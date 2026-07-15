@@ -1,0 +1,17 @@
+[package]
+name = "palette_native"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "palette_native"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+linfa = "0.8"
+linfa-clustering = "0.8"
+ndarray = "0.16"
+numpy = "0.28"
+pyo3 = { workspace = true, features = ["extension-module", "abi3-py310"] }
+rand = "0.8"
+rand_chacha = "0.3"

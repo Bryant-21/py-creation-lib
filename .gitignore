@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.venv/
+target/
+python/creation_lib/_native*.pyd
+native/.build_hash
+.build.lock
+/data/
+.pytest_cache/
+dist/

@@ -1,0 +1,17 @@
+[package]
+name = "scientific_native"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "scientific_native"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+numpy = "0.28"
+pyo3 = { workspace = true, features = ["extension-module", "abi3-py310"] }
+scirs2-core = "0.4.4"
+scirs2-interpolate = "0.4.4"
+scirs2-ndimage = "0.4.4"
+scirs2-signal = "0.4.4"
+scirs2-spatial = "0.4.4"

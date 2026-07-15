@@ -1,0 +1,16 @@
+[package]
+name = "materials_native"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "materials_native"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+directxtex_native = { path = "../directxtex" }
+pyo3 = { workspace = true, features = ["extension-module", "abi3-py310"] }
+rayon = "1"
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }

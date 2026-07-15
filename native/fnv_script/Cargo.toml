@@ -1,0 +1,15 @@
+[package]
+name = "fnv_script_native"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "fnv_script_native"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+nom = "7"
+pyo3 = { workspace = true, features = ["extension-module", "abi3-py310"] }
+serde = { workspace = true, features = ["derive"] }
+serde_yaml = "0.9"
+thiserror = { workspace = true }

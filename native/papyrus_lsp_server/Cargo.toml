@@ -1,0 +1,15 @@
+[package]
+name = "papyrus_lsp_server"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "papyrus-lsp"
+path = "src/main.rs"
+
+[dependencies]
+papyrus_core = { path = "../papyrus_core" }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+tokio = { version = "1", features = ["rt-multi-thread", "io-std", "macros", "sync"] }
+tower-lsp = "0.20"

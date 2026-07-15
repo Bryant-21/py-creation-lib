@@ -1,0 +1,15 @@
+// Hand-crafted fixture used by tests/test_schema_forge_probes_ck_dialogs.py.
+// Mirrors the form ResourceHacker.exe emits when dumping DIALOG resources
+// from a Bethesda editor executable: CONTROL-per-control, symbolic styles,
+// integer control IDs. Parser must pick out all three controls below.
+
+IDD_WEAPON DIALOGEX 0, 0, 320, 200
+STYLE DS_SHELLFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Weapon"
+LANGUAGE LANG_ENGLISH, SUBLANG_ENGLISH_US
+FONT 8, "MS Shell Dlg", FW_NORMAL, FALSE, 1
+{
+   CONTROL "Damage",               -1, STATIC, SS_LEFT | WS_CHILD | WS_VISIBLE | WS_GROUP, 10, 20, 40, 8
+   CONTROL "",                   2001, EDIT, ES_AUTOHSCROLL | WS_CHILD | WS_VISIBLE | WS_BORDER | WS_TABSTOP, 60, 18, 60, 12
+   CONTROL "",                   2002, COMBOBOX, CBS_DROPDOWNLIST | WS_CHILD | WS_VISIBLE | WS_TABSTOP, 130, 18, 90, 60
+}

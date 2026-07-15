@@ -1,0 +1,25 @@
+[package]
+name = "world_renderer_native"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "world_renderer_native"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+bsarchive_native = { path = "../bsarchive" }
+directxtex_native = { path = "../directxtex" }
+esp_authoring_core = { path = "../esp" }
+materials_native = { path = "../materials" }
+nif_core_native = { path = "../nif_core" }
+pyo3 = { workspace = true, features = ["extension-module", "abi3-py310"] }
+rayon = "1"
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+terrain_native = { path = "../terrain" }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+bytes = "1.11.1"
+smol_str = "0.3.6"

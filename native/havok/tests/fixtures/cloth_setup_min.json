@@ -1,0 +1,83 @@
+{
+  "name": "TestRobe",
+  "buffer_setups": [
+    {
+      "name": "Sim",
+      "buffer_type": 2,
+      "has_normals": true,
+      "has_tangents": false,
+      "has_bitangents": false,
+      "has_triangles": false
+    }
+  ],
+  "transform_set_setups": [
+    {
+      "name": "Bones",
+      "bone_names": [
+        "Bone_A_001",
+        "Bone_B_001"
+      ],
+      "skeleton_name": ""
+    }
+  ],
+  "sim_cloth_setups": [
+    {
+      "name": "Robe",
+      "simulation_mesh": {
+        "positions": [
+          [0.0, 1.0, 0.0, 0.0],
+          [1.0, 1.0, 0.0, 0.0],
+          [0.0, 0.0, 0.0, 0.0],
+          [1.0, 0.0, 0.0, 0.0]
+        ],
+        "triangles": [[0, 1, 2], [1, 3, 2]],
+        "sim_to_render_map": [[], [], [], []],
+        "render_to_sim_map": [0, 1, 2, 3]
+      },
+      "gravity": [
+        0.0,
+        -9.8,
+        0.0,
+        0.0
+      ],
+      "global_damping_per_second": 0.0,
+      "do_normals": true,
+      "specify_density": false,
+      "vertex_density": {
+        "type": 0,
+        "constant_value": 1.0
+      },
+      "rescale_mass": false,
+      "total_mass": 1.0,
+      "particle_mass": {
+        "type": 0,
+        "constant_value": 0.02
+      },
+      "particle_radius": {
+        "type": 0,
+        "constant_value": 0.5
+      },
+      "particle_friction": {
+        "type": 0,
+        "constant_value": 0.35
+      },
+      "fixed_particles": {
+        "type": 0
+      },
+      "enable_pinch_detection": false,
+      "pinch_detection_enabled_particles": {
+        "type": 1
+      },
+      "to_anim_period": 0.3,
+      "to_sim_period": 0.3,
+      "collision_tolerance": 0.5,
+      "enable_stuck_particle_detection": false,
+      "stuck_particles_stretch_factor": 2.0,
+      "enable_transfer_motion": false,
+      "constraint_setups": [],
+      "collidable_setups": []
+    }
+  ],
+  "operator_setups": [],
+  "state_setups": []
+}

@@ -1,0 +1,68 @@
+[package]
+name = "py_creation_lib_native"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "_native"
+crate-type = ["cdylib"]
+
+[features]
+default = ["all"]
+all = [
+    "audio",
+    "palette",
+    "esp",
+    "nif",
+    "havok",
+    "bsarchive",
+    "ck",
+    "db",
+    "directxtex",
+    "fnv_script",
+    "lodgen",
+    "materials",
+    "papyrus_core",
+    "scientific",
+    "swf",
+    "terrain",
+    "world_renderer",
+]
+audio        = ["dep:audio_native"]
+palette      = ["dep:palette_native"]
+esp          = ["dep:esp_authoring_core"]
+dhat-heap    = ["esp", "esp_authoring_core/dhat-heap"]
+nif          = ["dep:nif_core_native"]
+havok        = ["dep:havok_native"]
+bsarchive    = ["dep:bsarchive_native"]
+ck           = ["dep:ck_native"]
+db           = ["dep:db_native"]
+directxtex   = ["dep:directxtex_native"]
+fnv_script   = ["dep:fnv_script_native"]
+lodgen       = ["dep:lodgen_native", "lodgen_native/real-esp"]
+materials    = ["dep:materials_native"]
+papyrus_core = ["dep:papyrus_core"]
+scientific   = ["dep:scientific_native"]
+swf          = ["dep:swf_native"]
+terrain      = ["dep:terrain_native"]
+world_renderer = ["dep:world_renderer_native"]
+
+[dependencies]
+audio_native        = { path = "../audio",       optional = true }
+palette_native      = { path = "../palette",     optional = true }
+bsarchive_native    = { path = "../bsarchive",   optional = true }
+ck_native           = { path = "../ck",          optional = true }
+db_native           = { path = "../db",          optional = true }
+directxtex_native   = { path = "../directxtex",  optional = true }
+esp_authoring_core  = { path = "../esp",         optional = true }
+fnv_script_native   = { path = "../fnv_script",  optional = true }
+havok_native        = { path = "../havok",       optional = true }
+lodgen_native       = { path = "../lodgen",      optional = true }
+materials_native    = { path = "../materials",   optional = true }
+nif_core_native     = { path = "../nif_core",    optional = true }
+papyrus_core        = { path = "../papyrus_core", optional = true }
+scientific_native   = { path = "../scientific",  optional = true }
+swf_native          = { path = "../swf",         optional = true }
+terrain_native      = { path = "../terrain",     optional = true }
+world_renderer_native = { path = "../world_renderer", optional = true }
+pyo3 = { workspace = true, features = ["extension-module", "abi3-py310"] }

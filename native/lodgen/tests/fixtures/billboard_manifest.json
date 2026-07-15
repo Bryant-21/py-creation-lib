@@ -1,0 +1,30 @@
+{
+  "atlas": "Textures\\Terrain\\LODGen\\DLC03FarHarbor\\DLC03FarHarborTreeLod.dds",
+  "atlas_normal": "Textures\\Terrain\\LODGen\\DLC03FarHarbor\\DLC03FarHarborTreeLod_n.dds",
+  "atlas_w": 1024,
+  "atlas_h": 512,
+  "entries": [
+    {
+      "model": "meshes/trees/pinetree01_lod.nif",
+      "index": 0,
+      "width": 150.0,
+      "height": 512.0,
+      "shift_z": 8.0,
+      "uv_min_x": 0.0,
+      "uv_max_x": 0.5,
+      "uv_min_y": 0.0,
+      "uv_max_y": 1.0
+    },
+    {
+      "model": "meshes/trees/oaktree02_lod.nif",
+      "index": 1,
+      "width": 200.0,
+      "height": 600.0,
+      "shift_z": 0.0,
+      "uv_min_x": 0.5,
+      "uv_max_x": 1.0,
+      "uv_min_y": 0.0,
+      "uv_max_y": 1.0
+    }
+  ]
+}

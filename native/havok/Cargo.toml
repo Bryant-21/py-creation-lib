@@ -1,0 +1,20 @@
+[package]
+name = "havok_native"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "havok_native"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pyo3 = { workspace = true, features = ["extension-module", "abi3-py310"] }
+rayon = "1"
+roxmltree = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = "0.1"
+
+[dev-dependencies]
+havok_macros = { path = "../havok_macros" }

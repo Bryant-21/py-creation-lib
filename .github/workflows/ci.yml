@@ -1,0 +1,26 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install (builds native via maturin)
+        run: uv sync
+      - name: Rust tests
+        run: cargo test --workspace
+      # If this fails linking the pyo3 umbrella crate on the runner, change to:
+      # cargo test --workspace --exclude creation_lib_native
+      - name: Python tests
+        run: uv run pytest

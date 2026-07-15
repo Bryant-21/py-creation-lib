@@ -1,0 +1,44 @@
+[package]
+name = "esp_authoring_core"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "esp_authoring_core"
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = ["mimalloc-allocator"]
+mimalloc-allocator = ["dep:mimalloc", "dep:libmimalloc-sys"]
+dhat-heap = ["dep:dhat"]
+
+[dependencies]
+bitflags = "2"
+bsarchive_native = { path = "../bsarchive" }
+bytes = "1.7"
+dhat = { version = "0.3.3", optional = true }
+indexmap = "2"
+regex = "1"
+encoding_rs = "0.8"
+flate2 = "1.1.9"
+hex = "0.4"
+lasso = { version = "0.7", features = ["multi-threaded"] }
+libmimalloc-sys = { version = "0.1", default-features = false, features = ["extended"], optional = true }
+memmap2 = "0.9"
+mimalloc = { version = "0.1", default-features = false, optional = true }
+pyo3 = { workspace = true, features = ["extension-module", "abi3-py310", "py-clone"] }
+rayon = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+rustc-hash = "2"
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, features = ["preserve_order"] }
+serde-saphyr = { workspace = true }
+sha2 = "0.10"
+slotmap = "1"
+smallvec = { version = "1", features = ["const_generics"] }
+smol_str = "0.3"
+tempfile = { workspace = true }
+thiserror = { workspace = true }
+
+[build-dependencies]
+pyo3-build-config = { version = "0.28.3", features = ["resolve-config"] }

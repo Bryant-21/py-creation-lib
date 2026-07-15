@@ -1,0 +1,4 @@
+# Codegen golden fixtures: stock-PapyrusCompiler.exe .pex output, checked in as
+# the byte target for the per-construct codegen tests. Re-include them despite
+# the repo-wide `*.pex` ignore (these are test fixtures, not build artifacts).
+!*.pex

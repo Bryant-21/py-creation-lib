@@ -1,0 +1,22 @@
+[package]
+name = "ck_native"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "ck_native"
+crate-type = ["rlib"]
+
+[dependencies]
+esp_authoring_core = { path = "../esp" }
+havok_native       = { path = "../havok" }
+pyo3               = { workspace = true, features = ["extension-module", "abi3-py310"] }
+rayon              = "1"
+regex              = "1"
+serde              = { workspace = true, features = ["derive"] }
+serde_json         = { workspace = true, features = ["preserve_order"] }
+tempfile           = { workspace = true }
+thiserror          = { workspace = true }
+
+[dev-dependencies]
+serde-saphyr = { workspace = true }

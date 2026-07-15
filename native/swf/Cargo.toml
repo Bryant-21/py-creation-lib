@@ -1,0 +1,12 @@
+[package]
+name = "swf_native"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "swf_native"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+flate2 = "1.1.9"
+pyo3 = { workspace = true, features = ["extension-module", "abi3-py310"] }

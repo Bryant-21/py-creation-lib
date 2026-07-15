@@ -1,0 +1,534 @@
+BGSM total: 8911, with EnvmapTexture: 3915 (43.9%), failed: 0
+
+==== Per-directory cubemap distribution (top 10) ====
+---- actors (737 BGSMs) ----
+    287  <EMPTY>
+           e.g. actors/Alien/Alien_Body.BGSM
+    267  mipblur_DefaultOutside1.dds
+           e.g. actors/BloodBug/BloodBugGlow.BGSM
+     66  mipblur_DefaultOutside1_dielectric.dds
+           e.g. actors/Bloatfly/BloatflyColor.BGSM
+     30  MetalBrushedBronze01Cube_e.dds
+           e.g. actors/BloodBug/BloodBugFurAdult.BGSM
+     13  mudpond_e.dds
+           e.g. actors/BloodBug/BloodBugButt.BGSM
+     12  mipblur_InstInterior_dialectric.dds
+           e.g. actors/DLC03/Gulper/Gulper.BGSM
+     10  eyecubemap.dds
+           e.g. actors/Cat/eyes.BGSM
+      8  Bloatfly.dds
+           e.g. actors/Bloatfly/Bloatfly.BGSM
+      7  mipblur_OutsideDesaturate_dielectric.dds
+           e.g. actors/DLC03/MutatedWolf/MutatedWof.BGSM
+      6  EyeCubeMap.dds
+           e.g. actors/DLC03/Angler/eyes.BGSM
+
+---- ammo (18 BGSMs) ----
+     10  <EMPTY>
+           e.g. Ammo/10mm/10mm.BGSM
+      3  mipblur_DefaultOutside1_bronze.dds
+           e.g. Ammo/10mm/10mmCartridge.BGSM
+      2  mipblur_DefaultOutside1.dds
+           e.g. Ammo/32Cal/32CalProjectile.BGSM
+      1  mipblur_DefaultOutside1_Copper.dds
+           e.g. Ammo/10mm/10mmCartridgeCopper.BGSM
+      1  ShinyDull_e.dds
+           e.g. Ammo/5mm/5mmAmmo.bgsm
+      1  mipblur_DefaultOutside1_dielectric.dds
+           e.g. Ammo/CryoAmmo/CryoAmmo.bgsm
+
+---- animobjects (9 BGSMs) ----
+      5  <EMPTY>
+           e.g. AnimObjects/PipBoy/PipBoyGlow01.BGSM
+      2  MetalShineBrushedTopCube_e.dds
+           e.g. AnimObjects/PipBoy/PipBoy01.BGSM
+      2  mipblur_DefaultOutside1_dielectric.dds
+           e.g. AnimObjects/PipBoy/PipBoyPlastic01.BGSM
+
+---- architecture (768 BGSMs) ----
+    445  <EMPTY>
+           e.g. Architecture/MetalResidentialwindows01.BGSM
+    107  mipblur_DefaultOutside1.dds
+           e.g. Architecture/Airport/AirportJetway02.BGSM
+     35  ShinyDull_e.dds
+           e.g. Architecture/Buildings/BLDGFutQuad01.BGSM
+     27  outsideoldtownreflectcube_e.dds
+           e.g. Architecture/Buildings/ChurchSidingWindow01.BGSM
+     24  mipblur_OutsideDesaturate_dielectric.dds
+           e.g. Architecture/Capsules/CapDetailSheet01.BGSM
+     18  mudpond_e.dds
+           e.g. Architecture/DiamondCity/BaseballBanner01Alpha.BGSM
+     15  MetalBrushed01Cube_e.dds
+           e.g. Architecture/Buildings/BLDGFutDucts01.BGSM
+     12  shinyglass_e.dds
+           e.g. Architecture/Buildings/BrickWhiteLarge01.BGSM
+     12  shinybright_e.dds
+           e.g. Architecture/Buildings/DetailMetalResidential01.BGSM
+     10  MetalChrome01Cube_e.dds
+           e.g. Architecture/Buildings/DetailMetalResidential04.BGSM
+
+---- armor (175 BGSMs) ----
+     85  <EMPTY>
+           e.g. Armor/ArmoredCoat/Armored_Coat_Glove.BGSM
+     65  mipblur_DefaultOutside1.dds
+           e.g. Armor/BattingHelmet/BattingHelmet.BGSM
+     14  mipblur_InstInterior.dds
+           e.g. Armor/Synth/SynthArmor1.BGSM
+      4  mipblur_DefaultOutside1_dielectric.dds
+           e.g. Armor/DogGear/Armor.BGSM
+      2  mipblur_DefaultOutside1_Copper.dds
+           e.g. Armor/Metal/MetalArmorAlloyed.BGSM
+      2  ore_steel_e.dds
+           e.g. Armor/Raider01/MetalAddons.BGSM
+      1  BlurContrastCube_e.dds
+           e.g. Armor/ArmoredCoat/ArmoredCoat.BGSM
+      1  mipblur_DefaultOutside1_bronze.dds
+           e.g. Armor/LorenzosCrown/LorenzosCrown.BGSM
+      1  MetalBrushed02Cube_e.dds
+           e.g. Armor/Metal/Torso.BGSM
+
+---- barnacle.bgsm (1 BGSMs) ----
+      1  <EMPTY>
+           e.g. Barnacle.BGSM
+
+---- blood (1 BGSMs) ----
+      1  BloodHighlightCube.dds
+           e.g. Blood/BloodWeapon.BGSM
+
+---- clothes (289 BGSMs) ----
+    238  <EMPTY>
+           e.g. Clothes/Bathrobe/Bathrobes.BGSM
+     18  mipblur_DefaultOutside1_bronze.dds
+           e.g. Clothes/Grognak/costumemetal.BGSM
+     16  mipblur_DefaultOutside1.dds
+           e.g. Clothes/ChildrenOfAtom/ChildrenOfAtom1.BGSM
+      4  mipblur_DefaultOutside1_dielectric.dds
+           e.g. Clothes/GreaserJacket/AtomCatsJacket.BGSM
+      3  mipblur_InstInterior_dialectric.dds
+           e.g. Clothes/InstituteWorksuit/WorksuitBody.BGSM
+      2  ShinyDull_e.dds
+           e.g. Clothes/Mobsters/glass.BGSM
+      2  shinyglass_e.dds
+           e.g. Clothes/PoliceGlasses/lenses.BGSM
+      2  MetalShineBrushedTopCube_e.dds
+           e.g. Clothes/VaultSuit/vaultsuit111.bgsm
+      1  dogcollar_m.dds
+           e.g. Clothes/DogCollar/collar.BGSM
+      1  MetalShineTopCube01_e.dds
+           e.g. Clothes/GrandmaMonk/GrandmaMonkClothes2sided.BGSM
+
+---- construction (1 BGSMs) ----
+      1  mipblur_DefaultOutside1_dielectric.dds
+           e.g. Construction/TrafficCone.BGSM
+
+---- creationclub (573 BGSMs) ----
+    318  mipblur_DefaultOutside1.dds
+           e.g. CreationClub/BGSFO4006/AnimObjects/PipBoy/PipBoy01(Chrome).BGSM
+    112  <EMPTY>
+           e.g. CreationClub/BGSFO4001/AnimObjects/PipBoy/PipBoyLabels01(Black).BGSM
+     82  mipblur_defaultoutside1.dds
+           e.g. CreationClub/BGSFO4019/Armor/ChineseStealthArmor/ChineseStealthArmor01.BGSM
+     16  mipblur_DefaultOutside1_dielectric.dds
+           e.g. CreationClub/BGSFO4001/AnimObjects/PipBoy/PipBoyPlastic01(Black).BGSM
+     11  mipblur_DefaultOutside1_bronze.dds
+           e.g. CreationClub/BGSFO4016/Clothes/Prey/Morgan_Female_Body02.BGSM
+     10  MetalShineBrushedTopCube_e.dds
+           e.g. CreationClub/BGSFO4001/AnimObjects/PipBoy/PipBoy01(Black).BGSM
+      8  mipblur_DefaultOutside1_Copper.dds
+           e.g. CreationClub/BGSFO4019/Armor/ChineseStealthArmor/ChineseStealthArmorVisor01.BGSM
+      6  MetalShineBrushedTopCube_e
+           e.g. CreationClub/ccSBJFO4004/Nailgun/BarrelsMuzzles.BGSM
+      3  MetalBrushed01Cube_e.dds
+           e.g. CreationClub/FSVFO4007/SetDressing/Tombstone01.bgsm
+      2  mipblur_InstInterior.dds
+           e.g. CreationClub/BGSFO4096/Armor/Synth/SynthArmor_Enclave.BGSM
+
+---- critters (3 BGSMs) ----
+      3  <EMPTY>
+           e.g. Critters/Crow.BGSM
+
+---- decals (128 BGSMs) ----
+    126  <EMPTY>
+           e.g. Decals/BloodSmear01.BGSM
+      2  Black01_d.dds
+           e.g. Decals/ConcretePatch01.BGSM
+
+---- default.bgsm (1 BGSMs) ----
+      1  <EMPTY>
+           e.g. Default.bgsm
+
+---- dlc01 (195 BGSMs) ----
+    159  mipblur_defaultoutside1.dds
+           e.g. DLC01/Actors/CreateABot/DLC01AssaultronArmsRemap01_base.bgsm
+     19  <EMPTY>
+           e.g. DLC01/Actors/CreateABot/deathclaw_skull.BGSM
+      6  mipblur_DefaultOutside1_Copper.dds
+           e.g. DLC01/Actors/PowerArmor/T60_Tesla_Bulbs.BGSM
+      3  mipblur_DefaultOutside1_dielectric.dds
+           e.g. DLC01/BuzzBlade/TazerBladeDialectric.BGSM
+      3  outsidemetaloldtowncube_e.dds
+           e.g. DLC01/Interiors/FloorMedicalTiles01.bgsm
+      2  MetalShineTopCube01_e.dds
+           e.g. DLC01/SetDressing/GeneralAtomicsFloorSeal/DLC01GeneralAtomicsFloorSeal01.BGSM
+      1  MuseumIntCube01_e.dds
+           e.g. DLC01/Props/DLC01Components.BGSM
+      1  CityBuildingsCube.dds
+           e.g. DLC01/SetDressing/GeneralAtomicsRobcoSigns/RobcoRoofSign01.BGSM
+      1  ShinyDull_e.dds
+           e.g. DLC01/SetDressing/MachineKit/MacWireBundle01.BGSM
+
+---- dlc02 (59 BGSMs) ----
+     41  mipblur_DefaultOutside1.dds
+           e.g. DLC02/Architecture/MetalTrimRustedA.BGSM
+     17  <EMPTY>
+           e.g. DLC02/Actors/Gorilla/DLC02Gorilla.BGSM
+      1  MetalBrushed02Cube_e.dds
+           e.g. DLC02/SetDressing/DLC02WorkshopBetaWaveEmitterTripod01.BGSM
+
+---- dlc03 (414 BGSMs) ----
+    271  <EMPTY>
+           e.g. DLC03/Actors/RoboBrain/DLC03_RobobrainClothingAccessories.BGSM
+     85  mipblur_DefaultOutside1.dds
+           e.g. DLC03/Actors/RoboBrain/DLC03_RobobrainArms.BGSM
+      9  mipblur_DefaultOutside1_dielectric.dds
+           e.g. DLC03/Armor/CombatArmor/Combat_Armor_CoA_Chromepipe.BGSM
+      9  MetalBrushed02Cube_e.dds
+           e.g. DLC03/Props/DiMA/DiMAMemoryBank01.BGSM
+      5  mipblur_DefaultOutside1_bronze.dds
+           e.g. DLC03/Armor/InquisitorHood/InquisitorHoodBrass.BGSM
+      4  mipblur_DefaultOutside1_Copper.dds
+           e.g. DLC03/Armor/InquisitorHood/InquisitorHoodCopper.BGSM
+      4  MetalBrushedGold_e.dds
+           e.g. DLC03/Interiors/Vault/VltCeilings01DLC03Gold01.BGSM
+      4  MetalBrushed01Cube_e.dds
+           e.g. DLC03/Interiors/Vault/VltHallResPaneledDLC03Hotel01RoyalWhite.BGSM
+      3  BlurContrastCube_e.dds
+           e.g. DLC03/Architecture/Hotel/HotelFloorTilesA.BGSM
+      3  mudpond_e.dds
+           e.g. DLC03/Props/DLC03StimpackSludge.BGSM
+
+---- dlc04 (734 BGSMs) ----
+    569  <EMPTY>
+           e.g. DLC04/DLC04Greybox.BGSM
+    101  mipblur_DefaultOutside1.dds
+           e.g. DLC04/Architecture/MetalResidentialwindows01_Nuka.BGSM
+      9  MetalChrome01Cube_e.dds
+           e.g. DLC04/Clothes/Operators/OperatorsSuit01.BGSM
+      8  metalchrome02cube_e.dds
+           e.g. DLC04/Architecture/GalacticZone/FlatMetalPanelsFuture01a.BGSM
+      6  mipblur_DefaultOutside1_Copper.dds
+           e.g. DLC04/SetDressing/StingWingNest/DLC04Resin01.BGSM
+      5  mipblur_DefaultOutside1_dielectric.dds
+           e.g. DLC04/SetDressing/ClutterGeneric/DLC04_ClutterGenSmallANuka.bgsm
+      4  outsideoldtownreflectcube_e.dds
+           e.g. DLC04/Landscape/Roads/SideWalkNukaMosaic01.BGSM
+      4  MetalShineBrushedTopCube_e.dds
+           e.g. DLC04/SetDressing/Diner/DLC04DinerCounterstoRed.BGSM
+      2  metalbrushed02cube_e.dds
+           e.g. DLC04/Architecture/MetalResidentialDetails01_Nuka.BGSM
+      2  shinyglass_e.dds
+           e.g. DLC04/Clothes/CappySunglasses/CappySunglasses.BGSM
+
+---- dlc05 (71 BGSMs) ----
+     42  <EMPTY>
+           e.g. DLC05/Actors/ArmorRackFemale/ArmorRackFemale01.BGSM
+     24  mipblur_DefaultOutside1.dds
+           e.g. DLC05/Architecture/WarehouseGarageDoor01.BGSM
+      5  OutsideMetalOldTownCube_e.dds
+           e.g. DLC05/SetDressing/PADisplay/DLC05_PADisplay01.BGSM
+
+---- dlc06 (79 BGSMs) ----
+     42  <EMPTY>
+           e.g. DLC06/Architecture/Vault/DLC06ConcreteWalls02.BGSM
+     17  mipblur_DefaultOutside1.dds
+           e.g. DLC06/Architecture/Vault/VaultExteriorGearDoor03.BGSM
+      8  MetalBrushed01Cube_e.dds
+           e.g. DLC06/Interiors/Vault/BrickPile01.BGSM
+      7  mipblur_InstInterior.dds
+           e.g. DLC06/Interiors/Vault/VltBoxcar01.BGSM
+      2  metalchrome01cube_e.dds
+           e.g. DLC06/Architecture/Vault/VaultExteriorGearDoor01.BGSM
+      2  mipblur_DefaultOutside1_bronze.dds
+           e.g. DLC06/Clothes/VaultSuit/vaultsuitMnumber88.bgsm
+      1  MetalBrushed02Cube_e.dds
+           e.g. DLC06/SetDressing/Vault/DLC06_VaultSuitPackage88.BGSM
+
+---- effects (10 BGSMs) ----
+      7  <EMPTY>
+           e.g. Effects/FurTile.BGSM
+      2  eyecubemap.dds
+           e.g. Effects/MeatTileAlpha.BGSM
+      1  OutsideDay01.dds
+           e.g. Effects/10mmReflexGlass.BGSM
+
+---- furniture (14 BGSMs) ----
+     10  <EMPTY>
+           e.g. Furniture/Deathclaw/deathclawambushasphalt01.bgsm
+      3  mipblur_DefaultOutside1.dds
+           e.g. Furniture/Mirelurks/MirelurkAmbushRollingRocksSandWet.BGSM
+      1  mipblur_Eye1.dds
+           e.g. Furniture/Mirelurks/MirelurkAmbushRollingNestMud.BGSM
+
+---- gamejam (1 BGSMs) ----
+      1  mipblur_DefaultOutside1.dds
+           e.g. GameJam/PAJetpack/Jetpack.BGSM
+
+---- gasolinecanister.bgsm (1 BGSMs) ----
+      1  MetalShineTopCube01_e.dds
+           e.g. GasolineCanister.BGSM
+
+---- gore (15 BGSMs) ----
+      8  <EMPTY>
+           e.g. Gore/GoreBaseBitsRed.BGSM
+      5  eyecubemap.dds
+           e.g. Gore/ExplodedMeatTile.BGSM
+      2  mipblur_DefaultOutside1_dielectric.dds
+           e.g. Gore/GoreOrgans.BGSM
+
+---- hittechlongpanelsgradient_01.bgsm (1 BGSMs) ----
+      1  <EMPTY>
+           e.g. HitTechLongPanelsGradient_01.BGSM
+
+---- interface (24 BGSMs) ----
+     19  <EMPTY>
+           e.g. Interface/Newspaper/DN101Note.BGSM
+      2  MetalBrushed01Cube_e.dds
+           e.g. Interface/Lockpicking/LockInterfaceLock01.BGSM
+      1  metalchrome02cube_e.dds
+           e.g. Interface/PipScreenTerminals.BGSM
+      1  MetalBrushedBronze01Cube_e.dds
+           e.g. Interface/Lockpicking/LockInterfacePin01.BGSM
+      1  OutsideDay01.dds
+           e.g. Interface/Lockpicking/LockInterfacePlastic01.BGSM
+
+---- interiors (937 BGSMs) ----
+    426  <EMPTY>
+           e.g. Interiors/Building/BldCarpetBowling01.bgsm
+    222  mipblur_DefaultOutside1.dds
+           e.g. Interiors/Building/BldConcreteFloor01.BGSM
+     65  mipblur_DefaultOutside1_dielectric.dds
+           e.g. Interiors/Building/BldWoodFloorClean01.bgsm
+     59  MetalBrushed01Cube_e.dds
+           e.g. Interiors/Institute/InstituteFloor02c.BGSM
+     57  shinydull_e.dds
+           e.g. Interiors/Building/BldCeilingBlue01.bgsm
+     30  MetalBrushed02Cube_e.dds
+           e.g. Interiors/Industrial/metalindbgpipesbluegreen01.bgsm
+     14  ShinyDull_e.dds
+           e.g. Interiors/Building/BldWallStains02Decal.BGSM
+     11  IridescentColor01Cube_e.dds
+           e.g. Interiors/Institute/InstituteConcrete01.BGSM
+      9  shinybright_e.dds
+           e.g. Interiors/HighTech/flatmetalsupports01b.bgsm
+      8  MetalChrome01Cube_e.dds
+           e.g. Interiors/Vault/VltStripsPipes_02.BGSM
+
+---- keys.bgsm (1 BGSMs) ----
+      1  MetalShineBrushedTopCube_e.dds
+           e.g. Keys.BGSM
+
+---- landscape (379 BGSMs) ----
+    352  <EMPTY>
+           e.g. Landscape/Branchpiles01.BGSM
+     11  mipblur_DefaultOutside1.dds
+           e.g. Landscape/Plants/Seaweed01.BGSM
+      6  mipblur_DefaultOutside1_dielectric.dds
+           e.g. Landscape/Roads/HWMetalGreen01.BGSM
+      4  roomwindowhighlightscube.dds
+           e.g. Landscape/NorthBridgedetails.BGSM
+      2  outsideoldtownreflectcube_e.dds
+           e.g. Landscape/GSMuckWater02.BGSM
+      1  outsidemetaloldtowncube_e.dds
+           e.g. Landscape/Ground/CoastSandWet01Envir.BGSM
+      1  eyecubemap.dds
+           e.g. Landscape/Puddles/PuddleBloodDecal01.bgsm
+      1  mipblur_OutsideDesaturate_dielectric.dds
+           e.g. Landscape/Puddles/PuddleTownDecal01_NoSSR.bgsm
+      1  Oil02_e.dds
+           e.g. Landscape/Water/WaterDebrisA.BGSM
+
+---- lod (160 BGSMs) ----
+    159  <EMPTY>
+           e.g. LOD/Airport01_LOD.BGSM
+      1  ShinyDull_e.dds
+           e.g. LOD/CorrugatedMetalLOD02.bgsm
+
+---- metalbucket.bgsm (1 BGSMs) ----
+      1  MetalChrome01Cube_e.dds
+           e.g. MetalBucket.BGSM
+
+---- nukabottle.bgsm (1 BGSMs) ----
+      1  outsideoldtownreflectcube_e.dds
+           e.g. NukaBottle.BGSM
+
+---- nukabottlecherry.bgsm (1 BGSMs) ----
+      1  outsideoldtownreflectcube_e.dds
+           e.g. NukaBottleCherry.BGSM
+
+---- prewarpaintingcanvas01.bgsm (1 BGSMs) ----
+      1  <EMPTY>
+           e.g. PrewarPaintingCanvas01.BGSM
+
+---- props (654 BGSMs) ----
+    513  <EMPTY>
+           e.g. Props/AbraxoClean.BGSM
+     16  mipblur_DefaultOutside1.dds
+           e.g. Props/Blowtorch.BGSM
+     16  MetalBrushed01Cube_e.dds
+           e.g. Props/AutoParts/AutoParts01.BGSM
+     13  MetalShineBrushedTopCube_e.dds
+           e.g. Props/Clipboard.BGSM
+     12  mipblur_DefaultOutside1_dielectric.dds
+           e.g. Props/BobbyPinBox.BGSM
+     12  MetalBrushed02Cube_e.dds
+           e.g. Props/DeathclawEggCase01.BGSM
+      9  MetalShineTopCube01_e.dds
+           e.g. Props/AntifreezeRare.BGSM
+      9  mipblur_InstInterior_dialectric.dds
+           e.g. Props/GasCanister01.BGSM
+      8  mipblur_InstInterior.dds
+           e.g. Props/BlowtorchRare.BGSM
+      7  eyecubemap.dds
+           e.g. Props/AlienToy.BGSM
+
+---- setdressing (1730 BGSMs) ----
+   1020  <EMPTY>
+           e.g. SetDressing/AcDucts.BGSM
+    249  mipblur_DefaultOutside1.dds
+           e.g. SetDressing/GlassBeerBottle01Alpha.BGSM
+     77  mipblur_OutsideDesaturate_dielectric.dds
+           e.g. SetDressing/Pins/Charisma.BGSM
+     60  MetalBrushed02Cube_e.dds
+           e.g. SetDressing/PrewarPorcelainCoffeeCup02.BGSM
+     45  MetalBrushed01Cube_e.dds
+           e.g. SetDressing/AcDuctsRusted.BGSM
+     39  MetalShineBrushedTopCube_e.dds
+           e.g. SetDressing/MetalCoffeePot01.BGSM
+     34  MetalChrome01Cube_e.dds
+           e.g. SetDressing/MetalBarrel01Alpha.BGSM
+     31  Chrome_e.dds
+           e.g. SetDressing/FoodAndFoodWare/PotatoCrisps.BGSM
+     23  mipblur_DefaultOutside1_dielectric.dds
+           e.g. SetDressing/AlarmClock/AlarmClock01Rare.BGSM
+     19  Bronze_e.dds
+           e.g. SetDressing/Statues/BaseballStatue01.BGSM
+
+---- shared (22 BGSMs) ----
+     19  <EMPTY>
+           e.g. Shared/AshAndChar01.BGSM
+      3  mipblur_DefaultOutside1.dds
+           e.g. Shared/PipPlug01.BGSM
+
+---- template (47 BGSMs) ----
+     36  <EMPTY>
+           e.g. Template/ArmorTemplate_Wet.bgsm
+      8  mipblur_DefaultOutside1.dds
+           e.g. Template/AsphaltTemplate.bgsm
+      3  MetalChrome01Cube_e.dds
+           e.g. Template/MetalTemplate.bgsm
+
+---- traps (8 BGSMs) ----
+      6  <EMPTY>
+           e.g. Traps/ElectricalTrap01.BGSM
+      2  Bronze_e.dds
+           e.g. Traps/TrapCymbalMonkey01.BGSM
+
+---- vehicles (268 BGSMs) ----
+    158  mipblur_DefaultOutside1.dds
+           e.g. Vehicles/Aircraft/AircraftStingRayDeluxe01.BGSM
+     74  <EMPTY>
+           e.g. Vehicles/Car02.BGSM
+     11  mipblur_DefaultOutside1_dielectric.dds
+           e.g. Vehicles/Airplane/AirplaneLogo01.BGSM
+     10  Chrome_e.dds
+           e.g. Vehicles/Automotive/Coupe03.BGSM
+      9  MetalChrome01Cube_e.dds
+           e.g. Vehicles/Car02Chrome.BGSM
+      3  MetalShineBrushedTopCube_e.dds
+           e.g. Vehicles/Automotive/Bus_EXT_01.BGSM
+      1  metalchrome02cube_e.dds
+           e.g. Vehicles/Car01.BGSM
+      1  MetalBrushed02Cube_e.dds
+           e.g. Vehicles/Airplane/Flight_Recorder01.BGSM
+      1  Oil02_e.dds
+           e.g. Vehicles/Automotive/Coupe02_Postwar_Hulk.BGSM
+
+---- vltutilwindow01.bgsm (1 BGSMs) ----
+      1  MetalBrushed02Cube_e.dds
+           e.g. VltUtilWindow01.BGSM
+
+---- weapons (377 BGSMs) ----
+    223  mipblur_DefaultOutside1.dds
+           e.g. Weapons/10mmPistol/10mmCompensator.BGSM
+     71  <EMPTY>
+           e.g. Weapons/10mmPistol/10mmBarrelLong.BGSM
+     44  mipblur_DefaultOutside1_dielectric.dds
+           e.g. Weapons/10mmPistol/10mmRubberGrips.BGSM
+     10  mipblur_DefaultOutside1_bronze.dds
+           e.g. Weapons/Cryogun/Barrel01Brass.BGSM
+      9  mipblur_OutsideBronze.dds
+           e.g. Weapons/Plasma/FlamerNozzleCopper.BGSM
+      8  mipblur_DefaultOutside1_Copper.dds
+           e.g. Weapons/GaussRifle/GaussRifleCopper.bgsm
+      6  MetalShineBrushedTopCube_e.dds
+           e.g. Weapons/Minigun/Minigun.BGSM
+      3  mipblur_InstInterior.dds
+           e.g. Weapons/BaseballBat/BaseballBat.BGSM
+      1  BloodHighlightCube.dds
+           e.g. Weapons/BaseballBat/BaseballBatBloodLoadScreen.BGSM
+      1  Bronze_e.dds
+           e.g. Weapons/ChineseOfficerSword/ChineseOfficerSword01B.BGSM
+
+---- whatever.bgsm (1 BGSMs) ----
+      1  <EMPTY>
+           e.g. Whatever.BGSM
+
+==== Diffuse-keyword correlation (top 5 cubemaps per keyword) ====
+---- bronze ----
+      2  MetalBrushedBronze01Cube_e.dds
+      2  <EMPTY>
+      2  mipblur_defaultoutside1_bronze.dds
+      2  Bronze_e.dds
+      1  mipblur_DefaultOutside1.dds
+
+---- brushed ----
+      1  MetalBrushed02Cube_e.dds
+
+---- chrome ----
+      4  MetalChrome01Cube_e.dds
+      3  mipblur_DefaultOutside1.dds
+      3  <EMPTY>
+      2  mipblur_DefaultOutside1_dielectric.dds
+      2  IridescentColor01Cube_e.dds
+
+---- copper ----
+      2  <EMPTY>
+      2  mipblur_DefaultOutside1_Copper.dds
+      1  shinyglass_e.dds
+      1  outsideoldtownreflectcube_e.dds
+
+---- eye ----
+     10  <EMPTY>
+      9  mipblur_DefaultOutside1.dds
+      4  eyecubemap.dds
+      2  EyeCubeMap.dds
+      2  mipblur_defaultoutside1.dds
+
+---- glass ----
+     15  <EMPTY>
+     11  mipblur_DefaultOutside1.dds
+      9  outsideoldtownreflectcube_e.dds
+      5  ShinyDull_e.dds
+      5  shinyglass_e.dds
+
+---- gold ----
+      5  <EMPTY>
+      4  MetalBrushedGold_e.dds
+      1  mipblur_DefaultOutside1_bronze.dds
+
+---- oil ----
+      9  mipblur_DefaultOutside1.dds
+      7  <EMPTY>
+      1  MemoryDenCube.dds
+      1  eyecubemap.dds
+      1  Chrome_e.dds

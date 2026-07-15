@@ -1,0 +1,117 @@
+[
+  {
+    "name": "hkClass",
+    "position": 5,
+    "signature": 869540739
+  },
+  {
+    "name": "hkClassMember",
+    "position": 18,
+    "signature": 2968495897
+  },
+  {
+    "name": "hkClassEnum",
+    "position": 37,
+    "signature": 2318797263
+  },
+  {
+    "name": "hkClassEnumItem",
+    "position": 54,
+    "signature": 3463416428
+  },
+  {
+    "name": "hkRootLevelContainer",
+    "position": 75,
+    "signature": 661831966
+  },
+  {
+    "name": "hclClothData",
+    "position": 101,
+    "signature": 4181970594
+  },
+  {
+    "name": "hclSimClothData",
+    "position": 119,
+    "signature": 3859829127
+  },
+  {
+    "name": "hclCollidable",
+    "position": 140,
+    "signature": 4047530174
+  },
+  {
+    "name": "hclCapsuleShape",
+    "position": 159,
+    "signature": 3708024100
+  },
+  {
+    "name": "hclStandardLinkConstraintSet",
+    "position": 180,
+    "signature": 1114321748
+  },
+  {
+    "name": "hclStretchLinkConstraintSet",
+    "position": 214,
+    "signature": 1114321748
+  },
+  {
+    "name": "hclBendStiffnessConstraintSet",
+    "position": 247,
+    "signature": 288448265
+  },
+  {
+    "name": "hclSimClothPose",
+    "position": 282,
+    "signature": 455429281
+  },
+  {
+    "name": "hclScratchBufferDefinition",
+    "position": 303,
+    "signature": 2685602348
+  },
+  {
+    "name": "hclBufferDefinition",
+    "position": 335,
+    "signature": 2135579644
+  },
+  {
+    "name": "hclTransformSetDefinition",
+    "position": 360,
+    "signature": 419251557
+  },
+  {
+    "name": "hclObjectSpaceSkinPNOperator",
+    "position": 391,
+    "signature": 2219346838
+  },
+  {
+    "name": "hclMoveParticlesOperator",
+    "position": 425,
+    "signature": 3864686620
+  },
+  {
+    "name": "hclSimulateOperator",
+    "position": 455,
+    "signature": 1975987983
+  },
+  {
+    "name": "hclSimpleMeshBoneDeformOperator",
+    "position": 480,
+    "signature": 2161735327
+  },
+  {
+    "name": "hclCopyVerticesOperator",
+    "position": 517,
+    "signature": 3873113932
+  },
+  {
+    "name": "hclClothState",
+    "position": 546,
+    "signature": 2063781147
+  },
+  {
+    "name": "hkaSkeleton",
+    "position": 565,
+    "signature": 4274114267
+  }
+]

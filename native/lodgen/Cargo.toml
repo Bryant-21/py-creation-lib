@@ -1,0 +1,46 @@
+[package]
+name = "lodgen_native"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "lodgen_native"
+crate-type = ["rlib"]
+
+[features]
+# `real-esp` links esp_authoring_core's plugin reader so `enumerate_worldspace`
+# can read a real ESP/ESM. It is OFF by default because esp pulls the external
+# `directxtex` crate (via bsarchive_native) whose DirectXTex C++ FFI symbols
+# collide with our `directxtex_native` copy in an exe/test link (LNK2005). With
+# the feature off, the default lib + its unit tests never link esp, so the
+# DDS-writing terrain tests (directxtex_native) link cleanly. The end-to-end
+# enumeration golden test enables `--features real-esp` and validates the .btr /
+# .lod (which need esp + nif_core but NOT directxtex_native); DDS encoding is
+# covered separately by the default-feature texture tests. The umbrella
+# `_native.pyd` is a cdylib and links both FFI copies without conflict, so the
+# Python `generate_lod` entry uses the real reader regardless.
+default = []
+real-esp = ["dep:esp_authoring_core"]
+
+[dependencies]
+pyo3 = { workspace = true, features = ["abi3-py310"] }
+anyhow = "1"
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+rayon = "1"
+half = "2"
+indexmap = "2"
+bitflags = "2"
+meshopt = "0.6.2"
+nif_core_native = { path = "../nif_core" }
+directxtex_native = { path = "../directxtex" }
+# Optional: enabled by the `real-esp` feature (see [features] above). Kept out of
+# the default graph so the default lib/test link never pulls the conflicting
+# external `directxtex` FFI that esp drags in via bsarchive_native.
+esp_authoring_core = { path = "../esp", optional = true }
+terrain_native = { path = "../terrain" }
+materials_native = { path = "../materials" }
+
+[dev-dependencies]
+bytes = "1"
+tempfile = { workspace = true }

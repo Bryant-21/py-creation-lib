@@ -1,0 +1,47 @@
+{
+  "layers": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    19,
+    20,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31,
+    44,
+    49,
+    50,
+    55
+  ],
+  "flags": [],
+  "quality_ids": [
+    255
+  ],
+  "known_body_shape_classes": [
+    "hknpCompressedMeshShape",
+    "hknpConvexPolytopeShape",
+    "hknpDynamicCompoundShape"
+  ],
+  "shape_tag_codec_info": 4294967295,
+  "thin_hull_ratio": 1e-05,
+  "degenerate_extent_eps": 0.0001
+}

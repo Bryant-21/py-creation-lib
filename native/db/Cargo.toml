@@ -1,0 +1,25 @@
+[package]
+name = "db_native"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "db_native"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+nif_core_native = { path = "../nif_core" }
+pyo3 = { workspace = true, features = ["extension-module", "abi3-py310"] }
+rusqlite = { version = "0.32", features = ["bundled", "blob", "column_decltype"] }
+sqlite-vec = "0.1"
+rayon = "1"
+regex = "1"
+once_cell = "1"
+thiserror = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+serde-saphyr = { workspace = true }
+directories = "5"
+dunce = "1"
+model2vec-rs = { version = "0.1", default-features = false, features = ["fancy-regex"] }
+zstd = "0.13"

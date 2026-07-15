@@ -1,0 +1,34 @@
+[workspace]
+members = [
+    "native/audio",
+    "native/bsarchive",
+    "native/ck",
+    "native/db",
+    "native/directxtex",
+    "native/esp",
+    "native/fnv_script",
+    "native/havok",
+    "native/havok_macros",
+    "native/lodgen",
+    "native/materials",
+    "native/creation_lib_native",
+    "native/nif_core",
+    "native/palette",
+    "native/papyrus_core",
+    "native/papyrus_lsp_server",
+    "native/scientific",
+    "native/swf",
+    "native/terrain",
+    "native/world_renderer",
+]
+resolver = "3"
+
+[workspace.dependencies]
+directxtex = "1.3.0"
+pyo3 = "0.28.3"
+serde = "1.0"
+serde_json = "1.0.145"
+roxmltree = "0.20"
+serde-saphyr = "0.0.25"
+tempfile = "3"
+thiserror = "2.0.18"

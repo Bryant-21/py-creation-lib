@@ -1,0 +1,60 @@
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "py-creation-lib"
+version = "0.1.0"
+description = "Python and native libraries for Bethesda Creation Engine modding"
+requires-python = ">=3.11"
+dependencies = [
+    "beautifulsoup4",
+    "html2text",
+    "numpy>=2.2.6",
+    "setuptools",
+    "markdown>=3.5",
+    "pillow>=12.1.1",
+    "moderngl>=5.11",
+    "PyGLM>=2.7",
+    "imagequant>=1.1.5",
+    "opencv-python-headless>=4.13.0.92",
+    "lz4>=4.4.5",
+    "language-tool-python>=2.8",
+    "pyyaml>=6.0",
+    "ruamel.yaml>=0.18",
+    "orjson>=3.10",
+    "vtracer>=0.6",
+    "earcut>=1.1",
+    "pyclipper>=1.4",
+    "cairosvg>=2.9.0",
+    "pedalboard>=0.9.0",
+    "sounddevice>=0.4.6",
+    "soundfile>=0.12.0",
+    "pyghidra>=3.0.2",
+]
+
+[tool.maturin]
+manifest-path = "native/creation_lib_native/Cargo.toml"
+module-name = "creation_lib._native"
+python-source = "python"
+# Always build release. The default ("dev") shipped a ~129 MB unoptimized
+# .pyd that runs ~5–10× slower than the release build for hot paths like
+# the dependency walker and EID seeding. uv sync / uv sync --reinstall-package
+# / scripts/ensure_native.py all go through this maturin config, so setting
+# the profile here makes every install path produce the optimized .pyd.
+profile = "release"
+include = [
+    { path = "python/creation_lib/resources/**", format = "wheel" },
+    { path = "python/creation_lib/nif/nif_xml/**", format = "wheel" },
+    { path = "python/creation_lib/renderer/shaders/**", format = "wheel" },
+    { path = "python/creation_lib/renderer/assets/**", format = "wheel" },
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["python"]
+testpaths = ["tests", "python"]
+addopts = "-v --tb=short"
+markers = [
+    "integration: tests that use local game installs or heavier external tooling",
+    "isolated: tests that should run in a separate subprocess or shard",
+]

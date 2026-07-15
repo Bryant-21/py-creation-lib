@@ -1,0 +1,190 @@
+# Bethesda game-specific terms — one per line.
+# These are added to LanguageTool's ignore list to suppress false positives.
+# Lines starting with # are comments.
+
+# Fallout
+Stimpak
+RadAway
+Rad-X
+RadScorpion
+Nuka-Cola
+Nuka
+Deathclaw
+Mirelurk
+Vertibird
+Minutemen
+Synth
+Courser
+Brahmin
+Bloatfly
+Bloodbug
+Radstag
+Radroach
+Yao Guai
+Behemoth
+Sentry Bot
+Eyebot
+Assaultron
+Protectron
+Mister Handy
+Mister Gutsy
+Codsworth
+Curie
+Danse
+Cait
+Piper
+MacCready
+Deacon
+Hancock
+Preston
+Garvey
+Shaun
+Kellogg
+Dogmeat
+Pip-Boy
+V.A.T.S.
+VATS
+SPECIAL
+Wasteland
+Vault-Tec
+VaultTec
+Vault
+Power Armor
+T-45
+T-51
+T-60
+X-01
+Commonwealth
+Prydwen
+Brotherhood
+BoS
+Bottlecap
+Holotape
+Bobblehead
+Jet
+Psycho
+Buffout
+Mentats
+Med-X
+S.P.E.C.I.A.L.
+Junk Jet
+Fat Man
+Gauss
+Gatling
+Minigun
+Institute
+Railroad
+Atom Cats
+Gunners
+Triggermen
+Raider
+Ghoul
+Feral
+Glowing One
+Super Mutant
+FEV
+
+# Skyrim
+Dragonborn
+Dovahkiin
+Alduin
+Paarthurnax
+Whiterun
+Solitude
+Windhelm
+Riften
+Markarth
+Falkreath
+Winterhold
+Dawnstar
+Morthal
+Dragonsreach
+Greybeards
+Thu'um
+Draugr
+Falmer
+Dwemer
+Dwarven
+Daedric
+Daedra
+Aedra
+Divines
+Talos
+Kynareth
+Mara
+Stendarr
+Akatosh
+Sithis
+Sheogorath
+Meridia
+Azura
+Molag Bal
+Stormcloak
+Thalmor
+Altmer
+Bosmer
+Dunmer
+Orsimer
+Khajiit
+Argonian
+Breton
+Redguard
+Nord
+Imperial
+Jarl
+Thane
+Septim
+Hearthfire
+Dawnguard
+Solstheim
+Werebear
+Lycanthropy
+Skooma
+Nirnroot
+Shadowmere
+Arvak
+
+# Starfield
+Constellation
+Starborn
+Grav Jump
+Grav Drive
+Digipick
+UC
+Freestar
+Crimson Fleet
+Ecliptic
+Spacer
+Va'ruun
+Cydonia
+Neon
+Akila
+New Atlantis
+Jemison
+Volii
+Alpha Centauri
+Settled Systems
+Thermion
+Mantis
+Starstation
+Staryard
+
+# General modding terms
+EditorID
+FormKey
+FormID
+BSA
+BA2
+ESP
+ESM
+ESL
+NIF
+DDS
+XWM
+FUZ
+LIP
+Papyrus
+BGSM
+BGEM
+CK
+xEdit

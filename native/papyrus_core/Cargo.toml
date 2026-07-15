@@ -1,0 +1,20 @@
+[package]
+name = "papyrus_core"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "papyrus_core"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pyo3 = { workspace = true, features = ["extension-module", "abi3-py310"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, features = ["preserve_order"] }
+# Pinned to db_native's rusqlite version (0.32) so libsqlite3-sys links once.
+# Local rather than in workspace.dependencies because papyrus_core is the only
+# consumer outside db_native and they may diverge later.
+rusqlite = { version = "0.32", features = ["bundled"] }
+# Rope buffer for incremental document edits in `session.rs`. Local because
+# only papyrus_core needs it.
+ropey = "1.6"

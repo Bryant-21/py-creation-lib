@@ -8,8 +8,12 @@ name = "ck_native"
 crate-type = ["rlib"]
 
 [dependencies]
+bsarchive_native   = { path = "../bsarchive" }
+crc32fast          = "1"
 esp_authoring_core = { path = "../esp" }
 havok_native       = { path = "../havok" }
+indexmap           = "2"
+nif_core_native    = { path = "../nif_core" }
 pyo3               = { workspace = true, features = ["extension-module", "abi3-py310"] }
 rayon              = "1"
 regex              = "1"
@@ -19,4 +23,6 @@ tempfile           = { workspace = true }
 thiserror          = { workspace = true }
 
 [dev-dependencies]
-serde-saphyr = { workspace = true }
+bytes          = "1.7"
+serde-saphyr   = { workspace = true }
+smol_str       = "0.3"

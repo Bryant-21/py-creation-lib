@@ -1,0 +1,12 @@
+{
+  "materials/furniture/workstationdistillery/workstationdistillery01_pipes.bgsm": {
+    "EnvmapTexture": "Shared/Cubemaps/mipblur_DefaultOutside1_bronze.dds",
+    "EnvironmentMapping": true,
+    "EnvironmentMappingMaskScale": 1.0
+  },
+  "materials/setdressing/modifieddistiller/modifieddistiller01.bgsm": {
+    "EnvmapTexture": "Shared/Cubemaps/mipblur_DefaultOutside1_bronze.dds",
+    "EnvironmentMapping": true,
+    "EnvironmentMappingMaskScale": 1.0
+  }
+}

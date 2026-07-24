@@ -26,8 +26,7 @@ fn fixture_bytes(relative: &str) -> Vec<u8> {
 
 #[test]
 fn parses_tracked_tag0_collision_payload_scaffold() {
-    let blob =
-        fixture_bytes("python/creation_lib/havok/tests/novablast_reference.bin");
+    let blob = fixture_bytes("python/creation_lib/havok/tests/novablast_reference.bin");
 
     let payload = parse_tag0_collision_payload(&blob).expect("parse TAG0 collision payload");
 
@@ -66,8 +65,7 @@ fn fo4_compressed_mesh_parser_rejects_non_packfile_without_fake_output() {
 
 #[test]
 fn novablast_round_trip_byte_identical() {
-    let blob =
-        fixture_bytes("python/creation_lib/havok/tests/novablast_reference.bin");
+    let blob = fixture_bytes("python/creation_lib/havok/tests/novablast_reference.bin");
     let parsed = parse_tagged_collision(&blob).expect("parse TAG0 collision payload");
     let rebuilt = rebuild_tag0_collision(&parsed).expect("rebuild TAG0 collision");
     assert_eq!(
@@ -1147,8 +1145,7 @@ fn make_capsule_hkx_object(name: &str, a: [f32; 3], b: [f32; 3]) -> HkxObject {
 fn collision_preview_json_serializes_box_shape() {
     // Verify the JSON structure using the novablast fixture (a real TAG0 blob):
     // it should either parse a shape or return empty meshes.
-    let novablast =
-        fixture_bytes("python/creation_lib/havok/tests/novablast_reference.bin");
+    let novablast = fixture_bytes("python/creation_lib/havok/tests/novablast_reference.bin");
     let json = collision_preview_json(&novablast, 10.0, None)
         .expect("collision_preview_json must not fail on novablast blob");
     // Must be valid JSON with the expected shape

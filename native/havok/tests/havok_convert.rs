@@ -65,9 +65,8 @@ fn hkx_class_summary_flags_runtime_cloth_packfile() {
 
 #[test]
 fn hkx_class_summary_routes_tag0_fixture() {
-    let bytes = fixture_bytes(
-        "python/creation_lib/hkxpack/tests/fixtures/fo76_snallygastercharacter.hkx",
-    );
+    let bytes =
+        fixture_bytes("python/creation_lib/hkxpack/tests/fixtures/fo76_snallygastercharacter.hkx");
 
     let summary = api::hkx_class_summary(&bytes).expect("class summary");
 
@@ -1244,9 +1243,8 @@ fn convert_bytes_supported_noop_outputs_are_structurally_valid() {
 
 #[test]
 fn convert_bytes_fo76_tag0_to_fo4_succeeds_with_writer_implemented() {
-    let data = fixture_bytes(
-        "python/creation_lib/hkxpack/tests/fixtures/fo76_snallygastercharacter.hkx",
-    );
+    let data =
+        fixture_bytes("python/creation_lib/hkxpack/tests/fixtures/fo76_snallygastercharacter.hkx");
     let result = api::havok_convert_bytes(&data, "fo4");
     let bytes = result.expect("FO76→FO4 conversion should succeed now that writer is implemented");
     assert!(!bytes.is_empty(), "converted output should be non-empty");
@@ -1256,18 +1254,16 @@ fn convert_bytes_fo76_tag0_to_fo4_succeeds_with_writer_implemented() {
 
 #[test]
 fn fo76_tag0_to_fo4_writer_produces_parseable_packfile() {
-    let data = fixture_bytes(
-        "python/creation_lib/hkxpack/tests/fixtures/fo76_snallygastercharacter.hkx",
-    );
+    let data =
+        fixture_bytes("python/creation_lib/hkxpack/tests/fixtures/fo76_snallygastercharacter.hkx");
     let bytes = api::havok_convert_bytes(&data, "fo4").expect("FO76→FO4 should succeed");
     havok_native::hkx::read_packfile(&bytes).expect("output must be parseable as a v11 packfile");
 }
 
 #[test]
 fn fo76_migration_materializes_fixture_and_converts_to_fo4_packfile() {
-    let data = fixture_bytes(
-        "python/creation_lib/hkxpack/tests/fixtures/fo76_snallygastercharacter.hkx",
-    );
+    let data =
+        fixture_bytes("python/creation_lib/hkxpack/tests/fixtures/fo76_snallygastercharacter.hkx");
     let bytes = api::havok_convert_bytes(&data, "fo4").expect("FO76→FO4 migration should succeed");
     let parsed = havok_native::hkx::read_packfile(&bytes).expect("output should be parseable");
     assert!(
@@ -1279,9 +1275,8 @@ fn fo76_migration_materializes_fixture_and_converts_to_fo4_packfile() {
 
 #[test]
 fn fo76_migration_reports_correct_schema_version_in_output() {
-    let data = fixture_bytes(
-        "python/creation_lib/hkxpack/tests/fixtures/fo76_snallygastercharacter.hkx",
-    );
+    let data =
+        fixture_bytes("python/creation_lib/hkxpack/tests/fixtures/fo76_snallygastercharacter.hkx");
     let bytes = api::havok_convert_bytes(&data, "fo4").expect("FO76→FO4 should succeed");
     let parsed = havok_native::hkx::read_packfile(&bytes).expect("output parseable");
     assert_eq!(
@@ -1293,9 +1288,8 @@ fn fo76_migration_reports_correct_schema_version_in_output() {
 
 #[test]
 fn fo76_migration_output_is_not_same_as_input() {
-    let data = fixture_bytes(
-        "python/creation_lib/hkxpack/tests/fixtures/fo76_snallygastercharacter.hkx",
-    );
+    let data =
+        fixture_bytes("python/creation_lib/hkxpack/tests/fixtures/fo76_snallygastercharacter.hkx");
     let bytes = api::havok_convert_bytes(&data, "fo4").expect("FO76→FO4 should succeed");
     // Input is TAG0 format, output should be a packfile — they must differ.
     assert_ne!(
@@ -1307,9 +1301,8 @@ fn fo76_migration_output_is_not_same_as_input() {
 
 #[test]
 fn fo76_migration_output_has_hkx_magic() {
-    let data = fixture_bytes(
-        "python/creation_lib/hkxpack/tests/fixtures/fo76_snallygastercharacter.hkx",
-    );
+    let data =
+        fixture_bytes("python/creation_lib/hkxpack/tests/fixtures/fo76_snallygastercharacter.hkx");
     let bytes = api::havok_convert_bytes(&data, "fo4").expect("FO76→FO4 should succeed");
     const HKX_MAGIC: &[u8; 8] = b"\x57\xE0\xE0\x57\x10\xC0\xC0\x10";
     assert!(
@@ -1320,9 +1313,8 @@ fn fo76_migration_output_has_hkx_magic() {
 
 #[test]
 fn fo76_migration_full_transform_pipeline_produces_valid_output() {
-    let data = fixture_bytes(
-        "python/creation_lib/hkxpack/tests/fixtures/fo76_snallygastercharacter.hkx",
-    );
+    let data =
+        fixture_bytes("python/creation_lib/hkxpack/tests/fixtures/fo76_snallygastercharacter.hkx");
     let bytes =
         api::havok_convert_bytes(&data, "fo4").expect("full FO76→FO4 pipeline should succeed");
     let parsed =
@@ -1343,8 +1335,7 @@ fn fo76_migration_full_transform_pipeline_produces_valid_output() {
 // panels to center, so the recovered translations must be present.
 #[test]
 fn fo76_static_ragdoll_compound_instances_are_repopulated() {
-    let data =
-        fixture_bytes("native/havok/tests/fixtures/fo76_antiairturret_ragdoll.hkx");
+    let data = fixture_bytes("native/havok/tests/fixtures/fo76_antiairturret_ragdoll.hkx");
     let bytes = api::havok_convert_bytes(&data, "fo4").expect("FO76→FO4 should succeed");
     let parsed = havok_native::hkx::read_packfile(&bytes).expect("output parseable");
 
@@ -4207,9 +4198,8 @@ fn tag0_var0_object_returns_error_for_huge_string_field_offset() {
 fn fo76_tag0_materialization_error_names_field_context() {
     use havok_native::hkx::types::HkxValue;
 
-    let data = fixture_bytes(
-        "python/creation_lib/hkxpack/tests/fixtures/fo76_snallygastercharacter.hkx",
-    );
+    let data =
+        fixture_bytes("python/creation_lib/hkxpack/tests/fixtures/fo76_snallygastercharacter.hkx");
     let tagfile = havok_native::hkx::parse_tagfile(&data).unwrap();
 
     match tagfile.materialize_hkx() {

@@ -23,12 +23,14 @@ use super::core::{name_id, subgraph_id};
 use super::event_resolver::resolve_anim_events;
 use super::extract::{
     clip_generator_entries, expand_idle_glob, extract_fx_manifest, extract_project_manifest,
-    fx_project_dirs, project_hkx_relpath, race_dir_of, race_name_of,
+    fx_project_dirs, project_hkx_relpath, race_dir_of, race_name_of, race_name_of_dir,
 };
 use super::graph::GraphResolver;
 use super::offsets::{
-    build_offsets_aggregate, build_subgraph_offsets_body, build_subgraph_offsets_body_weapon,
+    build_offsets_aggregate, build_subgraph_offsets_body, build_subgraph_offsets_body_furniture,
+    build_subgraph_offsets_body_weapon, is_furniture_core_behavior,
 };
+use super::single_file;
 use super::speed::{
     build_speed_info_body, build_speed_info_body_weapon, speed_info_leaf_basenames,
 };
@@ -36,7 +38,7 @@ use super::stance::{
     WeaponStanceBuilder, WeaponSubgraphMetadata, behavior_wants_head_tracking,
     emit_stance_for_subgraph,
 };
-use super::sync::weapon_sync_anim_filenames;
+use super::sync::{build_plugin_sync_anim_data, plugin_sync_anim_filename, weapon_sync_anim_filenames};
 
 const AUTHORITATIVE_MANIFEST: &str = "AnimTextData/.modkit-authoritative-files.json";
 
@@ -47,6 +49,12 @@ pub struct SubgraphInput {
     pub core_behavior: String,
     /// `SAPT` chain, self-first (e.g. `[r"Actors\X\Animations\Injured\RightLeg", r"Actors\X\Animations"]`).
     pub sapt_chain: Vec<String>,
+    /// The owning race's own actor dir (`Actors\<Race>`), from the RACE record's
+    /// skeletal model. Humanoid creatures (scorched, mole miner) mount the shared
+    /// `Actors\Character\Behaviors\*` cores, so the core path names `Character`, not
+    /// the race — their project lives under this dir instead. `None` falls back to
+    /// deriving the dir from `core_behavior`, which is right for ordinary creatures.
+    pub race_dir: Option<String>,
 }
 
 /// Weapon-only metadata kept separate so existing `SubgraphInput` literals remain
@@ -292,6 +300,18 @@ pub fn generate_anim_text_data_with_progress(
         derivable.summary(),
         phase_started.elapsed().as_secs_f64(),
     ));
+
+    if EMIT_STRUCTURAL_AGGREGATES {
+        let phase_started = Instant::now();
+        progress("structural aggregates: starting");
+        let structural = emit_structural_aggregates(out_meshes_root, base_meshes_root, progress)?;
+        written += structural;
+        progress(&format!(
+            "structural aggregates: wrote {structural} file(s) in {:.1}s",
+            phase_started.elapsed().as_secs_f64(),
+        ));
+    }
+
     progress(&format!(
         "complete: wrote {written} AnimTextData bucket file(s) in {:.1}s",
         started.elapsed().as_secs_f64(),
@@ -304,6 +324,89 @@ pub fn generate_anim_text_data_with_progress(
         stance_skipped: authoritative.stance_skipped,
         stance_builder_error: authoritative.stance_builder_error,
     })
+}
+
+const SINGLE_FILE_NAME: &str =
+    "behaviorclipinformationandsubgraphanimationoffsetssinglefile.txt";
+
+/// Off: mods must not ship dirlists or the singlefile. Shipped CK-built fan mods
+/// (B21_PlasmaCaster, Snallygaster) carry neither — only per-bucket data files and a
+/// plugin-level SyncAnimData file — and they work, which disproves the "singlefile is
+/// the only clip-generator channel" premise this phase was built on. Emitting one is
+/// actively harmful: a mod's copy is the merged-VFS winner, so it shadows vanilla's
+/// entire clip table. The writers stay tested and available behind this flag.
+const EMIT_STRUCTURAL_AGGREGATES: bool = false;
+
+/// Final aggregation phase: CK-parity dirlists + the merged singlefile. Must run after
+/// every bucket writer (it aggregates the final on-disk set). Returns files written.
+/// Gated off by `EMIT_STRUCTURAL_AGGREGATES`.
+///
+/// Singlefile policy, when enabled: a mod's copy fully shadows vanilla's, so ours =
+/// vanilla's entries verbatim + our ClipGeneratorData entries appended. No vanilla
+/// singlefile → emit none (engine reads vanilla's own).
+fn emit_structural_aggregates(
+    out_meshes_root: &Path,
+    base_meshes_root: Option<&Path>,
+    progress: &mut dyn FnMut(&str),
+) -> Result<u32, String> {
+    let mut written = 0u32;
+
+    let vanilla_path = base_meshes_root
+        .map(|base| base.join("AnimTextData").join(SINGLE_FILE_NAME))
+        .filter(|path| path.is_file());
+    match vanilla_path {
+        None => progress("singlefile: no vanilla source; skipping (engine falls back to vanilla's)"),
+        Some(vanilla_path) => {
+            let vanilla = std::fs::read(&vanilla_path).map_err(|error| {
+                format!("failed to read {}: {error}", vanilla_path.display())
+            })?;
+            let clipgen_dir = out_meshes_root
+                .join("AnimTextData")
+                .join("ClipGeneratorData");
+            let mut additions: Vec<(u32, Vec<u8>)> = Vec::new();
+            if clipgen_dir.is_dir() {
+                let mut keyed: Vec<(u32, PathBuf)> = Vec::new();
+                for entry in std::fs::read_dir(&clipgen_dir).map_err(|error| {
+                    format!("failed to list {}: {error}", clipgen_dir.display())
+                })? {
+                    let path = entry
+                        .map_err(|error| {
+                            format!("failed to list {}: {error}", clipgen_dir.display())
+                        })?
+                        .path();
+                    let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+                        continue;
+                    };
+                    if let Ok(key) = stem.parse::<u32>() {
+                        keyed.push((key, path));
+                    }
+                }
+                keyed.sort_by_key(|(key, _)| *key);
+                for (key, path) in keyed {
+                    let body = std::fs::read(&path).map_err(|error| {
+                        format!("failed to read {}: {error}", path.display())
+                    })?;
+                    additions.push((key, body));
+                }
+            }
+            let (merged, applied) =
+                single_file::compose_merged_single_file(&vanilla, &additions)
+                    .map_err(|error| format!("singlefile compose failed: {error}"))?;
+            let out_path = out_meshes_root.join("AnimTextData").join(SINGLE_FILE_NAME);
+            std::fs::write(&out_path, merged)
+                .map_err(|error| format!("failed to write {}: {error}", out_path.display()))?;
+            written += 1;
+            progress(&format!(
+                "singlefile: merged vanilla + {applied} of {} clip entr(ies)",
+                additions.len()
+            ));
+        }
+    }
+
+    let dirlists = super::dirlist::emit_dirlists(out_meshes_root)?;
+    written += dirlists;
+    progress(&format!("dirlists: wrote {dirlists} file(s)"));
+    Ok(written)
 }
 
 /// Write `AnimTextData/AnimationFileData/<id>.txt` for each subgraph under
@@ -688,6 +791,9 @@ pub fn emit_serialized_production_buckets(
             }
         }
     }
+    if let Some(filename) = plugin_sync_anim_filename(target_plugin_name) {
+        owned.add(PathBuf::from("AnimTextData/SyncAnimData").join(&filename));
+    }
 
     let built = (|| {
         let mut files = Vec::new();
@@ -782,6 +888,19 @@ pub fn emit_serialized_production_buckets(
             }
         }
 
+        if let Some(filename) = plugin_sync_anim_filename(target_plugin_name) {
+            match build_plugin_sync_anim_data(subgraphs, src, base_meshes_root) {
+                Ok(body) => files.push(AuthoritativeFile {
+                    relative_path: PathBuf::from("AnimTextData/SyncAnimData").join(&filename),
+                    body,
+                }),
+                Err(error) => {
+                    // absent = graceful engine fallback; never fail the whole emission
+                    eprintln!("plugin SyncAnimData skipped: {error}");
+                }
+            }
+        }
+
         report.written = files.len() as u32;
         Ok((files, report))
     })();
@@ -817,7 +936,13 @@ fn emit_derivable_buckets_with_progress(
 
     let mut by_race: BTreeMap<String, Vec<&SubgraphInput>> = BTreeMap::new();
     for sg in &unique_subgraphs {
-        if let Some(rd) = race_dir_of(&sg.core_behavior) {
+        // The race's own dir wins: a humanoid creature's core behavior lives in the
+        // shared `Actors\Character` tree, which would file it under the wrong race.
+        if let Some(rd) = sg
+            .race_dir
+            .clone()
+            .or_else(|| race_dir_of(&sg.core_behavior))
+        {
             by_race.entry(rd).or_default().push(sg);
         }
     }
@@ -993,6 +1118,18 @@ fn emit_derivable_buckets_with_progress(
                             &sg.sapt_chain,
                             event_clips,
                         )
+                    } else if is_furniture_core_behavior(&sg.core_behavior) {
+                        // Furniture cores live in the base game, so they reach here rather
+                        // than the creature branch. They need their own builder: CK emits an
+                        // offsets entry for every furniture subgraph, motion or not, and FO76
+                        // furniture clips ship no baked reference frame.
+                        offsets_resolver.as_mut().and_then(|resolver| {
+                            build_subgraph_offsets_body_furniture(
+                                resolver,
+                                &sg.core_behavior,
+                                &sg.sapt_chain,
+                            )
+                        })
                     } else if let (Some(base), Some(resolver)) =
                         (base_meshes_root, offsets_resolver.as_mut())
                     {
@@ -1052,7 +1189,17 @@ fn emit_derivable_buckets_with_progress(
             !weapon_subgraph_ids.contains(&sg.id())
                 && src.join(sg.core_behavior.replace('\\', "/")).is_file()
         }) {
-            if let Some(race_name) = race_name_of(&creature.core_behavior) {
+            // Ordinary creatures keep the core-path-derived name so their authored case
+            // (`ScorchBeast`) survives; the race dir comes from a lowercased `ANAM` path
+            // and is only authoritative when the core path names a different race — the
+            // humanoid case, where it is the sole source of the project name.
+            if let Some(race_name) = race_name_of(&creature.core_behavior)
+                .filter(|_| {
+                    race_dir_of(&creature.core_behavior)
+                        .is_some_and(|dir| dir.eq_ignore_ascii_case(race_dir))
+                })
+                .or_else(|| race_name_of_dir(race_dir))
+            {
                 // Un-prefixed = the real on-disk FO76 project → existing-project G=1 (`V4\n1\n`).
                 pending_files.push(
                     "SyncAnimData",
@@ -1079,7 +1226,7 @@ fn emit_derivable_buckets_with_progress(
                 && src.join(sg.core_behavior.replace('\\', "/")).is_file()
         });
         if let Some((proj_name, files)) =
-            creature.and_then(|sg| extract_project_manifest(&sg.core_behavior, src))
+            creature.and_then(|_| extract_project_manifest(race_dir, src))
         {
             if !files.is_empty() {
                 pending_files.push(
@@ -1207,6 +1354,7 @@ mod tests {
         let subgraph = SubgraphInput {
             core_behavior: core.to_string(),
             sapt_chain: sapt.iter().map(|s| s.to_string()).collect(),
+            race_dir: None,
         };
         let id = subgraph.id();
         WeaponProfileInput {
@@ -1268,6 +1416,103 @@ mod tests {
         );
     }
 
+    /// A humanoid creature (scorched, mole miner) mounts the SHARED
+    /// `Actors\Character\Behaviors\*` cores, so its core path names `Character`, not the
+    /// race — but its project lives under its own `Actors\<Race>` dir. Keying the project
+    /// manifest off the core path looks in `Actors\Character`, finds no project there, and
+    /// emits nothing: the race ships no AnimTextData at all and the actor can only idle.
+    #[test]
+    fn humanoid_creature_project_manifest_follows_race_dir_not_core_path() {
+        let src = tempfile::tempdir().unwrap();
+        let write = |rel: &str| {
+            let p = src.path().join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, b"not a packfile").unwrap();
+        };
+        // Shared core, shipped by the mod — names `Character`, not the race.
+        write("Actors/Character/Behaviors/GunBehavior.hkx");
+        // The race's own project + root behavior.
+        write("Actors/Scorched/ScorchedProject.hkx");
+        write("Actors/Scorched/Behaviors/ScorchedRootBehavior.hkx");
+
+        let subgraphs = vec![SubgraphInput {
+            core_behavior: r"Actors\Character\Behaviors\GunBehavior.hkx".to_string(),
+            sapt_chain: vec![r"Actors\Scorched\Animations".to_string()],
+            race_dir: Some(r"Actors\Scorched".to_string()),
+        }];
+
+        let out = tempfile::tempdir().unwrap();
+        emit_derivable_buckets_with_progress(
+            &subgraphs,
+            &BTreeSet::new(),
+            &[],
+            &[],
+            src.path(),
+            out.path(),
+            None,
+            None,
+            &mut |_| {},
+        );
+
+        let bucket = out.path().join("AnimTextData/AnimationFileData");
+        assert!(
+            bucket.join("scorchedproject.txt").is_file(),
+            "humanoid creature must get its own project manifest; emitted instead: {:?}",
+            std::fs::read_dir(&bucket)
+                .map(|d| d.flatten().map(|e| e.file_name()).collect::<Vec<_>>())
+                .unwrap_or_default()
+        );
+    }
+
+    /// The race dir is derived from the RACE's `ANAM` skeletal-model path, which FO76
+    /// authors lowercase. An ordinary creature — whose core path already names its race —
+    /// must keep the authored case (`ResolvedSyncAnimDataScorchBeast.txt`), or every
+    /// existing creature's SyncAnimData filename churns.
+    #[test]
+    fn ordinary_creature_keeps_authored_case_when_race_dir_is_lowercased() {
+        let src = tempfile::tempdir().unwrap();
+        let core = src
+            .path()
+            .join("Actors/ScorchBeast/Behaviors/ScorchBeastCoreBehavior.hkx");
+        std::fs::create_dir_all(core.parent().unwrap()).unwrap();
+        std::fs::write(&core, b"not a packfile").unwrap();
+
+        let subgraphs = vec![SubgraphInput {
+            core_behavior: r"Actors\ScorchBeast\Behaviors\ScorchBeastCoreBehavior.hkx".to_string(),
+            sapt_chain: vec![r"Actors\ScorchBeast\Animations".to_string()],
+            race_dir: Some(r"actors\scorchbeast".to_string()),
+        }];
+
+        let out = tempfile::tempdir().unwrap();
+        emit_derivable_buckets_with_progress(
+            &subgraphs,
+            &BTreeSet::new(),
+            &[],
+            &[],
+            src.path(),
+            out.path(),
+            None,
+            None,
+            &mut |_| {},
+        );
+
+        // Compare the directory entry itself: `is_file()` is case-insensitive on NTFS and
+        // would accept the lowercased name this test exists to reject.
+        let emitted: Vec<String> = std::fs::read_dir(out.path().join("AnimTextData/SyncAnimData"))
+            .map(|dir| {
+                dir.flatten()
+                    .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert!(
+            emitted
+                .iter()
+                .any(|name| name == "ResolvedSyncAnimDataScorchBeast.txt"),
+            "authored case must survive; emitted instead: {emitted:?}"
+        );
+    }
+
     #[test]
     fn derivable_parallelism_preserves_multi_race_collision_order() {
         let src = tempfile::tempdir().unwrap();
@@ -1284,6 +1529,7 @@ mod tests {
                 ["A", "B"].into_iter().map(move |variant| SubgraphInput {
                     core_behavior: format!(r"Actors\{race}\Behaviors\CoreBehavior.hkx"),
                     sapt_chain: vec![format!(r"Actors\{race}\Animations\{variant}")],
+                    race_dir: None,
                 })
             })
             .collect();
@@ -1370,6 +1616,7 @@ mod tests {
         let subgraphs = vec![SubgraphInput {
             core_behavior: r"Actors\Creature\Behaviors\CreatureBehavior.hkx".to_string(),
             sapt_chain: vec![r"Actors\Creature\Animations".to_string()],
+            race_dir: None,
         }];
 
         let report = emit_serialized_production_buckets(
@@ -1383,7 +1630,9 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(report.written, 0);
+        // 1 = the plugin-level ResolvedSyncAnimDataCreature.txt empty form (V4\n0\n),
+        // now always emitted alongside the authoritative buckets.
+        assert_eq!(report.written, 1);
         assert!(out.path().join(AUTHORITATIVE_MANIFEST).is_file());
         assert!(
             !out.path()
@@ -1471,11 +1720,13 @@ mod tests {
             SubgraphInput {
                 core_behavior: r"Actors\Character\Behaviors\MissingWeaponBehavior.hkx".to_string(),
                 sapt_chain: vec![r"Actors\Character\Animations\Weapon\Missing".to_string()],
+                race_dir: None,
             },
             SubgraphInput {
                 core_behavior: r"Actors\Character\_1stPerson\Behaviors\MissingGunBehavior.hkx"
                     .to_string(),
                 sapt_chain: vec![r"Actors\Character\_1stPerson\Animations\Missing".to_string()],
+                race_dir: None,
             },
         ];
         let profiles = subgraphs
@@ -1713,7 +1964,9 @@ mod tests {
             Some(base.path()),
         )
         .unwrap();
-        assert_eq!(report.written, 1, "only the trusted aggregate is emitted");
+        // 2 = the trusted aggregate + the plugin-level ResolvedSyncAnimDataTest.txt empty
+        // form (V4\n0\n), now always emitted alongside the authoritative buckets.
+        assert_eq!(report.written, 2, "only the trusted aggregate + plugin sync file are emitted");
         let atd = out.path().join("AnimTextData");
         assert!(
             atd.join("AnimationOffsets/PersistantSubgraphInfoAndOffsetData.txt")
@@ -1735,4 +1988,57 @@ mod tests {
         );
     }
 
+    #[test]
+    fn structural_aggregates_write_dirlists_and_merged_single_file() {
+        let out = tempfile::tempdir().unwrap();
+        let base = tempfile::tempdir().unwrap();
+
+        // fabricate our out tree: one clipgen file + one filedata file
+        let clipgen_dir = out.path().join("AnimTextData").join("ClipGeneratorData");
+        std::fs::create_dir_all(&clipgen_dir).unwrap();
+        let our_body = clip_generator_data_body(r"Actors\Mod\Behaviors\ModBehavior.hkx", &[]);
+        let our_key = name_id(r"actors\mod\behaviors\modbehavior.hkx");
+        std::fs::write(clipgen_dir.join(format!("{our_key}.txt")), &our_body).unwrap();
+        let filedata_dir = out.path().join("AnimTextData").join("AnimationFileData");
+        std::fs::create_dir_all(&filedata_dir).unwrap();
+        std::fs::write(filedata_dir.join("123.txt"), b"x").unwrap();
+
+        // fabricate a tiny "vanilla" singlefile in the base root: 1 block-A entry, 0 block-B
+        let vanilla_entry_body =
+            clip_generator_data_body(r"Actors\Base\Behaviors\BaseBehavior.hkx", &[]);
+        let vanilla = super::single_file::emit_single_file(&super::single_file::SingleFile {
+            block_a: vec![super::single_file::SingleFileEntry {
+                key: name_id(r"actors\base\behaviors\basebehavior.hkx") as u64,
+                body: vanilla_entry_body,
+            }],
+            block_b: vec![],
+        });
+        let base_atd = base.path().join("AnimTextData");
+        std::fs::create_dir_all(&base_atd).unwrap();
+        std::fs::write(
+            base_atd.join("behaviorclipinformationandsubgraphanimationoffsetssinglefile.txt"),
+            &vanilla,
+        )
+        .unwrap();
+
+        let written =
+            emit_structural_aggregates(out.path(), Some(base.path()), &mut |_| {}).unwrap();
+        assert_eq!(written, 2); // 1 dirlist (AnimationFileData) + 1 singlefile; no clipgen dirlist
+
+        let merged = std::fs::read(
+            out.path()
+                .join("AnimTextData")
+                .join("behaviorclipinformationandsubgraphanimationoffsetssinglefile.txt"),
+        )
+        .unwrap();
+        let parsed = super::single_file::parse_single_file(&merged).unwrap();
+        assert_eq!(parsed.block_a.len(), 2); // vanilla + ours
+        assert_eq!(parsed.block_a[1].key, our_key as u64);
+        assert!(out
+            .path()
+            .join("AnimTextData")
+            .join("AnimationFileData")
+            .join("dirlist.txt")
+            .is_file());
+    }
 }

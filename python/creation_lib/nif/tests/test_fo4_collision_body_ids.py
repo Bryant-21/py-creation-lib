@@ -1,5 +1,7 @@
+import json
 from types import SimpleNamespace
 
+from creation_lib._native.havok_native import havok_collision_summary
 from creation_lib.nif.nif_file import NifFile
 from creation_lib.nif.operations import collision
 from creation_lib.nif.operations.collision import generate_collision
@@ -34,6 +36,34 @@ def _add_collision_source(nif: NifFile, name: str, x: float = 0.0):
     node.set_field("Children", [shape.block_id])
     node.set_field("Num Children", 1)
     return node
+
+
+def test_fo4_box_collision_emits_eight_aabb_corners():
+    nif = NifFile()
+    node = _add_collision_source(nif, "Body")
+    profile = SimpleNamespace(
+        id="fo4",
+        collision_layer_enum="Fallout4Layer",
+        havok_scale=69.99125,
+    )
+
+    result = generate_collision(
+        nif,
+        node.block_id,
+        shape_type="box",
+        profile=profile,
+    )
+
+    assert result.success
+    physics = next(block for block in nif.blocks if block.type_name == "bhkPhysicsSystem")
+    blob = bytes(physics.get_field("Binary Data")["Data"])
+    summary = json.loads(havok_collision_summary(blob))
+    shape = next(
+        item
+        for item in summary["objects"]
+        if item["class_name"] == "hknpConvexPolytopeShape"
+    )
+    assert shape["n_vertices"] == 8
 
 
 def test_fo4_generating_multiple_nodes_uses_one_shared_physics_system():

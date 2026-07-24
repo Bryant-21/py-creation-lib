@@ -99,3 +99,31 @@ def test_archive_batches_respect_total_worker_budget(tmp_path: Path, monkeypatch
         [3, 1, 1],
     ]
     assert all(sum(task.file_workers for task in batch) <= 8 for batch in batches)
+
+
+def test_large_archives_receive_the_full_worker_budget(tmp_path: Path, monkeypatch) -> None:
+    data_dir = tmp_path / "Data"
+    _touch_archives(
+        data_dir,
+        [
+            "Textures01.ba2",
+            "Textures02.ba2",
+        ],
+    )
+    monkeypatch.setattr(extraction, "archive_entry_count", lambda _archive: 8_000)
+    monkeypatch.setattr(
+        extraction,
+        "archive_size_bytes",
+        lambda _archive: 4 * 1024**3,
+    )
+
+    batches = extraction.plan_archive_extraction_batches(
+        find_archives(data_dir, "ba2"),
+        8,
+    )
+
+    assert [[task.archive.name for task in batch] for batch in batches] == [
+        ["Textures01.ba2"],
+        ["Textures02.ba2"],
+    ]
+    assert [[task.file_workers for task in batch] for batch in batches] == [[8], [8]]

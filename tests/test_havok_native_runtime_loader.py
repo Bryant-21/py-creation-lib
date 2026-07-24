@@ -1,3 +1,5 @@
+import os
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -10,9 +12,41 @@ def restore_native_runtime_state():
 
     old_module = native_runtime._NATIVE_MODULE
     old_attempted = native_runtime._NATIVE_IMPORT_ATTEMPTED
+    old_resource_dir = os.environ.get("CREATION_LIB_RESOURCE_DIR")
     yield
     native_runtime._NATIVE_MODULE = old_module
     native_runtime._NATIVE_IMPORT_ATTEMPTED = old_attempted
+    if old_resource_dir is None:
+        os.environ.pop("CREATION_LIB_RESOURCE_DIR", None)
+    else:
+        os.environ["CREATION_LIB_RESOURCE_DIR"] = old_resource_dir
+
+
+def test_configure_native_resources_uses_packaged_resource_dir(monkeypatch, tmp_path):
+    from creation_lib.havok import native_runtime
+
+    resource_dir = tmp_path / "creation_lib" / "resources"
+    monkeypatch.delenv("CREATION_LIB_RESOURCE_DIR", raising=False)
+    monkeypatch.setattr("creation_lib.paths.get_resource_dir", lambda: resource_dir)
+
+    native_runtime.configure_native_resources()
+
+    assert Path(os.environ["CREATION_LIB_RESOURCE_DIR"]) == resource_dir
+
+
+def test_configure_native_resources_preserves_explicit_override(monkeypatch, tmp_path):
+    from creation_lib.havok import native_runtime
+
+    explicit_dir = tmp_path / "explicit"
+    monkeypatch.setenv("CREATION_LIB_RESOURCE_DIR", str(explicit_dir))
+    monkeypatch.setattr(
+        "creation_lib.paths.get_resource_dir",
+        lambda: tmp_path / "packaged",
+    )
+
+    native_runtime.configure_native_resources()
+
+    assert Path(os.environ["CREATION_LIB_RESOURCE_DIR"]) == explicit_dir
 
 
 def test_load_native_module_falls_back_to_umbrella_submodule(monkeypatch):

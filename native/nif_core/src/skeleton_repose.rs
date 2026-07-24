@@ -164,7 +164,10 @@ fn uniform_convention_offset(residuals: &[BindMatrix]) -> bool {
     spread <= UNIFORM_RESIDUAL_DEV_TOL && max_identity_residual(&median) >= CONVENTION_MIN_OFFSET
 }
 
-fn collect_residuals(skel: &NifFile, bind_by_name: &HashMap<String, BindMatrix>) -> Vec<BindMatrix> {
+fn collect_residuals(
+    skel: &NifFile,
+    bind_by_name: &HashMap<String, BindMatrix>,
+) -> Vec<BindMatrix> {
     let (order, parents) = node_order_and_parents(skel);
     let mut world: HashMap<usize, BindMatrix> = HashMap::new();
     let mut residuals = Vec::new();

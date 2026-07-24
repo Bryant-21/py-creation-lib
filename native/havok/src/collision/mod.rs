@@ -4,6 +4,7 @@ pub mod compound;
 pub mod compressed_mesh;
 pub mod constants;
 pub mod constraints;
+pub mod convex;
 pub mod hull;
 pub mod mass_properties;
 pub mod multi_body;
@@ -16,20 +17,24 @@ pub mod validate;
 
 use std::cell::RefCell;
 
-pub use capsule::build_fo4_capsule_collision;
+pub use capsule::{
+    SourceCapsuleShape, build_fo4_capsule_collision, build_fo4_source_capsule_collision,
+};
 pub use compound::{
     CompoundChild, CompoundChildKind, SHAPE_INST_DEPRECATED, SHAPE_INST_HAS_ROTATION,
     SHAPE_INST_HAS_SCALE, SHAPE_INST_HAS_TRANSLATION, SHAPE_INST_IS_ENABLED,
     SHAPE_INST_SCALE_SURFACE, build_fo4_compound_collision, pack_inst_row_w,
 };
 pub use compressed_mesh::{
-    BuildOptions, CompressedMeshData, CompressedMeshSection, RawCompressedMeshData,
-    RawCompressedMeshDataRun, RawCompressedMeshSection, build_compressed_mesh_collision,
+    BuildOptions, CompressedMeshData, CompressedMeshSection, RawCompressedMeshBitField,
+    RawCompressedMeshData, RawCompressedMeshDataRun, RawCompressedMeshSection,
+    RawCompressedMeshSparseMap, build_compressed_mesh_collision,
     build_compressed_mesh_collision_from_raw, compressed_triangle_is_safe, pack_vertex_11_11_10,
     pack_vertex_21_21_22, triangle_area_squared, validate_compressed_triangle, validate_vertices,
     vertex_is_finite,
 };
 pub use constraints::{GraftCinfo, GraftedConstraints, extract_grafted_constraints};
+pub use convex::{SourceConvexShape, build_fo4_source_convex_collision};
 pub use mass_properties::{SourceMassDistribution, mass_properties_from_source};
 pub use multi_body::{MultiBodyShape, build_fo4_multi_body_collision};
 pub use payload::{
@@ -40,10 +45,12 @@ pub use polytope::{
     SourcePolytopeShape, build_fo4_polytope_collision, build_fo4_source_polytope_collision,
 };
 pub use preview::{
-    PreviewMesh, collision_preview_json, decode_source_mass_distributions,
+    PreviewMesh, SourceBodyTransform, SourcePrimitiveShape, collision_preview_json,
+    decode_source_body_transforms, decode_source_mass_distributions,
+    extract_direct_raw_compressed_mesh_from_blob, extract_direct_source_primitive_from_blob,
     extract_preview_meshes_from_blob, extract_preview_meshes_from_hkx,
     extract_raw_compressed_meshes_from_blob, extract_raw_compressed_meshes_from_hkx,
-    extract_source_polytopes_from_blob,
+    extract_source_compound_children_from_blob, extract_source_polytopes_from_blob,
 };
 pub use sphere::build_fo4_sphere_collision;
 pub use tagged_writer::{PatchEntry, TaggedBlobBuilder, TaggedItem};

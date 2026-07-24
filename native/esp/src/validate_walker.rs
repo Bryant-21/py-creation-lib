@@ -728,6 +728,8 @@ fn scope_repeating_element_anchor(
         }
         // A terminal menu item can carry more than one condition.
         Some("menu_items") => record_sig == "TERM" && sig == "CTDA",
+        // A magic effect can carry a conjunction of multiple conditions.
+        Some("effects") => matches!(record_sig, "ALCH" | "ENCH" | "SPEL") && sig == "CTDA",
         // DEST owns an array of destruction stages, each beginning at DSTD and
         // ending at DSTF.
         Some("destructible") => sig == "DSTD",
@@ -1494,6 +1496,31 @@ mod tests {
             errors[0],
             "Error: record SPEL contains unexpected (or out of order) subrecord EFIT 54494645"
         );
+    }
+
+    #[test]
+    fn order_check_accepts_repeated_magic_effect_conditions() {
+        let schema = crate::plugin_runtime::compiled_schema_for_game("fo4")
+            .expect("fo4 schema must compile");
+
+        for record_sig in ["ALCH", "ENCH", "SPEL"] {
+            let specs = &schema
+                .records
+                .get(record_sig)
+                .expect("fo4 schema must contain magic record")
+                .subrecords;
+            let mut rec = record(record_sig, 0x001F_2D3E, Some("test"));
+            for sig in [
+                "EFID", "EFIT", "CTDA", "CIS1", "CIS2", "CTDA", "CIS1", "CTDA", "CIS2", "EFID",
+                "EFIT", "CTDA",
+            ] {
+                rec.subrecords.push(empty_subrec(sig));
+            }
+
+            let errors = subrecord_order_errors(&rec, specs);
+
+            assert!(errors.is_empty(), "{record_sig}: {errors:?}");
+        }
     }
 
     #[test]

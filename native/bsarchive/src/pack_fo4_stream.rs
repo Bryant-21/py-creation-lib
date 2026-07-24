@@ -8,6 +8,7 @@ use flate2::{Compress, Compression, write::ZlibEncoder};
 use memmap2::MmapOptions;
 use rayon::prelude::*;
 use std::{
+    cell::RefCell,
     fs::{self, File},
     io::{self, Read, Seek, SeekFrom, Write},
     ops::Range,
@@ -772,6 +773,10 @@ pub(crate) fn plan_gnrl_chunks_for_size(size: u64) -> PackResult<Vec<Range<u64>>
     Ok(ranges)
 }
 
+thread_local! {
+    static ZLIB_READ_BUFFER: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+}
+
 pub(crate) fn stream_zlib_payload<R, W>(
     mut reader: R,
     writer: &mut W,
@@ -790,16 +795,22 @@ where
         counter,
         Compress::new_with_window_bits(level, true, window_bits),
     );
-    let mut buffer = vec![0; BUFFER_SIZE];
-    loop {
-        let len = reader.read(&mut buffer).map_err(|err| err.to_string())?;
-        if len == 0 {
-            break;
+    ZLIB_READ_BUFFER.with(|cell| {
+        let mut buffer = cell.borrow_mut();
+        if buffer.len() < BUFFER_SIZE {
+            buffer.resize(BUFFER_SIZE, 0);
         }
-        encoder
-            .write_all(&buffer[..len])
-            .map_err(|err| err.to_string())?;
-    }
+        loop {
+            let len = reader.read(&mut buffer).map_err(|err| err.to_string())?;
+            if len == 0 {
+                break;
+            }
+            encoder
+                .write_all(&buffer[..len])
+                .map_err(|err| err.to_string())?;
+        }
+        Ok::<_, String>(())
+    })?;
     let counter = encoder.finish().map_err(|err| err.to_string())?;
     Ok(counter.written)
 }

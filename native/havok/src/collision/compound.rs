@@ -91,7 +91,7 @@ fn max_primitive_key_value(primitive_bytes: &[u8]) -> u32 {
 // ---------------------------------------------------------------------------
 
 /// Kind of sub-shape inside a compound.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum CompoundChildKind {
     /// Convex polytope — hull computed from vertices.
     Polytope { vertices: Vec<[f32; 3]> },
@@ -105,7 +105,7 @@ pub enum CompoundChildKind {
 }
 
 /// One sub-shape entry in an hknpDynamicCompoundShape.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct CompoundChild {
     /// Row-major 4×4 local-to-compound transform.  Use identity if no offset.
     pub transform: [[f32; 4]; 4],
@@ -152,16 +152,7 @@ pub fn pack_inst_row_w(flags: u32) -> u32 {
     0x3F00_0000 | (flags & 0x00FF_FFFF)
 }
 
-// Row 0 W = IS_ENABLED only.
-const INST_ROW0_W: u32 = pack_inst_row_w_const(SHAPE_INST_IS_ENABLED);
-// Row 2 W = 0x3F000090. IS_ENABLED(0x40) | DEPRECATED(0x10) | bit7(0x80).
-// Bit 7 (0x80) has no entry in the public FlagsEnum — sampled from vanilla FO4 NIFs.
-// TODO: confirm meaning of bit 7 once the SDK private header is available.
-const INST_ROW2_W: u32 = 0x3F00_0090;
-
-const fn pack_inst_row_w_const(flags: u32) -> u32 {
-    0x3F00_0000 | (flags & 0x00FF_FFFF)
-}
+const COMPRESSED_MESH_INSTANCE_SIZE: usize = 0x90;
 
 fn align16(v: usize) -> usize {
     (v + 15) & !15
@@ -178,26 +169,56 @@ const COMPOUND_HDR_SIZE: usize = 0xd0;
 // Shape instance builder
 // ---------------------------------------------------------------------------
 
-fn build_shape_instance(transform: &[[f32; 4]; 4], tree_node_idx: usize) -> Vec<u8> {
+fn build_shape_instance(
+    transform: &[[f32; 4]; 4],
+    tree_node_idx: usize,
+    child_shape_size: usize,
+) -> Vec<u8> {
     let mut buf = vec![0u8; INST_STRIDE];
 
-    // hkTransform: 4 rows of hkVector4
-    // row0.w = INST_ROW0_W (constant), row1.w = 0.0, row2.w = INST_ROW2_W, row3.w = 0x3f000000|node
+    // hkTransform: 3 basis columns followed by a translation column.
+    // column0.w = flags, column1.w = 0, column2.w = child shape size,
+    // column3.w = tree node.
     //
     // tree_node_idx uses the full 24-bit field (hknpShapeInstance::setLeafIndex),
     // not 8 bits, so compounds with >255 sub-shapes are not corrupted; the high
     // byte carries the 0x3F flag pattern.
     let row3_w: u32 = 0x3F00_0000 | (tree_node_idx as u32 & 0x00FF_FFFF);
+    let row2_w: u32 = 0x3F00_0000 | (child_shape_size as u32 & 0x00FF_FFFF);
+    let has_translation = (0..3).any(|row| transform[row][3].abs() > 1.0e-6);
+    let has_rotation = (0..3).any(|row| {
+        (0..3).any(|column| {
+            let identity = if row == column { 1.0 } else { 0.0 };
+            (transform[row][column] - identity).abs() > 1.0e-6
+        })
+    });
+    let mut flags = SHAPE_INST_IS_ENABLED;
+    if has_translation {
+        flags |= SHAPE_INST_HAS_TRANSLATION;
+    }
+    if has_rotation {
+        flags |= SHAPE_INST_HAS_ROTATION;
+    }
+    let row0_w = pack_inst_row_w(flags);
 
-    for row in 0..4 {
-        let base = row * 16;
-        buf[base..base + 4].copy_from_slice(&transform[row][0].to_le_bytes());
-        buf[base + 4..base + 8].copy_from_slice(&transform[row][1].to_le_bytes());
-        buf[base + 8..base + 12].copy_from_slice(&transform[row][2].to_le_bytes());
-        let w: u32 = match row {
-            0 => INST_ROW0_W,
+    for column in 0..4 {
+        let base = column * 16;
+        let xyz = if column < 3 {
+            [
+                transform[0][column],
+                transform[1][column],
+                transform[2][column],
+            ]
+        } else {
+            [transform[0][3], transform[1][3], transform[2][3]]
+        };
+        buf[base..base + 4].copy_from_slice(&xyz[0].to_le_bytes());
+        buf[base + 4..base + 8].copy_from_slice(&xyz[1].to_le_bytes());
+        buf[base + 8..base + 12].copy_from_slice(&xyz[2].to_le_bytes());
+        let w: u32 = match column {
+            0 => row0_w,
             1 => 0,
-            2 => INST_ROW2_W,
+            2 => row2_w,
             3 => row3_w,
             _ => 0,
         };
@@ -224,6 +245,28 @@ fn build_shape_instance(transform: &[[f32; 4]; 4], tree_node_idx: usize) -> Vec<
     buf[0x60..0x64].copy_from_slice(&0u32.to_le_bytes()); // m_nextEmptyElement
 
     buf
+}
+
+fn transformed_vertices(vertices: &[[f32; 3]], transform: &[[f32; 4]; 4]) -> Vec<[f32; 3]> {
+    vertices
+        .iter()
+        .map(|vertex| {
+            [
+                transform[0][0] * vertex[0]
+                    + transform[0][1] * vertex[1]
+                    + transform[0][2] * vertex[2]
+                    + transform[0][3],
+                transform[1][0] * vertex[0]
+                    + transform[1][1] * vertex[1]
+                    + transform[1][2] * vertex[2]
+                    + transform[1][3],
+                transform[2][0] * vertex[0]
+                    + transform[2][1] * vertex[1]
+                    + transform[2][2] * vertex[2]
+                    + transform[2][3],
+            ]
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -336,6 +379,8 @@ fn write_polytope_objects(
         &indices,
         mass,
         None,
+        None,
+        false,
         convex_radius,
         user_data,
         name_offs,
@@ -360,6 +405,8 @@ fn write_source_polytope_objects(
         &shape.indices,
         mass,
         None,
+        shape.mass_properties.as_ref(),
+        true,
         shape.convex_radius,
         user_data,
         name_offs,
@@ -697,16 +744,21 @@ fn build_compound_data_section(
     let mut fx = FixupBuilder::new();
     let mut data: Vec<u8> = Vec::new();
 
-    // Compute per-child AABBs and compound AABB
+    // Compute per-child AABBs and compound AABB. Havok's child AABB includes
+    // the convex radius; the compound tree must cover the same surface used by
+    // narrowphase queries.
     let mut leaf_aabbs: Vec<Aabb> = Vec::with_capacity(sub_shapes.len());
     for (idx, s) in sub_shapes.iter().enumerate() {
-        let verts = match &s.kind {
-            CompoundChildKind::Polytope { vertices } => vertices.as_slice(),
-            CompoundChildKind::SourcePolytope { shape } => shape.vertices.as_slice(),
-            CompoundChildKind::CompressedMesh { vertices, .. } => vertices.as_slice(),
+        let (verts, convex_radius) = match &s.kind {
+            CompoundChildKind::Polytope { vertices } => (vertices.as_slice(), opts.convex_radius),
+            CompoundChildKind::SourcePolytope { shape } => {
+                (shape.vertices.as_slice(), shape.convex_radius)
+            }
+            CompoundChildKind::CompressedMesh { vertices, .. } => (vertices.as_slice(), 0.0),
         };
-        match Aabb::from_vertices(verts) {
-            Some(aabb) => leaf_aabbs.push(aabb),
+        let world_vertices = transformed_vertices(verts, &s.transform);
+        match Aabb::from_vertices(&world_vertices) {
+            Some(aabb) => leaf_aabbs.push(aabb.expanded(convex_radius)),
             None => {
                 return Err(crate::error::HavokError::InvalidInput(format!(
                     "sub-shape {idx} has no vertices (EmptySubShape)"
@@ -779,13 +831,15 @@ fn build_compound_data_section(
 
     // Write shape instances (shape* ptr = 0, fixups added after sub-shapes)
     let mut inst_ptr_rels: Vec<usize> = Vec::new();
+    let mut inst_shape_size_rels: Vec<usize> = Vec::new();
     let instances_rel = data.len();
     fx.add_local(compound_shape_rel + 0x60, instances_rel);
     for (i, child) in sub_shapes.iter().enumerate() {
         let inst_rel = data.len();
-        let inst_bytes = build_shape_instance(&child.transform, node_indices[i]);
+        let inst_bytes = build_shape_instance(&child.transform, node_indices[i], 0);
         data.extend_from_slice(&inst_bytes);
         inst_ptr_rels.push(inst_rel + 0x50); // shape* offset within instance
+        inst_shape_size_rels.push(inst_rel + 0x2c);
     }
 
     // Pointer to boundingVolumeData (DynCompShapeData)
@@ -807,10 +861,11 @@ fn build_compound_data_section(
     let child_user_data = opts.user_data.unwrap_or(0);
     let child_convex_radius = opts.convex_radius;
     let mut shape_rels: Vec<usize> = Vec::new();
+    let mut shape_instance_sizes: Vec<usize> = Vec::new();
     for child in sub_shapes.iter() {
-        let shape_rel = match &child.kind {
+        let (shape_rel, shape_instance_size) = match &child.kind {
             CompoundChildKind::Polytope { vertices } => {
-                let (sr, _) = write_polytope_objects(
+                let (sr, refprop_rel) = write_polytope_objects(
                     vertices,
                     per_child_mass,
                     child_user_data,
@@ -819,10 +874,10 @@ fn build_compound_data_section(
                     &mut fx,
                     &mut data,
                 )?;
-                sr
+                (sr, refprop_rel - sr)
             }
             CompoundChildKind::SourcePolytope { shape } => {
-                let (sr, _) = write_source_polytope_objects(
+                let (sr, refprop_rel) = write_source_polytope_objects(
                     shape,
                     per_child_mass,
                     child_user_data,
@@ -830,7 +885,7 @@ fn build_compound_data_section(
                     &mut fx,
                     &mut data,
                 )?;
-                sr
+                (sr, refprop_rel - sr)
             }
             CompoundChildKind::CompressedMesh {
                 vertices,
@@ -844,10 +899,21 @@ fn build_compound_data_section(
                     &mut fx,
                     &mut data,
                 )?;
-                sr
+                (sr, COMPRESSED_MESH_INSTANCE_SIZE)
             }
         };
         shape_rels.push(shape_rel);
+        shape_instance_sizes.push(shape_instance_size);
+    }
+
+    for (&size_rel, &shape_size) in inst_shape_size_rels.iter().zip(shape_instance_sizes.iter()) {
+        if shape_size > 0x00ff_ffff {
+            return Err(crate::error::HavokError::InvalidInput(format!(
+                "compound child shape size {shape_size} exceeds hknpShapeInstance int24 capacity"
+            )));
+        }
+        let packed = 0x3f00_0000 | shape_size as u32;
+        data[size_rel..size_rel + 4].copy_from_slice(&packed.to_le_bytes());
     }
 
     // Wire instance shape* pointers → sub-shapes
@@ -1009,6 +1075,10 @@ mod tests {
         u32::from_le_bytes(inst_bytes[0x3C..0x40].try_into().unwrap())
     }
 
+    fn read_row2_w(inst_bytes: &[u8]) -> u32 {
+        u32::from_le_bytes(inst_bytes[0x2C..0x30].try_into().unwrap())
+    }
+
     fn tetra_child(x: f32) -> CompoundChild {
         CompoundChild {
             transform: identity(),
@@ -1023,11 +1093,32 @@ mod tests {
         }
     }
 
+    fn source_tetrahedron() -> SourcePolytopeShape {
+        SourcePolytopeShape {
+            vertices: vec![
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+            ],
+            planes: vec![
+                [0.0, 0.0, -1.0, 0.0],
+                [0.0, -1.0, 0.0, 0.0],
+                [-1.0, 0.0, 0.0, 0.0],
+                [0.57735026, 0.57735026, 0.57735026, -0.57735026],
+            ],
+            faces: vec![(0, 3, 1), (3, 3, 31), (6, 3, 59), (9, 3, 127)],
+            indices: vec![0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3],
+            convex_radius: 0.01,
+            mass_properties: None,
+        }
+    }
+
     #[test]
     fn shape_instance_row3_encodes_low_24_bits_of_tree_node_idx() {
         // The high byte of row3.w carries Havok flag bits (0x3F constant);
         // the remaining 24 bits hold the leaf index.
-        let bytes = build_shape_instance(&identity(), 0x000123_AB);
+        let bytes = build_shape_instance(&identity(), 0x000123_AB, 0);
         let row3_w = read_row3_w(&bytes);
         // Top byte preserves the 0x3F flag pattern.
         assert_eq!(row3_w >> 24, 0x3F, "row3.w top byte must remain 0x3F");
@@ -1041,17 +1132,57 @@ mod tests {
     }
 
     #[test]
+    fn shape_instance_row2_encodes_child_shape_size() {
+        let bytes = build_shape_instance(&identity(), 1, 0x190);
+        assert_eq!(read_row2_w(&bytes), 0x3f00_0190);
+    }
+
+    #[test]
+    fn shape_instance_serializes_column_major_transform_and_flags() {
+        let transform = [
+            [0.0, -1.0, 0.0, 5.0],
+            [1.0, 0.0, 0.0, 6.0],
+            [0.0, 0.0, 1.0, 7.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ];
+        let bytes = build_shape_instance(&transform, 1, 0x190);
+        let read_f32 = |offset| f32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
+        let read_u32 = |offset| u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
+
+        assert_eq!(
+            [read_f32(0x00), read_f32(0x04), read_f32(0x08)],
+            [0.0, 1.0, 0.0]
+        );
+        assert_eq!(
+            [read_f32(0x10), read_f32(0x14), read_f32(0x18)],
+            [-1.0, 0.0, 0.0]
+        );
+        assert_eq!(
+            [read_f32(0x20), read_f32(0x24), read_f32(0x28)],
+            [0.0, 0.0, 1.0]
+        );
+        assert_eq!(
+            [read_f32(0x30), read_f32(0x34), read_f32(0x38)],
+            [5.0, 6.0, 7.0]
+        );
+        assert_eq!(
+            read_u32(0x0c) & 0x00ff_ffff,
+            SHAPE_INST_IS_ENABLED | SHAPE_INST_HAS_TRANSLATION | SHAPE_INST_HAS_ROTATION
+        );
+    }
+
+    #[test]
     fn shape_instance_supports_indices_above_255() {
         // The tightest regression: index 299 must round-trip without being
         // truncated to (299 & 0xFF) = 43.
-        let bytes = build_shape_instance(&identity(), 299);
+        let bytes = build_shape_instance(&identity(), 299, 0);
         let row3_w = read_row3_w(&bytes);
         assert_eq!(row3_w & 0x00FF_FFFF, 299);
     }
 
     #[test]
     fn shape_instance_writes_freelist_metadata() {
-        let bytes = build_shape_instance(&identity(), 0);
+        let bytes = build_shape_instance(&identity(), 0, 0);
         assert_eq!(
             bytes[0x5C], 0,
             "m_isEmpty must be 0 (this slot is allocated)"
@@ -1061,6 +1192,113 @@ mod tests {
             next_empty, 0,
             "m_nextEmptyElement must be 0 for allocated slots"
         );
+    }
+
+    #[test]
+    fn source_compound_child_preserves_face_min_half_angles() {
+        let shape = source_tetrahedron();
+        let expected = shape.faces.iter().map(|face| face.2).collect::<Vec<_>>();
+        let mut data = Vec::new();
+        let mut fixups = FixupBuilder::new();
+        let (shape_rel, _) = write_source_polytope_objects(
+            &shape,
+            0.0,
+            0,
+            &std::collections::HashMap::new(),
+            &mut fixups,
+            &mut data,
+        )
+        .expect("write source compound child");
+        let face_count =
+            u16::from_le_bytes(data[shape_rel + 0x44..shape_rel + 0x46].try_into().unwrap());
+        let face_rel =
+            u16::from_le_bytes(data[shape_rel + 0x46..shape_rel + 0x48].try_into().unwrap());
+        let faces_abs = shape_rel + 0x44 + usize::from(face_rel);
+        let actual = (0..usize::from(face_count))
+            .map(|index| data[faces_abs + index * 4 + 3])
+            .collect::<Vec<_>>();
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn source_compound_child_carries_source_mass_properties_verbatim() {
+        let mut shape = source_tetrahedron();
+        shape.mass_properties = Some(
+            crate::collision::mass_properties::CompressedMassProperties {
+                center_of_mass: [23241, 0, 0, 8832],
+                inertia: [29172, 11849, 30893, 11136],
+                major_axis_space: [-32768, -32768, -32768, -2768],
+                mass: 0.038964,
+                volume: 0.038964,
+            },
+        );
+        let mut data = Vec::new();
+        let mut fixups = FixupBuilder::new();
+        let (_, refprop_rel) = write_source_polytope_objects(
+            &shape,
+            0.0,
+            0,
+            &std::collections::HashMap::new(),
+            &mut fixups,
+            &mut data,
+        )
+        .expect("write source compound child");
+        // hknpShapeMassProperties block starts after the 0x20-byte
+        // hkRefCountedProperties object.
+        let mp = refprop_rel + 0x20;
+        let read_i16x4 = |offset: usize| {
+            let mut out = [0i16; 4];
+            for (i, slot) in out.iter_mut().enumerate() {
+                *slot = i16::from_le_bytes(
+                    data[offset + i * 2..offset + i * 2 + 2].try_into().unwrap(),
+                );
+            }
+            out
+        };
+        assert_eq!(read_i16x4(mp + 0x10), [23241, 0, 0, 8832]);
+        assert_eq!(read_i16x4(mp + 0x18), [29172, 11849, 30893, 11136]);
+        assert_eq!(read_i16x4(mp + 0x20), [-32768, -32768, -32768, -2768]);
+        let mass = f32::from_le_bytes(data[mp + 0x28..mp + 0x2C].try_into().unwrap());
+        let volume = f32::from_le_bytes(data[mp + 0x2C..mp + 0x30].try_into().unwrap());
+        assert_eq!(mass, 0.038964);
+        assert_eq!(volume, 0.038964);
+    }
+
+    #[test]
+    fn source_compound_instance_uses_serialized_polytope_size() {
+        let shape = source_tetrahedron();
+        let mut shape_data = Vec::new();
+        let mut shape_fixups = FixupBuilder::new();
+        let (shape_rel, refprop_rel) = write_source_polytope_objects(
+            &shape,
+            0.0,
+            0,
+            &std::collections::HashMap::new(),
+            &mut shape_fixups,
+            &mut shape_data,
+        )
+        .expect("write source polytope");
+        let expected_size = refprop_rel - shape_rel;
+        let children = vec![CompoundChild {
+            transform: identity(),
+            kind: CompoundChildKind::SourcePolytope { shape },
+        }];
+        let (data, _) = build_compound_data_section(
+            &children,
+            &std::collections::HashMap::new(),
+            &BuildOptions::default(),
+        )
+        .expect("build source compound");
+        let compound_shape_rel = 0x80 + 0x50 + 0x60 + 0x10;
+        let instance_rel = compound_shape_rel + COMPOUND_HDR_SIZE;
+        let packed_size = u32::from_le_bytes(
+            data[instance_rel + 0x2c..instance_rel + 0x30]
+                .try_into()
+                .unwrap(),
+        );
+
+        assert_eq!(packed_size & 0x00ff_ffff, expected_size as u32);
     }
 
     #[test]
@@ -1075,7 +1313,9 @@ mod tests {
         let leaf_aabbs: Vec<Aabb> = children
             .iter()
             .map(|child| match &child.kind {
-                CompoundChildKind::Polytope { vertices } => Aabb::from_vertices(vertices).unwrap(),
+                CompoundChildKind::Polytope { vertices } => Aabb::from_vertices(vertices)
+                    .unwrap()
+                    .expanded(BuildOptions::default().convex_radius),
                 _ => unreachable!(),
             })
             .collect();
@@ -1136,6 +1376,60 @@ mod tests {
             first_free, 0xFFFF_FFFF,
             "compound instances m_firstFree must be -1 (empty free list)"
         );
+    }
+
+    #[test]
+    fn source_compound_bounds_include_child_convex_radius() {
+        let shape = source_tetrahedron();
+        let radius = shape.convex_radius;
+        let children = vec![CompoundChild {
+            transform: identity(),
+            kind: CompoundChildKind::SourcePolytope { shape },
+        }];
+        let (data, _) = build_compound_data_section(
+            &children,
+            &std::collections::HashMap::new(),
+            &BuildOptions::default(),
+        )
+        .expect("build source compound");
+        let compound_shape_rel = 0x80 + 0x50 + 0x60 + 0x10;
+        let read_f32 = |offset| f32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
+
+        assert!((read_f32(compound_shape_rel + 0x80) + radius).abs() < 1e-6);
+        assert!((read_f32(compound_shape_rel + 0x84) + radius).abs() < 1e-6);
+        assert!((read_f32(compound_shape_rel + 0x88) + radius).abs() < 1e-6);
+        assert!((read_f32(compound_shape_rel + 0x90) - (1.0 + radius)).abs() < 1e-6);
+        assert!((read_f32(compound_shape_rel + 0x94) - (1.0 + radius)).abs() < 1e-6);
+        assert!((read_f32(compound_shape_rel + 0x98) - (1.0 + radius)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn source_compound_bounds_apply_child_transform() {
+        let shape = source_tetrahedron();
+        let radius = shape.convex_radius;
+        let mut transform = identity();
+        transform[0][3] = 5.0;
+        transform[1][3] = 6.0;
+        transform[2][3] = 7.0;
+        let children = vec![CompoundChild {
+            transform,
+            kind: CompoundChildKind::SourcePolytope { shape },
+        }];
+        let (data, _) = build_compound_data_section(
+            &children,
+            &std::collections::HashMap::new(),
+            &BuildOptions::default(),
+        )
+        .expect("build transformed source compound");
+        let compound_shape_rel = 0x80 + 0x50 + 0x60 + 0x10;
+        let read_f32 = |offset| f32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
+
+        assert!((read_f32(compound_shape_rel + 0x80) - (5.0 - radius)).abs() < 1e-6);
+        assert!((read_f32(compound_shape_rel + 0x84) - (6.0 - radius)).abs() < 1e-6);
+        assert!((read_f32(compound_shape_rel + 0x88) - (7.0 - radius)).abs() < 1e-6);
+        assert!((read_f32(compound_shape_rel + 0x90) - (6.0 + radius)).abs() < 1e-6);
+        assert!((read_f32(compound_shape_rel + 0x94) - (7.0 + radius)).abs() < 1e-6);
+        assert!((read_f32(compound_shape_rel + 0x98) - (8.0 + radius)).abs() < 1e-6);
     }
 
     #[test]

@@ -11,7 +11,7 @@
 //! a run and are referenced by nearly every compiled script, so caching avoids
 //! re-parsing large API scripts (Actor/Form/ObjectReference) once per compile.
 
-use crate::ast::{FunctionDef, PropertyDef, ScriptNode};
+use crate::ast::{EventDef, FunctionDef, PropertyDef, ScriptNode};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -94,6 +94,21 @@ impl SourceResolver {
                     .find(|f| f.name.eq_ignore_ascii_case(func))
                 {
                     return Some(f.return_type.clone());
+                }
+            }
+        }
+        None
+    }
+
+    pub fn get_event(&self, script: &str, event: &str) -> Option<(String, EventDef)> {
+        for ancestor in self.get_hierarchy(script) {
+            if let Some(ast) = self.parsed(&ancestor) {
+                if let Some(e) = ast
+                    .events
+                    .iter()
+                    .find(|e| e.name.eq_ignore_ascii_case(event))
+                {
+                    return Some((ast.name.clone(), e.clone()));
                 }
             }
         }

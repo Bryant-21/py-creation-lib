@@ -69,6 +69,21 @@ impl Aabb {
             ],
         }
     }
+
+    pub(crate) fn expanded(&self, radius: f32) -> Aabb {
+        Aabb {
+            min: [
+                self.min[0] - radius,
+                self.min[1] - radius,
+                self.min[2] - radius,
+            ],
+            max: [
+                self.max[0] + radius,
+                self.max[1] + radius,
+                self.max[2] + radius,
+            ],
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

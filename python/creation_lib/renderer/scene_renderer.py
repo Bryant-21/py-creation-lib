@@ -310,6 +310,12 @@ class SceneRenderer:
         self._collision_color_vbo: moderngl.Buffer | None = None
         self._collision_num_verts = 0
         self._collision_dirty = True
+        self._collision_shape_meshes: list[dict] = []
+        self._collision_solid_vbo: moderngl.Buffer | None = None
+        self._collision_solid_color_vbo: moderngl.Buffer | None = None
+        self._collision_solid_vao: moderngl.VertexArray | None = None
+        self._collision_solid_num_verts = 0
+        self._collision_solid_selection = None
 
         # --- Scene backend ---
         # Per-game draw delegate that owns scene_root, _current_effect_prog,
@@ -998,8 +1004,23 @@ class SceneRenderer:
         if self._collision_vao:
             self._collision_vao.release()
             self._collision_vao = None
+        self._clear_collision_solid()
+        self._collision_shape_meshes = []
         self._collision_num_verts = 0
         self._collision_dirty = True
+
+    def _clear_collision_solid(self):
+        for name in (
+            "_collision_solid_vbo",
+            "_collision_solid_color_vbo",
+            "_collision_solid_vao",
+        ):
+            resource = getattr(self, name, None)
+            if resource is not None:
+                resource.release()
+                setattr(self, name, None)
+        self._collision_solid_num_verts = 0
+        self._collision_solid_selection = None
 
     def _iter_particle_runtimes(self):
         registry = getattr(self, "active_nif_registry", None)
@@ -1515,8 +1536,9 @@ class SceneRenderer:
                 self.ctx.disable(moderngl.BLEND)
                 self.ctx.enable(moderngl.DEPTH_TEST)
 
-        # Collision overlay
-        if self._show_collision:
+        # Collision overlay. A selected collision shape remains visible even
+        # when the global wireframe toggle is off.
+        if self._show_collision or self._collision_selection_requested():
             self._render_collision_overlay(vp_tuple)
 
         # Selection outline
@@ -1586,6 +1608,7 @@ class SceneRenderer:
 
         all_positions = []
         all_colors = []
+        shape_meshes = []
 
         def _collect(n: SceneNode):
             overlay = getattr(n, 'collision_overlay', None)
@@ -1595,12 +1618,34 @@ class SceneRenderer:
                     wp = n.world_transform * glm.vec4(float(pos[0]), float(pos[1]), float(pos[2]), 1.0)
                     all_positions.extend([wp.x, wp.y, wp.z])
                     all_colors.extend(overlay.color)
+                for shape in getattr(overlay, "shapes", ()):
+                    world_vertices = []
+                    for vertex in shape.vertices:
+                        world = n.world_transform * glm.vec4(
+                            float(vertex[0]),
+                            float(vertex[1]),
+                            float(vertex[2]),
+                            1.0,
+                        )
+                        world_vertices.append([world.x, world.y, world.z])
+                    shape_meshes.append(
+                        {
+                            "nif_id": n.nif_id,
+                            "source_block_id": shape.source_block_id,
+                            "body_id": shape.body_id,
+                            "shape_index": shape.shape_index,
+                            "vertices": np.asarray(world_vertices, dtype=np.float32),
+                            "triangles": np.asarray(shape.triangles, dtype=np.uint32),
+                        }
+                    )
             for child in n.children:
                 _collect(child)
 
         _collect(node)
+        self._collision_shape_meshes = shape_meshes
 
         if not all_positions:
+            self._collision_dirty = False
             return
 
         pos_data = np.array(all_positions, dtype=np.float32)
@@ -1621,16 +1666,19 @@ class SceneRenderer:
         self._collision_dirty = False
 
     def _render_collision_overlay(self, vp_tuple):
-        """Render collision wireframe lines."""
-        if not self._show_collision:
-            return
+        """Render collision wireframes and the selected solid shape."""
         if self._collision_dirty and self.scene_root:
             self._rebuild_collision_overlay(self.scene_root)
-        if not self._collision_vao or self._collision_num_verts == 0:
-            return
 
         prog = self.programs.get("connect_point")
         if not prog:
+            return
+
+        self._render_selected_collision_solid(prog, vp_tuple)
+
+        if not self._show_collision:
+            return
+        if not self._collision_vao or self._collision_num_verts == 0:
             return
 
         self.ctx.disable(moderngl.DEPTH_TEST)
@@ -1646,6 +1694,102 @@ class SceneRenderer:
         self.ctx.disable(moderngl.BLEND)
         self.ctx.enable(moderngl.CULL_FACE)
         self.ctx.enable(moderngl.DEPTH_TEST)
+
+    def _collision_selection_requested(self) -> bool:
+        selection = self.selection_mgr
+        if selection is None:
+            return False
+        if getattr(selection, "selected_collision_shape", None) is not None:
+            return True
+        return (
+            getattr(selection, "selected", None) is None
+            and getattr(selection, "selected_block_id", None) is not None
+        )
+
+    def _selected_collision_meshes(self) -> tuple[tuple, list[dict]]:
+        selection = self.selection_mgr
+        if selection is None:
+            return (), []
+        virtual = getattr(selection, "selected_collision_shape", None)
+        selected = []
+        if virtual is not None:
+            for shape in self._collision_shape_meshes:
+                if (
+                    shape["nif_id"] == virtual.nif_id
+                    and shape["source_block_id"] == virtual.block_id
+                    and shape["body_id"] == virtual.body_id
+                    and (
+                        virtual.shape_index is None
+                        or shape["shape_index"] == virtual.shape_index
+                    )
+                ):
+                    selected.append(shape)
+            token = (
+                virtual.nif_id,
+                virtual.block_id,
+                virtual.body_id,
+                virtual.shape_index,
+            )
+            return token, selected
+
+        block_id = getattr(selection, "selected_block_id", None)
+        nif_id = getattr(selection, "selected_nif_id", None)
+        if block_id is None:
+            return (), []
+        selected = [
+            shape
+            for shape in self._collision_shape_meshes
+            if shape["source_block_id"] == block_id
+            and (nif_id is None or shape["nif_id"] == nif_id)
+        ]
+        return (nif_id, block_id), selected
+
+    def _render_selected_collision_solid(self, prog, vp_tuple) -> None:
+        token, shapes = self._selected_collision_meshes()
+        if token != self._collision_solid_selection:
+            self._clear_collision_solid()
+            self._collision_solid_selection = token
+            triangle_vertices = []
+            for shape in shapes:
+                vertices = shape["vertices"]
+                triangles = shape["triangles"]
+                if len(vertices) == 0 or len(triangles) == 0:
+                    continue
+                triangle_vertices.append(vertices[triangles.reshape(-1)])
+            if triangle_vertices:
+                positions = np.concatenate(triangle_vertices).astype(np.float32)
+                colors = np.tile(
+                    np.array([1.0, 0.55, 0.12, 0.85], dtype=np.float32),
+                    (len(positions), 1),
+                )
+                self._collision_solid_vbo = self.ctx.buffer(positions.tobytes())
+                self._collision_solid_color_vbo = self.ctx.buffer(colors.tobytes())
+                self._collision_solid_vao = self.ctx.vertex_array(
+                    prog,
+                    [
+                        (self._collision_solid_vbo, "3f", "in_position"),
+                        (
+                            self._collision_solid_color_vbo,
+                            "4f",
+                            "in_color",
+                        ),
+                    ],
+                )
+                self._collision_solid_num_verts = len(positions)
+
+        if not self._collision_solid_vao or self._collision_solid_num_verts == 0:
+            return
+        self.ctx.enable(moderngl.DEPTH_TEST)
+        self.ctx.disable(moderngl.CULL_FACE)
+        self.ctx.enable(moderngl.BLEND)
+        self.ctx.blend_func = (
+            moderngl.SRC_ALPHA,
+            moderngl.ONE_MINUS_SRC_ALPHA,
+        )
+        prog["u_mvp"].value = vp_tuple
+        self._collision_solid_vao.render(moderngl.TRIANGLES)
+        self.ctx.disable(moderngl.BLEND)
+        self.ctx.enable(moderngl.CULL_FACE)
 
     def get_fbo_texture_id(self) -> int:
         """Return OpenGL texture handle for imgui.image()."""

@@ -861,6 +861,20 @@ def _fo4_body_spec_from_preview(record: dict) -> tuple[str, list, list | None, N
     return ("polytope", vertices, None, None)
 
 
+def _aabb_box_vertices(vertices: np.ndarray) -> np.ndarray:
+    minimum = np.min(vertices, axis=0)
+    maximum = np.max(vertices, axis=0)
+    return np.asarray(
+        [
+            [x, y, z]
+            for x in (minimum[0], maximum[0])
+            for y in (minimum[1], maximum[1])
+            for z in (minimum[2], maximum[2])
+        ],
+        dtype=vertices.dtype,
+    )
+
+
 def _fo4_body_spec_from_node_geometry(
     nif,
     node_block_id: int,
@@ -916,11 +930,12 @@ def _fo4_body_spec_from_node_geometry(
             warnings,
         )
 
-    verts = (
-        _simplify_convex_fit_vertices(combined_verts)
-        if shape_type == "convex_fit"
-        else combined_verts
-    )
+    if shape_type == "convex_fit":
+        verts = _simplify_convex_fit_vertices(combined_verts)
+    elif shape_type == "box":
+        verts = _aabb_box_vertices(combined_verts)
+    else:
+        verts = combined_verts
     if shape_type in {"convex_hull", "convex_fit", "list", "auto"} and len(component_verts) > 1:
         children = []
         for component in component_verts:
@@ -967,11 +982,12 @@ def _fo4_body_spec_from_explicit_geometry(
             warnings,
         )
 
-    verts = (
-        _simplify_convex_fit_vertices(vertices)
-        if shape_type == "convex_fit"
-        else vertices
-    )
+    if shape_type == "convex_fit":
+        verts = _simplify_convex_fit_vertices(vertices)
+    elif shape_type == "box":
+        verts = _aabb_box_vertices(vertices)
+    else:
+        verts = vertices
     return (("polytope", (verts / havok_scale).tolist(), None, None), warnings)
 
 

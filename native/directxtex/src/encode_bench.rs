@@ -10,7 +10,7 @@ use intel_tex_2::bc7;
 
 use crate::{
     DXGI_FORMAT, bc_level_size, convert_unorm_texels_to_srgb, dds_base_rgba, dds_dx10_header,
-    dxtex_compressed_payload, ispc_bc7, ispc_bc7_payload, read_dds_mips_rgba8, rgba_mip_chain,
+    dxtex_compressed_payload, ispc_bc, ispc_bc7_payload, read_dds_mips_rgba8, rgba_mip_chain,
 };
 
 fn fo76_textures_dir() -> Option<PathBuf> {
@@ -146,14 +146,9 @@ fn chain_pixels(width: u32, height: u32) -> u64 {
 type PayloadFn = dyn Fn(usize, usize, &[u8]) -> Result<Vec<u8>, String> + Sync;
 
 /// Full-DDS assembly around a per-level BC7 payload encoder — mirrors
-/// `encode_compressed_dds_with_mips` for BC7_UNORM_SRGB with the payload
+/// `encode_compressed_dds` for BC7_UNORM_SRGB with the payload
 /// encoder swapped per variant.
-fn dds_via(
-    width: u32,
-    height: u32,
-    rgba: &[u8],
-    payload: &PayloadFn,
-) -> Result<Vec<u8>, String> {
+fn dds_via(width: u32, height: u32, rgba: &[u8], payload: &PayloadFn) -> Result<Vec<u8>, String> {
     let chain = rgba_mip_chain(width as usize, height as usize, rgba, true)?;
     let linear_size = bc_level_size(width as usize, height as usize, 2)?;
     let mut out = dds_dx10_header(
@@ -175,7 +170,7 @@ fn ispc_payload_with(
     move |w, h, rgba| {
         let converted = convert_unorm_texels_to_srgb(w, h, rgba)?;
         let settings = profile(&converted);
-        ispc_bc7::bc7_blocks_from_rgba(w, h, &converted, &settings)
+        ispc_bc::bc7_blocks_from_rgba(w, h, &converted, &settings)
     }
 }
 
@@ -219,13 +214,7 @@ fn bench_bc7_encoders() {
         (
             "dxtex_cpu_quick",
             Box::new(|w, h, rgba: &[u8]| {
-                dxtex_compressed_payload(
-                    w,
-                    h,
-                    rgba,
-                    DXGI_FORMAT::DXGI_FORMAT_BC7_UNORM_SRGB,
-                    false,
-                )
+                dxtex_compressed_payload(w, h, rgba, DXGI_FORMAT::DXGI_FORMAT_BC7_UNORM_SRGB, false)
             }),
         ),
         (
@@ -277,11 +266,12 @@ fn bench_bc7_encoders() {
         .iter()
         .min_by_key(|s| s.width * s.height)
         .expect("non-empty");
-    let warm = crate::encode_compressed_dds_with_mips(
+    let warm = crate::encode_compressed_dds(
         smallest.width,
         smallest.height,
         &smallest.rgba,
         DXGI_FORMAT::DXGI_FORMAT_BC7_UNORM_SRGB,
+        true,
         false,
         true,
     );
@@ -291,11 +281,12 @@ fn bench_bc7_encoders() {
     }
     let started = Instant::now();
     for s in &samples {
-        crate::encode_compressed_dds_with_mips(
+        crate::encode_compressed_dds(
             s.width,
             s.height,
             &s.rgba,
             DXGI_FORMAT::DXGI_FORMAT_BC7_UNORM_SRGB,
+            true,
             false,
             true,
         )
@@ -337,13 +328,7 @@ fn bench_bc7_encoders_2k() {
         (
             "dxtex_cpu_quick",
             Box::new(|w, h, rgba: &[u8]| {
-                dxtex_compressed_payload(
-                    w,
-                    h,
-                    rgba,
-                    DXGI_FORMAT::DXGI_FORMAT_BC7_UNORM_SRGB,
-                    false,
-                )
+                dxtex_compressed_payload(w, h, rgba, DXGI_FORMAT::DXGI_FORMAT_BC7_UNORM_SRGB, false)
             }),
         ),
         (

@@ -548,6 +548,38 @@ pub fn serialize_mass_properties_block(mp: &MassProperties) -> [u8; 0x30] {
     out
 }
 
+/// Verbatim compressed mass-properties block decoded from a source
+/// `hknpShapeMassProperties`. The source exporter already packed COM / inertia /
+/// majorAxisSpace with the hkPackedVector primitives, so the int16 words carry
+/// straight through — no unpack/repack round trip.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CompressedMassProperties {
+    pub center_of_mass: [i16; 4],
+    pub inertia: [i16; 4],
+    pub major_axis_space: [i16; 4],
+    pub mass: f32,
+    pub volume: f32,
+}
+
+/// Serialize a verbatim [`CompressedMassProperties`] into the 0x30-byte
+/// `hknpShapeMassProperties` block (same layout as
+/// [`serialize_mass_properties_block`]).
+pub fn serialize_compressed_mass_properties_block(props: &CompressedMassProperties) -> [u8; 0x30] {
+    let mut out = [0u8; 0x30];
+    for (i, v) in props.center_of_mass.iter().enumerate() {
+        out[0x10 + i * 2..0x12 + i * 2].copy_from_slice(&v.to_le_bytes());
+    }
+    for (i, v) in props.inertia.iter().enumerate() {
+        out[0x18 + i * 2..0x1A + i * 2].copy_from_slice(&v.to_le_bytes());
+    }
+    for (i, v) in props.major_axis_space.iter().enumerate() {
+        out[0x20 + i * 2..0x22 + i * 2].copy_from_slice(&v.to_le_bytes());
+    }
+    out[0x28..0x2C].copy_from_slice(&props.mass.to_le_bytes());
+    out[0x2C..0x30].copy_from_slice(&props.volume.to_le_bytes());
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

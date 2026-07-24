@@ -2,10 +2,11 @@
 from creation_lib.pex.types import (
     PexFile, PexObject, PexState, PexFunction, PexInstruction,
     PexValue, PexVariable, PexProperty, PexParam, PexLocal, ValueType,
-    PexStruct, PexStructMember,
+    PexStruct, PexStructMember, PexUserFlag,
 )
 from creation_lib.pex.opcodes import PexOpcode
 from creation_lib.pex.decompiler import decompile_function, decompile_pex_file
+from creation_lib.pex.native_runtime import compile_psc, parse_pex_bytes_native
 from creation_lib.papyrus_lsp.native_runtime import emit_script_native
 from creation_lib.papyrus_lsp.ast_nodes import (
     AssignStmt, BinaryExpr, NameExpr, ReturnStmt, ExprStmt,
@@ -246,6 +247,33 @@ def test_decompile_full_script():
     assert len(script.events) >= 1
 
 
+def test_decompile_preserves_auto_property_backing_variable_default():
+    pex = PexFile(
+        magic=0xFA57C0DE, major_version=3, minor_version=9, game_id=2,
+        compilation_time=0, source_filename="test.psc",
+        username="u", machine_name="m",
+        string_table=[],
+        debug_info=None,
+        user_flags=[],
+        objects=[
+            PexObject(
+                name="MyScript",
+                parent="ObjectReference",
+                variables=[
+                    PexVariable("::Delay_var", "Float", 0, PexValue.floating(12.0)),
+                ],
+                properties=[
+                    PexProperty("Delay", "Float", flags=4, auto_var="::Delay_var"),
+                ],
+            ),
+        ],
+    )
+
+    source = emit_script_native(decompile_pex_file(pex))
+
+    assert "Float Property Delay = 12.0 Auto" in source
+
+
 def test_decompile_struct_types_are_valid_papyrus_source():
     pex = PexFile(
         magic=0xFA57C0DE, major_version=3, minor_version=9, game_id=2,
@@ -336,6 +364,51 @@ def test_decompile_type_adapter_applies_to_script_parent():
     )
 
     assert script.parent == "Quest"
+
+
+def test_decompile_preserves_script_level_conditional_flag():
+    pex = PexFile(
+        magic=0xFA57C0DE,
+        major_version=3,
+        minor_version=9,
+        game_id=2,
+        compilation_time=0,
+        source_filename="ConditionalQuest.psc",
+        username="",
+        machine_name="",
+        string_table=[],
+        debug_info=None,
+        user_flags=[PexUserFlag(name="conditional", index=1)],
+        objects=[
+            PexObject(
+                name="ConditionalQuest",
+                parent="Quest",
+                user_flags=1 << 1,
+                variables=[
+                    PexVariable(
+                        name="rewardReady",
+                        type="Bool",
+                        user_flags=1 << 1,
+                        data=PexValue.boolean(False),
+                    )
+                ],
+                states=[PexState("", functions=[])],
+            )
+        ],
+    )
+
+    source = emit_script_native(decompile_pex_file(pex))
+
+    assert "Scriptname ConditionalQuest Extends Quest conditional" in source
+    assert "Bool rewardReady = False conditional" in source
+
+    compiled = compile_psc(source)
+    assert compiled.ok, compiled.diagnostics
+    round_tripped = parse_pex_bytes_native(compiled.pex_bytes)
+    conditional_index = next(
+        flag.index for flag in round_tripped.user_flags if flag.name.lower() == "conditional"
+    )
+    assert round_tripped.objects[0].user_flags & (1 << conditional_index)
 
 
 def test_decompile_struct_ops_emit_legal_source():
@@ -623,6 +696,48 @@ def test_decompile_fo4_compat_trims_weapon_fire_bool_arg():
     assert "myGun.Fire(Self, None, True)" not in source
 
 
+def test_decompile_fo4_compat_rewrites_game_get_local_player():
+    pex = PexFile(
+        magic=0xFA57C0DE, major_version=3, minor_version=9, game_id=2,
+        compilation_time=0, source_filename="test.psc",
+        username="u", machine_name="m",
+        string_table=[],
+        debug_info=None,
+        user_flags=[],
+        objects=[
+            PexObject(
+                name="MyScript",
+                parent="ObjectReference",
+                states=[
+                    PexState("", functions=[
+                        PexFunction(
+                            name="GetThePlayer", return_type="Actor", docstring="",
+                            is_native=False, is_global=False,
+                            locals=[PexLocal("::temp0", "Actor")],
+                            instructions=[
+                                PexInstruction(PexOpcode.CALLSTATIC, [
+                                    _make_id("Game"),
+                                    _make_id("GetLocalPlayer"),
+                                    _make_id("::temp0"),
+                                    _make_int(0),
+                                ]),
+                                PexInstruction(PexOpcode.RETURN, [_make_id("::temp0")]),
+                            ],
+                        ),
+                    ]),
+                ],
+            ),
+        ],
+    )
+
+    default_source = emit_script_native(decompile_pex_file(pex))
+    compat_source = emit_script_native(decompile_pex_file(pex, fo4_api_compat=True))
+
+    assert "Game.GetLocalPlayer()" in default_source
+    assert "Game.GetPlayer()" in compat_source
+    assert "GetLocalPlayer" not in compat_source
+
+
 def test_decompile_fo4_compat_trims_debug_trace_category_arg():
     pex = PexFile(
         magic=0xFA57C0DE, major_version=3, minor_version=9, game_id=2,
@@ -797,3 +912,61 @@ def test_decompile_fo4_compat_trims_active_magic_effect_on_effect_start_params()
     assert "Float afMagnitude" in compat_source
     assert "MagnitudeSeen = afMagnitude" in compat_source
     assert "afDuration" not in compat_source
+
+
+def test_decompile_fo4_compat_rewrites_topic_info_event_params():
+    pex = PexFile(
+        magic=0xFA57C0DE, major_version=3, minor_version=9, game_id=2,
+        compilation_time=0, source_filename="test.psc",
+        username="u", machine_name="m",
+        string_table=[],
+        debug_info=None,
+        user_flags=[],
+        objects=[
+            PexObject(
+                name="DefaultTopicInfoTest",
+                parent="TopicInfo",
+                variables=[
+                    PexVariable("SeenTarget", "ObjectReference"),
+                    PexVariable("SeenQuest", "QuestInstance"),
+                ],
+                states=[
+                    PexState("", functions=[
+                        PexFunction(
+                            name="OnBegin", return_type="None", docstring="",
+                            is_native=False, is_global=False,
+                            params=[
+                                PexParam("akSpeakerRef", "ObjectReference"),
+                                PexParam("akTargetRef", "ObjectReference"),
+                                PexParam("akQuestInstance", "QuestInstance"),
+                                PexParam("abHasBeenSaid", "Bool"),
+                            ],
+                            instructions=[
+                                PexInstruction(PexOpcode.ASSIGN, [
+                                    _make_id("SeenTarget"),
+                                    _make_id("akTargetRef"),
+                                ]),
+                                PexInstruction(PexOpcode.ASSIGN, [
+                                    _make_id("SeenQuest"),
+                                    _make_id("akQuestInstance"),
+                                ]),
+                                PexInstruction(PexOpcode.RETURN, [PexValue.none()]),
+                            ],
+                        ),
+                    ]),
+                ],
+            ),
+        ],
+    )
+
+    compat_source = emit_script_native(decompile_pex_file(
+        pex,
+        type_adapter=lambda name: "Quest" if name.lower() == "questinstance" else name,
+        fo4_api_compat=True,
+    ))
+
+    assert "Event OnBegin(ObjectReference akSpeakerRef, Bool abHasBeenSaid)" in compat_source
+    assert "ObjectReference akTargetRef = Game.GetPlayer()" in compat_source
+    assert "Quest akQuestInstance = Self.GetOwningQuest()" in compat_source
+    assert "SeenTarget = akTargetRef" in compat_source
+    assert "SeenQuest = akQuestInstance" in compat_source

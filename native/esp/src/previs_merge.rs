@@ -12,7 +12,7 @@ use crate::plugin_runtime::{
 
 const TES4_FLAG_LIGHT_PLUGIN: u32 = 0x0000_0200;
 const TES4_FLAG_LOCALIZED: u32 = 0x0000_0080;
-const RECORD_FLAG_NO_PREVIS: u32 = 0x0000_0080;
+pub const RECORD_FLAG_NO_PREVIS: u32 = 0x0000_0080;
 const CELL_CHILD_GROUP: i32 = 6;
 const PERSISTENT_GROUP: i32 = 8;
 const TEMPORARY_GROUP: i32 = 9;
@@ -664,22 +664,21 @@ fn remap_formid_between_master_lists(
     raw
 }
 
+// FO4's XCRI `reference_count` header field counts u32 *words* (2x the
+// logical reference-row count) — see `crate::xcri` for the grounded byte
+// layout. This helper stays row-oriented for its byte-offset callers
+// (`collect_xcri_owner_names`, `remap_xcri`) by deriving the reference
+// section's start offset and logical row count from the shared codec.
 fn xcri_reference_range(data: &[u8]) -> Option<(usize, usize)> {
-    if data.len() < 8 {
-        return None;
-    }
-    let mesh_count = read_u32(data, 0) as usize;
-    let reference_count = read_u32(data, 4) as usize;
-    let reference_start = 8usize.checked_add(mesh_count.checked_mul(4)?)?;
-    let reference_end = reference_start.checked_add(reference_count.checked_mul(8)?)?;
-    (reference_end <= data.len()).then_some((reference_start, reference_count))
+    let table = crate::xcri::decode_fo4(data)?;
+    let reference_start = 8 + table.meshes.len() * 4;
+    Some((reference_start, table.references.len()))
 }
 
 fn xcri_reference_count(data: &[u8]) -> u32 {
-    if data.len() < 8 {
-        return 0;
-    }
-    read_u32(data, 4)
+    crate::xcri::decode_fo4(data)
+        .map(|table| table.references.len() as u32)
+        .unwrap_or(0)
 }
 
 fn read_u32(data: &[u8], offset: usize) -> u32 {
@@ -710,7 +709,7 @@ fn remove_subrecords(record: &mut ParsedRecord, signatures: &[&str]) {
     });
 }
 
-fn upsert_ordered_subrecord(record: &mut ParsedRecord, subrecord: ParsedSubrecord) {
+pub fn upsert_ordered_subrecord(record: &mut ParsedRecord, subrecord: ParsedSubrecord) {
     remove_subrecords(record, &[subrecord.signature.as_str()]);
     let rank = cell_subrecord_rank(subrecord.signature.as_str());
     let Some(rank) = rank else {
@@ -727,7 +726,7 @@ fn upsert_ordered_subrecord(record: &mut ParsedRecord, subrecord: ParsedSubrecor
     record.subrecords.insert(insert_at, subrecord);
 }
 
-fn cell_subrecord_rank(signature: &str) -> Option<usize> {
+pub fn cell_subrecord_rank(signature: &str) -> Option<usize> {
     const ORDER: &[&str] = &[
         "EDID", "FULL", "DATA", "VISI", "RVIS", "PCMB", "XCLC", "XCLL", "XCLW", "XCLR", "XCLT",
         "XCLF", "XCAS", "XCMO", "XCIM", "XCWT", "XCMT", "XEZN", "XLCN", "XPRI", "XCRI", "XOWN",
@@ -851,8 +850,8 @@ mod tests {
 
     fn xcri_with_reference(raw_ref: u32, mesh_id: u32) -> Vec<u8> {
         let mut data = Vec::new();
-        data.extend_from_slice(&1u32.to_le_bytes());
-        data.extend_from_slice(&1u32.to_le_bytes());
+        data.extend_from_slice(&1u32.to_le_bytes()); // mesh_count = 1
+        data.extend_from_slice(&2u32.to_le_bytes()); // reference_count field = 2x1 row
         data.extend_from_slice(&mesh_id.to_le_bytes());
         data.extend_from_slice(&raw_ref.to_le_bytes());
         data.extend_from_slice(&mesh_id.to_le_bytes());

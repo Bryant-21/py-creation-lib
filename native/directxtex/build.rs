@@ -61,13 +61,13 @@ fn build_headers() {
 fn build_tex() {
     let root = Path::new("external/DirectXTex");
     let mut build = make_standard_build();
+    build.file("compat/DirectXTexCompress.cpp");
 
     build.files(
         [
             "DirectXTex/BC.cpp",
             "DirectXTex/BC4BC5.cpp",
             "DirectXTex/BC6HBC7.cpp",
-            "DirectXTex/DirectXTexCompress.cpp",
             "DirectXTex/DirectXTexConvert.cpp",
             "DirectXTex/DirectXTexDDS.cpp",
             "DirectXTex/DirectXTexHDR.cpp",
@@ -119,5 +119,6 @@ fn main() {
     build_tex();
     build_ffi();
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=compat/DirectXTexCompress.cpp");
     println!("cargo:rerun-if-changed=ffi/main.cpp");
 }

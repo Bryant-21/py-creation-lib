@@ -195,6 +195,38 @@ def test_plan_archive_outputs_splits_lod_and_terrain_by_archive_type(tmp_path: P
     assert by_label["TerrainTextures"].texture_archive is True
 
 
+def test_plan_archive_outputs_compacts_lod_and_terrain_dds_into_textures(
+    tmp_path: Path,
+):
+    plans = plan_archive_outputs(
+        "B21_Test",
+        [
+            _entry("Meshes/Terrain/Appalachia/Objects/a.bto", 10, tmp_path),
+            _entry("Textures/Actors/a.dds", 10, tmp_path),
+            _entry("Textures/Terrain/Appalachia/Appalachia.4.0.0.dds", 10, tmp_path),
+            _entry("Materials/Terrain/Appalachia/blend.bgsm", 10, tmp_path),
+            _entry("Textures/Terrain/Appalachia/lswamprocks01_d.dds", 10, tmp_path),
+        ],
+        "ba2",
+        "",
+        1024 * 1024,
+        game="fo4",
+        expanded_archives=False,
+    )
+
+    assert [plan.label for plan in plans] == ["Main", "Textures"]
+    assert [entry.relative_path for entry in plans[0].entries] == [
+        "Meshes/Terrain/Appalachia/Objects/a.bto",
+        "Materials/Terrain/Appalachia/blend.bgsm",
+    ]
+    assert [entry.relative_path for entry in plans[1].entries] == [
+        "Textures/Actors/a.dds",
+        "Textures/Terrain/Appalachia/Appalachia.4.0.0.dds",
+        "Textures/Terrain/Appalachia/lswamprocks01_d.dds",
+    ]
+    assert plans[1].texture_archive is True
+
+
 def test_plan_archive_outputs_shards_sounds_without_relying_on_compression(
     tmp_path: Path,
 ):

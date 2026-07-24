@@ -46,6 +46,8 @@ pub struct GlobalSettings {
     pub southwest_cell: Option<[i32; 2]>,
     #[serde(default)]
     pub bounds: Option<LodBounds>,
+    #[serde(default = "default_use_source_lodsettings")]
+    pub use_source_lodsettings: bool,
     pub write_lodsettings: bool,
     pub workers: usize,
     pub season: Option<String>,
@@ -59,6 +61,10 @@ pub struct GlobalSettings {
 }
 
 fn default_generate_phase() -> bool {
+    true
+}
+
+fn default_use_source_lodsettings() -> bool {
     true
 }
 
@@ -366,11 +372,30 @@ pub struct TreeSettings {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct GrassSettings {
+    pub enabled: bool,
+    pub spacings: [f32; 4],
+    pub min_alpha: f32,
+}
+
+impl Default for GrassSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            spacings: [0.0; 4],
+            min_alpha: 0.35,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct LodSettings {
     pub global: GlobalSettings,
     pub terrain: TerrainSettings,
     pub objects: ObjectSettings,
     pub trees: TreeSettings,
+    #[serde(default)]
+    pub grass: GrassSettings,
 }
 
 fn terrain_level(quality: f32, diffuse_mipmap: bool) -> TerrainLevel {
@@ -415,6 +440,7 @@ impl LodSettings {
                 align: 0,
                 southwest_cell: None,
                 bounds: None,
+                use_source_lodsettings: true,
                 write_lodsettings: true,
                 workers: 0,
                 season: None,
@@ -502,6 +528,7 @@ impl LodSettings {
                 billboard_atlas_size: 2048,
                 billboard_brightness: 1.0,
             },
+            grass: GrassSettings::default(),
         }
     }
 }
@@ -518,6 +545,7 @@ mod tests {
         assert_eq!(s.global.lod_max, 32);
         assert_eq!(s.global.southwest_cell, None);
         assert_eq!(s.global.bounds, None);
+        assert!(s.global.use_source_lodsettings);
         assert!(s.global.write_lodsettings);
         // Terrain per-level quality defaults 10/15/20/25 (R1 §4, Program.cs:205)
         assert_eq!(s.terrain.levels[0].quality, 10.0); // LOD4
@@ -600,6 +628,8 @@ mod tests {
         );
         // Trees
         assert!(s.trees.trees_3d);
+        assert!(!s.grass.enabled);
+        assert_eq!(s.grass.spacings, [0.0; 4]);
     }
 
     /// Settings JSON that predates additive object fields must still deserialize.
@@ -610,6 +640,8 @@ mod tests {
         let global = v["global"].as_object_mut().unwrap();
         global.remove("southwest_cell");
         global.remove("bounds");
+        global.remove("use_source_lodsettings");
+        v.as_object_mut().unwrap().remove("grass");
         let objects = v["objects"].as_object_mut().unwrap();
         for field in [
             "source",
@@ -653,6 +685,7 @@ mod tests {
         }
         let json = serde_json::to_string(&v).unwrap();
         let back: LodSettings = serde_json::from_str(&json).expect("legacy JSON must deserialize");
+        assert!(back.global.use_source_lodsettings);
         assert!(!back.objects.qem_decimate_full_model_lod);
         assert!(!back.objects.atlas_mip_flooding);
         assert_eq!(back.objects.qem_lod4_ratio, 0.35);

@@ -23,6 +23,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use rayon::prelude::*;
 use serde::Deserialize;
@@ -359,11 +360,21 @@ fn existing_output_matches_signature(
     if expected == crate::bgsm::BGSM_SIGNATURE
         && source_game == Game::Fo76
         && material_model(target_game) == MaterialModel::SpecGloss
-        && suppress_fo76_bgsm_emittance(source_path, BGSM_VERSION_FO4 + 1)
     {
-        return crate::bgsm::parse(&bytes)
-            .map(|bgsm| !bgsm.EmitEnabled)
-            .unwrap_or(false);
+        let Ok(bgsm) = crate::bgsm::parse(&bytes) else {
+            return false;
+        };
+        if source_path_has_named_glow_material(source_path) {
+            return bgsm.EmitEnabled
+                && bgsm.Glowmap
+                && bgsm
+                    .GlowTexture
+                    .as_deref()
+                    .is_some_and(|texture| !texture.trim_end_matches('\0').trim().is_empty());
+        }
+        if suppress_fo76_bgsm_emittance(source_path, BGSM_VERSION_FO4 + 1) {
+            return !bgsm.EmitEnabled;
+        }
     }
     true
 }
@@ -790,6 +801,13 @@ fn select_ore_cubemap(path: &str) -> Option<&'static str> {
 // wood, plastic, ceramic, cloth, toys — returns None so it is not forced to
 // reflect the sky (which reads as chrome). FO4 vanilla likewise leaves the vast
 // majority of world/structural/dielectric materials with env mapping off.
+/// Public entry to the FO4 cubemap heuristic for callers outside this module.
+/// Returns `(cubemap_path, env_mapping_mask_scale)`, or `None` for material
+/// categories that should have no cubemap at all.
+pub fn select_fo4_cubemap(source_path: &str) -> Option<(&'static str, f32)> {
+    select_cubemap(source_path)
+}
+
 fn select_cubemap(source_path: &str) -> Option<(&'static str, f32)> {
     let lower = source_path.to_lowercase().replace('\\', "/");
     // Exclusions: no cubemap for effects / UI / sky / decals.
@@ -845,6 +863,39 @@ fn select_cubemap_bgem(source_path: &str) -> Option<(&'static str, f32)> {
         }
     }
     select_cubemap(source_path).or(Some((DEFAULT_OUTSIDE, 1.0)))
+}
+
+// Exact-path exceptions stay data-driven so one-off art corrections do not
+// broaden the heuristic and accidentally make unrelated materials reflective.
+type BgsmPathOverrides = HashMap<String, Vec<(String, JsonValue)>>;
+
+static BGSM_PATH_OVERRIDES: OnceLock<BgsmPathOverrides> = OnceLock::new();
+
+fn bgsm_path_overrides() -> &'static BgsmPathOverrides {
+    BGSM_PATH_OVERRIDES.get_or_init(|| {
+        let parsed: HashMap<String, HashMap<String, JsonValue>> =
+            serde_json::from_str(include_str!("fo76_fo4_bgsm_overrides.json"))
+                .expect("embedded FO76-to-FO4 BGSM overrides must be valid JSON");
+
+        parsed
+            .into_iter()
+            .filter_map(|(path, properties)| {
+                let key = normalize_material_source_key(&path)?;
+                key.ends_with(".bgsm")
+                    .then(|| (key, properties.into_iter().collect()))
+            })
+            .collect()
+    })
+}
+
+fn apply_bgsm_path_overrides(bgsm: &mut crate::bgsm::BgsmData, source_path: &str) {
+    let Some(key) = normalize_material_source_key(source_path) else {
+        return;
+    };
+    let Some(overrides) = bgsm_path_overrides().get(&key) else {
+        return;
+    };
+    apply_bgsm_overrides(bgsm, overrides);
 }
 
 // ---------------------------------------------------------------------------
@@ -1043,6 +1094,9 @@ pub fn downgrade_bgsm(
         return bgsm;
     }
     if bgsm.header.version <= BGSM_VERSION_FO4 {
+        if source_game == Game::Fo76 && target_game == Game::Fo4 {
+            apply_bgsm_path_overrides(&mut bgsm, source_path);
+        }
         normalize_bgsm_texture_slots(&mut bgsm);
         return bgsm;
     }
@@ -1065,7 +1119,8 @@ pub fn downgrade_bgsm(
 
         let lighting_clean = clean_opt(bgsm.LightingTexture.as_deref());
         let glow_clean = clean_opt(bgsm.GlowTexture.as_deref());
-        if suppress_fo76_bgsm_emittance(source_path, src_v) && bgsm.EmitEnabled {
+        let named_glow = source_bgsm_has_named_glow_texture(&bgsm);
+        if suppress_fo76_bgsm_emittance(source_path, src_v) && bgsm.EmitEnabled && !named_glow {
             bgsm.EmitEnabled = false;
             bgsm.Glowmap = false;
             bgsm.GlowTexture = None;
@@ -1077,6 +1132,9 @@ pub fn downgrade_bgsm(
             bgsm.Glowmap = true;
             if bgsm.EmittanceMult > 1.0 {
                 bgsm.EmittanceMult = 1.0;
+            }
+            if named_glow {
+                bgsm.EmittanceColor = Some([1.0, 1.0, 1.0]);
             }
         }
 
@@ -1138,7 +1196,10 @@ pub fn downgrade_bgsm(
 
     // RootMaterialPath synthesis.
     let current_root = bgsm.RootMaterialPath.replace('\0', "").trim().to_owned();
-    if source_path_uses_empty_root_material(source_path) {
+    if bgsm.header.decal
+        || bgsm.header.decal_nofade
+        || source_path_uses_empty_root_material(source_path)
+    {
         bgsm.RootMaterialPath.clear();
     } else if current_root.is_empty() {
         bgsm.RootMaterialPath =
@@ -1159,6 +1220,10 @@ pub fn downgrade_bgsm(
         }
     }
 
+    if source_game == Game::Fo76 && target_game == Game::Fo4 {
+        apply_bgsm_path_overrides(&mut bgsm, source_path);
+    }
+
     normalize_bgsm_texture_slots(&mut bgsm);
 
     bgsm.header.version = BGSM_VERSION_FO4;
@@ -1170,6 +1235,9 @@ pub fn downgrade_bgsm(
 /// applies it across the whole surface; effect/decal material paths keep their
 /// emissive behavior.
 pub fn source_bgsm_enables_fo4_glowmap(bgsm: &crate::bgsm::BgsmData, source_path: &str) -> bool {
+    if source_bgsm_has_named_glow_texture(bgsm) {
+        return true;
+    }
     if suppress_fo76_bgsm_emittance(source_path, bgsm.header.version) {
         return false;
     }
@@ -1183,8 +1251,36 @@ pub fn source_bgsm_enables_fo4_glowmap(bgsm: &crate::bgsm::BgsmData, source_path
     bgsm.EmitEnabled && has_text(&bgsm.LightingTexture) && !has_text(&bgsm.GlowTexture)
 }
 
+fn source_bgsm_has_named_glow_texture(bgsm: &crate::bgsm::BgsmData) -> bool {
+    if !bgsm.EmitEnabled {
+        return false;
+    }
+    let Some(lighting) = bgsm.LightingTexture.as_deref() else {
+        return false;
+    };
+    let lighting = lighting.replace('\0', "");
+    let filename = lighting
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(lighting.as_str())
+        .to_ascii_lowercase();
+    filename.contains("glow")
+}
+
+fn source_path_has_named_glow_material(source_path: &str) -> bool {
+    let path = source_path.replace('\\', "/");
+    let filename = path.rsplit('/').next().unwrap_or(path.as_str());
+    let lower = filename.to_ascii_lowercase();
+    let stem = lower.strip_suffix(".bgsm").unwrap_or(&lower);
+    stem.rfind("glow").is_some_and(|index| {
+        stem[index + "glow".len()..]
+            .chars()
+            .all(|ch| ch.is_ascii_digit())
+    })
+}
+
 fn suppress_fo76_bgsm_emittance(source_path: &str, source_version: u32) -> bool {
-    if source_version <= BGSM_VERSION_FO4 {
+    if source_version <= BGSM_VERSION_FO4 || source_path_has_named_glow_material(source_path) {
         return false;
     }
     let path = source_path
@@ -1589,6 +1685,23 @@ fn apply_bgsm_overrides(bgsm: &mut crate::bgsm::BgsmData, overrides: &[(String, 
             "bEmitEnabled" | "EmitEnabled" => {
                 if let Some(b) = val.as_bool() {
                     bgsm.EmitEnabled = b;
+                }
+            }
+            "sEnvmapTexture" | "EnvmapTexture" => {
+                if let Some(value) = val.as_str() {
+                    bgsm.EnvmapTexture = Some(value.to_owned());
+                }
+            }
+            "bEnvironmentMapping" | "EnvironmentMapping" | "env_mapping" => {
+                if let Some(value) = val.as_bool() {
+                    bgsm.header.env_mapping = Some(value);
+                }
+            }
+            "fEnvironmentMappingMaskScale"
+            | "EnvironmentMappingMaskScale"
+            | "env_mapping_mask_scale" => {
+                if let Some(value) = val.as_f64() {
+                    bgsm.header.env_mapping_mask_scale = Some(value as f32);
                 }
             }
             _ => {} // unknown key: ignore
@@ -2535,6 +2648,58 @@ mod tests {
     }
 
     #[test]
+    fn bgsm_named_glow_texture_uses_fo4_colored_glow_map() {
+        let mut bgsm = make_test_bgsm_v20();
+        bgsm.LightingTexture = Some("Actors/Wendigo/wendigo_glow_l.dds".to_owned());
+        bgsm.GlowTexture = None;
+        bgsm.EmitEnabled = true;
+        bgsm.EmittanceColor = Some([0.627451, 1.0, 0.38431376]);
+        bgsm.EmittanceMult = 2.0;
+
+        let result = downgrade_bgsm(
+            bgsm,
+            "Materials/Actors/Wendigo/WendigoGlow.bgsm",
+            Game::Fo76,
+            Game::Fo4,
+        );
+
+        assert_eq!(
+            result.GlowTexture.as_deref(),
+            Some("Actors/Wendigo/wendigo_glow_g.dds")
+        );
+        assert!(result.Glowmap);
+        assert!(result.EmitEnabled);
+        assert_eq!(result.EmittanceColor, Some([1.0, 1.0, 1.0]));
+    }
+
+    #[test]
+    fn bgsm_named_glow_material_preserves_lighting_mask_emittance() {
+        let mut bgsm = make_test_bgsm_v20();
+        bgsm.LightingTexture = Some("SetDressing/AutoDispenser/AutoDispenserAmmo_l.dds".to_owned());
+        bgsm.GlowTexture = None;
+        bgsm.Glowmap = false;
+        bgsm.EmitEnabled = true;
+        bgsm.EmittanceColor = Some([1.0, 0.9568628, 0.43529415]);
+        bgsm.EmittanceMult = 10.0;
+
+        let result = downgrade_bgsm(
+            bgsm,
+            "Materials/SetDressing/AutoDispenser/AutoDispenserAmmo_Glow.bgsm",
+            Game::Fo76,
+            Game::Fo4,
+        );
+
+        assert_eq!(
+            result.GlowTexture.as_deref(),
+            Some("SetDressing/AutoDispenser/AutoDispenserAmmo_g.dds")
+        );
+        assert!(result.Glowmap);
+        assert!(result.EmitEnabled);
+        assert_eq!(result.EmittanceColor, Some([1.0, 0.9568628, 0.43529415]));
+        assert_eq!(result.EmittanceMult, 1.0);
+    }
+
+    #[test]
     fn bgsm_effect_lighting_emittance_is_preserved() {
         let mut bgsm = make_test_bgsm_v20();
         bgsm.LightingTexture = Some("Effects/Foo_l.dds".to_owned());
@@ -2725,6 +2890,20 @@ mod tests {
     }
 
     #[test]
+    fn distillery_material_overrides_use_bronze_cubemap() {
+        for source_path in [
+            "Materials/Furniture/WorkstationDistillery/WorkstationDistillery01_Pipes.bgsm",
+            "Materials/SetDressing/ModifiedDistiller/ModifiedDistiller01.bgsm",
+        ] {
+            let result = downgrade_bgsm(make_test_bgsm_v20(), source_path, Game::Fo76, Game::Fo4);
+
+            assert_eq!(result.EnvmapTexture.as_deref(), Some(OUT_BRONZE));
+            assert_eq!(result.header.env_mapping, Some(true));
+            assert_eq!(result.header.env_mapping_mask_scale, Some(1.0));
+        }
+    }
+
+    #[test]
     fn bgsm_landscape_mineral_path_keeps_ore_cubemap() {
         let mut bgsm = make_test_bgsm_v20();
         bgsm.RootMaterialPath = String::new();
@@ -2759,6 +2938,25 @@ mod tests {
         assert_eq!(result.EnvmapTexture.as_deref(), Some(DEFAULT_DIELECTRIC));
         assert_eq!(result.header.env_mapping, Some(true));
         assert_eq!(result.header.env_mapping_mask_scale, Some(0.3));
+    }
+
+    #[test]
+    fn bgsm_decal_keeps_empty_root_material() {
+        let mut bgsm = make_test_bgsm_v20();
+        bgsm.header.decal = true;
+        bgsm.header.decal_nofade = true;
+        bgsm.RootMaterialPath = String::new();
+
+        let result = downgrade_bgsm(
+            bgsm,
+            "Materials/SetDressing/NukaWorldProps/SignDecals01.bgsm",
+            Game::Fo76,
+            Game::Fo4,
+        );
+
+        assert_eq!(result.RootMaterialPath, "");
+        assert!(result.header.decal);
+        assert!(result.header.decal_nofade);
     }
 
     #[test]
@@ -2959,6 +3157,20 @@ mod tests {
             source_bgsm_enables_fo4_glowmap(&bgsm, "Materials/Effects/Test.bgsm"),
             "effect materials preserve synthesized lighting-mask emission"
         );
+        assert!(
+            source_bgsm_enables_fo4_glowmap(
+                &bgsm,
+                "Materials/SetDressing/AutoDispenser/AutoDispenserAmmo_Glow2.bgsm"
+            ),
+            "explicitly glow-named submaterial preserves its lighting mask"
+        );
+        assert!(
+            !source_bgsm_enables_fo4_glowmap(
+                &bgsm,
+                "Materials/Landscape/Rocks/GlowingSeaCliffs.bgsm"
+            ),
+            "ordinary names containing 'glow' are not treated as glow submaterials"
+        );
 
         // An existing GlowTexture suppresses the lighting-mask synthesis branch.
         bgsm.GlowTexture = Some("textures/x_g.dds".to_string());
@@ -3037,6 +3249,40 @@ mod tests {
             ),
             "after regeneration the output can be skipped normally"
         );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn existing_named_glow_fo76_bgsm_without_masked_emittance_is_stale() {
+        let tmp = std::env::temp_dir().join(format!(
+            "existing_named_glow_fo76_bgsm_without_masked_emittance_is_stale_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let path = tmp.join("stale.bgsm");
+        let source_path = "Materials/SetDressing/AutoDispenser/AutoDispenserAmmo_Glow.bgsm";
+
+        let mut bgsm = make_test_bgsm_v2();
+        bgsm.EmitEnabled = false;
+        std::fs::write(&path, crate::bgsm::write(&bgsm)).unwrap();
+        assert!(!existing_output_matches_signature(
+            &path,
+            source_path,
+            Game::Fo76,
+            Game::Fo4
+        ));
+
+        bgsm.EmitEnabled = true;
+        bgsm.Glowmap = true;
+        bgsm.GlowTexture = Some("SetDressing/AutoDispenser/AutoDispenserAmmo_g.dds".to_owned());
+        std::fs::write(&path, crate::bgsm::write(&bgsm)).unwrap();
+        assert!(existing_output_matches_signature(
+            &path,
+            source_path,
+            Game::Fo76,
+            Game::Fo4
+        ));
         let _ = std::fs::remove_dir_all(&tmp);
     }
 

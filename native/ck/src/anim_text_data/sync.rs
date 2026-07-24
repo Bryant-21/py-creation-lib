@@ -1068,9 +1068,10 @@ fn resolve_group(
     })
 }
 
-fn build_group(
+fn build_group_with(
     resolver: &mut ClipResolver,
     input: &ResolvedGroup,
+    strip: fn(&str) -> &str,
 ) -> Result<Vec<SyncAnimEntry>, SyncAnimBuildError> {
     let mut candidates = Vec::new();
     for behavior in &input.behavior_roots {
@@ -1097,7 +1098,7 @@ fn build_group(
                 candidate.animation_name
             ))
         })?;
-        let base = strip_role_suffix(stem);
+        let base = strip(stem);
         let (translation, rotation_wxyz) = sync_anim_offset(&clip)
             .map_err(|error| SyncAnimBuildError::new(format!("{} ({})", error, candidate.event)))?;
         emitted_events.insert(event_key);
@@ -1114,6 +1115,100 @@ fn build_group(
         ));
     }
     Ok(entries)
+}
+
+/// Weapon path: keeps the `ROLE_SUFFIXES` strip so its byte-exact tests stay pinned.
+fn build_group(
+    resolver: &mut ClipResolver,
+    input: &ResolvedGroup,
+) -> Result<Vec<SyncAnimEntry>, SyncAnimBuildError> {
+    build_group_with(resolver, input, strip_role_suffix)
+}
+
+/// Paired-move base stem: the clip animation-file stem minus its trailing
+/// `_<segment>` role token. Validated 100% over the 15,718 extracted anim stems
+/// against every base+DLC ResolvedSyncAnimData id. Used by the
+/// plugin-level writer only — the weapon path keeps ROLE_SUFFIXES for byte parity.
+fn sync_base_stem(stem: &str) -> &str {
+    match stem.rfind('_') {
+        Some(index) if index > 0 => &stem[..index],
+        _ => stem,
+    }
+}
+
+/// `ResolvedSyncAnimData<stem>.txt` for the target plugin, or None when the stem is
+/// empty (an unsuffixed name would shadow vanilla's own file — never emit it).
+pub fn plugin_sync_anim_filename(target_plugin_name: &str) -> Option<String> {
+    let stem = target_plugin_name
+        .rsplit_once('.')
+        .map_or(target_plugin_name, |(stem, _)| stem);
+    if stem.is_empty() {
+        return None;
+    }
+    Some(format!("ResolvedSyncAnimData{stem}.txt"))
+}
+
+/// Whole-plugin paired-anim registry (the analog of the CK's per-plugin
+/// resolvedsyncanimdata<plugin>.txt). One group per behavior context that yields
+/// paired candidates, groups sorted by context path, participants sorted.
+/// Count line = `numGroups + 1`, the CK convention every shipped Fallout 4 plugin
+/// uses (base game, all four DLCs, and Creation Club alike, down to the 0-group
+/// `V4\n1\n` form). The engine's group-read loop runs exactly `count` times, so the
+/// extra iteration no-ops at EOF; under-counting would silently drop trailing groups.
+pub fn build_plugin_sync_anim_data(
+    subgraphs: &[SubgraphInput],
+    src_meshes_root: &Path,
+    base_meshes_root: Option<&Path>,
+) -> Result<Vec<u8>, SyncAnimBuildError> {
+    let mut roots: Vec<&Path> = vec![src_meshes_root];
+    if let Some(base) = base_meshes_root {
+        roots.push(base);
+    }
+    let mut resolver = ClipResolver::new(&roots);
+
+    // Unique behavior contexts across the plugin's subgraphs, deterministic order.
+    let mut contexts: Vec<(&str, Vec<&SubgraphInput>)> = Vec::new();
+    for subgraph in subgraphs {
+        match contexts
+            .iter_mut()
+            .find(|(core, _)| *core == subgraph.core_behavior.as_str())
+        {
+            Some((_, members)) => members.push(subgraph),
+            None => contexts.push((subgraph.core_behavior.as_str(), vec![subgraph])),
+        }
+    }
+    contexts.sort_by(|a, b| a.0.to_ascii_lowercase().cmp(&b.0.to_ascii_lowercase()));
+
+    let mut groups: Vec<(Vec<SyncAnimEntry>, Vec<u64>)> = Vec::new();
+    for (_core, members) in contexts {
+        // resolve_group walks the members' behavior closure and gathers paired
+        // candidates + animation directories; build_group_with resolves each
+        // candidate's clip, id, transform, and event name.
+        let resolved = match resolve_group(&mut resolver, &members) {
+            Ok(resolved) => resolved,
+            Err(_) => continue, // base-game/absent core: nothing to enumerate here
+        };
+        let entries = match build_group_with(&mut resolver, &resolved, sync_base_stem) {
+            Ok(entries) => entries,
+            Err(_) => continue, // never ship a partially-decoded group
+        };
+        if entries.is_empty() {
+            continue;
+        }
+        let mut participants: Vec<u64> = members.iter().map(|subgraph| subgraph.id()).collect();
+        participants.sort_unstable();
+        participants.dedup();
+        groups.push((entries, participants));
+    }
+
+    let mut out = String::new();
+    out.push_str("V4\n");
+    out.push_str(&(groups.len() + 1).to_string());
+    out.push('\n');
+    for (entries, participants) in &groups {
+        serialize_group(&mut out, entries, participants);
+    }
+    Ok(out.into_bytes())
 }
 
 fn canonical_participant_ids(subgraph_ids: &[u64]) -> Vec<u64> {
@@ -1414,6 +1509,7 @@ mod tests {
                     r"Actors\Character\Animations\Weapon\Alpha".to_string(),
                     r"Actors\Character\Animations\Paired".to_string(),
                 ],
+                race_dir: None,
             },
             SubgraphInput {
                 core_behavior: r"Actors\Character\Behaviors\WeaponBehavior.hkx".to_string(),
@@ -1421,6 +1517,7 @@ mod tests {
                     r"Actors\Character\Animations\Weapon\Beta".to_string(),
                     r"Actors\Character\Animations\Paired".to_string(),
                 ],
+                race_dir: None,
             },
             SubgraphInput {
                 core_behavior: r"Actors\Character\_1stPerson\Behaviors\GunBehavior.hkx".to_string(),
@@ -1428,6 +1525,7 @@ mod tests {
                     r"Actors\Character\_1stPerson\Animations\Alpha".to_string(),
                     r"Actors\Character\_1stPerson\Animations\Paired".to_string(),
                 ],
+                race_dir: None,
             },
         ];
         let groups = complete_group_candidates(&subgraphs).unwrap();
@@ -1447,12 +1545,14 @@ mod tests {
             subgraphs.push(SubgraphInput {
                 core_behavior: r"Actors\Character\Behaviors\WeaponBehavior.hkx".to_string(),
                 sapt_chain: vec![format!(r"Actors\Character\Animations\Weapon\{archetype}")],
+                race_dir: None,
             });
             subgraphs.push(SubgraphInput {
                 core_behavior: r"Actors\Character\_1stPerson\Behaviors\GunBehavior.hkx".to_string(),
                 sapt_chain: vec![format!(
                     r"Actors\Character\_1stPerson\Animations\{archetype}\Specialized"
                 )],
+                race_dir: None,
             });
         }
 
@@ -1528,4 +1628,63 @@ mod tests {
             .then_some(ParsedSyncAnim { version, groups })
     }
 
+    #[test]
+    fn trailing_segment_strip_matches_verified_base_game_ids() {
+        // (clip stem, expected id) pairs verified at scale against the base game.
+        assert_eq!(
+            sync_base_stem("pairedblockpunchcounter_victim"),
+            "pairedblockpunchcounter"
+        );
+        assert_eq!(
+            name_id(sync_base_stem("pairedblockpunchcounter_victim")),
+            1593399197
+        );
+        // creature/companion role tokens the old ROLE_SUFFIXES misses:
+        assert_eq!(
+            sync_base_stem("paireddogmeathumangreetpet_doglead"),
+            "paireddogmeathumangreetpet"
+        );
+        assert_eq!(sync_base_stem("somepairedmove_moleratkill"), "somepairedmove");
+        // no underscore → unchanged
+        assert_eq!(sync_base_stem("plainstem"), "plainstem");
+    }
+
+    #[test]
+    fn plugin_sync_filename_is_stem_keyed_and_never_unsuffixed() {
+        assert_eq!(
+            plugin_sync_anim_filename("SeventySix.esm").as_deref(),
+            Some("ResolvedSyncAnimDataSeventySix.txt")
+        );
+        assert_eq!(
+            plugin_sync_anim_filename("Snallygaster.esp").as_deref(),
+            Some("ResolvedSyncAnimDataSnallygaster.txt")
+        );
+        assert_eq!(plugin_sync_anim_filename(""), None);
+        assert_eq!(plugin_sync_anim_filename(".esm"), None);
+    }
+
+    #[test]
+    fn plugin_sync_empty_result_matches_vanilla_zero_group_form() {
+        // A subgraph set with no paired candidates must yield the same bytes the CK
+        // ships for a zero-group plugin: `numGroups + 1`, so the extra read no-ops at EOF.
+        let subgraphs = vec![SubgraphInput {
+            core_behavior: r"Actors\Nothing\Behaviors\NothingBehavior.hkx".to_string(),
+            sapt_chain: vec![r"Actors\Nothing\Animations".to_string()],
+            race_dir: None,
+        }];
+        let tmp = tempfile::tempdir().unwrap();
+        let body = build_plugin_sync_anim_data(&subgraphs, tmp.path(), None).unwrap();
+        assert_eq!(body, b"V4\n1\n");
+
+        // DLCworkshop01/02/03 are the shipped zero-group oracles.
+        let oracle = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+            "../../../extracted/fo4/meshes/animtextdata/syncanimdata/\
+             resolvedsyncanimdatadlcworkshop01.txt",
+        );
+        if !oracle.is_file() {
+            eprintln!("skipping oracle compare: missing {}", oracle.display());
+            return;
+        }
+        assert_eq!(body, std::fs::read(oracle).unwrap());
+    }
 }

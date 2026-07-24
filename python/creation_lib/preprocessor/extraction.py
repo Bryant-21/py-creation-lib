@@ -31,6 +31,7 @@ from creation_lib.core.game_profiles import get_profile
 
 _log = logging.getLogger("modkit.extraction")
 _UPDATE_ARCHIVE_RE = re.compile(r"(?:^|[\s_-])(\d{2,})update", re.IGNORECASE)
+_EXTRACT_BYTES_PER_WORKER = 512 * 1024**2
 
 
 @dataclass(frozen=True)
@@ -169,10 +170,17 @@ def archive_entry_count(archive: Path) -> int:
         return 0
 
 
-def _suggest_file_workers(file_count: int, total_workers: int) -> int:
-    if file_count <= 0:
-        return 1
-    return max(1, min(total_workers, math.ceil(file_count / 10_000)))
+def archive_size_bytes(archive: Path) -> int:
+    try:
+        return max(0, archive.stat().st_size)
+    except OSError:
+        return 0
+
+
+def _suggest_file_workers(file_count: int, size_bytes: int, total_workers: int) -> int:
+    workers_by_file_count = math.ceil(file_count / 10_000)
+    workers_by_size = math.ceil(size_bytes / _EXTRACT_BYTES_PER_WORKER)
+    return max(1, min(total_workers, max(workers_by_file_count, workers_by_size)))
 
 
 def plan_archive_extraction_batches(
@@ -185,7 +193,11 @@ def plan_archive_extraction_batches(
     used_workers = 0
     for archive in archives:
         file_count = archive_entry_count(archive)
-        file_workers = _suggest_file_workers(file_count, budget)
+        file_workers = _suggest_file_workers(
+            file_count,
+            archive_size_bytes(archive),
+            budget,
+        )
         task = ArchiveExtractionTask(
             archive=archive,
             file_workers=file_workers,

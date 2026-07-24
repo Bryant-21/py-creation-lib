@@ -185,7 +185,8 @@ fn patched_synthetic_safe_data_can_be_parsed_again() {
 
 #[test]
 fn patch_hkx_returns_byte_identical_when_unchanged() {
-    let data = std::fs::read(fixture_path("native/havok/tests/fixtures/skeleton.hkx")).expect("read skeleton");
+    let data = std::fs::read(fixture_path("native/havok/tests/fixtures/skeleton.hkx"))
+        .expect("read skeleton");
     let hkx = read_packfile(&data).expect("parse skeleton");
 
     assert!(
@@ -199,7 +200,8 @@ fn patch_hkx_returns_byte_identical_when_unchanged() {
 
 #[test]
 fn patch_hkx_overlays_in_place_array_mutation() {
-    let data = std::fs::read(fixture_path("native/havok/tests/fixtures/skeleton.hkx")).expect("read skeleton");
+    let data = std::fs::read(fixture_path("native/havok/tests/fixtures/skeleton.hkx"))
+        .expect("read skeleton");
     let mut hkx = read_packfile(&data).expect("parse skeleton");
 
     // Find the first DIRECT (scalar) array we can mutate without changing length.
@@ -258,7 +260,8 @@ fn patch_hkx_overlays_in_place_array_mutation() {
 
 #[test]
 fn patch_hkx_rejects_array_length_change() {
-    let data = std::fs::read(fixture_path("native/havok/tests/fixtures/skeleton.hkx")).expect("read skeleton");
+    let data = std::fs::read(fixture_path("native/havok/tests/fixtures/skeleton.hkx"))
+        .expect("read skeleton");
     let mut hkx = read_packfile(&data).expect("parse skeleton");
 
     // Find a scalar array with at least one element.

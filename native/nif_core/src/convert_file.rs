@@ -29,10 +29,15 @@ const VF_VERTEX_COLORS: i64 = 0x0020;
 const VF_SKINNED: i64 = 0x0040;
 const SLSF1_SPECULAR: u64 = 1 << 0;
 const SLSF1_SKINNED: u64 = 1 << 1;
+const SLSF1_VERTEX_ALPHA: u64 = 1 << 3;
 const SLSF1_ENVIRONMENT_MAPPING: u64 = 1 << 7;
+const SLSF1_CAST_SHADOWS: u64 = 1 << 9;
 const SLSF1_HAIR: u64 = 1 << 18;
+const SLSF1_SCREENDOOR_ALPHA_FADE: u64 = 1 << 19;
 const SLSF1_OWN_EMIT: u64 = 1 << 22;
 const SLSF1_DECAL: u64 = 1 << 26;
+const SLSF1_DYNAMIC_DECAL: u64 = 1 << 27;
+const SLSF1_ZBUFFER_TEST: u64 = 1 << 31;
 const SLSF2_TRANSFORM_CHANGED: u64 = 1 << 7;
 
 /// FO4 hair color-gradient palette bound in GreyscaleToPalette slot 3.
@@ -51,6 +56,42 @@ const SLSF2_DOUBLE_SIDED: u32 = 1 << 4;
 const SLSF2_VERTEX_COLORS: u32 = 1 << 5;
 const SLSF2_GLOW_MAP: u64 = 1 << 6;
 const SLSF2_TREE_ANIM: u32 = 1 << 29;
+const FO4_LEGACY_PP_SHADER_FLAGS_1_MASK: u64 = (1 << 0)
+    | (1 << 1)
+    | (1 << 3)
+    | (1 << 7)
+    | (1 << 10)
+    | (1 << 13)
+    | (1 << 15)
+    | (1 << 16)
+    | (1 << 17)
+    | (1 << 18)
+    | (1 << 20)
+    | (1 << 24)
+    | (1 << 26)
+    | (1 << 27)
+    | (1 << 29)
+    | (1 << 31);
+const FO4_LEGACY_PP_SHADER_FLAGS_2_MASK: u64 = (1 << 0)
+    | (1 << 1)
+    | (1 << 2)
+    | (1 << 3)
+    | (1 << 5)
+    | (1 << 10)
+    | (1 << 11)
+    | (1 << 12)
+    | (1 << 13)
+    | (1 << 14)
+    | (1 << 16)
+    | (1 << 19);
+const FO4_TALL_GRASS_SHADER_FLAGS_1: u64 = SLSF1_SPECULAR
+    | SLSF1_VERTEX_ALPHA
+    | SLSF1_CAST_SHADOWS
+    | SLSF1_SCREENDOOR_ALPHA_FADE
+    | SLSF1_OWN_EMIT
+    | SLSF1_ZBUFFER_TEST;
+const FO4_TALL_GRASS_SHADER_FLAGS_2: u64 =
+    (SLSF2_ZBUFFER_WRITE | SLSF2_DOUBLE_SIDED | SLSF2_VERTEX_COLORS | SLSF2_TREE_ANIM) as u64;
 const BSX_DYNAMIC_FLAG: u64 = 0x40;
 const BSX_COMPLEX_FLAG: u64 = 0x08;
 const BSX_ARTICULATED_FLAG: u64 = 0x80;
@@ -86,7 +127,7 @@ pub struct ConvertFileOptions {
     pub weapon_role: Option<String>,
     /// Source-game data root (e.g. the FO76 `extracted/fo76` dir). When set, the
     /// FO76→FO4 external-BGSM normalizer reads each referenced source material to
-    /// decide whether the FO4 shader needs the `Glow_Map` flag. None disables it.
+    /// restore FO4 shader flags and texture fallbacks. None disables it.
     pub source_material_dir: Option<PathBuf>,
     /// Source material substitutions keyed by canonical `materials/...` paths.
     /// The NIF keeps the original material reference, but shader texture data is
@@ -211,9 +252,9 @@ pub fn convert_nif_file(
     let load_started = Instant::now();
     let mut nif = NifFile::load(src.to_path_buf())?;
     report.record_timing_ms("load", load_started);
-    let skyrim_static = source_game == "skyrimse" && target_game == "fo4";
-    if skyrim_static {
-        if let Err(error) = crate::skyrim::validate_static_only(&nif) {
+    let skyrim_to_fo4 = source_game == "skyrimse" && target_game == "fo4";
+    if skyrim_to_fo4 {
+        if let Err(error) = crate::skyrim::validate_unskinned_geometry(&nif) {
             report.errors.push(error);
             report.record_timing_ms("total", total_started);
             return Ok(report);
@@ -223,7 +264,7 @@ pub fn convert_nif_file(
         let step_started = Instant::now();
         retarget_header(&mut nif, &target_game, &mut report);
         report.record_timing_ms("retarget_header", step_started);
-        if skyrim_static {
+        if skyrim_to_fo4 {
             let step_started = Instant::now();
             let normalized = crate::skyrim::normalize_static_geometry(&mut nif);
             if normalized > 0 {
@@ -275,6 +316,11 @@ pub fn convert_nif_file(
             report.record_timing_ms("skyrim_materials", step_started);
 
             let step_started = Instant::now();
+            ensure_fo4_effect_shader_defaults(&mut nif, &mut report);
+            ensure_fo4_lighting_shader_defaults(&mut nif, &mut report, true);
+            report.record_timing_ms("skyrim_fo4_shader_defaults", step_started);
+
+            let step_started = Instant::now();
             let collision_report = crate::skyrim_collision::bridge_static_collision(&mut nif);
             if collision_report.converted > 0 || collision_report.stripped > 0 {
                 report.changes.push(format!(
@@ -313,7 +359,7 @@ pub fn convert_nif_file(
             strip_fo76_position_data(&mut nif, &mut report);
             report.record_timing_ms("fo76_position_data", step_started);
             let step_started = Instant::now();
-            ensure_fo4_lighting_shader_defaults(&mut nif, &mut report);
+            ensure_fo4_lighting_shader_defaults(&mut nif, &mut report, false);
             report.record_timing_ms("fo4_lighting_shader_defaults", step_started);
             let step_started = Instant::now();
             remap_fo76_texture_slots(&mut nif, &mut report);
@@ -361,7 +407,7 @@ pub fn convert_nif_file(
             regenerate_fo4_collision(&mut nif, &mut report);
             report.record_timing_ms("regenerate_fo4_collision", step_started);
         }
-        if !skyrim_static {
+        if !skyrim_to_fo4 {
             let step_started = Instant::now();
             normalize_external_material_names(
                 &mut nif,
@@ -379,7 +425,7 @@ pub fn convert_nif_file(
             prune_fo76_flatwoods_skeleton_hand_helpers(&mut nif, &mut report);
             report.record_timing_ms("fo76_flatwoods_skeleton_hand_helpers", step_started);
         }
-        if !skyrim_static {
+        if !skyrim_to_fo4 {
             let step_started = Instant::now();
             normalize_texture_sets(
                 &mut nif,
@@ -1456,17 +1502,52 @@ fn convert_tall_grass(nif: &mut NifFile, block: &NifBlock) -> usize {
     fields.insert("Texture Set".to_string(), NifValue::Ref(texset_id as i32));
     fields.insert(
         "Shader Flags 1".to_string(),
-        NifValue::UInt(flag_names_to_bits(block.get_field("Shader Flags"), true)),
+        NifValue::UInt(FO4_TALL_GRASS_SHADER_FLAGS_1),
+    );
+    fields.insert(
+        "Shader Flags 1:FO4".to_string(),
+        NifValue::UInt(FO4_TALL_GRASS_SHADER_FLAGS_1),
     );
     fields.insert(
         "Shader Flags 2".to_string(),
-        NifValue::UInt(flag_names_to_bits(block.get_field("Shader Flags 2"), false)),
+        NifValue::UInt(FO4_TALL_GRASS_SHADER_FLAGS_2),
     );
+    fields.insert(
+        "Shader Flags 2:FO4".to_string(),
+        NifValue::UInt(FO4_TALL_GRASS_SHADER_FLAGS_2),
+    );
+    fields.insert("UV Offset".to_string(), tex_coord([0.0, 0.0]));
+    fields.insert("UV Scale".to_string(), tex_coord([1.0, 1.0]));
+    fields.insert("Emissive Color".to_string(), NifValue::Color3([0.0; 3]));
+    fields.insert("Emissive Multiple".to_string(), NifValue::Float(1.0));
+    fields.insert("Root Material".to_string(), NifValue::String(String::new()));
+    fields.insert("Texture Clamp Mode".to_string(), NifValue::UInt(3));
+    fields.insert("Alpha".to_string(), NifValue::Float(1.0));
+    fields.insert("Refraction Strength".to_string(), NifValue::Float(0.0));
+    fields.insert("Smoothness".to_string(), NifValue::Float(0.282));
+    fields.insert("Specular Color".to_string(), NifValue::Color3([1.0; 3]));
+    fields.insert("Specular Strength".to_string(), NifValue::Float(1.0));
+    fields.insert("Subsurface Rolloff".to_string(), NifValue::Float(10.0));
+    fields.insert(
+        "Rimlight Power".to_string(),
+        NifValue::Float(f32::MAX as f64),
+    );
+    fields.insert("Backlight Power".to_string(), NifValue::Float(0.0));
+    fields.insert(
+        "Grayscale to Palette Scale".to_string(),
+        NifValue::Float(1.0),
+    );
+    fields.insert("Fresnel Power".to_string(), NifValue::Float(5.0));
+    fields.insert("Wetness".to_string(), default_fo4_wetness());
     nif.add_block("BSLightingShaderProperty", Some(fields))
 }
 
 fn convert_pp_lighting(nif: &mut NifFile, block: &NifBlock) -> usize {
     let texset_ref = resolve_texset(nif, block);
+    let flags_1 = flag_names_to_bits(block.get_field("Shader Flags"), true)
+        & FO4_LEGACY_PP_SHADER_FLAGS_1_MASK;
+    let flags_2 = flag_names_to_bits(block.get_field("Shader Flags 2"), false)
+        & FO4_LEGACY_PP_SHADER_FLAGS_2_MASK;
     let mut fields = IndexMap::new();
     fields.insert(
         "Name".to_string(),
@@ -1477,14 +1558,15 @@ fn convert_pp_lighting(nif: &mut NifFile, block: &NifBlock) -> usize {
     );
     fields.insert("Shader Type".to_string(), NifValue::UInt(0));
     fields.insert("Texture Set".to_string(), NifValue::Ref(texset_ref));
-    fields.insert(
-        "Shader Flags 1".to_string(),
-        NifValue::UInt(flag_names_to_bits(block.get_field("Shader Flags"), true)),
-    );
-    fields.insert(
-        "Shader Flags 2".to_string(),
-        NifValue::UInt(flag_names_to_bits(block.get_field("Shader Flags 2"), false)),
-    );
+    fields.insert("Shader Flags 1".to_string(), NifValue::UInt(flags_1));
+    fields.insert("Shader Flags 1:FO4".to_string(), NifValue::UInt(flags_1));
+    fields.insert("Shader Flags 2".to_string(), NifValue::UInt(flags_2));
+    fields.insert("Shader Flags 2:FO4".to_string(), NifValue::UInt(flags_2));
+    fields.insert("UV Offset".to_string(), tex_coord([0.0, 0.0]));
+    fields.insert("UV Scale".to_string(), tex_coord([1.0, 1.0]));
+    fields.insert("Emissive Color".to_string(), NifValue::Color3([0.0; 3]));
+    fields.insert("Emissive Multiple".to_string(), NifValue::Float(1.0));
+    fields.insert("Root Material".to_string(), NifValue::String(String::new()));
     fields.insert(
         "Texture Clamp Mode".to_string(),
         block
@@ -1492,10 +1574,26 @@ fn convert_pp_lighting(nif: &mut NifFile, block: &NifBlock) -> usize {
             .cloned()
             .unwrap_or(NifValue::UInt(0)),
     );
+    fields.insert("Alpha".to_string(), NifValue::Float(1.0));
     fields.insert(
         "Refraction Strength".to_string(),
         NifValue::Float(value_f64(block.get_field("Refraction Strength")).unwrap_or(0.0)),
     );
+    fields.insert("Smoothness".to_string(), NifValue::Float(1.0));
+    fields.insert("Specular Color".to_string(), NifValue::Color3([1.0; 3]));
+    fields.insert("Specular Strength".to_string(), NifValue::Float(1.0));
+    fields.insert("Subsurface Rolloff".to_string(), NifValue::Float(0.0));
+    fields.insert(
+        "Rimlight Power".to_string(),
+        NifValue::Float(f32::MAX as f64),
+    );
+    fields.insert("Backlight Power".to_string(), NifValue::Float(0.0));
+    fields.insert(
+        "Grayscale to Palette Scale".to_string(),
+        NifValue::Float(1.0),
+    );
+    fields.insert("Fresnel Power".to_string(), NifValue::Float(5.0));
+    fields.insert("Wetness".to_string(), default_fo4_wetness());
     nif.add_block("BSLightingShaderProperty", Some(fields))
 }
 
@@ -2207,7 +2305,11 @@ fn nif_looks_like_vegetation(nif: &NifFile) -> bool {
     false
 }
 
-fn ensure_fo4_lighting_shader_defaults(nif: &mut NifFile, report: &mut ConvertFileReport) {
+fn ensure_fo4_lighting_shader_defaults(
+    nif: &mut NifFile,
+    report: &mut ConvertFileReport,
+    complete_existing: bool,
+) {
     // Detect "vegetation" NIFs once per file: the FO4 vegetation shader path
     // uses Double_Sided on BSLightingShaderProperty. Tree_Anim and
     // Vertex_Colors are only valid when all shapes using the shader carry
@@ -2245,8 +2347,9 @@ fn ensure_fo4_lighting_shader_defaults(nif: &mut NifFile, report: &mut ConvertFi
         {
             continue;
         }
-        if block.get_field("Shader Flags 1").is_some()
-            || block.get_field("Shader Flags 1:FO4").is_some()
+        if !complete_existing
+            && (block.get_field("Shader Flags 1").is_some()
+                || block.get_field("Shader Flags 1:FO4").is_some())
         {
             continue;
         }
@@ -2603,13 +2706,9 @@ fn normalize_external_bgsm_shader_data_with_overrides(
     for (shader_id, material_path, texset_id) in shader_texture_sets {
         let (source_material_path, source_overridden) =
             material_source_override_path(&material_path, material_source_overrides);
-        // FO76 NIFs carry no shader flags. Read the source material to learn
-        // whether the converted FO4 BGSM keeps an explicit glow map, and set the
-        // matching shader flag only for that case. Synthesized FO76 `_l`
-        // emission is disabled in material conversion because FO4 applies it
-        // across the whole object surface.
-        let wants_glow_map =
-            material_yields_fo4_glow_map(&source_material_path, source_material_dir);
+        let source_shader_flags =
+            source_bgsm_shader_flags(&source_material_path, source_material_dir);
+        let wants_glow_map = source_shader_flags.is_some_and(|flags| flags.glow_map);
         let material_texture_paths =
             converted_source_bgsm_texture_paths(&source_material_path, source_material_dir);
         {
@@ -2617,13 +2716,10 @@ fn normalize_external_bgsm_shader_data_with_overrides(
                 continue;
             };
             let mut shader_changed = false;
-            // A glow-emitting material needs the Glow Shader type (2) so FO4
-            // selects the glow-map technique and masks the emittance by the glow
-            // texture. With Default (0) the engine ignores the glow map and
-            // applies Own_Emit flat across the whole mesh (perkboard glowed solid
-            // white; AutoDispenser solid red). Vanilla FO4 glow meshes
-            // (EmergencyLightOn01, SecurityCamera01) confirm Glow Shader is the
-            // expected type for material-backed glow shapes.
+            // Own_Emit is part of FO4's external-BGSM baseline, including
+            // non-glowing vanilla rocks. A glow-emitting material additionally
+            // needs the Glow Shader type (2) so FO4 selects the glow-map
+            // technique and masks the emittance by the glow texture.
             let desired_shader_type = if wants_glow_map {
                 BSLSP_SHADER_TYPE_GLOW
             } else {
@@ -2638,6 +2734,21 @@ fn normalize_external_bgsm_shader_data_with_overrides(
             }
             if clear_shader_flag(shader, "Shader Flags 1:FO4", SLSF1_ENVIRONMENT_MAPPING) {
                 shader_changed = true;
+            }
+            if let Some(flags) = source_shader_flags {
+                for field in ["Shader Flags 1", "Shader Flags 1:FO4"] {
+                    shader_changed |= sync_shader_flag(shader, field, SLSF1_DECAL, flags.decal);
+                    shader_changed |=
+                        sync_shader_flag(shader, field, SLSF1_DYNAMIC_DECAL, flags.dynamic_decal);
+                }
+                for field in ["Shader Flags 2", "Shader Flags 2:FO4"] {
+                    shader_changed |= sync_shader_flag(
+                        shader,
+                        field,
+                        SLSF2_DOUBLE_SIDED as u64,
+                        flags.double_sided,
+                    );
+                }
             }
             for field in [
                 "Environment Map Scale",
@@ -2655,12 +2766,12 @@ fn normalize_external_bgsm_shader_data_with_overrides(
                     shader_changed = true;
                 }
             }
+            let mut own_emit_set = set_shader_flag(shader, "Shader Flags 1", SLSF1_OWN_EMIT);
+            own_emit_set |= set_shader_flag(shader, "Shader Flags 1:FO4", SLSF1_OWN_EMIT);
+            if own_emit_set {
+                shader_changed = true;
+            }
             if wants_glow_map {
-                let mut set = set_shader_flag(shader, "Shader Flags 1", SLSF1_OWN_EMIT);
-                set |= set_shader_flag(shader, "Shader Flags 1:FO4", SLSF1_OWN_EMIT);
-                if set {
-                    shader_changed = true;
-                }
                 let mut glow_set = set_shader_flag(shader, "Shader Flags 2", SLSF2_GLOW_MAP);
                 glow_set |= set_shader_flag(shader, "Shader Flags 2:FO4", SLSF2_GLOW_MAP);
                 if glow_set {
@@ -2668,9 +2779,7 @@ fn normalize_external_bgsm_shader_data_with_overrides(
                     shader_changed = true;
                 }
             } else {
-                let mut cleared = clear_shader_flag(shader, "Shader Flags 1", SLSF1_OWN_EMIT);
-                cleared |= clear_shader_flag(shader, "Shader Flags 1:FO4", SLSF1_OWN_EMIT);
-                cleared |= clear_shader_flag(shader, "Shader Flags 2", SLSF2_GLOW_MAP);
+                let mut cleared = clear_shader_flag(shader, "Shader Flags 2", SLSF2_GLOW_MAP);
                 cleared |= clear_shader_flag(shader, "Shader Flags 2:FO4", SLSF2_GLOW_MAP);
                 if cleared {
                     shader_changed = true;
@@ -2916,18 +3025,37 @@ fn set_shader_flag(block: &mut NifBlock, field: &str, flag: u64) -> bool {
     true
 }
 
-/// Reads the FO76 source BGSM referenced by `material_path` (resolved under the
-/// source data root) and reports whether its FO4 conversion enables a glow map.
-/// Returns false when no source dir is given, the file is missing, or it fails
-/// to parse — the shader simply keeps the FO4 default (Glow_Map off).
-fn material_yields_fo4_glow_map(material_path: &str, source_material_dir: Option<&Path>) -> bool {
+fn sync_shader_flag(block: &mut NifBlock, field: &str, flag: u64, enabled: bool) -> bool {
+    if enabled {
+        set_shader_flag(block, field, flag)
+    } else {
+        clear_shader_flag(block, field, flag)
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+struct SourceBgsmShaderFlags {
+    glow_map: bool,
+    decal: bool,
+    dynamic_decal: bool,
+    double_sided: bool,
+}
+
+fn source_bgsm_shader_flags(
+    material_path: &str,
+    source_material_dir: Option<&Path>,
+) -> Option<SourceBgsmShaderFlags> {
     let Some((bytes, relative, _resolved)) = read_source_bgsm(material_path, source_material_dir)
     else {
-        return false;
+        return None;
     };
-    materials_native::bgsm::parse(&bytes)
-        .map(|bgsm| materials_native::convert::source_bgsm_enables_fo4_glowmap(&bgsm, &relative))
-        .unwrap_or(false)
+    let bgsm = materials_native::bgsm::parse(&bytes).ok()?;
+    Some(SourceBgsmShaderFlags {
+        glow_map: materials_native::convert::source_bgsm_enables_fo4_glowmap(&bgsm, &relative),
+        decal: bgsm.header.decal || bgsm.header.decal_nofade,
+        dynamic_decal: bgsm.header.decal_nofade,
+        double_sided: bgsm.header.two_sided,
+    })
 }
 
 fn converted_source_bgsm_texture_paths(
@@ -3394,7 +3522,8 @@ fn convert_fo76_cloth_blobs(nif: &mut NifFile, report: &mut ConvertFileReport) {
 }
 
 fn validate_fo4_cloth_blob(blob: &[u8]) -> Result<(), String> {
-    let format = havok_native::api::hkx_detect_format_full(blob).map_err(|error| error.to_string())?;
+    let format =
+        havok_native::api::hkx_detect_format_full(blob).map_err(|error| error.to_string())?;
     if format.kind != "packfile" || format.version != "hk_2014.1.0-r1" {
         return Err(format!(
             "expected hk_2014.1.0-r1 packfile, got {} {}",
@@ -3651,11 +3780,7 @@ fn is_fo76_cloth_bone_name(name: &str) -> bool {
     // Match indexed sim bones while leaving nodes like "Clothing" alone.
     n.find("cloth").is_some_and(|pos| {
         let suffix = &n[pos + "cloth".len()..];
-        if suffix
-            .chars()
-            .next()
-            .is_some_and(|c| c.is_ascii_digit())
-        {
+        if suffix.chars().next().is_some_and(|c| c.is_ascii_digit()) {
             return true;
         }
         let mut chars = suffix.chars();
@@ -4051,7 +4176,8 @@ fn source_body_is_dynamic_for_nif(
 }
 
 fn source_body_is_single_convex(body: &ExtractedCollisionBody) -> bool {
-    body.source_polytopes.len() == 1
+    body.source_primitive.is_some()
+        || body.source_polytopes.len() == 1
         || (body.source_polytopes.is_empty()
             && body.meshes.len() == 1
             && body.meshes[0].shape_type == "convex_hull")
@@ -4059,6 +4185,10 @@ fn source_body_is_single_convex(body: &ExtractedCollisionBody) -> bool {
 
 struct CollisionPlanEntry {
     source_collision_id: usize,
+    /// The source `bhkPhysicsSystem` block this entry's body came from (the
+    /// collision object's Data ref). Non-constrained rebuilds emit one output
+    /// physics system per distinct value, mirroring the source partitioning.
+    source_system_id: usize,
     source_parent_id: usize,
     source_parent_name: String,
     parent_id: usize,
@@ -4092,10 +4222,7 @@ struct CollisionChangeSummary {
     details: Vec<String>,
 }
 
-fn synthesize_fo76_ground_object_collision(
-    nif: &mut NifFile,
-    report: &mut ConvertFileReport,
-) {
+fn synthesize_fo76_ground_object_collision(nif: &mut NifFile, report: &mut ConvertFileReport) {
     if has_live_collision_object(nif) || !is_fo76_ground_object_nif(nif) {
         return;
     }
@@ -4118,8 +4245,7 @@ fn synthesize_fo76_ground_object_collision(
         plan_visible_aabb_collision_fallback(nif, root_id, 0, metadata, false)
     else {
         report.warnings.push(
-            "FO76 ground object collision: no bounded visible geometry was available"
-                .to_string(),
+            "FO76 ground object collision: no bounded visible geometry was available".to_string(),
         );
         return;
     };
@@ -4129,6 +4255,7 @@ fn synthesize_fo76_ground_object_collision(
         .unwrap_or_default();
     let entry = CollisionPlanEntry {
         source_collision_id: root_id,
+        source_system_id: root_id,
         source_parent_id: root_id,
         source_parent_name: parent_name.clone(),
         parent_id,
@@ -4341,6 +4468,10 @@ fn rebuild_fo76_np_collision(nif: &mut NifFile, report: &mut ConvertFileReport) 
             .unwrap_or_default();
         pending.push(CollisionPlanEntry {
             source_collision_id: collision_id,
+            source_system_id: field_ref(&collision, "Data")
+                .filter(|id| *id >= 0)
+                .map(|id| id as usize)
+                .unwrap_or(collision_id),
             source_parent_id: parent_ref as usize,
             source_parent_name,
             parent_id: planned_parent_ref,
@@ -4371,7 +4502,20 @@ fn rebuild_fo76_np_collision(nif: &mut NifFile, report: &mut ConvertFileReport) 
     let grafted_constraints = grafted_constraints_for_pending(nif, &pending);
 
     if !pending.is_empty() {
-        match install_fo4_np_collision_system(nif, &pending, grafted_constraints.as_ref()) {
+        // Constrained (articulated) systems remap constraint body handles by
+        // position across the whole pending set, so they keep the single
+        // combined blob. Everything else mirrors the SOURCE bhkPhysicsSystem
+        // partitioning: FO4 binds a layer-31 stair helper to the step body of
+        // its OWN system (vanilla stairs pair them two-per-system; vanilla
+        // SCOLs never share a system across members). Merging every SCOL
+        // member into one 5-body system left the helpers unbound and the
+        // stairs unclimbable (Point Pleasant SCOLs 00491AE1 / 00491B05).
+        let install_result = if grafted_constraints.is_some() {
+            install_fo4_np_collision_system(nif, &pending, grafted_constraints.as_ref())
+        } else {
+            install_fo4_np_collision_systems_grouped(nif, &mut pending)
+        };
+        match install_result {
             Ok(count) => {
                 regenerated = count;
                 for entry in &pending {
@@ -4516,6 +4660,17 @@ impl SourceCollisionSummary {
 }
 
 fn source_collision_shape_kind(body: &ExtractedCollisionBody) -> String {
+    if let Some((primitive, _)) = &body.source_primitive {
+        return match primitive {
+            havok_native::collision::SourcePrimitiveShape::Sphere { .. } => "sphere",
+            havok_native::collision::SourcePrimitiveShape::Capsule(_) => "capsule",
+            havok_native::collision::SourcePrimitiveShape::Convex(_) => "convex",
+        }
+        .to_string();
+    }
+    if body.source_polytopes.len() == 1 {
+        return "polytope".to_string();
+    }
     if body.meshes.len() != 1 {
         return "compound".to_string();
     }
@@ -4526,6 +4681,39 @@ fn source_collision_shape_kind(body: &ExtractedCollisionBody) -> String {
 }
 
 fn source_collision_shape_summary(body: &ExtractedCollisionBody) -> String {
+    if let Some((primitive, _)) = &body.source_primitive {
+        return match primitive {
+            havok_native::collision::SourcePrimitiveShape::Sphere { radius, .. } => {
+                format!("sphere(r={radius:.3})")
+            }
+            havok_native::collision::SourcePrimitiveShape::Capsule(shape) => format!(
+                "capsule({}v/{}p/{}f/{}i,r={:.3},cr={:.3})",
+                shape.hull.vertices.len(),
+                shape.hull.planes.len(),
+                shape.hull.faces.len(),
+                shape.hull.indices.len(),
+                shape.a[3],
+                shape.convex_radius
+            ),
+            havok_native::collision::SourcePrimitiveShape::Convex(shape) => {
+                format!(
+                    "convex({}v,cr={:.3})",
+                    shape.vertices.len(),
+                    shape.convex_radius
+                )
+            }
+        };
+    }
+    if body.source_polytopes.len() == 1 {
+        let shape = &body.source_polytopes[0];
+        return format!(
+            "polytope({}v/{}p/{}f/{}i source)",
+            shape.vertices.len(),
+            shape.planes.len(),
+            shape.faces.len(),
+            shape.indices.len()
+        );
+    }
     if body.meshes.len() == 1 {
         let mesh = &body.meshes[0];
         return format!(
@@ -4556,6 +4744,7 @@ fn output_collision_shape_kind(shape: &MultiBodyShape) -> &'static str {
         MultiBodyShape::Compound { .. } => "compound",
         MultiBodyShape::Sphere { .. } => "sphere",
         MultiBodyShape::Capsule { .. } => "capsule",
+        MultiBodyShape::SourceConvex { .. } => "convex",
     }
 }
 
@@ -4582,8 +4771,20 @@ fn output_collision_shape_summary(shape: &MultiBodyShape) -> String {
             )
         }
         MultiBodyShape::Sphere { radius, .. } => format!("sphere(r={radius:.3})"),
-        MultiBodyShape::Capsule { convex_radius, .. } => {
-            format!("capsule(cr={convex_radius:.3})")
+        MultiBodyShape::Capsule { shape } => {
+            format!(
+                "capsule({}v,r={:.3},cr={:.3})",
+                shape.hull.vertices.len(),
+                shape.a[3],
+                shape.convex_radius
+            )
+        }
+        MultiBodyShape::SourceConvex { shape } => {
+            format!(
+                "convex({}v,cr={:.3})",
+                shape.vertices.len(),
+                shape.convex_radius
+            )
         }
     }
 }
@@ -4903,6 +5104,9 @@ fn collision_parent_label(entry: &CollisionPlanEntry) -> String {
 
 fn collision_route_name(route: CollisionRoute) -> &'static str {
     match route {
+        CollisionRoute::SourceSphere => "source-sphere",
+        CollisionRoute::SourceCapsule => "source-capsule",
+        CollisionRoute::SourceConvex => "source-convex",
         CollisionRoute::SourcePolytope => "source-polytope",
         CollisionRoute::SourceCompound => "source-compound",
         CollisionRoute::SourceCompressedMesh => "source-compressed-mesh",
@@ -5001,11 +5205,26 @@ fn np_collision_parent_diagnostic_parts(
     }
 }
 
+fn np_collision_body_frame(
+    metadata: SourceBodyMetadata,
+    is_articulated: bool,
+) -> ([f32; 4], [f32; 4]) {
+    if is_articulated {
+        (
+            metadata.position.unwrap_or([0.0; 4]),
+            metadata.orientation.unwrap_or([0.0, 0.0, 0.0, 1.0]),
+        )
+    } else {
+        ([0.0; 4], [0.0, 0.0, 0.0, 1.0])
+    }
+}
+
 fn install_fo4_np_collision_system(
     nif: &mut NifFile,
     entries: &[CollisionPlanEntry],
     constraints: Option<&GraftedConstraints>,
 ) -> Result<usize, String> {
+    let is_articulated = constraints.is_some_and(|constraints| !constraints.is_empty());
     let bodies = entries
         .iter()
         .map(|entry| entry.planned.shape.clone())
@@ -5016,31 +5235,28 @@ fn install_fo4_np_collision_system(
         .collect::<Vec<_>>();
     let body_metas = entries
         .iter()
-        .map(|entry| BodyMeta {
-            // In a constrained assembly the source group/system filter bits are
-            // load-bearing (they keep the linked bodies from self-colliding), so
-            // carry the full filter; otherwise the builder writes just the layer.
-            collision_filter_info: constraints.and(entry.source_metadata.collision_filter_info),
-            layer: entry.planned.layer,
-            body_flags: entry.source_metadata.body_flags,
-            // Position is INTENTIONALLY origin (orientation identity). The shape
-            // vertices reaching the builder are already world/NIF-baked: the FO76
-            // decode path (`extract_preview_meshes_from_blob` →
-            // `shape_targets_for_body`) starts from an identity transform and only
-            // composes compound-instance transforms — it never applies the source
-            // `bodyCinfo.position`, so each body's geometry already sits at its
-            // authored world offset (verified on FO76 ammo / cryo-debris multi-body
-            // NIFs: per-body geometry AABB centers equal the source body positions).
-            // FO4's narrowphase places a body's shape at `bodyCinfo.position`, so
-            // copying the source body transform here would translate the
-            // already-offset geometry a SECOND time and mis-place collision across
-            // every multi-body static. Keep the body frame at origin; placement
-            // comes from the baked geometry.
-            position: [0.0, 0.0, 0.0, 0.0],
-            orientation: [0.0, 0.0, 0.0, 1.0],
-            motion_type: body_motion_type_for_entry(entry),
-            body_mass: entry.body_mass,
-            mass_distribution: entry.mass_distribution,
+        .map(|entry| {
+            let (position, orientation) =
+                np_collision_body_frame(entry.source_metadata, is_articulated);
+            BodyMeta {
+                // In a constrained assembly the source group/system filter bits are
+                // load-bearing (they keep the linked bodies from self-colliding), so
+                // carry the full filter; otherwise the builder writes just the layer.
+                collision_filter_info: constraints.and(entry.source_metadata.collision_filter_info),
+                layer: entry.planned.layer,
+                body_flags: entry.source_metadata.body_flags,
+                material_flags: entry.source_metadata.material_flags,
+                material_trigger_type: entry.source_metadata.material_trigger_type,
+                // Static multi-body set dressing has world-baked shapes and must stay
+                // at origin. Articulated systems are different: their constraint pivots
+                // are relative to each source body frame, so dropping those frames
+                // makes every segment spawn at one point and the solver explodes them.
+                position,
+                orientation,
+                motion_type: body_motion_type_for_entry(entry),
+                body_mass: entry.body_mass,
+                mass_distribution: entry.mass_distribution,
+            }
         })
         .collect::<Vec<_>>();
     let opts = BuildOptions {
@@ -5098,6 +5314,41 @@ fn install_fo4_np_collision_system(
     Ok(entries.len())
 }
 
+/// Emit one FO4 physics system per distinct SOURCE `bhkPhysicsSystem`,
+/// preserving the source's body grouping (a stair-step body and its layer-31
+/// helper stay paired in one system; separate SCOL members get separate
+/// systems). Reorders `entries` so each group is a contiguous slice; the
+/// pre-existing shape-rank order is kept within each group.
+fn install_fo4_np_collision_systems_grouped(
+    nif: &mut NifFile,
+    entries: &mut [CollisionPlanEntry],
+) -> Result<usize, String> {
+    let mut group_rank: Vec<usize> = Vec::new();
+    for entry in entries.iter() {
+        if !group_rank.contains(&entry.source_system_id) {
+            group_rank.push(entry.source_system_id);
+        }
+    }
+    entries.sort_by_key(|entry| {
+        group_rank
+            .iter()
+            .position(|id| *id == entry.source_system_id)
+            .unwrap_or(usize::MAX)
+    });
+    let mut regenerated = 0usize;
+    let mut start = 0usize;
+    while start < entries.len() {
+        let key = entries[start].source_system_id;
+        let mut end = start;
+        while end < entries.len() && entries[end].source_system_id == key {
+            end += 1;
+        }
+        regenerated += install_fo4_np_collision_system(nif, &entries[start..end], None)?;
+        start = end;
+    }
+    Ok(regenerated)
+}
+
 fn install_fo4_np_collision_system_separate(
     nif: &mut NifFile,
     entries: &[CollisionPlanEntry],
@@ -5111,6 +5362,8 @@ fn install_fo4_np_collision_system_separate(
             collision_filter_info: None,
             layer: entry.planned.layer,
             body_flags: entry.source_metadata.body_flags,
+            material_flags: entry.source_metadata.material_flags,
+            material_trigger_type: entry.source_metadata.material_trigger_type,
             // Origin/identity is intentional — the shape geometry is already
             // world-baked, so a body transform would double-apply the offset. See
             // `install_fo4_np_collision_system` for the full rationale.
@@ -5636,10 +5889,7 @@ fn ensure_root_bsx_flags(nif: &mut NifFile, node_id: usize, flags: u64) {
             "Extra Data List",
             NifValue::Array(extra_ids.into_iter().map(NifValue::Ref).collect()),
         );
-        root.set_field(
-            "Num Extra Data List",
-            NifValue::UInt(extra_count as u64),
-        );
+        root.set_field("Num Extra Data List", NifValue::UInt(extra_count as u64));
     }
 }
 
@@ -5744,6 +5994,16 @@ fn normalize_fo4_root_node(
             if root.type_name == "BSFadeNode" {
                 root.type_name = "NiNode".to_string();
                 converted += 1;
+                if let Some(flags) = value_u64(root.get_field("Flags"))
+                    && flags & NIF_NODE_PRESERVE_HIGH_FLAG_COMPANION != 0
+                    && flags & NIF_NODE_EDITOR_MARKER_FLAG == 0
+                {
+                    root.set_field(
+                        "Flags",
+                        NifValue::UInt(flags & !NIF_NODE_PRESERVE_HIGH_FLAG_COMPANION),
+                    );
+                    converted += 1;
+                }
             }
             if root_controller_is_manager
                 && root.type_name == "NiNode"
@@ -6339,19 +6599,12 @@ fn vec3_value(value: Option<&NifValue>) -> Option<[f32; 3]> {
 fn color4_value(value: &NifValue) -> Option<NifValue> {
     match value {
         NifValue::Color4(value) => Some(NifValue::Color4(*value)),
-        NifValue::Struct(fields) => {
-            let mut out = IndexMap::new();
-            for key in ["r", "g", "b", "a"] {
-                out.insert(
-                    key.to_string(),
-                    fields
-                        .get(key)
-                        .cloned()
-                        .unwrap_or_else(|| NifValue::Float(1.0)),
-                );
-            }
-            Some(NifValue::Struct(out))
-        }
+        NifValue::Struct(fields) => Some(NifValue::Color4([
+            value_f64(fields.get("r")).unwrap_or(1.0) as f32,
+            value_f64(fields.get("g")).unwrap_or(1.0) as f32,
+            value_f64(fields.get("b")).unwrap_or(1.0) as f32,
+            value_f64(fields.get("a")).unwrap_or(1.0) as f32,
+        ])),
         _ => None,
     }
 }
@@ -6502,6 +6755,9 @@ mod tests {
         let body = ExtractedCollisionBody {
             body_id: 1,
             source_polytopes: Vec::new(),
+            source_compound_children: Vec::new(),
+            source_compressed_mesh: None,
+            source_primitive: None,
             meshes: vec![havok_native::collision::PreviewMesh {
                 shape_type: "convex_hull".to_string(),
                 vertices: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
@@ -6534,6 +6790,9 @@ mod tests {
         let body = ExtractedCollisionBody {
             body_id: 0,
             source_polytopes: Vec::new(),
+            source_compound_children: Vec::new(),
+            source_compressed_mesh: None,
+            source_primitive: None,
             meshes: vec![
                 havok_native::collision::PreviewMesh {
                     shape_type: "convex_hull".to_string(),
@@ -6573,6 +6832,9 @@ mod tests {
         let body = ExtractedCollisionBody {
             body_id: 0,
             source_polytopes: Vec::new(),
+            source_compound_children: Vec::new(),
+            source_compressed_mesh: None,
+            source_primitive: None,
             meshes: vec![havok_native::collision::PreviewMesh {
                 shape_type: "convex_hull".to_string(),
                 vertices: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
@@ -7200,7 +7462,7 @@ mod tests {
         nif.blocks.push(shader);
 
         let mut report = ConvertFileReport::default();
-        ensure_fo4_lighting_shader_defaults(&mut nif, &mut report);
+        ensure_fo4_lighting_shader_defaults(&mut nif, &mut report, false);
 
         let shader = &nif.blocks[0];
         assert_eq!(
@@ -7230,7 +7492,7 @@ mod tests {
         nif.blocks.push(shader);
 
         let mut report = ConvertFileReport::default();
-        ensure_fo4_lighting_shader_defaults(&mut nif, &mut report);
+        ensure_fo4_lighting_shader_defaults(&mut nif, &mut report, false);
 
         let shader = &nif.blocks[0];
         assert_eq!(
@@ -7365,14 +7627,14 @@ mod tests {
     }
 
     #[test]
-    fn multi_body_collision_placement_comes_from_baked_geometry_not_body_transform() {
+    fn unconstrained_multi_body_placement_comes_from_baked_geometry_not_body_transform() {
         // Regression guard for the "drop the source body transform" hypothesis.
         //
         // The shape vertices reaching `install_fo4_np_collision_system` are already
         // world/NIF-baked — the FO76 decode never applies `bodyCinfo.position`, so
-        // each body's geometry carries its own world offset. We therefore keep
-        // `BodyMeta.position` at origin; copying the source body transform here would
-        // double-apply the offset.
+        // each body's geometry carries its own world offset. For an unconstrained
+        // assembly we therefore keep `BodyMeta.position` at origin; copying the
+        // source body transform here would double-apply the offset.
         //
         // This builds two bodies whose convex shapes sit at DISTINCT, pre-offset
         // world positions (a "left" box at X≈0 and a "right" box at X≈+5 Havok
@@ -7404,6 +7666,7 @@ mod tests {
         let entries = vec![
             CollisionPlanEntry {
                 source_collision_id: 10,
+                source_system_id: 100,
                 source_parent_id: left_parent,
                 source_parent_name: "LeftBox".to_string(),
                 parent_id: left_parent,
@@ -7426,6 +7689,7 @@ mod tests {
             },
             CollisionPlanEntry {
                 source_collision_id: 11,
+                source_system_id: 101,
                 source_parent_id: right_parent,
                 source_parent_name: "RightBox".to_string(),
                 parent_id: right_parent,
@@ -7496,9 +7760,129 @@ mod tests {
     }
 
     #[test]
+    fn grouped_install_mirrors_source_physics_system_partitioning() {
+        // A SCOL-style NIF: two source systems (a stairs piece with its layer-31
+        // helper, and an unrelated member) must come out as TWO output physics
+        // systems, with per-group Body IDs restarting at 0 — the vanilla stairs
+        // pairing FO4's stair-helper binding requires. One merged system left
+        // helpers at body index 3+ and the stairs unclimbable (Point Pleasant
+        // SCOLs 00491AE1 / 00491B05).
+        fn unit_box() -> Vec<[f32; 3]> {
+            let mut v = Vec::with_capacity(8);
+            for &x in &[-0.5_f32, 0.5] {
+                for &y in &[-0.5_f32, 0.5] {
+                    for &z in &[-0.5_f32, 0.5] {
+                        v.push([x, y, z]);
+                    }
+                }
+            }
+            v
+        }
+        fn entry(
+            source_system_id: usize,
+            parent_id: usize,
+            layer: u8,
+            source_body_id: usize,
+        ) -> CollisionPlanEntry {
+            CollisionPlanEntry {
+                source_collision_id: source_system_id,
+                source_system_id,
+                source_parent_id: parent_id,
+                source_parent_name: String::new(),
+                parent_id,
+                parent_name: String::new(),
+                planned: PlannedCollisionBody {
+                    source_body_id,
+                    route: CollisionRoute::SourcePolytope,
+                    layer,
+                    material_crc: None,
+                    shape: MultiBodyShape::Polytope {
+                        vertices: unit_box(),
+                    },
+                },
+                source: None,
+                source_metadata: SourceBodyMetadata::default(),
+                nif_collision_intent: NifCollisionIntent::default(),
+                in_multi_body_assembly: true,
+                body_mass: None,
+                mass_distribution: None,
+            }
+        }
+
+        let mut nif = NifFile::new("fo4");
+        let steps_node = nif.add_block("NiNode", None);
+        let helper_node = nif.add_block("NiNode", None);
+        let other_node = nif.add_block("NiNode", None);
+
+        let mut entries = vec![
+            entry(50, steps_node, 1, 0),
+            entry(50, helper_node, 31, 1),
+            entry(60, other_node, 1, 0),
+        ];
+
+        let installed = install_fo4_np_collision_systems_grouped(&mut nif, &mut entries)
+            .expect("grouped install");
+        assert_eq!(installed, 3);
+
+        let systems: Vec<usize> = nif
+            .blocks
+            .iter()
+            .filter(|block| block.type_name == "bhkPhysicsSystem")
+            .map(|block| block.block_id)
+            .collect();
+        assert_eq!(systems.len(), 2, "one output system per source system");
+
+        let mut wiring = Vec::new();
+        for block in &nif.blocks {
+            if block.type_name == "bhkNPCollisionObject" {
+                let target = block.get_field("Target").and_then(value_usize).unwrap();
+                let body_id = block.get_field("Body ID").and_then(value_usize).unwrap();
+                let data = match block.get_field("Data") {
+                    Some(NifValue::Ref(id)) => *id as usize,
+                    other => panic!("unexpected Data field {other:?}"),
+                };
+                wiring.push((target, data, body_id));
+            }
+        }
+        wiring.sort();
+        assert_eq!(wiring.len(), 3);
+        let (steps_sys, helper_sys, other_sys) = (wiring[0].1, wiring[1].1, wiring[2].1);
+        assert_eq!(
+            steps_sys, helper_sys,
+            "steps and helper must share ONE system"
+        );
+        assert_ne!(
+            steps_sys, other_sys,
+            "the unrelated member must get its own system"
+        );
+        assert_eq!(wiring[0].2, 0, "steps body id");
+        assert_eq!(wiring[1].2, 1, "helper body id");
+        assert_eq!(wiring[2].2, 0, "other member restarts at body id 0");
+    }
+
+    #[test]
+    fn constrained_collision_preserves_source_body_frame_only_for_articulated_systems() {
+        let metadata = SourceBodyMetadata {
+            position: Some([1.0, 2.0, 3.0, 4.0]),
+            orientation: Some([0.1, 0.2, 0.3, 0.9]),
+            ..SourceBodyMetadata::default()
+        };
+
+        assert_eq!(
+            np_collision_body_frame(metadata, true),
+            ([1.0, 2.0, 3.0, 4.0], [0.1, 0.2, 0.3, 0.9])
+        );
+        assert_eq!(
+            np_collision_body_frame(metadata, false),
+            ([0.0; 4], [0.0, 0.0, 0.0, 1.0])
+        );
+    }
+
+    #[test]
     fn collision_change_summary_reports_shape_layer_and_motion_changes() {
         let entry = CollisionPlanEntry {
             source_collision_id: 5,
+            source_system_id: 6,
             source_parent_id: 42,
             source_parent_name: "CollisionParent".to_string(),
             parent_id: 42,
@@ -7507,7 +7891,7 @@ mod tests {
                 source_body_id: 7,
                 route: CollisionRoute::ClutterConvex,
                 layer: FO4_CLUTTER_LAYER,
-                material_crc: Some(0xC0EB_623D),
+                material_crc: Some(0x0640_03D4),
                 shape: MultiBodyShape::Polytope {
                     vertices: vec![[0.0, 0.0, 0.0]; 8],
                 },
@@ -7522,9 +7906,13 @@ mod tests {
                 collision_filter_info: None,
                 layer: Some(29),
                 body_flags: Some(128),
+                material_flags: None,
+                material_trigger_type: None,
                 material_crc: Some(0x1234_5678),
                 body_mass: Some(2.0),
                 motion_type: Some(2), // hknpMotionType::DYNAMIC
+                position: None,
+                orientation: None,
                 has_ref_mass_distribution: true,
                 is_dynamic: true,
             },
@@ -7572,7 +7960,7 @@ mod tests {
             "source_shape=compressed_mesh(120v/240t)",
             "output_shape=polytope(8v)",
             "filter=layer 29->4",
-            "material 0x12345678->0xC0EB623D",
+            "material 0x12345678->0x064003D4",
             "motion dynamic-refmass -> dynamic-clutter+motionCinfo+clutter-mass",
             "meta=motion_type:dynamic(2),flags:0x80,mass:2.000,refmass:no,dynamic:yes,bsx:0x48(dynamic:yes,complex:yes),assembly:single",
         ] {
@@ -7774,7 +8162,7 @@ mod tests {
         nif.blocks.push(shader);
 
         let mut report = ConvertFileReport::default();
-        ensure_fo4_lighting_shader_defaults(&mut nif, &mut report);
+        ensure_fo4_lighting_shader_defaults(&mut nif, &mut report, false);
 
         let shader = &nif.blocks[0];
         assert_eq!(
@@ -7809,7 +8197,7 @@ mod tests {
         nif.rebuild_header();
 
         let mut report = ConvertFileReport::default();
-        ensure_fo4_lighting_shader_defaults(&mut nif, &mut report);
+        ensure_fo4_lighting_shader_defaults(&mut nif, &mut report, false);
         assert_eq!(
             value_u64(nif.blocks[shader_id].get_field("Shader Type")),
             Some(BSLSP_SHADER_TYPE_DEFAULT)
@@ -7844,7 +8232,7 @@ mod tests {
         nif.blocks.push(vault_texture_set_block(1));
 
         let mut report = ConvertFileReport::default();
-        ensure_fo4_lighting_shader_defaults(&mut nif, &mut report);
+        ensure_fo4_lighting_shader_defaults(&mut nif, &mut report, false);
         normalize_external_bgsm_shader_data_with_overrides(
             &mut nif,
             None,
@@ -7865,6 +8253,112 @@ mod tests {
         assert_eq!(value_f64(shader.get_field("Environment Map Scale")), None);
     }
 
+    #[test]
+    fn tall_grass_shader_matches_fo4_grass_render_state() {
+        let mut nif = NifFile::new("fnv");
+        let mut source = NifBlock::new(0, "TallGrassShaderProperty");
+        source.set_field(
+            "File Name",
+            NifValue::String("textures\\landscape\\grass\\GrassWastelandComp01.dds".into()),
+        );
+
+        let shader_id = convert_tall_grass(&mut nif, &source);
+        let shader = nif.get_block(shader_id).expect("converted grass shader");
+
+        assert_eq!(
+            value_u64(shader.get_field("Shader Flags 1")),
+            Some(FO4_TALL_GRASS_SHADER_FLAGS_1)
+        );
+        assert_eq!(
+            value_u64(shader.get_field("Shader Flags 2")),
+            Some(FO4_TALL_GRASS_SHADER_FLAGS_2)
+        );
+        assert_eq!(
+            value_u64(shader.fields.get("Shader Flags 1:FO4")),
+            Some(FO4_TALL_GRASS_SHADER_FLAGS_1)
+        );
+        assert_eq!(
+            value_u64(shader.fields.get("Shader Flags 2:FO4")),
+            Some(FO4_TALL_GRASS_SHADER_FLAGS_2)
+        );
+        assert_eq!(value_u64(shader.get_field("Texture Clamp Mode")), Some(3));
+        let Some(NifValue::Struct(uv_scale)) = shader.get_field("UV Scale") else {
+            panic!("expected UV Scale");
+        };
+        assert_eq!(value_f64(uv_scale.get("u")), Some(1.0));
+        assert_eq!(value_f64(uv_scale.get("v")), Some(1.0));
+        assert_eq!(value_f64(shader.get_field("Smoothness")), Some(0.282));
+    }
+
+    #[test]
+    fn pp_lighting_shader_serializes_fo4_flags_and_uv_scale() {
+        let mut nif = NifFile::new("fo4");
+        let mut source = NifBlock::new(99, "BSShaderPPLightingProperty");
+        source.set_field(
+            "Shader Flags",
+            NifValue::Array(vec![
+                NifValue::String("Specular".to_string()),
+                NifValue::String("ZBuffer_Test".to_string()),
+            ]),
+        );
+        source.set_field(
+            "Shader Flags 2",
+            NifValue::Array(vec![NifValue::String("ZBuffer_Write".to_string())]),
+        );
+
+        let shader_id = convert_pp_lighting(&mut nif, &source);
+        nif.rebuild_header();
+        let bytes = nif.to_bytes().expect("serialize pp-lighting shader");
+        let reparsed = NifFile::from_bytes(&bytes, None).expect("reparse pp-lighting shader");
+        let shader = reparsed.get_block(shader_id).expect("converted shader");
+
+        assert_eq!(
+            value_u64(shader.get_field("Shader Flags 1")),
+            Some(SLSF1_SPECULAR | SLSF1_ZBUFFER_TEST)
+        );
+        assert_eq!(
+            value_u64(shader.get_field("Shader Flags 2")),
+            Some(SLSF2_ZBUFFER_WRITE as u64)
+        );
+        let Some(NifValue::Struct(uv_scale)) = shader.get_field("UV Scale") else {
+            panic!("expected UV Scale");
+        };
+        assert_eq!(value_f64(uv_scale.get("u")), Some(1.0));
+        assert_eq!(value_f64(uv_scale.get("v")), Some(1.0));
+        assert_eq!(
+            value_f64(shader.get_field("Rimlight Power")),
+            Some(f32::MAX as f64)
+        );
+    }
+
+    #[test]
+    fn legacy_grass_root_drops_orphan_high_flag_companion() {
+        let mut nif = NifFile::new("fnv");
+        nif.blocks[0].type_name = "BSFadeNode".to_string();
+        nif.blocks[0].set_field("Flags", NifValue::UInt(0x0008_000e));
+        let mut report = ConvertFileReport::default();
+
+        normalize_fo4_root_node(&mut nif, None, false, false, &mut report);
+
+        assert_eq!(nif.blocks[0].type_name, "NiNode");
+        assert_eq!(value_u64(nif.blocks[0].get_field("Flags")), Some(0x000e));
+    }
+
+    #[test]
+    fn legacy_float_vertex_color_becomes_compact_color() {
+        let source = NifValue::Struct(IndexMap::from([
+            ("r".to_string(), NifValue::Float(0.5)),
+            ("g".to_string(), NifValue::Float(0.25)),
+            ("b".to_string(), NifValue::Float(0.75)),
+            ("a".to_string(), NifValue::Float(0.125)),
+        ]));
+
+        let Some(NifValue::Color4(color)) = color4_value(&source) else {
+            panic!("expected compact color");
+        };
+        assert_eq!(color, [0.5, 0.25, 0.75, 0.125]);
+    }
+
     fn write_glow_bgsm(dir: &Path, relative: &str, glowmap: bool) {
         let mut bgsm = materials_native::bgsm::BgsmData {
             EmitEnabled: glowmap,
@@ -7873,6 +8367,35 @@ mod tests {
         };
         bgsm.header.signature = materials_native::bgsm::BGSM_SIGNATURE;
         bgsm.header.version = 2;
+        let path = dir.join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, materials_native::bgsm::write(&bgsm)).unwrap();
+    }
+
+    fn write_fo76_named_glow_bgsm(dir: &Path, relative: &str) {
+        let mut bgsm = materials_native::bgsm::BgsmData {
+            DiffuseTexture: "SetDressing/AutoDispenser/AutoDispenserAmmo_d.dds".to_owned(),
+            NormalTexture: "SetDressing/AutoDispenser/AutoDispenserAmmo_n.dds".to_owned(),
+            LightingTexture: Some("SetDressing/AutoDispenser/AutoDispenserAmmo_l.dds".to_owned()),
+            EmitEnabled: true,
+            EmittanceColor: Some([1.0, 0.9568628, 0.43529415]),
+            EmittanceMult: 10.0,
+            ..Default::default()
+        };
+        bgsm.header.signature = materials_native::bgsm::BGSM_SIGNATURE;
+        bgsm.header.version = 20;
+        let path = dir.join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, materials_native::bgsm::write(&bgsm)).unwrap();
+    }
+
+    fn write_decal_bgsm(dir: &Path, relative: &str) {
+        let mut bgsm = materials_native::bgsm::BgsmData::default();
+        bgsm.header.signature = materials_native::bgsm::BGSM_SIGNATURE;
+        bgsm.header.version = 2;
+        bgsm.header.decal = true;
+        bgsm.header.decal_nofade = true;
+        bgsm.header.two_sided = true;
         let path = dir.join(relative);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, materials_native::bgsm::write(&bgsm)).unwrap();
@@ -7909,7 +8432,7 @@ mod tests {
         // Glow material → Glow_Map flag set AND slot 2 bound to the glow texture.
         let mut nif = external_bgsm_shader_nif("Materials\\TestGlow\\GlowBoard.bgsm");
         let mut report = ConvertFileReport::default();
-        ensure_fo4_lighting_shader_defaults(&mut nif, &mut report);
+        ensure_fo4_lighting_shader_defaults(&mut nif, &mut report, false);
         normalize_external_bgsm_shader_data_with_overrides(
             &mut nif,
             Some(dir.path()),
@@ -7941,7 +8464,7 @@ mod tests {
         // Non-glow material → Glow_Map off and slot 2 stays empty.
         let mut nif = external_bgsm_shader_nif("Materials\\TestGlow\\PlainBoard.bgsm");
         let mut report = ConvertFileReport::default();
-        ensure_fo4_lighting_shader_defaults(&mut nif, &mut report);
+        ensure_fo4_lighting_shader_defaults(&mut nif, &mut report, false);
         normalize_external_bgsm_shader_data_with_overrides(
             &mut nif,
             Some(dir.path()),
@@ -7965,14 +8488,14 @@ mod tests {
         );
         assert!(
             value_u64(nif.blocks[0].get_field("Shader Flags 1"))
-                .is_some_and(|flags| flags & SLSF1_OWN_EMIT == 0),
-            "non-glow material must not apply unmasked emittance"
+                .is_some_and(|flags| flags & SLSF1_OWN_EMIT != 0),
+            "non-glow external BGSM must retain FO4 Own_Emit"
         );
 
         // No source dir → behavior unchanged (flag off, slot 2 empty).
         let mut nif = external_bgsm_shader_nif("Materials\\TestGlow\\GlowBoard.bgsm");
         let mut report = ConvertFileReport::default();
-        ensure_fo4_lighting_shader_defaults(&mut nif, &mut report);
+        ensure_fo4_lighting_shader_defaults(&mut nif, &mut report, false);
         normalize_external_bgsm_shader_data_with_overrides(
             &mut nif,
             None,
@@ -7990,6 +8513,66 @@ mod tests {
             "without a source dir the shader type must stay Default"
         );
         assert_eq!(texture_at(&nif.blocks[1], 2), "");
+    }
+
+    #[test]
+    fn external_fo76_named_glow_material_uses_masked_glow_shader() {
+        let dir = tempfile::tempdir().unwrap();
+        write_fo76_named_glow_bgsm(
+            dir.path(),
+            "materials/setdressing/autodispenser/autodispenserammo_glow.bgsm",
+        );
+
+        let mut nif = external_bgsm_shader_nif(
+            "Materials\\SetDressing\\AutoDispenser\\AutoDispenserAmmo_Glow.bgsm",
+        );
+        let mut report = ConvertFileReport::default();
+        ensure_fo4_lighting_shader_defaults(&mut nif, &mut report, false);
+        normalize_external_bgsm_shader_data_with_overrides(
+            &mut nif,
+            Some(dir.path()),
+            &HashMap::new(),
+            &mut report,
+        );
+
+        assert!(
+            value_u64(nif.blocks[0].get_field("Shader Flags 2"))
+                .is_some_and(|flags| flags & SLSF2_GLOW_MAP != 0)
+        );
+        assert_eq!(
+            value_u64(nif.blocks[0].get_field("Shader Type")),
+            Some(BSLSP_SHADER_TYPE_GLOW)
+        );
+        assert_eq!(
+            texture_at(&nif.blocks[1], 2).to_ascii_lowercase(),
+            "textures\\setdressing\\autodispenser\\autodispenserammo_g.dds"
+        );
+    }
+
+    #[test]
+    fn external_bgsm_decal_material_restores_fo4_shader_flags() {
+        let dir = tempfile::tempdir().unwrap();
+        write_decal_bgsm(
+            dir.path(),
+            "materials/setdressing/nukaworldprops/signdecals01.bgsm",
+        );
+
+        let mut nif =
+            external_bgsm_shader_nif("Materials\\SetDressing\\NukaWorldProps\\SignDecals01.bgsm");
+        let mut report = ConvertFileReport::default();
+        ensure_fo4_lighting_shader_defaults(&mut nif, &mut report, false);
+        normalize_external_bgsm_shader_data_with_overrides(
+            &mut nif,
+            Some(dir.path()),
+            &HashMap::new(),
+            &mut report,
+        );
+
+        let flags1 = value_u64(nif.blocks[0].get_field("Shader Flags 1")).unwrap();
+        let flags2 = value_u64(nif.blocks[0].get_field("Shader Flags 2")).unwrap();
+        assert_ne!(flags1 & SLSF1_DECAL, 0);
+        assert_ne!(flags1 & SLSF1_DYNAMIC_DECAL, 0);
+        assert_ne!(flags2 & SLSF2_DOUBLE_SIDED as u64, 0);
     }
 
     #[test]

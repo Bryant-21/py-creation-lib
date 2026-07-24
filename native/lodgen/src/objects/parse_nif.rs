@@ -13,6 +13,7 @@
 //! decoding those named representations back to raw bits (`shader_flags` /
 //! `clamp_mode`), mirroring nif_core/convert_file.rs `flag_name_bit`.
 
+use crate::asset_source::{self, ResolvedAsset};
 use crate::descriptors::BBox;
 use crate::input::StaticDesc;
 use crate::objects::geometry::LodGeometry;
@@ -20,7 +21,6 @@ use crate::objects::static_desc::{ShaderKind, ShapeDesc, ShapeFlags};
 use crate::progress::QuadCtx;
 use nif_core_native::model::{NifBlock, NifFile, NifValue};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
 // ---------------------------------------------------------------------------
@@ -40,13 +40,13 @@ use std::sync::{Arc, Mutex, OnceLock};
 // decoded ONCE and shared across all refs/quads. `clear_nif_cache()` runs at each
 // object-LOD level boundary (driver.rs) so resident memory stays bounded to a
 // single level's unique meshes, never the whole worldspace.
-static NIF_CACHE: OnceLock<Mutex<HashMap<PathBuf, Arc<NifFile>>>> = OnceLock::new();
+static NIF_CACHE: OnceLock<Mutex<HashMap<ResolvedAsset, Arc<NifFile>>>> = OnceLock::new();
 
 static MODEL_SHAPE_CACHE: OnceLock<Mutex<ModelShapeCache>> = OnceLock::new();
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct ModelShapeCacheKey {
-    path: PathBuf,
+    path: ResolvedAsset,
     level: usize,
     base_flags: u32,
     is_billboard: bool,
@@ -103,7 +103,7 @@ struct ModelShapePrepareStats {
     triangles_after: u64,
 }
 
-fn nif_cache() -> &'static Mutex<HashMap<PathBuf, Arc<NifFile>>> {
+fn nif_cache() -> &'static Mutex<HashMap<ResolvedAsset, Arc<NifFile>>> {
     NIF_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -115,16 +115,18 @@ fn model_shape_cache() -> &'static Mutex<ModelShapeCache> {
 /// decode runs OUTSIDE the lock, so concurrent rayon workers decoding DIFFERENT
 /// meshes never serialize; only the brief map get/insert is guarded. A rare
 /// double-miss on the same path just decodes twice and keeps the first insert.
-fn cached_load_nif(path: &Path) -> anyhow::Result<Arc<NifFile>> {
+fn cached_load_nif(ctx: &QuadCtx, asset: &ResolvedAsset) -> anyhow::Result<Arc<NifFile>> {
     {
         let cache = nif_cache().lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(hit) = cache.get(path) {
+        if let Some(hit) = cache.get(asset) {
             return Ok(Arc::clone(hit));
         }
     }
-    let nif = Arc::new(NifFile::load(path).map_err(|e| anyhow::anyhow!("{e:?}"))?);
+    let bytes = asset_source::read(&ctx.paths.data_dirs, asset)?;
+    let nif =
+        Arc::new(NifFile::from_bytes(&bytes, None).map_err(|error| anyhow::anyhow!("{error:?}"))?);
     let mut cache = nif_cache().lock().unwrap_or_else(|e| e.into_inner());
-    Ok(Arc::clone(cache.entry(path.to_path_buf()).or_insert(nif)))
+    Ok(Arc::clone(cache.entry(asset.clone()).or_insert(nif)))
 }
 
 /// Drop all cached decoded NIFs. Called at object-LOD level boundaries to bound
@@ -179,7 +181,7 @@ pub fn parse_nif(stat: &StaticDesc, level: usize, ctx: &QuadCtx) -> anyhow::Resu
     }
     let path = resolve_model_path(ctx, model)
         .ok_or_else(|| anyhow::anyhow!("LOD model not found in data_dirs: {model}"))?;
-    let nif = cached_load_nif(&path).map_err(|e| anyhow::anyhow!("read {model}: {e}"))?;
+    let nif = cached_load_nif(ctx, &path).map_err(|e| anyhow::anyhow!("read {model}: {e}"))?;
     if nif.blocks.is_empty() || !is_ninode(&nif.blocks[0]) {
         anyhow::bail!("{model}: unexpected root node (not a NiNode)");
     }
@@ -213,7 +215,7 @@ pub fn parse_nif_for_object_lod(
         return Ok(shapes);
     }
 
-    let nif = cached_load_nif(&path).map_err(|e| anyhow::anyhow!("read {model}: {e}"))?;
+    let nif = cached_load_nif(ctx, &path).map_err(|e| anyhow::anyhow!("read {model}: {e}"))?;
     if nif.blocks.is_empty() || !is_ninode(&nif.blocks[0]) {
         anyhow::bail!("{model}: unexpected root node (not a NiNode)");
     }
@@ -226,7 +228,11 @@ pub fn parse_nif_for_object_lod(
     Ok(shapes)
 }
 
-fn model_shape_cache_key(stat: &StaticDesc, level: usize, path: PathBuf) -> ModelShapeCacheKey {
+fn model_shape_cache_key(
+    stat: &StaticDesc,
+    level: usize,
+    path: ResolvedAsset,
+) -> ModelShapeCacheKey {
     ModelShapeCacheKey {
         path,
         level,
@@ -981,7 +987,7 @@ fn load_bgsm(ctx: &QuadCtx, matname: &str) -> Option<materials_native::bgsm::Bgs
         format!("Materials\\{matname}")
     };
     let path = resolve_data_path(ctx, &rel)?;
-    let bytes = std::fs::read(path).ok()?;
+    let bytes = asset_source::read(&ctx.paths.data_dirs, &path).ok()?;
     materials_native::bgsm::parse(&bytes).ok()
 }
 
@@ -995,7 +1001,7 @@ fn load_bgem(ctx: &QuadCtx, matname: &str) -> Option<materials_native::bgem::Bge
         format!("Materials\\{matname}")
     };
     let path = resolve_data_path(ctx, &rel)?;
-    let bytes = std::fs::read(path).ok()?;
+    let bytes = asset_source::read(&ctx.paths.data_dirs, &path).ok()?;
     materials_native::bgem::parse(&bytes).ok()
 }
 
@@ -1645,7 +1651,7 @@ fn geom_transform_scaled(block: &NifBlock, scale: f32) -> Mat4 {
 /// path — e.g. tests — still resolves), then with `Meshes\` prepended.
 /// port: ParseNif's `niFile.Read(gameDir, staticModels[level])` (LODApp.cs:1376),
 /// where the game's mesh root is the implicit base for the stored model path.
-pub(crate) fn resolve_model_path(ctx: &QuadCtx, model: &str) -> Option<PathBuf> {
+pub(crate) fn resolve_model_path(ctx: &QuadCtx, model: &str) -> Option<ResolvedAsset> {
     if let Some(p) = resolve_data_path(ctx, model) {
         return Some(p);
     }
@@ -1657,41 +1663,8 @@ pub(crate) fn resolve_model_path(ctx: &QuadCtx, model: &str) -> Option<PathBuf> 
 
 /// Resolve a Data-relative path (backslash-separated, any case) against the
 /// run's data_dirs. Returns the first existing match.
-fn resolve_data_path(ctx: &QuadCtx, rel: &str) -> Option<PathBuf> {
-    let normalized = rel.replace('\\', "/");
-    for dir in &ctx.paths.data_dirs {
-        let candidate = dir.join(&normalized);
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-        // Case-insensitive fallback: walk components.
-        if let Some(found) = resolve_ci(dir, &normalized) {
-            return Some(found);
-        }
-    }
-    None
-}
-
-/// Case-insensitive path resolution component-by-component (Windows is CI but
-/// extracted corpora may differ in case from the NIF's stored path).
-fn resolve_ci(base: &std::path::Path, rel: &str) -> Option<PathBuf> {
-    let mut cur = base.to_path_buf();
-    for part in rel.split('/').filter(|p| !p.is_empty()) {
-        let entries = std::fs::read_dir(&cur).ok()?;
-        let mut matched: Option<PathBuf> = None;
-        for entry in entries.flatten() {
-            if entry
-                .file_name()
-                .to_string_lossy()
-                .eq_ignore_ascii_case(part)
-            {
-                matched = Some(entry.path());
-                break;
-            }
-        }
-        cur = matched?;
-    }
-    if cur.is_file() { Some(cur) } else { None }
+fn resolve_data_path(ctx: &QuadCtx, rel: &str) -> Option<ResolvedAsset> {
+    asset_source::resolve(&ctx.paths.data_dirs, rel)
 }
 
 #[cfg(test)]
@@ -1740,7 +1713,10 @@ mod rooting_tests {
 
         let resolved = resolve_model_path(&ctx, "DLC03\\LOD\\Architecture\\Foo\\Bar01_LOD.nif");
         assert!(
-            resolved.as_deref().is_some_and(|p| p.is_file()),
+            resolved
+                .as_ref()
+                .and_then(|asset| asset.loose_path())
+                .is_some_and(std::path::Path::is_file),
             "MNAM should resolve to the on-disk LOD mesh, got {resolved:?}"
         );
 

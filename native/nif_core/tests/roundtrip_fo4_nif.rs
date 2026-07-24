@@ -22,7 +22,9 @@ fn ammo_generator_candidates() -> Vec<PathBuf> {
 fn extracted_fo4_dir() -> PathBuf {
     std::env::var("FO4_EXTRACTED_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../extracted/fo4"))
+        .unwrap_or_else(|_| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../extracted/fo4")
+        })
 }
 
 fn first_diff(a: &[u8], b: &[u8]) -> Option<usize> {

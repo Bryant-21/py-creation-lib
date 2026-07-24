@@ -35,12 +35,14 @@ pub(crate) struct FileEntry {
     pub(crate) rel_backslash: String,
     pub(crate) rel_backslash_lower: String,
     pub(crate) full_path: PathBuf,
+    pub(crate) source_size: Option<u64>,
 }
 
 #[derive(Clone, Debug)]
 pub(crate) struct PackEntrySpec {
     pub(crate) source_path: PathBuf,
     pub(crate) archive_path: String,
+    pub(crate) source_size: Option<u64>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -124,6 +126,7 @@ pub(crate) fn pack_archive(
                         &entries,
                         output_path,
                         writer_kind,
+                        version,
                         compress,
                         compression_level,
                     )?;
@@ -238,6 +241,7 @@ pub(crate) fn pack_archive_entries(
                         &entries,
                         output_path,
                         writer_kind,
+                        version,
                         compress,
                         compression_level,
                     )?;
@@ -309,6 +313,8 @@ fn incremental_writer_kind(
     force_compress: bool,
     xbox_profile: bool,
 ) -> Option<Fo4WriterKind> {
+    // v1 (fo76/fo4og) and v8 share the same header/record layout; only the
+    // header version field differs, so both can use the direct writer.
     match (
         version,
         format,
@@ -316,12 +322,20 @@ fn incremental_writer_kind(
         force_compress,
         xbox_profile,
     ) {
-        (fo4::Version::v8, fo4::Format::GNRL, fo4::CompressionFormat::Zip, false, false) => {
-            Some(Fo4WriterKind::Gnrl)
-        }
-        (fo4::Version::v8, fo4::Format::DX10, fo4::CompressionFormat::Zip, true, false) => {
-            Some(Fo4WriterKind::Dx10)
-        }
+        (
+            fo4::Version::v1 | fo4::Version::v8,
+            fo4::Format::GNRL,
+            fo4::CompressionFormat::Zip,
+            false,
+            false,
+        ) => Some(Fo4WriterKind::Gnrl),
+        (
+            fo4::Version::v1 | fo4::Version::v8,
+            fo4::Format::DX10,
+            fo4::CompressionFormat::Zip,
+            true,
+            false,
+        ) => Some(Fo4WriterKind::Dx10),
         _ => None,
     }
 }
@@ -330,6 +344,7 @@ fn pack_fo4_direct_entries(
     entries: &[FileEntry],
     output_path: &Path,
     writer_kind: Fo4WriterKind,
+    version: fo4::Version,
     compress: bool,
     compression_level: u32,
 ) -> PackResult<()> {
@@ -337,6 +352,7 @@ fn pack_fo4_direct_entries(
         entries,
         output_path,
         writer_kind,
+        version,
         CompressionSettings {
             compress,
             compression_level,
@@ -488,6 +504,7 @@ fn collect_files(
             rel_backslash,
             rel_backslash_lower,
             full_path: entry.path().to_path_buf(),
+            source_size: None,
         });
     }
     if let Some(manifest_path) = manifest_path {
@@ -503,12 +520,6 @@ fn collect_entry_specs(entries: &[PackEntrySpec]) -> PackResult<Vec<FileEntry>> 
     let mut collected = Vec::with_capacity(entries.len());
     let mut seen = std::collections::HashSet::with_capacity(entries.len());
     for entry in entries {
-        if !entry.source_path.is_file() {
-            return Err(format!(
-                "planned archive source file not found: {}",
-                entry.source_path.display()
-            ));
-        }
         let rel_slash = normalize_archive_entry_path(&entry.archive_path)?;
         let rel_slash_lower = rel_slash.to_ascii_lowercase();
         if !seen.insert(rel_slash_lower.clone()) {
@@ -524,6 +535,7 @@ fn collect_entry_specs(entries: &[PackEntrySpec]) -> PackResult<Vec<FileEntry>> 
             rel_backslash,
             rel_backslash_lower,
             full_path: entry.source_path.clone(),
+            source_size: entry.source_size,
         });
     }
     collected.sort_by(|a, b| a.rel_backslash.cmp(&b.rel_backslash));
@@ -932,7 +944,7 @@ mod tests {
     }
 
     #[test]
-    fn incremental_writer_route_is_fo4_v8_only() {
+    fn incremental_writer_route_covers_v1_and_v8() {
         assert_eq!(
             incremental_writer_kind(
                 fo4::Version::v8,
@@ -956,9 +968,29 @@ mod tests {
         assert_eq!(
             incremental_writer_kind(
                 fo4::Version::v1,
+                fo4::Format::GNRL,
+                fo4::CompressionFormat::Zip,
+                false,
+                false,
+            ),
+            Some(Fo4WriterKind::Gnrl)
+        );
+        assert_eq!(
+            incremental_writer_kind(
+                fo4::Version::v1,
                 fo4::Format::DX10,
                 fo4::CompressionFormat::Zip,
                 true,
+                false,
+            ),
+            Some(Fo4WriterKind::Dx10)
+        );
+        assert_eq!(
+            incremental_writer_kind(
+                fo4::Version::v2,
+                fo4::Format::GNRL,
+                fo4::CompressionFormat::Zip,
+                false,
                 false,
             ),
             None
@@ -973,6 +1005,48 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn fo76dds_pack_writes_v1_header_via_direct_writer() -> anyhow::Result<()> {
+        let dir = TestDir::new();
+        let source_dir = dir.path().join("src");
+        let texture_dir = source_dir.join("Textures");
+        fs::create_dir_all(&texture_dir)?;
+        let fixture = Path::new("data/fo4_dds_test").join("Fence006_1K_Roughness.dds");
+        fs::copy(&fixture, texture_dir.join("texture.dds"))?;
+
+        let archive_path = dir.path().join("out.ba2");
+        let written = pack_archive(
+            &source_dir,
+            &archive_path,
+            "fo76dds",
+            true,
+            4,
+            false,
+            None,
+            Some(2),
+            PackFilters::default(),
+        )
+        .map_err(anyhow::Error::msg)?;
+        assert_eq!(written, 1);
+
+        let raw = fs::read(&archive_path)?;
+        assert_eq!(&raw[0..4], b"BTDX");
+        assert_eq!(u32::from_le_bytes(raw[4..8].try_into().unwrap()), 1);
+
+        let (archive, options) = fo4::Archive::read(archive_path.as_path())?;
+        assert_eq!(options.format(), fo4::Format::DX10);
+        let write_options: fo4::FileWriteOptions = options.into();
+        let original = fs::read(&fixture)?;
+        let file = archive
+            .get(&fo4::ArchiveKey::from("Textures\\texture.dds"))
+            .expect("missing packed texture");
+        let mut extracted = Vec::new();
+        file.write(&mut extracted, &write_options)?;
+        assert_dx10_dds_payload_matches(&original, &extracted);
+
+        Ok(())
     }
 
     #[test]
@@ -1120,10 +1194,12 @@ mod tests {
                 PackEntrySpec {
                     source_path: mesh_path,
                     archive_path: "Meshes/Generated/a.nif".to_string(),
+                    source_size: Some(4),
                 },
                 PackEntrySpec {
                     source_path: sound_path,
                     archive_path: "Sound/Generated/b.wav".to_string(),
+                    source_size: Some(8192),
                 },
             ],
             &archive_path,
@@ -1287,6 +1363,7 @@ mod tests {
             &[PackEntrySpec {
                 source_path,
                 archive_path: "../bad.txt".to_string(),
+                source_size: None,
             }],
             &dir.path().join("out.ba2"),
             "fo4",
@@ -1298,6 +1375,48 @@ mod tests {
         )
         .expect_err("unsafe archive path should fail");
         assert!(err.contains("unsafe archive path"));
+        Ok(())
+    }
+
+    #[test]
+    fn planned_entry_collection_defers_source_io_to_pack_workers() -> anyhow::Result<()> {
+        let dir = TestDir::new();
+        let missing_source = dir.path().join("missing.nif");
+        let entries = collect_entry_specs(&[PackEntrySpec {
+            source_path: missing_source.clone(),
+            archive_path: "Meshes/missing.nif".to_string(),
+            source_size: Some(123),
+        }])
+        .map_err(anyhow::Error::msg)?;
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].full_path, missing_source);
+        assert_eq!(entries[0].source_size, Some(123));
+        Ok(())
+    }
+
+    #[test]
+    fn pack_worker_still_rejects_a_missing_planned_source() -> anyhow::Result<()> {
+        let dir = TestDir::new();
+        let missing_source = dir.path().join("missing.nif");
+        let error = pack_archive_entries(
+            &[PackEntrySpec {
+                source_path: missing_source.clone(),
+                archive_path: "Meshes/missing.nif".to_string(),
+                source_size: Some(123),
+            }],
+            &dir.path().join("out.ba2"),
+            "fo4",
+            true,
+            6,
+            false,
+            None,
+            Some(2),
+        )
+        .expect_err("the pack worker should reject a missing source");
+
+        assert!(error.contains("read"));
+        assert!(error.contains(&missing_source.display().to_string()));
         Ok(())
     }
 
@@ -1316,6 +1435,7 @@ mod tests {
                 &[PackEntrySpec {
                     source_path: source_path.clone(),
                     archive_path: archive_path.to_string(),
+                    source_size: None,
                 }],
                 &dir.path().join("out.ba2"),
                 "fo4",

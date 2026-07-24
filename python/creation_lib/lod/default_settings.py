@@ -37,6 +37,7 @@ def _hardcoded_fo4_defaults() -> dict:
             "align": 0,
             "southwest_cell": None,
             "bounds": None,
+            "use_source_lodsettings": True,
             "write_lodsettings": True,
             "workers": 0,
             "season": None,
@@ -124,6 +125,11 @@ def _hardcoded_fo4_defaults() -> dict:
             "generate_billboards": False,
             "billboard_atlas_size": 2048,
             "billboard_brightness": 1.0,
+        },
+        "grass": {
+            "enabled": False,
+            "spacings": [0.0, 0.0, 0.0, 0.0],
+            "min_alpha": 0.35,
         },
     }
 

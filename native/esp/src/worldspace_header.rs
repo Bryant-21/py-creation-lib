@@ -18,10 +18,14 @@ use std::borrow::Cow;
 // struct:i,i,h,h,h,h, NAM4 float32, ONAM struct:f,f,f,f, NAM0/NAM9 f32,f32.
 const NONREF_CARRY: &[&str] = &["DNAM", "MNAM", "NAM4", "ONAM", "NAM0", "NAM9"];
 
-// FO76 WRLD runtime/cache tables keyed to the source cell topology. RNAM
-// (large-ref), OFST (offset), and CLSZ (cell-size) are dropped; the nested
-// CELL/LAND topology is authoritative until a FO4-native rebuilder exists.
+// FO76 WRLD runtime/cache tables keyed to the source cell topology. OFST
+// (offset) and CLSZ (cell-size) are dropped here and regenerated against the
+// final file layout by `worldspace_offsets::rebuild_worldspace_cell_offsets`.
+// RNAM (large-ref grid) is stripped for idempotency, then re-carried below with
+// its ref formids remapped — its grid/cell coords are absolute and survive
+// conversion, and without it FO4 renders large refs as LOD only.
 const UNSAFE_FO76_RUNTIME_TABLES: &[&str] = &["RNAM", "OFST", "CLSZ"];
+const LARGE_REF_GRID: &str = "RNAM";
 
 // FO76 WRLD max-height grid. Layout is byte-identical FO76↔FO4 (struct h,h,h,h
 // dims + width*height 2x2-corner byte cells) and it self-indexes by absolute
@@ -38,6 +42,9 @@ const MAX_HEIGHT_DATA: &str = "MHDT";
 const SOURCE_MAP_IMAGE: &str = "NAM5";
 const TARGET_MAP_IMAGE: &str = "ICON";
 const FO76_APPALACHIA_PIPBOY_MAP_IMAGE: &[u8] = b"Interface\\Pip-Boy\\papermap_city_d.dds\0";
+const TARGET_WATER_ENV_MAP: &str = "XWEM";
+const FO4_DEFAULT_OUTSIDE_WATER_ENV_MAP: &[u8] =
+    b"data\\Textures\\Shared\\Cubemaps\\mipblur_DefaultOutside1.dds\0";
 
 // WRLD formid header links: (4cc, required target record signature). The source
 // ref is master-0 (source-local); it is remapped to the target's own index and
@@ -63,6 +70,8 @@ const FO4_WRLD_ORDER: &[&str] = &[
 #[derive(Default, Serialize)]
 pub struct WorldspaceHeaderCarryPayload {
     pub copied: u32,
+    pub rnam_entries_carried: u32,
+    pub rnam_entries_dropped: u32,
     pub warnings: Vec<String>,
 }
 
@@ -86,6 +95,7 @@ pub fn carry_worldspace_header_from_source(
     let mut map_image: Option<Bytes> = None;
     let mut max_height: Option<Bytes> = None;
     let mut formid: HashMap<&'static str, Bytes> = HashMap::new();
+    let mut large_ref_grids: Vec<Bytes> = Vec::new();
     let source_subrecords = source_subrecords_for_record(source_wrld);
     for sr in source_subrecords.iter() {
         let sig = sr.signature.as_str();
@@ -95,6 +105,8 @@ pub fn carry_worldspace_header_from_source(
             map_image.get_or_insert_with(|| sr.data.clone());
         } else if sig == MAX_HEIGHT_DATA {
             max_height.get_or_insert_with(|| sr.data.clone());
+        } else if sig == LARGE_REF_GRID {
+            large_ref_grids.push(sr.data.clone());
         } else if let Some(&(key, _)) = FORMID_CARRY.iter().find(|(s, _)| *s == sig) {
             formid.entry(key).or_insert_with(|| sr.data.clone());
         }
@@ -104,6 +116,11 @@ pub fn carry_worldspace_header_from_source(
     // remapped to the converted record and validated against its expected type.
     let own_index = (target.header.masters.len() & 0xFF) as u32;
     let target_game = target.game.as_deref().unwrap_or_default().to_string();
+    let inject_fo4_water_environment_map = source
+        .game
+        .as_deref()
+        .is_some_and(|game| game.eq_ignore_ascii_case("fo76"))
+        && target_game.eq_ignore_ascii_case("fo4");
     let fo4_master_index = target
         .header
         .masters
@@ -122,7 +139,7 @@ pub fn carry_worldspace_header_from_source(
 
     // Drop any prior carry-target subrecords so a re-run is idempotent, keep the
     // rest of the skeleton, then re-add the carried fields.
-    let carry_sigs = carry_target_signatures();
+    let carry_sigs = carry_target_signatures(inject_fo4_water_environment_map);
     let mut merged: Vec<ParsedSubrecord> = target_wrld
         .subrecords
         .iter()
@@ -188,6 +205,33 @@ pub fn carry_worldspace_header_from_source(
         merged.push(make_subrecord("FULL", full));
         copied += 1;
     }
+    if inject_fo4_water_environment_map {
+        merged.push(make_subrecord(
+            TARGET_WATER_ENV_MAP,
+            Bytes::from_static(FO4_DEFAULT_OUTSIDE_WATER_ENV_MAP),
+        ));
+        copied += 1;
+    }
+    let mut malformed_large_ref_grids = 0u32;
+    for blob in &large_ref_grids {
+        let Some((data, kept, dropped)) = remap_large_ref_grid(blob, own_index, &obj_sig) else {
+            malformed_large_ref_grids += 1;
+            continue;
+        };
+        payload.rnam_entries_carried += kept;
+        payload.rnam_entries_dropped += dropped;
+        if kept > 0 {
+            merged.push(make_subrecord(LARGE_REF_GRID, data));
+        }
+    }
+    if payload.rnam_entries_carried > 0 {
+        copied += 1;
+    }
+    if malformed_large_ref_grids > 0 {
+        payload.warnings.push(format!(
+            "dropped {malformed_large_ref_grids} WRLD RNAM grids inconsistent with the header+rows layout"
+        ));
+    }
 
     merged.sort_by_key(|s| {
         FO4_WRLD_ORDER
@@ -200,11 +244,14 @@ pub fn carry_worldspace_header_from_source(
     payload
 }
 
-fn carry_target_signatures() -> Vec<&'static str> {
+fn carry_target_signatures(include_water_environment_map: bool) -> Vec<&'static str> {
     let mut sigs: Vec<&'static str> = NONREF_CARRY.to_vec();
     sigs.push(TARGET_MAP_IMAGE);
     sigs.push(MAX_HEIGHT_DATA);
     sigs.push("FULL");
+    if include_water_environment_map {
+        sigs.push(TARGET_WATER_ENV_MAP);
+    }
     for (sig, _) in FORMID_CARRY {
         sigs.push(sig);
     }
@@ -385,6 +432,46 @@ fn remap_leading_formid(
     let mut out = remapped.to_le_bytes().to_vec();
     out.extend_from_slice(&blob[4..]);
     Some(Bytes::from(out))
+}
+
+// WRLD RNAM layout (byte-identical FO76↔FO4, verified against every vanilla
+// FO4 and FO76 grid): i16 gridY + i16 gridX + u32 count + count rows of
+// (u32 ref formid, i16 cellY, i16 cellX). Grid and cell coords are absolute and
+// carry verbatim; a row survives only when its source-local ref converted as a
+// REFR in the target, remapped to the target's own master index. Returns the
+// rebuilt blob plus (kept, dropped) row counts, or None for a malformed grid.
+fn remap_large_ref_grid(
+    blob: &Bytes,
+    own_index: u32,
+    obj_sig: &HashMap<u32, SmolStr>,
+) -> Option<(Bytes, u32, u32)> {
+    if blob.len() < 8 {
+        return None;
+    }
+    let count = u32::from_le_bytes([blob[4], blob[5], blob[6], blob[7]]) as usize;
+    if blob.len() != 8 + count * 8 {
+        return None;
+    }
+    let mut kept = 0u32;
+    let mut dropped = 0u32;
+    let mut out = Vec::with_capacity(blob.len());
+    out.extend_from_slice(&blob[..8]);
+    for row in blob[8..].chunks_exact(8) {
+        let raw = u32::from_le_bytes([row[0], row[1], row[2], row[3]]);
+        let object_id = raw & 0x00FF_FFFF;
+        let survives = raw != 0
+            && raw >> 24 == 0
+            && matches!(obj_sig.get(&object_id), Some(sig) if sig.as_str() == "REFR");
+        if !survives {
+            dropped += 1;
+            continue;
+        }
+        kept += 1;
+        out.extend_from_slice(&((own_index << 24) | object_id).to_le_bytes());
+        out.extend_from_slice(&row[4..]);
+    }
+    out[4..8].copy_from_slice(&kept.to_le_bytes());
+    Some((Bytes::from(out), kept, dropped))
 }
 
 fn fallback_wrld_water_formid(
@@ -799,6 +886,31 @@ mod tests {
         )
     }
 
+    fn target_with_refrs() -> ParsedPlugin {
+        let mut target = skeleton_target();
+        target.root_items.push(top_group(
+            "REFR",
+            vec![
+                record("REFR", 0x0100_1111, vec![]),
+                record("STAT", 0x0100_2222, vec![]),
+            ],
+        ));
+        target
+    }
+
+    fn rnam_blob(grid_y: i16, grid_x: i16, rows: &[(u32, i16, i16)]) -> Vec<u8> {
+        let mut data = Vec::new();
+        data.extend_from_slice(&grid_y.to_le_bytes());
+        data.extend_from_slice(&grid_x.to_le_bytes());
+        data.extend_from_slice(&(rows.len() as u32).to_le_bytes());
+        for (fid, y, x) in rows {
+            data.extend_from_slice(&fid.to_le_bytes());
+            data.extend_from_slice(&y.to_le_bytes());
+            data.extend_from_slice(&x.to_le_bytes());
+        }
+        data
+    }
+
     fn wrld_subs(plugin: &ParsedPlugin) -> Vec<ParsedSubrecord> {
         for item in &plugin.root_items {
             if let ParsedItem::Group(g) = item {
@@ -837,7 +949,7 @@ mod tests {
             None,
         );
 
-        assert_eq!(report.copied, 11, "warnings={:?}", report.warnings);
+        assert_eq!(report.copied, 12, "warnings={:?}", report.warnings);
         let subs = wrld_subs(&target);
         for sig in UNSAFE_FO76_RUNTIME_TABLES {
             assert!(
@@ -847,6 +959,117 @@ mod tests {
         }
         assert!(data_for(&subs, "EDID").is_some());
         assert!(data_for(&subs, "NAMA").is_some());
+    }
+
+    #[test]
+    fn carries_and_remaps_wrld_large_ref_grids() {
+        let mut source = source_plugin();
+        let wrld = find_wrld_mut(&mut source, "APPALACHIA").unwrap();
+        // Grid A: surviving REFR + dead ref + non-REFR + master-qualified.
+        wrld.subrecords.push(sub(
+            "RNAM",
+            rnam_blob(
+                5,
+                -3,
+                &[
+                    (0x0000_1111, 7, -2),
+                    (0x0000_9999, 1, 1),
+                    (0x0000_2222, 2, 2),
+                    (0x0200_1111, 3, 3),
+                ],
+            ),
+        ));
+        // Grid B: nothing survives → the whole subrecord is dropped.
+        wrld.subrecords
+            .push(sub("RNAM", rnam_blob(6, 6, &[(0x0000_9999, 0, 0)])));
+        let mut target = target_with_refrs();
+
+        let report = carry_worldspace_header_from_source(
+            &source,
+            &mut target,
+            "APPALACHIA",
+            "APPALACHIA",
+            None,
+        );
+
+        // 12 header fields + the RNAM unit = 13.
+        assert_eq!(report.copied, 13, "warnings={:?}", report.warnings);
+        assert_eq!(report.rnam_entries_carried, 1);
+        assert_eq!(report.rnam_entries_dropped, 4);
+
+        let subs = wrld_subs(&target);
+        let grids: Vec<&ParsedSubrecord> = subs
+            .iter()
+            .filter(|s| s.signature.as_str() == "RNAM")
+            .collect();
+        assert_eq!(grids.len(), 1);
+        assert_eq!(
+            grids[0].data.as_ref(),
+            rnam_blob(5, -3, &[(0x0100_1111, 7, -2)]).as_slice()
+        );
+
+        // RNAM sits right after EDID in FO4 schema order.
+        let pos = |sig: &str| subs.iter().position(|s| s.signature.as_str() == sig);
+        assert!(pos("EDID").unwrap() < pos("RNAM").unwrap());
+        assert!(pos("RNAM").unwrap() < pos("ICON").unwrap());
+    }
+
+    #[test]
+    fn drops_malformed_wrld_large_ref_grid_with_warning() {
+        let mut source = source_plugin();
+        let mut blob = rnam_blob(0, 0, &[(0x0000_1111, 0, 0)]);
+        blob.truncate(blob.len() - 2); // rows shorter than the count claims
+        find_wrld_mut(&mut source, "APPALACHIA")
+            .unwrap()
+            .subrecords
+            .push(sub("RNAM", blob));
+        let mut target = target_with_refrs();
+
+        let report = carry_worldspace_header_from_source(
+            &source,
+            &mut target,
+            "APPALACHIA",
+            "APPALACHIA",
+            None,
+        );
+
+        assert_eq!(report.copied, 12, "warnings={:?}", report.warnings);
+        assert_eq!(report.rnam_entries_carried, 0);
+        assert!(data_for(&wrld_subs(&target), "RNAM").is_none());
+        assert!(report.warnings.iter().any(|w| w.contains("RNAM")));
+    }
+
+    #[test]
+    fn recarries_wrld_large_ref_grids_idempotently() {
+        let mut source = source_plugin();
+        find_wrld_mut(&mut source, "APPALACHIA")
+            .unwrap()
+            .subrecords
+            .push(sub("RNAM", rnam_blob(5, -3, &[(0x0000_1111, 7, -2)])));
+        let mut target = target_with_refrs();
+
+        for _ in 0..2 {
+            let report = carry_worldspace_header_from_source(
+                &source,
+                &mut target,
+                "APPALACHIA",
+                "APPALACHIA",
+                None,
+            );
+            assert_eq!(report.copied, 13, "warnings={:?}", report.warnings);
+            assert_eq!(report.rnam_entries_carried, 1);
+        }
+
+        let subs = wrld_subs(&target);
+        let grids: Vec<&ParsedSubrecord> = subs
+            .iter()
+            .filter(|s| s.signature.as_str() == "RNAM")
+            .collect();
+        assert_eq!(grids.len(), 1);
+        assert_eq!(
+            grids[0].data.as_ref(),
+            rnam_blob(5, -3, &[(0x0100_1111, 7, -2)]).as_slice()
+        );
     }
 
     #[test]
@@ -870,8 +1093,8 @@ mod tests {
             None,
         );
 
-        // 11 header fields + MHDT = 12.
-        assert_eq!(report.copied, 12, "warnings={:?}", report.warnings);
+        // 12 header fields + MHDT = 13.
+        assert_eq!(report.copied, 13, "warnings={:?}", report.warnings);
         let subs = wrld_subs(&target);
         assert_eq!(
             data_for(&subs, "MHDT").unwrap().as_ref(),
@@ -903,7 +1126,7 @@ mod tests {
             None,
         );
 
-        assert_eq!(report.copied, 11, "warnings={:?}", report.warnings);
+        assert_eq!(report.copied, 12, "warnings={:?}", report.warnings);
         let subs = wrld_subs(&target);
         assert!(data_for(&subs, "MHDT").is_none());
         assert!(report.warnings.iter().any(|w| w.contains("MHDT")));
@@ -922,8 +1145,8 @@ mod tests {
             None,
         );
 
-        // DNAM/MNAM/NAM4/ONAM/NAM0/NAM9 carried verbatim, NAM5→ICON, 4 formid links = 11.
-        assert_eq!(report.copied, 11, "warnings={:?}", report.warnings);
+        // Six non-ref carries, NAM5→ICON, four formid links, and the FO4 XWEM default = 12.
+        assert_eq!(report.copied, 12, "warnings={:?}", report.warnings);
 
         let subs = wrld_subs(&target);
 
@@ -949,6 +1172,10 @@ mod tests {
         );
         assert_eq!(data_for(&subs, "NAM0").unwrap().as_ref(), &NAM0_BYTES);
         assert_eq!(data_for(&subs, "NAM9").unwrap().as_ref(), &NAM9_BYTES);
+        assert_eq!(
+            data_for(&subs, "XWEM").unwrap().as_ref(),
+            FO4_DEFAULT_OUTSIDE_WATER_ENV_MAP
+        );
 
         // formid links remapped master-0 → own index 1, validated by target sig.
         assert_eq!(
@@ -995,6 +1222,38 @@ mod tests {
     }
 
     #[test]
+    fn replaces_wrld_water_environment_map_idempotently() {
+        let source = source_plugin();
+        let mut target = skeleton_target();
+        find_wrld_mut(&mut target, "APPALACHIA")
+            .unwrap()
+            .subrecords
+            .push(sub("XWEM", b"stale.dds\0".to_vec()));
+
+        for _ in 0..2 {
+            let report = carry_worldspace_header_from_source(
+                &source,
+                &mut target,
+                "APPALACHIA",
+                "APPALACHIA",
+                None,
+            );
+            assert_eq!(report.copied, 12, "warnings={:?}", report.warnings);
+        }
+
+        let subs = wrld_subs(&target);
+        let environment_maps: Vec<&ParsedSubrecord> = subs
+            .iter()
+            .filter(|subrecord| subrecord.signature.as_str() == "XWEM")
+            .collect();
+        assert_eq!(environment_maps.len(), 1);
+        assert_eq!(
+            environment_maps[0].data.as_ref(),
+            FO4_DEFAULT_OUTSIDE_WATER_ENV_MAP
+        );
+    }
+
+    #[test]
     fn strips_data_prefix_from_carried_wrld_map_image() {
         let source = source_plugin_with_map_path(NAM5_DATA_PREFIX_PATH);
         let mut target = skeleton_target();
@@ -1007,7 +1266,7 @@ mod tests {
             None,
         );
 
-        assert_eq!(report.copied, 11, "warnings={:?}", report.warnings);
+        assert_eq!(report.copied, 12, "warnings={:?}", report.warnings);
         let subs = wrld_subs(&target);
         assert_eq!(data_for(&subs, "ICON").unwrap().as_ref(), PAPERMAP_PATH);
     }
@@ -1057,7 +1316,7 @@ mod tests {
             None,
         );
 
-        assert_eq!(report.copied, 11, "warnings={:?}", report.warnings);
+        assert_eq!(report.copied, 12, "warnings={:?}", report.warnings);
         let subs = wrld_subs(&target);
         assert_eq!(data_for(&subs, "ICON").unwrap().as_ref(), PAPERMAP_PATH);
         assert_eq!(data_for(&subs, "MNAM").unwrap().as_ref(), &MNAM_BYTES);
@@ -1131,7 +1390,7 @@ mod tests {
             Some(Bytes::from(id.to_le_bytes().to_vec())),
         );
 
-        assert_eq!(report.copied, 12, "warnings={:?}", report.warnings);
+        assert_eq!(report.copied, 13, "warnings={:?}", report.warnings);
         let subs = wrld_subs(&target);
         assert_eq!(data_for(&subs, "FULL").unwrap().as_ref(), &id.to_le_bytes());
         assert_eq!(
@@ -1166,7 +1425,7 @@ mod tests {
             data_for(&subs, "XLCN").is_none(),
             "XLCN must skip wrong-type target"
         );
-        assert_eq!(report.copied, 10);
+        assert_eq!(report.copied, 11);
         assert!(report.warnings.iter().any(|w| w.contains("XLCN")));
     }
 
@@ -1195,7 +1454,7 @@ mod tests {
             data_for(&subs, "NAM3").unwrap().as_ref(),
             &0x000C_8633u32.to_le_bytes()
         );
-        assert_eq!(report.copied, 11, "warnings={:?}", report.warnings);
+        assert_eq!(report.copied, 12, "warnings={:?}", report.warnings);
         assert_eq!(
             report
                 .warnings
@@ -1232,8 +1491,8 @@ mod tests {
             Some(Bytes::from(full.clone())),
         );
 
-        // 11 header fields + FULL = 12.
-        assert_eq!(report.copied, 12, "warnings={:?}", report.warnings);
+        // 12 header fields + FULL = 13.
+        assert_eq!(report.copied, 13, "warnings={:?}", report.warnings);
 
         let subs = wrld_subs(&target);
         assert_eq!(data_for(&subs, "FULL").unwrap().as_ref(), full.as_slice());

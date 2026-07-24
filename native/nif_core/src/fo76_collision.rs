@@ -1,12 +1,17 @@
-use havok_native::collision::SourcePolytopeShape;
 use havok_native::collision::{
-    CompoundChild, CompoundChildKind, MultiBodyShape, PreviewMesh, compressed_triangle_is_safe,
-    decode_source_mass_distributions, extract_preview_meshes_from_blob,
+    CompoundChild, CompoundChildKind, MultiBodyShape, PreviewMesh, RawCompressedMeshData,
+    compressed_triangle_is_safe, decode_source_body_transforms, decode_source_mass_distributions,
+    extract_direct_raw_compressed_mesh_from_blob, extract_direct_source_primitive_from_blob,
+    extract_preview_meshes_from_blob, extract_source_compound_children_from_blob,
     extract_source_polytopes_from_blob, vertex_is_finite,
 };
+use havok_native::collision::{SourceConvexShape, SourcePolytopeShape, SourcePrimitiveShape};
 use serde_json::Value;
 
 pub(crate) const ROUTE_SOURCE_POLYTOPE: &str = "source-polytope";
+pub(crate) const ROUTE_SOURCE_SPHERE: &str = "source-sphere";
+pub(crate) const ROUTE_SOURCE_CAPSULE: &str = "source-capsule";
+pub(crate) const ROUTE_SOURCE_CONVEX: &str = "source-convex";
 pub(crate) const ROUTE_SOURCE_COMPOUND: &str = "source-compound";
 pub(crate) const ROUTE_SOURCE_COMPRESSED_MESH: &str = "source-compressed-mesh";
 pub(crate) const ROUTE_CLUTTER_CONVEX: &str = "clutter-convex";
@@ -95,8 +100,22 @@ const CLUTTER_MIN_EXTENT: f32 = 0.1;
 /// exact/near-zero static axes enough for Quickhull, not to gameplay thickness.
 const STATIC_MIN_EXTENT: f32 = 0.001;
 
+/// Minimum slab thickness for a COPLANAR convex body (a flat plane at any
+/// orientation). FO76 ships stair helpers and similar walkable planes as
+/// zero-thickness convex quads (fine there: convex radius gives them skin);
+/// re-emitting them as compressed-mesh triangles makes a paper surface the
+/// character controller tunnels through intermittently ("random fall through
+/// steps", Point Pleasant SCOL catwalk stairs 00491AE1/00491B05). Vanilla FO4
+/// stair helpers are hknpConvexPolytopeShape slabs ~0.094 m thick
+/// (bosbarricadewbstairsl01.nif C_Ramp01: y half-extent 0.047); pad flat
+/// convex sources to match.
+const WALKABLE_SLAB_MIN_EXTENT: f32 = 0.09;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CollisionRoute {
+    SourceSphere,
+    SourceCapsule,
+    SourceConvex,
     SourcePolytope,
     SourceCompound,
     SourceCompressedMesh,
@@ -107,6 +126,9 @@ pub(crate) enum CollisionRoute {
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct RouteCounts {
+    pub source_sphere: usize,
+    pub source_capsule: usize,
+    pub source_convex: usize,
     pub source_polytope: usize,
     pub source_compound: usize,
     pub source_compressed_mesh: usize,
@@ -118,6 +140,9 @@ pub(crate) struct RouteCounts {
 impl RouteCounts {
     pub(crate) fn bump(&mut self, route: CollisionRoute) {
         match route {
+            CollisionRoute::SourceSphere => self.source_sphere += 1,
+            CollisionRoute::SourceCapsule => self.source_capsule += 1,
+            CollisionRoute::SourceConvex => self.source_convex += 1,
             CollisionRoute::SourcePolytope => self.source_polytope += 1,
             CollisionRoute::SourceCompound => self.source_compound += 1,
             CollisionRoute::SourceCompressedMesh => self.source_compressed_mesh += 1,
@@ -129,13 +154,16 @@ impl RouteCounts {
 
     pub(crate) fn report_fragment(&self) -> String {
         format!(
-            "{ROUTE_SOURCE_POLYTOPE}={}, {ROUTE_SOURCE_COMPOUND}={}, {ROUTE_SOURCE_COMPRESSED_MESH}={}, {ROUTE_CLUTTER_CONVEX}={}, {ROUTE_AABB_FALLBACK}={}, {ROUTE_STRIPPED}={}",
+            "{ROUTE_SOURCE_POLYTOPE}={}, {ROUTE_SOURCE_COMPOUND}={}, {ROUTE_SOURCE_COMPRESSED_MESH}={}, {ROUTE_CLUTTER_CONVEX}={}, {ROUTE_AABB_FALLBACK}={}, {ROUTE_STRIPPED}={}, {ROUTE_SOURCE_SPHERE}={}, {ROUTE_SOURCE_CAPSULE}={}, {ROUTE_SOURCE_CONVEX}={}",
             self.source_polytope,
             self.source_compound,
             self.source_compressed_mesh,
             self.clutter_convex,
             self.visible_mesh_aabb_fallback,
             self.stripped_unrecoverable,
+            self.source_sphere,
+            self.source_capsule,
+            self.source_convex,
         )
     }
 }
@@ -145,6 +173,9 @@ pub(crate) struct ExtractedCollisionBody {
     pub body_id: usize,
     pub meshes: Vec<PreviewMesh>,
     pub source_polytopes: Vec<SourcePolytopeShape>,
+    pub source_compound_children: Vec<CompoundChild>,
+    pub source_compressed_mesh: Option<RawCompressedMeshData>,
+    pub source_primitive: Option<(SourcePrimitiveShape, usize)>,
     pub layer: Option<u8>,
     pub material_crc: Option<u32>,
     /// The source body is movable according to its own Havok body info
@@ -164,23 +195,35 @@ pub(crate) fn extract_source_collision_body(
     blob: &[u8],
     body_id: usize,
 ) -> Result<ExtractedCollisionBody, String> {
-    let meshes = extract_preview_meshes_from_blob(blob, HAVOK_SCALE, Some(body_id))
-        .map_err(|error| error.to_string())?;
-    let meshes = meshes
-        .into_iter()
-        .filter(usable_source_preview_mesh)
-        .collect::<Vec<_>>();
-    if meshes.is_empty() {
-        return Err(format!(
-            "body {body_id} has no decodable collision preview mesh"
-        ));
-    }
     let metadata = source_body_metadata(blob, body_id);
+    let source_primitive = extract_direct_source_primitive_from_blob(blob, body_id)
+        .ok()
+        .flatten()
+        .map(|shape| (shape, decode_source_body_transforms(blob).len()));
     let source_polytopes = extract_source_polytopes_from_blob(blob, body_id).unwrap_or_default();
+    let source_compound_children =
+        extract_source_compound_children_from_blob(blob, body_id).unwrap_or_default();
+    let source_compressed_mesh =
+        extract_direct_raw_compressed_mesh_from_blob(blob, body_id).unwrap_or_default();
+    let has_exact_source_shape = source_primitive.is_some()
+        || !source_polytopes.is_empty()
+        || !source_compound_children.is_empty()
+        || source_compressed_mesh.is_some();
+    let meshes = match extract_preview_meshes_from_blob(blob, HAVOK_SCALE, Some(body_id)) {
+        Ok(meshes) => meshes
+            .into_iter()
+            .filter(usable_source_preview_mesh)
+            .collect(),
+        Err(_) if has_exact_source_shape => Vec::new(),
+        Err(error) => return Err(error.to_string()),
+    };
     Ok(ExtractedCollisionBody {
         body_id,
         meshes,
         source_polytopes,
+        source_compound_children,
+        source_compressed_mesh,
+        source_primitive,
         layer: metadata.layer,
         material_crc: metadata.material_crc,
         is_dynamic: metadata.is_dynamic,
@@ -202,16 +245,75 @@ pub(crate) fn classify_source_body(
     };
     let material_crc = body.material_crc;
     let source_polytopes = body.source_polytopes;
+    let source_compound_children = body.source_compound_children;
+    let source_compressed_mesh = body.source_compressed_mesh;
+    let source_primitive = body.source_primitive;
     let meshes = body
         .meshes
         .into_iter()
         .filter(usable_source_preview_mesh)
         .collect::<Vec<_>>();
-    if meshes.is_empty() {
-        return Err(format!(
-            "body {} has no usable source collision geometry",
-            body.body_id
-        ));
+    if !in_multi_body_assembly {
+        if let Some((primitive, source_system_body_count)) = source_primitive {
+            let primitive_layer = if body.is_dynamic {
+                FO4_CLUTTER_LAYER
+            } else {
+                layer
+            };
+            match primitive {
+                SourcePrimitiveShape::Sphere { center, radius }
+                    if source_system_body_count == 1 && !body.is_dynamic =>
+                {
+                    return Ok(PlannedCollisionBody {
+                        source_body_id: body.body_id,
+                        route: CollisionRoute::SourceSphere,
+                        layer: primitive_layer,
+                        material_crc,
+                        shape: MultiBodyShape::Sphere {
+                            radius,
+                            position: center,
+                        },
+                    });
+                }
+                SourcePrimitiveShape::Capsule(shape) => {
+                    return Ok(PlannedCollisionBody {
+                        source_body_id: body.body_id,
+                        route: CollisionRoute::SourceCapsule,
+                        layer: primitive_layer,
+                        material_crc,
+                        shape: MultiBodyShape::Capsule { shape },
+                    });
+                }
+                SourcePrimitiveShape::Convex(shape) => {
+                    return Ok(PlannedCollisionBody {
+                        source_body_id: body.body_id,
+                        route: CollisionRoute::SourceConvex,
+                        layer: primitive_layer,
+                        material_crc,
+                        shape: MultiBodyShape::SourceConvex { shape },
+                    });
+                }
+                SourcePrimitiveShape::Sphere { center, radius } => {
+                    // The raw FO4 sphere writer preserves descriptor-hidden trailer bytes but
+                    // cannot carry a dynamic motion cinfo. Havok's own faceless-convex path
+                    // represents a sphere as one support point plus convexRadius, so use that
+                    // equivalent layout whenever the body must pass through the dynamic merge.
+                    return Ok(PlannedCollisionBody {
+                        source_body_id: body.body_id,
+                        route: CollisionRoute::SourceSphere,
+                        layer: primitive_layer,
+                        material_crc,
+                        shape: MultiBodyShape::SourceConvex {
+                            shape: SourceConvexShape {
+                                vertices: vec![[center[0], center[1], center[2], 0.5]],
+                                convex_radius: radius,
+                                mass_properties: None,
+                            },
+                        },
+                    });
+                }
+            }
+        }
     }
 
     // Loose, gravity-driven items must be CONVEX, on the FO4 CLUTTER layer, with
@@ -249,20 +351,21 @@ pub(crate) fn classify_source_body(
                 },
             });
         }
-        if source_polytopes.len() == meshes.len() && !source_polytopes.is_empty() {
-            let children = source_polytopes
-                .into_iter()
-                .map(|shape| CompoundChild {
-                    transform: CompoundChild::identity_transform(),
-                    kind: CompoundChildKind::SourcePolytope { shape },
-                })
-                .collect::<Vec<_>>();
+        if meshes.is_empty() {
+            return Err(format!(
+                "body {} has no usable source collision geometry",
+                body.body_id
+            ));
+        }
+        if source_compound_children.len() == meshes.len() && !source_compound_children.is_empty() {
             return Ok(PlannedCollisionBody {
                 source_body_id: body.body_id,
                 route: CollisionRoute::SourceCompound,
                 layer: FO4_CLUTTER_LAYER,
                 material_crc,
-                shape: MultiBodyShape::Compound { children },
+                shape: MultiBodyShape::Compound {
+                    children: source_compound_children,
+                },
             });
         }
         // A single-mesh source is one convex hull. A MULTI-mesh source is a
@@ -313,19 +416,36 @@ pub(crate) fn classify_source_body(
         });
     }
 
+    if source_polytopes.len() == 1 && !in_multi_body_assembly {
+        return Ok(PlannedCollisionBody {
+            source_body_id: body.body_id,
+            route: CollisionRoute::SourcePolytope,
+            layer,
+            material_crc,
+            shape: MultiBodyShape::SourcePolytope {
+                shape: source_polytopes
+                    .into_iter()
+                    .next()
+                    .expect("single source polytope"),
+            },
+        });
+    }
+
+    if meshes.is_empty() {
+        return Err(format!(
+            "body {} has no usable source collision geometry",
+            body.body_id
+        ));
+    }
+
     if meshes.len() == 1 {
-        if source_polytopes.len() == 1 && !in_multi_body_assembly {
+        if let Some(data) = source_compressed_mesh {
             return Ok(PlannedCollisionBody {
                 source_body_id: body.body_id,
-                route: CollisionRoute::SourcePolytope,
+                route: CollisionRoute::SourceCompressedMesh,
                 layer,
                 material_crc,
-                shape: MultiBodyShape::SourcePolytope {
-                    shape: source_polytopes
-                        .into_iter()
-                        .next()
-                        .expect("single source polytope"),
-                },
+                shape: MultiBodyShape::RawCompressedMesh { data },
             });
         }
         let raw_mesh = meshes.into_iter().next().expect("single mesh");
@@ -343,6 +463,28 @@ pub(crate) fn classify_source_body(
         }
 
         if raw_mesh.shape_type == "convex_hull" {
+            // A COPLANAR convex source (stair helper ramp, flat pane) must NOT
+            // become compressed-mesh triangles: a zero-thickness mesh plane is
+            // tunneled through intermittently by the character controller.
+            // Vanilla FO4 keeps these as convex slabs with real thickness —
+            // emit the same, padded along the plane normal so the footprint
+            // is preserved for planes at any orientation.
+            let havok_vertices = nif_vertices_to_havok(&raw_mesh.vertices);
+            if !havok_vertices.is_empty()
+                && havok_vertices.iter().all(vertex_is_finite)
+                && coplanar_padding_normal(&havok_vertices, WALKABLE_SLAB_MIN_EXTENT).is_some()
+            {
+                let padded = padded_convex_vertices(havok_vertices, WALKABLE_SLAB_MIN_EXTENT);
+                if !padded.is_empty() {
+                    return Ok(PlannedCollisionBody {
+                        source_body_id: body.body_id,
+                        route: CollisionRoute::SourcePolytope,
+                        layer,
+                        material_crc,
+                        shape: MultiBodyShape::Polytope { vertices: padded },
+                    });
+                }
+            }
             if let Some((vertices, triangles)) = usable_triangle_mesh(&raw_mesh) {
                 return Ok(PlannedCollisionBody {
                     source_body_id: body.body_id,
@@ -371,10 +513,34 @@ pub(crate) fn classify_source_body(
         });
     }
 
+    // Static multi-child bodies whose children are ALL exact source convex
+    // polytopes keep the source hknpDynamicCompoundShape representation —
+    // vanilla FO4's own convention for intact vehicles (per-child convex
+    // shapes, source transforms, verbatim child mass properties). In-game
+    // verified on the golf cart (073E3FD0) once the fallback-material bug was
+    // fixed: every earlier "compound doesn't block" verdict came from variants
+    // carrying MaterialMetalStairs (0xC0EB623D), which the character
+    // controller climbs — those tests condemned the material, not the shape.
+    if !in_multi_body_assembly
+        && source_compound_children.len() == meshes.len()
+        && !source_compound_children.is_empty()
+    {
+        return Ok(PlannedCollisionBody {
+            source_body_id: body.body_id,
+            route: CollisionRoute::SourceCompound,
+            layer,
+            material_crc,
+            shape: MultiBodyShape::Compound {
+                children: source_compound_children,
+            },
+        });
+    }
+
     // Preserve source collision surfaces by merging multi-child static/keyframed
-    // bodies into a single multi-section hknpCompressedMeshShape whenever every
-    // decoded child carries usable surface triangles. This decision uses only
-    // the source Havok body metadata above and the collision preview geometry.
+    // bodies into a single multi-section hknpCompressedMeshShape when the source
+    // children are not all exact convex polytopes and every decoded child carries
+    // usable surface triangles. This decision uses only the source Havok body
+    // metadata above and the collision preview geometry.
     //
     // Collapsing children to convex hulls instead is wrong two ways. Concave
     // children (e.g. Vault 76 railings, walkways) get "filled in" to a solid slab
@@ -640,9 +806,13 @@ pub(crate) struct SourceBodyMetadata {
     /// bodies write.
     pub collision_filter_info: Option<u32>,
     pub body_flags: Option<i64>,
+    pub material_flags: Option<i64>,
+    pub material_trigger_type: Option<u8>,
     pub material_crc: Option<u32>,
     pub body_mass: Option<f32>,
     pub motion_type: Option<u8>,
+    pub position: Option<[f32; 4]>,
+    pub orientation: Option<[f32; 4]>,
     pub has_ref_mass_distribution: bool,
     pub is_dynamic: bool,
 }
@@ -693,14 +863,24 @@ fn motion_type_is_movable(motion_type: &str) -> bool {
 }
 
 pub(crate) fn source_body_metadata(blob: &[u8], body_id: usize) -> SourceBodyMetadata {
+    let source_transform = decode_source_body_transforms(blob)
+        .get(body_id)
+        .copied()
+        .flatten();
     let Ok(summary) = havok_native::api::havok_collision_summary(blob) else {
-        return SourceBodyMetadata::default();
+        return SourceBodyMetadata {
+            position: source_transform.map(|value| value.position),
+            orientation: source_transform.map(|value| value.orientation),
+            ..SourceBodyMetadata::default()
+        };
     };
     let has_mass_dist = decode_source_mass_distributions(blob)
         .get(body_id)
         .is_some_and(Option::is_some);
     let Ok(value) = serde_json::from_str::<Value>(&summary) else {
         return SourceBodyMetadata {
+            position: source_transform.map(|value| value.position),
+            orientation: source_transform.map(|value| value.orientation),
             has_ref_mass_distribution: has_mass_dist,
             is_dynamic: has_mass_dist,
             ..SourceBodyMetadata::default()
@@ -719,6 +899,8 @@ pub(crate) fn source_body_metadata(blob: &[u8], body_id: usize) -> SourceBodyMet
         })
     else {
         return SourceBodyMetadata {
+            position: source_transform.map(|value| value.position),
+            orientation: source_transform.map(|value| value.orientation),
             has_ref_mass_distribution: has_mass_dist,
             is_dynamic: has_mass_dist,
             ..SourceBodyMetadata::default()
@@ -746,6 +928,15 @@ pub(crate) fn source_body_metadata(blob: &[u8], body_id: usize) -> SourceBodyMet
         .get("flags")
         .and_then(Value::as_i64)
         .filter(|value| *value >= 0 && *value <= u32::MAX as i64);
+    let material_flags = body
+        .get("material_flags")
+        .and_then(Value::as_i64)
+        .filter(|value| *value >= 0 && *value <= u32::MAX as i64);
+    let material_trigger_type = body
+        .get("material_trigger_type")
+        .and_then(Value::as_u64)
+        .filter(|value| *value <= u8::MAX as u64)
+        .map(|value| value as u8);
     let body_mass = body
         .get("mass")
         .and_then(Value::as_f64)
@@ -760,9 +951,13 @@ pub(crate) fn source_body_metadata(blob: &[u8], body_id: usize) -> SourceBodyMet
         layer,
         collision_filter_info,
         body_flags,
+        material_flags,
+        material_trigger_type,
         material_crc: material_crc_from_summary_body(body),
         body_mass,
         motion_type,
+        position: source_transform.map(|value| value.position),
+        orientation: source_transform.map(|value| value.orientation),
         has_ref_mass_distribution: has_mass_dist,
         is_dynamic,
     }
@@ -808,39 +1003,96 @@ fn material_crc_from_summary_body(body: &Value) -> Option<u32> {
         .map(remap_unsupported_fo4_material)
 }
 
-/// FO4's complete collision-material vocabulary: the 85 distinct
+/// FO4's engine-resolvable collision-material vocabulary: the 85 distinct
 /// `hknpBSMaterialProperties.MaterialA` CRCs found across ALL 224,719 vanilla
-/// FO4 meshes. A source material whose
-/// CRC is outside this set has no FO4 equivalent — FO4 cannot resolve it, so
-/// footstep / impact audio is silent. 99%+ of FO76 surfaces share FO4's CRC
-/// (same engine hash) and pass through untouched; only genuinely FO76-only
-/// materials (e.g. `0xC30A4C50`, used by 48 Appalachia SCOL meshes) hit the
-/// remap.
-const FO4_COLLISION_MATERIALS: [u32; 85] = [
-    0x064003D4, 0x07D13747, 0x086D3D2D, 0x0A49D8C1, 0x0B237EAD, 0x11F2215B, 0x1402606B, 0x17C77AAF,
-    0x18D524E1, 0x198BBA58, 0x1D6B08F6, 0x1DD9C611, 0x1E151923, 0x233DB702, 0x2597884C, 0x26067D15,
-    0x27D71C46, 0x2A1A6690, 0x340E5D1C, 0x34C446FB, 0x359D733D, 0x3657B01A, 0x3D11E3C7, 0x3F8A92B1,
-    0x4BAEB094, 0x4CCACC3B, 0x4E85DE57, 0x4FE3937B, 0x543E8379, 0x55DFAB90, 0x58987081, 0x5DA0D740,
-    0x680D0E62, 0x6A3830DF, 0x6CCAF7B5, 0x6E2F68EE, 0x6F5D5172, 0x7000682E, 0x71B18589, 0x742D4841,
-    0x759D63FA, 0x7720EFD7, 0x7A359672, 0x7DFA6E05, 0x813E4D0D, 0x84E226A3, 0x86593A46, 0x87AB4C9C,
-    0x8838970B, 0x904580BD, 0x9384F1D8, 0x95480672, 0x962AECF5, 0x970ECC3C, 0xAB858F31, 0xACDEC9D6,
-    0xAD3E9DA2, 0xAD5ACB92, 0xAE697D67, 0xB151ADDB, 0xB26A84C5, 0xB9207C44, 0xB9233EAA, 0xC0EB623D,
-    0xC1CF2BBB, 0xCADE9C61, 0xCF81E009, 0xD9F982EB, 0xDEAAC6A1, 0xDEE94842, 0xDF02F237, 0xE2218D18,
-    0xE3EF5389, 0xE4D39CA3, 0xE538F7DB, 0xE868B7B9, 0xEAA17C2D, 0xEF371F70, 0xF0170989, 0xF1723C21,
-    0xF262004E, 0xF413D173, 0xF50FC457, 0xFCB37EA0, 0xFFF2AF4E,
+/// FO4 meshes, UNION the CRCs of every material with a MATT record in
+/// Fallout4.esm + DLC (155 of nifskope's 157 Fallout4HavokMaterial enum names
+/// have a MATT record — verified 2026-07-15 via `modkit data search records
+/// -t MATT`). A MATT record carries the HavokImpactDataSet, so any CRC here
+/// resolves with real footstep / impact audio even if no vanilla mesh uses it
+/// (e.g. MaterialMetalAuto 0xB26A0490: MATT 05BAD6 exists, zero vanilla mesh
+/// hits). A source CRC outside this set has no FO4 equivalent; it goes
+/// through [`FO76_ONLY_MATERIAL_MAP`], then the hard-surface default.
+const FO4_COLLISION_MATERIALS: [u32; 172] = [
+    0x0198AC25, 0x04280084, 0x043E188C, 0x064003D4, 0x07D13747, 0x086D3D2D, 0x0A49D8C1, 0x0B237EAD,
+    0x0E3D261F, 0x1183C024, 0x11F2215B, 0x1383E6FD, 0x1402606B, 0x14560422, 0x15881C70, 0x17C77AAF,
+    0x18D524E1, 0x198BBA58, 0x1AE0B5C1, 0x1D6B08F6, 0x1DD9C611, 0x1E151923, 0x233DB702, 0x2597884C,
+    0x26067D15, 0x2733FD4A, 0x27D71C46, 0x2810DB21, 0x29676A2A, 0x2A1A6690, 0x2C8F951F, 0x2C992CF3,
+    0x2E2C54E9, 0x3057FDEE, 0x340E5D1C, 0x34C446FB, 0x359D733D, 0x3657B01A, 0x38A65A44, 0x3A363A56,
+    0x3D11E3C7, 0x3DB20A5B, 0x3F8A92B1, 0x4301AF5D, 0x43DDF46D, 0x46A891A2, 0x479F2744, 0x4BAEB094,
+    0x4CCACC3B, 0x4E85DE57, 0x4ECD8A4D, 0x4FE3937B, 0x532E0B01, 0x543E8379, 0x54D67FA5, 0x55CBE58B,
+    0x55DFAB90, 0x5647AF5A, 0x58987081, 0x595D700D, 0x597E18B1, 0x5AF5B832, 0x5BCFAAAA, 0x5BFA2907,
+    0x5DA0D740, 0x5F8E706E, 0x680D0E62, 0x6A3830DF, 0x6CCAF7B5, 0x6E2F68EE, 0x6F2F6CF0, 0x6F5D5172,
+    0x7000682E, 0x70796311, 0x71971A7B, 0x71B18589, 0x72A964B2, 0x742D4841, 0x759D63FA, 0x76DB7B9F,
+    0x7720EFD7, 0x77572546, 0x78FA2E50, 0x7A359672, 0x7A565E6C, 0x7DFA6E05, 0x813E4D0D, 0x84115EBF,
+    0x8420148B, 0x84454330, 0x84E226A3, 0x86593A46, 0x86D8076E, 0x87AB4C9C, 0x8838970B, 0x8DB4BA3F,
+    0x904580BD, 0x92950590, 0x9384F1D8, 0x95480672, 0x956F001D, 0x962AECF5, 0x970ECC3C, 0x9B4E1A61,
+    0x9B78FC38, 0x9F660BFB, 0xA1E75858, 0xAA1835C0, 0xAA87B0BA, 0xAB858F31, 0xACDEC9D6, 0xAD3E9DA2,
+    0xAD5ACB92, 0xAE5B0FC9, 0xAE697D67, 0xB0A4E0C0, 0xB139C58D, 0xB151ADDB, 0xB21D96A4, 0xB26A0490,
+    0xB26A84C5, 0xB485CA91, 0xB8FF14A8, 0xB9207C44, 0xB9233EAA, 0xB9A18FF2, 0xBD6CDB8B, 0xBDD69D70,
+    0xBF2C6882, 0xBF702961, 0xBFCF56BF, 0xC0EB623D, 0xC1CF2BBB, 0xC3C8B87D, 0xC7F82142, 0xC9601F3F,
+    0xCADE9C61, 0xCF81E009, 0xCFC6E5AC, 0xD0DE9ABD, 0xD822C827, 0xD8F10645, 0xD9F982EB, 0xDC82FA46,
+    0xDEAAC6A1, 0xDEB5E98A, 0xDEE94842, 0xDF02F237, 0xE2218D18, 0xE3EF5389, 0xE4D39CA3, 0xE538F7DB,
+    0xE718F52D, 0xE82B8707, 0xE868B7B9, 0xEA88E143, 0xEAA17C2D, 0xEEBAD018, 0xEF371F70, 0xF0170989,
+    0xF1723C21, 0xF262004E, 0xF413D173, 0xF50FC457, 0xF5F68F1C, 0xF7272B39, 0xF81771FE, 0xFA43D6C2,
+    0xFACCA15B, 0xFCB37EA0, 0xFF9AE74C, 0xFFF2AF4E,
 ];
 
-/// Hard-surface fallback for FO76-only materials. Already the established FO4
-/// default for the no-source-material path, and a member of the corpus above so
-/// FO4 always resolves it.
-const FO4_MATERIAL_DEFAULT: u32 = 0xC0EB623D;
+/// Semantic FO76-only → FO4 material mappings, applied before the corpus
+/// check. Sources: the 2026-07-15 full scan of all 99,539 FO76 source meshes
+/// (`tmp/fo76_material_audit.json`) — these are every FO76 material CRC with
+/// no FO4 MATT record, mapped to the closest FO4 surface by name/usage.
+/// Unnamed CRCs (absent from nifskope's Fallout76HavokMaterial enum) are
+/// mapped by the objects that carry them. Targets MUST be corpus members and
+/// MUST NOT be stairs materials (the character controller climbs stairs
+/// collision instead of blocking — the golf cart bug).
+const FO76_ONLY_MATERIAL_MAP: [(u32, u32); 25] = [
+    (0x05502709, 0xB9A18FF2), // MaterialSoccerBall -> MaterialRubberBall
+    (0x2877AE1C, 0xB151ADDB), // MaterialOrganicCranberrySundewTendril2 -> Material_Organic
+    (0x297268A5, 0x1383E6FD), // foodpaste_enclave tray -> MaterialMetalTray
+    (0x2F1A6A05, 0xB151ADDB), // MaterialOrganicCranberrySundewTendril6 -> Material_Organic
+    (0x3569D3DD, 0x2C8F951F), // ATX construction barrier -> MaterialPlasticTrafficCone
+    (0x4D901DFC, 0xB26A0490), // cop car hulk -> MaterialMetalAuto
+    (0x5C36ACD3, 0x6F2F6CF0), // cat skeleton -> MaterialActorSkinSmall
+    (0x5DD8A028, 0x54D67FA5), // alien skeleton -> MaterialActorSkin
+    (0x5ED4DFD3, 0x064003D4), // translating platform -> Material_Metal
+    (0x5F709E8A, 0xB151ADDB), // MaterialOrganicCranberrySundewTendril3 -> Material_Organic
+    (0x5FB7F3C0, 0xAA1835C0), // MaterialWorkshopDestructionWoodA -> MaterialWoodBoard
+    (0x6EC710FA, 0x15881C70), // ATX combat dagger -> MaterialWeaponMetalBlade1HandSmall
+    (0x7D0E71E9, 0x064003D4), // MaterialWorkshopDestructionMetalA -> Material_Metal
+    (0x7E86F62D, 0xF7272B39), // ATX alien blaster -> MaterialWeaponPistol
+    (0x84543E72, 0x3657B01A), // MaterialWorkshopDestructionConcA -> MaterialStoneConcrete
+    (0xAE486D87, 0x064003D4), // MaterialWindChimes -> Material_Metal
+    (0xB17EFFA6, 0xB151ADDB), // MaterialOrganicCranberrySundewTendril1 -> Material_Organic
+    (0xB3E07D39, 0x7DFA6E05), // MaterialPlasticPartyCup -> Material_Plastic
+    (0xB6133BBF, 0xB151ADDB), // MaterialOrganicCranberrySundewTendril5 -> Material_Organic
+    (0xB8FA7643, 0x4301AF5D), // yaoguai gib -> MaterialActorSkinLarge
+    (0xC1140B29, 0xB151ADDB), // MaterialOrganicCranberrySundewTendril4 -> Material_Organic
+    (0xC30A4C50, 0xBDD69D70), // MaterialTrash -> MaterialGroundDirtLeaves
+    (0xCCC79284, 0x7A565E6C), // MaterialTableTennisBall -> MaterialBaseball
+    (0xF957E4EE, 0xB9A18FF2), // MaterialRubberBalloon -> MaterialRubberBall
+    (0xFB6F3F0F, 0xC3C8B87D), // MaterialWeaponTomahawk -> MaterialWeaponMetalBlade1Hand
+];
+
+/// Hard-surface fallback for FO76-only materials: `Material_Metal`
+/// (0x064003D4), a corpus member and the material vanilla FO4 vehicles carry.
+///
+/// Must NOT be a stairs material. The previous default 0xC0EB623D is
+/// `MaterialMetalStairs`, and FO4's character controller treats stair-material
+/// collision as climbable instead of blocking: the golf cart (FO76-only
+/// `MaterialMetalAuto` → stairs default) let the player walk up its side onto
+/// the roof, with shape geometry, layer, and body flags all verified correct.
+const FO4_MATERIAL_DEFAULT: u32 = 0x064003D4;
 
 fn remap_unsupported_fo4_material(crc: u32) -> u32 {
     if FO4_COLLISION_MATERIALS.contains(&crc) {
-        crc
-    } else {
-        FO4_MATERIAL_DEFAULT
+        return crc;
     }
+    FO76_ONLY_MATERIAL_MAP
+        .iter()
+        .find(|(source, _)| *source == crc)
+        .map(|(_, target)| *target)
+        .unwrap_or(FO4_MATERIAL_DEFAULT)
 }
 
 pub(crate) fn summary_has_degenerate_collision_shape(summary: &str) -> bool {
@@ -946,20 +1198,62 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_fo76_material_remaps_to_fo4_default() {
-        // 0xC30A4C50 is a FO76-only physics material (48 Appalachia SCOL meshes)
-        // absent from FO4's 85-material corpus — FO4 can't resolve it, so it must
-        // remap to the hard-surface default rather than ship silent.
+    fn fo76_only_material_remaps_through_semantic_map() {
+        // 0xC30A4C50 is MaterialTrash, FO76-only (no FO4 MATT record) — the
+        // semantic map sends it to MaterialGroundDirtLeaves, not the generic
+        // hard-surface default.
         let body = serde_json::json!({
             "body_id": 0,
             "material_crc": 0,
             "bs_materials": [{"filter_info": 0x0D, "material_crc": 0xC30A4C50u32}],
             "layer": 0x0D,
         });
+        assert_eq!(material_crc_from_summary_body(&body), Some(0xBDD69D70));
+    }
+
+    #[test]
+    fn unknown_fo76_material_remaps_to_fo4_default() {
+        // A CRC with no FO4 MATT record and no semantic map entry falls back
+        // to the hard-surface default.
+        let body = serde_json::json!({
+            "body_id": 0,
+            "material_crc": 0,
+            "bs_materials": [{"filter_info": 0x0D, "material_crc": 0xEE1A3728u32}],
+            "layer": 0x0D,
+        });
         assert_eq!(
             material_crc_from_summary_body(&body),
             Some(FO4_MATERIAL_DEFAULT)
         );
+    }
+
+    /// Every FO4 stairs-material CRC (nifskope Fallout4HavokMaterial names
+    /// containing "Stairs"). The character controller climbs stair-material
+    /// collision instead of blocking laterally, so no remap may ever CHOOSE
+    /// one — a source that genuinely carries one passes through untouched.
+    const FO4_STAIRS_MATERIALS: [u32; 12] = [
+        0x3057FDEE, 0x38A65A44, 0x4FE3937B, 0x55CBE58B, 0x6A3830DF, 0x7000682E, 0x962AECF5,
+        0x970ECC3C, 0xAE697D67, 0xB21D96A4, 0xC0EB623D, 0xE2218D18,
+    ];
+
+    #[test]
+    fn material_map_targets_are_resolvable_and_never_stairs() {
+        assert!(!FO4_STAIRS_MATERIALS.contains(&FO4_MATERIAL_DEFAULT));
+        for (source, target) in FO76_ONLY_MATERIAL_MAP {
+            assert!(
+                FO4_COLLISION_MATERIALS.contains(&target),
+                "map target 0x{target:08X} must be FO4-resolvable"
+            );
+            assert!(
+                !FO4_STAIRS_MATERIALS.contains(&target),
+                "map target 0x{target:08X} must not be a stairs material"
+            );
+            assert!(
+                !FO4_COLLISION_MATERIALS.contains(&source),
+                "map source 0x{source:08X} is already resolvable — dead entry"
+            );
+            assert_eq!(remap_unsupported_fo4_material(source), target);
+        }
     }
 
     #[test]
@@ -1001,6 +1295,9 @@ mod tests {
     #[test]
     fn route_counts_render_stable_report_fragment() {
         let mut counts = RouteCounts::default();
+        counts.bump(CollisionRoute::SourceSphere);
+        counts.bump(CollisionRoute::SourceCapsule);
+        counts.bump(CollisionRoute::SourceConvex);
         counts.bump(CollisionRoute::SourcePolytope);
         counts.bump(CollisionRoute::SourcePolytope);
         counts.bump(CollisionRoute::SourceCompound);
@@ -1009,8 +1306,84 @@ mod tests {
 
         assert_eq!(
             counts.report_fragment(),
-            "source-polytope=2, source-compound=1, source-compressed-mesh=0, clutter-convex=0, visible-mesh-aabb-fallback=1, stripped-unrecoverable=1"
+            "source-polytope=2, source-compound=1, source-compressed-mesh=0, clutter-convex=0, visible-mesh-aabb-fallback=1, stripped-unrecoverable=1, source-sphere=1, source-capsule=1, source-convex=1"
         );
+    }
+
+    #[test]
+    fn semantic_primitives_route_without_preview_geometry() {
+        let body = |primitive, source_body_count, is_dynamic| ExtractedCollisionBody {
+            body_id: 7,
+            meshes: Vec::new(),
+            source_polytopes: Vec::new(),
+            source_compound_children: Vec::new(),
+            source_compressed_mesh: None,
+            source_primitive: Some((primitive, source_body_count)),
+            layer: Some(FO4_STATIC_LAYER),
+            material_crc: Some(FO4_MATERIAL_DEFAULT),
+            is_dynamic,
+        };
+
+        let static_sphere = classify_source_body(
+            body(
+                SourcePrimitiveShape::Sphere {
+                    center: [1.0, 2.0, 3.0],
+                    radius: 0.25,
+                },
+                1,
+                false,
+            ),
+            false,
+        )
+        .expect("static sphere route");
+        assert_eq!(static_sphere.route, CollisionRoute::SourceSphere);
+        assert!(matches!(
+            static_sphere.shape,
+            MultiBodyShape::Sphere {
+                radius: 0.25,
+                position: [1.0, 2.0, 3.0]
+            }
+        ));
+
+        let dynamic_sphere = classify_source_body(
+            body(
+                SourcePrimitiveShape::Sphere {
+                    center: [0.0, 0.0, 0.0],
+                    radius: 0.5,
+                },
+                1,
+                true,
+            ),
+            false,
+        )
+        .expect("dynamic sphere route");
+        assert_eq!(dynamic_sphere.route, CollisionRoute::SourceSphere);
+        assert!(matches!(
+            dynamic_sphere.shape,
+            MultiBodyShape::SourceConvex { ref shape }
+                if shape.vertices == vec![[0.0, 0.0, 0.0, 0.5]]
+                    && shape.convex_radius == 0.5
+        ));
+
+        let source_convex = SourceConvexShape {
+            vertices: vec![[0.0, 0.0, 0.0, 0.5], [1.0, 0.0, 0.0, 0.5]],
+            convex_radius: 0.01,
+            mass_properties: None,
+        };
+        let convex = classify_source_body(
+            body(
+                SourcePrimitiveShape::Convex(source_convex.clone()),
+                1,
+                false,
+            ),
+            false,
+        )
+        .expect("source convex route");
+        assert_eq!(convex.route, CollisionRoute::SourceConvex);
+        assert!(matches!(
+            convex.shape,
+            MultiBodyShape::SourceConvex { shape } if shape == source_convex
+        ));
     }
 
     // Summaries below mirror the REAL rebuilt-FO4-blob shape dumped from
@@ -1099,6 +1472,9 @@ mod tests {
         let body = ExtractedCollisionBody {
             body_id: 9,
             source_polytopes: Vec::new(),
+            source_compound_children: Vec::new(),
+            source_compressed_mesh: None,
+            source_primitive: None,
             meshes: vec![PreviewMesh {
                 shape_type: "convex_hull".to_string(),
                 vertices: vec![
@@ -1143,6 +1519,9 @@ mod tests {
         let body = ExtractedCollisionBody {
             body_id: 10,
             source_polytopes: Vec::new(),
+            source_compound_children: Vec::new(),
+            source_compressed_mesh: None,
+            source_primitive: None,
             meshes: vec![PreviewMesh {
                 shape_type: "convex_hull".to_string(),
                 vertices: unit_cube_nif_vertices(),
@@ -1170,6 +1549,9 @@ mod tests {
         let body = ExtractedCollisionBody {
             body_id: 10,
             source_polytopes: vec![source_shape.clone()],
+            source_compound_children: Vec::new(),
+            source_compressed_mesh: None,
+            source_primitive: None,
             meshes: vec![PreviewMesh {
                 shape_type: "convex_hull".to_string(),
                 vertices: unit_cube_nif_vertices(),
@@ -1215,6 +1597,9 @@ mod tests {
         let body = ExtractedCollisionBody {
             body_id: 21,
             source_polytopes: Vec::new(),
+            source_compound_children: Vec::new(),
+            source_compressed_mesh: None,
+            source_primitive: None,
             meshes: vec![PreviewMesh {
                 shape_type: "convex_hull".to_string(),
                 vertices: unit_cube_nif_vertices(),
@@ -1236,15 +1621,18 @@ mod tests {
     }
 
     #[test]
-    fn flat_source_convex_in_static_assembly_with_triangles_becomes_compressed_mesh() {
-        // WorkshopExplosionGenericMetal-style debris: the source body carries a
-        // dynamic mass distribution, but the NIF has many collision bodies, so it
-        // is treated as a static assembly. If the source exposes real surface
-        // triangles, keep those triangles as static compressed mesh instead of
-        // emitting a convex shape that FO4 may wrap as a scaled convex at runtime.
+    fn flat_source_convex_in_static_assembly_becomes_padded_slab() {
+        // WorkshopExplosionGenericMetal-style debris: a truly FLAT convex source.
+        // Keeping its triangles as compressed mesh (the old policy) ships a
+        // zero-thickness plane the character controller tunnels through — the
+        // recurring "random fall through" on converted SCOL surfaces. It must
+        // become a convex slab padded along the plane normal (footprint intact).
         let body = ExtractedCollisionBody {
             body_id: 33,
             source_polytopes: Vec::new(),
+            source_compound_children: Vec::new(),
+            source_compressed_mesh: None,
+            source_primitive: None,
             meshes: vec![PreviewMesh {
                 shape_type: "convex_hull".to_string(),
                 vertices: vec![
@@ -1262,26 +1650,35 @@ mod tests {
 
         let planned = classify_source_body(body, true).expect("planned body");
 
-        assert_eq!(planned.route, CollisionRoute::SourceCompressedMesh);
+        assert_eq!(planned.route, CollisionRoute::SourcePolytope);
         assert_eq!(planned.layer, 19);
         match planned.shape {
-            MultiBodyShape::CompressedMesh {
-                ref vertices,
-                ref triangles,
-            } => {
-                assert_eq!(vertices.len(), 4);
-                assert_eq!(triangles, &vec![[0, 1, 2], [0, 2, 3]]);
+            MultiBodyShape::Polytope { ref vertices } => {
+                assert_eq!(vertices.len(), 8, "quad padded to both sides");
+                let z_lo = vertices.iter().map(|v| v[2]).fold(f32::INFINITY, f32::min);
+                let z_hi = vertices
+                    .iter()
+                    .map(|v| v[2])
+                    .fold(f32::NEG_INFINITY, f32::max);
+                assert!(
+                    (z_hi - z_lo - WALKABLE_SLAB_MIN_EXTENT).abs() < 1e-3,
+                    "flat convex must gain walkable slab thickness, got {}",
+                    z_hi - z_lo
+                );
             }
-            _ => panic!("static assembly body with triangles must become compressed mesh"),
+            _ => panic!("flat static assembly convex must become a padded slab"),
         }
     }
 
     #[test]
-    fn source_polytope_in_static_assembly_prefers_compressed_mesh_when_triangles_exist() {
+    fn source_polytope_in_static_assembly_prefers_padded_slab_when_flat() {
         let source_shape = thin_source_box_polytope(0.01);
         let body = ExtractedCollisionBody {
             body_id: 34,
             source_polytopes: vec![source_shape.clone()],
+            source_compound_children: Vec::new(),
+            source_compressed_mesh: None,
+            source_primitive: None,
             meshes: vec![PreviewMesh {
                 shape_type: "convex_hull".to_string(),
                 vertices: vec![
@@ -1299,17 +1696,13 @@ mod tests {
 
         let planned = classify_source_body(body, true).expect("planned body");
 
-        assert_eq!(planned.route, CollisionRoute::SourceCompressedMesh);
+        assert_eq!(planned.route, CollisionRoute::SourcePolytope);
         assert_eq!(planned.layer, FO4_STATIC_LAYER);
         match planned.shape {
-            MultiBodyShape::CompressedMesh {
-                ref vertices,
-                ref triangles,
-            } => {
-                assert_eq!(vertices.len(), 4);
-                assert_eq!(triangles, &vec![[0, 1, 2], [0, 2, 3]]);
+            MultiBodyShape::Polytope { ref vertices } => {
+                assert_eq!(vertices.len(), 8, "quad padded to both sides");
             }
-            _ => panic!("static assembly body with triangles must stay on compressed mesh route"),
+            _ => panic!("flat static assembly convex must become a padded slab"),
         }
     }
 
@@ -1322,6 +1715,9 @@ mod tests {
         let body = ExtractedCollisionBody {
             body_id: 12,
             source_polytopes: Vec::new(),
+            source_compound_children: Vec::new(),
+            source_compressed_mesh: None,
+            source_primitive: None,
             meshes: vec![
                 PreviewMesh {
                     shape_type: "convex_hull".to_string(),
@@ -1367,6 +1763,9 @@ mod tests {
         let body = ExtractedCollisionBody {
             body_id: 20,
             source_polytopes: Vec::new(),
+            source_compound_children: Vec::new(),
+            source_compressed_mesh: None,
+            source_primitive: None,
             meshes: vec![PreviewMesh {
                 shape_type: "convex_hull".to_string(),
                 vertices: unit_cube_nif_vertices(),
@@ -1399,6 +1798,9 @@ mod tests {
         let body = ExtractedCollisionBody {
             body_id: 20,
             source_polytopes: Vec::new(),
+            source_compound_children: Vec::new(),
+            source_compressed_mesh: None,
+            source_primitive: None,
             meshes: vec![PreviewMesh {
                 shape_type: "convex_hull".to_string(),
                 vertices: unit_cube_nif_vertices(),
@@ -1515,6 +1917,9 @@ mod tests {
         let body = ExtractedCollisionBody {
             body_id: 11,
             source_polytopes: Vec::new(),
+            source_compound_children: Vec::new(),
+            source_compressed_mesh: None,
+            source_primitive: None,
             meshes: vec![PreviewMesh {
                 shape_type: "convex_hull".to_string(),
                 vertices: unit_cube_nif_vertices(),
@@ -1543,6 +1948,9 @@ mod tests {
         let body = ExtractedCollisionBody {
             body_id: 12,
             source_polytopes: Vec::new(),
+            source_compound_children: Vec::new(),
+            source_compressed_mesh: None,
+            source_primitive: None,
             meshes: vec![PreviewMesh {
                 shape_type: "convex_hull".to_string(),
                 vertices: unit_cube_nif_vertices(),
@@ -1584,6 +1992,9 @@ mod tests {
         let body = ExtractedCollisionBody {
             body_id: 13,
             source_polytopes: vec![source_shape.clone()],
+            source_compound_children: Vec::new(),
+            source_compressed_mesh: None,
+            source_primitive: None,
             meshes: vec![PreviewMesh {
                 shape_type: "convex_hull".to_string(),
                 vertices: unit_cube_nif_vertices(),
@@ -1622,6 +2033,9 @@ mod tests {
             let body = ExtractedCollisionBody {
                 body_id: 1,
                 source_polytopes: vec![source_shape.clone()],
+                source_compound_children: Vec::new(),
+                source_compressed_mesh: None,
+                source_primitive: None,
                 meshes: vec![PreviewMesh {
                     shape_type: "convex_hull".to_string(),
                     vertices: unit_cube_nif_vertices(),
@@ -1679,10 +2093,49 @@ mod tests {
     }
 
     #[test]
+    fn extracts_trigger_material_metadata_from_havok_blob() {
+        use havok_native::collision::multi_body::BodyMeta;
+        use havok_native::collision::{
+            BuildOptions, MultiBodyShape, build_fo4_multi_body_collision,
+        };
+
+        let metas = [BodyMeta {
+            layer: FO4_ACTORZONE_LAYER,
+            body_flags: Some(1 << 4),
+            material_flags: Some(1 << 21),
+            material_trigger_type: Some(2),
+            position: [1.0, 2.0, 3.0, 4.0],
+            orientation: [0.1, 0.2, 0.3, 0.9],
+            ..BodyMeta::default()
+        }];
+        let blob = build_fo4_multi_body_collision(
+            &[MultiBodyShape::Polytope {
+                vertices: unit_cube_havok_vertices(),
+            }],
+            &BuildOptions::default(),
+            None,
+            Some(&metas),
+        )
+        .expect("trigger test blob");
+
+        let metadata = source_body_metadata(&blob, 0);
+
+        assert_eq!(metadata.layer, Some(FO4_ACTORZONE_LAYER));
+        assert_eq!(metadata.body_flags, Some(1 << 4));
+        assert_eq!(metadata.material_flags, Some(1 << 21));
+        assert_eq!(metadata.material_trigger_type, Some(2));
+        assert_eq!(metadata.position, Some([1.0, 2.0, 3.0, 4.0]));
+        assert_eq!(metadata.orientation, Some([0.1, 0.2, 0.3, 0.9]));
+    }
+
+    #[test]
     fn classifies_single_static_convex_preview_as_source_compressed_mesh() {
         let body = ExtractedCollisionBody {
             body_id: 7,
             source_polytopes: Vec::new(),
+            source_compound_children: Vec::new(),
+            source_compressed_mesh: None,
+            source_primitive: None,
             meshes: vec![PreviewMesh {
                 shape_type: "convex_hull".to_string(),
                 vertices: unit_cube_nif_vertices(),
@@ -1717,6 +2170,9 @@ mod tests {
         let body = ExtractedCollisionBody {
             body_id: 7,
             source_polytopes: Vec::new(),
+            source_compound_children: Vec::new(),
+            source_compressed_mesh: None,
+            source_primitive: None,
             meshes: vec![PreviewMesh {
                 shape_type: "convex_hull".to_string(),
                 vertices: unit_cube_nif_vertices(),
@@ -1747,6 +2203,9 @@ mod tests {
         let body = ExtractedCollisionBody {
             body_id: 2,
             source_polytopes: Vec::new(),
+            source_compound_children: Vec::new(),
+            source_compressed_mesh: None,
+            source_primitive: None,
             meshes: vec![PreviewMesh {
                 shape_type: "compressed_mesh".to_string(),
                 vertices: unit_cube_nif_vertices(),
@@ -1791,6 +2250,9 @@ mod tests {
         let body = ExtractedCollisionBody {
             body_id: 3,
             source_polytopes: Vec::new(),
+            source_compound_children: Vec::new(),
+            source_compressed_mesh: None,
+            source_primitive: None,
             meshes: vec![PreviewMesh {
                 shape_type: "compressed_mesh".to_string(),
                 vertices,
@@ -1821,6 +2283,9 @@ mod tests {
         let body = ExtractedCollisionBody {
             body_id: 3,
             source_polytopes: Vec::new(),
+            source_compound_children: Vec::new(),
+            source_compressed_mesh: None,
+            source_primitive: None,
             meshes: vec![PreviewMesh {
                 shape_type: "compressed_mesh".to_string(),
                 vertices: vec![
@@ -1848,10 +2313,70 @@ mod tests {
     }
 
     #[test]
+    fn coplanar_convex_hull_becomes_padded_polytope_slab_not_zero_thickness_mesh() {
+        // A stair-helper-style ramp: a zero-thickness convex quad on a DIAGONAL
+        // plane (no thin AABB axis). As compressed-mesh triangles the character
+        // controller tunnels through it ("random fall through steps"); it must
+        // come out as a convex slab padded to vanilla stair-helper thickness.
+        let quad = vec![
+            [0.0, 0.0, 0.0],
+            [3.7 * HAVOK_SCALE, 0.0, 3.7 * HAVOK_SCALE],
+            [0.0, 1.1 * HAVOK_SCALE, 0.0],
+            [3.7 * HAVOK_SCALE, 1.1 * HAVOK_SCALE, 3.7 * HAVOK_SCALE],
+        ];
+        let body = ExtractedCollisionBody {
+            body_id: 9,
+            source_polytopes: Vec::new(),
+            source_compound_children: Vec::new(),
+            source_compressed_mesh: None,
+            source_primitive: None,
+            meshes: vec![PreviewMesh {
+                shape_type: "convex_hull".to_string(),
+                vertices: quad,
+                triangles: vec![[0, 1, 2], [1, 3, 2]],
+            }],
+            layer: Some(31),
+            material_crc: None,
+            is_dynamic: false,
+        };
+
+        let planned = classify_source_body(body, true).expect("planned body");
+
+        assert_eq!(planned.route, CollisionRoute::SourcePolytope);
+        assert_eq!(planned.layer, 31);
+        match planned.shape {
+            MultiBodyShape::Polytope { ref vertices } => {
+                assert_eq!(vertices.len(), 8, "4 quad corners padded to both sides");
+                // Thickness along the plane normal must be the vanilla-calibrated
+                // slab extent, not STATIC_MIN_EXTENT's 1 mm.
+                let normal = {
+                    let n = [-1.0f32 / 2.0f32.sqrt(), 0.0, 1.0 / 2.0f32.sqrt()];
+                    n
+                };
+                let dots: Vec<f32> = vertices
+                    .iter()
+                    .map(|v| v[0] * normal[0] + v[1] * normal[1] + v[2] * normal[2])
+                    .collect();
+                let lo = dots.iter().cloned().fold(f32::INFINITY, f32::min);
+                let hi = dots.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+                assert!(
+                    (hi - lo - WALKABLE_SLAB_MIN_EXTENT).abs() < 1e-3,
+                    "slab thickness {} must be ~{WALKABLE_SLAB_MIN_EXTENT}",
+                    hi - lo
+                );
+            }
+            _ => panic!("coplanar convex must become a padded polytope slab"),
+        }
+    }
+
+    #[test]
     fn classifies_all_convex_static_compound_with_triangles_as_compressed_mesh() {
         let body = ExtractedCollisionBody {
             body_id: 5,
             source_polytopes: Vec::new(),
+            source_compound_children: Vec::new(),
+            source_compressed_mesh: None,
+            source_primitive: None,
             meshes: vec![
                 PreviewMesh {
                     shape_type: "convex_hull".to_string(),
@@ -1885,6 +2410,73 @@ mod tests {
     }
 
     #[test]
+    fn classifies_exact_all_convex_static_compound_as_source_compound() {
+        let first = thin_source_box_polytope(0.25);
+        let mut second = thin_source_box_polytope(0.5);
+        for vertex in &mut second.vertices {
+            vertex[0] += 2.0;
+        }
+        for plane in &mut second.planes {
+            plane[3] -= plane[0] * 2.0;
+        }
+        let body = ExtractedCollisionBody {
+            body_id: 5,
+            source_polytopes: vec![first.clone(), second.clone()],
+            source_compound_children: vec![
+                CompoundChild {
+                    transform: CompoundChild::identity_transform(),
+                    kind: CompoundChildKind::SourcePolytope {
+                        shape: first.clone(),
+                    },
+                },
+                CompoundChild {
+                    transform: CompoundChild::identity_transform(),
+                    kind: CompoundChildKind::SourcePolytope {
+                        shape: second.clone(),
+                    },
+                },
+            ],
+            source_compressed_mesh: None,
+            source_primitive: None,
+            meshes: vec![
+                PreviewMesh {
+                    shape_type: "convex_hull".to_string(),
+                    vertices: unit_cube_nif_vertices(),
+                    triangles: unit_cube_triangles(),
+                },
+                PreviewMesh {
+                    shape_type: "convex_hull".to_string(),
+                    vertices: unit_cube_nif_vertices(),
+                    triangles: unit_cube_triangles(),
+                },
+            ],
+            layer: Some(FO4_STATIC_LAYER),
+            material_crc: Some(0xC0EB623D),
+            is_dynamic: false,
+        };
+
+        let planned = classify_source_body(body, false).expect("planned body");
+
+        // Exact source convex children keep the source compound representation
+        // (vanilla intact-vehicle convention). In-game verified blocking on the
+        // golf cart 073E3FD0 with a correct (non-stairs) material.
+        assert_eq!(planned.route, CollisionRoute::SourceCompound);
+        assert_eq!(planned.layer, FO4_STATIC_LAYER);
+        match planned.shape {
+            MultiBodyShape::Compound { ref children } => {
+                assert_eq!(children.len(), 2);
+                assert!(
+                    children.iter().all(|child| matches!(
+                        child.kind,
+                        CompoundChildKind::SourcePolytope { .. }
+                    ))
+                );
+            }
+            _ => panic!("exact static convex children must stay a source compound"),
+        }
+    }
+
+    #[test]
     fn classifies_mixed_compound_with_flat_panel_as_merged_compressed_mesh() {
         // FO76 ATX_CoalTower-style body: a compressed-mesh child plus a FLAT
         // (coplanar) convex panel. The old path force-fit every child to a
@@ -1907,6 +2499,9 @@ mod tests {
         let body = ExtractedCollisionBody {
             body_id: 5,
             source_polytopes: Vec::new(),
+            source_compound_children: Vec::new(),
+            source_compressed_mesh: None,
+            source_primitive: None,
             meshes: vec![
                 PreviewMesh {
                     shape_type: "compressed_mesh".to_string(),
@@ -1945,12 +2540,18 @@ mod tests {
     }
 
     #[test]
-    fn thin_static_source_convex_with_triangles_becomes_compressed_mesh() {
+    fn thin_static_source_convex_becomes_padded_slab() {
+        // A near-flat convex shell (~1 cm thick) tunnels the character
+        // controller just like a true plane — it gains walkable slab
+        // thickness along its thin normal, keeping the footprint exact.
         let y_min = -0.56985486;
         let y_max = 0.10741507;
         let body = ExtractedCollisionBody {
             body_id: 0,
             source_polytopes: Vec::new(),
+            source_compound_children: Vec::new(),
+            source_compressed_mesh: None,
+            source_primitive: None,
             meshes: vec![PreviewMesh {
                 shape_type: "convex_hull".to_string(),
                 vertices: vec![
@@ -1972,30 +2573,26 @@ mod tests {
 
         let planned = classify_source_body(body, false).expect("planned body");
 
-        assert_eq!(planned.route, CollisionRoute::SourceCompressedMesh);
+        assert_eq!(planned.route, CollisionRoute::SourcePolytope);
         match planned.shape {
-            MultiBodyShape::CompressedMesh {
-                ref vertices,
-                ref triangles,
-            } => {
-                assert_eq!(triangles.len(), 12);
+            MultiBodyShape::Polytope { ref vertices } => {
+                assert_eq!(
+                    vertices.len(),
+                    8,
+                    "axis-thin box pads its thin axis in place"
+                );
                 let y_lo = vertices.iter().map(|v| v[1]).fold(f32::INFINITY, f32::min);
                 let y_hi = vertices
                     .iter()
                     .map(|v| v[1])
                     .fold(f32::NEG_INFINITY, f32::max);
-                let expected = (y_max - y_min) / HAVOK_SCALE;
                 assert!(
-                    (y_hi - y_lo - expected).abs() < 1e-5,
-                    "static thin axis changed from {expected} to {}",
+                    (y_hi - y_lo - WALKABLE_SLAB_MIN_EXTENT).abs() < 1e-3,
+                    "thin shell must gain walkable slab thickness: got {}",
                     y_hi - y_lo
                 );
-                assert!(
-                    y_hi - y_lo < CLUTTER_MIN_EXTENT,
-                    "static source compressed mesh must not receive clutter padding"
-                );
             }
-            _ => panic!("expected compressed mesh"),
+            _ => panic!("near-flat static convex must become a padded slab"),
         }
     }
 
@@ -2004,6 +2601,9 @@ mod tests {
         let body = ExtractedCollisionBody {
             body_id: 1,
             source_polytopes: Vec::new(),
+            source_compound_children: Vec::new(),
+            source_compressed_mesh: None,
+            source_primitive: None,
             meshes: vec![PreviewMesh {
                 shape_type: "convex_hull".to_string(),
                 vertices: vec![
@@ -2042,6 +2642,9 @@ mod tests {
         let body = ExtractedCollisionBody {
             body_id: 4,
             source_polytopes: Vec::new(),
+            source_compound_children: Vec::new(),
+            source_compressed_mesh: None,
+            source_primitive: None,
             meshes: vec![
                 PreviewMesh {
                     shape_type: "convex_hull".to_string(),
@@ -2076,6 +2679,9 @@ mod tests {
         let body = ExtractedCollisionBody {
             body_id: 4,
             source_polytopes: Vec::new(),
+            source_compound_children: Vec::new(),
+            source_compressed_mesh: None,
+            source_primitive: None,
             meshes: vec![
                 PreviewMesh {
                     shape_type: "convex_hull".to_string(),
@@ -2129,6 +2735,9 @@ mod tests {
         let body = ExtractedCollisionBody {
             body_id: 1,
             source_polytopes: Vec::new(),
+            source_compound_children: Vec::new(),
+            source_compressed_mesh: None,
+            source_primitive: None,
             meshes: vec![PreviewMesh {
                 shape_type: "convex_hull".to_string(),
                 vertices: Vec::new(),
@@ -2234,6 +2843,7 @@ mod tests {
                 0, 4, 7, 3, 1, 2, 6, 5, 0, 1, 5, 4, 3, 7, 6, 2, 0, 3, 2, 1, 4, 5, 6, 7,
             ],
             convex_radius: 0.02,
+            mass_properties: None,
         }
     }
 }

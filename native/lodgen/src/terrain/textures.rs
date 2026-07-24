@@ -25,6 +25,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
+use crate::asset_source::{self, ResolvedAsset};
 use crate::descriptors::QuadDesc;
 use crate::input::{CellInput, WorldspaceInput};
 use crate::progress::LodPaths;
@@ -178,10 +179,12 @@ const MAX_SOURCE_DDS_EDGE: u32 = 16384;
 /// length disagrees with its dimensions. A miss falls back to the grey base in
 /// `composite_pass`, so a bad source DDS can never crash the run or feed garbage
 /// to `SourceTexture::sample`.
-fn load_valid_dds(path: &Path) -> Option<SourceTexture> {
+fn load_valid_dds(asset: &ResolvedAsset, sources: &[PathBuf]) -> Option<SourceTexture> {
+    let bytes = asset_source::read(sources, asset).ok()?;
+    let label = asset.label();
     // Cheap header probe (≤148 bytes, pure-Rust, no decode) guards the C++
     // decoder from absurd / truncated headers that would OOM-abort the process.
-    match directxtex_native::read_dds_probe(path) {
+    match directxtex_native::read_dds_probe_bytes(&bytes) {
         Ok(p) => {
             if p.width == 0
                 || p.height == 0
@@ -189,24 +192,19 @@ fn load_valid_dds(path: &Path) -> Option<SourceTexture> {
                 || p.height > MAX_SOURCE_DDS_EDGE
             {
                 if std::env::var_os("LODGEN_TRACE_TEX").is_some() {
-                    eprintln!(
-                        "[tex] REJECT (bad dims {}x{}) {}",
-                        p.width,
-                        p.height,
-                        path.display()
-                    );
+                    eprintln!("[tex] REJECT (bad dims {}x{}) {}", p.width, p.height, label);
                 }
                 return None;
             }
         }
         Err(e) => {
             if std::env::var_os("LODGEN_TRACE_TEX").is_some() {
-                eprintln!("[tex] REJECT (probe: {e}) {}", path.display());
+                eprintln!("[tex] REJECT (probe: {e}) {label}");
             }
             return None;
         }
     }
-    let img = directxtex_native::read_dds_rgba_image(path).ok()?;
+    let img = directxtex_native::read_dds_rgba_image_bytes(&bytes).ok()?;
     let expected = (img.width as usize)
         .checked_mul(img.height as usize)
         .and_then(|n| n.checked_mul(4));
@@ -217,13 +215,13 @@ fn load_valid_dds(path: &Path) -> Option<SourceTexture> {
                 img.rgba.len(),
                 img.width,
                 img.height,
-                path.display()
+                label
             );
         }
         return None;
     }
     if std::env::var_os("LODGEN_TRACE_TEX").is_some() {
-        eprintln!("[tex] OK {}x{} {}", img.width, img.height, path.display());
+        eprintln!("[tex] OK {}x{} {label}", img.width, img.height);
     }
     Some(SourceTexture {
         width: img.width,
@@ -235,24 +233,36 @@ fn load_valid_dds(path: &Path) -> Option<SourceTexture> {
 /// Decode + box-downscale memoization cache, keyed by `(resolved absolute path,
 /// target square edge px)` → the decoded-and-resized texture (or `None` if that
 /// file is missing/invalid). The compositor samples the same ~100 LTEX diffuse
-/// textures across every cell of every quad; without this each access re-decoded
-/// the DDS from disk (a full worldspace run exceeded 10 min). The expensive
+/// textures across every cell of a terrain level; without this each access
+/// re-decodes the DDS. The driver clears the cache between levels so decoded
+/// images do not accumulate for the entire LOD run. The expensive
 /// decode+resize runs OUTSIDE the lock, so the rayon-parallel quad loop never
 /// blocks all workers on a single decode; a racing duplicate decode is harmless
 /// (idempotent) and far cheaper than holding a global lock across a decode. The
 /// `Arc` lets readers clone the entry out cheaply.
-type TexCache = HashMap<(PathBuf, u32), Option<Arc<SourceTexture>>>;
+type TexCache = HashMap<(ResolvedAsset, u32), Option<Arc<SourceTexture>>>;
 
 fn texture_cache() -> &'static Mutex<TexCache> {
     static CACHE: OnceLock<Mutex<TexCache>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+pub(crate) fn clear_texture_cache() {
+    texture_cache()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clear();
+}
+
 /// Decode `path` and box-downscale it to `target`² px, memoized by `(path,
 /// target)`. Returns `None` (cached) when the DDS is missing/invalid so callers
 /// can fall through to the next candidate without re-probing it.
-fn cached_decode_resize(path: PathBuf, target: u32) -> Option<Arc<SourceTexture>> {
-    let key = (path, target);
+fn cached_decode_resize(
+    asset: ResolvedAsset,
+    sources: &[PathBuf],
+    target: u32,
+) -> Option<Arc<SourceTexture>> {
+    let key = (asset, target);
     {
         let cache = texture_cache().lock().unwrap();
         if let Some(entry) = cache.get(&key) {
@@ -260,7 +270,7 @@ fn cached_decode_resize(path: PathBuf, target: u32) -> Option<Arc<SourceTexture>
         }
     }
     // Decode + resize OUTSIDE the lock (the expensive step).
-    let result = load_valid_dds(&key.0).map(|t| Arc::new(t.downscaled_to(target)));
+    let result = load_valid_dds(&key.0, sources).map(|t| Arc::new(t.downscaled_to(target)));
     let mut cache = texture_cache().lock().unwrap();
     // A racing thread may have inserted first; keep that entry (idempotent).
     cache.entry(key.clone()).or_insert_with(|| result.clone());
@@ -288,15 +298,13 @@ fn load_texture_scaled(
         candidates.push(prefixed.split('/').collect());
     }
     let target = target.max(1);
-    for dir in data_dirs {
-        for cand in &candidates {
-            let candidate = dir.join(cand);
-            if !candidate.is_file() {
-                continue;
-            }
-            if let Some(tex) = cached_decode_resize(candidate, target) {
-                return Some(tex);
-            }
+    for cand in &candidates {
+        let relative = cand.to_string_lossy();
+        let Some(asset) = asset_source::resolve(data_dirs, &relative) else {
+            continue;
+        };
+        if let Some(tex) = cached_decode_resize(asset, data_dirs, target) {
+            return Some(tex);
         }
     }
     None

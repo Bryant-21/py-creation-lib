@@ -411,6 +411,10 @@ def _inventory_root_strings_entries(strings_dir: Path) -> list[ArchiveEntry]:
     for source_path in sorted(strings_dir.rglob("*"), key=lambda path: path.as_posix().lower()):
         if not source_path.is_file():
             continue
+        # Dot-prefixed files are orphaned temp-save string tables, not
+        # shippable localization — never pack them.
+        if source_path.name.startswith("."):
+            continue
         rel_path = Path("Strings") / source_path.relative_to(strings_dir)
         entries.append(
             ArchiveEntry(

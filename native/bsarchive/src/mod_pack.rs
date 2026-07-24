@@ -18,9 +18,8 @@ const ARCHIVE_HEADER_OVERHEAD: u64 = 4096;
 const ENTRY_OVERHEAD: u64 = 512;
 const COMPRESSIBLE_BA2_ESTIMATE_NUMERATOR: u64 = 2;
 const COMPRESSIBLE_BA2_ESTIMATE_DENOMINATOR: u64 = 3;
-const MAX_ARCHIVE_PACK_CONCURRENCY: usize = 6;
+const MAX_ARCHIVE_PACK_CONCURRENCY: usize = 2;
 const MAX_TEXTURE_ARCHIVE_CONCURRENCY: usize = 2;
-const MAX_TEXTURE_PACK_WORKERS: usize = 8;
 const MAIN_FAMILY_ORDER: [ArchiveFamily; 10] = [
     ArchiveFamily::Lod,
     ArchiveFamily::Terrain,
@@ -620,24 +619,54 @@ fn plan_archive_outputs(
     }
 
     let mut planned = Vec::new();
-    for (family, texture_label) in [
-        (ArchiveFamily::Textures, "Textures"),
-        (ArchiveFamily::Lod, "LODTextures"),
-        (ArchiveFamily::Terrain, "TerrainTextures"),
-    ] {
-        let family_entries = by_family.remove(&family).unwrap_or_default();
-        let (texture_entries, general_entries) = if family == ArchiveFamily::Textures {
-            (family_entries, Vec::new())
-        } else {
-            family_entries.into_iter().partition(is_dds_entry)
-        };
-        if !general_entries.is_empty() {
-            by_family.insert(family, general_entries);
+    if expanded_archives {
+        for (family, texture_label) in [
+            (ArchiveFamily::Textures, "Textures"),
+            (ArchiveFamily::Lod, "LODTextures"),
+            (ArchiveFamily::Terrain, "TerrainTextures"),
+        ] {
+            let family_entries = by_family.remove(&family).unwrap_or_default();
+            let (texture_entries, general_entries) = if family == ArchiveFamily::Textures {
+                (family_entries, Vec::new())
+            } else {
+                family_entries.into_iter().partition(is_dds_entry)
+            };
+            if !general_entries.is_empty() {
+                by_family.insert(family, general_entries);
+            }
+            planned.extend(plan_texture_archives(
+                mod_name,
+                family,
+                texture_label,
+                texture_entries,
+                archive_ext,
+                platform_suffix,
+                cap,
+            )?);
         }
+    } else {
+        let mut texture_entries = by_family
+            .remove(&ArchiveFamily::Textures)
+            .unwrap_or_default();
+        for family in [ArchiveFamily::Lod, ArchiveFamily::Terrain] {
+            let family_entries = by_family.remove(&family).unwrap_or_default();
+            let (family_textures, general_entries): (Vec<_>, Vec<_>) =
+                family_entries.into_iter().partition(is_dds_entry);
+            texture_entries.extend(family_textures);
+            if !general_entries.is_empty() {
+                by_family.insert(family, general_entries);
+            }
+        }
+        texture_entries.sort_by(|a, b| {
+            let ak = a.relative_path.to_ascii_lowercase();
+            let bk = b.relative_path.to_ascii_lowercase();
+            ak.cmp(&bk)
+                .then_with(|| a.relative_path.cmp(&b.relative_path))
+        });
         planned.extend(plan_texture_archives(
             mod_name,
-            family,
-            texture_label,
+            ArchiveFamily::Textures,
+            "Textures",
             texture_entries,
             archive_ext,
             platform_suffix,
@@ -880,6 +909,7 @@ fn planned_entry_specs(plan: &PlannedArchive) -> Vec<PackEntrySpec> {
         .map(|entry| PackEntrySpec {
             source_path: entry.source_path.clone(),
             archive_path: entry.relative_path.clone(),
+            source_size: Some(entry.size),
         })
         .collect()
 }
@@ -914,7 +944,7 @@ fn archive_worker_count(allocation: ArchiveWorkerAllocation, archive_slot: usize
     allocation.workers_per_archive + usize::from(archive_slot < allocation.extra_worker_archives)
 }
 
-fn pack_batch_policy<T: ScheduledArchivePlan>(
+fn pack_group_policy<T: ScheduledArchivePlan>(
     worker_budget: usize,
     plans: &[T],
     start: usize,
@@ -929,12 +959,7 @@ fn pack_batch_policy<T: ScheduledArchivePlan>(
     } else {
         MAX_ARCHIVE_PACK_CONCURRENCY
     };
-    let active_worker_budget = if texture_archive {
-        worker_budget.min(MAX_TEXTURE_PACK_WORKERS)
-    } else {
-        worker_budget
-    }
-    .max(1);
+    let active_worker_budget = worker_budget.max(1);
     let batch_len = group_len
         .min(concurrency_cap)
         .min(active_worker_budget)
@@ -1119,6 +1144,43 @@ fn pack_archive_plan(
     })
 }
 
+fn report_archive_pack_start<T, A, P>(
+    plan: &T,
+    plan_index: usize,
+    plan_count: usize,
+    workers_for_archive: usize,
+    worker_budget: usize,
+    archive_concurrency: usize,
+    completed: usize,
+    archive_type_for: &A,
+    progress: &mut P,
+) -> PackResult<()>
+where
+    T: ScheduledArchivePlan,
+    A: Fn(&T) -> PackResult<String>,
+    P: FnMut(PackProgress) -> PackResult<()>,
+{
+    let archive_type = archive_type_for(plan)?;
+    let level = crate::pack::archive_type_default_level(&archive_type);
+    progress(PackProgress {
+        phase: "pack",
+        platform: "pc".to_string(),
+        message: format!(
+            "Packing archive {} ({}/{}) files={} bytes={:.1} MB workers={}/{} archive_concurrency={} compression=zlib:{level}",
+            plan.output_name(),
+            plan_index + 1,
+            plan_count,
+            plan.file_count(),
+            plan.input_bytes() as f64 / (1024.0 * 1024.0),
+            workers_for_archive,
+            worker_budget,
+            archive_concurrency
+        ),
+        completed,
+        total: plan_count,
+    })
+}
+
 fn pack_scheduled_archives<T: ScheduledArchivePlan + Sync>(
     plans: &[T],
     worker_budget: usize,
@@ -1132,87 +1194,141 @@ fn pack_scheduled_archives<T: ScheduledArchivePlan + Sync>(
             phase: "pack",
             platform: "pc".to_string(),
             message: format!(
-                "Packing archives with total_workers={worker_budget} general_concurrency={} texture_concurrency={} texture_worker_cap={}",
+                "Packing archives with total_workers={worker_budget} general_concurrency={} texture_concurrency={}",
                 MAX_ARCHIVE_PACK_CONCURRENCY.min(worker_budget),
                 MAX_TEXTURE_ARCHIVE_CONCURRENCY.min(worker_budget),
-                MAX_TEXTURE_PACK_WORKERS.min(worker_budget),
             ),
             completed: 0,
             total: plans.len(),
         })?;
     }
 
-    let mut summaries = Vec::with_capacity(plans.len());
+    let mut summaries = vec![None; plans.len()];
     let mut completed = 0usize;
-    let mut batch_start = 0usize;
-    while batch_start < plans.len() {
-        let (batch_len, active_worker_budget) =
-            pack_batch_policy(worker_budget, plans, batch_start);
-        let batch_end = batch_start + batch_len;
-        let chunk = &plans[batch_start..batch_end];
-        let allocation = allocate_archive_workers(active_worker_budget, chunk.len());
-        for (slot, plan) in chunk.iter().enumerate() {
-            let workers_for_archive = archive_worker_count(allocation, slot);
-            let plan_index = batch_start + slot;
-            let plan_bytes = plan.input_bytes();
-            let archive_type = archive_type_for(plan)?;
-            let level = crate::pack::archive_type_default_level(&archive_type);
-            progress(PackProgress {
-                phase: "pack",
-                platform: "pc".to_string(),
-                message: format!(
-                    "Packing archive {} ({}/{}) files={} bytes={:.1} MB workers={}/{} archive_concurrency={} compression=zlib:{level}",
-                    plan.output_name(),
-                    plan_index + 1,
+    let mut group_start = 0usize;
+    while group_start < plans.len() {
+        let texture_archive = plans[group_start].texture_archive();
+        let group_len = plans[group_start..]
+            .iter()
+            .take_while(|plan| plan.texture_archive() == texture_archive)
+            .count();
+        let group_end = group_start + group_len;
+        let (archive_concurrency, active_worker_budget) =
+            pack_group_policy(worker_budget, plans, group_start);
+        let allocation = allocate_archive_workers(active_worker_budget, archive_concurrency);
+
+        std::thread::scope(|scope| -> PackResult<()> {
+            let (sender, receiver) =
+                std::sync::mpsc::channel::<(usize, usize, PackResult<ArchiveSummary>)>();
+            let mut free_slots: Vec<_> = (0..archive_concurrency).rev().collect();
+            let mut next_plan_index = group_start;
+            let mut active = 0usize;
+            let mut first_error = None;
+
+            while active < archive_concurrency && next_plan_index < group_end {
+                let slot = free_slots.pop().expect("archive slot should be available");
+                let workers_for_archive = archive_worker_count(allocation, slot);
+                report_archive_pack_start(
+                    &plans[next_plan_index],
+                    next_plan_index,
                     plans.len(),
-                    plan.file_count(),
-                    plan_bytes as f64 / (1024.0 * 1024.0),
                     workers_for_archive,
                     active_worker_budget,
-                    allocation.archive_concurrency
-                ),
-                completed,
-                total: plans.len(),
-            })?;
-        }
-
-        let chunk_summaries = std::thread::scope(|scope| -> PackResult<Vec<ArchiveSummary>> {
-            let mut handles = Vec::with_capacity(chunk.len());
-            for (slot, plan) in chunk.iter().enumerate() {
-                let workers_for_archive = archive_worker_count(allocation, slot);
-                handles.push(scope.spawn(move || pack_one(plan, workers_for_archive)));
+                    archive_concurrency,
+                    completed,
+                    archive_type_for,
+                    progress,
+                )?;
+                let plan_index = next_plan_index;
+                let plan = &plans[plan_index];
+                let sender = sender.clone();
+                scope.spawn(move || {
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        pack_one(plan, workers_for_archive)
+                    }))
+                    .unwrap_or_else(|_| Err("archive pack worker panicked".to_string()));
+                    let _ = sender.send((slot, plan_index, result));
+                });
+                active += 1;
+                next_plan_index += 1;
             }
 
-            let mut chunk_summaries = Vec::with_capacity(handles.len());
-            for handle in handles {
-                match handle.join() {
-                    Ok(result) => chunk_summaries.push(result?),
-                    Err(_) => return Err("archive pack worker panicked".to_string()),
+            while active != 0 {
+                let (slot, plan_index, result) = receiver
+                    .recv()
+                    .map_err(|_| "archive pack worker stopped without a result".to_string())?;
+                active -= 1;
+                free_slots.push(slot);
+                match result {
+                    Ok(summary) => {
+                        completed += 1;
+                        let progress_result = progress(PackProgress {
+                            phase: "pack",
+                            platform: "pc".to_string(),
+                            message: format!(
+                                "Archive packed native: name={} files={} bytes={:.1} MB elapsed={:.3}s",
+                                summary.name,
+                                summary.file_count,
+                                summary.bytes as f64 / (1024.0 * 1024.0),
+                                summary.elapsed_secs
+                            ),
+                            completed,
+                            total: plans.len(),
+                        });
+                        summaries[plan_index] = Some(summary);
+                        if let Err(err) = progress_result {
+                            first_error.get_or_insert(err);
+                        }
+                    }
+                    Err(err) => {
+                        first_error.get_or_insert(err);
+                    }
+                }
+
+                if first_error.is_none() && next_plan_index < group_end {
+                    let slot = free_slots.pop().expect("archive slot should be available");
+                    let workers_for_archive = archive_worker_count(allocation, slot);
+                    if let Err(err) = report_archive_pack_start(
+                        &plans[next_plan_index],
+                        next_plan_index,
+                        plans.len(),
+                        workers_for_archive,
+                        active_worker_budget,
+                        archive_concurrency,
+                        completed,
+                        archive_type_for,
+                        progress,
+                    ) {
+                        first_error = Some(err);
+                        continue;
+                    }
+                    let plan_index = next_plan_index;
+                    let plan = &plans[plan_index];
+                    let sender = sender.clone();
+                    scope.spawn(move || {
+                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            pack_one(plan, workers_for_archive)
+                        }))
+                        .unwrap_or_else(|_| Err("archive pack worker panicked".to_string()));
+                        let _ = sender.send((slot, plan_index, result));
+                    });
+                    active += 1;
+                    next_plan_index += 1;
                 }
             }
-            Ok(chunk_summaries)
-        })?;
 
-        for summary in chunk_summaries {
-            completed += 1;
-            progress(PackProgress {
-                phase: "pack",
-                platform: "pc".to_string(),
-                message: format!(
-                    "Archive packed native: name={} files={} bytes={:.1} MB elapsed={:.3}s",
-                    summary.name,
-                    summary.file_count,
-                    summary.bytes as f64 / (1024.0 * 1024.0),
-                    summary.elapsed_secs
-                ),
-                completed,
-                total: plans.len(),
-            })?;
-            summaries.push(summary);
-        }
-        batch_start = batch_end;
+            match first_error {
+                Some(err) => Err(err),
+                None => Ok(()),
+            }
+        })?;
+        group_start = group_end;
     }
-    Ok(summaries)
+
+    summaries
+        .into_iter()
+        .map(|summary| summary.ok_or_else(|| "archive pack result missing".to_string()))
+        .collect()
 }
 
 pub(crate) fn pack_archive_plans(
@@ -1361,8 +1477,11 @@ pub(crate) fn pack_mod_archives(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::sync::{
+        Arc, Condvar, Mutex,
+        atomic::{AtomicU64, Ordering},
+    };
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     static NEXT_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -1476,16 +1595,16 @@ mod tests {
         assert_eq!(
             allocation,
             ArchiveWorkerAllocation {
-                archive_concurrency: 3,
-                workers_per_archive: 6,
-                extra_worker_archives: 2,
+                archive_concurrency: 2,
+                workers_per_archive: 10,
+                extra_worker_archives: 0,
             }
         );
         assert_eq!(
             (0..allocation.archive_concurrency)
                 .map(|slot| archive_worker_count(allocation, slot))
                 .collect::<Vec<_>>(),
-            vec![7, 7, 6]
+            vec![10, 10]
         );
 
         let allocation = allocate_archive_workers(2, 4);
@@ -1497,18 +1616,105 @@ mod tests {
             vec![1, 1]
         );
 
-        let allocation = allocate_archive_workers(20, 17);
+        let allocation = allocate_archive_workers(7, 17);
         assert_eq!(allocation.archive_concurrency, MAX_ARCHIVE_PACK_CONCURRENCY);
         assert_eq!(
             (0..allocation.archive_concurrency)
                 .map(|slot| archive_worker_count(allocation, slot))
                 .collect::<Vec<_>>(),
-            vec![4, 4, 3, 3, 3, 3]
+            vec![4, 3]
         );
     }
 
     #[test]
-    fn texture_batches_cap_archive_and_worker_concurrency() {
+    fn scheduler_refills_a_finished_archive_slot_without_waiting_for_its_peer() {
+        #[derive(Clone)]
+        struct TestPlan {
+            index: usize,
+            name: String,
+        }
+
+        impl ScheduledArchivePlan for TestPlan {
+            fn output_name(&self) -> &str {
+                &self.name
+            }
+
+            fn file_count(&self) -> usize {
+                1
+            }
+
+            fn input_bytes(&self) -> u64 {
+                1
+            }
+
+            fn texture_archive(&self) -> bool {
+                true
+            }
+        }
+
+        let plans: Vec<_> = (0..3)
+            .map(|index| TestPlan {
+                index,
+                name: format!("Textures{index}.ba2"),
+            })
+            .collect();
+        let third_started = Arc::new((Mutex::new(false), Condvar::new()));
+        let pack_signal = Arc::clone(&third_started);
+        let pack_one = move |plan: &TestPlan, _workers| {
+            if plan.index == 0 {
+                let (started, wake) = &*pack_signal;
+                let started = started.lock().expect("third-started mutex poisoned");
+                let (started, _) = wake
+                    .wait_timeout_while(started, Duration::from_secs(2), |value| !*value)
+                    .expect("third-started mutex poisoned");
+                if !*started {
+                    return Err(
+                        "third archive did not start while the first was active".to_string()
+                    );
+                }
+            } else if plan.index == 2 {
+                let (started, wake) = &*pack_signal;
+                *started.lock().expect("third-started mutex poisoned") = true;
+                wake.notify_all();
+            }
+            Ok(ArchiveSummary {
+                platform: "pc".to_string(),
+                name: plan.name.clone(),
+                file_count: 1,
+                bytes: 1,
+                elapsed_secs: 0.0,
+            })
+        };
+        let mut messages = Vec::new();
+
+        let summaries = pack_scheduled_archives(
+            &plans,
+            4,
+            &|_| Ok("fo4dds".to_string()),
+            &pack_one,
+            &mut |event| {
+                messages.push(event.message);
+                Ok(())
+            },
+        )
+        .expect("rolling scheduler should refill the free slot");
+
+        assert_eq!(
+            summaries
+                .iter()
+                .map(|summary| summary.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Textures0.ba2", "Textures1.ba2", "Textures2.ba2"]
+        );
+        let completions: Vec<_> = messages
+            .iter()
+            .filter(|message| message.starts_with("Archive packed native:"))
+            .collect();
+        assert!(completions[0].contains("Textures1.ba2"));
+    }
+
+    #[test]
+    fn texture_groups_cap_archive_concurrency_and_use_worker_budget() {
         let entries = vec![
             entry("Meshes/a.nif", 10),
             entry("Textures/a.dds", 4000),
@@ -1520,11 +1726,11 @@ mod tests {
             .expect("planning should succeed");
 
         assert!(!plans[0].texture_archive);
-        assert_eq!(pack_batch_policy(32, &plans, 0), (1, 32));
+        assert_eq!(pack_group_policy(32, &plans, 0), (1, 32));
         assert!(plans[1].texture_archive);
-        assert_eq!(pack_batch_policy(32, &plans, 1), (2, 8));
-        assert_eq!(pack_batch_policy(4, &plans, 1), (2, 4));
-        assert_eq!(pack_batch_policy(1, &plans, 1), (1, 1));
+        assert_eq!(pack_group_policy(32, &plans, 1), (2, 32));
+        assert_eq!(pack_group_policy(4, &plans, 1), (2, 4));
+        assert_eq!(pack_group_policy(1, &plans, 1), (1, 1));
     }
 
     #[test]
@@ -1744,7 +1950,7 @@ mod tests {
 
         assert!(messages.iter().any(|m| {
             m.contains("Packing archives with total_workers=6")
-                && m.contains("general_concurrency=6")
+                && m.contains("general_concurrency=2")
                 && m.contains("texture_concurrency=2")
         }));
         let pack_starts: Vec<_> = messages
@@ -1752,10 +1958,19 @@ mod tests {
             .filter(|message| message.starts_with("Packing archive "))
             .collect();
         assert_eq!(pack_starts.len(), 3);
-        assert!(
+        assert_eq!(
             pack_starts
                 .iter()
-                .all(|message| message.contains("workers=2/6 archive_concurrency=3"))
+                .filter(|message| message.contains("workers=3/6 archive_concurrency=2"))
+                .count(),
+            3
+        );
+        assert_eq!(
+            pack_starts
+                .iter()
+                .filter(|message| message.contains("workers=6/6 archive_concurrency=1"))
+                .count(),
+            0
         );
     }
 
@@ -1772,6 +1987,7 @@ mod tests {
                 entries: vec![PackEntrySpec {
                     source_path: source_path.clone(),
                     archive_path: format!("Meshes/test{index}.nif"),
+                    source_size: Some(3),
                 }],
                 input_bytes: 3,
                 texture_archive: false,
@@ -1789,7 +2005,7 @@ mod tests {
         assert!(plans.iter().all(|plan| plan.output_path.is_file()));
         assert!(messages.iter().any(|message| {
             message.contains("Packing archives with total_workers=6")
-                && message.contains("general_concurrency=6")
+                && message.contains("general_concurrency=2")
                 && message.contains("texture_concurrency=2")
         }));
         let pack_starts: Vec<_> = messages
@@ -1797,10 +2013,19 @@ mod tests {
             .filter(|message| message.starts_with("Packing archive "))
             .collect();
         assert_eq!(pack_starts.len(), 3);
-        assert!(
+        assert_eq!(
             pack_starts
                 .iter()
-                .all(|message| message.contains("workers=2/6 archive_concurrency=3"))
+                .filter(|message| message.contains("workers=3/6 archive_concurrency=2"))
+                .count(),
+            3
+        );
+        assert_eq!(
+            pack_starts
+                .iter()
+                .filter(|message| message.contains("workers=6/6 archive_concurrency=1"))
+                .count(),
+            0
         );
     }
 
@@ -1891,6 +2116,54 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["Textures/Terrain/Appalachia/lswamprocks01_d.dds"]
         );
+    }
+
+    #[test]
+    fn planner_compacts_lod_and_terrain_dds_into_textures() {
+        let entries = vec![
+            entry("Meshes/Terrain/Appalachia/Objects/a.bto", 10),
+            entry("Textures/Actors/a.dds", 10),
+            entry("Textures/Terrain/Appalachia/Appalachia.4.0.0.dds", 10),
+            entry("Materials/Terrain/Appalachia/blend.bgsm", 10),
+            entry("Textures/Terrain/Appalachia/lswamprocks01_d.dds", 10),
+        ];
+        let plans =
+            plan_archive_outputs("B21_Test", &entries, "ba2", "", 1024 * 1024, "fo4", false)
+                .expect("planning should succeed");
+        let by_label: HashMap<_, _> = plans
+            .iter()
+            .map(|plan| (plan.label.as_str(), plan))
+            .collect();
+
+        assert_eq!(plans.len(), 2);
+        assert_eq!(plans[0].label, "Main");
+        assert_eq!(plans[1].label, "Textures");
+        assert_eq!(
+            by_label["Main"]
+                .entries
+                .iter()
+                .map(|entry| entry.relative_path.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "Meshes/Terrain/Appalachia/Objects/a.bto",
+                "Materials/Terrain/Appalachia/blend.bgsm",
+            ]
+        );
+        assert_eq!(
+            by_label["Textures"]
+                .entries
+                .iter()
+                .map(|entry| entry.relative_path.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "Textures/Actors/a.dds",
+                "Textures/Terrain/Appalachia/Appalachia.4.0.0.dds",
+                "Textures/Terrain/Appalachia/lswamprocks01_d.dds",
+            ]
+        );
+        assert!(by_label["Textures"].texture_archive);
+        assert!(!by_label.contains_key("LODTextures"));
+        assert!(!by_label.contains_key("TerrainTextures"));
     }
 
     #[test]

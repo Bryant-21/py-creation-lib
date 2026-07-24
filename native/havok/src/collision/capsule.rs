@@ -3,8 +3,9 @@
 // A capsule is NOT a sphere-like primitive: per the Havok 2018 SDK
 // (`hknpCapsuleShape : public hknpConvexPolytopeShape`) it is a full convex
 // polytope — 8 vertices forming a thin box along the capsule axis — plus the
-// two endpoint vectors `m_a` / `m_b`, with the rounding radius carried in
-// `convexRadius` (NOT in `m_a.w`, which vanilla leaves at 1.0). The hull
+// two endpoint vectors `m_a` / `m_b`. FO76 stores the physical radius in
+// `m_a.w` and the rounded core radius in `convexRadius`; FO4 normalizes both
+// endpoint W lanes to 1.0. The hull
 // geometry is generated exactly as `convert::fo76::capsule_hull_from_endpoints`
 // does (the converter already emits valid FO4 capsules this way), so this
 // builder reproduces the source FO76 capsule faithfully by carrying its own
@@ -22,6 +23,7 @@
 // tessellates source capsules to hulls rather than routing them here.
 
 use super::compressed_mesh::BuildOptions;
+use super::polytope::SourcePolytopeShape;
 use super::sphere::build_fo4_sphere_collision;
 use crate::error::{HavokError, HavokResult};
 use crate::hkx::model::{HkxFile, HkxMember, HkxObject};
@@ -32,13 +34,43 @@ use crate::hkx::types::HkxValue;
 /// SUPPORTS_COLLISIONS_WITH_INTERIOR_TRIANGLES = 0x1C3.
 const CAPSULE_FLAGS: u64 = 451;
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct SourceCapsuleShape {
+    pub a: [f32; 4],
+    pub b: [f32; 4],
+    pub convex_radius: f32,
+    pub hull: SourcePolytopeShape,
+}
+
+impl SourceCapsuleShape {
+    pub fn validate(&self) -> HavokResult<()> {
+        if !self.a.iter().all(|value| value.is_finite())
+            || !self.b.iter().all(|value| value.is_finite())
+        {
+            return Err(HavokError::InvalidInput(
+                "source capsule has non-finite endpoints".to_string(),
+            ));
+        }
+        if self.a[3] <= 0.0
+            || !self.convex_radius.is_finite()
+            || self.convex_radius < 0.0
+            || self.convex_radius > self.a[3]
+        {
+            return Err(HavokError::InvalidInput(format!(
+                "source capsule has invalid physical/core radii {}/{}",
+                self.a[3], self.convex_radius
+            )));
+        }
+        self.hull.validate()
+    }
+}
+
 /// Build a FO4 Havok 2014.1.0 packfile for a single capsule body.
 ///
 /// `a` / `b` are the capsule axis endpoints in Havok space (NIF / havok_scale),
-/// carried verbatim from the source FO76 `hknpCapsuleShape` (their `.w` stays
-/// 1.0 in vanilla). `convex_radius` is the source capsule's `convexRadius` — the
-/// hull half-width is `|a.w| - convex_radius`, so the source's own radius split
-/// is preserved rather than re-derived.
+/// read from the source FO76 `hknpCapsuleShape`. `a.w` is the physical radius;
+/// `convex_radius` is the source capsule's inherited core radius. FO4 endpoint
+/// W lanes are normalized to the vanilla target value 1.0.
 ///
 /// `position` is the body world position (the per-body merge patches it for
 /// multi-body systems, so sole callers pass the body origin).
@@ -55,7 +87,102 @@ pub fn build_fo4_capsule_collision(
                 "degenerate capsule: |a.w| <= convexRadius or zero-length axis".to_string(),
             )
         })?;
+    build_fo4_capsule_from_values(
+        a,
+        b,
+        convex_radius,
+        vertices,
+        planes,
+        faces,
+        indices,
+        position,
+        opts,
+    )
+}
 
+pub fn build_fo4_source_capsule_collision(
+    shape: &SourceCapsuleShape,
+    position: [f32; 3],
+    opts: &BuildOptions,
+) -> HavokResult<Vec<u8>> {
+    shape.validate()?;
+    const FLT_MIN: f32 = -3.402_823_5e38;
+    let vertices = shape
+        .hull
+        .vertices
+        .iter()
+        .enumerate()
+        .map(|(index, vertex)| {
+            HkxValue::F32List(vec![
+                vertex[0],
+                vertex[1],
+                vertex[2],
+                f32::from_bits(0x3F00_0000u32.wrapping_add(index as u32)),
+            ])
+        })
+        .collect();
+    let mut planes = shape
+        .hull
+        .planes
+        .iter()
+        .map(|plane| HkxValue::F32List(plane.to_vec()))
+        .collect::<Vec<_>>();
+    while planes.len() < 8 {
+        planes.push(HkxValue::F32List(vec![0.0, 0.0, 0.0, FLT_MIN]));
+    }
+    let faces = shape
+        .hull
+        .faces
+        .iter()
+        .map(|&(first_index, num_indices, min_half_angle)| {
+            HkxValue::Object(vec![
+                HkxMember {
+                    name: "firstIndex".to_string(),
+                    value: HkxValue::U16(first_index),
+                },
+                HkxMember {
+                    name: "numIndices".to_string(),
+                    value: HkxValue::U8(num_indices),
+                },
+                HkxMember {
+                    name: "minHalfAngle".to_string(),
+                    value: HkxValue::U8(min_half_angle),
+                },
+            ])
+        })
+        .collect();
+    let indices = shape
+        .hull
+        .indices
+        .iter()
+        .copied()
+        .map(HkxValue::U8)
+        .collect();
+    build_fo4_capsule_from_values(
+        shape.a,
+        shape.b,
+        shape.convex_radius,
+        vertices,
+        planes,
+        faces,
+        indices,
+        position,
+        opts,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_fo4_capsule_from_values(
+    a: [f32; 4],
+    b: [f32; 4],
+    convex_radius: f32,
+    vertices: Vec<HkxValue>,
+    planes: Vec<HkxValue>,
+    faces: Vec<HkxValue>,
+    indices: Vec<HkxValue>,
+    position: [f32; 3],
+    opts: &BuildOptions,
+) -> HavokResult<Vec<u8>> {
     // Sphere template radius is irrelevant — the shape is replaced. Keep it
     // positive so the template build can't itself reject a degenerate radius.
     let template_radius = a[3].abs().max(convex_radius).max(0.01);
@@ -86,8 +213,20 @@ pub fn build_fo4_capsule_collision(
     set_value(&mut shape.members, "planes", HkxValue::Array(planes));
     set_value(&mut shape.members, "faces", HkxValue::Array(faces));
     set_value(&mut shape.members, "indices", HkxValue::Array(indices));
-    set_value(&mut shape.members, "a", HkxValue::F32List(a.to_vec()));
-    set_value(&mut shape.members, "b", HkxValue::F32List(b.to_vec()));
+    let mut target_a = a;
+    let mut target_b = b;
+    target_a[3] = 1.0;
+    target_b[3] = 1.0;
+    set_value(
+        &mut shape.members,
+        "a",
+        HkxValue::F32List(target_a.to_vec()),
+    );
+    set_value(
+        &mut shape.members,
+        "b",
+        HkxValue::F32List(target_b.to_vec()),
+    );
 
     let hkx = HkxFile::from_tagxml(11, "hk_2014.1.0-r1", objects);
     Ok(hkx.save())
@@ -241,7 +380,7 @@ mod tests {
 
     fn z_capsule() -> Vec<u8> {
         // Capsule along +z, radius split between a thin box and convexRadius.
-        let a = [0.0, 0.0, 0.5, 1.0];
+        let a = [0.0, 0.0, 0.5, 0.0505];
         let b = [0.0, 0.0, 0.0, 1.0];
         build_fo4_capsule_collision(a, b, 0.05, [0.0, 0.0, 0.0], &BuildOptions::default())
             .expect("build capsule")
@@ -285,11 +424,11 @@ mod tests {
                 .map(|m| &m.value)
         };
 
-        // Endpoints carried verbatim (a.w stays 1.0, radius is NOT in a.w).
+        // FO76 physical radius in a.w is normalized to FO4's endpoint marker.
         match member("a").expect("a member") {
             HkxValue::F32List(v) => {
                 assert!((v[2] - 0.5).abs() < 1e-5, "a.z");
-                assert!((v[3] - 1.0).abs() < 1e-5, "a.w stays 1.0");
+                assert!((v[3] - 1.0).abs() < 1e-5, "a.w target marker");
             }
             other => panic!("a not F32List: {other:?}"),
         }

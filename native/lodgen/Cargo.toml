@@ -21,6 +21,7 @@ crate-type = ["rlib"]
 # Python `generate_lod` entry uses the real reader regardless.
 default = []
 real-esp = ["dep:esp_authoring_core"]
+archive-assets = ["dep:bsarchive_native"]
 
 [dependencies]
 pyo3 = { workspace = true, features = ["abi3-py310"] }
@@ -40,6 +41,7 @@ directxtex_native = { path = "../directxtex" }
 esp_authoring_core = { path = "../esp", optional = true }
 terrain_native = { path = "../terrain" }
 materials_native = { path = "../materials" }
+bsarchive_native = { path = "../bsarchive", optional = true }
 
 [dev-dependencies]
 bytes = "1"

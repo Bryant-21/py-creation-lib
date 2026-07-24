@@ -702,7 +702,7 @@ class SettingsWindow:
             game=game,
             data_dir=data_dir,
             strings_dir=strings_dir,
-            cache_dir=get_host().get_db_dir() / "cache",
+            db_dir=get_host().get_db_dir(),
         )
         if cache_path is None or not cache_path.is_file():
             return False, "Not built"

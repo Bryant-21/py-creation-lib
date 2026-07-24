@@ -168,6 +168,8 @@ fn apply_implemented_transforms(
     migrate_compound_shape_to_physics_system(hkx); // 9 — Phase 7C
     reclassify_mass_distributions(hkx); // 10
     synthesize_ragdoll_shape_geometry(hkx);
+    normalize_sphere_support_vertices(hkx);
+    normalize_shape_mass_properties(hkx);
     strip_shape_connectivity(hkx); // 11
     convert_polytope_to_capsule(hkx); // 12
     flatten_compound_shapes_in_psd(hkx); // 13 — Phase 7C
@@ -180,12 +182,15 @@ fn apply_implemented_transforms(
     normalize_dynamic_compound_shapes(hkx);
     populate_dynamic_compound_instances(hkx);
     simplify_compound_ragdoll_body_shapes(hkx);
+    strip_trailing_ragdoll_controller_bodies(hkx);
     convert_limited_hinge_to_ragdoll(hkx); // 16 — Phase 7C
     fix_physics_referenced_objects(hkx); // 17
     normalize_bumper_body_cinfos(hkx); // 18
     normalize_ragdoll_body_cinfos(hkx); // 19
+    normalize_ragdoll_constraint_offsets(hkx);
     inject_ragdoll_motors(hkx); // 20
     synthesize_motion_cinfos(hkx, &shape_mass_cache); // 21
+    normalize_ragdoll_body_position_w(hkx);
     fix_blend_hint_enum(hkx); // 22
     #[allow(unused_assignments)]
     {
@@ -2035,17 +2040,19 @@ fn populate_event_property_arrays(hkx: &mut HkxFile) {
             continue;
         }
 
-        // Combine signals.
+        let gen_class = state_generator_class(hkx.objects(), state_idx);
+
+        // Direct child state machines own their transition events. Treating
+        // those events as wrapper signals duplicates their child EPAs.
         let mut signals: Vec<String> = Vec::new();
         if let Some(inc) = incoming_transitions.get(&state_idx) {
             signals.extend(inc.iter().cloned());
         }
-        if let Some(gk) = generator_keywords.get(&state_idx) {
-            signals.extend(gk.iter().cloned());
+        if gen_class.as_deref() != Some("hkbStateMachine") {
+            if let Some(gk) = generator_keywords.get(&state_idx) {
+                signals.extend(gk.iter().cloned());
+            }
         }
-
-        // Resolve generator class name.
-        let gen_class = state_generator_class(hkx.objects(), state_idx);
 
         let mut enter_events: Vec<(String, Option<String>)> = Vec::new();
         let mut exit_events: Vec<(String, Option<String>)> = Vec::new();
@@ -2966,7 +2973,7 @@ fn migrate_skeleton_physics(hkx: &mut HkxFile) {
                 let members = std::mem::take(&mut object.members);
                 object.members = drop_meta(members);
             }
-            "hknpConvexShape" => {
+            "hknpConvexShape" if is_compact_sphere_shape(object) => {
                 object.class_name = "hknpSphereShape".to_string();
                 object.signature = 0; // hknpSphereShape_0.xml
                 // Set canonical sphere flags / dispatch.
@@ -3049,6 +3056,34 @@ fn migrate_skeleton_physics(hkx: &mut HkxFile) {
     }
 }
 
+fn is_compact_sphere_shape(object: &HkxObject) -> bool {
+    let radius = object.members.iter().find_map(|member| match member {
+        HkxMember {
+            name,
+            value: HkxValue::F32(value),
+        } if name == "convexRadius" => Some(*value),
+        _ => None,
+    });
+    let vertices = object.members.iter().find_map(|member| {
+        (member.name == "vertices").then(|| match &member.value {
+            HkxValue::Array(vertices) => Some(vertices),
+            _ => None,
+        })?
+    });
+    let one_support_point = vertices.is_some_and(|vertices| {
+        let Some(HkxValue::F32List(first)) = vertices.first() else {
+            return false;
+        };
+        !vertices.is_empty()
+            && vertices.len() <= 4
+            && first.len() >= 3
+            && vertices.iter().all(|vertex| {
+                matches!(vertex, HkxValue::F32List(value) if value.len() >= 3 && value[..3] == first[..3])
+            })
+    });
+    radius.is_some_and(|radius| radius.is_finite() && radius > 0.0) && one_support_point
+}
+
 fn synthesize_ragdoll_shape_geometry(hkx: &mut HkxFile) {
     let object_count = hkx.objects().len();
     let mut sphere_updates: Vec<(usize, [f32; 4])> = Vec::new();
@@ -3095,6 +3130,94 @@ fn synthesize_ragdoll_shape_geometry(hkx: &mut HkxFile) {
             "vertices",
             HkxValue::Array(vec![HkxValue::F32List(vertex.to_vec())]),
         );
+    }
+}
+
+/// FO4 sphere shapes carry a four-lane support-point array even when all four
+/// points describe the same sphere center. FO76 commonly stores only one lane.
+/// The FO4 narrow-phase reads the native-width quartet once a non-root ragdoll
+/// sphere begins colliding, so pad compact sphere arrays with their authored
+/// support point instead of leaving adjacent packfile data as implicit lanes.
+fn normalize_sphere_support_vertices(hkx: &mut HkxFile) {
+    const FO4_SPHERE_SUPPORT_LANES: usize = 4;
+
+    for object in hkx.objects_mut() {
+        if object.class_name != "hknpSphereShape" {
+            continue;
+        }
+        let Some(vertices_member) = object
+            .members
+            .iter_mut()
+            .find(|member| member.name == "vertices")
+        else {
+            continue;
+        };
+        let HkxValue::Array(vertices) = &mut vertices_member.value else {
+            continue;
+        };
+        if vertices.is_empty() || vertices.len() >= FO4_SPHERE_SUPPORT_LANES {
+            continue;
+        }
+        let first = vertices[0].clone();
+        let HkxValue::F32List(first_values) = &first else {
+            continue;
+        };
+        if first_values.len() < 4 || !first_values.iter().all(|value| value.is_finite()) {
+            continue;
+        }
+        let all_same_support = vertices
+            .iter()
+            .all(|vertex| matches!(vertex, HkxValue::F32List(values) if values == first_values));
+        if !all_same_support {
+            continue;
+        }
+        vertices.resize(FO4_SPHERE_SUPPORT_LANES, first);
+    }
+}
+
+/// FO76 wraps packed COM/inertia words in an inline `values` object. FO4's older
+/// descriptor expects the four packed words directly. Flatten the wrapper
+/// without decoding/repacking so the exact authored words survive the target
+/// writer.
+fn normalize_shape_mass_properties(hkx: &mut HkxFile) {
+    for object in hkx.objects_mut() {
+        if object.class_name != "hknpShapeMassProperties" {
+            continue;
+        }
+        let Some(compressed) = object
+            .members
+            .iter_mut()
+            .find(|member| member.name == "compressedMassProperties")
+            .and_then(|member| member.value.as_object_members_mut())
+        else {
+            continue;
+        };
+
+        for field_name in ["centerOfMass", "inertia", "majorAxisSpace"] {
+            let Some(field) = compressed
+                .iter_mut()
+                .find(|member| member.name == field_name)
+            else {
+                continue;
+            };
+            let Some(values) = field
+                .value
+                .as_object_members()
+                .and_then(|members| members.iter().find(|member| member.name == "values"))
+                .and_then(|member| match &member.value {
+                    HkxValue::Array(values)
+                        if values.len() == 4
+                            && values.iter().all(|value| matches!(value, HkxValue::I16(_))) =>
+                    {
+                        Some(values.clone())
+                    }
+                    _ => None,
+                })
+            else {
+                continue;
+            };
+            field.value = HkxValue::Array(values);
+        }
     }
 }
 
@@ -3416,6 +3539,7 @@ fn convert_box_shapes_to_polytopes(hkx: &mut HkxFile, warnings: &mut Vec<String>
         "planes",
         "faces",
         "indices",
+        "properties",
     ];
 
     for object in hkx.objects_mut() {
@@ -4151,10 +4275,18 @@ fn extract_shape_mass_cache(hkx: &HkxFile) -> std::collections::HashMap<String, 
     let objects = hkx.objects();
     let mut cache = std::collections::HashMap::new();
 
-    // Helper: extract 4 i16 values from HkxValue::Array([I16;4]) → [u8;8].
+    // Real FO76 packed vectors may wrap their array in an inline `values` object.
     let extract_i16x4_bytes = |v: &HkxValue| -> Option<[u8; 8]> {
-        let HkxValue::Array(arr) = v else {
-            return None;
+        let arr = match v {
+            HkxValue::Array(arr) => arr,
+            _ => v
+                .as_object_members()?
+                .iter()
+                .find(|member| member.name == "values")
+                .and_then(|member| match &member.value {
+                    HkxValue::Array(values) => Some(values),
+                    _ => None,
+                })?,
         };
         if arr.len() != 4 {
             return None;
@@ -4781,6 +4913,104 @@ fn simplify_compound_ragdoll_body_shapes(hkx: &mut HkxFile) {
     }
 }
 
+fn strip_trailing_ragdoll_controller_bodies(hkx: &mut HkxFile) {
+    use std::collections::HashSet;
+
+    for object in hkx.objects_mut() {
+        if object.class_name != "hknpRagdollData" {
+            continue;
+        }
+
+        let mapped_bodies: HashSet<usize> = object
+            .members
+            .iter()
+            .find(|member| member.name == "boneToBodyMap")
+            .and_then(|member| match &member.value {
+                HkxValue::Array(values) => Some(values),
+                _ => None,
+            })
+            .into_iter()
+            .flatten()
+            .filter_map(|value| extract_int(value))
+            .filter(|&body_index| body_index >= 0)
+            .map(|body_index| body_index as usize)
+            .collect();
+
+        let constrained_bodies: HashSet<usize> = object
+            .members
+            .iter()
+            .find(|member| member.name == "constraintCinfos")
+            .and_then(|member| match &member.value {
+                HkxValue::Array(values) => Some(values),
+                _ => None,
+            })
+            .into_iter()
+            .flatten()
+            .flat_map(|constraint| constraint.as_object_members().into_iter().flatten())
+            .filter(|member| member.name == "bodyA" || member.name == "bodyB")
+            .filter_map(|member| extract_int(&member.value))
+            .filter(|&body_index| body_index >= 0)
+            .map(|body_index| body_index as usize)
+            .collect();
+
+        let Some(body_member) = object
+            .members
+            .iter()
+            .find(|member| member.name == "bodyCinfos")
+        else {
+            continue;
+        };
+        let HkxValue::Array(bodies) = &body_member.value else {
+            continue;
+        };
+
+        let original_body_count = bodies.len();
+        let mut kept_body_count = original_body_count;
+        while kept_body_count > 0 {
+            let body_index = kept_body_count - 1;
+            if mapped_bodies.contains(&body_index) || constrained_bodies.contains(&body_index) {
+                break;
+            }
+
+            let is_controller_body = bodies[body_index]
+                .as_object_members()
+                .and_then(|members| members.iter().find(|member| member.name == "name"))
+                .and_then(|member| match &member.value {
+                    HkxValue::String { value, .. } => Some(value.as_str()),
+                    _ => None,
+                })
+                .map(|name| {
+                    name.eq_ignore_ascii_case("CharacterBumper")
+                        || name.eq_ignore_ascii_case("CharacterController")
+                })
+                .unwrap_or(false);
+            if !is_controller_body {
+                break;
+            }
+
+            kept_body_count -= 1;
+        }
+
+        if kept_body_count == original_body_count {
+            continue;
+        }
+
+        for member in &mut object.members {
+            if member.name == "bodyCinfos" {
+                if let HkxValue::Array(values) = &mut member.value {
+                    values.truncate(kept_body_count);
+                }
+            } else if member.name == "motionCinfos" {
+                if let HkxValue::Array(values) = &mut member.value {
+                    if values.len() == original_body_count {
+                        values.truncate(kept_body_count);
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Collect all valid pointer targets from an array of inline objects, from any
 /// member whose name matches `field_name`. Used by `fix_physics_referenced_objects`.
 fn collect_pointers_from_cinfo_array(
@@ -5033,8 +5263,9 @@ fn normalize_bumper_body_cinfos(hkx: &mut HkxFile) {
 /// 1. `motionId`: set to sequential body index (0..N-1) so `_synthesize_motion_cinfos`
 ///    pairs `motionCinfos[i]` with `body[i]` 1:1.
 /// 2. `reservedBodyId`: set to 0x7FFFFFFF (INVALID_ID).
-/// 3. `orientation`: recover from `hkaSkeleton.referencePose[bone]` quaternion (4..7),
-///    or fall back to identity `(0,0,0,1)` when no skeleton data is available.
+/// 3. `orientation`: preserve a valid authored body transform. Only recover a
+///    missing or malformed value from `hkaSkeleton.referencePose[bone]`, falling
+///    back to identity `(0,0,0,1)` when no skeleton data is available.
 /// 4. `collisionFilterInfo` on body[0]: if < 256 (no group bit), set to 520
 ///    (layer 8 + bit 9) so FO4's ragdoll linker can register it as the root body.
 fn normalize_ragdoll_body_cinfos(hkx: &mut HkxFile) {
@@ -5156,7 +5387,8 @@ fn normalize_ragdoll_body_cinfos(hkx: &mut HkxFile) {
                 });
             }
 
-            // orientation: recover from referencePose[bone_idx] or use identity.
+            // orientation: preserve authored body transforms. A skeleton's local
+            // reference-pose rotation is only a fallback for missing/bad source data.
             let bone_idx = info
                 .body_to_bone
                 .get(&body_idx)
@@ -5173,11 +5405,12 @@ fn normalize_ragdoll_body_cinfos(hkx: &mut HkxFile) {
             if let Some(m) = body_members.iter_mut().find(|m| m.name == "orientation") {
                 let needs_fix = match &m.value {
                     HkxValue::F32List(v) if v.len() == 4 => {
-                        v.iter().map(|x| x * x).sum::<f32>() < 1e-10
+                        !v.iter().all(|x| x.is_finite())
+                            || v.iter().map(|x| x * x).sum::<f32>() < 1e-10
                     }
                     _ => true,
                 };
-                if pose_target_rot.is_some() || needs_fix {
+                if needs_fix {
                     m.value = HkxValue::F32List(target_rot);
                 }
             } else {
@@ -5200,6 +5433,72 @@ fn normalize_ragdoll_body_cinfos(hkx: &mut HkxFile) {
                     }
                 }
             }
+        }
+    }
+}
+
+/// FO4 ragdoll body transforms require a homogeneous position lane of zero.
+/// Some FO76 ragdolls retain nonzero data there on sphere and polytope bodies;
+/// FO4's SIMD broadphase consumes it while building body bounds and can produce
+/// invalid closest-point queries. Run after motion synthesis so the source lane
+/// remains available to `centerOfMassWorld`, matching native FO4 motion cinfos.
+fn normalize_ragdoll_body_position_w(hkx: &mut HkxFile) {
+    for object in hkx.objects_mut() {
+        if object.class_name != "hknpRagdollData" {
+            continue;
+        }
+        let Some(body_member) = object.members.iter_mut().find(|m| m.name == "bodyCinfos") else {
+            continue;
+        };
+        let HkxValue::Array(bodies) = &mut body_member.value else {
+            continue;
+        };
+        for body in bodies {
+            let Some(body_members) = body.as_object_members_mut() else {
+                continue;
+            };
+            let Some(position) = body_members.iter_mut().find(|m| m.name == "position") else {
+                continue;
+            };
+            if let HkxValue::F32List(values) = &mut position.value {
+                if values.len() >= 4 {
+                    values[3] = 0.0;
+                }
+            }
+        }
+    }
+}
+
+/// FO76 serializes the cone atom's runtime angle-offset displacement for its
+/// larger constraint layout. FO4 follows this byte offset while activating the
+/// solver, so retain the authored limits but stamp the FO4 layout displacement.
+fn normalize_ragdoll_constraint_offsets(hkx: &mut HkxFile) {
+    const FO4_CONE_ANGLE_OFFSET: i32 = 56;
+
+    for object in hkx.objects_mut() {
+        if object.class_name != "hkpRagdollConstraintData" {
+            continue;
+        }
+        let Some(atoms) = object
+            .members
+            .iter_mut()
+            .find(|member| member.name == "atoms")
+            .and_then(|member| member.value.as_object_members_mut())
+        else {
+            continue;
+        };
+        let Some(cone_limit) = atoms
+            .iter_mut()
+            .find(|member| member.name == "coneLimit")
+            .and_then(|member| member.value.as_object_members_mut())
+        else {
+            continue;
+        };
+        if let Some(offset) = cone_limit
+            .iter_mut()
+            .find(|member| member.name == "memOffsetToAngleOffset")
+        {
+            set_int_member(&mut offset.value, FO4_CONE_ANGLE_OFFSET);
         }
     }
 }
@@ -5352,8 +5651,9 @@ fn inject_ragdoll_motors(hkx: &mut HkxFile) {
 /// keep empty `motionCinfos` in vanilla FO4.
 ///
 /// Inertia derivation: reads `hknpRefMassDistribution` data linked via each
-/// body's `massDistribution` pointer, computes `com_world = body.position +
-/// com_local` and `inv_inertia[i] = inertia[i]^-1 * inv_mass` per axis.
+/// body's `massDistribution` pointer, rotates its body-space COM into world,
+/// emits `mass / volume` as FO4's mass factor, and scales unit-mass inertia by
+/// the body's inverse mass.
 fn synthesize_motion_cinfos(
     hkx: &mut HkxFile,
     shape_mass_cache: &std::collections::HashMap<String, ShapeMassInfo>,
@@ -5444,7 +5744,7 @@ fn synthesize_motion_cinfos(
     // first, then apply.
     let n_objects = hkx.objects().len();
     let mut insertions: Vec<(usize, usize, Vec<HkxMember>)> = Vec::new(); // (obj_idx, insert_pos, new_motion_infos)
-    let inverse_inertia_w = if hkx
+    let default_inverse_inertia_w = if hkx
         .objects()
         .iter()
         .any(|o| o.class_name == "hkRootLevelContainer")
@@ -5463,6 +5763,11 @@ fn synthesize_motion_cinfos(
             continue;
         }
         let is_ragdoll = obj.class_name == "hknpRagdollData";
+        let inverse_inertia_w = if is_ragdoll {
+            1.0
+        } else {
+            default_inverse_inertia_w
+        };
 
         // Find bodyCinfos and existing motionCinfos.
         let body_arr = obj.members.iter().find(|m| m.name == "bodyCinfos");
@@ -5477,6 +5782,15 @@ fn synthesize_motion_cinfos(
         if bodies.is_empty() {
             continue;
         }
+        let motion_properties_count = obj
+            .members
+            .iter()
+            .find(|m| m.name == "motionProperties")
+            .and_then(|m| match &m.value {
+                HkxValue::Array(values) => Some(values.len()),
+                _ => None,
+            })
+            .unwrap_or(0);
         // Skip if motionCinfos already populated.
         if let Some(ma) = motion_arr {
             if let HkxValue::Array(entries) = &ma.value {
@@ -5515,6 +5829,15 @@ fn synthesize_motion_cinfos(
             let Some(body_members) = body.as_object_members() else {
                 continue;
             };
+
+            let motion_properties_id = body_members
+                .iter()
+                .find(|m| m.name == "motionPropertiesId")
+                .and_then(|m| extract_int(&m.value))
+                .and_then(|id| usize::try_from(id).ok())
+                .filter(|&id| id < motion_properties_count)
+                .and_then(|id| u16::try_from(id).ok())
+                .unwrap_or(0);
 
             let mut position = vec![0.0f32, 0.0, 0.0, 0.0];
             let mut orientation = vec![0.0f32, 0.0, 0.0, 1.0];
@@ -5609,10 +5932,14 @@ fn synthesize_motion_cinfos(
                     // inverseMass = 1/mass; massFactor = 1.0 (valid constant, matches FO4 vanilla).
                     let im = cache.inverse_mass;
 
+                    let rotated_com = quat_rotate_vector_xyzw(
+                        [orientation[0], orientation[1], orientation[2], orientation[3]],
+                        cache.center_of_mass,
+                    );
                     let cw = vec![
-                        position[0] + cache.center_of_mass[0],
-                        position[1] + cache.center_of_mass[1],
-                        position[2] + cache.center_of_mass[2],
+                        position[0] + rotated_com[0],
+                        position[1] + rotated_com[1],
+                        position[2] + rotated_com[2],
                         position[3],
                     ];
 
@@ -5638,24 +5965,10 @@ fn synthesize_motion_cinfos(
                     ];
 
                     let maq = cache.major_axis_space;
-                    let orient = if is_ragdoll {
-                        [
-                            orientation[0],
-                            orientation[1],
-                            orientation[2],
-                            orientation[3],
-                        ]
-                    } else {
-                        quat_mul_xyzw(
-                            [
-                                orientation[0],
-                                orientation[1],
-                                orientation[2],
-                                orientation[3],
-                            ],
-                            maq,
-                        )
-                    };
+                    let orient = quat_mul_xyzw(
+                        [orientation[0], orientation[1], orientation[2], orientation[3]],
+                        maq,
+                    );
 
                     (im, 1.0_f32, cw, ii, orient)
                 } else {
@@ -5665,10 +5978,14 @@ fn synthesize_motion_cinfos(
                     let (com4, inertia4, major_axis4) =
                         resolve_mass_dist(hkx.objects(), &obj_by_name, &mass_dist_target);
                     let cw = if let Some(ref c) = com4 {
+                        let rotated_com = quat_rotate_vector_xyzw(
+                            [orientation[0], orientation[1], orientation[2], orientation[3]],
+                            [c[0], c[1], c[2]],
+                        );
                         vec![
-                            position[0] + c[0],
-                            position[1] + c[1],
-                            position[2] + c[2],
+                            position[0] + rotated_com[0],
+                            position[1] + rotated_com[1],
+                            position[2] + rotated_com[2],
                             position[3],
                         ]
                     } else {
@@ -5693,6 +6010,13 @@ fn synthesize_motion_cinfos(
                     } else {
                         ([1.0, 1.0, 1.0], [0.0, 0.0, 0.0, 1.0])
                     };
+                    let density = com4
+                        .as_ref()
+                        .map(|com| com[3])
+                        .filter(|volume| volume.is_finite() && *volume > 1e-12)
+                        .filter(|_| mass_val.is_finite() && mass_val > 1e-6)
+                        .map(|volume| mass_val / volume);
+                    let mass_factor = density.unwrap_or(mass_val);
                     let ii = vec![
                         if principal_inertia[0].abs() > 1e-12 {
                             (1.0 / principal_inertia[0]) * inv_mass
@@ -5728,26 +6052,12 @@ fn synthesize_motion_cinfos(
                     } else {
                         derived_major_axis
                     };
-                    let orient = if is_ragdoll {
-                        [
-                            orientation[0],
-                            orientation[1],
-                            orientation[2],
-                            orientation[3],
-                        ]
-                    } else {
-                        quat_mul_xyzw(
-                            [
-                                orientation[0],
-                                orientation[1],
-                                orientation[2],
-                                orientation[3],
-                            ],
-                            major_axis_q,
-                        )
-                    };
+                    let orient = quat_mul_xyzw(
+                        [orientation[0], orientation[1], orientation[2], orientation[3]],
+                        major_axis_q,
+                    );
 
-                    (inv_mass, mass_val, cw, ii, orient)
+                    (inv_mass, mass_factor, cw, ii, orient)
                 };
 
             let orientation = vec![
@@ -5765,7 +6075,7 @@ fn synthesize_motion_cinfos(
                     members: vec![
                         HkxMember {
                             name: "motionPropertiesId".to_string(),
-                            value: HkxValue::U16(0),
+                            value: HkxValue::U16(motion_properties_id),
                         },
                         HkxMember {
                             name: "enableDeactivation".to_string(),
@@ -5940,6 +6250,30 @@ fn quat_mul_xyzw(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
         aw * by - ax * bz + ay * bw + az * bx,
         aw * bz + ax * by - ay * bx + az * bw,
         aw * bw - ax * bx - ay * by - az * bz,
+    ]
+}
+
+fn quat_rotate_vector_xyzw(quaternion: [f32; 4], vector: [f32; 3]) -> [f32; 3] {
+    let norm_sq = quaternion.iter().map(|value| value * value).sum::<f32>();
+    if !norm_sq.is_finite() || norm_sq < 1e-12 {
+        return vector;
+    }
+    let inverse_norm = norm_sq.sqrt().recip();
+    let q = [
+        quaternion[0] * inverse_norm,
+        quaternion[1] * inverse_norm,
+        quaternion[2] * inverse_norm,
+        quaternion[3] * inverse_norm,
+    ];
+    let t = [
+        2.0 * (q[1] * vector[2] - q[2] * vector[1]),
+        2.0 * (q[2] * vector[0] - q[0] * vector[2]),
+        2.0 * (q[0] * vector[1] - q[1] * vector[0]),
+    ];
+    [
+        vector[0] + q[3] * t[0] + q[1] * t[2] - q[2] * t[1],
+        vector[1] + q[3] * t[1] + q[2] * t[0] - q[0] * t[2],
+        vector[2] + q[3] * t[2] + q[0] * t[1] - q[1] * t[0],
     ]
 }
 
@@ -10784,6 +11118,11 @@ mod tests {
                         member("flags", HkxValue::I32(515)),
                         member("dispatchType", HkxValue::I32(2)),
                         member("type", HkxValue::I32(0)),
+                        member("convexRadius", HkxValue::F32(0.25)),
+                        member(
+                            "vertices",
+                            HkxValue::Array(vec![HkxValue::F32List(vec![0.0, 0.0, 0.0, 0.5]); 4]),
+                        ),
                     ],
                 ),
             ],
@@ -10800,6 +11139,34 @@ mod tests {
             .unwrap();
         assert_eq!(dispatch.value, HkxValue::I32(1));
         assert!(obj.members.iter().all(|m| m.name != "type"));
+    }
+
+    #[test]
+    fn migrate_skeleton_physics_keeps_true_generic_convex_shape() {
+        let mut hkx = HkxFile::from_tagxml(
+            12,
+            "hk_2015.1.0-r1",
+            vec![
+                object("hknpPhysicsSystemData", vec![]),
+                object(
+                    "hknpConvexShape",
+                    vec![
+                        member("flags", HkxValue::I32(1)),
+                        member("dispatchType", HkxValue::I32(2)),
+                        member("convexRadius", HkxValue::F32(0.0)),
+                        member(
+                            "vertices",
+                            HkxValue::Array(vec![
+                                HkxValue::F32List(vec![-1.0, 0.0, 0.0, 0.5]),
+                                HkxValue::F32List(vec![1.0, 0.0, 0.0, 0.5]),
+                            ]),
+                        ),
+                    ],
+                ),
+            ],
+        );
+        migrate_skeleton_physics(&mut hkx);
+        assert_eq!(hkx.objects()[1].class_name, "hknpConvexShape");
     }
 
     #[test]
@@ -11018,6 +11385,92 @@ mod tests {
     }
 
     #[test]
+    fn normalize_sphere_support_vertices_pads_compact_sphere_to_fo4_width() {
+        let support = HkxValue::F32List(vec![0.049218, 0.011694, -0.000945, 0.5]);
+        let mut hkx = HkxFile::from_tagxml(
+            12,
+            "hk_2015.1.0-r1",
+            vec![object(
+                "hknpSphereShape",
+                vec![member("vertices", HkxValue::Array(vec![support.clone()]))],
+            )],
+        );
+
+        normalize_sphere_support_vertices(&mut hkx);
+
+        let HkxValue::Array(vertices) = &hkx.objects()[0]
+            .members
+            .iter()
+            .find(|member| member.name == "vertices")
+            .expect("sphere vertices")
+            .value
+        else {
+            panic!("sphere vertices must be an array");
+        };
+        assert_eq!(vertices, &vec![support; 4]);
+    }
+
+    #[test]
+    fn normalize_shape_mass_properties_flattens_fo76_packed_vectors() {
+        let center_words = vec![21621_i16, -1203, 674, 12032];
+        let inertia_words = vec![11300_i16, 22813, 14204, 12160];
+        let wrapped = |words: &[i16]| {
+            HkxValue::Object(vec![member(
+                "values",
+                HkxValue::Array(words.iter().copied().map(HkxValue::I16).collect()),
+            )])
+        };
+        let mut hkx = HkxFile::from_tagxml(
+            12,
+            "hk_2015.1.0-r1",
+            vec![object(
+                "hknpShapeMassProperties",
+                vec![member(
+                    "compressedMassProperties",
+                    HkxValue::Object(vec![
+                        member("centerOfMass", wrapped(&center_words)),
+                        member("inertia", wrapped(&inertia_words)),
+                        member(
+                            "majorAxisSpace",
+                            HkxValue::Array(
+                                [-32768_i16, -32768, 32150, -2775]
+                                    .into_iter()
+                                    .map(HkxValue::I16)
+                                    .collect(),
+                            ),
+                        ),
+                        member("mass", HkxValue::F32(12.565272)),
+                        member("volume", HkxValue::F32(0.012565272)),
+                    ]),
+                )],
+            )],
+        );
+
+        normalize_shape_mass_properties(&mut hkx);
+
+        let compressed = hkx.objects()[0].members[0]
+            .value
+            .as_object_members()
+            .expect("compressed mass properties");
+        let words = |name: &str| {
+            compressed
+                .iter()
+                .find(|member| member.name == name)
+                .map(|member| &member.value)
+                .expect("packed vector")
+        };
+        assert_eq!(
+            words("centerOfMass"),
+            &HkxValue::Array(center_words.into_iter().map(HkxValue::I16).collect())
+        );
+        assert_eq!(
+            words("inertia"),
+            &HkxValue::Array(inertia_words.into_iter().map(HkxValue::I16).collect())
+        );
+        assert_eq!(words("volume"), &HkxValue::F32(0.012565272));
+    }
+
+    #[test]
     fn strip_shape_connectivity_nulls_pointer_and_drops_target() {
         let mut hkx = HkxFile::from_tagxml(
             12,
@@ -11075,11 +11528,16 @@ mod tests {
                     ])]),
                 ),
                 member("indices", HkxValue::Array(vec![HkxValue::U8(0)])),
+                member("properties", HkxValue::Pointer(Some(1))),
                 member("connectivity", HkxValue::Pointer(Some(1))),
                 member("obb", HkxValue::Object(vec![])),
             ],
         };
-        let mut hkx = HkxFile::from_tagxml(12, "hk_2015.1.0-r1", vec![box_shape]);
+        let mut hkx = HkxFile::from_tagxml(
+            12,
+            "hk_2015.1.0-r1",
+            vec![box_shape, object("hkRefCountedProperties", vec![])],
+        );
         let mut warnings = Vec::new();
 
         convert_box_shapes_to_polytopes(&mut hkx, &mut warnings);
@@ -11098,6 +11556,7 @@ mod tests {
         assert!(names.contains(&"planes"));
         assert!(names.contains(&"faces"));
         assert!(names.contains(&"indices"));
+        assert!(names.contains(&"properties"));
         assert!(!names.contains(&"memSizeAndFlags"));
         assert!(!names.contains(&"refCount"));
         assert!(!names.contains(&"connectivity"));
@@ -11816,6 +12275,121 @@ mod tests {
         assert_eq!(omembers[0].value, HkxValue::Pointer(Some(300)));
     }
 
+    #[test]
+    fn strip_trailing_ragdoll_controller_bodies_removes_unmapped_suffix() {
+        let named_body = |name: &str| {
+            HkxValue::Object(vec![member(
+                "name",
+                HkxValue::String {
+                    value: name.to_string(),
+                    is_null: false,
+                },
+            )])
+        };
+        let mut hkx = HkxFile::from_tagxml(
+            12,
+            "hk_2015.1.0-r1",
+            vec![object(
+                "hknpRagdollData",
+                vec![
+                    member(
+                        "boneToBodyMap",
+                        HkxValue::Array(vec![HkxValue::I32(0), HkxValue::I32(1)]),
+                    ),
+                    member(
+                        "bodyCinfos",
+                        HkxValue::Array(vec![
+                            named_body("Ragdoll_COM"),
+                            named_body("Ragdoll_Head"),
+                            named_body("CharacterBumper"),
+                            named_body("CharacterController"),
+                        ]),
+                    ),
+                    member(
+                        "motionCinfos",
+                        HkxValue::Array(vec![
+                            HkxValue::Object(vec![]),
+                            HkxValue::Object(vec![]),
+                            HkxValue::Object(vec![]),
+                            HkxValue::Object(vec![]),
+                        ]),
+                    ),
+                    member(
+                        "constraintCinfos",
+                        HkxValue::Array(vec![HkxValue::Object(vec![
+                            member("bodyA", HkxValue::U32(1)),
+                            member("bodyB", HkxValue::U32(0)),
+                        ])]),
+                    ),
+                ],
+            )],
+        );
+
+        strip_trailing_ragdoll_controller_bodies(&mut hkx);
+
+        let ragdoll = &hkx.objects()[0];
+        for member_name in ["bodyCinfos", "motionCinfos"] {
+            let member = ragdoll
+                .members
+                .iter()
+                .find(|member| member.name == member_name)
+                .unwrap();
+            let HkxValue::Array(values) = &member.value else {
+                panic!("{member_name} must be an array")
+            };
+            assert_eq!(values.len(), 2);
+        }
+    }
+
+    #[test]
+    fn strip_trailing_ragdoll_controller_bodies_preserves_constrained_body() {
+        let named_body = |name: &str| {
+            HkxValue::Object(vec![member(
+                "name",
+                HkxValue::String {
+                    value: name.to_string(),
+                    is_null: false,
+                },
+            )])
+        };
+        let mut hkx = HkxFile::from_tagxml(
+            12,
+            "hk_2015.1.0-r1",
+            vec![object(
+                "hknpRagdollData",
+                vec![
+                    member("boneToBodyMap", HkxValue::Array(vec![HkxValue::I32(0)])),
+                    member(
+                        "bodyCinfos",
+                        HkxValue::Array(vec![
+                            named_body("Ragdoll_COM"),
+                            named_body("CharacterBumper"),
+                        ]),
+                    ),
+                    member(
+                        "constraintCinfos",
+                        HkxValue::Array(vec![HkxValue::Object(vec![
+                            member("bodyA", HkxValue::U32(1)),
+                            member("bodyB", HkxValue::U32(0)),
+                        ])]),
+                    ),
+                ],
+            )],
+        );
+
+        strip_trailing_ragdoll_controller_bodies(&mut hkx);
+
+        let bodies = hkx.objects()[0]
+            .members
+            .iter()
+            .find(|member| member.name == "bodyCinfos")
+            .unwrap();
+        let HkxValue::Array(bodies) = &bodies.value else {
+            panic!("bodyCinfos must be an array")
+        };
+        assert_eq!(bodies.len(), 2);
+    }
+
     // ── Transform F: normalize_ragdoll_body_cinfos ───────────────────────────
 
     #[test]
@@ -11886,7 +12460,7 @@ mod tests {
     }
 
     #[test]
-    fn normalize_ragdoll_body_cinfos_overwrites_valid_source_orientation_from_reference_pose() {
+    fn normalize_ragdoll_body_cinfos_preserves_valid_source_orientation() {
         let skeleton = HkxObject {
             name: Some("#skel".to_string()),
             offset: 0,
@@ -11945,7 +12519,7 @@ mod tests {
                 .find(|m| m.name == "orientation")
                 .unwrap()
                 .value,
-            HkxValue::F32List(vec![0.0, 0.0, -0.433327, 0.901237])
+            HkxValue::F32List(vec![-0.179972, 0.620723, -0.246546, 0.722169])
         );
     }
 
@@ -11965,6 +12539,137 @@ mod tests {
         normalize_ragdoll_body_cinfos(&mut hkx);
         // motionId should still be 0 — bumper transform (not ragdoll) handles PSD.
         assert_eq!(hkx.objects(), before.as_slice());
+    }
+
+    #[test]
+    fn normalize_ragdoll_body_position_w_preserves_motion_center_lane() {
+        let body = HkxValue::Object(vec![member(
+            "position",
+            HkxValue::F32List(vec![0.1, -0.7, 0.3, -0.089]),
+        )]);
+        let motion = HkxValue::TypedObject {
+            class_name: "hknpMotionCinfo".to_string(),
+            members: vec![member(
+                "centerOfMassWorld",
+                HkxValue::F32List(vec![0.2, -0.7, 0.3, -0.089]),
+            )],
+        };
+        let mut hkx = HkxFile::from_tagxml(
+            12,
+            "hk_2015.1.0-r1",
+            vec![object(
+                "hknpRagdollData",
+                vec![
+                    member("bodyCinfos", HkxValue::Array(vec![body])),
+                    member("motionCinfos", HkxValue::Array(vec![motion])),
+                ],
+            )],
+        );
+
+        normalize_ragdoll_body_position_w(&mut hkx);
+
+        let ragdoll = &hkx.objects()[0];
+        let HkxValue::Array(bodies) = &ragdoll
+            .members
+            .iter()
+            .find(|m| m.name == "bodyCinfos")
+            .unwrap()
+            .value
+        else {
+            panic!("bodyCinfos should be an array");
+        };
+        let Some(body_members) = bodies[0].as_object_members() else {
+            panic!("body cinfo should be an object");
+        };
+        assert_eq!(
+            body_members
+                .iter()
+                .find(|m| m.name == "position")
+                .unwrap()
+                .value,
+            HkxValue::F32List(vec![0.1, -0.7, 0.3, 0.0])
+        );
+
+        let HkxValue::Array(motions) = &ragdoll
+            .members
+            .iter()
+            .find(|m| m.name == "motionCinfos")
+            .unwrap()
+            .value
+        else {
+            panic!("motionCinfos should be an array");
+        };
+        let Some(motion_members) = motions[0].as_object_members() else {
+            panic!("motion cinfo should be an object");
+        };
+        assert_eq!(
+            motion_members
+                .iter()
+                .find(|m| m.name == "centerOfMassWorld")
+                .unwrap()
+                .value,
+            HkxValue::F32List(vec![0.2, -0.7, 0.3, -0.089])
+        );
+    }
+
+    #[test]
+    fn normalize_ragdoll_constraint_offsets_uses_fo4_cone_layout() {
+        let cone_limit = HkxValue::Object(vec![member(
+            "memOffsetToAngleOffset",
+            HkxValue::I16(160),
+        )]);
+        let atoms = HkxValue::Object(vec![
+            member("coneLimit", cone_limit),
+            member(
+                "planesLimit",
+                HkxValue::Object(vec![member("memOffsetToAngleOffset", HkxValue::I16(0))]),
+            ),
+        ]);
+        let mut hkx = HkxFile::from_tagxml(
+            12,
+            "hk_2015.1.0-r1",
+            vec![object(
+                "hkpRagdollConstraintData",
+                vec![member("atoms", atoms)],
+            )],
+        );
+
+        normalize_ragdoll_constraint_offsets(&mut hkx);
+
+        let atoms = hkx.objects()[0].members[0]
+            .value
+            .as_object_members()
+            .expect("atoms object");
+        let cone_limit = atoms
+            .iter()
+            .find(|member| member.name == "coneLimit")
+            .and_then(|member| member.value.as_object_members())
+            .expect("cone limit object");
+        assert_eq!(
+            extract_int(
+                &cone_limit
+                    .iter()
+                    .find(|member| member.name == "memOffsetToAngleOffset")
+                    .expect("cone offset")
+                    .value
+            ),
+            Some(56)
+        );
+        let planes_limit = atoms
+            .iter()
+            .find(|member| member.name == "planesLimit")
+            .and_then(|member| member.value.as_object_members())
+            .expect("planes limit object");
+        assert_eq!(
+            extract_int(
+                &planes_limit
+                    .iter()
+                    .find(|member| member.name == "memOffsetToAngleOffset")
+                    .expect("planes offset")
+                    .value
+            ),
+            Some(0)
+        );
     }
 
     // ── Transform G: inject_ragdoll_motors ──────────────────────────────────
@@ -12100,12 +12805,68 @@ mod tests {
         let mf = members.iter().find(|m| m.name == "massFactor").unwrap();
         assert_eq!(mf.value, HkxValue::F32(5.0));
 
+        let motion_properties_id = members
+            .iter()
+            .find(|m| m.name == "motionPropertiesId")
+            .unwrap();
+        assert_eq!(motion_properties_id.value, HkxValue::U16(0));
+
         // centerOfMassWorld = position (no mass dist target)
         let com = members
             .iter()
             .find(|m| m.name == "centerOfMassWorld")
             .unwrap();
         assert_eq!(com.value, HkxValue::F32List(vec![1.0, 2.0, 3.0, 0.0]));
+    }
+
+    #[test]
+    fn synthesize_motion_cinfos_preserves_nonsequential_motion_properties_ids() {
+        let bodies = [0_u16, 3, 1]
+            .into_iter()
+            .map(|motion_properties_id| {
+                HkxValue::Object(vec![member(
+                    "motionPropertiesId",
+                    HkxValue::U16(motion_properties_id),
+                )])
+            })
+            .collect();
+        let motion_properties = (0..4).map(|_| HkxValue::Object(vec![])).collect();
+        let mut hkx = HkxFile::from_tagxml(
+            12,
+            "hk_2015.1.0-r1",
+            vec![object(
+                "hknpRagdollData",
+                vec![
+                    member("motionProperties", HkxValue::Array(motion_properties)),
+                    member("bodyCinfos", HkxValue::Array(bodies)),
+                ],
+            )],
+        );
+
+        synthesize_motion_cinfos(&mut hkx, &std::collections::HashMap::new());
+
+        let motion_arr = hkx.objects()[0]
+            .members
+            .iter()
+            .find(|m| m.name == "motionCinfos")
+            .expect("motionCinfos must be created");
+        let HkxValue::Array(entries) = &motion_arr.value else {
+            panic!()
+        };
+        let ids: Vec<i32> = entries
+            .iter()
+            .map(|entry| {
+                let HkxValue::TypedObject { members, .. } = entry else {
+                    panic!("entry must be TypedObject")
+                };
+                members
+                    .iter()
+                    .find(|m| m.name == "motionPropertiesId")
+                    .and_then(|m| extract_int(&m.value))
+                    .expect("motionPropertiesId must be present")
+            })
+            .collect();
+        assert_eq!(ids, vec![0, 3, 1]);
     }
 
     #[test]
@@ -12207,7 +12968,7 @@ mod tests {
                 HkxValue::Object(vec![
                     member(
                         "centerOfMassAndVolume",
-                        HkxValue::F32List(vec![0.0, 0.0, 0.0, 1.0]),
+                        HkxValue::F32List(vec![0.0, 0.0, 0.0, 0.5]),
                     ),
                     member("inertiaTensor", HkxValue::F32List(vec![2.0, 5.0, 8.0, 0.0])),
                     member("majorAxisSpace", HkxValue::F32List(major_axis_q.clone())),
@@ -12273,6 +13034,12 @@ mod tests {
             );
         }
 
+        let mass_factor = members
+            .iter()
+            .find(|m| m.name == "massFactor")
+            .expect("massFactor field missing");
+        assert_eq!(mass_factor.value, HkxValue::F32(8.0));
+
         // Inverse inertia should be (1/I_i) * inv_mass for each principal axis.
         let inv_mass = 0.25_f32;
         let inv_inertia = members
@@ -12305,8 +13072,11 @@ mod tests {
     }
 
     #[test]
-    fn synthesize_motion_cinfos_leaves_embedded_ragdoll_orientation_in_body_space() {
+    fn synthesize_motion_cinfos_composes_ragdoll_major_axis_and_rotates_com() {
         let body_orientation = vec![-0.000038_f32, -0.001566, -0.118366, -0.992969];
+        let major_axis = [0.000147_f32, -0.000018, -0.118366, 0.992970];
+        let body_position = [0.5_f32, -0.25, 1.0, 0.0];
+        let local_com = [0.1_f32, 0.2, -0.3];
         let mass_dist = HkxObject {
             name: Some("#massdist".to_string()),
             offset: 0,
@@ -12317,7 +13087,7 @@ mod tests {
                 HkxValue::Object(vec![
                     member(
                         "centerOfMassAndVolume",
-                        HkxValue::F32List(vec![0.0, 0.0, 0.0, 1.0]),
+                        HkxValue::F32List(vec![local_com[0], local_com[1], local_com[2], 0.25]),
                     ),
                     member(
                         "inertiaTensor",
@@ -12325,7 +13095,7 @@ mod tests {
                     ),
                     member(
                         "majorAxisSpace",
-                        HkxValue::F32List(vec![0.000147, -0.000018, -0.118366, 0.992970]),
+                        HkxValue::F32List(major_axis.to_vec()),
                     ),
                 ]),
             )],
@@ -12333,7 +13103,7 @@ mod tests {
         let body = HkxValue::Object(vec![
             member("flags", HkxValue::I32(128)),
             member("mass", HkxValue::F32(1.0)),
-            member("position", HkxValue::F32List(vec![0.0, 0.0, 0.0, 0.0])),
+            member("position", HkxValue::F32List(body_position.to_vec())),
             member("orientation", HkxValue::F32List(body_orientation.clone())),
             member("massDistribution", HkxValue::Pointer(Some(0))),
         ]);
@@ -12362,7 +13132,52 @@ mod tests {
             .iter()
             .find(|m| m.name == "orientation")
             .expect("orientation field missing");
-        assert_eq!(orient.value, HkxValue::F32List(body_orientation));
+        let HkxValue::F32List(orientation) = &orient.value else {
+            panic!("orientation must be F32List")
+        };
+        let expected_orientation = quat_mul_xyzw(
+            [
+                body_orientation[0],
+                body_orientation[1],
+                body_orientation[2],
+                body_orientation[3],
+            ],
+            major_axis,
+        );
+        for axis in 0..4 {
+            assert!((orientation[axis] - expected_orientation[axis]).abs() < 1e-6);
+        }
+
+        let rotated_com = quat_rotate_vector_xyzw(
+            [
+                body_orientation[0],
+                body_orientation[1],
+                body_orientation[2],
+                body_orientation[3],
+            ],
+            local_com,
+        );
+        let HkxValue::F32List(center_of_mass) = &members
+            .iter()
+            .find(|m| m.name == "centerOfMassWorld")
+            .expect("centerOfMassWorld field missing")
+            .value
+        else {
+            panic!("centerOfMassWorld must be F32List")
+        };
+        for axis in 0..3 {
+            assert!(
+                (center_of_mass[axis] - (body_position[axis] + rotated_com[axis])).abs() < 1e-6
+            );
+        }
+        assert_eq!(
+            members
+                .iter()
+                .find(|m| m.name == "massFactor")
+                .expect("massFactor field missing")
+                .value,
+            HkxValue::F32(4.0)
+        );
     }
 
     #[test]
@@ -12385,6 +13200,54 @@ mod tests {
         synthesize_motion_cinfos(&mut hkx, &std::collections::HashMap::new());
 
         let motion_arr = hkx.objects()[0]
+            .members
+            .iter()
+            .find(|m| m.name == "motionCinfos")
+            .expect("motionCinfos must be created");
+        let HkxValue::Array(entries) = &motion_arr.value else {
+            panic!()
+        };
+        let HkxValue::TypedObject { members, .. } = &entries[0] else {
+            panic!("entry must be TypedObject");
+        };
+        let inv_inertia = members
+            .iter()
+            .find(|m| m.name == "inverseInertiaLocal")
+            .expect("inverseInertiaLocal field missing");
+        let HkxValue::F32List(ii) = &inv_inertia.value else {
+            panic!("inverseInertiaLocal must be F32List");
+        };
+        assert_eq!(ii[3], 1.0);
+    }
+
+    #[test]
+    fn synthesize_motion_cinfos_uses_ragdoll_inverse_inertia_w_one_with_root_container() {
+        let body = HkxValue::Object(vec![
+            member("flags", HkxValue::I32(128)),
+            member("mass", HkxValue::F32(1.0)),
+            member("position", HkxValue::F32List(vec![0.0, 0.0, 0.0, 0.0])),
+            member("orientation", HkxValue::F32List(vec![0.0, 0.0, 0.0, 1.0])),
+        ]);
+        let mut hkx = HkxFile::from_tagxml(
+            12,
+            "hk_2015.1.0-r1",
+            vec![
+                object("hkRootLevelContainer", vec![]),
+                object(
+                    "hknpRagdollData",
+                    vec![member("bodyCinfos", HkxValue::Array(vec![body]))],
+                ),
+            ],
+        );
+
+        synthesize_motion_cinfos(&mut hkx, &std::collections::HashMap::new());
+
+        let ragdoll = hkx
+            .objects()
+            .iter()
+            .find(|object| object.class_name == "hknpRagdollData")
+            .expect("ragdoll must remain present");
+        let motion_arr = ragdoll
             .members
             .iter()
             .find(|m| m.name == "motionCinfos")
@@ -12447,8 +13310,14 @@ mod tests {
         let mass_m = 5.0_f32;
 
         // Pack the values into hkPackedVector3 / hkPackedUnitVector byte blocks.
-        let com_i16 = packed_bytes_to_i16_array(pack_vector3(shape_com));
-        let inertia_i16 = packed_bytes_to_i16_array(pack_vector3(fwd_inertia));
+        let com_i16 = HkxValue::Object(vec![member(
+            "values",
+            packed_bytes_to_i16_array(pack_vector3(shape_com)),
+        )]);
+        let inertia_i16 = HkxValue::Object(vec![member(
+            "values",
+            packed_bytes_to_i16_array(pack_vector3(fwd_inertia)),
+        )]);
         let major_i16 = packed_bytes_to_i16_array(pack_unit_quat([0.0, 0.0, 0.0, 1.0])); // identity
 
         // hkCompressedMassProperties inline struct.
@@ -12788,6 +13657,102 @@ mod tests {
             .find(|m| m.name == "enterNotifyEvents")
             .unwrap();
         assert_eq!(enter_ptr.value, HkxValue::Pointer(None));
+    }
+
+    #[test]
+    fn populate_event_property_arrays_keeps_child_events_off_state_machine_wrapper() {
+        let existing_exit_epa = object(
+            "hkbStateMachineEventPropertyArray",
+            vec![member(
+                "events",
+                HkxValue::Array(vec![HkxValue::TypedObject {
+                    class_name: "hkbEventProperty".to_string(),
+                    members: vec![
+                        member("id", HkxValue::I32(3)),
+                        member("payload", HkxValue::Pointer(None)),
+                    ],
+                }]),
+            )],
+        );
+        let inner_state = object(
+            "hkbStateMachineStateInfo",
+            vec![
+                member("stateId", HkxValue::I32(5)),
+                member("enterNotifyEvents", HkxValue::Pointer(None)),
+                member("exitNotifyEvents", HkxValue::Pointer(None)),
+                member("transitions", HkxValue::Pointer(None)),
+                member("generator", HkxValue::Pointer(None)),
+            ],
+        );
+        let inner_transitions = object(
+            "hkbStateMachineTransitionInfoArray",
+            vec![member(
+                "transitions",
+                HkxValue::Array(vec![HkxValue::Object(vec![
+                    member("toStateId", HkxValue::I32(5)),
+                    member("eventId", HkxValue::I32(0)),
+                ])]),
+            )],
+        );
+        let inner_state_machine = object(
+            "hkbStateMachine",
+            vec![
+                member("states", HkxValue::Array(vec![HkxValue::Pointer(Some(2))])),
+                member("wildcardTransitions", HkxValue::Pointer(Some(3))),
+            ],
+        );
+        let outer_state = object(
+            "hkbStateMachineStateInfo",
+            vec![
+                member("stateId", HkxValue::I32(8)),
+                member("enterNotifyEvents", HkxValue::Pointer(None)),
+                member("exitNotifyEvents", HkxValue::Pointer(Some(1))),
+                member("transitions", HkxValue::Pointer(None)),
+                member("generator", HkxValue::Pointer(Some(4))),
+            ],
+        );
+        let outer_state_machine = object(
+            "hkbStateMachine",
+            vec![
+                member("states", HkxValue::Array(vec![HkxValue::Pointer(Some(5))])),
+                member("wildcardTransitions", HkxValue::Pointer(None)),
+            ],
+        );
+        let mut hkx = HkxFile::from_tagxml(
+            11,
+            "hk_2014.1.0-r1",
+            vec![
+                behavior_string_data(&[
+                    "Ragdoll",
+                    "RemoveCharacterControllerFromWorld",
+                    "EnterFullyRagdoll",
+                    "GetUpEnd",
+                ]),
+                existing_exit_epa,
+                inner_state,
+                inner_transitions,
+                inner_state_machine,
+                outer_state,
+                outer_state_machine,
+            ],
+        );
+
+        let pre_count = hkx.objects().len();
+        populate_event_property_arrays(&mut hkx);
+
+        assert_eq!(hkx.objects().len(), pre_count + 1);
+        let outer_enter = hkx.objects()[5]
+            .members
+            .iter()
+            .find(|member| member.name == "enterNotifyEvents")
+            .unwrap();
+        assert_eq!(outer_enter.value, HkxValue::Pointer(None));
+        let inner_enter = hkx.objects()[2]
+            .members
+            .iter()
+            .find(|member| member.name == "enterNotifyEvents")
+            .unwrap();
+        assert_eq!(inner_enter.value, HkxValue::Pointer(Some(pre_count)));
     }
 
     #[test]

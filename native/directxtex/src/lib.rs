@@ -44,7 +44,7 @@ use std::fs;
 use std::path::Path;
 use std::slice;
 
-mod ispc_bc7;
+mod ispc_bc;
 mod python;
 
 #[cfg(test)]
@@ -876,7 +876,15 @@ fn encode_bc_unorm_dds(
     let mut out = dds_header(width, height, linear_size as u32, fourcc, mip_count);
 
     for (level_width, level_height, level_rgba) in chain {
-        append_bc_unorm_level(&mut out, level_width, level_height, &level_rgba, channels)?;
+        if channels == 2 {
+            out.extend_from_slice(&ispc_bc::bc5_blocks_from_rgba(
+                level_width,
+                level_height,
+                &level_rgba,
+            )?);
+        } else {
+            append_bc_unorm_level(&mut out, level_width, level_height, &level_rgba, channels)?;
+        }
     }
     Ok(out)
 }
@@ -947,13 +955,49 @@ fn compressed_payload_from_rgba(
         }
         // fall through to CPU on any GPU error
     }
-    if matches!(
-        target_format,
-        DXGI_FORMAT::DXGI_FORMAT_BC7_UNORM | DXGI_FORMAT::DXGI_FORMAT_BC7_UNORM_SRGB
-    ) {
-        return ispc_bc7_payload(width, height, rgba, target_format.is_srgb());
+    match target_format {
+        DXGI_FORMAT::DXGI_FORMAT_BC1_UNORM | DXGI_FORMAT::DXGI_FORMAT_BC1_UNORM_SRGB
+            if rgba.chunks_exact(4).all(|pixel| pixel[3] == 0xFF) =>
+        {
+            return ispc_bc1_payload(width, height, rgba, target_format.is_srgb());
+        }
+        DXGI_FORMAT::DXGI_FORMAT_BC3_UNORM | DXGI_FORMAT::DXGI_FORMAT_BC3_UNORM_SRGB => {
+            return ispc_bc3_payload(width, height, rgba, target_format.is_srgb());
+        }
+        DXGI_FORMAT::DXGI_FORMAT_BC7_UNORM | DXGI_FORMAT::DXGI_FORMAT_BC7_UNORM_SRGB => {
+            return ispc_bc7_payload(width, height, rgba, target_format.is_srgb());
+        }
+        _ => {}
     }
     dxtex_compressed_payload(width, height, rgba, target_format, parallel_compression)
+}
+
+fn ispc_bc1_payload(
+    width: usize,
+    height: usize,
+    rgba: &[u8],
+    srgb: bool,
+) -> core::result::Result<Vec<u8>, String> {
+    if srgb {
+        let converted = convert_unorm_texels_to_srgb(width, height, rgba)?;
+        ispc_bc::bc1_blocks_from_rgba(width, height, &converted)
+    } else {
+        ispc_bc::bc1_blocks_from_rgba(width, height, rgba)
+    }
+}
+
+fn ispc_bc3_payload(
+    width: usize,
+    height: usize,
+    rgba: &[u8],
+    srgb: bool,
+) -> core::result::Result<Vec<u8>, String> {
+    if srgb {
+        let converted = convert_unorm_texels_to_srgb(width, height, rgba)?;
+        ispc_bc::bc3_blocks_from_rgba(width, height, &converted)
+    } else {
+        ispc_bc::bc3_blocks_from_rgba(width, height, rgba)
+    }
 }
 
 /// BC7 CPU encode via the ISPC kernel. sRGB targets keep the exact pre-encode
@@ -968,11 +1012,11 @@ fn ispc_bc7_payload(
 ) -> core::result::Result<Vec<u8>, String> {
     if srgb {
         let converted = convert_unorm_texels_to_srgb(width, height, rgba)?;
-        let settings = ispc_bc7::production_settings(&converted);
-        ispc_bc7::bc7_blocks_from_rgba(width, height, &converted, &settings)
+        let settings = ispc_bc::bc7_production_settings(&converted);
+        ispc_bc::bc7_blocks_from_rgba(width, height, &converted, &settings)
     } else {
-        let settings = ispc_bc7::production_settings(rgba);
-        ispc_bc7::bc7_blocks_from_rgba(width, height, rgba, &settings)
+        let settings = ispc_bc::bc7_production_settings(rgba);
+        ispc_bc::bc7_blocks_from_rgba(width, height, rgba, &settings)
     }
 }
 
@@ -1042,18 +1086,19 @@ fn dxtex_compressed_payload(
         .ok_or_else(|| "compressed DDS output missing payload".to_string())
 }
 
-fn encode_compressed_dds_with_mips(
+fn encode_compressed_dds(
     width: u32,
     height: u32,
     rgba: &[u8],
     target_format: DXGI_FORMAT,
+    generate_mips: bool,
     parallel_compression: bool,
     use_gpu: bool,
 ) -> core::result::Result<Vec<u8>, String> {
     let width_usize = usize::try_from(width).map_err(|_| "width does not fit usize".to_string())?;
     let height_usize =
         usize::try_from(height).map_err(|_| "height does not fit usize".to_string())?;
-    let chain = rgba_mip_chain(width_usize, height_usize, rgba, true)?;
+    let chain = rgba_mip_chain(width_usize, height_usize, rgba, generate_mips)?;
     let block_channels = if matches!(
         target_format,
         DXGI_FORMAT::DXGI_FORMAT_BC1_UNORM | DXGI_FORMAT::DXGI_FORMAT_BC1_UNORM_SRGB
@@ -1140,10 +1185,14 @@ fn encode_legacy_dxt_dds_from_chain(
 
 pub(crate) fn dds_base_rgba(path: &Path) -> core::result::Result<(u32, u32, Vec<u8>, u32), String> {
     let bytes = fs::read(path).map_err(|err| err.to_string())?;
-    if let Some(decoded) = try_load_legacy_rgba8_dds(&bytes)? {
+    dds_base_rgba_bytes(&bytes)
+}
+
+fn dds_base_rgba_bytes(bytes: &[u8]) -> core::result::Result<(u32, u32, Vec<u8>, u32), String> {
+    if let Some(decoded) = try_load_legacy_rgba8_dds(bytes)? {
         return Ok(decoded);
     }
-    let scratch = ScratchImage::load_dds(&bytes, DDS_FLAGS::DDS_FLAGS_NONE, None, None)
+    let scratch = ScratchImage::load_dds(bytes, DDS_FLAGS::DDS_FLAGS_NONE, None, None)
         .map_err(|err| err.to_string())?;
     let metadata = *scratch.metadata();
     let width: u32 = metadata
@@ -1318,12 +1367,22 @@ fn write_dds_bytes_with_compression(
         return fs::write(output_path, encoded).map_err(|err| err.to_string());
     }
 
-    if target_format.is_compressed() && generate_mips {
-        let encoded = encode_compressed_dds_with_mips(
+    let is_ispc_target = matches!(
+        target_format,
+        DXGI_FORMAT::DXGI_FORMAT_BC1_UNORM
+            | DXGI_FORMAT::DXGI_FORMAT_BC1_UNORM_SRGB
+            | DXGI_FORMAT::DXGI_FORMAT_BC3_UNORM
+            | DXGI_FORMAT::DXGI_FORMAT_BC3_UNORM_SRGB
+            | DXGI_FORMAT::DXGI_FORMAT_BC7_UNORM
+            | DXGI_FORMAT::DXGI_FORMAT_BC7_UNORM_SRGB
+    );
+    if target_format.is_compressed() && (generate_mips || is_ispc_target) {
+        let encoded = encode_compressed_dds(
             width,
             height,
             rgba,
             target_format,
+            generate_mips,
             parallel_compression,
             use_gpu,
         )?;
@@ -1384,6 +1443,16 @@ fn write_dds_bytes_with_compression(
 
 pub fn read_dds_rgba_image(path: &Path) -> core::result::Result<DdsRgbaImage, String> {
     let (width, height, rgba, dxgi_format) = dds_base_rgba(path)?;
+    Ok(DdsRgbaImage {
+        width,
+        height,
+        rgba,
+        dxgi_format,
+    })
+}
+
+pub fn read_dds_rgba_image_bytes(bytes: &[u8]) -> core::result::Result<DdsRgbaImage, String> {
+    let (width, height, rgba, dxgi_format) = dds_base_rgba_bytes(bytes)?;
     Ok(DdsRgbaImage {
         width,
         height,
@@ -1488,22 +1557,27 @@ pub fn read_dds_probe(path: &Path) -> core::result::Result<DdsProbe, String> {
             n => filled += n,
         }
     }
-    if filled < 128 || &buf[0..4] != b"DDS " {
+    read_dds_probe_bytes(&buf[..filled])
+}
+
+pub fn read_dds_probe_bytes(bytes: &[u8]) -> core::result::Result<DdsProbe, String> {
+    if bytes.len() < 128 || &bytes[0..4] != b"DDS " {
         return Err("not a DDS file".to_string());
     }
-    let u32_at = |off: usize| -> u32 { u32::from_le_bytes(buf[off..off + 4].try_into().unwrap()) };
+    let u32_at =
+        |off: usize| -> u32 { u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap()) };
     let height = u32_at(12);
     let width = u32_at(16);
     let depth = u32_at(24).max(1);
     let mip_levels = u32_at(28).max(1);
     let pf_flags = u32_at(80);
-    let fourcc = &buf[84..88];
+    let fourcc = &bytes[84..88];
     let caps2 = u32_at(112);
     let mut is_cubemap = (caps2 & 0x200) != 0;
     let mut array_size = 1u32;
     let dxgi_format: u32;
     if fourcc == b"DX10" {
-        if filled < 148 {
+        if bytes.len() < 148 {
             return Err("truncated DX10 DDS header".to_string());
         }
         dxgi_format = u32_at(128);
@@ -1697,7 +1771,7 @@ pub fn encode_dds_from_rgba8_chain(
         return Ok(out);
     }
 
-    // BC4/BC5 — mirrors encode_bc_unorm_dds (native Rust encoder, ATI1/ATI2 headers).
+    // BC4/BC5 — mirrors encode_bc_unorm_dds (ATI1/ATI2 headers).
     let native_bc = match target_format {
         DXGI_FORMAT::DXGI_FORMAT_BC4_UNORM => Some(1usize),
         DXGI_FORMAT::DXGI_FORMAT_BC5_UNORM => Some(2usize),
@@ -1708,12 +1782,20 @@ pub fn encode_dds_from_rgba8_chain(
         let fourcc = if channels == 1 { b"ATI1" } else { b"ATI2" };
         let mut out = dds_header(width, height, linear_size as u32, fourcc, mip_count);
         for (w, h, px) in chain {
-            append_bc_unorm_level(&mut out, *w as usize, *h as usize, px, channels)?;
+            if channels == 2 {
+                out.extend_from_slice(&ispc_bc::bc5_blocks_from_rgba(
+                    *w as usize,
+                    *h as usize,
+                    px,
+                )?);
+            } else {
+                append_bc_unorm_level(&mut out, *w as usize, *h as usize, px, channels)?;
+            }
         }
         return Ok(out);
     }
 
-    // Remaining compressed targets — mirrors encode_compressed_dds_with_mips.
+    // Remaining compressed targets — mirrors encode_compressed_dds.
     if !target_format.is_compressed() {
         return Err(format!("unsupported chain format: {format}"));
     }
@@ -2185,6 +2267,113 @@ mod tests {
     }
 
     #[test]
+    fn opaque_bc1_and_bc3_route_through_ispc() {
+        let width = 6usize;
+        let height = 10usize;
+        let mut rgba = vec![0u8; width * height * 4];
+        for (index, pixel) in rgba.chunks_exact_mut(4).enumerate() {
+            pixel.copy_from_slice(&[
+                (index * 17) as u8,
+                (index * 31) as u8,
+                (index * 47) as u8,
+                255,
+            ]);
+        }
+
+        let routed_bc1 = compressed_payload_from_rgba(
+            width,
+            height,
+            &rgba,
+            DXGI_FORMAT::DXGI_FORMAT_BC1_UNORM,
+            false,
+            false,
+        )
+        .unwrap();
+        let routed_bc3 = compressed_payload_from_rgba(
+            width,
+            height,
+            &rgba,
+            DXGI_FORMAT::DXGI_FORMAT_BC3_UNORM,
+            false,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(
+            routed_bc1,
+            ispc_bc::bc1_blocks_from_rgba(width, height, &rgba).unwrap()
+        );
+        assert_eq!(
+            routed_bc3,
+            ispc_bc::bc3_blocks_from_rgba(width, height, &rgba).unwrap()
+        );
+    }
+
+    #[test]
+    fn bc1_cutout_alpha_keeps_directxtex_fallback() {
+        let width = 8usize;
+        let height = 8usize;
+        let mut rgba = vec![40u8, 180, 70, 255].repeat(width * height);
+        for (index, pixel) in rgba.chunks_exact_mut(4).enumerate() {
+            if index % 2 == 0 {
+                pixel[3] = 0;
+            }
+        }
+
+        let routed = compressed_payload_from_rgba(
+            width,
+            height,
+            &rgba,
+            DXGI_FORMAT::DXGI_FORMAT_BC1_UNORM,
+            false,
+            false,
+        )
+        .unwrap();
+        let directxtex = dxtex_compressed_payload(
+            width,
+            height,
+            &rgba,
+            DXGI_FORMAT::DXGI_FORMAT_BC1_UNORM,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(routed, directxtex);
+    }
+
+    #[test]
+    fn no_mip_bc1_and_bc3_writers_use_ispc_payloads() {
+        let width = 8usize;
+        let height = 8usize;
+        let rgba = vec![40u8, 180, 70, 255].repeat(width * height);
+        let tmp =
+            std::env::temp_dir().join(format!("modbox21_ispc_bc1_bc3_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+
+        for (format, filename, expected_payload) in [
+            (
+                "BC1_UNORM",
+                "bc1.dds",
+                ispc_bc::bc1_blocks_from_rgba(width, height, &rgba).unwrap(),
+            ),
+            (
+                "BC3_UNORM",
+                "bc3.dds",
+                ispc_bc::bc3_blocks_from_rgba(width, height, &rgba).unwrap(),
+            ),
+        ] {
+            let path = tmp.join(filename);
+            write_dds_rgba_image(&path, width as u32, height as u32, &rgba, format, false).unwrap();
+            let bytes = fs::read(path).unwrap();
+            assert_eq!(&bytes[84..88], b"DX10");
+            assert_eq!(&bytes[148..], expected_payload);
+        }
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
     fn public_rgba_helpers_roundtrip_dds() {
         let dir = std::env::temp_dir();
         let path = dir.join(format!("modbox21_public_rgba_{}.dds", std::process::id()));
@@ -2370,6 +2559,41 @@ mod tests {
         assert_eq!(&bytes[0..4], b"DDS ");
         assert_eq!(u32::from_le_bytes(bytes[28..32].try_into().unwrap()), 4);
         assert_eq!(bytes.len(), 128 + 64 + 16 + 16 + 16);
+    }
+
+    #[test]
+    fn bc5_writer_uses_ispc_payload() {
+        let path =
+            std::env::temp_dir().join(format!("modbox21_ispc_bc5_{}.dds", std::process::id()));
+        let width = 6usize;
+        let height = 10usize;
+        let mut rgba = vec![0u8; width * height * 4];
+        for (index, pixel) in rgba.chunks_exact_mut(4).enumerate() {
+            pixel.copy_from_slice(&[
+                (index * 17) as u8,
+                (index * 31) as u8,
+                (index * 47) as u8,
+                255,
+            ]);
+        }
+
+        write_dds_rgba_image(
+            &path,
+            width as u32,
+            height as u32,
+            &rgba,
+            "BC5_UNORM",
+            false,
+        )
+        .unwrap();
+        let bytes = fs::read(&path).unwrap();
+        let _ = fs::remove_file(&path);
+
+        assert_eq!(&bytes[84..88], b"ATI2");
+        assert_eq!(
+            &bytes[128..],
+            ispc_bc::bc5_blocks_from_rgba(width, height, &rgba).unwrap()
+        );
     }
 
     #[test]

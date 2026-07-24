@@ -153,8 +153,8 @@ struct WaterManifestCell {
 const VALID_WATER_HEIGHT_LIMIT: f32 = 1.0e8;
 
 const PLACEMENT_BASE_SIGNATURES: &[&str] = &[
-    "ACTI", "ASPC", "CONT", "DOOR", "EXPL", "FLOR", "FURN", "IPCT", "IPDS", "LIGH", "LVLI", "MISC",
-    "MOVT", "MSTT", "NPC_", "PROJ", "SCOL", "SOUN", "STAT", "TREE",
+    "ACTI", "ASPC", "CONT", "DOOR", "EXPL", "FLOR", "FURN", "HAZD", "IPCT", "IPDS", "LIGH", "LVLI",
+    "MISC", "MOVT", "MSTT", "NPC_", "PROJ", "SCOL", "SOUN", "STAT", "TREE",
 ];
 
 const INVALID_PLACED_BASE_SIGNATURES: &[&str] = &["LVLI"];
@@ -1477,6 +1477,9 @@ fn target_schema_accepts_payload(
 }
 
 fn subrecord_payload_matches_schema(spec: &SchemaSubrecordJson, payload_len: usize) -> bool {
+    if matches!(spec.id.as_str(), "VMAD" | "NVNM") {
+        return true;
+    }
     let Some(codec) = spec.codec.as_deref() else {
         return true;
     };
@@ -1817,7 +1820,21 @@ fn normalize_placed_enum_flag_subrecord(sig: &str, data: &[u8]) -> Option<Vec<u8
 
 const XALG_NEVER_VISIBLE_DISTANT: u64 = 0x0000_0008;
 const XALG_VISIBLE_DISTANT: u64 = 0x0000_0200;
+const RECORD_FLAG_LOD_RESPECTS_ENABLE_STATE: u32 = 0x0000_0100;
 const RECORD_FLAG_VISIBLE_WHEN_DISTANT: u32 = 0x0000_8000;
+const RECORD_FLAG_IS_FULL_LOD: u32 = 0x0001_0000;
+
+pub fn normalize_fo76_refr_lod_header_flags(mut record_flags: u32, xalg_flags: u64) -> u32 {
+    if xalg_flags & XALG_NEVER_VISIBLE_DISTANT != 0 {
+        record_flags &= !RECORD_FLAG_VISIBLE_WHEN_DISTANT;
+    } else if xalg_flags & XALG_VISIBLE_DISTANT != 0 {
+        record_flags |= RECORD_FLAG_VISIBLE_WHEN_DISTANT;
+    }
+    if record_flags & (RECORD_FLAG_VISIBLE_WHEN_DISTANT | RECORD_FLAG_IS_FULL_LOD) == 0 {
+        record_flags &= !RECORD_FLAG_LOD_RESPECTS_ENABLE_STATE;
+    }
+    record_flags
+}
 
 fn read_xalg_flags(data: &[u8]) -> u64 {
     let mut bytes = [0u8; 8];
@@ -1835,17 +1852,13 @@ fn placed_ref_xalg_flags(record: &ParsedRecord) -> u64 {
         })
 }
 
-fn carry_placed_ref_visible_distant_flag(record: &mut ParsedRecord) {
+fn normalize_placed_ref_lod_header_flags(record: &mut ParsedRecord) {
     if record.signature.as_str() != "REFR" {
         return;
     }
     let xalg_flags = placed_ref_xalg_flags(record);
     let previous = record.flags;
-    if xalg_flags & XALG_NEVER_VISIBLE_DISTANT != 0 {
-        record.flags &= !RECORD_FLAG_VISIBLE_WHEN_DISTANT;
-    } else if xalg_flags & XALG_VISIBLE_DISTANT != 0 {
-        record.flags |= RECORD_FLAG_VISIBLE_WHEN_DISTANT;
-    }
+    record.flags = normalize_fo76_refr_lod_header_flags(record.flags, xalg_flags);
     if record.flags != previous {
         record.raw_payload = None;
     }
@@ -1941,7 +1954,7 @@ fn rewrite_placed_child_local_refs(
 
     let mut changed = 0usize;
     let record_is_refr = record.signature.as_str() == "REFR";
-    carry_placed_ref_visible_distant_flag(record);
+    normalize_placed_ref_lod_header_flags(record);
 
     // FO4 placed-ref XEZN (Encounter Zone) must point at an ECZN. FO76 has no
     // ECZN concept — its REFR.XEZN points at a LCTN (locations carry encounter
@@ -2122,15 +2135,20 @@ fn subrecord_has_missing_target_local_ref(
     target_existing_form_ids: &BTreeSet<u32>,
 ) -> bool {
     let offsets: &[usize] = match subrecord.signature.as_str() {
-        // XLKR (linked refs) and XAPR (activate parents) are NOT dropped here.
-        // The cell-slice copy runs in multiple passes (grid children vs.
-        // persistent-cell synthesis), each with its own `target_existing_form_ids`
-        // snapshot. A ref copied in a DIFFERENT pass looks "missing" from this
-        // pass's snapshot and would be wrongly dropped. Dangling refs are dropped
-        // later by `normalize_placed_records`, which sees the fully-assembled
-        // target.
-        "XRFG" | "XESP" | "XMSP" | "XCZC" | "XLCN" | "XEZN" | "XEMI" | "XATR" | "XLIB" | "XNDP"
-        | "XTNM" => &[0],
+        // XLKR (linked refs), XAPR (activate parents), and XESP (enable parent)
+        // are NOT dropped here. The cell-slice copy runs in multiple passes (grid
+        // children vs. persistent-cell synthesis), each with its own
+        // `target_existing_form_ids` snapshot. A ref copied in a DIFFERENT pass
+        // looks "missing" from this pass's snapshot and would be wrongly dropped —
+        // e.g. an XESP enable-parent pointing at a PERSISTENT ref (source flag
+        // 0x400) materialized only by the persistent-cell pass. Dropping XESP
+        // severs the enable-parent link, so the ref spawns always-enabled and its
+        // AI package can null-deref (BGSProcedureTreeProcedure::InitItem). Dangling
+        // refs are dropped later by `normalize_placed_records`, which sees the
+        // fully-assembled target.
+        "XRFG" | "XMSP" | "XCZC" | "XLCN" | "XEZN" | "XEMI" | "XATR" | "XLIB" | "XNDP" | "XTNM" => {
+            &[0]
+        }
         "XLRT" => {
             return !subrecord.data.is_empty()
                 && subrecord.data.len() % 4 == 0
@@ -3709,6 +3727,19 @@ pub struct GraftTerrainReport {
     pub warnings: Vec<String>,
 }
 
+struct GraftedWorldBlocks {
+    editor_id: String,
+    blocks: Vec<ParsedItem>,
+}
+
+struct TerrainGraftSource {
+    worlds: Vec<GraftedWorldBlocks>,
+    terrain_records: Vec<ParsedRecord>,
+    masters: Vec<String>,
+    report: GraftTerrainReport,
+    reservation_object_ids: Vec<u32>,
+}
+
 /// Recursively clone a worldspace group keeping only terrain records (CELL/LAND/
 /// NAVM) and structural group shells; placed children (REFR/ACHR/…) and the
 /// per-cell PERSISTENT group are dropped so the normal FO76→FO4 record phases
@@ -3755,99 +3786,170 @@ fn clone_terrain_only_group(group: &ParsedGroup, report: &mut GraftTerrainReport
     out
 }
 
+fn extract_terrain_graft_source(plugin: &ParsedPlugin) -> Result<TerrainGraftSource, String> {
+    let mut report = GraftTerrainReport::default();
+    let wrld_group =
+        top_group(plugin, "WRLD").ok_or_else(|| "cache: WRLD top group not found".to_string())?;
+
+    let mut worlds = Vec::new();
+    for item in &wrld_group.children {
+        let ParsedItem::Record(world_record) = item else {
+            continue;
+        };
+        if world_record.signature.as_str() != "WRLD" {
+            continue;
+        }
+        let Some(world_children) = find_world_children_group(wrld_group, world_record.form_id)
+        else {
+            continue;
+        };
+        let mut blocks = Vec::new();
+        for child in &world_children.children {
+            if let ParsedItem::Group(group) = child {
+                if group.group_type == EXTERIOR_CELL_BLOCK {
+                    blocks.push(ParsedItem::Group(clone_terrain_only_group(
+                        group,
+                        &mut report,
+                    )));
+                }
+            }
+        }
+        if !blocks.is_empty() {
+            worlds.push(GraftedWorldBlocks {
+                editor_id: editor_id(world_record),
+                blocks,
+            });
+        }
+    }
+
+    let mut terrain_records = Vec::new();
+    for sig in ["TXST", "LTEX", "GRAS"] {
+        if let Some(group) = top_group(plugin, sig) {
+            let mut records = Vec::new();
+            collect_group_records(group, sig, &mut records);
+            terrain_records.extend(records.into_iter().cloned());
+        }
+    }
+
+    let mut reservation_object_ids = report.object_ids.clone();
+    reservation_object_ids.extend(
+        terrain_records
+            .iter()
+            .map(|record| record.form_id & 0x00FF_FFFF),
+    );
+    reservation_object_ids.retain(|object_id| *object_id != 0);
+    reservation_object_ids.sort_unstable();
+    reservation_object_ids.dedup();
+
+    Ok(TerrainGraftSource {
+        worlds,
+        terrain_records,
+        masters: plugin.header.masters.clone(),
+        report,
+        reservation_object_ids,
+    })
+}
+
+/// Return every object-id the terrain graft may introduce so generated record
+/// allocation can reserve the graft's namespace before translation starts.
+pub fn graft_terrain_navmesh_object_ids_from_handle(
+    cache_handle_id: u64,
+) -> Result<Vec<u32>, String> {
+    let store = plugin_handle_store_ref()
+        .lock()
+        .map_err(|e| format!("plugin handle store lock poisoned: {e}"))?;
+    let cache = store
+        .get(&cache_handle_id)
+        .ok_or_else(|| format!("unknown cache plugin handle: {cache_handle_id}"))?;
+    Ok(extract_terrain_graft_source(&cache.parsed)?.reservation_object_ids)
+}
+
+fn recontextualize_grafted_master_context(
+    worlds: &mut [GraftedWorldBlocks],
+    terrain_records: &mut [ParsedRecord],
+    cache_masters: &[String],
+    target_masters: &[String],
+) {
+    if cache_masters == target_masters {
+        return;
+    }
+    let source_own_index = cache_masters.len() as u8;
+    let target_own_index = target_masters.len() as u8;
+    for world in worlds {
+        remap_formids_in_items(
+            &mut world.blocks,
+            cache_masters,
+            target_masters,
+            source_own_index,
+            target_own_index,
+        );
+    }
+    for record in terrain_records {
+        remap_formids_in_record(
+            record,
+            cache_masters,
+            target_masters,
+            source_own_index,
+            target_own_index,
+        );
+    }
+}
+
 /// Graft exterior terrain (CELL shells + LAND), navmesh (NAVM), and the
 /// terrain-texture records (TXST/LTEX/GRAS) from a prior FO4 output ESM
 /// (`cache_handle_id`) into a freshly-built FO4 target plugin (`target_handle_id`),
-/// preserving FormIDs. Both plugins are FO4 with the same master list, so this is a
-/// structural clone — NOT a FO76→FO4 conversion. Placed children are stripped from
-/// each cell child group so the normal record phases repopulate them. Backs
-/// `regen.py --re-use-land`.
+/// preserving FormIDs. Both plugins are FO4; cloned records are recontextualized
+/// when their master lists differ. Placed children are stripped from each cell
+/// child group so the normal record phases repopulate them. Backs `regen.py
+/// --re-use-land`.
 pub fn graft_terrain_navmesh_from_handle(
     cache_handle_id: u64,
     target_handle_id: u64,
 ) -> Result<GraftTerrainReport, String> {
-    let mut report = GraftTerrainReport::default();
     let mut store = plugin_handle_store_ref()
         .lock()
         .map_err(|e| format!("plugin handle store lock poisoned: {e}"))?;
 
-    // Per-worldspace cloned exterior block groups, keyed by worldspace EditorID
-    // (matched to the target by EditorID, since both are FO4 with the same ids).
-    struct WorldBlocks {
-        editor_id: String,
-        blocks: Vec<ParsedItem>,
-    }
-
     // ── 1. Extract from cache (scoped immutable borrow → owned clones) ──────
-    let (worlds, cache_terrain_records, cache_masters): (
-        Vec<WorldBlocks>,
-        Vec<ParsedRecord>,
-        Vec<String>,
-    ) = {
+    let TerrainGraftSource {
+        mut worlds,
+        terrain_records: mut cache_terrain_records,
+        masters: cache_masters,
+        mut report,
+        ..
+    } = {
         let cache = store
             .get(&cache_handle_id)
             .ok_or_else(|| format!("unknown cache plugin handle: {cache_handle_id}"))?;
-        let plugin = &cache.parsed;
-        let wrld_group = top_group(plugin, "WRLD")
-            .ok_or_else(|| "cache: WRLD top group not found".to_string())?;
-
-        // For every worldspace, clone its exterior cell-block groups (type 4),
-        // filtering each to terrain records only. Per-cell persistent cells (a
-        // direct CELL record + type-6 group under world_children) live outside the
-        // block groups and are naturally skipped, as is the whole interior CELL
-        // top group (not under WRLD).
-        let mut worlds: Vec<WorldBlocks> = Vec::new();
-        for item in &wrld_group.children {
-            let ParsedItem::Record(world_record) = item else {
-                continue;
-            };
-            if world_record.signature.as_str() != "WRLD" {
-                continue;
-            }
-            let Some(world_children) = find_world_children_group(wrld_group, world_record.form_id)
-            else {
-                continue;
-            };
-            let mut blocks: Vec<ParsedItem> = Vec::new();
-            for child in &world_children.children {
-                if let ParsedItem::Group(group) = child {
-                    if group.group_type == EXTERIOR_CELL_BLOCK {
-                        blocks.push(ParsedItem::Group(clone_terrain_only_group(
-                            group,
-                            &mut report,
-                        )));
-                    }
-                }
-            }
-            if !blocks.is_empty() {
-                worlds.push(WorldBlocks {
-                    editor_id: editor_id(world_record),
-                    blocks,
-                });
-            }
-        }
-
-        // Top-level terrain-texture records (added/deduped against the target below).
-        let mut cache_terrain_records: Vec<ParsedRecord> = Vec::new();
-        for sig in ["TXST", "LTEX", "GRAS"] {
-            if let Some(group) = top_group(plugin, sig) {
-                let mut recs = Vec::new();
-                collect_group_records(group, sig, &mut recs);
-                cache_terrain_records.extend(recs.into_iter().cloned());
-            }
-        }
-        (worlds, cache_terrain_records, plugin.header.masters.clone())
+        extract_terrain_graft_source(&cache.parsed)?
     };
 
     // ── 2. Insert into target (mutable borrow) ─────────────────────────────
     let target = store
         .get_mut(&target_handle_id)
         .ok_or_else(|| format!("unknown target plugin handle: {target_handle_id}"))?;
-    if target.parsed.header.masters != cache_masters {
-        report.warnings.push(
-            "cache/target master lists differ; grafted terrain references may be off (own \
-             LAND/NAVM/CELL refs are unaffected)"
-                .to_string(),
+    let target_masters = target.parsed.header.masters.clone();
+    if target_masters != cache_masters {
+        let missing_masters: Vec<&str> = cache_masters
+            .iter()
+            .filter(|master| {
+                !target_masters
+                    .iter()
+                    .any(|candidate| candidate.eq_ignore_ascii_case(master))
+            })
+            .map(String::as_str)
+            .collect();
+        if !missing_masters.is_empty() {
+            report.warnings.push(format!(
+                "cache masters absent from target: {}",
+                missing_masters.join(", ")
+            ));
+        }
+        recontextualize_grafted_master_context(
+            &mut worlds,
+            &mut cache_terrain_records,
+            &cache_masters,
+            &target_masters,
         );
     }
     let header_size = target.parsed.header_size;
@@ -5430,6 +5532,128 @@ mod tests {
         );
     }
 
+    #[test]
+    fn graft_master_context_rebases_navmesh_and_terrain_ids() {
+        let cache_masters = vec![
+            "Fallout4.esm".to_string(),
+            "DLCRobot.esm".to_string(),
+            "DLCworkshop01.esm".to_string(),
+            "DLCCoast.esm".to_string(),
+            "DLCworkshop02.esm".to_string(),
+            "DLCworkshop03.esm".to_string(),
+            "DLCNukaWorld.esm".to_string(),
+        ];
+        let mut target_masters = cache_masters.clone();
+        target_masters.push("XDI.esm".to_string());
+
+        let source_world_id: u32 = 0x0725DA15;
+        let source_cell_id: u32 = 0x07263D52;
+        let source_navm_id: u32 = 0x07606004;
+        let source_linked_navm_id: u32 = 0x07606005;
+        let source_door_id: u32 = 0x07012345;
+        let mut edge_row = [0u8; 11];
+        edge_row[4..8].copy_from_slice(&source_linked_navm_id.to_le_bytes());
+        let nvnm = crate::nvnm::NvnmPayload {
+            version: 15,
+            flags: 0,
+            parent: crate::nvnm::NvnmParent::Exterior {
+                world: source_world_id,
+                grid_x: -26,
+                grid_y: 22,
+            },
+            vertices: Vec::new(),
+            triangles: Vec::new(),
+            edge_links: vec![crate::nvnm::NvnmEdgeLink { row: edge_row }],
+            door_refs: vec![crate::nvnm::NvnmDoorRef {
+                triangle_index: 0,
+                padding: [0; 4],
+                door_ref_form_id: source_door_id,
+            }],
+            cover_array: Vec::new(),
+            cover_triangle_mappings: Vec::new(),
+            waypoints: Vec::new(),
+            grid: crate::nvnm::NvnmGrid::default(),
+        };
+        let mut navm = record("NAVM", source_navm_id, None);
+        navm.subrecords
+            .push(subrecord("NVNM", crate::nvnm::write_nvnm(&nvnm)));
+        let temporary = plain_group(
+            TEMPORARY_GROUP,
+            source_cell_id.to_le_bytes(),
+            vec![ParsedItem::Record(navm)],
+        );
+        let cell_children = plain_group(
+            CELL_CHILD_GROUP,
+            source_cell_id.to_le_bytes(),
+            vec![ParsedItem::Group(temporary)],
+        );
+        let subblock = plain_group(
+            EXTERIOR_CELL_SUBBLOCK,
+            [0; 4],
+            vec![
+                ParsedItem::Record(cell_record(source_cell_id, "Vault76Ext", -26, 22)),
+                ParsedItem::Group(cell_children),
+            ],
+        );
+        let block = plain_group(
+            EXTERIOR_CELL_BLOCK,
+            [0; 4],
+            vec![ParsedItem::Group(subblock)],
+        );
+        let mut worlds = vec![GraftedWorldBlocks {
+            editor_id: "Appalachia".to_string(),
+            blocks: vec![ParsedItem::Group(block)],
+        }];
+        let mut terrain_records = vec![record("TXST", 0x07000800, None)];
+
+        recontextualize_grafted_master_context(
+            &mut worlds,
+            &mut terrain_records,
+            &cache_masters,
+            &target_masters,
+        );
+
+        assert_eq!(terrain_records[0].form_id, 0x08000800);
+        let ParsedItem::Group(block) = &worlds[0].blocks[0] else {
+            panic!("exterior block");
+        };
+        let ParsedItem::Group(subblock) = &block.children[0] else {
+            panic!("exterior subblock");
+        };
+        let ParsedItem::Group(cell_children) = &subblock.children[1] else {
+            panic!("cell children");
+        };
+        assert_eq!(u32::from_le_bytes(cell_children.label), 0x08263D52);
+        let ParsedItem::Group(temporary) = &cell_children.children[0] else {
+            panic!("temporary children");
+        };
+        assert_eq!(u32::from_le_bytes(temporary.label), 0x08263D52);
+        assert!(find_record_by_form_id(&worlds[0].blocks, 0x08263D52).is_some());
+        let navm = find_record_by_form_id(&worlds[0].blocks, 0x08606004).expect("NAVM");
+        let payload = crate::nvnm::parse_nvnm(
+            navm.subrecords
+                .iter()
+                .find(|subrecord| subrecord.signature.as_str() == "NVNM")
+                .expect("NVNM")
+                .data
+                .as_ref(),
+        )
+        .expect("parse remapped NVNM");
+        assert_eq!(
+            payload.parent,
+            crate::nvnm::NvnmParent::Exterior {
+                world: 0x0825DA15,
+                grid_x: -26,
+                grid_y: 22,
+            }
+        );
+        assert_eq!(
+            u32::from_le_bytes(payload.edge_links[0].row[4..8].try_into().unwrap()),
+            0x08606005
+        );
+        assert_eq!(payload.door_refs[0].door_ref_form_id, 0x08012345);
+    }
+
     fn record(signature: &str, form_id: u32, editor_id: Option<&str>) -> ParsedRecord {
         let mut subrecords = Vec::new();
         if let Some(editor_id) = editor_id {
@@ -5448,6 +5672,24 @@ mod tests {
             raw_payload: None,
             parse_error: None,
         }
+    }
+
+    #[test]
+    fn target_schema_filter_keeps_variable_length_placed_vmad() {
+        let mut placed = record("REFR", 0x004F_8C45, None);
+        placed.subrecords.push(subrecord("NAME", vec![0; 4]));
+        placed.subrecords.push(subrecord("VMAD", vec![0; 114]));
+        placed.subrecords.push(subrecord("DATA", vec![0; 24]));
+
+        let removed = filter_record_to_target_schema(&mut placed, Some("fo4"));
+
+        assert_eq!(removed, 0);
+        assert!(
+            placed
+                .subrecords
+                .iter()
+                .any(|field| { field.signature.as_str() == "VMAD" && field.data.len() == 114 })
+        );
     }
 
     fn cell_record(form_id: u32, editor_id: &str, x: i32, y: i32) -> ParsedRecord {
@@ -6487,6 +6729,39 @@ mod tests {
     }
 
     #[test]
+    fn placement_base_collection_includes_hazard_bases_for_phzd() {
+        let hazard = record("HAZD", 0x00092528, Some("RadiationHazardLight256"));
+        let mut placed_hazard = record("PHZD", 0x00091A72, None);
+        placed_hazard
+            .subrecords
+            .push(subrecord("NAME", 0x00092528_u32.to_le_bytes().to_vec()));
+        let plugin = plugin(vec![top_group("HAZD", vec![ParsedItem::Record(hazard)])]);
+        let locator = build_locator_section(&plugin);
+        let mut base_keys = Vec::new();
+        let mut base_seen = BTreeSet::new();
+        let mut leveled_base_entry_keys = Vec::new();
+        let mut leveled_base_entry_seen = BTreeSet::new();
+        let mut layer_keys = Vec::new();
+        let mut layer_seen = BTreeSet::new();
+
+        append_static_placement_base_key(
+            &plugin,
+            &locator,
+            &placed_hazard,
+            &mut base_keys,
+            &mut base_seen,
+            &mut leveled_base_entry_keys,
+            &mut leveled_base_entry_seen,
+            &mut layer_keys,
+            &mut layer_seen,
+        );
+
+        assert_eq!(base_keys, vec!["SeventySix.esm:092528"]);
+        assert!(leveled_base_entry_keys.is_empty());
+        assert!(layer_keys.is_empty());
+    }
+
+    #[test]
     fn sync_cell_locations_from_lctn_tags_projected_exterior_cells() {
         let world_form_id = 0x0725DA15;
         let location_form_id = 0x072CD2E2;
@@ -7267,7 +7542,7 @@ mod tests {
     }
 
     #[test]
-    fn placed_child_missing_local_ref_drop_defers_activate_parent_refs() {
+    fn placed_child_missing_local_ref_drop_defers_enable_and_activate_parent_refs() {
         let target = TargetFormIdContext {
             plugin_name: "B21_Appalachia.esp".to_string(),
             masters: vec!["Fallout4.esm".to_string()],
@@ -7286,8 +7561,10 @@ mod tests {
 
         let removed = drop_unresolved_placed_child_local_refs(&mut refr, &target, &existing);
 
-        assert_eq!(removed, 1);
-        assert!(subrecord_data(&refr, "XESP").is_none());
+        // XESP enable-parent, like XAPR, must survive a cross-pass "missing" ref:
+        // its target is often a PERSISTENT ref copied in the persistent-cell pass.
+        assert_eq!(removed, 0);
+        assert!(subrecord_data(&refr, "XESP").is_some());
         assert!(subrecord_data(&refr, "XAPR").is_some());
     }
 
@@ -7497,14 +7774,35 @@ mod tests {
     }
 
     #[test]
+    fn normalizes_fo76_refr_lod_header_flag_combinations_for_fo4() {
+        assert_eq!(
+            normalize_fo76_refr_lod_header_flags(0x0000_0500, 0x0000_2000),
+            0x0000_0400
+        );
+        assert_eq!(
+            normalize_fo76_refr_lod_header_flags(0x0000_0100, 0x0000_2001),
+            0
+        );
+        assert_eq!(
+            normalize_fo76_refr_lod_header_flags(0x0000_0100, 0x0000_2200),
+            0x0000_8100
+        );
+        assert_eq!(
+            normalize_fo76_refr_lod_header_flags(0x0001_0100, 0),
+            0x0001_0100
+        );
+    }
+
+    #[test]
     fn copy_cell_slice_children_clones_source_records_into_target_cells() {
         let mut source_ref = record("REFR", 0x014EA534, None);
+        source_ref.flags = RECORD_FLAG_LOD_RESPECTS_ENABLE_STATE;
         source_ref
             .subrecords
             .push(subrecord("NAME", 0x011A6663_u32.to_le_bytes().to_vec()));
         source_ref
             .subrecords
-            .push(subrecord("XALG", vec![0, 2, 0, 0, 0, 0, 0, 0]));
+            .push(subrecord("XALG", vec![0, 34, 0, 0, 0, 0, 0, 0]));
         let mut data = Vec::new();
         for value in [10.0_f32, 20.0, 30.0, 0.0, 0.0, 0.0] {
             data.extend_from_slice(&value.to_le_bytes());
@@ -7572,6 +7870,11 @@ mod tests {
             inserted.flags & RECORD_FLAG_VISIBLE_WHEN_DISTANT,
             RECORD_FLAG_VISIBLE_WHEN_DISTANT,
             "FO76 REFR XALG VisibleDistant must carry into the FO4 header flag"
+        );
+        assert_eq!(
+            inserted.flags & RECORD_FLAG_LOD_RESPECTS_ENABLE_STATE,
+            RECORD_FLAG_LOD_RESPECTS_ENABLE_STATE,
+            "LOD Respects Enable State is valid once Visible When Distant is carried"
         );
         let name = subrecord_data(inserted, "NAME").expect("NAME");
         assert_eq!(

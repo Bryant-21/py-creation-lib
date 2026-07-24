@@ -946,6 +946,17 @@ pub fn havok_collision_summary(blob: &[u8]) -> HavokResult<String> {
                 })
         })
         .unwrap_or(&[]);
+    let materials: &[HkxValue] = physics_system_data
+        .and_then(|psd| {
+            psd.members
+                .iter()
+                .find(|m| m.name == "materials")
+                .and_then(|m| match &m.value {
+                    HkxValue::Array(items) => Some(items.as_slice()),
+                    _ => None,
+                })
+        })
+        .unwrap_or(&[]);
     let bodies: Vec<serde_json::Value> = physics_system_data
         .and_then(|psd| {
             psd.members
@@ -1007,6 +1018,16 @@ pub fn havok_collision_summary(blob: &[u8]) -> HavokResult<String> {
                             members.iter().find(|m| m.name == name).map(|m| &m.value)
                         })
                     };
+                    let material_members = body_member("materialId")
+                        .and_then(hkx_value_as_i64)
+                        .and_then(|id| usize::try_from(id).ok())
+                        .and_then(|id| materials.get(id))
+                        .and_then(HkxValue::as_object_members);
+                    let material_member = |name: &str| {
+                        material_members.and_then(|members| {
+                            members.iter().find(|m| m.name == name).map(|m| &m.value)
+                        })
+                    };
                     // The body's motionId indexes into `motionCinfos`; the matching
                     // hknpMotionCinfo carries the body's `inverseMass` and
                     // `inverseInertiaLocal`. An INVALID/out-of-range motionId (e.g. a
@@ -1043,6 +1064,9 @@ pub fn havok_collision_summary(blob: &[u8]) -> HavokResult<String> {
                         "collision_filter_info": collision_filter_info,
                         "layer": collision_filter_info.map(|info| info & 0xFF),
                         "flags": body_member("flags").and_then(hkx_value_as_i64),
+                        "material_flags": material_member("flags").and_then(hkx_value_as_i64),
+                        "material_trigger_type": material_member("triggerType")
+                            .and_then(hkx_value_as_i64),
                         "motion_id": body_member("motionId").and_then(hkx_value_as_i64),
                         "motion_type": body_member("motionType").and_then(hkx_value_as_i64),
                         "motion_properties_id": body_member("motionPropertiesId")

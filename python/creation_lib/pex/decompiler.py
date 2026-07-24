@@ -353,6 +353,12 @@ def _decompile_instruction(
         raw_call_args = args[4:]
         if (
             fo4_api_compat
+            and str(cls).lower() == "game"
+            and str(method).lower() == "getlocalplayer"
+        ):
+            method = "GetPlayer"
+        if (
+            fo4_api_compat
             and str(cls).lower() == "debug"
             and str(method).lower() == "trace"
             and len(raw_call_args) == 3
@@ -973,8 +979,10 @@ def _decompile_object(
         return type_adapter(normalized)
 
     # Script-level flags
-    script_flags = []
-    if obj.is_const and not drop_script_const:
+    script_flags = _decode_user_flags(obj.user_flags, flag_names)
+    if drop_script_const:
+        script_flags = [flag for flag in script_flags if flag.lower() != "const"]
+    elif obj.is_const and not any(flag.lower() == "const" for flag in script_flags):
         script_flags.append("Const")
 
     # Build auto-property backing var → property name map
@@ -982,6 +990,7 @@ def _decompile_object(
     for p in obj.properties:
         if p.auto_var:
             auto_var_map[p.auto_var] = p.name
+    variables_by_name = {var.name: var for var in obj.variables}
 
     member_types: dict[str, str] = {}
     for var in obj.variables:
@@ -1068,6 +1077,11 @@ def _decompile_object(
             type=normalize_type(prop.type),
             flags=prop_flags,
             docstring=prop.docstring,
+            default=(
+                _pex_value_to_literal(variables_by_name[prop.auto_var].data)
+                if prop.auto_var in variables_by_name
+                else None
+            ),
             getter=getter,
             setter=setter,
             pos=P,
@@ -1138,6 +1152,36 @@ def _decompile_object(
                     LocalVarStmt(param.name, param.type, None, P)
                     for param in used_dropped_params
                 ] + body
+            if (
+                fo4_api_compat
+                and is_event
+                and obj.parent.lower() == "topicinfo"
+                and fn.name.lower() in {"onbegin", "onend"}
+                and len(params) == 4
+                and params[0].type.lower() == "objectreference"
+                and params[1].type.lower() == "objectreference"
+                and params[2].type.lower() in {"quest", "questinstance"}
+                and params[3].type.lower() == "bool"
+            ):
+                target_param = params[1]
+                quest_param = params[2]
+                params = [params[0], params[3]]
+                compatibility_locals = []
+                if any(_node_references_name(stmt, target_param.name) for stmt in body):
+                    compatibility_locals.append(LocalVarStmt(
+                        target_param.name,
+                        target_param.type,
+                        DotCallExpr(NameExpr("Game", P), "GetPlayer", [], P),
+                        P,
+                    ))
+                if any(_node_references_name(stmt, quest_param.name) for stmt in body):
+                    compatibility_locals.append(LocalVarStmt(
+                        quest_param.name,
+                        quest_param.type,
+                        DotCallExpr(NameExpr("Self", P), "GetOwningQuest", [], P),
+                        P,
+                    ))
+                body = compatibility_locals + body
 
             if is_event:
                 ast_node = EventDef(

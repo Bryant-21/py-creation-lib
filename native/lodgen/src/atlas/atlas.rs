@@ -13,6 +13,8 @@ use indexmap::IndexMap;
 use rayon::prelude::*;
 use std::path::Path;
 
+use crate::asset_source::{self, ResolvedAsset};
+
 // ---------------------------------------------------------------------------
 // AtlasMapRow — one row in the 8-column TSV
 // ---------------------------------------------------------------------------
@@ -329,7 +331,7 @@ pub fn build_object_atlas_with_progress(
     let tol_max = 1.0_f32 + (uv_range - 1.0);
 
     let mut seen_diffuse: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut diffuse_paths: Vec<std::path::PathBuf> = Vec::new();
+    let mut diffuse_assets: Vec<ResolvedAsset> = Vec::new();
 
     let total_refs = refs.len().max(1);
     let report_every = (total_refs / 20).max(1);
@@ -359,8 +361,8 @@ pub fn build_object_atlas_with_progress(
         if let Some(tiles) = scan_cache.get(key) {
             for tile in tiles {
                 if seen_diffuse.insert(tile.key.clone()) {
-                    if let Some(path) = &tile.path {
-                        diffuse_paths.push(path.clone());
+                    if let Some(asset) = &tile.asset {
+                        diffuse_assets.push(asset.clone());
                     }
                 }
             }
@@ -372,7 +374,7 @@ pub fn build_object_atlas_with_progress(
                 &format!(
                     "object atlas: scanned {done}/{} refs, {} texture tiles, cache={} hits={}",
                     refs.len(),
-                    diffuse_paths.len(),
+                    diffuse_assets.len(),
                     scan_cache.len(),
                     cache_hits
                 ),
@@ -381,7 +383,7 @@ pub fn build_object_atlas_with_progress(
         }
     }
 
-    if diffuse_paths.is_empty() {
+    if diffuse_assets.is_empty() {
         // No valid tiles — return an empty AtlasResult without error.
         report_progress(&mut progress, "object atlas: no valid texture tiles", 1.0);
         return Ok(AtlasResult {
@@ -407,8 +409,9 @@ pub fn build_object_atlas_with_progress(
     let format_normal = format_to_str(&settings.normal_format);
     let format_specular = format_to_str(&settings.specular_format);
 
-    build_atlas_from_tiles_with_progress(
-        &diffuse_paths,
+    build_atlas_from_assets_with_progress(
+        &diffuse_assets,
+        Some(&ctx.paths.data_dirs),
         &atlas_path,
         &map_path,
         settings.atlas_size,
@@ -434,7 +437,7 @@ struct AtlasScanKey {
 #[derive(Clone, Debug)]
 struct AtlasTileCandidate {
     key: String,
-    path: Option<std::path::PathBuf>,
+    asset: Option<ResolvedAsset>,
 }
 
 #[derive(Clone, Debug)]
@@ -565,15 +568,15 @@ fn collect_object_atlas_tiles_for_stat(
                 continue;
             }
             if !in_tol {
-                tiles.push(AtlasTileCandidate { key, path: None });
+                tiles.push(AtlasTileCandidate { key, asset: None });
                 continue;
             }
             // Resolve the normalised path in the data dirs. `resolve_data_path_ci`
             // already applies `strip_normalize_texture_path` internally, but
             // passing the pre-normalised form is cheaper and avoids double work.
             let rel = norm.replace('/', "\\");
-            let path = resolve_data_path_ci(ctx, &rel);
-            tiles.push(AtlasTileCandidate { key, path });
+            let asset = resolve_data_path_ci(ctx, &rel);
+            tiles.push(AtlasTileCandidate { key, asset });
         }
     }
     for material in stat.material_swap.values() {
@@ -643,22 +646,9 @@ pub fn strip_normalize_texture_path(s: &str) -> String {
 /// Applies `strip_normalize_texture_path` before the lookup so that paths stored
 /// in LOD NIFs as `Data\Textures\LOD\...` or `Data\LOD\...` both resolve against
 /// the extracted corpus in the same way as a clean `Textures\LOD\...` path.
-fn resolve_data_path_ci(
-    ctx: &crate::progress::QuadCtx<'_>,
-    rel: &str,
-) -> Option<std::path::PathBuf> {
+fn resolve_data_path_ci(ctx: &crate::progress::QuadCtx<'_>, rel: &str) -> Option<ResolvedAsset> {
     let normalized = strip_normalize_texture_path(rel).replace('\\', "/");
-    for dir in &ctx.paths.data_dirs {
-        let candidate = dir.join(&normalized);
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-        // Case-insensitive walk.
-        if let Some(found) = ci_resolve(dir, &normalized) {
-            return Some(found);
-        }
-    }
-    None
+    asset_source::resolve(&ctx.paths.data_dirs, &normalized)
 }
 
 fn normalize_lod_material_path(s: &str) -> Option<String> {
@@ -675,22 +665,13 @@ fn normalize_lod_material_path(s: &str) -> Option<String> {
 fn resolve_material_path_ci(
     ctx: &crate::progress::QuadCtx<'_>,
     rel: &str,
-) -> Option<std::path::PathBuf> {
+) -> Option<ResolvedAsset> {
     let normalized = if rel.to_lowercase().starts_with("materials\\") {
         rel.replace('\\', "/")
     } else {
         format!("Materials\\{rel}").replace('\\', "/")
     };
-    for dir in &ctx.paths.data_dirs {
-        let candidate = dir.join(&normalized);
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-        if let Some(found) = ci_resolve(dir, &normalized) {
-            return Some(found);
-        }
-    }
-    None
+    asset_source::resolve(&ctx.paths.data_dirs, &normalized)
 }
 
 fn push_lod_material_diffuse(
@@ -706,10 +687,10 @@ fn push_lod_material_diffuse(
     if !seen_lod_materials.insert(lod_material.clone()) {
         return;
     }
-    let Some(material_path) = resolve_material_path_ci(ctx, &lod_material) else {
+    let Some(material_asset) = resolve_material_path_ci(ctx, &lod_material) else {
         return;
     };
-    let Ok(bytes) = std::fs::read(material_path) else {
+    let Ok(bytes) = asset_source::read(&ctx.paths.data_dirs, &material_asset) else {
         return;
     };
     let Ok(bgsm) = materials_native::bgsm::parse(&bytes) else {
@@ -725,28 +706,8 @@ fn push_lod_material_diffuse(
         return;
     }
     let rel = norm.replace('/', "\\");
-    let path = resolve_data_path_ci(ctx, &rel);
-    diffuse_paths.push(AtlasTileCandidate { key, path });
-}
-
-fn ci_resolve(base: &std::path::Path, rel: &str) -> Option<std::path::PathBuf> {
-    let mut cur = base.to_path_buf();
-    for part in rel.split('/').filter(|p| !p.is_empty()) {
-        let entries = std::fs::read_dir(&cur).ok()?;
-        let mut matched: Option<std::path::PathBuf> = None;
-        for entry in entries.flatten() {
-            if entry
-                .file_name()
-                .to_string_lossy()
-                .eq_ignore_ascii_case(part)
-            {
-                matched = Some(entry.path());
-                break;
-            }
-        }
-        cur = matched?;
-    }
-    if cur.is_file() { Some(cur) } else { None }
+    let asset = resolve_data_path_ci(ctx, &rel);
+    diffuse_paths.push(AtlasTileCandidate { key, asset });
 }
 
 fn diffuse_lower_contains(s: &str, needle: &str) -> bool {
@@ -807,11 +768,41 @@ fn build_atlas_from_tiles_with_progress(
     format_normal: &str,
     format_specular: &str,
     mip_flooding: bool,
+    progress: Option<&mut dyn crate::progress::Progress>,
+) -> anyhow::Result<AtlasResult> {
+    let diffuse_assets: Vec<ResolvedAsset> = diffuse_tile_paths
+        .iter()
+        .map(|path| ResolvedAsset::loose(data_relative_path(path), path.clone()))
+        .collect();
+    build_atlas_from_assets_with_progress(
+        &diffuse_assets,
+        None,
+        atlas_diffuse_path,
+        atlas_map_path,
+        atlas_size,
+        max_tile_size,
+        format_diffuse,
+        format_normal,
+        format_specular,
+        mip_flooding,
+        progress,
+    )
+}
+
+fn build_atlas_from_assets_with_progress(
+    diffuse_tile_assets: &[ResolvedAsset],
+    asset_sources: Option<&[std::path::PathBuf]>,
+    atlas_diffuse_path: &std::path::Path,
+    atlas_map_path: &std::path::Path,
+    atlas_size: u32,
+    max_tile_size: u32,
+    format_diffuse: &str,
+    format_normal: &str,
+    format_specular: &str,
+    mip_flooding: bool,
     mut progress: Option<&mut dyn crate::progress::Progress>,
 ) -> anyhow::Result<AtlasResult> {
     use super::binpacker::{BinBlock, BinPacker};
-    use directxtex_native::read_dds_rgba_image;
-
     // Load + optionally resize each diffuse tile.
     // port: wbLOD.pas:1440-1480
     struct Tile {
@@ -829,20 +820,20 @@ fn build_atlas_from_tiles_with_progress(
 
     let mut tiles: Vec<Tile> = Vec::new();
 
-    let total_tiles = diffuse_tile_paths.len().max(1);
+    let total_tiles = diffuse_tile_assets.len().max(1);
     let report_every = (total_tiles / 20).max(1);
     report_progress(
         &mut progress,
         &format!(
             "object atlas: loading {} texture tiles",
-            diffuse_tile_paths.len()
+            diffuse_tile_assets.len()
         ),
         0.45,
     );
 
-    for (idx, abs_path) in diffuse_tile_paths.iter().enumerate() {
+    for (idx, asset) in diffuse_tile_assets.iter().enumerate() {
         // Skip tiles too large for the atlas (port: wbLOD.pas:1453)
-        let img = match read_dds_rgba_image(abs_path) {
+        let img = match read_asset_dds(asset, asset_sources) {
             Ok(i) => i,
             Err(_) => continue,
         };
@@ -862,19 +853,18 @@ fn build_atlas_from_tiles_with_progress(
 
         // Derive _n and _s sibling paths.
         // port: wbLOD.pas:1423-1435
-        let n_path = derive_sibling_path(abs_path, "_n.dds");
-        let s_path = derive_sibling_path(abs_path, "_s.dds");
+        let n_asset = resolve_sibling_asset(asset, "_n.dds", asset_sources);
+        let s_asset = resolve_sibling_asset(asset, "_s.dds", asset_sources);
 
-        let n_on_disk = n_path.as_ref().filter(|p| p.is_file());
-        let rgba_n = if let Some(p) = n_on_disk {
-            read_dds_rgba_image(p)
+        let rgba_n = if let Some(sibling) = &n_asset {
+            read_asset_dds(sibling, asset_sources)
                 .map(|i| maybe_resize_rgba(i, w, h))
                 .unwrap_or_else(|_| flat_normal_rgba(w, h))
         } else {
             flat_normal_rgba(w, h)
         };
-        let rgba_s = if let Some(p) = s_path.as_ref().filter(|p| p.is_file()) {
-            read_dds_rgba_image(p)
+        let rgba_s = if let Some(sibling) = &s_asset {
+            read_asset_dds(sibling, asset_sources)
                 .map(|i| maybe_resize_rgba(i, w, h))
                 .unwrap_or_else(|_| white_rgba(w, h))
         } else {
@@ -882,11 +872,14 @@ fn build_atlas_from_tiles_with_progress(
         };
 
         // Data-relative path for the atlas-map: take the part after "textures\" (case-insensitive).
-        let rel = data_relative_path(abs_path);
+        let rel = asset.logical_path().replace('/', "\\");
         // Data-relative normal path (only when an `_n` sibling exists on disk), used
         // for the `diffuse,normal` AtlasList key. port: AtlasList.GetKey / atlas-map
         // source column = `diffuse,normal` (Program.cs:1306-1311).
-        let normal_rel = n_on_disk.map(|p| data_relative_path(p)).unwrap_or_default();
+        let normal_rel = n_asset
+            .as_ref()
+            .map(|asset| asset.logical_path().replace('/', "\\"))
+            .unwrap_or_default();
 
         tiles.push(Tile {
             diffuse_rel: rel,
@@ -899,12 +892,12 @@ fn build_atlas_from_tiles_with_progress(
         });
 
         let done = idx + 1;
-        if done == diffuse_tile_paths.len() || done % report_every == 0 {
+        if done == diffuse_tile_assets.len() || done % report_every == 0 {
             report_progress(
                 &mut progress,
                 &format!(
                     "object atlas: loaded {done}/{} texture tiles, {} usable",
-                    diffuse_tile_paths.len(),
+                    diffuse_tile_assets.len(),
                     tiles.len()
                 ),
                 0.45 + (done as f32 / total_tiles as f32) * 0.35,
@@ -1450,6 +1443,38 @@ fn derive_sibling_path(diffuse: &std::path::Path, suffix: &str) -> Option<std::p
         return None;
     };
     Some(diffuse.parent()?.join(new_name))
+}
+
+fn read_asset_dds(
+    asset: &ResolvedAsset,
+    sources: Option<&[std::path::PathBuf]>,
+) -> core::result::Result<directxtex_native::DdsRgbaImage, String> {
+    let bytes = if let Some(sources) = sources {
+        asset_source::read(sources, asset).map_err(|error| error.to_string())?
+    } else {
+        std::fs::read(
+            asset
+                .loose_path()
+                .ok_or_else(|| "archive asset has no resolver".to_string())?,
+        )
+        .map_err(|error| error.to_string())?
+    };
+    directxtex_native::read_dds_rgba_image_bytes(&bytes)
+}
+
+fn resolve_sibling_asset(
+    diffuse: &ResolvedAsset,
+    suffix: &str,
+    sources: Option<&[std::path::PathBuf]>,
+) -> Option<ResolvedAsset> {
+    let sibling_relative = derive_sibling_path(Path::new(diffuse.logical_path()), suffix)?;
+    if let Some(sources) = sources {
+        return asset_source::resolve(sources, &sibling_relative.to_string_lossy());
+    }
+    let sibling_path = derive_sibling_path(diffuse.loose_path()?, suffix)?;
+    sibling_path
+        .is_file()
+        .then(|| ResolvedAsset::loose(data_relative_path(&sibling_path), sibling_path))
 }
 
 /// Build a sibling atlas path by inserting a suffix before `.dds`.

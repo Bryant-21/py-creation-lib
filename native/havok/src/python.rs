@@ -528,6 +528,8 @@ fn fo4_multi_body_collision_blob<'py>(
                 collision_filter_info: None,
                 layer: b_layer,
                 body_flags: None,
+                material_flags: None,
+                material_trigger_type: None,
                 position: [pos[0], pos[1], pos[2], 0.0],
                 orientation: orient,
                 motion_type: match motion.as_str() {

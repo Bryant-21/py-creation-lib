@@ -122,8 +122,7 @@ fn load_cloth_hkx_from_bathrobe_returns_non_empty_object_graph() {
 /// `read_packfile` -> writer.
 #[test]
 fn test_vanilla_cape_roundtrip() {
-    let original =
-        fixture_bytes("native/havok/tests/fixtures/cloth/vanilla_cape_outfitm.bin");
+    let original = fixture_bytes("native/havok/tests/fixtures/cloth/vanilla_cape_outfitm.bin");
 
     let mut parsed = read_packfile(&original).expect("parse vanilla cape blob");
     // Force the writer path (otherwise save() short-circuits to source bytes).

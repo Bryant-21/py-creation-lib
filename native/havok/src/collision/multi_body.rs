@@ -1,14 +1,16 @@
-use super::capsule::build_fo4_capsule_collision;
+use super::capsule::{SourceCapsuleShape, build_fo4_source_capsule_collision};
 use super::compound::{CompoundChild, CompoundChildKind, build_fo4_compound_collision};
 use super::compressed_mesh::{
     BuildOptions, MaterialEntry, RawCompressedMeshData, build_compressed_mesh_collision,
     build_compressed_mesh_collision_from_raw,
 };
 use super::constraints::GraftedConstraints;
+use super::convex::{SourceConvexShape, build_fo4_source_convex_collision};
 use super::polytope::{
     SourcePolytopeShape, build_fo4_polytope_collision, build_fo4_source_polytope_collision,
 };
 use super::sphere::build_fo4_sphere_collision;
+use crate::animation::pose::quat_rotate;
 use crate::error::{HavokError, HavokResult};
 use crate::hkx::model::{HkxFile, HkxMember, HkxObject};
 use crate::hkx::types::HkxValue;
@@ -22,6 +24,11 @@ const BODY_FLAGS_DYNAMIC: i64 = 128;
 /// maxLinearAccelerationDistancePerStep / maxRotationToPreventTunneling.
 /// Matches the value emitted by `convert::fo76::synthesize_motion_cinfos`.
 const FLT_CAP: f32 = 1.844_672_6e19;
+/// `collisionFilterInfo` bit marking a body as part of an articulated system —
+/// bits 8..14 then carry the part number and the engine suppresses contacts
+/// between parts of the same system (vanilla TrapCanChimes01: 0x800F,
+/// 0x810A..0x850A).
+const RAGDOLL_PART_FILTER_FLAG: u32 = 0x8000;
 
 /// How an individual body in a multi-body packfile behaves at runtime.
 ///
@@ -54,12 +61,19 @@ pub struct BodyMeta {
     /// Full source `hknpBodyCinfo.collisionFilterInfo` (layer byte + group/system
     /// high-bytes). `Some` only for constrained assemblies, where the per-body
     /// group bits (`0x81xx`, `0x82xx`, …) are load-bearing — they keep the
-    /// articulated bodies from self-colliding. When set it is written verbatim;
-    /// otherwise the filter is just `layer`.
+    /// articulated bodies from self-colliding. Written verbatim when the part
+    /// bit (0x8000) is present; a constrained body without it gets a vanilla
+    /// part filter synthesized (`0x8000 | body_index<<8 | layer`) since FO76
+    /// sources may rely on runtime pair filtering FO4 doesn't do. Otherwise the
+    /// filter is just `layer`.
     pub collision_filter_info: Option<u32>,
     /// Source `hknpBodyCinfo.flags` for non-dynamic bodies. FO76 trigger/bumper
     /// bodies can carry flags like 16 while still using static motion.
     pub body_flags: Option<i64>,
+    /// Source `hknpMaterial.flags`, including `ENABLE_TRIGGER_MODIFIER`.
+    pub material_flags: Option<i64>,
+    /// Source `hknpMaterial.triggerType` for trigger-volume behavior.
+    pub material_trigger_type: Option<u8>,
     pub position: [f32; 4],
     pub orientation: [f32; 4],
     pub motion_type: BodyMotionType,
@@ -79,6 +93,8 @@ impl Default for BodyMeta {
             layer: 1,
             collision_filter_info: None,
             body_flags: None,
+            material_flags: None,
+            material_trigger_type: None,
             position: [0.0, 0.0, 0.0, 0.0],
             orientation: [0.0, 0.0, 0.0, 1.0],
             motion_type: BodyMotionType::Static,
@@ -114,14 +130,11 @@ pub enum MultiBodyShape {
         radius: f32,
         position: [f32; 3],
     },
-    /// Capsule (convex polytope along the `a`-`b` axis + rounding
-    /// `convex_radius`). Carries the source FO76 `hknpCapsuleShape`'s own
-    /// endpoints + radius split. Builder only — `classify_source_body` does not
-    /// route source capsules here yet (still tessellates to hull).
     Capsule {
-        a: [f32; 4],
-        b: [f32; 4],
-        convex_radius: f32,
+        shape: SourceCapsuleShape,
+    },
+    SourceConvex {
+        shape: SourceConvexShape,
     },
 }
 
@@ -170,7 +183,14 @@ pub fn build_fo4_multi_body_collision_with_constraints(
             let body_opts = options_for_body(opts, &bodies[0], material_crcs, body_metas, 0);
             let meta = body_metas.and_then(|m| m.first()).copied();
             let center = meta
-                .map(|m| [m.position[0], m.position[1], m.position[2]])
+                .map(|meta| {
+                    let local_center = quat_rotate(&meta.orientation, &position);
+                    [
+                        meta.position[0] + local_center[0],
+                        meta.position[1] + local_center[1],
+                        meta.position[2] + local_center[2],
+                    ]
+                })
                 .unwrap_or(position);
             return build_fo4_sphere_collision(radius, center, &body_opts);
         }
@@ -202,7 +222,7 @@ pub fn build_fo4_multi_body_collision_with_constraints(
             MultiBodyShape::Compound { .. } => {}
             // A capsule is its own convex body; it does not participate in the
             // CM-before-polytope ordering constraint.
-            MultiBodyShape::Capsule { .. } => {}
+            MultiBodyShape::Capsule { .. } | MultiBodyShape::SourceConvex { .. } => {}
             MultiBodyShape::Sphere { .. } => {
                 return Err(HavokError::InvalidInput(format!(
                     "MultiBodyShape::Sphere at index {i} is only supported as a sole body. \
@@ -246,11 +266,12 @@ pub fn build_fo4_multi_body_collision_with_constraints(
             }
             // Body world position is patched by the per-body merge below, so the
             // sole-builder origin can be zero here.
-            MultiBodyShape::Capsule {
-                a,
-                b,
-                convex_radius,
-            } => build_fo4_capsule_collision(*a, *b, *convex_radius, [0.0; 3], &body_opts)?,
+            MultiBodyShape::Capsule { shape } => {
+                build_fo4_source_capsule_collision(shape, [0.0; 3], &body_opts)?
+            }
+            MultiBodyShape::SourceConvex { shape } => {
+                build_fo4_source_convex_collision(shape, &body_opts)?
+            }
             // Validated away above so the build dispatch can't see Sphere.
             // Keep the arm explicit so adding the real builder is a one-line
             // change instead of unwinding an unreachable.
@@ -301,6 +322,15 @@ pub fn build_fo4_multi_body_collision_with_constraints(
         remap_value_pointers(&mut material_value, &remap);
         remap_value_pointers(&mut body_cinfo_value, &remap);
         remap_value_pointers(&mut referenced_value, &remap);
+        if let Some(material_members) = material_value.as_object_members_mut() {
+            let meta = meta_at(body_index);
+            if let Some(flags) = meta.material_flags {
+                set_int_member(material_members, "flags", flags);
+            }
+            if let Some(trigger_type) = meta.material_trigger_type {
+                set_int_member(material_members, "triggerType", i64::from(trigger_type));
+            }
+        }
         material_values.push(material_value);
         body_cinfo_values.push(body_cinfo_value);
         referenced_values.push(referenced_value);
@@ -359,6 +389,23 @@ pub fn build_fo4_multi_body_collision_with_constraints(
     // a real dynamic motion frame like clutter does, so the constraints have live
     // bodies to swing.
     let constrained = constraints.is_some();
+    // FO4 suppresses contacts inside an articulated assembly with baked ragdoll
+    // part filters: every constrained body carries 0x8000 | part<<8 | layer
+    // (vanilla TrapCanChimes01: anchor 0x800F, chain 0x810A..0x850A). FO76 relies
+    // on runtime constraint-pair filtering instead and ships some articulated
+    // sources (TireSwing02) with the bare layer — carried verbatim, the chain
+    // self-collides in FO4 whenever it bends and the contact solver locks it.
+    // Synthesize the vanilla numbering for constrained bodies whose source filter
+    // has no part bits; sources that already carry them keep them verbatim.
+    let constrained_body_indices: std::collections::HashSet<usize> = constraints
+        .map(|grafted| {
+            grafted
+                .cinfos
+                .iter()
+                .flat_map(|cinfo| [cinfo.body_a as usize, cinfo.body_b as usize])
+                .collect()
+        })
+        .unwrap_or_default();
     let mut motion_cinfo_values: Vec<HkxValue> = Vec::new();
     let mut has_dynamic_clutter = false;
     for (body_index, body_value) in body_cinfo_values.iter_mut().enumerate() {
@@ -376,10 +423,20 @@ pub fn build_fo4_multi_body_collision_with_constraints(
         // Bodies the solver simulates dynamically: loose clutter, or a constrained
         // assembly's moving chain segments.
         let is_dynamic = meta.layer == FO4_CLUTTER_LAYER || constrained_dynamic;
-        let filter = meta
+        let source_filter = meta
             .collision_filter_info
-            .map(i64::from)
-            .unwrap_or_else(|| i64::from(meta.layer));
+            .unwrap_or_else(|| u32::from(meta.layer));
+        let filter = if constrained_body_indices.contains(&body_index)
+            && source_filter & RAGDOLL_PART_FILTER_FLAG == 0
+        {
+            i64::from(
+                RAGDOLL_PART_FILTER_FLAG
+                    | ((body_index as u32 & 0x7F) << 8)
+                    | (source_filter & 0xFF),
+            )
+        } else {
+            i64::from(source_filter)
+        };
 
         set_int_member(body_members, "materialId", body_index as i64);
         set_int_member(body_members, "collisionFilterInfo", filter);
@@ -480,7 +537,24 @@ pub fn build_fo4_multi_body_collision_with_constraints(
     }
 
     let hkx = HkxFile::from_tagxml(11, "hk_2014.1.0-r1", objects);
-    Ok(hkx.save())
+    let mut blob = hkx.save();
+    let compressed_mesh_markers = bodies
+        .iter()
+        .filter_map(|body| match body {
+            MultiBodyShape::CompressedMesh { .. } => Some(0),
+            MultiBodyShape::RawCompressedMesh { data } => {
+                Some(data.primitive_stores_is_flat_convex)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if !compressed_mesh_markers.is_empty() {
+        super::compressed_mesh::patch_fo4_compressed_mesh_flat_convex_markers(
+            &mut blob,
+            &compressed_mesh_markers,
+        )?;
+    }
+    Ok(blob)
 }
 
 fn body_flags_for_meta(meta: BodyMeta, is_dynamic: bool) -> i64 {
@@ -579,19 +653,25 @@ fn build_dynamic_clutter_motion_cinfo(
     } else {
         CLUTTER_BODY_MASS / shape_mass
     };
-    // The shape solve gives 1/I at `shape_mass`; inertia scales linearly with mass,
+    // The shape solve gives 1/I at `mp.mass`; inertia scales linearly with mass,
     // so rescale to the body's effective mass to stay consistent with `inverseMass`.
-    let scale = shape_mass / body_mass;
+    // `shape_mass` is NOT the solve mass — its floor only exists to cap massFactor.
+    // Rescaling by the floored value inflates inverse inertia by the floor ratio
+    // for small-volume bodies (TireSwing02 rope links: 173×), leaving constrained
+    // chains hyper-floppy and solver-locked rigid in-game.
+    let solve_mass = if mp.mass > 0.0 { mp.mass } else { shape_mass };
+    let scale = solve_mass / body_mass;
     let inv_inertia = vec![
         mp.inverse_inertia_diag[0] * scale,
         mp.inverse_inertia_diag[1] * scale,
         mp.inverse_inertia_diag[2] * scale,
         1.0,
     ];
+    let rotated_center = quat_rotate(&orientation, &mp.center_of_mass);
     let com_world = vec![
-        position[0] + mp.center_of_mass[0],
-        position[1] + mp.center_of_mass[1],
-        position[2] + mp.center_of_mass[2],
+        position[0] + rotated_center[0],
+        position[1] + rotated_center[1],
+        position[2] + rotated_center[2],
         position[3],
     ];
     HkxValue::TypedObject {
@@ -672,12 +752,24 @@ fn clutter_mass_properties(body: &MultiBodyShape) -> super::mass_properties::Mas
                 .collect();
             polytope_mass_properties(&verts, clutter_mass_from_volume(&verts))
         }
-        MultiBodyShape::RawCompressedMesh { .. }
-        | MultiBodyShape::Sphere { .. }
-        | MultiBodyShape::Capsule { .. } => polytope_mass_properties(
-            &[[-0.05, -0.05, -0.05], [0.05, 0.05, 0.05]],
-            CLUTTER_MIN_MASS,
+        MultiBodyShape::Capsule { shape } => polytope_mass_properties(
+            &shape.hull.vertices,
+            clutter_mass_from_volume(&shape.hull.vertices),
         ),
+        MultiBodyShape::SourceConvex { shape } => {
+            let vertices = shape
+                .vertices
+                .iter()
+                .map(|vertex| [vertex[0], vertex[1], vertex[2]])
+                .collect::<Vec<_>>();
+            polytope_mass_properties(&vertices, clutter_mass_from_volume(&vertices))
+        }
+        MultiBodyShape::RawCompressedMesh { .. } | MultiBodyShape::Sphere { .. } => {
+            polytope_mass_properties(
+                &[[-0.05, -0.05, -0.05], [0.05, 0.05, 0.05]],
+                CLUTTER_MIN_MASS,
+            )
+        }
     }
 }
 
@@ -796,6 +888,7 @@ fn options_for_body(
             | MultiBodyShape::RawCompressedMesh { .. }
             | MultiBodyShape::Compound { .. }
             | MultiBodyShape::SourcePolytope { .. }
+            | MultiBodyShape::SourceConvex { .. }
     ) {
         body_opts.materials = vec![MaterialEntry {
             filter_info: u32::from(body_layer),
@@ -1045,6 +1138,42 @@ mod tests {
     }
 
     #[test]
+    fn dynamic_clutter_motion_cinfo_rotates_local_center_of_mass_into_body_frame() {
+        let body = MultiBodyShape::Polytope {
+            vertices: unit_cube_vertices(),
+        };
+        let mass_distribution = crate::collision::SourceMassDistribution {
+            center_of_mass: [1.0, 0.0, 0.0],
+            volume: 8.0,
+            unit_inertia: [1.0, 1.0, 1.0],
+            major_axis_space: [0.0, 0.0, 0.0, 1.0],
+        };
+        let half_sqrt_two = 0.5_f32.sqrt();
+        let cinfo = build_dynamic_clutter_motion_cinfo(
+            &body,
+            [10.0, 20.0, 30.0, 0.0],
+            [0.0, 0.0, half_sqrt_two, half_sqrt_two],
+            Some(2.0),
+            Some(&mass_distribution),
+        );
+        let HkxValue::TypedObject { members, .. } = cinfo else {
+            panic!("cinfo must be a TypedObject");
+        };
+        let HkxValue::F32List(center) = &members
+            .iter()
+            .find(|member| member.name == "centerOfMassWorld")
+            .expect("centerOfMassWorld member")
+            .value
+        else {
+            panic!("centerOfMassWorld must be F32List");
+        };
+
+        assert!((center[0] - 10.0).abs() < 1e-5, "{center:?}");
+        assert!((center[1] - 21.0).abs() < 1e-5, "{center:?}");
+        assert!((center[2] - 30.0).abs() < 1e-5, "{center:?}");
+    }
+
+    #[test]
     fn clutter_compound_body_uses_source_body_mass() {
         let body = MultiBodyShape::Compound {
             children: vec![CompoundChild {
@@ -1140,7 +1269,7 @@ mod tests {
     }
 
     #[test]
-    fn static_trigger_body_preserves_source_body_flags() {
+    fn static_trigger_body_preserves_source_body_and_material_flags() {
         let body = MultiBodyShape::Polytope {
             vertices: unit_cube_vertices(),
         };
@@ -1148,6 +1277,8 @@ mod tests {
             collision_filter_info: None,
             layer: 12,
             body_flags: Some(16),
+            material_flags: Some(1 << 21),
+            material_trigger_type: Some(2),
             ..BodyMeta::default()
         }];
         let blob =
@@ -1172,6 +1303,19 @@ mod tests {
             body_member_i64(&body_cinfos[0], "motionId"),
             i64::from(MOTION_ID_INVALID)
         );
+
+        let materials = match &psd
+            .members
+            .iter()
+            .find(|m| m.name == "materials")
+            .unwrap()
+            .value
+        {
+            HkxValue::Array(values) => values,
+            _ => panic!("materials not array"),
+        };
+        assert_eq!(body_member_i64(&materials[0], "flags"), 1 << 21);
+        assert_eq!(body_member_i64(&materials[0], "triggerType"), 2);
 
         let motion_cinfo_len = match &psd
             .members
@@ -1303,6 +1447,164 @@ mod tests {
     }
 
     #[test]
+    fn constrained_bodies_without_source_part_bits_get_vanilla_part_filters() {
+        use crate::collision::{GraftCinfo, GraftedConstraints};
+
+        // TireSwing02 shape: FO76 ships the anchor (layer 15) and chain (layer 4)
+        // with BARE layer filters, relying on runtime constraint-pair filtering
+        // FO4 doesn't do. The re-encode must synthesize the vanilla part numbering
+        // (0x8000 | body_index<<8 | layer) for every constrained body; an
+        // unconstrained body in the same system keeps its bare filter.
+        let bodies = [
+            MultiBodyShape::Polytope {
+                vertices: unit_cube_vertices(),
+            },
+            MultiBodyShape::Polytope {
+                vertices: unit_cube_vertices(),
+            },
+            MultiBodyShape::Polytope {
+                vertices: unit_cube_vertices(),
+            },
+        ];
+        let metas = [
+            BodyMeta {
+                collision_filter_info: Some(0x000f),
+                layer: 15,
+                ..BodyMeta::default()
+            },
+            BodyMeta {
+                collision_filter_info: Some(0x0004),
+                layer: 4,
+                body_flags: Some(BODY_FLAGS_DYNAMIC),
+                ..BodyMeta::default()
+            },
+            BodyMeta {
+                collision_filter_info: Some(0x0004),
+                layer: 4,
+                body_flags: Some(BODY_FLAGS_DYNAMIC),
+                ..BodyMeta::default()
+            },
+        ];
+        let constraint_data = HkxObject {
+            name: None,
+            offset: 0,
+            signature: 0,
+            class_name: "hkpRagdollConstraintData".to_string(),
+            members: vec![HkxMember {
+                name: "userData".to_string(),
+                value: HkxValue::U64(0),
+            }],
+        };
+        let grafted = GraftedConstraints {
+            objects: vec![constraint_data],
+            cinfos: vec![GraftCinfo {
+                body_a: 1,
+                body_b: 0,
+                data_object: 0,
+                flags: 0,
+            }],
+        };
+
+        let blob = build_fo4_multi_body_collision_with_constraints(
+            &bodies,
+            &BuildOptions::default(),
+            None,
+            Some(&metas),
+            Some(&grafted),
+        )
+        .expect("build constrained assembly");
+        let file = HkxFile::read(&blob).expect("parse");
+        let psd = find_psd(&file);
+        let body_cinfos = match &psd
+            .members
+            .iter()
+            .find(|m| m.name == "bodyCinfos")
+            .unwrap()
+            .value
+        {
+            HkxValue::Array(v) => v.clone(),
+            _ => panic!("bodyCinfos not array"),
+        };
+        assert_eq!(
+            body_member_i64(&body_cinfos[0], "collisionFilterInfo"),
+            0x800f,
+            "constrained anchor must gain the vanilla part filter"
+        );
+        assert_eq!(
+            body_member_i64(&body_cinfos[1], "collisionFilterInfo"),
+            0x8104,
+            "constrained chain body must gain part<<8 over its source layer"
+        );
+        assert_eq!(
+            body_member_i64(&body_cinfos[2], "collisionFilterInfo"),
+            0x0004,
+            "unconstrained body must keep its bare source filter"
+        );
+    }
+
+    #[test]
+    fn source_mass_distribution_inertia_solves_at_body_mass() {
+        use crate::collision::mass_properties::SourceMassDistribution;
+
+        // TireSwing02 rope link: volume 0.000577 sits far below the massFactor
+        // floor (0.1). The inertia solve happens at the volume-mass, so the
+        // rescale to the source body mass must use that same mass — flooring it
+        // first inflated inverse inertia 173× and locked constrained chains.
+        let dist = SourceMassDistribution {
+            center_of_mass: [0.0, 0.0, 0.05],
+            volume: 0.000577,
+            unit_inertia: [0.018935, 0.019039, 0.000386],
+            major_axis_space: [0.0, 0.0, 0.0, 1.0],
+        };
+        let body_mass = 2.0_f32;
+        let metas = [BodyMeta {
+            layer: FO4_CLUTTER_LAYER,
+            body_flags: Some(BODY_FLAGS_DYNAMIC),
+            body_mass: Some(body_mass),
+            mass_distribution: Some(dist),
+            ..BodyMeta::default()
+        }];
+        let body = MultiBodyShape::Polytope {
+            vertices: unit_cube_vertices(),
+        };
+        let blob =
+            build_fo4_multi_body_collision(&[body], &BuildOptions::default(), None, Some(&metas))
+                .expect("build dynamic body");
+        let file = HkxFile::read(&blob).expect("parse");
+        let psd = find_psd(&file);
+        let motion_cinfos = match &psd
+            .members
+            .iter()
+            .find(|m| m.name == "motionCinfos")
+            .unwrap()
+            .value
+        {
+            HkxValue::Array(v) => v.clone(),
+            _ => panic!("motionCinfos not array"),
+        };
+        assert_eq!(motion_cinfos.len(), 1);
+        let HkxValue::Object(members) = &motion_cinfos[0] else {
+            panic!("motion cinfo must be inline object");
+        };
+        let find = |name: &str| members.iter().find(|m| m.name == name).map(|m| &m.value);
+        let HkxValue::F32List(inv_inertia) = find("inverseInertiaLocal").unwrap() else {
+            panic!("inverseInertiaLocal not F32List");
+        };
+        for (axis, unit) in dist.unit_inertia.iter().enumerate() {
+            let expected = 1.0 / (unit * body_mass);
+            let actual = inv_inertia[axis];
+            assert!(
+                (actual - expected).abs() / expected < 1e-3,
+                "axis {axis}: inverse inertia {actual} must solve at body mass (expected {expected})"
+            );
+        }
+        assert!(
+            matches!(find("inverseMass"), Some(HkxValue::F32(v)) if (*v - 0.5).abs() < 1e-6),
+            "inverseMass must stay 1/body_mass"
+        );
+    }
+
+    #[test]
     fn non_clutter_body_does_not_preserve_dynamic_body_flag() {
         let body = MultiBodyShape::Polytope {
             vertices: unit_cube_vertices(),
@@ -1357,6 +1659,8 @@ mod tests {
                 collision_filter_info: None,
                 layer: 1,
                 body_flags: None,
+                material_flags: None,
+                material_trigger_type: None,
                 position: [0.0, 0.0, 0.0, 0.0],
                 orientation: [0.0, 0.0, 0.0, 1.0],
                 motion_type: BodyMotionType::Static,
@@ -1367,6 +1671,8 @@ mod tests {
                 collision_filter_info: None,
                 layer: 2,
                 body_flags: None,
+                material_flags: None,
+                material_trigger_type: None,
                 position: [0.3, -0.3, 0.6, 0.0],
                 orientation: [0.0, 0.0, -0.707, 0.707],
                 motion_type: BodyMotionType::Keyframed,
@@ -1487,6 +1793,8 @@ mod tests {
                 collision_filter_info: None,
                 layer: 2,
                 body_flags: None,
+                material_flags: None,
+                material_trigger_type: None,
                 position: [1.0, 2.0, 3.0, 0.0],
                 orientation: [0.0, 0.0, 0.0, 1.0],
                 motion_type: BodyMotionType::Keyframed,
@@ -1698,6 +2006,8 @@ mod tests {
                 collision_filter_info: None,
                 layer: 1,
                 body_flags: None,
+                material_flags: None,
+                material_trigger_type: None,
                 position: [0.0, 0.0, 0.0, 0.0],
                 orientation: [0.0, 0.0, 0.0, 1.0],
                 motion_type: BodyMotionType::Static,
@@ -1708,6 +2018,8 @@ mod tests {
                 collision_filter_info: None,
                 layer: 31,
                 body_flags: None,
+                material_flags: None,
+                material_trigger_type: None,
                 position: [0.0, 0.0, 0.0, 0.0],
                 orientation: [0.0, 0.0, 0.0, 1.0],
                 motion_type: BodyMotionType::Static,
@@ -1718,6 +2030,8 @@ mod tests {
                 collision_filter_info: None,
                 layer: 3,
                 body_flags: None,
+                material_flags: None,
+                material_trigger_type: None,
                 position: [0.0, 0.0, 0.0, 0.0],
                 orientation: [0.0, 0.0, 0.0, 1.0],
                 motion_type: BodyMotionType::Static,
@@ -2002,6 +2316,8 @@ mod tests {
                 collision_filter_info: None,
                 layer: 1, // preserved CompressedMesh on STATIC
                 body_flags: None,
+                material_flags: None,
+                material_trigger_type: None,
                 position: [0.0, 0.0, 0.0, 0.0],
                 orientation: [0.0, 0.0, 0.0, 1.0],
                 motion_type: BodyMotionType::Static,
@@ -2012,6 +2328,8 @@ mod tests {
                 collision_filter_info: None,
                 layer: 2, // new polytope on ANIMSTATIC
                 body_flags: None,
+                material_flags: None,
+                material_trigger_type: None,
                 position: [0.3, -0.3, 0.6, 0.0],
                 orientation: [0.0, 0.0, -0.707, 0.707],
                 motion_type: BodyMotionType::Keyframed,
@@ -2137,6 +2455,8 @@ mod tests {
             collision_filter_info: None,
             layer: 5,
             body_flags: None,
+            material_flags: None,
+            material_trigger_type: None,
             position: [1.0, 2.0, 3.0, 0.0],
             orientation: [0.0, 0.0, 0.0, 1.0],
             motion_type: BodyMotionType::Static,

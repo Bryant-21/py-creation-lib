@@ -18,7 +18,7 @@ FO76_TO_FO4_PROFILE = "fo76-to-fo4"
 SUPPORTED_PROFILES = (FO76_TO_FO4_PROFILE,)
 
 _FO76_TO_FO4_RECORD_SIGS = ("IMAD", "NPC_", "PROJ", "QUST", "TERM")
-_FO4_LAYOUT_RECORD_SIGS = frozenset({"EFSH", "NAVI", "REFR", "WTHR"})
+_FO4_LAYOUT_RECORD_SIGS = frozenset({"EFSH", "NAVI", "NAVM", "REFR", "WTHR"})
 _QUST_EVENT_ALIAS_FILL_SIGS = {"ALFE", "ALFD"}
 _IMAD_EMPTY_UNSAFE_SIGS = {"NAM5", "NAM6"}
 _FO4_TERM_MARKER_ROW_VERSION = 125
@@ -72,6 +72,8 @@ _FO4_WTHR_MAX_CLOUD_ROWS = 32
 _FO4_WTHR_DALC_ROWS = 8
 _FO4_NAVI_VERSION = 15
 _FO4_NAVI_LEGACY_FALLOUT_VERSION = 11
+_FO4_CANONICAL_NAVI_FORM_ID = 0x00000FF1
+_FO4_PATHING_CELL_CRC_HASH = 0xA5E9A03C
 _FO4_DISTANT_LOD_MNAM_SIZE = 1040
 
 
@@ -206,6 +208,11 @@ def scan_runtime_hazard_records(
         _scan_wthr_target_shape(result, plugin_name, record)
     for record in _flatten_iter(records_by_sig.get("NAVI", ())):
         _scan_navi_target_shape(result, plugin_name, record)
+    _scan_navm_pathing_cell_crc(
+        result,
+        plugin_name,
+        _flatten_iter(records_by_sig.get("NAVM", ())),
+    )
     for records in records_by_sig.values():
         for record in _flatten_iter(records):
             _scan_model_info_payloads(result, plugin_name, record)
@@ -402,6 +409,7 @@ def _scan_wthr_target_shape(
         "UNAM": 24,
         "VNAM": 4,
         "WNAM": 4,
+        "WGDR": 32,
     }
     for subrecord_sig, expected_size in expected_sizes.items():
         for occurrence, subrecord in enumerate(by_sig.get(subrecord_sig, ())):
@@ -563,6 +571,24 @@ def _scan_navi_target_shape(
     plugin_name: str,
     record,
 ) -> None:
+    form_id = _record_form_id(record)
+    if form_id != _FO4_CANONICAL_NAVI_FORM_ID:
+        form_id_text = f"{form_id:08X}" if form_id is not None else "unknown"
+        report.add(
+            RuntimeHazard(
+                rule_id="fo4-loader-navi-record-formid",
+                plugin_name=plugin_name,
+                form_id=form_id,
+                record_sig="NAVI",
+                path="NAVI",
+                message=(
+                    f"{_record_label('NAVI', record)} uses raw FormID "
+                    f"{form_id_text}; FO4 requires the canonical NavMeshInfoMap "
+                    f"override {_FO4_CANONICAL_NAVI_FORM_ID:08X}"
+                ),
+            )
+        )
+
     by_sig = _subrecords_by_signature(record)
     nver = by_sig.get("NVER", ())
     if len(nver) != 1:
@@ -622,10 +648,19 @@ def _scan_navi_target_shape(
             )
         )
 
+    crc_mismatch_count = 0
+    first_crc_mismatch: tuple[int, int] | None = None
     for occurrence, subrecord in enumerate(by_sig.get("NVMI", ())):
         data = bytes(_field(subrecord, "data", b"") or b"")
-        error = _fo4_nvmi_shape_error(data)
-        if error is None:
+        error, pathing_tail_offset = _fo4_nvmi_layout(data)
+        if error is None and pathing_tail_offset is not None:
+            pathing_cell_crc = int.from_bytes(
+                data[pathing_tail_offset : pathing_tail_offset + 4], "little"
+            )
+            if pathing_cell_crc != _FO4_PATHING_CELL_CRC_HASH:
+                crc_mismatch_count += 1
+                if first_crc_mismatch is None:
+                    first_crc_mismatch = (occurrence, pathing_cell_crc)
             continue
         report.add(
             RuntimeHazard(
@@ -641,12 +676,77 @@ def _scan_navi_target_shape(
             )
         )
 
+    if first_crc_mismatch is not None:
+        occurrence, pathing_cell_crc = first_crc_mismatch
+        report.add(
+            RuntimeHazard(
+                rule_id="fo4-loader-navi-pathing-cell-crc",
+                plugin_name=plugin_name,
+                form_id=_record_form_id(record),
+                record_sig="NAVI",
+                subrecord_sig="NVMI",
+                path=f"NAVI.NVMI[{occurrence}].PathingCellCRCHash",
+                message=(
+                    f"{_record_label('NAVI', record)} has {crc_mismatch_count} NVMI rows "
+                    "with a noncanonical PathingCell CRC; first mismatch uses "
+                    f"{pathing_cell_crc:08X}, but FO4 requires "
+                    f"{_FO4_PATHING_CELL_CRC_HASH:08X}"
+                ),
+            )
+        )
 
-def _fo4_nvmi_shape_error(data: bytes) -> str | None:
+
+def _scan_navm_pathing_cell_crc(
+    report: RuntimeHazardReport,
+    plugin_name: str,
+    records: Iterable[object],
+) -> None:
+    mismatch_count = 0
+    first_mismatch: tuple[int | None, int, int] | None = None
+    for record in records:
+        occurrence = 0
+        for subrecord in _subrecords(record):
+            if str(_field(subrecord, "signature", "") or "") != "NVNM":
+                continue
+            data = bytes(_field(subrecord, "data", b"") or b"")
+            if len(data) >= 8:
+                pathing_cell_crc = int.from_bytes(data[4:8], "little")
+                if pathing_cell_crc != _FO4_PATHING_CELL_CRC_HASH:
+                    mismatch_count += 1
+                    if first_mismatch is None:
+                        first_mismatch = (
+                            _record_form_id(record),
+                            occurrence,
+                            pathing_cell_crc,
+                        )
+            occurrence += 1
+
+    if first_mismatch is None:
+        return
+    form_id, occurrence, pathing_cell_crc = first_mismatch
+    report.add(
+        RuntimeHazard(
+            rule_id="fo4-loader-navm-pathing-cell-crc",
+            plugin_name=plugin_name,
+            form_id=form_id,
+            record_sig="NAVM",
+            subrecord_sig="NVNM",
+            path=f"NAVM.NVNM[{occurrence}].PathingCellCRCHash",
+            message=(
+                f"{plugin_name} has {mismatch_count} NAVM NVNM rows with a "
+                "noncanonical PathingCell CRC; first mismatch uses "
+                f"{pathing_cell_crc:08X}, but FO4 requires "
+                f"{_FO4_PATHING_CELL_CRC_HASH:08X}"
+            ),
+        )
+    )
+
+
+def _fo4_nvmi_layout(data: bytes) -> tuple[str | None, int | None]:
     # Fixed metadata through `preferred` occupies 24 bytes. The remainder is
     # three counted tables, optional island geometry, and a 12-byte pathing tail.
     if len(data) < 49:
-        return f"payload is {len(data)} bytes; FO4 NVMI requires at least 49"
+        return f"payload is {len(data)} bytes; FO4 NVMI requires at least 49", None
     offset = 24
     for label, row_size in (
         ("edge links", 4),
@@ -654,7 +754,7 @@ def _fo4_nvmi_shape_error(data: bytes) -> str | None:
         ("door links", 8),
     ):
         if offset + 4 > len(data):
-            return f"missing {label} count at offset {offset}"
+            return f"missing {label} count at offset {offset}", None
         count = int.from_bytes(data[offset : offset + 4], "little")
         offset += 4
         end = offset + count * row_size
@@ -662,22 +762,22 @@ def _fo4_nvmi_shape_error(data: bytes) -> str | None:
             return (
                 f"{label} rows exceed payload: offset={offset} count={count} "
                 f"row_size={row_size} len={len(data)}"
-            )
+            ), None
         offset = end
 
     if offset >= len(data):
-        return "missing island-data selector"
+        return "missing island-data selector", None
     has_island_data = data[offset]
     offset += 1
     if has_island_data not in (0, 1):
-        return f"island-data selector is {has_island_data}; FO4 requires 0 or 1"
+        return f"island-data selector is {has_island_data}; FO4 requires 0 or 1", None
     if has_island_data:
         if offset + 24 > len(data):
-            return "island bounds exceed payload"
+            return "island bounds exceed payload", None
         offset += 24
         for label, row_size in (("island triangles", 6), ("island vertices", 12)):
             if offset + 4 > len(data):
-                return f"missing {label} count at offset {offset}"
+                return f"missing {label} count at offset {offset}", None
             count = int.from_bytes(data[offset : offset + 4], "little")
             offset += 4
             end = offset + count * row_size
@@ -685,13 +785,16 @@ def _fo4_nvmi_shape_error(data: bytes) -> str | None:
                 return (
                     f"{label} rows exceed payload: offset={offset} count={count} "
                     f"row_size={row_size} len={len(data)}"
-                )
+                ), None
             offset = end
 
     expected_end = offset + 12
     if expected_end != len(data):
-        return f"pathing tail ends at {expected_end}, but payload length is {len(data)}"
-    return None
+        return (
+            f"pathing tail ends at {expected_end}, but payload length is {len(data)}",
+            None,
+        )
+    return None, offset
 
 
 def _scan_mnam_payloads(

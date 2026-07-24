@@ -73,7 +73,8 @@ def generate_lod(
 ) -> LodGenResult:
     """Generate LOD for one worldspace.
 
-    `data_dirs` are ASSET-ONLY search roots (LOD meshes/textures). `plugin_path`,
+    `data_dirs` are ASSET-ONLY search sources: loose Data roots or BA2 files.
+    Loose files win; BA2 members are decompressed in memory on demand. `plugin_path`,
     when given, is the SOLE plugin the worldspace + records are read from (no
     `data_dirs` plugin discovery). When omitted, the native side falls back to
     legacy `data_dirs` plugin discovery (UI / standalone use).

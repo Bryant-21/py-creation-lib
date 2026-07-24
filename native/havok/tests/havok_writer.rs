@@ -295,9 +295,8 @@ fn write_hkx_round_trip_preserves_fixed_pointer_arrays() {
 
 #[test]
 fn havok_convert_bytes_fo76_to_fo4_returns_bytes_for_fixture() {
-    let fixture_path = repo_path(
-        "python/creation_lib/hkxpack/tests/fixtures/fo76_snallygastercharacter.hkx",
-    );
+    let fixture_path =
+        repo_path("python/creation_lib/hkxpack/tests/fixtures/fo76_snallygastercharacter.hkx");
     let data = std::fs::read(&fixture_path).unwrap_or_else(|e| {
         panic!(
             "failed to read fo76 fixture {}: {}",

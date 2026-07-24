@@ -3,8 +3,9 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use havok_native::collision::{
-    PreviewMesh, extract_preview_meshes_from_blob, extract_raw_compressed_meshes_from_blob,
-    parse_fo4_compressed_mesh,
+    PreviewMesh, RawCompressedMeshData, SourcePrimitiveShape,
+    extract_direct_source_primitive_from_blob, extract_preview_meshes_from_blob,
+    extract_raw_compressed_meshes_from_blob, parse_fo4_compressed_mesh,
 };
 use havok_native::hkx::{HkxMember, parse_tagfile, types::HkxValue};
 use indexmap::IndexMap;
@@ -230,6 +231,64 @@ fn hkx_member_f32(value: &havok_native::hkx::types::HkxValue, name: &str) -> f32
     }
 }
 
+fn hkx_member_vec4(value: &havok_native::hkx::types::HkxValue, name: &str) -> [f32; 4] {
+    let members = value.as_object_members().expect("HKX object members");
+    let HkxValue::F32List(values) = &members
+        .iter()
+        .find(|member| member.name == name)
+        .unwrap_or_else(|| panic!("{name} member missing"))
+        .value
+    else {
+        panic!("unsupported {name} value");
+    };
+    assert!(values.len() >= 4, "{name} must contain four floats");
+    [values[0], values[1], values[2], values[3]]
+}
+
+fn quat_mul_xyzw(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
+    [
+        a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1],
+        a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
+        a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3],
+        a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2],
+    ]
+}
+
+fn quat_rotate_vector_xyzw(quaternion: [f32; 4], vector: [f32; 3]) -> [f32; 3] {
+    let inverse_norm = quaternion
+        .iter()
+        .map(|value| value * value)
+        .sum::<f32>()
+        .sqrt()
+        .recip();
+    let q = [
+        quaternion[0] * inverse_norm,
+        quaternion[1] * inverse_norm,
+        quaternion[2] * inverse_norm,
+        quaternion[3] * inverse_norm,
+    ];
+    let t = [
+        2.0 * (q[1] * vector[2] - q[2] * vector[1]),
+        2.0 * (q[2] * vector[0] - q[0] * vector[2]),
+        2.0 * (q[0] * vector[1] - q[1] * vector[0]),
+    ];
+    [
+        vector[0] + q[3] * t[0] + q[1] * t[2] - q[2] * t[1],
+        vector[1] + q[3] * t[1] + q[2] * t[0] - q[0] * t[2],
+        vector[2] + q[3] * t[2] + q[0] * t[1] - q[1] * t[0],
+    ]
+}
+
+fn assert_quaternion_equivalent(actual: [f32; 4], expected: [f32; 4], context: &str) {
+    let dot = actual
+        .iter()
+        .zip(expected.iter())
+        .map(|(left, right)| left * right)
+        .sum::<f32>()
+        .abs();
+    assert!((dot - 1.0).abs() < 1e-4, "{context}: quaternion dot={dot}");
+}
+
 fn np_collision_blob_for_target(nif: &NifFile, target_id: i32) -> Option<(Vec<u8>, usize)> {
     for block in &nif.blocks {
         if block.type_name != "bhkNPCollisionObject" {
@@ -281,6 +340,209 @@ fn ref_usize(value: Option<&NifValue>) -> Option<usize> {
         Some(NifValue::Int(value)) if *value >= 0 => Some(*value as usize),
         Some(NifValue::UInt(value)) => Some(*value as usize),
         _ => None,
+    }
+}
+
+#[test]
+fn vanilla_fo4_capsule_layout_uses_target_radius_encoding() {
+    let path = repo_path("extracted/fo4/Meshes/Ammo/44/44Ammo.nif");
+    if !path.exists() {
+        return;
+    }
+    let nif = NifFile::load(path).expect("load vanilla FO4 capsule fixture");
+    let blob = embedded_havok_blob(&nif).expect("embedded Havok blob");
+    let hkx = havok_native::hkx::model::HkxFile::read(&blob).expect("parse Havok blob");
+    let capsule = hkx
+        .objects()
+        .iter()
+        .find(|object| object.class_name == "hknpCapsuleShape")
+        .expect("capsule shape");
+    assert_eq!(
+        member_value(&capsule.members, "flags"),
+        Some(&HkxValue::U16(451))
+    );
+    assert_eq!(
+        member_value(&capsule.members, "dispatchType"),
+        Some(&HkxValue::U8(1))
+    );
+    let vec4 = |name| match member_value(&capsule.members, name) {
+        Some(HkxValue::F32List(values)) if values.len() >= 4 => values[3],
+        other => panic!("missing {name}: {other:?}"),
+    };
+    assert!((vec4("a") - 1.0).abs() < 1e-6);
+    assert!((vec4("b") - 1.0).abs() < 1e-6);
+    assert_eq!(hkx_object_array(capsule, "vertices").len(), 8);
+    assert_eq!(hkx_object_array(capsule, "planes").len(), 8);
+    assert_eq!(hkx_object_array(capsule, "faces").len(), 6);
+    assert_eq!(hkx_object_array(capsule, "indices").len(), 24);
+}
+
+#[test]
+fn extracts_real_fo76_native_primitives_without_preview_reconstruction() {
+    for (relative, expected) in [
+        ("extracted/fo76/Meshes/ammo/50cal/50calball.nif", "sphere"),
+        (
+            "extracted/fo76/Meshes/weapons/huntingrifle/308casing.nif",
+            "capsule",
+        ),
+        (
+            "extracted/fo76/Meshes/babylon/zaxframemodular/zaxfloor_d_half.nif",
+            "convex",
+        ),
+    ] {
+        let path = repo_path(relative);
+        if !path.exists() {
+            continue;
+        }
+        let nif = NifFile::load(path).expect("load FO76 primitive fixture");
+        let blob = embedded_havok_blob(&nif).expect("embedded Havok blob");
+        let primitive = extract_direct_source_primitive_from_blob(&blob, 0)
+            .expect("extract primitive")
+            .expect("direct primitive");
+        match (expected, primitive) {
+            ("sphere", SourcePrimitiveShape::Sphere { center, radius }) => {
+                assert_eq!(center, [0.0; 3]);
+                assert!((radius - 0.0108109405).abs() < 1e-7);
+            }
+            ("capsule", SourcePrimitiveShape::Capsule(shape)) => {
+                assert_eq!(shape.hull.vertices.len(), 8);
+                assert_eq!(shape.hull.planes.len(), 6);
+                assert_eq!(shape.hull.faces.len(), 6);
+                assert_eq!(shape.hull.indices.len(), 24);
+                assert!((shape.a[3] - 0.0067894207).abs() < 1e-7);
+                assert!((shape.convex_radius - 0.0067215264).abs() < 1e-7);
+            }
+            ("convex", SourcePrimitiveShape::Convex(shape)) => {
+                assert_eq!(shape.vertices.len(), 8);
+                assert_eq!(shape.convex_radius, 0.0);
+            }
+            (expected, actual) => panic!("expected {expected}, got {actual:?}"),
+        }
+    }
+}
+
+#[test]
+fn converts_real_fo76_direct_primitives_to_native_fo4_shapes() {
+    for (name, relative, route, output_class) in [
+        (
+            "sphere",
+            "extracted/fo76/Meshes/ammo/50cal/50calball.nif",
+            "source-sphere=1",
+            "hknpConvexShape",
+        ),
+        (
+            "capsule",
+            "extracted/fo76/Meshes/weapons/huntingrifle/308casing.nif",
+            "source-capsule=1",
+            "hknpCapsuleShape",
+        ),
+        (
+            "convex",
+            "extracted/fo76/Meshes/babylon/zaxframemodular/zaxfloor_d_half.nif",
+            "source-convex=1",
+            "hknpConvexShape",
+        ),
+    ] {
+        let source_path = repo_path(relative);
+        if !source_path.exists() {
+            continue;
+        }
+        let source_nif = NifFile::load(&source_path).expect("load source primitive NIF");
+        let source_blob = embedded_havok_blob(&source_nif).expect("source primitive blob");
+        let source_shape = extract_direct_source_primitive_from_blob(&source_blob, 0)
+            .expect("extract source primitive")
+            .expect("direct source primitive");
+
+        let dir = temp_dir(&format!("native_primitive_{name}"));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let output_path = dir.join("converted.nif");
+        let report = convert_nif_file(
+            &source_path,
+            &output_path,
+            "fo76",
+            "fo4",
+            None,
+            &ConvertFileOptions::default(),
+        )
+        .expect("convert native primitive NIF");
+        assert!(report.supported, "{name}: {:?}", report.errors);
+        assert!(
+            report.changes.iter().any(|change| change.contains(route)),
+            "{name}: expected {route} in {:?}; warnings={:?}",
+            report.changes,
+            report.warnings
+        );
+
+        let output_nif = NifFile::load(&output_path).expect("load converted primitive NIF");
+        let output_blob = embedded_havok_blob(&output_nif).expect("output primitive blob");
+        let output_hkx =
+            havok_native::hkx::model::HkxFile::read(&output_blob).expect("parse output primitive");
+        let output_summary: serde_json::Value = serde_json::from_str(
+            &havok_native::api::havok_collision_summary(&output_blob)
+                .expect("summarize output primitive"),
+        )
+        .expect("parse output primitive summary");
+        let output_object = output_hkx
+            .objects()
+            .iter()
+            .find(|object| object.class_name == output_class)
+            .unwrap_or_else(|| panic!("{name}: missing {output_class}"));
+
+        match source_shape {
+            SourcePrimitiveShape::Sphere { radius, .. } => {
+                assert_eq!(
+                    member_value(&output_object.members, "convexRadius"),
+                    Some(&HkxValue::F32(radius))
+                );
+                assert_eq!(
+                    member_value(&output_object.members, "flags"),
+                    Some(&HkxValue::U16(17))
+                );
+                let vertices = hkx_object_array(output_object, "vertices");
+                assert_eq!(
+                    vertices.len(),
+                    4,
+                    "single support point must be SIMD padded"
+                );
+                assert!(vertices.windows(2).all(|pair| pair[0] == pair[1]));
+                let body = &output_summary["bodies"][0];
+                assert_eq!(body["flags"].as_u64(), Some(128));
+                assert_eq!(body["motion_id"].as_u64(), Some(0));
+                assert!(body["inverse_mass"].as_f64().is_some_and(|mass| mass > 0.0));
+            }
+            SourcePrimitiveShape::Capsule(shape) => {
+                assert_eq!(hkx_object_array(output_object, "vertices").len(), 8);
+                assert_eq!(hkx_object_array(output_object, "planes").len(), 8);
+                assert_eq!(hkx_object_array(output_object, "faces").len(), 6);
+                assert_eq!(hkx_object_array(output_object, "indices").len(), 24);
+                assert_eq!(
+                    member_value(&output_object.members, "convexRadius"),
+                    Some(&HkxValue::F32(shape.convex_radius))
+                );
+                for endpoint in ["a", "b"] {
+                    let Some(HkxValue::F32List(values)) =
+                        member_value(&output_object.members, endpoint)
+                    else {
+                        panic!("{name}: missing endpoint {endpoint}");
+                    };
+                    assert!((values[3] - 1.0).abs() < 1e-6);
+                }
+                let body = &output_summary["bodies"][0];
+                assert_eq!(body["flags"].as_u64(), Some(128));
+                assert_eq!(body["motion_id"].as_u64(), Some(0));
+                assert!(body["inverse_mass"].as_f64().is_some_and(|mass| mass > 0.0));
+            }
+            SourcePrimitiveShape::Convex(shape) => {
+                let output_vertices = hkx_object_array(output_object, "vertices");
+                assert_eq!(output_vertices.len(), shape.vertices.len());
+                assert_eq!(
+                    output_vertices[0],
+                    HkxValue::F32List(shape.vertices[0].to_vec())
+                );
+                assert!(member_value(&output_object.members, "faces").is_none());
+            }
+        }
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
 
@@ -365,17 +627,15 @@ fn bitfield_words(members: &[havok_native::hkx::model::HkxMember], name: &str) -
         .collect()
 }
 
-fn assert_rebuilt_compressed_mesh_blob(blob: &[u8], body_id: usize) {
+fn assert_valid_compressed_mesh_blob(blob: &[u8], body_id: usize) {
     let raw = extract_raw_compressed_meshes_from_blob(blob, Some(body_id))
         .expect("converted raw compressed mesh data");
     assert!(!raw.is_empty(), "converted compressed mesh missing");
     assert!(
-        raw.iter().all(|mesh| mesh.shared_vertices.is_empty()
-            && mesh
-                .sections
-                .iter()
-                .all(|section| section.shared_vertices_index.is_empty())),
-        "converted collision should be rebuilt with local section vertices"
+        raw.iter().all(|mesh| mesh.sections.iter().all(|section| {
+            !section.primitive_bytes.is_empty() && !section.primitive_data_runs.is_empty()
+        })),
+        "converted compressed mesh has incomplete section topology"
     );
 
     let hkx = havok_native::hkx::model::HkxFile::read(blob).expect("parse converted physics blob");
@@ -389,17 +649,31 @@ fn assert_rebuilt_compressed_mesh_blob(blob: &[u8], body_id: usize) {
         "converted compressed mesh shape missing"
     );
     for shape in shapes {
-        let quad_words = bitfield_words(&shape.members, "quadIsFlat");
-        let interior_words = bitfield_words(&shape.members, "triangleIsInterior");
-        assert!(
-            quad_words.iter().any(|word| *word != 0),
-            "converted compressed mesh must mark triangle-backed quads as flat"
-        );
-        assert!(
-            interior_words.iter().all(|word| *word == 0),
-            "converted compressed mesh should not mark exported surface triangles interior"
-        );
+        let _ = bitfield_words(&shape.members, "quadIsFlat");
+        let _ = bitfield_words(&shape.members, "triangleIsInterior");
     }
+}
+
+fn assert_authored_compressed_mesh_preserved(
+    source: &RawCompressedMeshData,
+    converted: &RawCompressedMeshData,
+) {
+    assert_eq!(converted.user_data, source.user_data);
+    assert_eq!(converted.edge_welding_map, source.edge_welding_map);
+    assert_eq!(converted.triangle_is_interior, source.triangle_is_interior);
+    assert_eq!(
+        converted.primitive_stores_is_flat_convex,
+        source.primitive_stores_is_flat_convex
+    );
+    assert_eq!(converted.object_aabb_min, source.object_aabb_min);
+    assert_eq!(converted.object_aabb_max, source.object_aabb_max);
+    assert_eq!(converted.num_primitive_keys, source.num_primitive_keys);
+    assert_eq!(converted.bits_per_key, source.bits_per_key);
+    assert_eq!(converted.max_key_value, source.max_key_value);
+    assert_eq!(converted.master_tree_nodes, source.master_tree_nodes);
+    assert_eq!(converted.sections, source.sections);
+    assert_eq!(converted.shared_vertices, source.shared_vertices);
+    assert_eq!(converted.materials, source.materials);
 }
 
 fn preview_aabb(meshes: &[PreviewMesh]) -> ([f32; 3], [f32; 3]) {
@@ -487,7 +761,11 @@ fn convert_static_skyrim_to_fo4_emits_material_and_rewrites_vertex_stream() {
             ),
             ("Shader Flags 2:SK", NifValue::UInt((1 << 0) | (1 << 6))),
             ("Texture Set", NifValue::Ref(texture_set_id as i32)),
+            ("Texture Clamp Mode", NifValue::UInt(3)),
+            ("Alpha", NifValue::Float(1.0)),
+            ("Refraction Strength", NifValue::Float(0.0)),
             ("Glossiness", NifValue::Float(75.0)),
+            ("Specular Color", NifValue::Color3([1.0, 1.0, 1.0])),
             ("Specular Strength", NifValue::Float(1.5)),
         ])),
     );
@@ -498,7 +776,7 @@ fn convert_static_skyrim_to_fo4_emits_material_and_rewrites_vertex_stream() {
             ("Skin", NifValue::Ref(-1)),
             ("Shader Property", NifValue::Ref(shader_id as i32)),
             ("Alpha Property", NifValue::Ref(-1)),
-            ("Vertex Desc", NifValue::Int(basic_vertex_desc(false))),
+            ("Vertex Desc", NifValue::Int(skyrim_vertex_desc(false))),
             ("Num Triangles", NifValue::UInt(1)),
             ("Num Vertices", NifValue::UInt(3)),
             (
@@ -554,7 +832,12 @@ fn convert_static_skyrim_to_fo4_emits_material_and_rewrites_vertex_stream() {
             .map(|value| value.trim_end_matches('\0')),
         Some("Skyrim/architecture/wall_g.dds")
     );
-    assert_eq!(material.SmoothSpecTexture.trim_end_matches('\0'), "");
+    // The texture conversion path synthesizes `_s` from the normal's alpha and
+    // the `_em` mask, so the material must name it up front.
+    assert_eq!(
+        material.SmoothSpecTexture.trim_end_matches('\0'),
+        "Skyrim/architecture/wall_s.dds"
+    );
     assert_eq!(
         material
             .EnvmapTexture
@@ -589,6 +872,16 @@ fn convert_static_skyrim_to_fo4_emits_material_and_rewrites_vertex_stream() {
             }),
         Some(3)
     );
+    assert_eq!(
+        converted_shape
+            .get_field("Vertex Desc")
+            .map(NifValue::as_i64),
+        Some(basic_vertex_desc(false))
+    );
+    assert_eq!(
+        converted_shape.get_field("Data Size").map(NifValue::as_i64),
+        Some(66)
+    );
     let converted_shader = converted
         .blocks
         .iter()
@@ -603,7 +896,156 @@ fn convert_static_skyrim_to_fo4_emits_material_and_rewrites_vertex_stream() {
         converted_shader.get_field("Name")
     );
     assert!(converted_shader.fields.contains_key("Shader Flags 1:FO4"));
+    assert!(matches!(
+        converted_shader.get_field("Root Material"),
+        Some(NifValue::String(value)) if value.is_empty()
+    ));
+    assert!(
+        matches!(
+            converted_shader.get_field("Texture Clamp Mode"),
+            Some(NifValue::UInt(3))
+        ),
+        "shader fields: {:?}",
+        converted_shader.fields
+    );
+    assert!(matches!(
+        converted_shader.get_field("Alpha"),
+        Some(NifValue::Float(value)) if (*value - 1.0).abs() < f64::EPSILON
+    ));
+    assert!(matches!(
+        converted_shader.get_field("Refraction Strength"),
+        Some(NifValue::Float(value)) if value.abs() < f64::EPSILON
+    ));
+    assert!(matches!(
+        converted_shader.get_field("Smoothness"),
+        Some(NifValue::Float(value)) if (*value - 1.0).abs() < f64::EPSILON
+    ));
+    assert!(converted_shader.get_field("Wetness").is_some());
 
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn convert_skyrim_rigid_transform_animation_is_preserved() {
+    let dir = temp_dir("convert_skyrim_rigid_animation");
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let src = dir.join("source.nif");
+    let dst = dir.join("converted.nif");
+    let mut nif = NifFile::new("skyrimse");
+    let data_id = nif.add_block("NiTransformData", None);
+    let interpolator_id = nif.add_block(
+        "NiTransformInterpolator",
+        Some(fields([("Data", NifValue::Ref(data_id as i32))])),
+    );
+    let controller_id = nif.add_block(
+        "NiTransformController",
+        Some(fields([
+            ("Flags", NifValue::UInt(72)),
+            ("Stop Time", NifValue::Float(8.0)),
+            ("Target", NifValue::Ref(0)),
+            ("Interpolator", NifValue::Ref(interpolator_id as i32)),
+        ])),
+    );
+    nif.blocks[0].set_field("Controller", NifValue::Ref(controller_id as i32));
+    nif.save(Some(src.clone()))
+        .expect("write rigid animated source");
+
+    let report = convert_nif_file(
+        &src,
+        &dst,
+        "skyrimse",
+        "fo4",
+        None,
+        &ConvertFileOptions::default(),
+    )
+    .expect("convert rigid animated Skyrim NIF");
+
+    assert!(report.supported, "errors: {:?}", report.errors);
+    let converted = NifFile::load(dst).expect("load converted rigid animation");
+    assert_eq!(converted.header.bs_version, 130);
+    let controller = converted
+        .blocks
+        .iter()
+        .find(|block| block.type_name == "NiTransformController")
+        .expect("preserved transform controller");
+    assert_eq!(
+        controller.get_field("Interpolator").map(NifValue::as_i64),
+        Some(interpolator_id as i64)
+    );
+    assert!(
+        converted
+            .blocks
+            .iter()
+            .any(|block| block.type_name == "NiTransformData")
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn convert_skyrim_dwemer_rigid_animation_fixture_when_available() {
+    let src = repo_path(
+        "extracted/skyrimse/Meshes/Dungeons/Dwemer/Pipes/DwePipeGearAssemblyExtraCCW01.nif",
+    );
+    if !src.exists() {
+        eprintln!("skip: Skyrim Dwemer animation fixture is unavailable");
+        return;
+    }
+    let dir = temp_dir("convert_skyrim_dwemer_rigid_animation");
+    let materials = dir.join("Materials").join("Skyrim");
+    std::fs::create_dir_all(&materials).expect("create material output");
+    let dst = dir.join("converted.nif");
+
+    let report = convert_nif_file(
+        &src,
+        &dst,
+        "skyrimse",
+        "fo4",
+        Some(&materials),
+        &ConvertFileOptions::default(),
+    )
+    .expect("convert Dwemer animated static");
+
+    assert!(report.supported, "errors: {:?}", report.errors);
+    let converted = NifFile::load(dst).expect("load converted Dwemer animation");
+    assert_eq!(converted.header.bs_version, 130);
+    for block_type in [
+        "NiTransformController",
+        "NiTransformInterpolator",
+        "NiTransformData",
+    ] {
+        assert!(
+            converted
+                .blocks
+                .iter()
+                .any(|block| block.type_name == block_type),
+            "missing {block_type}"
+        );
+    }
+    let transform_data = converted
+        .blocks
+        .iter()
+        .find(|block| block.type_name == "NiTransformData")
+        .expect("preserved transform data");
+    assert_eq!(
+        transform_data
+            .get_field("Num Rotation Keys")
+            .map(NifValue::as_i64),
+        Some(1)
+    );
+    let NifValue::Array(rotations) = transform_data
+        .get_field("XYZ Rotations")
+        .expect("preserved XYZ rotations")
+    else {
+        panic!("XYZ rotations are not an array");
+    };
+    assert_eq!(rotations.len(), 3);
+    let NifValue::Struct(y_rotation) = &rotations[1] else {
+        panic!("Y rotation is not a key group");
+    };
+    assert_eq!(
+        y_rotation.get("Num Keys").map(NifValue::as_i64),
+        Some(3)
+    );
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -631,7 +1073,7 @@ fn convert_skyrim_skinned_nif_is_rejected_without_output() {
     )
     .expect("reject report");
     assert!(!report.supported);
-    assert!(report.errors[0].contains("excludes animated/skinned block"));
+    assert!(report.errors[0].contains("excludes dynamic/skinned block"));
     assert!(!dst.exists());
     let _ = std::fs::remove_dir_all(dir);
 }
@@ -812,7 +1254,7 @@ fn convert_fo76_vault76_stairs_preserves_root_compressed_collision() {
         .map(|mesh| mesh.triangles.len())
         .sum::<usize>();
     assert_eq!(converted_triangles, source_triangles);
-    assert_rebuilt_compressed_mesh_blob(&converted_blob, converted_body_id);
+    assert_valid_compressed_mesh_blob(&converted_blob, converted_body_id);
     assert!(
         converted_preview
             .iter()
@@ -1151,7 +1593,7 @@ fn convert_fo76_scol_cm005627d3_preserves_compressed_collision() {
     let converted_preview =
         extract_preview_meshes_from_blob(&converted_blob, 69.99125, Some(converted_body_id))
             .expect("converted collision preview");
-    assert_rebuilt_compressed_mesh_blob(&converted_blob, converted_body_id);
+    assert_valid_compressed_mesh_blob(&converted_blob, converted_body_id);
     assert_eq!(
         valid_compressed_triangle_count(&converted_preview),
         source_triangles
@@ -1207,7 +1649,7 @@ fn convert_fo76_scol_cm00013b0b_rebuilds_compressed_collision() {
     let converted_preview =
         extract_preview_meshes_from_blob(&converted_blob, 69.99125, Some(converted_body_id))
             .expect("converted collision preview");
-    assert_rebuilt_compressed_mesh_blob(&converted_blob, converted_body_id);
+    assert_valid_compressed_mesh_blob(&converted_blob, converted_body_id);
     assert_eq!(
         valid_compressed_triangle_count(&converted_preview),
         source_triangles
@@ -1274,7 +1716,7 @@ fn convert_fo76_scol_cm002a74bc_decodes_full_custom_flat_convex_coverage() {
     let converted_preview =
         extract_preview_meshes_from_blob(&converted_blob, 69.99125, Some(converted_body_id))
             .expect("converted collision preview");
-    assert_rebuilt_compressed_mesh_blob(&converted_blob, converted_body_id);
+    assert_valid_compressed_mesh_blob(&converted_blob, converted_body_id);
     // The FO4 re-encode round-trips this hull with a small triangle delta, so
     // assert the converted collision is likewise well above the buggy floor (the
     // fix has to survive the decode→re-encode path, not just the raw decode) and
@@ -1285,6 +1727,163 @@ fn convert_fo76_scol_cm002a74bc_decodes_full_custom_flat_convex_coverage() {
         "converted custom flat-convex coverage regressed: {converted_triangles} triangles"
     );
     assert_same_preview_aabb(&source_preview, &converted_preview, 0.25);
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn convert_fo76_scol_cm004521e1_preserves_authored_compressed_mesh_topology() {
+    let src = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../extracted/fo76/meshes/scol/seventysix.esm/cm004521e1.nif");
+    if !src.exists() {
+        eprintln!("skip: FO76 extracted CM004521E1 fixture not available");
+        return;
+    }
+
+    const MAIN_NODE: &str = "004521E1_PhysicsMerged_L01";
+    let source = NifFile::load(&src).expect("load source nif");
+    let source_collisions = collision_blobs_for_named_nodes(&source, MAIN_NODE);
+    assert_eq!(source_collisions.len(), 1, "source main collision body");
+    let (source_blob, source_body_id) = &source_collisions[0];
+    let source_raw = extract_raw_compressed_meshes_from_blob(source_blob, Some(*source_body_id))
+        .expect("source raw compressed mesh")
+        .into_iter()
+        .next()
+        .expect("source main compressed mesh");
+    assert_eq!(source_raw.primitive_stores_is_flat_convex, u8::MAX);
+    assert_eq!(source_raw.sections.len(), 3);
+    assert_eq!(
+        source_raw.edge_welding_map.value_and_secondary_keys.len(),
+        74
+    );
+    assert!(
+        source_raw
+            .triangle_is_interior
+            .words
+            .iter()
+            .any(|word| *word != 0)
+    );
+    assert_eq!(source_raw.materials.len(), 7);
+
+    let dir = temp_dir("convert_fo76_scol_cm004521e1");
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let dst = dir.join("out").join("cm004521e1.nif");
+    let report = convert_nif_file(
+        &src,
+        &dst,
+        "fo76",
+        "fo4",
+        None,
+        &ConvertFileOptions {
+            asset_prefix: Some("fo76".to_string()),
+            ..ConvertFileOptions::default()
+        },
+    )
+    .expect("convert nif");
+    assert!(report.supported, "{:?}", report.errors);
+
+    let converted = NifFile::load(&dst).expect("load converted nif");
+    let converted_collisions = collision_blobs_for_named_nodes(&converted, MAIN_NODE);
+    assert_eq!(
+        converted_collisions.len(),
+        1,
+        "converted main collision body; changes={:?}; warnings={:?}",
+        report.changes,
+        report.warnings
+    );
+    let (converted_blob, converted_body_id) = &converted_collisions[0];
+    assert_valid_compressed_mesh_blob(converted_blob, *converted_body_id);
+    let converted_raw =
+        extract_raw_compressed_meshes_from_blob(converted_blob, Some(*converted_body_id))
+            .expect("converted raw compressed mesh")
+            .into_iter()
+            .next()
+            .expect("converted main compressed mesh");
+
+    assert_authored_compressed_mesh_preserved(&source_raw, &converted_raw);
+
+    let source_preview =
+        extract_preview_meshes_from_blob(source_blob, 69.99125, Some(*source_body_id))
+            .expect("source main preview");
+    let converted_preview =
+        extract_preview_meshes_from_blob(converted_blob, 69.99125, Some(*converted_body_id))
+            .expect("converted main preview");
+    assert_eq!(
+        valid_compressed_triangle_count(&converted_preview),
+        valid_compressed_triangle_count(&source_preview)
+    );
+    assert_same_preview_aabb(&source_preview, &converted_preview, 0.001);
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn convert_fo76_scol_cm004521e2_preserves_authored_compressed_mesh_topology() {
+    let src = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../extracted/fo76/meshes/scol/seventysix.esm/cm004521e2.nif");
+    if !src.exists() {
+        eprintln!("skip: FO76 extracted CM004521E2 fixture not available");
+        return;
+    }
+
+    const MAIN_NODE: &str = "004521E2_PhysicsMerged_L01";
+    let source = NifFile::load(&src).expect("load source nif");
+    let source_collisions = collision_blobs_for_named_nodes(&source, MAIN_NODE);
+    assert_eq!(source_collisions.len(), 1, "source main collision body");
+    let (source_blob, source_body_id) = &source_collisions[0];
+    let source_raw = extract_raw_compressed_meshes_from_blob(source_blob, Some(*source_body_id))
+        .expect("source raw compressed mesh")
+        .into_iter()
+        .next()
+        .expect("source main compressed mesh");
+
+    let dir = temp_dir("convert_fo76_scol_cm004521e2");
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let dst = dir.join("out").join("cm004521e2.nif");
+    let report = convert_nif_file(
+        &src,
+        &dst,
+        "fo76",
+        "fo4",
+        None,
+        &ConvertFileOptions {
+            asset_prefix: Some("fo76".to_string()),
+            ..ConvertFileOptions::default()
+        },
+    )
+    .expect("convert nif");
+    assert!(report.supported, "{:?}", report.errors);
+
+    let converted = NifFile::load(&dst).expect("load converted nif");
+    let converted_collisions = collision_blobs_for_named_nodes(&converted, MAIN_NODE);
+    assert_eq!(
+        converted_collisions.len(),
+        1,
+        "converted main collision body; changes={:?}; warnings={:?}",
+        report.changes,
+        report.warnings
+    );
+    let (converted_blob, converted_body_id) = &converted_collisions[0];
+    assert_valid_compressed_mesh_blob(converted_blob, *converted_body_id);
+    let converted_raw =
+        extract_raw_compressed_meshes_from_blob(converted_blob, Some(*converted_body_id))
+            .expect("converted raw compressed mesh")
+            .into_iter()
+            .next()
+            .expect("converted main compressed mesh");
+    assert_authored_compressed_mesh_preserved(&source_raw, &converted_raw);
+
+    let source_preview =
+        extract_preview_meshes_from_blob(source_blob, 69.99125, Some(*source_body_id))
+            .expect("source main preview");
+    let converted_preview =
+        extract_preview_meshes_from_blob(converted_blob, 69.99125, Some(*converted_body_id))
+            .expect("converted main preview");
+    assert_eq!(
+        valid_compressed_triangle_count(&converted_preview),
+        valid_compressed_triangle_count(&source_preview)
+    );
+    assert_same_preview_aabb(&source_preview, &converted_preview, 0.001);
 
     let _ = std::fs::remove_dir_all(dir);
 }
@@ -1529,6 +2128,56 @@ fn convert_fnv_geometry_shader_and_collision_in_rust() {
             .starts_with("textures\\fnv\\"),
         "{first_texture}"
     );
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn convert_fnv_woodbeam_static_fixture_when_available() {
+    let src = repo_root().join("extracted/fnv/Meshes/architecture/Wasteland/WoodBeam01.NIF");
+    if !src.exists() {
+        eprintln!("skipping missing fixture {}", src.display());
+        return;
+    }
+    let dir = temp_dir("convert_fnv_woodbeam");
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let dst = dir.join("out").join("WoodBeam01.nif");
+
+    let report = convert_nif_file(
+        &src,
+        &dst,
+        "fnv",
+        "fo4",
+        None,
+        &ConvertFileOptions::default(),
+    )
+    .expect("convert wood beam");
+
+    assert!(report.supported, "{:?}", report.errors);
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    let converted = NifFile::load(dst).expect("load converted wood beam");
+    let root = converted.get_block(0).expect("root");
+    assert_eq!(root.get_field("Flags").map(NifValue::as_i64), Some(14));
+    assert_eq!(converted.header.footer_roots, vec![0]);
+
+    let shader = converted
+        .blocks
+        .iter()
+        .find(|block| block.type_name == "BSLightingShaderProperty")
+        .expect("lighting shader");
+    assert_eq!(
+        shader.get_field("Shader Flags 1").map(NifValue::as_i64),
+        Some(0x8000_0001)
+    );
+    assert_eq!(
+        shader.get_field("Shader Flags 2").map(NifValue::as_i64),
+        Some(1)
+    );
+    let Some(NifValue::Struct(uv_scale)) = shader.get_field("UV Scale") else {
+        panic!("expected UV Scale");
+    };
+    assert!(matches!(uv_scale.get("u"), Some(NifValue::Float(1.0))));
+    assert!(matches!(uv_scale.get("v"), Some(NifValue::Float(1.0))));
 
     let _ = std::fs::remove_dir_all(dir);
 }
@@ -3992,6 +4641,55 @@ fn convert_real_fo76_tree_uses_source_compressed_mesh_collision() {
 }
 
 #[test]
+fn convert_real_fo76_county_sign_restores_decal_shader_flags() {
+    let src = repo_path("extracted/fo76/Meshes/SCOL/SeventySix.esm/CM0034C71E.NIF");
+    let source_material_dir = repo_path("extracted/fo76");
+    if !src.exists() {
+        eprintln!("skip: FO76 extracted county-sign fixture not available");
+        return;
+    }
+
+    let dir = temp_dir("convert_real_fo76_county_sign_decal");
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let dst = dir.join("out").join("converted.nif");
+    let options = ConvertFileOptions {
+        source_material_dir: Some(source_material_dir),
+        ..ConvertFileOptions::default()
+    };
+
+    let report = convert_nif_file(&src, &dst, "fo76", "fo4", None, &options).expect("convert nif");
+    assert!(report.supported, "{:?}", report.errors);
+
+    let converted = NifFile::load(dst).expect("load converted nif");
+    let shader = converted
+        .blocks
+        .iter()
+        .find(|block| {
+            block.type_name == "BSLightingShaderProperty"
+                && matches!(
+                    block.get_field("Name"),
+                    Some(NifValue::String(path))
+                        if path.eq_ignore_ascii_case(
+                            r"Materials\SetDressing\Signage\HighwaySignLetters_Black.BGSM"
+                        )
+                )
+        })
+        .expect("county-sign lettering shader");
+    let flags = shader
+        .get_field("Shader Flags 1")
+        .map(NifValue::as_i64)
+        .unwrap_or_default();
+    assert_ne!(flags & (1 << 26), 0, "decal flag missing: {flags:#x}");
+    assert_ne!(
+        flags & (1 << 27),
+        0,
+        "dynamic decal flag missing: {flags:#x}"
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn convert_real_fo76_multi_compressed_collision_uses_shared_blob() {
     let src = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../../extracted/fo76/meshes/SCOL/SeventySix.esm/CM0000F6FD.NIF");
@@ -4992,6 +5690,279 @@ fn convert_real_fo76_turret_ragdoll_populates_motion_properties() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+#[test]
+fn convert_real_fo76_radbeaver_ragdoll_uses_fo4_solver_frames() {
+    let src = repo_path("extracted/fo76/Meshes/actors/RadBeaver/CharacterAssets/Skeleton.nif");
+    if !src.exists() {
+        eprintln!("skip: FO76 RadBeaver skeleton fixture not available");
+        return;
+    }
+
+    let source_nif = NifFile::load(&src).expect("load source RadBeaver skeleton");
+    let source_blob = embedded_havok_blob(&source_nif).expect("source RadBeaver ragdoll blob");
+    let source_hkx =
+        havok_native::hkx::model::HkxFile::read(&source_blob).expect("parse source ragdoll");
+    let source_ragdoll = source_hkx
+        .objects()
+        .iter()
+        .find(|object| object.class_name == "hknpRagdollData")
+        .expect("source ragdoll data");
+    assert!(
+        hkx_object_array(source_ragdoll, "bodyCinfos")
+            .iter()
+            .any(|body| hkx_member_vec4(body, "position")[3].abs() > 1e-6),
+        "fixture must exercise nonzero FO76 body-position lanes"
+    );
+    let source_bodies = hkx_object_array(source_ragdoll, "bodyCinfos");
+    let source_bodies_by_material: HashMap<i64, &HkxValue> = source_bodies
+        .iter()
+        .map(|body| (hkx_member_i64(body, "materialId"), body))
+        .collect();
+    assert_eq!(source_bodies_by_material.len(), source_bodies.len());
+
+    let dir = temp_dir("convert_real_fo76_radbeaver_ragdoll");
+    let dst = dir.join("out").join("Skeleton.nif");
+    let report = convert_nif_file(
+        &src,
+        &dst,
+        "fo76",
+        "fo4",
+        None,
+        &ConvertFileOptions::default(),
+    )
+    .expect("convert RadBeaver skeleton");
+    assert!(report.supported, "{:?}", report.errors);
+
+    let converted = NifFile::load(dst).expect("load converted RadBeaver skeleton");
+    let output_blob = embedded_havok_blob(&converted).expect("converted RadBeaver ragdoll blob");
+    let output_hkx =
+        havok_native::hkx::model::HkxFile::read(&output_blob).expect("parse converted ragdoll");
+    let output_ragdoll = output_hkx
+        .objects()
+        .iter()
+        .find(|object| object.class_name == "hknpRagdollData")
+        .expect("converted ragdoll data");
+    let output_bodies = hkx_object_array(output_ragdoll, "bodyCinfos");
+    let output_motions = hkx_object_array(output_ragdoll, "motionCinfos");
+
+    assert_eq!(output_bodies.len(), 22);
+    assert_eq!(output_motions.len(), output_bodies.len());
+    let output_spheres: Vec<_> = output_hkx
+        .objects()
+        .iter()
+        .filter(|object| object.class_name == "hknpSphereShape")
+        .collect();
+    assert_eq!(output_spheres.len(), 1);
+    let sphere_vertices = member_value(&output_spheres[0].members, "vertices")
+        .and_then(|value| match value {
+            HkxValue::Array(values) => Some(values),
+            _ => None,
+        })
+        .expect("sphere support vertices");
+    assert_eq!(sphere_vertices.len(), 4, "FO4 sphere support width");
+    assert!(
+        sphere_vertices.windows(2).all(|pair| pair[0] == pair[1]),
+        "FO4 sphere support lanes must describe the same center"
+    );
+    let output_shape_mass_properties: Vec<_> = output_hkx
+        .objects()
+        .iter()
+        .filter(|object| object.class_name == "hknpShapeMassProperties")
+        .collect();
+    assert_eq!(output_shape_mass_properties.len(), 5);
+    for mass_properties in output_shape_mass_properties {
+        let compressed = member_value(&mass_properties.members, "compressedMassProperties")
+            .and_then(HkxValue::as_object_members)
+            .expect("compressed shape mass properties");
+        for field_name in ["centerOfMass", "inertia"] {
+            let values = member_value(compressed, field_name)
+                .and_then(|value| match value {
+                    HkxValue::Array(values) => Some(values),
+                    _ => None,
+                })
+                .expect("packed shape mass vector");
+            assert_eq!(values.len(), 4, "{field_name} packed width");
+            assert!(
+                values.iter().any(|value| hkx_int(value) != Some(0)),
+                "{field_name} must retain the FO76 packed values"
+            );
+        }
+    }
+    for (index, body) in output_bodies.iter().enumerate() {
+        assert_eq!(
+            hkx_member_vec4(body, "position")[3],
+            0.0,
+            "body {index} position.w"
+        );
+
+        let material_id = hkx_member_i64(body, "materialId");
+        let source_body = source_bodies_by_material
+            .get(&material_id)
+            .unwrap_or_else(|| panic!("source body for material {material_id}"));
+        let source_orientation = hkx_member_vec4(source_body, "orientation");
+        let output_orientation = hkx_member_vec4(body, "orientation");
+        assert_quaternion_equivalent(
+            output_orientation,
+            source_orientation,
+            &format!("body {index} authored orientation"),
+        );
+
+        let source_body_members = source_body.as_object_members().expect("source body object");
+        let mass_distribution_index = match member_value(source_body_members, "massDistribution") {
+            Some(HkxValue::Pointer(Some(index))) => *index,
+            other => panic!("body {index} massDistribution pointer: {other:?}"),
+        };
+        let mass_distribution = &source_hkx.objects()[mass_distribution_index];
+        let distribution_members = member_value(&mass_distribution.members, "massDistribution")
+            .and_then(HkxValue::as_object_members)
+            .expect("source mass distribution object");
+        let source_distribution = HkxValue::Object(distribution_members.to_vec());
+        let center_and_volume = hkx_member_vec4(&source_distribution, "centerOfMassAndVolume");
+        let inertia = hkx_member_vec4(&source_distribution, "inertiaTensor");
+        let major_axis = hkx_member_vec4(&source_distribution, "majorAxisSpace");
+
+        let motion_id = hkx_member_i64(body, "motionId") as usize;
+        let motion = &output_motions[motion_id];
+        let output_position = hkx_member_vec4(body, "position");
+        let rotated_com = quat_rotate_vector_xyzw(
+            output_orientation,
+            [center_and_volume[0], center_and_volume[1], center_and_volume[2]],
+        );
+        let center_of_mass_world = hkx_member_vec4(motion, "centerOfMassWorld");
+        for axis in 0..3 {
+            assert!(
+                (center_of_mass_world[axis] - (output_position[axis] + rotated_com[axis])).abs()
+                    < 1e-5,
+                "body {index} centerOfMassWorld axis {axis}"
+            );
+        }
+
+        let body_mass = hkx_member_f32(source_body, "mass");
+        let mass_factor = hkx_member_f32(motion, "massFactor");
+        let expected_mass_factor = body_mass / center_and_volume[3];
+        assert!(
+            (mass_factor - expected_mass_factor).abs() / expected_mass_factor < 1e-5,
+            "body {index} massFactor {mass_factor}, expected {expected_mass_factor}"
+        );
+
+        let inverse_inertia = hkx_member_vec4(motion, "inverseInertiaLocal");
+        for axis in 0..3 {
+            let expected_inverse_inertia = 1.0 / (inertia[axis] * body_mass);
+            assert!(
+                (inverse_inertia[axis] - expected_inverse_inertia).abs()
+                    / expected_inverse_inertia
+                    < 1e-5,
+                "body {index} inverse inertia axis {axis}"
+            );
+        }
+        assert_quaternion_equivalent(
+            hkx_member_vec4(motion, "orientation"),
+            quat_mul_xyzw(output_orientation, major_axis),
+            &format!("body {index} motion orientation"),
+        );
+    }
+    assert!(
+        output_motions
+            .iter()
+            .any(|motion| hkx_member_vec4(motion, "centerOfMassWorld")[3].abs() > 1e-6),
+        "motion center lanes should retain the source values"
+    );
+
+    let ragdoll_constraints: Vec<_> = output_hkx
+        .objects()
+        .iter()
+        .filter(|object| object.class_name == "hkpRagdollConstraintData")
+        .collect();
+    assert_eq!(ragdoll_constraints.len(), 13);
+    for (index, constraint) in ragdoll_constraints.iter().enumerate() {
+        let atoms = member_value(&constraint.members, "atoms")
+            .and_then(HkxValue::as_object_members)
+            .expect("ragdoll atoms");
+        let cone_limit = member_value(atoms, "coneLimit")
+            .and_then(HkxValue::as_object_members)
+            .expect("ragdoll cone limit");
+        let offset = member_value(cone_limit, "memOffsetToAngleOffset")
+            .and_then(hkx_int)
+            .expect("ragdoll cone offset");
+        assert_eq!(offset, 56, "constraint {index} cone runtime offset");
+    }
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn convert_real_fo76_dismembered_skeleton_preserves_constrained_body_frames() {
+    let src = repo_path("extracted/fo76/Meshes/SetDressing/Skeletons/SkeletonDismembered08.nif");
+    if !src.exists() {
+        eprintln!("skip: FO76 dismembered skeleton fixture not available");
+        return;
+    }
+
+    let source_nif = NifFile::load(&src).expect("load source skeleton");
+    let source_blob = embedded_havok_blob(&source_nif).expect("source physics blob");
+    let source_hkx =
+        havok_native::hkx::model::HkxFile::read(&source_blob).expect("parse source physics blob");
+    let source_system = source_hkx
+        .objects()
+        .iter()
+        .find(|object| object.class_name == "hknpPhysicsSystemData")
+        .expect("source physics system data");
+
+    let dir = temp_dir("convert_real_fo76_dismembered_skeleton");
+    let dst = dir.join("out").join("SkeletonDismembered08.nif");
+    let report = convert_nif_file(
+        &src,
+        &dst,
+        "fo76",
+        "fo4",
+        None,
+        &ConvertFileOptions::default(),
+    )
+    .expect("convert dismembered skeleton");
+    assert!(report.supported, "{:?}", report.errors);
+
+    let converted = NifFile::load(dst).expect("load converted skeleton");
+    let output_blob = embedded_havok_blob(&converted).expect("converted physics blob");
+    let output_hkx = havok_native::hkx::model::HkxFile::read(&output_blob)
+        .expect("parse converted physics blob");
+    let output_system = output_hkx
+        .objects()
+        .iter()
+        .find(|object| object.class_name == "hknpPhysicsSystemData")
+        .expect("converted physics system data");
+
+    let source_bodies = hkx_object_array(source_system, "bodyCinfos");
+    let output_bodies = hkx_object_array(output_system, "bodyCinfos");
+    let output_motions = hkx_object_array(output_system, "motionCinfos");
+    assert_eq!(source_bodies.len(), 13);
+    assert_eq!(output_bodies.len(), source_bodies.len());
+    assert_eq!(output_motions.len(), source_bodies.len());
+    assert_eq!(
+        hkx_object_array(source_system, "constraintCinfos").len(),
+        12
+    );
+    assert_eq!(
+        hkx_object_array(output_system, "constraintCinfos").len(),
+        12
+    );
+
+    for (index, (source_body, output_body)) in source_bodies.iter().zip(output_bodies).enumerate() {
+        assert_eq!(
+            hkx_member_vec4(output_body, "position"),
+            hkx_member_vec4(source_body, "position"),
+            "body {index} position"
+        );
+        assert_eq!(
+            hkx_member_vec4(output_body, "orientation"),
+            hkx_member_vec4(source_body, "orientation"),
+            "body {index} orientation"
+        );
+        assert_eq!(hkx_member_i64(output_body, "motionId"), index as i64);
+    }
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 fn fo76_inline_shader_nif() -> NifFile {
     let mut nif = NifFile::new("fo76");
     let texset = nif.add_block(
@@ -5372,6 +6343,17 @@ fn basic_vertex_desc(has_vertex_colors: bool) -> i64 {
         color_offset = 5;
     }
     stride | (2 << 8) | (3 << 16) | (4 << 20) | (color_offset << 24) | (flags << 44)
+}
+
+fn skyrim_vertex_desc(has_vertex_colors: bool) -> i64 {
+    let stride = if has_vertex_colors { 8 } else { 7 };
+    let mut flags = 0x0001 | 0x0002 | 0x0008 | 0x0010;
+    let mut color_offset = 0;
+    if has_vertex_colors {
+        flags |= 0x0020;
+        color_offset = 7;
+    }
+    stride | (4 << 8) | (5 << 16) | (6 << 20) | (color_offset << 24) | (flags << 44)
 }
 
 fn basic_vertex(position: [f32; 3], has_vertex_colors: bool) -> NifValue {

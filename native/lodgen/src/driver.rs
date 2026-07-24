@@ -695,6 +695,7 @@ pub fn run_terrain(
     paths: &LodPaths,
     progress: &mut dyn Progress,
 ) -> anyhow::Result<LodGenStats> {
+    crate::terrain::textures::clear_texture_cache();
     let mut stats = LodGenStats::default();
 
     // One-time fidelity warning for the still-DEFERRED options. protect_cell_borders
@@ -785,6 +786,7 @@ pub fn run_terrain(
             }
         }
 
+        crate::terrain::textures::clear_texture_cache();
         // Decommit this level's freed pages before the next allocates.
         trim_allocator();
     }
@@ -996,6 +998,9 @@ pub fn run_trees(
                 }
             }
         }
+        crate::objects::parse_nif::clear_model_shape_cache();
+        crate::objects::parse_nif::clear_nif_cache();
+        trim_allocator();
     }
 
     // In billboard mode: write the world-level .lst once, listing only the species

@@ -317,6 +317,7 @@ impl<'a> TypeChecker<'a> {
 
     fn check_event(&mut self, ev: &EventDef, scope: &HashMap<std::string::String, PapyrusType>) {
         self.record(crate::compiler::WalkNode::Event(ev));
+        self.check_inherited_event_signature(ev);
         let mut local = scope.clone();
         for p in &ev.params {
             let ty = self.parse_type(&p.ty);
@@ -324,6 +325,49 @@ impl<'a> TypeChecker<'a> {
         }
         // Events return None implicitly.
         self.check_body(&ev.body, &mut local, &PapyrusType::None);
+    }
+
+    fn check_inherited_event_signature(&mut self, ev: &EventDef) {
+        let Some(parent) = self.ast.parent.as_deref() else {
+            return;
+        };
+        let Some((declaring_script, inherited)) = self.resolver.get_event(parent, &ev.name) else {
+            return;
+        };
+        let matches = ev.params.len() == inherited.params.len()
+            && ev
+                .params
+                .iter()
+                .zip(&inherited.params)
+                .all(|(actual, expected)| {
+                    type_eq_ci(&self.parse_type(&actual.ty), &self.parse_type(&expected.ty))
+                });
+        if matches {
+            return;
+        }
+
+        let signature = |event: &EventDef| {
+            event
+                .params
+                .iter()
+                .map(|param| param.ty.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        self.diagnostics.push(Diagnostic {
+            line: ev.pos.line,
+            col: ev.pos.col,
+            end_line: ev.pos.end_line,
+            end_col: ev.pos.end_col,
+            message: format!(
+                "event '{}' does not match inherited signature from '{}': expected ({}) but found ({})",
+                ev.name,
+                declaring_script,
+                signature(&inherited),
+                signature(ev),
+            ),
+            severity: DiagnosticSeverity::Error,
+        });
     }
 
     fn check_body(
@@ -348,11 +392,27 @@ impl<'a> TypeChecker<'a> {
                 self.visit_expr(expr, scope);
             }
             Stmt::AssignStmt {
-                target, value, pos, ..
+                target,
+                op,
+                value,
+                pos,
             } => {
-                let (_, target_ty) = self.visit_expr(target, scope);
+                let (target_id, target_ty) = self.visit_expr(target, scope);
                 let (val_id, val_ty) = self.visit_expr(value, scope);
-                self.check_assignable(&val_ty, &target_ty, val_id, *pos);
+                if op == "=" {
+                    self.check_assignable(&val_ty, &target_ty, val_id, *pos);
+                } else {
+                    let arithmetic_op = op.strip_suffix('=').unwrap_or(op);
+                    let result_ty = self.binary_result_type(
+                        arithmetic_op,
+                        target_id,
+                        &target_ty,
+                        val_id,
+                        &val_ty,
+                        *pos,
+                    );
+                    self.check_assignable(&result_ty, &target_ty, target_id, *pos);
+                }
             }
             Stmt::ReturnStmt {
                 value: Some(v),
@@ -594,41 +654,26 @@ impl<'a> TypeChecker<'a> {
         right_ty: &PapyrusType,
         _pos: Pos,
     ) -> PapyrusType {
-        use PapyrusType::*;
+        let result_ty = binary_result_type(op, left_ty, right_ty);
 
-        // String concatenation with `+`.
-        if op == "+" {
-            let either_string = matches!(left_ty, String) || matches!(right_ty, String);
-            if either_string {
-                if left_ty != &String {
-                    self.casts.push(CastSite {
-                        node: left_id,
-                        from: left_ty.clone(),
-                        to: String,
-                    });
-                }
-                if right_ty != &String {
-                    self.casts.push(CastSite {
-                        node: right_id,
-                        from: right_ty.clone(),
-                        to: String,
-                    });
-                }
-                return String;
+        if op == "+" && result_ty == PapyrusType::String {
+            if left_ty != &PapyrusType::String {
+                self.casts.push(CastSite {
+                    node: left_id,
+                    from: left_ty.clone(),
+                    to: PapyrusType::String,
+                });
+            }
+            if right_ty != &PapyrusType::String {
+                self.casts.push(CastSite {
+                    node: right_id,
+                    from: right_ty.clone(),
+                    to: PapyrusType::String,
+                });
             }
         }
 
-        // Comparison / logical operators always return Bool.
-        if matches!(op, "==" | "!=" | "<" | "<=" | ">" | ">=" | "&&" | "||") {
-            return Bool;
-        }
-
-        // Numeric promotion: Int op Float → Float.
-        match (left_ty, right_ty) {
-            (Float, _) | (_, Float) => Float,
-            (Int, Int) => Int,
-            _ => left_ty.clone(),
-        }
+        result_ty
     }
 
     /// Check that `from` is assignable to `to`; push a cast site or an error.
@@ -662,6 +707,26 @@ impl<'a> TypeChecker<'a> {
                 severity: DiagnosticSeverity::Error,
             });
         }
+    }
+}
+
+pub(crate) fn binary_result_type(
+    op: &str,
+    left_ty: &PapyrusType,
+    right_ty: &PapyrusType,
+) -> PapyrusType {
+    use PapyrusType::*;
+
+    if op == "+" && (matches!(left_ty, String) || matches!(right_ty, String)) {
+        return String;
+    }
+    if matches!(op, "==" | "!=" | "<" | "<=" | ">" | ">=" | "&&" | "||") {
+        return Bool;
+    }
+    match (left_ty, right_ty) {
+        (Float, _) | (_, Float) => Float,
+        (Int, Int) => Int,
+        _ => left_ty.clone(),
     }
 }
 
@@ -764,5 +829,25 @@ mod tests {
                 r.diagnostics
             );
         }
+    }
+
+    #[test]
+    fn compound_assignments_typecheck_the_arithmetic_result() {
+        let valid = typeck_source(
+            "Scriptname TCompoundValid\nFunction F()\n  Float f = 1.0\n  Int i = 1\n  Bool b = True\n  String s = \"x\"\n  f += i\n  i += b\n  s += i\nEndFunction\n",
+        );
+        assert!(valid.diagnostics.is_empty(), "{:?}", valid.diagnostics);
+
+        let invalid = typeck_source(
+            "Scriptname TCompoundInvalid\nFunction F()\n  Int i = 1\n  Float f = 1.0\n  i += f\nEndFunction\n",
+        );
+        assert!(
+            invalid
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("cannot assign Float to Int")),
+            "{:?}",
+            invalid.diagnostics
+        );
     }
 }

@@ -8,6 +8,7 @@ pub struct TextureConversionParams {
     pub specular_multiplier: f32,
     pub gloss_multiplier: f32,
     pub spec_offset: f32,
+    pub preserve_lighting_rgb_for_glow: bool,
 }
 
 pub struct Fo76BundleOutputs {
@@ -111,6 +112,7 @@ impl Default for TextureConversionParams {
             specular_multiplier: 1.0,
             gloss_multiplier: 1.0,
             spec_offset: 0.8,
+            preserve_lighting_rgb_for_glow: false,
         }
     }
 }
@@ -133,6 +135,7 @@ impl From<TextureConversionParamsPayload> for TextureConversionParams {
             specular_multiplier: value.specular_multiplier,
             gloss_multiplier: value.gloss_multiplier,
             spec_offset: value.spec_offset,
+            preserve_lighting_rgb_for_glow: false,
         }
     }
 }
@@ -219,14 +222,19 @@ pub fn fo76_bundle_to_fo4_buffers(
 
         if let Some(glow_values) = glow.as_mut() {
             // FO76 stores the emissive mask in the `_l` alpha channel; the `_l`
-            // RGB holds gloss(R)/AO(G)/unused(B), NOT emissive colour. Emit a
-            // white (grayscale) glow map scaled by that mask so the FO4 glow is
-            // white rather than tinted green by the near-constant AO channel.
-            // The glow's colour comes from the BGSM EmittanceColor.
+            // RGB normally holds packed material data. Explicitly glow-named
+            // textures are authored with colour there, matching FO4's coloured
+            // `_g` convention, so preserve it only for that named exception.
             let emissive_mask = lighting[i + 3].clamp(0.0, 1.0);
-            glow_values[i] = emissive_mask;
-            glow_values[i + 1] = emissive_mask;
-            glow_values[i + 2] = emissive_mask;
+            if params.preserve_lighting_rgb_for_glow {
+                glow_values[i] = lighting[i].clamp(0.0, 1.0) * emissive_mask;
+                glow_values[i + 1] = lighting[i + 1].clamp(0.0, 1.0) * emissive_mask;
+                glow_values[i + 2] = lighting[i + 2].clamp(0.0, 1.0) * emissive_mask;
+            } else {
+                glow_values[i] = emissive_mask;
+                glow_values[i + 1] = emissive_mask;
+                glow_values[i + 2] = emissive_mask;
+            }
             glow_values[i + 3] = 1.0;
         }
     }
@@ -295,6 +303,113 @@ pub fn fo76_reflectivity_lighting_to_fo4_specgloss_buffers(
     Ok(specgloss)
 }
 
+/// Parameters for the Gamebryo/Skyrim → FO4 spec-gloss synthesis.
+///
+/// FNV and Skyrim store per-texel specular intensity in the normal map's alpha
+/// and cubemap throughput in a separate `_m`/`_em` mask. FO4 has one channel for
+/// both: `_s.R`. `_s.G` is glossiness and `_s.B` is unread.
+#[derive(Debug, Clone, Copy)]
+pub struct GamebryoSpecParams {
+    /// Specular for non-metals when the source alpha carries no information.
+    /// Matches the constant the FO76 bundle kernel uses for dielectrics.
+    pub dielectric_baseline: f32,
+    /// Alpha range below which the channel is treated as carrying no data.
+    /// 73% of sampled Skyrim normals are uniformly opaque; without this guard
+    /// they would all render fully specular.
+    pub alpha_flat_epsilon: f32,
+    pub envmask_weight: f32,
+    pub gloss_baseline: f32,
+    pub specular_multiplier: f32,
+}
+
+impl Default for GamebryoSpecParams {
+    fn default() -> Self {
+        Self {
+            dielectric_baseline: 0.22,
+            alpha_flat_epsilon: 0.02,
+            envmask_weight: 1.0,
+            gloss_baseline: 0.8,
+            specular_multiplier: 1.0,
+        }
+    }
+}
+
+pub struct GamebryoSpecOutputs {
+    pub normal: Vec<f32>,
+    pub specgloss: Vec<f32>,
+}
+
+pub fn gamebryo_normal_envmask_to_fo4_specgloss_buffers(
+    normal_bytes: &[u8],
+    envmask_bytes: Option<&[u8]>,
+    width: usize,
+    height: usize,
+    envmask_width: usize,
+    envmask_height: usize,
+    params: GamebryoSpecParams,
+) -> Result<GamebryoSpecOutputs> {
+    let normal = read_rgba_f32_bytes(normal_bytes, width, height, "normal")?;
+    let count = pixel_count(width, height)?;
+
+    let envmask = match envmask_bytes {
+        Some(bytes) => {
+            let raw = read_rgba_f32_bytes(bytes, envmask_width, envmask_height, "envmask")?;
+            Some(resize_rgba_bilinear(
+                &raw,
+                envmask_width,
+                envmask_height,
+                width,
+                height,
+            )?)
+        }
+        None => None,
+    };
+
+    let mut alpha_min = f32::MAX;
+    let mut alpha_max = f32::MIN;
+    for idx in 0..count {
+        let alpha = normal[idx * 4 + 3];
+        alpha_min = alpha_min.min(alpha);
+        alpha_max = alpha_max.max(alpha);
+    }
+    let alpha_informative = (alpha_max - alpha_min) > params.alpha_flat_epsilon;
+
+    let mut normal_out = vec![0.0; normal.len()];
+    let mut specgloss = vec![0.0; normal.len()];
+    for idx in 0..count {
+        let i = idx * 4;
+        let spec_base = if alpha_informative {
+            normal[i + 3].clamp(0.0, 1.0)
+        } else {
+            params.dielectric_baseline
+        };
+        let mask = envmask
+            .as_ref()
+            .map_or(0.0, |values| values[i].clamp(0.0, 1.0) * params.envmask_weight);
+
+        normal_out[i] = normal[i].clamp(0.0, 1.0);
+        normal_out[i + 1] = normal[i + 1].clamp(0.0, 1.0);
+        // FO4 normals are two-channel: it reconstructs Z from X and Y, and
+        // every vanilla BC5 normal decodes with blue at ~0 (measured mean 12.7
+        // across 4000 `_n.dds`, 9.7 for terrain). Gamebryo sources carry a real
+        // Z in blue, which is what makes a carried-over normal read blue
+        // instead of FO4's yellow.
+        normal_out[i + 2] = 0.0;
+        normal_out[i + 3] = 1.0;
+
+        specgloss[i] =
+            (spec_base.max(mask).clamp(0.0, 1.0) * params.specular_multiplier).clamp(0.0, 1.0);
+        specgloss[i + 1] = params.gloss_baseline.clamp(0.0, 1.0);
+        specgloss[i + 2] = 0.0;
+        specgloss[i + 3] = 1.0;
+    }
+
+    Ok(GamebryoSpecOutputs {
+        normal: normal_out,
+        specgloss,
+    })
+}
+
 pub fn passthrough_rgba_buffer(rgba_bytes: &[u8], width: usize, height: usize) -> Result<Vec<f32>> {
     read_rgba_f32_bytes(rgba_bytes, width, height, "rgba")
 }
@@ -305,6 +420,12 @@ fn input_path<'a>(request: &'a TextureSetPathRequest, role: &str) -> Option<&'a 
         .iter()
         .find(|input| input.role == role)
         .map(|input| input.path.as_path())
+}
+
+pub fn is_named_glow_lighting_path(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.to_ascii_lowercase().contains("glow"))
 }
 
 fn output_for<'a>(request: &'a TextureSetPathRequest, role: &str) -> Option<&'a TexturePathOutput> {
@@ -502,7 +623,7 @@ fn convert_fo76_to_fo4_paths(request: TextureSetPathRequest) -> Result<TextureSe
         converted: Vec::new(),
         skipped: Vec::new(),
     };
-    let params: TextureConversionParams = request.params.into();
+    let mut params: TextureConversionParams = request.params.into();
 
     let diffuse_path = input_path(&request, "diffuse");
     let reflectivity_path = input_path(&request, "reflectivity");
@@ -511,6 +632,7 @@ fn convert_fo76_to_fo4_paths(request: TextureSetPathRequest) -> Result<TextureSe
     if let (Some(diffuse_path), Some(reflectivity_path), Some(lighting_path)) =
         (diffuse_path, reflectivity_path, lighting_path)
     {
+        params.preserve_lighting_rgb_for_glow = is_named_glow_lighting_path(lighting_path);
         let diffuse = directxtex_native::read_dds_float_rgba_image(diffuse_path)
             .map_err(MaterialError::runtime)?;
         let reflectivity = directxtex_native::read_dds_float_rgba_image(reflectivity_path)
@@ -932,6 +1054,39 @@ mod tests {
     }
 
     #[test]
+    fn named_glow_rule_is_limited_to_glow_lighting_filenames() {
+        assert!(is_named_glow_lighting_path(Path::new(
+            "Actors/Wendigo/wendigo_glow_l.dds"
+        )));
+        assert!(!is_named_glow_lighting_path(Path::new(
+            "Actors/Wendigo/wendigo_l.dds"
+        )));
+    }
+
+    #[test]
+    fn bundle_preserves_named_glow_color_from_lighting_rgb() {
+        let out = fo76_bundle_to_fo4_buffers(
+            &rgba_bytes([0.1, 0.2, 0.3, 0.4]),
+            &rgba_bytes([0.0, 0.0, 0.0, 1.0]),
+            &rgba_bytes([0.5, 1.0, 0.0, 0.75]),
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            TextureConversionParams {
+                preserve_lighting_rgb_for_glow: true,
+                ..TextureConversionParams::default()
+            },
+            true,
+        )
+        .unwrap();
+
+        assert_eq!(decode_rgba(out.glow.unwrap()), [0.375, 0.75, 0.0, 1.0]);
+    }
+
+    #[test]
     fn normal_conversion_matches_reference_signed_to_unsigned_transform() {
         let out =
             fo76_normal_to_fo4_buffer(&f32_vec_to_bytes(&[-1.0, 0.0, 1.0, 0.5]), 1, 1).unwrap();
@@ -1310,5 +1465,150 @@ mod tests {
         assert!(output_uses_gpu("BC7_UNORM", 512, 512, true, 512 * 512));
         assert!(!output_uses_gpu("BC1_UNORM", 1024, 1024, true, 512 * 512));
         assert!(!output_uses_gpu("BC7_UNORM", 1024, 1024, false, 512 * 512));
+    }
+
+    #[test]
+    fn gamebryo_flat_normal_alpha_falls_back_to_dielectric_baseline() {
+        // 2x1 normal whose alpha carries no variation: 73% of Skyrim looks like this.
+        let normal = f32_vec_to_bytes(&[0.5, 0.5, 1.0, 1.0, 0.5, 0.5, 1.0, 1.0]);
+        let out = gamebryo_normal_envmask_to_fo4_specgloss_buffers(
+            &normal,
+            None,
+            2,
+            1,
+            0,
+            0,
+            GamebryoSpecParams::default(),
+        )
+        .unwrap();
+        assert!((out.specgloss[0] - 0.22).abs() < 1e-6);
+        assert!((out.specgloss[4] - 0.22).abs() < 1e-6);
+    }
+
+    #[test]
+    fn gamebryo_normal_drops_blue_to_fo4s_two_channel_convention() {
+        // Tangent-space source (blue ~1.0) and an object-space terrain source
+        // (green ~1.0, blue mid) both keep R and G and lose blue: FO4
+        // reconstructs Z, and its own normals decode with blue at ~0 in both
+        // categories.
+        let normal = f32_vec_to_bytes(&[0.5, 0.5, 0.99, 0.4, 0.48, 0.95, 0.48, 0.4]);
+        let out = gamebryo_normal_envmask_to_fo4_specgloss_buffers(
+            &normal,
+            None,
+            2,
+            1,
+            0,
+            0,
+            GamebryoSpecParams::default(),
+        )
+        .unwrap();
+
+        assert!((out.normal[0] - 0.5).abs() < 1e-6);
+        assert!((out.normal[1] - 0.5).abs() < 1e-6);
+        assert_eq!(out.normal[2], 0.0, "tangent-space blue must be dropped");
+        assert_eq!(out.normal[3], 1.0);
+
+        assert!((out.normal[4] - 0.48).abs() < 1e-6);
+        assert!((out.normal[5] - 0.95).abs() < 1e-6, "terrain green survives");
+        assert_eq!(out.normal[6], 0.0, "object-space blue must be dropped too");
+    }
+
+    #[test]
+    fn gamebryo_varying_normal_alpha_becomes_specular_red() {
+        let normal = f32_vec_to_bytes(&[0.5, 0.5, 1.0, 0.0, 0.5, 0.5, 1.0, 1.0]);
+        let out = gamebryo_normal_envmask_to_fo4_specgloss_buffers(
+            &normal,
+            None,
+            2,
+            1,
+            0,
+            0,
+            GamebryoSpecParams::default(),
+        )
+        .unwrap();
+        assert!((out.specgloss[0] - 0.0).abs() < 1e-6);
+        assert!((out.specgloss[4] - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn gamebryo_envmask_wins_where_brighter_than_normal_alpha() {
+        let normal = f32_vec_to_bytes(&[0.5, 0.5, 1.0, 0.0, 0.5, 0.5, 1.0, 1.0]);
+        let mask = f32_vec_to_bytes(&[0.6, 0.6, 0.6, 1.0, 0.1, 0.1, 0.1, 1.0]);
+        let out = gamebryo_normal_envmask_to_fo4_specgloss_buffers(
+            &normal,
+            Some(&mask),
+            2,
+            1,
+            2,
+            1,
+            GamebryoSpecParams::default(),
+        )
+        .unwrap();
+        assert!(
+            (out.specgloss[0] - 0.6).abs() < 1e-6,
+            "mask should win texel 0"
+        );
+        assert!(
+            (out.specgloss[4] - 1.0).abs() < 1e-6,
+            "alpha should win texel 1"
+        );
+    }
+
+    #[test]
+    fn gamebryo_envmask_resizes_to_normal_dimensions() {
+        // Flat 0.0 alpha is uninformative, so the baseline applies and the 1x1
+        // mask must be upsampled to cover both texels.
+        let normal = f32_vec_to_bytes(&[0.5, 0.5, 1.0, 0.0, 0.5, 0.5, 1.0, 0.0]);
+        let mask = f32_vec_to_bytes(&[0.75, 0.75, 0.75, 1.0]);
+        let out = gamebryo_normal_envmask_to_fo4_specgloss_buffers(
+            &normal,
+            Some(&mask),
+            2,
+            1,
+            1,
+            1,
+            GamebryoSpecParams::default(),
+        )
+        .unwrap();
+        assert!((out.specgloss[0] - 0.75).abs() < 1e-6);
+        assert!((out.specgloss[4] - 0.75).abs() < 1e-6);
+    }
+
+    #[test]
+    fn gamebryo_specgloss_zeroes_blue_and_strips_normal_alpha() {
+        let normal = f32_vec_to_bytes(&[0.25, 0.75, 1.0, 0.4, 0.25, 0.75, 1.0, 0.9]);
+        let out = gamebryo_normal_envmask_to_fo4_specgloss_buffers(
+            &normal,
+            None,
+            2,
+            1,
+            0,
+            0,
+            GamebryoSpecParams::default(),
+        )
+        .unwrap();
+        for idx in 0..2 {
+            let i = idx * 4;
+            assert_eq!(out.specgloss[i + 2], 0.0, "blue must be zero");
+            assert_eq!(out.specgloss[i + 3], 1.0, "alpha must be opaque");
+            assert!((out.specgloss[i + 1] - 0.8).abs() < 1e-6, "gloss baseline");
+            assert_eq!(out.normal[i + 3], 1.0, "normal alpha must be discarded");
+        }
+        assert!((out.normal[0] - 0.25).abs() < 1e-6);
+        assert!((out.normal[1] - 0.75).abs() < 1e-6);
+    }
+
+    #[test]
+    fn gamebryo_gloss_baseline_is_configurable_per_game() {
+        let normal = f32_vec_to_bytes(&[0.5, 0.5, 1.0, 0.5, 0.5, 0.5, 1.0, 0.5]);
+        let params = GamebryoSpecParams {
+            gloss_baseline: 0.1,
+            ..GamebryoSpecParams::default()
+        };
+        let out =
+            gamebryo_normal_envmask_to_fo4_specgloss_buffers(&normal, None, 2, 1, 0, 0, params)
+                .unwrap();
+        assert!((out.specgloss[1] - 0.1).abs() < 1e-6);
+        assert!((out.specgloss[5] - 0.1).abs() < 1e-6);
     }
 }

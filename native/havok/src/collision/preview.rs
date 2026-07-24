@@ -2,20 +2,37 @@ use std::collections::HashSet;
 
 use serde_json::json;
 
+use super::capsule::SourceCapsuleShape;
+use super::compound::{CompoundChild, CompoundChildKind};
 use super::compressed_mesh::{
-    RawCompressedMeshData, RawCompressedMeshDataRun, RawCompressedMeshSection,
+    MaterialEntry, RawCompressedMeshBitField, RawCompressedMeshData, RawCompressedMeshDataRun,
+    RawCompressedMeshSection, RawCompressedMeshSparseMap,
 };
+use super::convex::SourceConvexShape;
 use super::mass_properties::SourceMassDistribution;
 use super::polytope::SourcePolytopeShape;
 use crate::error::{HavokError, HavokResult};
 use crate::hkx::model::{HkxFile, HkxMember, HkxObject};
 use crate::hkx::types::HkxValue;
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SourceBodyTransform {
+    pub position: [f32; 4],
+    pub orientation: [f32; 4],
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct PreviewMesh {
     pub shape_type: String,
     pub vertices: Vec<[f32; 3]>,
     pub triangles: Vec<[u32; 3]>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum SourcePrimitiveShape {
+    Sphere { center: [f32; 3], radius: f32 },
+    Capsule(SourceCapsuleShape),
+    Convex(SourceConvexShape),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -60,6 +77,30 @@ impl ShapeTransform {
                 + self.translation[2],
         ];
         Self { basis, translation }
+    }
+
+    fn to_row_major_matrix(self) -> [[f32; 4]; 4] {
+        [
+            [
+                self.basis[0][0],
+                self.basis[0][1],
+                self.basis[0][2],
+                self.translation[0],
+            ],
+            [
+                self.basis[1][0],
+                self.basis[1][1],
+                self.basis[1][2],
+                self.translation[1],
+            ],
+            [
+                self.basis[2][0],
+                self.basis[2][1],
+                self.basis[2][2],
+                self.translation[2],
+            ],
+            [0.0, 0.0, 0.0, 1.0],
+        ]
     }
 }
 
@@ -142,6 +183,56 @@ pub fn decode_source_mass_distributions(blob: &[u8]) -> Vec<Option<SourceMassDis
             read_mass_distribution(objects.get(idx)?)
         })
         .collect()
+}
+
+/// Decode source body frames from `hknpPhysicsSystemData.bodyCinfos`, indexed by
+/// body position. These frames are required by articulated systems because their
+/// constraint pivots are authored relative to each body's position and rotation.
+pub fn decode_source_body_transforms(blob: &[u8]) -> Vec<Option<SourceBodyTransform>> {
+    let Ok(hkx) = HkxFile::read(blob) else {
+        return Vec::new();
+    };
+    let Some(psd) = hkx
+        .objects()
+        .iter()
+        .find(|object| object.class_name == "hknpPhysicsSystemData")
+    else {
+        return Vec::new();
+    };
+    let Some(HkxValue::Array(bodies)) = psd
+        .members
+        .iter()
+        .find(|member| member.name == "bodyCinfos")
+        .map(|member| &member.value)
+    else {
+        return Vec::new();
+    };
+
+    bodies
+        .iter()
+        .map(|body| {
+            let members = body.as_object_members()?;
+            let position = vec4_member(members, "position")?;
+            let orientation = vec4_member(members, "orientation")?;
+            if !position.iter().all(|value| value.is_finite())
+                || !orientation.iter().all(|value| value.is_finite())
+            {
+                return None;
+            }
+            Some(SourceBodyTransform {
+                position,
+                orientation,
+            })
+        })
+        .collect()
+}
+
+fn vec4_member(members: &[HkxMember], name: &str) -> Option<[f32; 4]> {
+    let HkxValue::F32List(values) = &members.iter().find(|member| member.name == name)?.value
+    else {
+        return None;
+    };
+    (values.len() >= 4).then(|| [values[0], values[1], values[2], values[3]])
 }
 
 fn read_mass_distribution(obj: &HkxObject) -> Option<SourceMassDistribution> {
@@ -228,7 +319,24 @@ pub fn extract_raw_compressed_meshes_from_blob(
     body_id: Option<usize>,
 ) -> HavokResult<Vec<RawCompressedMeshData>> {
     if let Ok(hkx) = HkxFile::read(blob) {
-        return Ok(extract_raw_compressed_meshes_from_hkx(&hkx, body_id));
+        let mut meshes = extract_raw_compressed_meshes_from_hkx(&hkx, body_id);
+        if let Ok(markers) = super::compressed_mesh::fo4_compressed_mesh_flat_convex_markers(blob) {
+            if body_id.is_none() {
+                for (mesh, marker) in meshes.iter_mut().zip(markers) {
+                    mesh.primitive_stores_is_flat_convex = marker;
+                }
+            } else {
+                let all_meshes = extract_raw_compressed_meshes_from_hkx(&hkx, None);
+                for mesh in &mut meshes {
+                    if let Some(index) = all_meshes.iter().position(|candidate| candidate == mesh) {
+                        if let Some(marker) = markers.get(index) {
+                            mesh.primitive_stores_is_flat_convex = *marker;
+                        }
+                    }
+                }
+            }
+        }
+        return Ok(meshes);
     }
     if let Ok(tagfile) = crate::hkx::parse_tagfile(blob) {
         if let Ok(hkx) = tagfile.materialize_hkx() {
@@ -236,6 +344,43 @@ pub fn extract_raw_compressed_meshes_from_blob(
         }
     }
     Ok(Vec::new())
+}
+
+pub fn extract_direct_raw_compressed_mesh_from_blob(
+    blob: &[u8],
+    body_id: usize,
+) -> HavokResult<Option<RawCompressedMeshData>> {
+    if let Ok(hkx) = HkxFile::read(blob) {
+        if body_shape_class_for_body(&hkx, Some(body_id)).as_deref()
+            != Some("hknpCompressedMeshShape")
+        {
+            return Ok(None);
+        }
+        return Ok(
+            extract_raw_compressed_meshes_from_blob(blob, Some(body_id))?
+                .into_iter()
+                .next(),
+        );
+    }
+    if let Ok(tagfile) = crate::hkx::parse_tagfile(blob) {
+        if let Ok(hkx) = tagfile.materialize_hkx() {
+            return Ok(extract_direct_raw_compressed_mesh_from_hkx(&hkx, body_id));
+        }
+    }
+    Ok(None)
+}
+
+fn extract_direct_raw_compressed_mesh_from_hkx(
+    hkx: &HkxFile,
+    body_id: usize,
+) -> Option<RawCompressedMeshData> {
+    if body_shape_class_for_body(hkx, Some(body_id)).as_deref() != Some("hknpCompressedMeshShape") {
+        return None;
+    }
+    let target = shape_targets_for_body(hkx, Some(body_id))?
+        .into_iter()
+        .next()?;
+    raw_compressed_mesh_from_hkx(hkx, target.index)
 }
 
 pub fn extract_raw_compressed_meshes_from_hkx(
@@ -274,8 +419,19 @@ pub fn extract_preview_meshes_from_blob(
     // bhkPhysicsSystem blobs are TAG0, but materialize into the same HkxFile
     // object model as packfiles once parsed.
     if let Ok(hkx) = HkxFile::read(blob) {
-        let (hkx_meshes, shape_class) =
+        let (mut hkx_meshes, shape_class) =
             extract_preview_meshes_from_hkx_with_body_class(&hkx, havok_scale, body_id);
+        if let Ok(raw_meshes) = extract_raw_compressed_meshes_from_blob(blob, body_id) {
+            if raw_meshes
+                .iter()
+                .any(|mesh| mesh.primitive_stores_is_flat_convex == FLAT_CONVEX_ENABLED)
+            {
+                hkx_meshes = raw_meshes
+                    .iter()
+                    .filter_map(|mesh| preview_compressed_mesh_from_raw(mesh, havok_scale))
+                    .collect();
+            }
+        }
         body_shape_class = shape_class;
         meshes.extend(hkx_meshes);
     } else if let Ok(tagfile) = crate::hkx::parse_tagfile(blob) {
@@ -353,6 +509,96 @@ pub fn extract_source_polytopes_from_blob(
     Ok(Vec::new())
 }
 
+pub fn extract_direct_source_primitive_from_blob(
+    blob: &[u8],
+    body_id: usize,
+) -> HavokResult<Option<SourcePrimitiveShape>> {
+    if let Ok(hkx) = HkxFile::read(blob) {
+        return Ok(direct_source_primitive_for_body(&hkx, body_id));
+    }
+    if let Ok(tagfile) = crate::hkx::parse_tagfile(blob) {
+        if let Ok(hkx) = tagfile.materialize_hkx() {
+            return Ok(direct_source_primitive_for_body(&hkx, body_id));
+        }
+    }
+    Ok(None)
+}
+
+fn direct_source_primitive_for_body(hkx: &HkxFile, body_id: usize) -> Option<SourcePrimitiveShape> {
+    let shape_index = body_shape_index_for_body(hkx, body_id)?;
+    let object = hkx.objects().get(shape_index)?;
+    match object.class_name.as_str() {
+        "hknpSphereShape" => {
+            let center = member_vec4_array4(object, "vertices").into_iter().next()?;
+            let radius = member_f32(object, "convexRadius");
+            if !center.iter().all(|value| value.is_finite()) || !radius.is_finite() || radius < 0.0
+            {
+                return None;
+            }
+            Some(SourcePrimitiveShape::Sphere {
+                center: [center[0], center[1], center[2]],
+                radius,
+            })
+        }
+        "hknpCapsuleShape" => {
+            let a = member_vec4_from_members(&object.members, "a")?;
+            let b = member_vec4_from_members(&object.members, "b")?;
+            let mut hull = source_polytope_from_object(object)?;
+            hull.mass_properties = source_shape_mass_properties(hkx, object);
+            let capsule = SourceCapsuleShape {
+                a,
+                b,
+                convex_radius: member_f32(object, "convexRadius"),
+                hull,
+            };
+            capsule.validate().ok()?;
+            Some(SourcePrimitiveShape::Capsule(capsule))
+        }
+        "hknpConvexShape" => {
+            let convex = SourceConvexShape {
+                vertices: member_vec4_array4(object, "vertices"),
+                convex_radius: member_f32(object, "convexRadius"),
+                mass_properties: source_shape_mass_properties(hkx, object),
+            };
+            convex.validate().ok()?;
+            Some(SourcePrimitiveShape::Convex(convex))
+        }
+        _ => None,
+    }
+}
+
+pub fn extract_source_compound_children_from_blob(
+    blob: &[u8],
+    body_id: usize,
+) -> HavokResult<Vec<CompoundChild>> {
+    if let Ok(hkx) = HkxFile::read(blob) {
+        return Ok(extract_source_compound_children_from_hkx(&hkx, body_id));
+    }
+    if let Ok(tagfile) = crate::hkx::parse_tagfile(blob) {
+        if let Ok(hkx) = tagfile.materialize_hkx() {
+            return Ok(extract_source_compound_children_from_hkx(&hkx, body_id));
+        }
+    }
+    Ok(Vec::new())
+}
+
+fn extract_source_compound_children_from_hkx(hkx: &HkxFile, body_id: usize) -> Vec<CompoundChild> {
+    let Some(targets) = shape_targets_for_body(hkx, Some(body_id)) else {
+        return Vec::new();
+    };
+    targets
+        .into_iter()
+        .filter_map(|target| {
+            let mut visiting = HashSet::new();
+            let shape = source_polytope_for_shape_index(hkx, target.index, &mut visiting)?;
+            Some(CompoundChild {
+                transform: target.transform.to_row_major_matrix(),
+                kind: CompoundChildKind::SourcePolytope { shape },
+            })
+        })
+        .collect()
+}
+
 fn extract_source_polytopes_from_hkx(hkx: &HkxFile, body_id: usize) -> Vec<SourcePolytopeShape> {
     let Some(targets) = shape_targets_for_body(hkx, Some(body_id)) else {
         return Vec::new();
@@ -377,7 +623,13 @@ fn source_polytope_for_shape_index(
     }
     let object = hkx.objects().get(shape_index)?;
     let result = match object.class_name.as_str() {
-        "hknpConvexPolytopeShape" | "hkpConvexVerticesShape" => source_polytope_from_object(object),
+        "hknpConvexPolytopeShape" | "hkpConvexVerticesShape" | "hknpBoxShape" => {
+            let mut shape = source_polytope_from_object(object);
+            if let Some(shape) = shape.as_mut() {
+                shape.mass_properties = source_shape_mass_properties(hkx, object);
+            }
+            shape
+        }
         "hknpScaledConvexShape" | "hknpScaledConvexShapeBase" => {
             source_polytope_from_scaled_convex_shape(hkx, object, visiting)
         }
@@ -385,6 +637,111 @@ fn source_polytope_for_shape_index(
     };
     visiting.remove(&shape_index);
     result
+}
+
+/// Decode the verbatim compressed `hknpShapeMassProperties` a source shape
+/// carries via its `properties` (hkRefCountedProperties) entry. `None` when the
+/// shape has no properties, no mass-props entry, or the block doesn't decode —
+/// callers fall back to the zeroed static block.
+fn source_shape_mass_properties(
+    hkx: &HkxFile,
+    shape_obj: &HkxObject,
+) -> Option<super::mass_properties::CompressedMassProperties> {
+    let props_index = shape_obj.members.iter().find_map(|member| {
+        if member.name == "properties" {
+            if let HkxValue::Pointer(Some(index)) = member.value {
+                return Some(index);
+            }
+        }
+        None
+    })?;
+    let refprops = hkx.objects().get(props_index)?;
+    let HkxValue::Array(entries) = &refprops
+        .members
+        .iter()
+        .find(|member| member.name == "entries")?
+        .value
+    else {
+        return None;
+    };
+    for entry in entries {
+        let members = entry.as_object_members()?;
+        let target = members.iter().find_map(|member| {
+            if member.name == "object" {
+                if let HkxValue::Pointer(Some(index)) = member.value {
+                    return Some(index);
+                }
+            }
+            None
+        });
+        let Some(target) = target else { continue };
+        let Some(object) = hkx.objects().get(target) else {
+            continue;
+        };
+        if object.class_name != "hknpShapeMassProperties" {
+            continue;
+        }
+        let compressed = object
+            .members
+            .iter()
+            .find(|member| member.name == "compressedMassProperties")?;
+        let fields = compressed.value.as_object_members()?;
+        let center_of_mass = packed_i16x4_member(fields, "centerOfMass")?;
+        let inertia = packed_i16x4_member(fields, "inertia")?;
+        let major_axis_space = packed_i16x4_member(fields, "majorAxisSpace")?;
+        let mass = f32_field(fields, "mass")?;
+        let volume = f32_field(fields, "volume")?;
+        if !mass.is_finite() || !volume.is_finite() {
+            return None;
+        }
+        return Some(super::mass_properties::CompressedMassProperties {
+            center_of_mass,
+            inertia,
+            major_axis_space,
+            mass,
+            volume,
+        });
+    }
+    None
+}
+
+/// Read an int16x4 packed-vector member that may be either a direct array or a
+/// nested struct with a `values` array (FO76 hkPackedVector serialization).
+fn packed_i16x4_member(members: &[HkxMember], name: &str) -> Option<[i16; 4]> {
+    let value = &members.iter().find(|member| member.name == name)?.value;
+    let list = match value {
+        HkxValue::Object(_) | HkxValue::TypedObject { .. } => {
+            &value
+                .as_object_members()?
+                .iter()
+                .find(|member| member.name == "values")?
+                .value
+        }
+        other => other,
+    };
+    let HkxValue::Array(items) = list else {
+        return None;
+    };
+    if items.len() < 4 {
+        return None;
+    }
+    let mut out = [0i16; 4];
+    for (slot, item) in out.iter_mut().zip(items.iter()) {
+        *slot = match item {
+            HkxValue::I16(v) => *v,
+            HkxValue::U16(v) => *v as i16,
+            HkxValue::I32(v) => i16::try_from(*v).ok()?,
+            _ => return None,
+        };
+    }
+    Some(out)
+}
+
+fn f32_field(members: &[HkxMember], name: &str) -> Option<f32> {
+    match &members.iter().find(|member| member.name == name)?.value {
+        HkxValue::F32(v) => Some(*v),
+        _ => None,
+    }
 }
 
 fn extract_preview_meshes_from_hkx_with_body_class(
@@ -537,6 +894,16 @@ fn raw_compressed_mesh_from_hkx(
     shape_index: usize,
 ) -> Option<RawCompressedMeshData> {
     let shape = hkx.objects().get(shape_index)?;
+    let user_data = shape
+        .members
+        .iter()
+        .find(|member| member.name == "userData")
+        .and_then(|member| value_u64(&member.value))
+        .unwrap_or(0);
+    let edge_welding_map = raw_sparse_map(shape, "edgeWeldingMap").unwrap_or_default();
+    let quad_is_flat = raw_bitfield(shape, "quadIsFlat").unwrap_or_default();
+    let triangle_is_interior = raw_bitfield(shape, "triangleIsInterior").unwrap_or_default();
+    let materials = raw_materials_for_shape(hkx, shape);
     let data_index = member_pointer(shape, "data")?;
     let data_obj = hkx.objects().get(data_index)?;
     let mesh_tree = member_object(data_obj, "meshTree")?;
@@ -570,7 +937,7 @@ fn raw_compressed_mesh_from_hkx(
         .collect::<Option<Vec<_>>>()?;
     let shared_vertices = shared_vertex_values
         .iter()
-        .map(value_u64)
+        .map(value_bits_u64)
         .collect::<Option<Vec<_>>>()?;
     let primitive_data_runs = primitive_run_values
         .iter()
@@ -670,6 +1037,11 @@ fn raw_compressed_mesh_from_hkx(
     }
 
     Some(RawCompressedMeshData {
+        user_data,
+        edge_welding_map,
+        quad_is_flat,
+        triangle_is_interior,
+        materials,
         object_aabb_min,
         object_aabb_max,
         num_primitive_keys,
@@ -680,6 +1052,81 @@ fn raw_compressed_mesh_from_hkx(
         sections,
         shared_vertices,
     })
+}
+
+fn raw_sparse_map(shape: &HkxObject, name: &str) -> Option<RawCompressedMeshSparseMap> {
+    let map = member_object(shape, name)?;
+    let primary_key_to_index = member_array(map, "primaryKeyToIndex")?
+        .iter()
+        .map(value_u32)
+        .map(|value| value.and_then(|value| u16::try_from(value).ok()))
+        .collect::<Option<Vec<_>>>()?;
+    let value_and_secondary_keys = member_array(map, "valueAndSecondaryKeys")?
+        .iter()
+        .map(value_u32)
+        .map(|value| value.and_then(|value| u16::try_from(value).ok()))
+        .collect::<Option<Vec<_>>>()?;
+    Some(RawCompressedMeshSparseMap {
+        secondary_key_mask: member_u32(map, "secondaryKeyMask").unwrap_or(u32::MAX),
+        secondary_key_bits: member_u32(map, "sencondaryKeyBits")
+            .or_else(|| member_u32(map, "secondaryKeyBits"))
+            .unwrap_or(0),
+        primary_key_to_index,
+        value_and_secondary_keys,
+    })
+}
+
+fn raw_bitfield(shape: &HkxObject, name: &str) -> Option<RawCompressedMeshBitField> {
+    let bitfield = member_object(shape, name)?;
+    let storage = member_object_from_members(bitfield, "storage")?;
+    let words = member_array(storage, "words")?
+        .iter()
+        .map(value_u32)
+        .collect::<Option<Vec<_>>>()?;
+    Some(RawCompressedMeshBitField {
+        words,
+        num_bits: member_u32(storage, "numBits").unwrap_or(0),
+    })
+}
+
+fn raw_materials_for_shape(hkx: &HkxFile, shape: &HkxObject) -> Vec<MaterialEntry> {
+    let Some(properties_index) = member_pointer(shape, "properties") else {
+        return Vec::new();
+    };
+    let Some(properties) = hkx.objects().get(properties_index) else {
+        return Vec::new();
+    };
+    let Some(entries) = member_array(&properties.members, "entries") else {
+        return Vec::new();
+    };
+    for entry in entries {
+        let Some(entry_members) = value_object(entry) else {
+            continue;
+        };
+        let Some(materials_index) = member_target_index(hkx, entry_members, "object") else {
+            continue;
+        };
+        let Some(materials_object) = hkx.objects().get(materials_index) else {
+            continue;
+        };
+        if materials_object.class_name != "hknpBSMaterialProperties" {
+            continue;
+        }
+        let Some(values) = member_array(&materials_object.members, "MaterialA") else {
+            continue;
+        };
+        return values
+            .iter()
+            .filter_map(value_object)
+            .filter_map(|material| {
+                Some(MaterialEntry {
+                    filter_info: member_u32(material, "uiFilterInfo")?,
+                    material_crc: member_u32(material, "uiMaterialCRC")?,
+                })
+            })
+            .collect();
+    }
+    Vec::new()
 }
 
 fn preview_compressed_mesh_from_raw(
@@ -1242,10 +1689,10 @@ fn pack_master_tree_nodes(values: &[HkxValue]) -> Option<Vec<u8>> {
         bytes.push(u8::try_from(value_u32(&xyz[0])?).ok()?);
         bytes.push(u8::try_from(value_u32(&xyz[1])?).ok()?);
         bytes.push(u8::try_from(value_u32(&xyz[2])?).ok()?);
-        let lo = u8::try_from(member_u32(node, "loData")?).ok()?;
         let hi = u8::try_from(member_u32(node, "hiData")?).ok()?;
-        bytes.push(lo);
+        let lo = u8::try_from(member_u32(node, "loData")?).ok()?;
         bytes.push(hi);
+        bytes.push(lo);
     }
     Some(bytes)
 }
@@ -1269,13 +1716,17 @@ fn pack_section_tree_nodes(values: &[HkxValue]) -> Option<Vec<u8>> {
 fn raw_primitive_data_run(value: &HkxValue) -> Option<RawCompressedMeshDataRun> {
     let run = value_object(value)?;
     Some(RawCompressedMeshDataRun {
-        value: u8::try_from(nested_member_u32(run, "value", "data")?).ok()?,
-        index: u16::try_from(member_u32(run, "index")?).ok()?,
+        value: u16::try_from(nested_member_u32(run, "value", "data")?).ok()?,
+        index: u8::try_from(member_u32(run, "index")?).ok()?,
         count: u8::try_from(member_u32(run, "count")?).ok()?,
     })
 }
 
 fn preview_box(obj: &HkxObject, havok_scale: f32) -> Option<PreviewMesh> {
+    if let Some(mut mesh) = preview_convex_polytope(obj, havok_scale) {
+        mesh.shape_type = "box".to_string();
+        return Some(mesh);
+    }
     let half_extents =
         member_vec3(obj, "halfExtents").or_else(|| member_vec3(obj, "halfExtentsAndRadius"))?;
     let vertices = box_vertices(half_extents, havok_scale);
@@ -1328,9 +1779,15 @@ fn preview_hknp_convex_shape(obj: &HkxObject, havok_scale: f32) -> Option<Previe
 }
 
 fn preview_capsule(obj: &HkxObject, havok_scale: f32) -> Option<PreviewMesh> {
-    let point_a = member_vec3(obj, "a")?;
-    let point_b = member_vec3(obj, "b")?;
-    let radius = member_f32(obj, "convexRadius");
+    let a = member_vec4_from_members(&obj.members, "a")?;
+    let b = member_vec4_from_members(&obj.members, "b")?;
+    let point_a = [a[0], a[1], a[2]];
+    let point_b = [b[0], b[1], b[2]];
+    let radius = if a[3].is_finite() && a[3] > 0.0 && (a[3] - 1.0).abs() > 1e-4 {
+        a[3]
+    } else {
+        member_f32(obj, "convexRadius")
+    };
     if radius <= 0.0 {
         return None;
     }
@@ -1385,6 +1842,7 @@ fn source_polytope_from_object(obj: &HkxObject) -> Option<SourcePolytopeShape> {
         faces,
         indices,
         convex_radius: member_f32(obj, "convexRadius"),
+        mass_properties: None,
     };
     shape.validate().ok()?;
     Some(shape)
@@ -1770,12 +2228,257 @@ fn inverse3(m: [[f32; 3]; 3]) -> Option<[[f32; 3]; 3]> {
 #[cfg(test)]
 mod tests {
     use super::{
-        RawCompressedMeshData, RawCompressedMeshSection, ShapeTransform,
+        RawCompressedMeshBitField, RawCompressedMeshData, RawCompressedMeshSection,
+        RawCompressedMeshSparseMap, ShapeTransform, SourcePrimitiveShape,
+        direct_source_primitive_for_body, extract_source_polytopes_from_hkx,
         preview_compressed_mesh_from_raw, shared_pool_index, transform_source_polytope,
         triangles_from_faces_usize,
     };
     use crate::collision::compressed_mesh::{pack_vertex_11_11_10, pack_vertex_21_21_22};
     use crate::collision::polytope::SourcePolytopeShape;
+    use crate::hkx::model::{HkxFile, HkxMember, HkxObject};
+    use crate::hkx::types::HkxValue;
+
+    fn direct_body_file(shape: HkxObject) -> HkxFile {
+        let physics_system = HkxObject {
+            name: Some("#0001".to_string()),
+            offset: 0,
+            signature: 0,
+            class_name: "hknpPhysicsSystemData".to_string(),
+            members: vec![HkxMember {
+                name: "bodyCinfos".to_string(),
+                value: HkxValue::Array(vec![HkxValue::Object(vec![HkxMember {
+                    name: "shape".to_string(),
+                    value: HkxValue::Pointer(Some(1)),
+                }])]),
+            }],
+        };
+        HkxFile::from_tagxml(11, "hk_2018.1.0-r1", vec![physics_system, shape])
+    }
+
+    fn primitive_shape(class_name: &str, mut members: Vec<HkxMember>) -> HkxObject {
+        members.push(HkxMember {
+            name: "properties".to_string(),
+            value: HkxValue::Pointer(None),
+        });
+        HkxObject {
+            name: Some("#0002".to_string()),
+            offset: 0,
+            signature: 0,
+            class_name: class_name.to_string(),
+            members,
+        }
+    }
+
+    #[test]
+    fn direct_primitive_extraction_reads_semantic_sphere_capsule_and_convex_fields() {
+        let sphere = direct_body_file(primitive_shape(
+            "hknpSphereShape",
+            vec![
+                HkxMember {
+                    name: "convexRadius".to_string(),
+                    value: HkxValue::F32(0.25),
+                },
+                HkxMember {
+                    name: "vertices".to_string(),
+                    value: HkxValue::Array(vec![HkxValue::F32List(vec![1.0, 2.0, 3.0, 0.5])]),
+                },
+            ],
+        ));
+        assert_eq!(
+            direct_source_primitive_for_body(&sphere, 0),
+            Some(SourcePrimitiveShape::Sphere {
+                center: [1.0, 2.0, 3.0],
+                radius: 0.25,
+            })
+        );
+
+        let vertices = vec![
+            [-0.001, -1.0, -0.001],
+            [0.001, -1.0, -0.001],
+            [0.001, 1.0, -0.001],
+            [-0.001, 1.0, -0.001],
+            [-0.001, -1.0, 0.001],
+            [0.001, -1.0, 0.001],
+            [0.001, 1.0, 0.001],
+            [-0.001, 1.0, 0.001],
+        ];
+        let vertex_values = vertices
+            .iter()
+            .enumerate()
+            .map(|(index, vertex)| {
+                HkxValue::F32List(vec![
+                    vertex[0],
+                    vertex[1],
+                    vertex[2],
+                    f32::from_bits(0x3F00_0000 + index as u32),
+                ])
+            })
+            .collect();
+        let planes = vec![
+            [-1.0, 0.0, 0.0, -0.001],
+            [1.0, 0.0, 0.0, -0.001],
+            [0.0, -1.0, 0.0, -1.0],
+            [0.0, 1.0, 0.0, -1.0],
+            [0.0, 0.0, -1.0, -0.001],
+            [0.0, 0.0, 1.0, -0.001],
+        ]
+        .into_iter()
+        .map(|plane| HkxValue::F32List(plane.to_vec()))
+        .collect();
+        let faces = (0..6)
+            .map(|index| {
+                HkxValue::Object(vec![
+                    HkxMember {
+                        name: "firstIndex".to_string(),
+                        value: HkxValue::U16(index * 4),
+                    },
+                    HkxMember {
+                        name: "numIndices".to_string(),
+                        value: HkxValue::U8(4),
+                    },
+                    HkxMember {
+                        name: "minHalfAngle".to_string(),
+                        value: HkxValue::U8(4),
+                    },
+                ])
+            })
+            .collect();
+        let capsule = direct_body_file(primitive_shape(
+            "hknpCapsuleShape",
+            vec![
+                HkxMember {
+                    name: "convexRadius".to_string(),
+                    value: HkxValue::F32(0.099),
+                },
+                HkxMember {
+                    name: "vertices".to_string(),
+                    value: HkxValue::Array(vertex_values),
+                },
+                HkxMember {
+                    name: "planes".to_string(),
+                    value: HkxValue::Array(planes),
+                },
+                HkxMember {
+                    name: "faces".to_string(),
+                    value: HkxValue::Array(faces),
+                },
+                HkxMember {
+                    name: "indices".to_string(),
+                    value: HkxValue::Array((0..24).map(|index| HkxValue::U8(index % 8)).collect()),
+                },
+                HkxMember {
+                    name: "a".to_string(),
+                    value: HkxValue::F32List(vec![0.0, 1.0, 0.0, 0.1]),
+                },
+                HkxMember {
+                    name: "b".to_string(),
+                    value: HkxValue::F32List(vec![0.0, -1.0, 0.0, 1.0]),
+                },
+            ],
+        ));
+        let Some(SourcePrimitiveShape::Capsule(capsule)) =
+            direct_source_primitive_for_body(&capsule, 0)
+        else {
+            panic!("capsule semantic extraction failed");
+        };
+        assert_eq!(capsule.hull.vertices, vertices);
+        assert_eq!(capsule.a[3], 0.1);
+        assert_eq!(capsule.convex_radius, 0.099);
+
+        let convex = direct_body_file(primitive_shape(
+            "hknpConvexShape",
+            vec![
+                HkxMember {
+                    name: "convexRadius".to_string(),
+                    value: HkxValue::F32(0.0),
+                },
+                HkxMember {
+                    name: "vertices".to_string(),
+                    value: HkxValue::Array(vec![
+                        HkxValue::F32List(vec![-1.0, 0.0, 0.0, 0.5]),
+                        HkxValue::F32List(vec![1.0, 0.0, 0.0, 0.5]),
+                    ]),
+                },
+            ],
+        ));
+        let Some(SourcePrimitiveShape::Convex(convex)) =
+            direct_source_primitive_for_body(&convex, 0)
+        else {
+            panic!("convex semantic extraction failed");
+        };
+        assert_eq!(convex.vertices.len(), 2);
+    }
+
+    #[test]
+    fn source_box_extraction_uses_inherited_polytope_topology() {
+        let box_shape = primitive_shape(
+            "hknpBoxShape",
+            vec![
+                HkxMember {
+                    name: "convexRadius".to_string(),
+                    value: HkxValue::F32(0.05),
+                },
+                HkxMember {
+                    name: "vertices".to_string(),
+                    value: HkxValue::Array(vec![
+                        HkxValue::F32List(vec![0.0, 0.0, 0.0, 0.5]),
+                        HkxValue::F32List(vec![1.0, 0.0, 0.0, 0.5]),
+                        HkxValue::F32List(vec![0.0, 1.0, 0.0, 0.5]),
+                        HkxValue::F32List(vec![0.0, 0.0, 1.0, 0.5]),
+                    ]),
+                },
+                HkxMember {
+                    name: "planes".to_string(),
+                    value: HkxValue::Array(vec![
+                        HkxValue::F32List(vec![-1.0, 0.0, 0.0, 0.0]),
+                        HkxValue::F32List(vec![0.0, -1.0, 0.0, 0.0]),
+                        HkxValue::F32List(vec![0.0, 0.0, -1.0, 0.0]),
+                        HkxValue::F32List(vec![0.577, 0.577, 0.577, -0.577]),
+                    ]),
+                },
+                HkxMember {
+                    name: "faces".to_string(),
+                    value: HkxValue::Array(
+                        (0..4)
+                            .map(|index| {
+                                HkxValue::Object(vec![
+                                    HkxMember {
+                                        name: "firstIndex".to_string(),
+                                        value: HkxValue::U16(index * 3),
+                                    },
+                                    HkxMember {
+                                        name: "numIndices".to_string(),
+                                        value: HkxValue::U8(3),
+                                    },
+                                    HkxMember {
+                                        name: "minHalfAngle".to_string(),
+                                        value: HkxValue::U8(4),
+                                    },
+                                ])
+                            })
+                            .collect(),
+                    ),
+                },
+                HkxMember {
+                    name: "indices".to_string(),
+                    value: HkxValue::Array(
+                        [0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3]
+                            .into_iter()
+                            .map(HkxValue::U8)
+                            .collect(),
+                    ),
+                },
+            ],
+        );
+        let file = direct_body_file(box_shape);
+        let shapes = extract_source_polytopes_from_hkx(&file, 0);
+        assert_eq!(shapes.len(), 1);
+        assert_eq!(shapes[0].vertices.len(), 4);
+        assert_eq!(shapes[0].faces.len(), 4);
+        assert_eq!(shapes[0].indices.len(), 12);
+        assert_eq!(shapes[0].convex_radius, 0.05);
+    }
 
     #[test]
     fn source_polytope_transform_scales_vertices_planes_and_radius() {
@@ -1810,6 +2513,7 @@ mod tests {
                 0, 4, 7, 3, 1, 2, 6, 5, 0, 1, 5, 4, 3, 7, 6, 2, 0, 3, 2, 1, 4, 5, 6, 7,
             ],
             convex_radius: 0.02,
+            mass_properties: None,
         };
         let transform = ShapeTransform {
             basis: [[2.0, 0.0, 0.0], [0.0, 3.0, 0.0], [0.0, 0.0, 4.0]],
@@ -1854,6 +2558,11 @@ mod tests {
     #[test]
     fn compressed_mesh_preview_ignores_unused_shared_index_metadata() {
         let raw = RawCompressedMeshData {
+            user_data: 0,
+            edge_welding_map: RawCompressedMeshSparseMap::default(),
+            quad_is_flat: RawCompressedMeshBitField::default(),
+            triangle_is_interior: RawCompressedMeshBitField::default(),
+            materials: Vec::new(),
             object_aabb_min: [0.0, 0.0, 0.0],
             object_aabb_max: [1.0, 1.0, 1.0],
             num_primitive_keys: 1,
@@ -1907,6 +2616,11 @@ mod tests {
         let header = (4u16 << 8) | (1u16 << 4) | 3u16;
 
         let raw = RawCompressedMeshData {
+            user_data: 0,
+            edge_welding_map: RawCompressedMeshSparseMap::default(),
+            quad_is_flat: RawCompressedMeshBitField::default(),
+            triangle_is_interior: RawCompressedMeshBitField::default(),
+            materials: Vec::new(),
             object_aabb_min: [0.0, 0.0, 0.0],
             object_aabb_max: [1.0, 1.0, 1.0],
             num_primitive_keys: 1,
@@ -1967,6 +2681,11 @@ mod tests {
         let header = (2u16 << 8) | (1u16 << 6) | (1u16 << 4) | 1u16;
 
         let raw = RawCompressedMeshData {
+            user_data: 0,
+            edge_welding_map: RawCompressedMeshSparseMap::default(),
+            quad_is_flat: RawCompressedMeshBitField::default(),
+            triangle_is_interior: RawCompressedMeshBitField::default(),
+            materials: Vec::new(),
             object_aabb_min: [0.0, 0.0, 0.0],
             object_aabb_max: [1.0, 1.0, 1.0],
             num_primitive_keys: 1,
@@ -2027,6 +2746,11 @@ mod tests {
         let header = (4u16 << 8) | (1u16 << 4) | 2u16;
 
         let raw = RawCompressedMeshData {
+            user_data: 0,
+            edge_welding_map: RawCompressedMeshSparseMap::default(),
+            quad_is_flat: RawCompressedMeshBitField::default(),
+            triangle_is_interior: RawCompressedMeshBitField::default(),
+            materials: Vec::new(),
             object_aabb_min: [0.0, 0.0, 0.0],
             object_aabb_max: [1.0, 1.0, 1.0],
             num_primitive_keys: 1,
@@ -2459,6 +3183,16 @@ fn value_u64(value: &HkxValue) -> Option<u64> {
     }
 }
 
+fn value_bits_u64(value: &HkxValue) -> Option<u64> {
+    match value {
+        HkxValue::U64(v) => Some(*v),
+        HkxValue::I64(v) => Some(*v as u64),
+        HkxValue::U32(v) => Some(*v as u64),
+        HkxValue::I32(v) => Some(*v as u32 as u64),
+        _ => None,
+    }
+}
+
 fn value_f32(value: &HkxValue) -> Option<f32> {
     match value {
         HkxValue::F32(v) => Some(*v),
@@ -2574,6 +3308,16 @@ fn hkx_value_as_u32(value: &HkxValue) -> Option<u32> {
 fn shape_targets_for_body(hkx: &HkxFile, body_id: Option<usize>) -> Option<Vec<ShapeTarget>> {
     let body_id = body_id?;
     let body_shape_indices = body_shape_indices(hkx);
+    let shape_index = body_shape_index_for_body(hkx, body_id)?;
+    Some(shape_targets_for_shape_index(
+        hkx,
+        shape_index,
+        ShapeTransform::identity(),
+        &body_shape_indices,
+    ))
+}
+
+fn body_shape_index_for_body(hkx: &HkxFile, body_id: usize) -> Option<usize> {
     let psd = hkx
         .objects()
         .iter()
@@ -2586,12 +3330,7 @@ fn shape_targets_for_body(hkx: &HkxFile, body_id: Option<usize>) -> Option<Vec<S
             let body_val = bodies.get(body_id)?;
             if let Some(body_members) = body_val.as_object_members() {
                 if let Some(idx) = member_target_index(hkx, body_members, "shape") {
-                    return Some(shape_targets_for_shape_index(
-                        hkx,
-                        idx,
-                        ShapeTransform::identity(),
-                        &body_shape_indices,
-                    ));
+                    return Some(idx);
                 }
             }
         }
@@ -2625,27 +3364,10 @@ fn shape_targets_for_shape_index(
 
 fn body_shape_class_for_body(hkx: &HkxFile, body_id: Option<usize>) -> Option<String> {
     let body_id = body_id?;
-    let psd = hkx
-        .objects()
-        .iter()
-        .find(|o| o.class_name == "hknpPhysicsSystemData")?;
-    for m in &psd.members {
-        if m.name != "bodyCinfos" {
-            continue;
-        }
-        if let HkxValue::Array(ref bodies) = m.value {
-            let body_members = bodies.get(body_id)?.as_object_members()?;
-            let shape_member = body_members.iter().find(|member| member.name == "shape")?;
-            let target_index =
-                member_target_index(hkx, std::slice::from_ref(shape_member), "shape")?;
-            return hkx
-                .objects()
-                .get(target_index)
-                .map(|object| object.class_name.clone());
-        }
-        return None;
-    }
-    None
+    let target_index = body_shape_index_for_body(hkx, body_id)?;
+    hkx.objects()
+        .get(target_index)
+        .map(|object| object.class_name.clone())
 }
 
 fn compound_child_shape_targets(

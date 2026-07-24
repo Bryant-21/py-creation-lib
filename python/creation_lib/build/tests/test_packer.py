@@ -912,3 +912,17 @@ def test_pack_mod_validates_final_packed_size(tmp_path, monkeypatch):
             project_root=tmp_path,
             archive_max_bytes=9000,
         )
+
+
+def test_inventory_root_strings_skips_dotfile_temp_orphans(tmp_path):
+    strings_dir = tmp_path / "Strings"
+    strings_dir.mkdir()
+    (strings_dir / "B21_Test_en.STRINGS").write_bytes(b"real")
+    (strings_dir / ".B21_Test.esm.02m9o1vv_en.STRINGS").write_bytes(b"orphan")
+    (strings_dir / ".B21_Test.esm.ckfix.tmp_en.DLSTRINGS").write_bytes(b"orphan")
+
+    entries = packer._inventory_root_strings_entries(strings_dir)
+
+    assert [entry.relative_path for entry in entries] == [
+        "Strings/B21_Test_en.STRINGS"
+    ]

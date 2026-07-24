@@ -226,6 +226,7 @@ fn fo76_bundle_to_fo4_f32(
         specular_multiplier,
         gloss_multiplier,
         spec_offset,
+        preserve_lighting_rgb_for_glow: false,
     };
     let converted = texture_convert::fo76_bundle_to_fo4_buffers(
         diffuse,

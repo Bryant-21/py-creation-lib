@@ -441,6 +441,14 @@ def plugin_handle_load_index(
     return None
 
 
+def audit_plugin_topology(plugin_path: str, game: str | None = None) -> dict[str, Any]:
+    """Scan WRLD/CELL/LAND/NAVM group topology without materializing records."""
+    import json
+
+    native_fn = _require_native_function("audit_plugin_topology_native")
+    return dict(json.loads(str(native_fn(str(plugin_path), game))))
+
+
 def plugin_handle_new(plugin_name: str, game: str | None = None) -> Any:
     native_fn = _optional_native_function("plugin_handle_new")
     if callable(native_fn):

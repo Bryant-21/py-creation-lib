@@ -440,6 +440,99 @@ def deploy_loose_assets(
     return result
 
 
+def deploy_loose_file(
+    mod_name: str,
+    asset_path: Path | str,
+    *,
+    game: str,
+    game_data_dir: Path,
+    project_root: Path | str | None = None,
+    on_progress: Callable[[str], None] | None = None,
+) -> Path:
+    """Copy one mod asset to the game Data directory and track it."""
+    if project_root is None:
+        raise ValueError("project_root is required")
+
+    project_root = Path(project_root)
+    mod_dir = (project_root / "mods" / mod_name).resolve()
+    if not mod_dir.is_dir():
+        raise FileNotFoundError(f"Mod directory not found: {mod_dir}")
+
+    requested = Path(asset_path)
+    source = requested.resolve() if requested.is_absolute() else (mod_dir / requested).resolve()
+    if not source.is_file():
+        raise FileNotFoundError(f"Loose asset not found: {source}")
+
+    source_root_name = ""
+    source_rel: Path | None = None
+    destination_rel: Path | None = None
+    for root_name, destination_prefix in _SOURCE_ROOTS:
+        root = (mod_dir / root_name).resolve()
+        try:
+            relative = source.relative_to(root)
+        except ValueError:
+            continue
+        source_root_name = root_name
+        source_rel = relative
+        destination_rel = Path(destination_prefix) / relative if destination_prefix else relative
+        break
+
+    if source_rel is None or destination_rel is None:
+        roots = ", ".join(name for name, _ in _SOURCE_ROOTS)
+        raise ValueError(f"Loose asset must be under one of the mod roots: {roots}")
+
+    target_root = Path(game_data_dir).resolve()
+    destination = (target_root / destination_rel).resolve()
+    try:
+        destination.relative_to(target_root)
+    except ValueError as exc:
+        raise ValueError("Loose asset destination escapes the game Data directory") from exc
+
+    manifest = _read_manifest(mod_dir) or {
+        "mod_name": mod_name,
+        "game": game,
+        "game_data_dir": str(target_root),
+        "plugin": "",
+        "files": [],
+        "claimed_dirs": [],
+    }
+    manifest_target = Path(manifest.get("game_data_dir", target_root)).resolve()
+    if manifest_target != target_root:
+        raise RuntimeError(
+            f"Existing loose manifest targets {manifest_target}, not {target_root}"
+        )
+
+    entry = _copy_loose_job(_LooseCopyJob(
+        source=source,
+        dest=destination,
+        rel=destination_rel.as_posix(),
+        src_root=source_root_name,
+        src_rel=source_rel.as_posix(),
+    ))
+
+    files = [
+        item for item in manifest.get("files", [])
+        if str(item.get("rel", "")).casefold() != entry["rel"].casefold()
+    ]
+    files.append(entry)
+    claimed = _collect_claimed_dirs([item["rel"] for item in files], mod_name)
+    manifest.update({
+        "mod_name": mod_name,
+        "game": game,
+        "game_data_dir": str(target_root),
+        "deployed_at": datetime.datetime.now().isoformat(timespec="seconds"),
+        "files": sorted(files, key=lambda item: item["rel"].casefold()),
+        "claimed_dirs": claimed,
+    })
+    _write_manifest(mod_dir, manifest)
+
+    message = f"Deployed loose file: {entry['rel']} -> {destination}"
+    _log.info(message)
+    if on_progress:
+        on_progress(message)
+    return destination
+
+
 # ---------------------------------------------------------------------------
 # Undeploy
 # ---------------------------------------------------------------------------

@@ -373,19 +373,12 @@ pub(crate) fn load_flat_desc(dds_model: &str, ctx: &QuadCtx<'_>) -> FlatDesc {
         ..Default::default()
     };
 
-    // Search data_dirs for the .txt sidecar
-    for dir in &ctx.paths.data_dirs {
-        let candidate = dir.join(txt_model.replace('\\', "/"));
-        if let Ok(txt) = std::fs::read_to_string(&candidate) {
-            parse_billboard_dimensions(&txt, &mut fd);
-            return fd;
-        }
-        // Also try with the original (possibly backslash) path form
-        let candidate2 = dir.join(&txt_model);
-        if let Ok(txt) = std::fs::read_to_string(&candidate2) {
-            parse_billboard_dimensions(&txt, &mut fd);
-            return fd;
-        }
+    if let Some(asset) = crate::asset_source::resolve(&ctx.paths.data_dirs, &txt_model)
+        && let Ok(bytes) = crate::asset_source::read(&ctx.paths.data_dirs, &asset)
+        && let Ok(txt) = std::str::from_utf8(&bytes)
+    {
+        parse_billboard_dimensions(txt, &mut fd);
+        return fd;
     }
 
     // Not found — return the default FlatDesc (unit dimensions)

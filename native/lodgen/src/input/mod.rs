@@ -48,6 +48,208 @@ pub struct RefInput {
     pub material_swap: std::collections::BTreeMap<String, String>,
 }
 
+#[derive(Clone, Debug)]
+struct GrassModelInput {
+    base_name: String,
+    model: String,
+    max_slope_degrees: f32,
+}
+
+#[derive(Clone, Debug)]
+struct GrassLayerInput {
+    quadrant: u8,
+    alpha: Vec<f32>,
+    models: Vec<GrassModelInput>,
+}
+
+const GRASS_CELL_SIZE: f32 = 4096.0;
+const GRASS_POST_GRID: usize = 33;
+const GRASS_ALPHA_EDGE: usize = 17;
+
+fn sample_grass_layer_alpha(alpha: &[f32], quadrant: u8, u: f32, v: f32) -> f32 {
+    let (qu, qv) = match quadrant {
+        0 => (u * 2.0, v * 2.0),
+        1 => ((u - 0.5) * 2.0, v * 2.0),
+        2 => (u * 2.0, (v - 0.5) * 2.0),
+        3 => ((u - 0.5) * 2.0, (v - 0.5) * 2.0),
+        _ => return 0.0,
+    };
+    if !(0.0..=1.0).contains(&qu) || !(0.0..=1.0).contains(&qv) {
+        return 0.0;
+    }
+    if alpha.len() != GRASS_ALPHA_EDGE * GRASS_ALPHA_EDGE {
+        return 1.0;
+    }
+
+    let fx = qu.clamp(0.0, 1.0) * (GRASS_ALPHA_EDGE - 1) as f32;
+    let fy = qv.clamp(0.0, 1.0) * (GRASS_ALPHA_EDGE - 1) as f32;
+    let x0 = fx.floor() as usize;
+    let y0 = fy.floor() as usize;
+    let x1 = (x0 + 1).min(GRASS_ALPHA_EDGE - 1);
+    let y1 = (y0 + 1).min(GRASS_ALPHA_EDGE - 1);
+    let tx = fx - x0 as f32;
+    let ty = fy - y0 as f32;
+    let get = |x: usize, y: usize| alpha[y * GRASS_ALPHA_EDGE + x].clamp(0.0, 1.0);
+    let top = get(x0, y0) * (1.0 - tx) + get(x1, y0) * tx;
+    let bottom = get(x0, y1) * (1.0 - tx) + get(x1, y1) * tx;
+    (top * (1.0 - ty) + bottom * ty).clamp(0.0, 1.0)
+}
+
+fn grass_height_and_slope(heights: &[f32], u: f32, v: f32) -> Option<(f32, f32)> {
+    if heights.len() != GRASS_POST_GRID * GRASS_POST_GRID {
+        return None;
+    }
+    let fx = u.clamp(0.0, 1.0) * (GRASS_POST_GRID - 1) as f32;
+    let fy = v.clamp(0.0, 1.0) * (GRASS_POST_GRID - 1) as f32;
+    let x0 = fx.floor() as usize;
+    let y0 = fy.floor() as usize;
+    let x1 = (x0 + 1).min(GRASS_POST_GRID - 1);
+    let y1 = (y0 + 1).min(GRASS_POST_GRID - 1);
+    let tx = fx - x0 as f32;
+    let ty = fy - y0 as f32;
+    let h00 = heights[x0 + y0 * GRASS_POST_GRID];
+    let h10 = heights[x1 + y0 * GRASS_POST_GRID];
+    let h01 = heights[x0 + y1 * GRASS_POST_GRID];
+    let h11 = heights[x1 + y1 * GRASS_POST_GRID];
+    let south = h00 * (1.0 - tx) + h10 * tx;
+    let north = h01 * (1.0 - tx) + h11 * tx;
+    let height = south * (1.0 - ty) + north * ty;
+    let post_spacing = GRASS_CELL_SIZE / (GRASS_POST_GRID - 1) as f32;
+    let dz_dx = ((h10 - h00) * (1.0 - ty) + (h11 - h01) * ty) / post_spacing;
+    let dz_dy = ((h01 - h00) * (1.0 - tx) + (h11 - h10) * tx) / post_spacing;
+    let slope = (dz_dx * dz_dx + dz_dy * dz_dy).sqrt().atan().to_degrees();
+    Some((height, slope))
+}
+
+fn mix_grass_seed(mut value: u64) -> u64 {
+    value = value.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    value = (value ^ (value >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    value = (value ^ (value >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    value ^ (value >> 31)
+}
+
+fn grass_random(seed: u64, stream: u64) -> f32 {
+    let bits = mix_grass_seed(seed ^ stream) >> 40;
+    bits as f32 / 0x00FF_FFFFu32 as f32
+}
+
+fn grass_seed(
+    cell: (i32, i32),
+    level_index: usize,
+    layer_index: usize,
+    gx: usize,
+    gy: usize,
+) -> u64 {
+    [
+        cell.0 as u32 as u64,
+        cell.1 as u32 as u64,
+        level_index as u64,
+        layer_index as u64,
+        gx as u64,
+        gy as u64,
+    ]
+    .into_iter()
+    .fold(0, |seed, value| mix_grass_seed(seed ^ value))
+}
+
+fn synthesize_grass_refs_for_cell(
+    cell: (i32, i32),
+    heights: &[f32],
+    hidden_quadrants: [bool; 4],
+    layers: &[GrassLayerInput],
+    settings: &crate::settings::GrassSettings,
+    out: &mut Vec<RefInput>,
+) {
+    if !settings.enabled || layers.is_empty() {
+        return;
+    }
+    let min_alpha = settings.min_alpha.clamp(0.0, 1.0);
+    for (level_index, &spacing) in settings.spacings.iter().enumerate() {
+        if !spacing.is_finite() || spacing <= 0.0 {
+            continue;
+        }
+        let edge_count = (GRASS_CELL_SIZE / spacing).ceil().max(1.0) as usize;
+        let step = GRASS_CELL_SIZE / edge_count as f32;
+        for (layer_index, layer) in layers.iter().enumerate() {
+            if layer.models.is_empty()
+                || hidden_quadrants
+                    .get(layer.quadrant as usize)
+                    .copied()
+                    .unwrap_or(true)
+            {
+                continue;
+            }
+            for gy in 0..edge_count {
+                for gx in 0..edge_count {
+                    let seed = grass_seed(cell, level_index, layer_index, gx, gy);
+                    let jitter_x = (grass_random(seed, 1) - 0.5) * step * 0.5;
+                    let jitter_y = (grass_random(seed, 2) - 0.5) * step * 0.5;
+                    let local_x = ((gx as f32 + 0.5) * step + jitter_x)
+                        .clamp(0.0, GRASS_CELL_SIZE - f32::EPSILON);
+                    let local_y = ((gy as f32 + 0.5) * step + jitter_y)
+                        .clamp(0.0, GRASS_CELL_SIZE - f32::EPSILON);
+                    let u = local_x / GRASS_CELL_SIZE;
+                    let v = local_y / GRASS_CELL_SIZE;
+                    let mut coverage = sample_grass_layer_alpha(&layer.alpha, layer.quadrant, u, v);
+                    if layer.alpha.is_empty() {
+                        let overlay_coverage: f32 = layers
+                            .iter()
+                            .filter(|other| {
+                                other.quadrant == layer.quadrant && !other.alpha.is_empty()
+                            })
+                            .map(|other| {
+                                sample_grass_layer_alpha(&other.alpha, other.quadrant, u, v)
+                            })
+                            .sum();
+                        coverage *= 1.0 - overlay_coverage.clamp(0.0, 1.0);
+                    }
+                    if coverage < min_alpha || grass_random(seed, 3) > coverage {
+                        continue;
+                    }
+                    let Some((height, slope)) = grass_height_and_slope(heights, u, v) else {
+                        continue;
+                    };
+                    let model_index = (mix_grass_seed(seed ^ 4) as usize) % layer.models.len();
+                    let grass = &layer.models[model_index];
+                    if slope > grass.max_slope_degrees {
+                        continue;
+                    }
+                    let mut lod_models = [None, None, None, None];
+                    lod_models[level_index] = Some(grass.model.clone());
+                    out.push(RefInput {
+                        ref_id: format!(
+                            "GRASS:{}:{}:{level_index}:{layer_index}:{gx}:{gy}",
+                            cell.0, cell.1
+                        ),
+                        ref_flags: 0,
+                        enable_parent: 0,
+                        cell,
+                        pos: [
+                            cell.0 as f32 * GRASS_CELL_SIZE + local_x,
+                            cell.1 as f32 * GRASS_CELL_SIZE + local_y,
+                            height,
+                        ],
+                        rot: [0.0, 0.0, grass_random(seed, 5) * std::f32::consts::TAU],
+                        scale: 0.85 + grass_random(seed, 6) * 0.3,
+                        color: 1.0,
+                        alpha_threshold: 128,
+                        is_billboard: false,
+                        is_grass: true,
+                        base_name: grass.base_name.clone(),
+                        base_flags: 0,
+                        material_name: String::new(),
+                        full_model: grass.model.clone(),
+                        lod_models,
+                        part_transform: identity_part_transform(),
+                        part_scale: 1.0,
+                        material_swap: Default::default(),
+                    });
+                }
+            }
+        }
+    }
+}
+
 pub type StaticDesc = RefInput;
 
 pub fn identity_part_transform() -> [[f32; 4]; 4] {
@@ -137,7 +339,10 @@ mod object_lod_overlay;
 #[cfg(feature = "real-esp")]
 mod esp_enum {
     use super::object_lod_overlay::{ObjectLodOverlay, OverlayEntry};
-    use super::{CellInput, LayerTexture, RefInput, WorldspaceInput, decode_hidden_quadrants};
+    use super::{
+        CellInput, GrassLayerInput, GrassModelInput, LayerTexture, RefInput, WorldspaceInput,
+        decode_hidden_quadrants, synthesize_grass_refs_for_cell,
+    };
     use esp_authoring_core::plugin_runtime::{
         ParsedGroup, ParsedItem, ParsedPlugin, ParsedRecord, parse_plugin_file,
     };
@@ -741,18 +946,71 @@ mod esp_enum {
         (diffuse, normal)
     }
 
+    fn resolve_ltex_grasses(handle: &EspHandle, ltex_form_id: u32) -> Vec<GrassModelInput> {
+        let plugins = std::iter::once(handle.plugin.as_ref())
+            .flatten()
+            .chain(handle.masters.iter());
+        let Some(ltex) = plugins
+            .clone()
+            .find_map(|plugin| find_record_by_form_id(plugin, "LTEX", ltex_form_id))
+        else {
+            return Vec::new();
+        };
+
+        let mut grasses = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for gnam in ltex
+            .subrecords
+            .iter()
+            .filter(|sub| sub.signature.as_str() == "GNAM" && sub.data.len() >= 4)
+        {
+            let grass_form_id =
+                u32::from_le_bytes([gnam.data[0], gnam.data[1], gnam.data[2], gnam.data[3]]);
+            if !seen.insert(grass_form_id) {
+                continue;
+            }
+            let Some(grass) = plugins
+                .clone()
+                .find_map(|plugin| find_record_by_form_id(plugin, "GRAS", grass_form_id))
+            else {
+                continue;
+            };
+            let model = subrecord(grass, "MODL").map(zstring).unwrap_or_default();
+            if model.is_empty() {
+                continue;
+            }
+            let max_slope_degrees = subrecord(grass, "DATA")
+                .and_then(|data| data.get(2))
+                .copied()
+                .map(f32::from)
+                .filter(|value| *value > 0.0)
+                .unwrap_or(90.0);
+            grasses.push(GrassModelInput {
+                base_name: record_editor_id(grass).unwrap_or_default(),
+                model,
+                max_slope_degrees,
+            });
+        }
+        grasses
+    }
+
     /// Build the `LayerTexture` list for a LAND record. The BTXT base texture for a
     /// quadrant becomes an opaque layer (alpha treated as 1.0); each ATXT becomes a
     /// layer whose alpha comes from the VTXT that immediately follows it in
     /// subrecord order (FO4 LAND encoding).
-    fn build_layers(handle: &EspHandle, land: &ParsedRecord) -> Vec<LayerTexture> {
+    fn build_layers(
+        handle: &EspHandle,
+        land: &ParsedRecord,
+    ) -> (Vec<LayerTexture>, Vec<GrassLayerInput>) {
         let mut layers = Vec::new();
+        let mut grass_layers = Vec::new();
         let mut subs = land.subrecords.iter().peekable();
         while let Some(sub) = subs.next() {
             match sub.signature.as_str() {
                 "BTXT" => {
                     if let Some(h) = decode_layer_header(&sub.data) {
                         let (diffuse, normal) = resolve_ltex_textures(handle, h.texture_form_id);
+                        let grasses = resolve_ltex_grasses(handle, h.texture_form_id);
                         layers.push(LayerTexture {
                             diffuse,
                             normal,
@@ -761,11 +1019,19 @@ mod esp_enum {
                             // vec as fully opaque, which is the intended base behavior.
                             alpha: Vec::new(),
                         });
+                        if !grasses.is_empty() {
+                            grass_layers.push(GrassLayerInput {
+                                quadrant: h.quadrant,
+                                alpha: Vec::new(),
+                                models: grasses,
+                            });
+                        }
                     }
                 }
                 "ATXT" => {
                     if let Some(h) = decode_layer_header(&sub.data) {
                         let (diffuse, normal) = resolve_ltex_textures(handle, h.texture_form_id);
+                        let grasses = resolve_ltex_grasses(handle, h.texture_form_id);
                         // The paired VTXT (if any) follows this ATXT.
                         let alpha = match subs.peek() {
                             Some(next) if next.signature.as_str() == "VTXT" => {
@@ -780,14 +1046,21 @@ mod esp_enum {
                             diffuse,
                             normal,
                             quadrant: h.quadrant,
-                            alpha,
+                            alpha: alpha.clone(),
                         });
+                        if !grasses.is_empty() {
+                            grass_layers.push(GrassLayerInput {
+                                quadrant: h.quadrant,
+                                alpha,
+                                models: grasses,
+                            });
+                        }
                     }
                 }
                 _ => {}
             }
         }
-        layers
+        (layers, grass_layers)
     }
 
     // ---------------------------------------------------------------------------
@@ -1874,7 +2147,7 @@ mod esp_enum {
     pub fn enumerate_worldspace(
         handle: &EspHandle,
         world_editor_id: &str,
-        _settings: &crate::settings::LodSettings,
+        settings: &crate::settings::LodSettings,
     ) -> anyhow::Result<WorldspaceInput> {
         let plugin = handle
             .plugin
@@ -1898,6 +2171,7 @@ mod esp_enum {
         }
 
         let mut cells = Vec::with_capacity(cell_lands.len());
+        let mut grass_refs = Vec::new();
         for cl in &cell_lands {
             let (x, y) = cl.grid;
             let heights = match subrecord(cl.land, "VHGT") {
@@ -1908,11 +2182,20 @@ mod esp_enum {
                 Some(vclr) => decode_vclr(vclr),
                 None => vec![[255u8, 255, 255]; GRID * GRID],
             };
-            let layers = build_layers(handle, cl.land);
+            let (layers, grass_layers) = build_layers(handle, cl.land);
             let hidden_quadrants = subrecord(cl.land, "DATA")
                 .filter(|d| d.len() >= 4)
                 .map(|d| decode_hidden_quadrants(i32::from_le_bytes([d[0], d[1], d[2], d[3]])))
                 .unwrap_or([false; 4]);
+
+            synthesize_grass_refs_for_cell(
+                (x, y),
+                &heights,
+                hidden_quadrants,
+                &grass_layers,
+                &settings.grass,
+                &mut grass_refs,
+            );
 
             // Per-cell water height (CELL.XCLW) with the worldspace DNAM as fallback.
             // The water-emit rule (water.rs / GenerateWater) tests this per cell.
@@ -1967,7 +2250,8 @@ mod esp_enum {
         // Enumerate placed-object references (REFR) for object LOD. Each REFR
         // whose base record carries a DistantLOD model becomes a RefInput; disabled
         // refs and bases without LOD models are filtered out (ProcessReference).
-        let refs = enumerate_refs(handle, children);
+        let mut refs = enumerate_refs(handle, children);
+        refs.extend(grass_refs);
 
         Ok(WorldspaceInput {
             editor_id: world_editor_id.to_string(),
@@ -2083,6 +2367,89 @@ mod tests {
         assert_eq!(q, [true, true, false, true]);
         let none = decode_hidden_quadrants(0);
         assert_eq!(none, [false; 4]);
+    }
+
+    fn grass_layer(max_slope_degrees: f32) -> GrassLayerInput {
+        GrassLayerInput {
+            quadrant: 0,
+            alpha: Vec::new(),
+            models: vec![GrassModelInput {
+                base_name: "TestGrass".to_string(),
+                model: r"Landscape\Grass\TestGrass.nif".to_string(),
+                max_slope_degrees,
+            }],
+        }
+    }
+
+    #[test]
+    fn grass_refs_are_deterministic_and_level_scoped() {
+        let settings = crate::settings::GrassSettings {
+            enabled: true,
+            spacings: [1024.0, 0.0, 0.0, 0.0],
+            min_alpha: 0.35,
+        };
+        let mut first = Vec::new();
+        let mut second = Vec::new();
+        synthesize_grass_refs_for_cell(
+            (2, -3),
+            &vec![100.0; 33 * 33],
+            [false; 4],
+            &[grass_layer(90.0)],
+            &settings,
+            &mut first,
+        );
+        synthesize_grass_refs_for_cell(
+            (2, -3),
+            &vec![100.0; 33 * 33],
+            [false; 4],
+            &[grass_layer(90.0)],
+            &settings,
+            &mut second,
+        );
+
+        assert_eq!(first.len(), 4);
+        assert_eq!(
+            first
+                .iter()
+                .map(|reference| &reference.ref_id)
+                .collect::<Vec<_>>(),
+            second
+                .iter()
+                .map(|reference| &reference.ref_id)
+                .collect::<Vec<_>>()
+        );
+        assert!(first.iter().all(|reference| reference.is_grass));
+        assert!(first.iter().all(|reference| reference.pos[2] == 100.0));
+        assert!(first.iter().all(|reference| {
+            reference.lod_models[0].is_some()
+                && reference.lod_models[1..].iter().all(Option::is_none)
+        }));
+    }
+
+    #[test]
+    fn grass_refs_respect_source_slope_limit() {
+        let settings = crate::settings::GrassSettings {
+            enabled: true,
+            spacings: [1024.0, 0.0, 0.0, 0.0],
+            min_alpha: 0.35,
+        };
+        let mut heights = vec![0.0; 33 * 33];
+        for y in 0..33 {
+            for x in 0..33 {
+                heights[x + y * 33] = x as f32 * 512.0;
+            }
+        }
+        let mut refs = Vec::new();
+        synthesize_grass_refs_for_cell(
+            (0, 0),
+            &heights,
+            [false; 4],
+            &[grass_layer(10.0)],
+            &settings,
+            &mut refs,
+        );
+
+        assert!(refs.is_empty());
     }
 
     #[cfg(feature = "real-esp")]

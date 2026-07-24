@@ -31,6 +31,9 @@ pub struct SourcePolytopeShape {
     pub faces: Vec<(u16, u8, u8)>,
     pub indices: Vec<u8>,
     pub convex_radius: f32,
+    /// Source `hknpShapeMassProperties` carried verbatim; vanilla FO4 compound
+    /// children always ship real compressed mass properties, never zeros.
+    pub mass_properties: Option<super::mass_properties::CompressedMassProperties>,
 }
 
 impl SourcePolytopeShape {
@@ -112,7 +115,11 @@ fn rel_array(size: usize, rel_off: usize) -> [u8; 4] {
     b
 }
 
-fn normalize_fo4_polytope_arrays(planes: &mut Vec<[f32; 4]>, faces: &mut Vec<(u16, u8, u8)>) {
+fn normalize_fo4_polytope_arrays(
+    planes: &mut Vec<[f32; 4]>,
+    faces: &mut Vec<(u16, u8, u8)>,
+    preserve_min_half_angles: bool,
+) {
     while planes.len() < 4 && !planes.is_empty() {
         planes.push(planes[0]);
     }
@@ -120,8 +127,10 @@ fn normalize_fo4_polytope_arrays(planes: &mut Vec<[f32; 4]>, faces: &mut Vec<(u1
         faces.push(faces[0]);
     }
 
-    for face in faces.iter_mut() {
-        face.2 = FO4_POLYTOPE_FACE_MIN_HALF_ANGLE;
+    if !preserve_min_half_angles {
+        for face in faces.iter_mut() {
+            face.2 = FO4_POLYTOPE_FACE_MIN_HALF_ANGLE;
+        }
     }
 
     if !planes.is_empty() && planes.len() == faces.len() {
@@ -147,6 +156,8 @@ pub(crate) fn write_polytope_shape_object(
     indices: &[u8],
     mass: f32,
     mass_dist: Option<&super::mass_properties::SourceMassDistribution>,
+    source_mass_props: Option<&super::mass_properties::CompressedMassProperties>,
+    preserve_min_half_angles: bool,
     convex_radius: f32,
     user_data: u64,
     name_offs: &std::collections::HashMap<String, usize>,
@@ -155,7 +166,7 @@ pub(crate) fn write_polytope_shape_object(
 ) -> (usize, usize) {
     let mut planes = planes.to_vec();
     let mut faces = faces.to_vec();
-    normalize_fo4_polytope_arrays(&mut planes, &mut faces);
+    normalize_fo4_polytope_arrays(&mut planes, &mut faces, preserve_min_half_angles);
 
     let real_n = hull_verts.len();
     let n_verts = (real_n + 3) & !3; // pad up to a multiple of 4
@@ -267,12 +278,18 @@ pub(crate) fn write_polytope_shape_object(
     fx.add_global(refprop_entry_rel, 2, mass_props_rel);
     // Prefer the source body's real mass distribution (COM / volume / inertia)
     // over the AABB box approximation when it was decoded and this is a dynamic
-    // (non-zero mass) body. Static bodies (mass 0) keep the zeroed block.
-    let mp = match mass_dist {
-        Some(dist) if mass > 0.0 => super::mass_properties::mass_properties_from_source(dist),
-        _ => polytope_mass_properties(hull_verts, mass),
+    // (non-zero mass) body. Static bodies carry the source's compressed block
+    // verbatim when one was decoded (vanilla FO4 statics ship real values);
+    // otherwise they keep the zeroed block.
+    let mp_bytes = match (mass_dist, source_mass_props) {
+        (Some(dist), _) if mass > 0.0 => serialize_mass_properties_block(
+            &super::mass_properties::mass_properties_from_source(dist),
+        ),
+        (_, Some(props)) => {
+            super::mass_properties::serialize_compressed_mass_properties_block(props)
+        }
+        _ => serialize_mass_properties_block(&polytope_mass_properties(hull_verts, mass)),
     };
-    let mp_bytes = serialize_mass_properties_block(&mp);
     data.extend_from_slice(&mp_bytes);
     while data.len() % 16 != 0 {
         data.push(0);
@@ -292,6 +309,8 @@ fn build_polytope_data_section(
     indices: &[u8],
     name_offs: &std::collections::HashMap<String, usize>,
     opts: &BuildOptions,
+    preserve_min_half_angles: bool,
+    source_mass_props: Option<&super::mass_properties::CompressedMassProperties>,
 ) -> (Vec<u8>, FixupBuilder) {
     // hknpConvexPolytopeShape.h:85,196 mandates that m_planes and m_faces are
     // padded up to a minimum of 4 entries each (planes pad with m_planes[0];
@@ -378,6 +397,8 @@ fn build_polytope_data_section(
         indices,
         opts.mass,
         opts.mass_distribution.as_ref(),
+        source_mass_props,
+        preserve_min_half_angles,
         opts.convex_radius,
         opts.user_data.unwrap_or(0),
         name_offs,
@@ -428,6 +449,8 @@ pub fn build_fo4_polytope_collision(
         &hull.indices,
         &name_offs,
         opts,
+        false,
+        None,
     );
 
     let local_tbl = fx.build_local_table();
@@ -505,6 +528,8 @@ pub fn build_fo4_source_polytope_collision(
         &shape.indices,
         &name_offs,
         &opts,
+        true,
+        shape.mass_properties.as_ref(),
     );
 
     let local_tbl = fx.build_local_table();
@@ -672,6 +697,40 @@ mod tests {
     }
 
     #[test]
+    fn source_polytope_preserves_face_min_half_angles() {
+        let shape = SourcePolytopeShape {
+            vertices: cube_verts(),
+            planes: vec![
+                [1.0, 0.0, 0.0, -1.0],
+                [-1.0, 0.0, 0.0, -1.0],
+                [0.0, 1.0, 0.0, -1.0],
+                [0.0, -1.0, 0.0, -1.0],
+                [0.0, 0.0, 1.0, -1.0],
+                [0.0, 0.0, -1.0, -1.0],
+            ],
+            faces: vec![
+                (0, 4, 1),
+                (4, 4, 127),
+                (8, 4, 59),
+                (12, 4, 67),
+                (16, 4, 31),
+                (20, 4, 94),
+            ],
+            indices: vec![
+                1, 2, 6, 5, 0, 4, 7, 3, 2, 3, 7, 6, 0, 1, 5, 4, 4, 5, 6, 7, 0, 3, 2, 1,
+            ],
+            convex_radius: 0.01,
+            mass_properties: None,
+        };
+        let expected = shape.faces.iter().map(|face| face.2).collect::<Vec<_>>();
+        let blob = build_fo4_source_polytope_collision(&shape, &BuildOptions::default())
+            .expect("build source polytope");
+        let shape_abs = find_polytope_shape(&blob).expect("shape located");
+
+        assert_eq!(read_face_min_half_angles(&blob, shape_abs), expected);
+    }
+
+    #[test]
     fn polytope_vertices_padded_to_multiple_of_four() {
         // 5 vertices → must be padded to 8 (next multiple of 4).
         let verts = vec![
@@ -729,8 +788,9 @@ mod tests {
             mass: 0.0,
             ..BuildOptions::default()
         };
-        let (data, _fx) =
-            build_polytope_data_section(&verts, &planes, &faces, &indices, &name_offs, &opts);
+        let (data, _fx) = build_polytope_data_section(
+            &verts, &planes, &faces, &indices, &name_offs, &opts, false, None,
+        );
         // Find the polytope shape header in the synthetic data section.
         // It starts after psd (0x80) + body_props (0x50) + body_cinfo (0x60)
         // + shape_entry (0x10) = 0x150.

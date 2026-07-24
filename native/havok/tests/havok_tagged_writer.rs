@@ -214,8 +214,7 @@ fn type_section_bytes_appear_verbatim_in_blob() {
 fn novablast_round_trip_is_byte_identical_via_tagged_blob_builder() {
     use havok_native::collision::payload::{parse_tagged_collision, rebuild_tag0_collision};
 
-    let blob =
-        fixture_bytes("python/creation_lib/havok/tests/novablast_reference.bin");
+    let blob = fixture_bytes("python/creation_lib/havok/tests/novablast_reference.bin");
     let parsed = parse_tagged_collision(&blob).expect("parse novablast TAG0 collision");
     let rebuilt = rebuild_tag0_collision(&parsed).expect("rebuild TAG0 collision");
     assert_eq!(

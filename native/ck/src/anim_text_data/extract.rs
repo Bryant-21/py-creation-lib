@@ -280,6 +280,16 @@ pub fn race_dir_of(core_behavior: &str) -> Option<String> {
     }
 }
 
+/// `Actors\<Race>` → `<Race>` (the SyncAnimData project name), from a race DIR rather
+/// than a core-behavior path.
+pub fn race_name_of_dir(race_dir: &str) -> Option<String> {
+    race_dir
+        .replace('/', "\\")
+        .rsplit('\\')
+        .find(|part| !part.is_empty())
+        .map(str::to_string)
+}
+
 /// `Actors\<Race>\Behaviors\X.hkx` → `<Race>` (the SyncAnimData project name).
 pub fn race_name_of(core_behavior: &str) -> Option<String> {
     let norm = core_behavior.replace('/', "\\");
@@ -481,16 +491,19 @@ fn force_hkx_ext(rel: &str) -> String {
 }
 
 /// Build the MAIN project manifest `(project_name, project-relative file list)` for a
-/// creature, given its converted `Meshes` root and one core-behavior path (to locate
-/// the race dir). Reads the project/character/root-behavior `.hkx` for the canonical
-/// strings; falls back to on-disk discovery where a read comes back empty. Returns
-/// `None` only if the race dir cannot be located.
+/// creature, given its converted `Meshes` root and its race dir (`Actors\<Race>`).
+/// Reads the project/character/root-behavior `.hkx` for the canonical strings; falls
+/// back to on-disk discovery where a read comes back empty. Returns `None` only if the
+/// race dir cannot be located.
+///
+/// Takes the race dir rather than a core-behavior path because humanoid creatures mount
+/// the shared `Actors\Character\Behaviors\*` cores — their core path names `Character`,
+/// not the race that owns the project.
 pub fn extract_project_manifest(
-    core_behavior: &str,
+    race_dir: &str,
     meshes_root: &Path,
 ) -> Option<(String, Vec<String>)> {
-    let race_dir = race_dir_of(core_behavior)?; // Actors\<Race>
-    let race_name = race_name_of(core_behavior)?; // <Race>
+    let race_name = race_name_of_dir(race_dir)?; // <Race>
     let race_disk = meshes_root.join(race_dir.replace('\\', "/"));
 
     // --- project .hkx: name + characterFilenames ---

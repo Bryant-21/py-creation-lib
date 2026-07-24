@@ -57,11 +57,15 @@ pub mod plugin_runtime;
 mod previs_merge;
 pub mod schema_registry;
 mod strings_py;
+mod topology_audit;
 mod translated_store;
 #[path = "validate.rs"]
 mod validate;
 mod validate_walker;
 mod voice_reference;
+pub mod xcri;
+
+pub use previs_merge::{RECORD_FLAG_NO_PREVIS, cell_subrecord_rank, upsert_ordered_subrecord};
 
 pub(crate) fn default_job_count() -> usize {
     std::thread::available_parallelism()
@@ -654,6 +658,18 @@ fn plugin_handle_carry_worldspace_header_from_source_native(
     Ok(json.call_method1("loads", (text,))?.into_any().unbind())
 }
 
+#[pyfunction(name = "plugin_handle_rebuild_worldspace_cell_offsets")]
+fn plugin_handle_rebuild_worldspace_cell_offsets_native(
+    py: Python<'_>,
+    handle_id: u64,
+) -> PyResult<Py<PyAny>> {
+    let text = py.detach(move || {
+        crate::plugin_runtime::plugin_handle_rebuild_worldspace_cell_offsets_json(handle_id)
+    })?;
+    let json = PyModule::import(py, "json")?;
+    Ok(json.call_method1("loads", (text,))?.into_any().unbind())
+}
+
 #[pyfunction(name = "plugin_handle_copy_cell_slice_children")]
 #[pyo3(signature = (
     source_handle_id,
@@ -1203,6 +1219,10 @@ fn nvnm_validate_plugin_navmeshes(
 }
 
 pub fn register_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(
+        topology_audit::audit_plugin_topology_native,
+        m
+    )?)?;
     m.add_function(wrap_pyfunction!(validate_record_native, m)?)?;
     m.add_function(wrap_pyfunction!(supported_games, m)?)?;
     m.add_function(wrap_pyfunction!(fo76_custom_marker_icons, m)?)?;
@@ -1247,6 +1267,10 @@ pub fn register_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     )?)?;
     m.add_function(wrap_pyfunction!(
         plugin_handle_carry_worldspace_header_from_source_native,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        plugin_handle_rebuild_worldspace_cell_offsets_native,
         m
     )?)?;
     m.add_function(wrap_pyfunction!(

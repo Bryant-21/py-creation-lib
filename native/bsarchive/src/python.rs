@@ -111,6 +111,14 @@ impl ArchiveReader {
         }
         Ok(())
     }
+
+    pub fn list_files(&self) -> Vec<String> {
+        self.inner.list_files()
+    }
+
+    pub fn read_file(&self, file_path: &str) -> Result<Vec<u8>, String> {
+        self.inner.extract_file(file_path)
+    }
 }
 
 impl OpenArchive {
@@ -575,6 +583,7 @@ fn pack_archive_entries_impl(
         .map(|(source_path, archive_path)| PackEntrySpec {
             source_path: PathBuf::from(source_path),
             archive_path,
+            source_size: None,
         })
         .collect();
     pack::pack_archive_entries(
@@ -746,9 +755,10 @@ pub(crate) fn pack_archive_plans(
         let input_bytes = entries.iter().map(|entry| entry.2).sum();
         let entries = entries
             .into_iter()
-            .map(|(source_path, archive_path, _size)| PackEntrySpec {
+            .map(|(source_path, archive_path, source_size)| PackEntrySpec {
                 source_path: PathBuf::from(source_path),
                 archive_path,
+                source_size: Some(source_size),
             })
             .collect();
         native_plans.push(PackArchivePlan {

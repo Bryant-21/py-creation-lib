@@ -42,7 +42,10 @@ fn convert_batch_runs_mixed_fixture_tree_with_deterministic_results() {
     let dst_root = temp.join("dst");
     std::fs::create_dir_all(src_root.join("a")).unwrap();
     std::fs::create_dir_all(src_root.join("b")).unwrap();
-    copy_fixture("native/havok/tests/fixtures/skeleton.hkx", &src_root.join("a/skeleton.hkx"));
+    copy_fixture(
+        "native/havok/tests/fixtures/skeleton.hkx",
+        &src_root.join("a/skeleton.hkx"),
+    );
     copy_fixture(
         "../bacup/py_bacup_lib/python/bacup_lib/tests/fixtures/creatures/deathclaw/expected/character.hkx",
         &src_root.join("b/character.hkx"),
@@ -73,7 +76,10 @@ fn convert_batch_rejects_flattened_duplicate_destinations() {
     let dst_root = temp.join("dst");
     std::fs::create_dir_all(src_root.join("a")).unwrap();
     std::fs::create_dir_all(src_root.join("b")).unwrap();
-    copy_fixture("native/havok/tests/fixtures/skeleton.hkx", &src_root.join("a/same.hkx"));
+    copy_fixture(
+        "native/havok/tests/fixtures/skeleton.hkx",
+        &src_root.join("a/same.hkx"),
+    );
     copy_fixture(
         "../bacup/py_bacup_lib/python/bacup_lib/tests/fixtures/creatures/deathclaw/expected/character.hkx",
         &src_root.join("b/same.hkx"),

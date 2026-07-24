@@ -156,12 +156,14 @@ fn decode_target_plugin(plugin: &ParsedPlugin) -> Result<DecodedAnimInputs, Stri
     };
 
     for record in races {
+        let race_dir = race_dir_from_skeletal_model(record);
         let blocks = canonical_blocks_from_record(record, plugin)?;
         decoded
             .subgraphs
             .extend(blocks.iter().map(|block| SubgraphInput {
                 core_behavior: block.behavior_graph.clone(),
                 sapt_chain: block.paths.clone(),
+                race_dir: race_dir.clone(),
             }));
         decoded
             .weapon_profiles
@@ -215,6 +217,26 @@ fn records_with_signature<'a>(items: &'a [ParsedItem], signature: &str) -> Vec<&
     records
 }
 
+/// `Actors\<Race>` for this RACE, from its skeletal model (`ANAM`, e.g.
+/// `actors\scorched\characterassets\skeleton.nif`). Humanoid creatures mount the shared
+/// `Actors\Character\Behaviors\*` graphs, so a subgraph's core-behavior path names
+/// `Character` and cannot identify the race that owns the animation project.
+fn race_dir_from_skeletal_model(record: &ParsedRecord) -> Option<String> {
+    record
+        .subrecords
+        .iter()
+        .filter(|subrecord| subrecord.signature.as_str() == "ANAM")
+        .map(|subrecord| decode_zstring(&subrecord.data))
+        .find_map(|model| {
+            let norm = model.replace('/', "\\");
+            if !norm.to_ascii_lowercase().ends_with(".nif") {
+                return None;
+            }
+            let parts: Vec<&str> = norm.split('\\').filter(|s| !s.is_empty()).collect();
+            (parts.len() >= 3).then(|| parts[..2].join("\\"))
+        })
+}
+
 fn canonical_blocks_from_record(
     record: &ParsedRecord,
     plugin: &ParsedPlugin,
@@ -252,6 +274,7 @@ fn weapon_profiles_from_blocks(
     blocks: Vec<CanonicalSubgraphBlock<String, StanceFormKey, Vec<u8>>>,
 ) -> Result<Vec<WeaponProfileInput>, String> {
     let own_plugin = Arc::<str>::from(plugin.plugin_name.as_str());
+    let race_dir = race_dir_from_skeletal_model(record);
     let owner = resolve_form_id_to_form_key(record.form_id, &own_plugin, &plugin.header.masters);
     let owner_race = StanceFormKey {
         plugin: owner.plugin.to_string(),
@@ -278,6 +301,7 @@ fn weapon_profiles_from_blocks(
             let subgraph = SubgraphInput {
                 core_behavior: block.behavior_graph.clone(),
                 sapt_chain: block.paths.clone(),
+                race_dir: race_dir.clone(),
             };
             let id = subgraph.id();
             Some(WeaponProfileInput {
@@ -445,6 +469,53 @@ mod tests {
         path
     }
 
+    fn write_humanoid_race_fixture(dir: &Path) -> PathBuf {
+        let name = "HumanoidFixture.esp";
+        let path = dir.join(name);
+        let handle = plugin_handle_new_native(name, Some("fo4")).expect("create fixture plugin");
+        {
+            let mut store = plugin_handle_store_ref().lock().unwrap();
+            let slot = store.get_mut(&handle).unwrap();
+            slot.parsed.header.masters = vec!["Fallout4.esm".to_string()];
+            insert_parsed_record_in_slot(
+                slot,
+                record(
+                    "RACE",
+                    0x0100_0900,
+                    vec![
+                        zstring("EDID", "ScorchedRace"),
+                        zstring("ANAM", r"actors\scorched\characterassets\skeleton.nif"),
+                        // Humanoid: the core behavior is the SHARED character graph.
+                        zstring("SGNM", r"Actors\Character\Behaviors\GunBehavior.hkx"),
+                        zstring("SAPT", r"Actors\Scorched\Animations"),
+                        bytes("SRAF", &[7, 0, 0, 0]),
+                    ],
+                ),
+            );
+        }
+        plugin_handle_save_no_py(handle, path.to_str().unwrap()).expect("save fixture plugin");
+        assert!(plugin_handle_close_native(handle));
+        path
+    }
+
+    /// A humanoid creature mounts the shared `Actors\Character` behaviors, so the
+    /// subgraph's core path names `Character` and cannot identify the race that owns the
+    /// project. The race dir must come from the RACE's own skeletal model (`ANAM`).
+    #[test]
+    fn race_dir_comes_from_skeletal_model_not_core_behavior() {
+        let temp = tempfile::tempdir().unwrap();
+        let plugin = write_humanoid_race_fixture(temp.path());
+        let decoded =
+            subgraph_inputs_from_plugin(&plugin, "fo4", std::slice::from_ref(&plugin)).unwrap();
+
+        assert_eq!(decoded.subgraphs.len(), 1);
+        assert_eq!(
+            decoded.subgraphs[0].race_dir.as_deref(),
+            Some(r"actors\scorched"),
+            "race dir must follow the skeletal model, not the shared core behavior"
+        );
+    }
+
     #[test]
     fn canonical_parser_keeps_leading_and_post_flags_keywords_with_the_next_block() {
         use CanonicalSubgraphField::*;
@@ -479,6 +550,7 @@ mod tests {
             SubgraphInput {
                 core_behavior: r"Actors\Fixture\Behaviors\Fixture.hkx".to_string(),
                 sapt_chain: vec![r"Actors\Fixture\Animations".to_string()],
+                race_dir: None,
             }
         );
         assert_eq!(decoded.weapon_profiles.len(), 1);

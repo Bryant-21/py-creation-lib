@@ -16,7 +16,12 @@ import numpy as np
 import glm
 import moderngl
 
-from creation_lib.geometry.preview_meshes import mesh_to_wireframe_lines
+from creation_lib.geometry.preview_meshes import (
+    box_mesh_from_half_extents,
+    capsule_mesh_from_endpoints,
+    mesh_to_wireframe_lines,
+    sphere_mesh_from_center,
+)
 from creation_lib.havok.collision_preview import extract_preview_meshes_from_blob
 from creation_lib.nif.nif_file import NifFile
 from creation_lib.renderer.scene_renderer import SceneNode, Mesh, Material
@@ -38,6 +43,20 @@ class CollisionOverlay:
         0.4,
         0.85,
     )  # orange wireframe (matches scene tree category)
+    shapes: list["CollisionShapeOverlay"] = field(default_factory=list)
+
+
+@dataclass
+class CollisionShapeOverlay:
+    """Selectable triangle geometry for one collision shape."""
+
+    source_block_id: int
+    body_id: int | None
+    shape_index: int | None
+    shape_type: str
+    vertices: np.ndarray
+    triangles: np.ndarray
+    positions: np.ndarray
 
 
 @dataclass
@@ -424,21 +443,37 @@ def _extract_collision_overlay(
         return None
 
     lines = None
+    shapes: list[CollisionShapeOverlay] = []
 
     if coll_block.type_name == "bhkCollisionObject":
         # Legacy format: bhkCollisionObject → bhkRigidBody → shape
-        lines = _extract_legacy_collision_lines(
+        shapes = _extract_legacy_collision_shapes(
             nif, coll_block, havok_scale=havok_scale
         )
+        if shapes:
+            lines = [point.tolist() for shape in shapes for point in shape.positions]
+        else:
+            lines = _extract_legacy_collision_lines(
+                nif, coll_block, havok_scale=havok_scale
+            )
 
     elif coll_block.type_name == "bhkNPCollisionObject":
         # NP format: bhkNPCollisionObject → bhkPhysicsSystem (binary blob)
-        lines = _extract_np_collision_lines(nif, coll_block, havok_scale=havok_scale)
+        shapes = _extract_np_collision_shapes(nif, coll_block, havok_scale=havok_scale)
+        if shapes:
+            lines = [point.tolist() for shape in shapes for point in shape.positions]
+        else:
+            lines = _extract_np_collision_lines(
+                nif, coll_block, havok_scale=havok_scale
+            )
 
     if lines is None or len(lines) == 0:
         return None
 
-    return CollisionOverlay(positions=np.array(lines, dtype=np.float32))
+    return CollisionOverlay(
+        positions=np.array(lines, dtype=np.float32),
+        shapes=shapes,
+    )
 
 
 def _extract_legacy_collision_lines(
@@ -463,6 +498,202 @@ def _extract_legacy_collision_lines(
         return None
 
     return _extract_shape_lines(nif, shape_id, havok_scale=havok_scale)
+
+
+def _mesh_overlay(
+    mesh: dict,
+    source_block_id: int,
+    shape_type: str,
+    body_id: int | None = None,
+    shape_index: int | None = None,
+    transform: np.ndarray | None = None,
+) -> CollisionShapeOverlay | None:
+    raw_vertices = mesh.get("vertices") or []
+    raw_triangles = mesh.get("triangles") or []
+    if not raw_vertices or not raw_triangles:
+        return None
+    vertices = np.array(
+        [
+            [
+                float(vertex.get("x", 0.0)),
+                float(vertex.get("y", 0.0)),
+                float(vertex.get("z", 0.0)),
+            ]
+            for vertex in raw_vertices
+        ],
+        dtype=np.float32,
+    )
+    triangles = np.array(
+        [
+            [
+                int(triangle.get("v1", 0)),
+                int(triangle.get("v2", 0)),
+                int(triangle.get("v3", 0)),
+            ]
+            for triangle in raw_triangles
+        ],
+        dtype=np.uint32,
+    )
+    if transform is not None:
+        homogeneous = np.hstack(
+            [vertices, np.ones((len(vertices), 1), dtype=np.float32)]
+        )
+        vertices = (transform @ homogeneous.T).T[:, :3].astype(np.float32)
+    transformed_mesh = {
+        "vertices": [
+            {"x": float(v[0]), "y": float(v[1]), "z": float(v[2])} for v in vertices
+        ],
+        "triangles": raw_triangles,
+    }
+    positions = np.array(mesh_to_wireframe_lines(transformed_mesh), dtype=np.float32)
+    return CollisionShapeOverlay(
+        source_block_id=source_block_id,
+        body_id=body_id,
+        shape_index=shape_index,
+        shape_type=shape_type,
+        vertices=vertices,
+        triangles=triangles,
+        positions=positions,
+    )
+
+
+def _legacy_shape_transform(value, havok_scale: float) -> np.ndarray:
+    transform = np.eye(4, dtype=np.float32)
+    if not isinstance(value, dict):
+        return transform
+    for row in range(3):
+        for column in range(3):
+            key = f"m{row + 1}{column + 1}"
+            if key in value:
+                transform[row, column] = float(value[key])
+    translation = value.get("Translation")
+    if isinstance(translation, dict):
+        transform[0, 3] = float(translation.get("x", 0.0)) * havok_scale
+        transform[1, 3] = float(translation.get("y", 0.0)) * havok_scale
+        transform[2, 3] = float(translation.get("z", 0.0)) * havok_scale
+    else:
+        transform[0, 3] = float(value.get("m14", 0.0)) * havok_scale
+        transform[1, 3] = float(value.get("m24", 0.0)) * havok_scale
+        transform[2, 3] = float(value.get("m34", 0.0)) * havok_scale
+    return transform
+
+
+def _convex_shape_mesh(block, havok_scale: float) -> dict | None:
+    vertices = block.get_field("Vertices") or []
+    if len(vertices) < 4:
+        return None
+    mesh_vertices = [
+        {
+            "x": float(vertex.get("x", 0.0)) * havok_scale,
+            "y": float(vertex.get("y", 0.0)) * havok_scale,
+            "z": float(vertex.get("z", 0.0)) * havok_scale,
+        }
+        for vertex in vertices
+    ]
+    try:
+        from creation_lib.scientific.native_runtime import convex_hull_triangles
+
+        faces = convex_hull_triangles([[v["x"], v["y"], v["z"]] for v in mesh_vertices])
+    except Exception:
+        return None
+    return {
+        "vertices": mesh_vertices,
+        "triangles": [
+            {"v1": int(face[0]), "v2": int(face[1]), "v3": int(face[2])}
+            for face in faces
+        ],
+    }
+
+
+def _extract_legacy_collision_shapes(
+    nif,
+    coll_block,
+    havok_scale: float | None = None,
+) -> list[CollisionShapeOverlay]:
+    from creation_lib.nif.operations.collision import HAVOK_SCALE_FO4
+
+    body_id = coll_block.get_field("Body")
+    body = nif.get_block(body_id) if isinstance(body_id, int) and body_id >= 0 else None
+    shape_id = body.get_field("Shape") if body is not None else None
+    if not isinstance(shape_id, int) or shape_id < 0:
+        return []
+    scale = havok_scale if havok_scale is not None else HAVOK_SCALE_FO4
+
+    def _walk(
+        current_id: int,
+        transform: np.ndarray,
+        visiting: set[int],
+    ) -> list[CollisionShapeOverlay]:
+        if current_id in visiting:
+            return []
+        visiting = set(visiting)
+        visiting.add(current_id)
+        block = nif.get_block(current_id)
+        if block is None:
+            return []
+        type_name = block.type_name
+        if type_name in ("bhkTransformShape", "bhkConvexTransformShape"):
+            child_id = block.get_field("Shape")
+            if not isinstance(child_id, int) or child_id < 0:
+                return []
+            child_transform = _legacy_shape_transform(
+                block.get_field("Transform"), scale
+            )
+            return _walk(child_id, transform @ child_transform, visiting)
+        if type_name == "bhkListShape":
+            shapes = []
+            for child_id in block.get_field("Sub Shapes") or []:
+                if isinstance(child_id, int) and child_id >= 0:
+                    shapes.extend(_walk(child_id, transform, visiting))
+            return shapes
+        if type_name == "bhkMoppBvTreeShape":
+            child_id = block.get_field("Shape")
+            if isinstance(child_id, int) and child_id >= 0:
+                return _walk(child_id, transform, visiting)
+            return []
+
+        mesh = None
+        if type_name == "bhkConvexVerticesShape":
+            mesh = _convex_shape_mesh(block, scale)
+        elif type_name == "bhkBoxShape":
+            dimensions = block.get_field("Dimensions") or {}
+            mesh = box_mesh_from_half_extents(
+                [
+                    float(dimensions.get("x", 0.0)),
+                    float(dimensions.get("y", 0.0)),
+                    float(dimensions.get("z", 0.0)),
+                ],
+                scale,
+            )
+        elif type_name == "bhkSphereShape":
+            mesh = sphere_mesh_from_center(
+                [0.0, 0.0, 0.0],
+                float(block.get_field("Radius") or 0.0),
+                scale,
+            )
+        elif type_name == "bhkCapsuleShape":
+            first = block.get_field("First Point") or {}
+            second = block.get_field("Second Point") or {}
+            radius = block.get_field("Radius")
+            if radius is None:
+                radius = block.get_field("Radius 1") or 0.0
+            mesh = capsule_mesh_from_endpoints(
+                [float(first.get(axis, 0.0)) for axis in ("x", "y", "z")],
+                [float(second.get(axis, 0.0)) for axis in ("x", "y", "z")],
+                float(radius),
+                scale,
+            )
+        if mesh is None:
+            return []
+        overlay = _mesh_overlay(
+            mesh,
+            source_block_id=current_id,
+            shape_type=type_name,
+            transform=transform,
+        )
+        return [overlay] if overlay is not None else []
+
+    return _walk(shape_id, np.eye(4, dtype=np.float32), set())
 
 
 def _shapes_to_wireframe_lines(all_shapes: list) -> list | None:
@@ -597,6 +828,63 @@ def _parse_compound_instance_transforms(
         transforms.append((rot, trans))
 
     return transforms
+
+
+def _extract_np_collision_shapes(
+    nif,
+    coll_block,
+    havok_scale: float | None = None,
+) -> list[CollisionShapeOverlay]:
+    from creation_lib.nif.operations.collision import HAVOK_SCALE_FO4
+
+    data_id = coll_block.get_field("Data")
+    if not isinstance(data_id, int) or data_id < 0:
+        return []
+    data_block = nif.get_block(data_id)
+    if data_block is None or data_block.type_name != "bhkPhysicsSystem":
+        return []
+    binary = data_block.get_field("Binary Data")
+    raw = binary.get("Data") if isinstance(binary, dict) else None
+    if isinstance(raw, (bytes, bytearray)):
+        blob = bytes(raw)
+    elif isinstance(raw, list) and raw:
+        try:
+            blob = bytes(raw)
+        except (TypeError, ValueError):
+            return []
+    else:
+        return []
+
+    body_id = coll_block.get_field("Body ID")
+    try:
+        body_id_int = int(body_id) if body_id is not None else 0
+    except (TypeError, ValueError):
+        body_id_int = 0
+    scale = havok_scale if havok_scale is not None else HAVOK_SCALE_FO4
+    try:
+        previews = extract_preview_meshes_from_blob(
+            blob,
+            havok_scale=scale,
+            body_id=body_id_int,
+        )
+    except Exception:
+        return []
+
+    shapes = []
+    for shape_index, preview in enumerate(previews):
+        mesh = preview.get("mesh") if isinstance(preview, dict) else None
+        if not isinstance(mesh, dict):
+            continue
+        overlay = _mesh_overlay(
+            mesh,
+            source_block_id=data_id,
+            body_id=body_id_int,
+            shape_index=shape_index,
+            shape_type=str(preview.get("shape_type") or "unknown"),
+        )
+        if overlay is not None:
+            shapes.append(overlay)
+    return shapes
 
 
 def _extract_np_collision_lines(

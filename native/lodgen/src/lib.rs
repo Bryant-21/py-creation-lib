@@ -1,5 +1,6 @@
 use pyo3::prelude::*;
 
+pub mod asset_source;
 pub mod atlas;
 pub mod billboards;
 pub mod descriptors;
@@ -32,6 +33,44 @@ pub fn run_with_world(
     paths: &progress::LodPaths,
     progress: &mut dyn progress::Progress,
 ) -> anyhow::Result<progress::LodGenStats> {
+    let mut resolved_settings = settings.clone();
+    let has_layout_override = settings.global.southwest_cell.is_some()
+        || settings.global.bounds.is_some()
+        || settings.global.stride.is_some()
+        || settings.global.align != 0;
+    if settings.global.use_source_lodsettings && !has_layout_override {
+        if let Some(source_data_dir) = paths.source_data_dir.as_deref() {
+            if let Some(source) =
+                output::lodsettings::read_source(source_data_dir, &world.editor_id)?
+            {
+                resolved_settings.global.southwest_cell =
+                    Some([source.southwest.0, source.southwest.1]);
+                resolved_settings.global.stride = Some(source.stride);
+                resolved_settings.global.lod_min = source.min;
+                resolved_settings.global.lod_max = source.max;
+                progress.report(
+                    &format!(
+                        "using source LOD settings: southwest=({},{}) stride={} levels={}..{}",
+                        source.southwest.0,
+                        source.southwest.1,
+                        source.stride,
+                        source.min,
+                        source.max
+                    ),
+                    0.0,
+                );
+            }
+        }
+    }
+    let settings = &resolved_settings;
+    if paths.data_dirs.iter().any(|path| {
+        path.extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("ba2"))
+    }) {
+        progress.report("indexing LOD assets from BA2 archives", 0.0);
+    }
+    let _asset_sources = asset_source::prepare(&paths.data_dirs)?;
     let game = game::Game::fo4();
     let mut stats = if settings.global.generate_terrain {
         driver::run_terrain(world, settings, &game, paths, progress)?
@@ -255,8 +294,8 @@ fn try_enumerate(
 
 /// Python-visible paths struct passed to `generate_lod`.
 ///
-/// `data_dirs` are ASSET-ONLY search roots (LOD meshes/textures), searched after
-/// `output_dir`. `working_esm`, when set, is the SOLE plugin lodgen parses for the
+/// `data_dirs` are ASSET-ONLY loose roots or BA2 files (LOD meshes/textures),
+/// searched after `output_dir`. `working_esm`, when set, is the SOLE plugin lodgen parses for the
 /// worldspace + records (WRLD/CELL/LAND/REFR + base MNAM) — `data_dirs` is never
 /// scanned for the plugin, so a stale copy in the game install cannot shadow the
 /// freshly-built conversion output.
@@ -625,6 +664,101 @@ mod run_tests {
         // 4x4: L4->1, L8->1, L16->1, L32->1 = 4 btr
         assert_eq!(stats.btr, 4);
         assert!(stats.lod_written);
+    }
+
+    #[test]
+    fn run_with_world_uses_source_lodsettings_unless_layout_is_explicit() {
+        let world = crate::input::WorldspaceInput::from_cells(
+            "Tamriel",
+            vec![crate::input::CellInput {
+                x: -57,
+                y: -43,
+                heights: vec![0.0; 33 * 33],
+                vertex_colors: vec![[255, 255, 255]; 33 * 33],
+                layers: Vec::new(),
+                hidden_quadrants: [false; 4],
+                water_height: f32::MIN,
+            }],
+        );
+        let root =
+            std::env::temp_dir().join(format!("lodgen_source_window_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let source_dir = root.join("source");
+        let settings_dir = source_dir.join("LODSettings");
+        std::fs::create_dir_all(&settings_dir).unwrap();
+        std::fs::write(
+            settings_dir.join("Tamriel.lod"),
+            crate::output::lodsettings::encode((-96, -96), 256, 4, 32),
+        )
+        .unwrap();
+
+        let mut settings = LodSettings::fo4_default();
+        settings.global.generate_objects = false;
+        let source_output = root.join("source_output");
+        let source_paths = LodPaths {
+            data_dirs: vec![root.clone()],
+            output_dir: source_output.clone(),
+            source_data_dir: Some(source_dir.clone()),
+        };
+        run_with_world(&world, &settings, &source_paths, &mut NullProgress).unwrap();
+        assert_eq!(
+            std::fs::read(source_output.join("LODSettings/Tamriel.lod")).unwrap(),
+            crate::output::lodsettings::encode((-96, -96), 256, 4, 32)
+        );
+        for (level, x, y) in [(4, -60, -44), (8, -64, -48), (16, -64, -48), (32, -64, -64)] {
+            assert!(
+                source_output
+                    .join(format!(
+                        "Meshes/Terrain/Tamriel/Tamriel.{level}.{x}.{y}.btr"
+                    ))
+                    .is_file()
+            );
+        }
+
+        settings.global.southwest_cell = Some([-8, -8]);
+        settings.global.stride = Some(64);
+        let override_output = root.join("override_output");
+        let override_paths = LodPaths {
+            data_dirs: vec![root.clone()],
+            output_dir: override_output.clone(),
+            source_data_dir: Some(source_dir.clone()),
+        };
+        run_with_world(&world, &settings, &override_paths, &mut NullProgress).unwrap();
+        assert_eq!(
+            std::fs::read(override_output.join("LODSettings/Tamriel.lod")).unwrap(),
+            crate::output::lodsettings::encode((-8, -8), 64, 4, 32)
+        );
+
+        settings.global.southwest_cell = None;
+        settings.global.stride = None;
+        settings.global.align = 4;
+        let aligned_output = root.join("aligned_output");
+        let aligned_paths = LodPaths {
+            data_dirs: vec![root.clone()],
+            output_dir: aligned_output.clone(),
+            source_data_dir: Some(source_dir.clone()),
+        };
+        run_with_world(&world, &settings, &aligned_paths, &mut NullProgress).unwrap();
+        assert_eq!(
+            std::fs::read(aligned_output.join("LODSettings/Tamriel.lod")).unwrap(),
+            crate::output::lodsettings::encode((-60, -44), 4, 4, 32)
+        );
+
+        settings.global.align = 0;
+        settings.global.use_source_lodsettings = false;
+        let disabled_output = root.join("disabled_output");
+        let disabled_paths = LodPaths {
+            data_dirs: vec![root.clone()],
+            output_dir: disabled_output.clone(),
+            source_data_dir: Some(source_dir),
+        };
+        run_with_world(&world, &settings, &disabled_paths, &mut NullProgress).unwrap();
+        assert_eq!(
+            std::fs::read(disabled_output.join("LODSettings/Tamriel.lod")).unwrap(),
+            crate::output::lodsettings::encode((-57, -43), 1, 4, 32)
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

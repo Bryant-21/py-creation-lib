@@ -767,14 +767,128 @@ pub fn build_subgraph_offsets_body_weapon(
     ))
 }
 
+/// True for the FO4 furniture behavior cores (`WorkbenchFurnitureBehavior`,
+/// `FurnitureBehavior`, `FurnitureNoMirrorBehavior`, `1stPFurnitureIdleBehavior`,
+/// `SingleAnimFurniture`, the furniture wrapping behaviors).
+pub fn is_furniture_core_behavior(core_behavior_rel: &str) -> bool {
+    core_behavior_rel.to_ascii_lowercase().contains("furniture")
+}
+
+/// The clip's own duration, for clips that ship no baked reference frame.
+fn clip_duration(clip_hkx: &Path) -> Option<f32> {
+    let data = std::fs::read(clip_hkx).ok()?;
+    let hkx = read_packfile(&data).ok()?;
+    hkx.objects()
+        .iter()
+        .find(|o| o.class_name.starts_with("hka") && o.class_name.ends_with("Animation"))
+        .and_then(|o| f32_member(o, "duration"))
+}
+
+/// Build the per-subgraph `AnimationOffsets/<id>.txt` body for a **furniture** subgraph.
+///
+/// Furniture differs from the creature/weapon builders in two ways, both taken from CK
+/// output rather than inferred:
+///
+/// 1. **No motion gate.** Every one of FO4's 252 Furniture-role subgraph blocks ships an
+///    offsets entry, including wholly static ones — `Furniture\Chair` and
+///    `Furniture\BarStool` each carry one clip whose single translation sample is
+///    `(0,0,0)`. The creature/weapon builders return `None` when nothing moves; for
+///    furniture that would drop the file the engine needs to build the subgraph at all.
+/// 2. **Clips with no baked reference frame still get an entry.** FO76 furniture clips
+///    carry a null `extractedMotion` (verified on the FO76 *source*, so this is a
+///    convention difference, not a conversion loss). CK's static-furniture entries are
+///    exactly a neutral frame, so synthesize one rather than dropping the clip — dropping
+///    it empties both sections and yields no file.
+///
+/// The clip universe is the same cross-file `GraphResolver` closure `AnimationFileData`
+/// uses, because a furniture core behavior lives in the base game, not the mod.
+pub fn build_subgraph_offsets_body_furniture(
+    resolver: &mut GraphResolver,
+    core_behavior_rel: &str,
+    sapt_chain: &[String],
+) -> Option<Vec<u8>> {
+    let mut section1: Vec<OffsetsClipNoMotion> = Vec::new();
+    let mut section2: Vec<OffsetsMotion> = Vec::new();
+    let mut seen_paths: BTreeSet<String> = BTreeSet::new();
+
+    for (clip_name, anim_no_ext, disk) in
+        resolver.resolve_clip_generators(core_behavior_rel, sapt_chain)
+    {
+        if !seen_paths.insert(anim_no_ext.clone()) {
+            continue;
+        }
+        section1.push(OffsetsClipNoMotion {
+            clip_name,
+            anim_path: anim_no_ext.clone(),
+        });
+        let (duration, translations, rotations) = match extract_baked_reference_frame(&disk) {
+            Some(rf) => {
+                let (translations, rotations) = reduce_lanes(&rf);
+                (rf.duration, translations, rotations)
+            }
+            None => {
+                let duration = clip_duration(&disk).unwrap_or(1.0);
+                (
+                    duration,
+                    vec![(duration, [0.0_f32; 3])],
+                    vec![(duration, [0.0, 0.0, 0.0, 1.0])],
+                )
+            }
+        };
+        section2.push(OffsetsMotion {
+            anim_path: anim_no_ext,
+            duration,
+            translations,
+            rotations,
+            annotations: extract_root_annotations(&disk),
+        });
+    }
+
+    if section1.is_empty() {
+        return None;
+    }
+    section1.sort_by(|a, b| a.anim_path.cmp(&b.anim_path));
+    section2.sort_by(|a, b| a.anim_path.cmp(&b.anim_path));
+    Some(animation_offsets_populated_body(
+        core_behavior_rel,
+        &section1,
+        &section2,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every FO4 furniture core must route to the furniture builder; creature and weapon
+    /// cores must not, so their byte-exact paths keep owning their subgraphs.
+    #[test]
+    fn furniture_cores_are_recognised_and_others_are_not() {
+        for core in [
+            r"Actors\Character\Behaviors\WorkbenchFurnitureBehavior.hkx",
+            r"Actors\Character\Behaviors\FurnitureBehavior.hkx",
+            r"Actors\Character\Behaviors\FurnitureNoMirrorBehavior.hkx",
+            r"Actors\Character\Behaviors\SingleAnimFurniture.hkx",
+            r"Actors\Character\_1stPerson\Behaviors\1stPFurnitureIdleBehavior.hkx",
+            r"Actors\Character\Behaviors\UseBodyMorphOffsetFurnitureWrappingBehavior.hkx",
+            r"Actors\Character\Behaviors\EnableSneakFurnitureWrappingBehavior.hkx",
+        ] {
+            assert!(is_furniture_core_behavior(core), "{core}");
+        }
+        for core in [
+            r"Actors\Snallygaster\Behaviors\SnallygasterCoreBehavior.hkx",
+            r"Actors\Character\Behaviors\GunBehavior.hkx",
+            r"Actors\Character\_1stPerson\Behaviors\1stPGunBehavior.hkx",
+        ] {
+            assert!(!is_furniture_core_behavior(core), "{core}");
+        }
+    }
 
     fn aggregate_subgraph(core_behavior: &str, sapt_chain: &[&str]) -> SubgraphInput {
         SubgraphInput {
             core_behavior: core_behavior.to_string(),
             sapt_chain: sapt_chain.iter().map(|path| (*path).to_string()).collect(),
+            race_dir: None,
         }
     }
 

@@ -23,7 +23,13 @@ const SLSF2_PREMULT_ALPHA: u64 = 1 << 19;
 const SLSF2_ANISOTROPIC_LIGHTING: u64 = 1 << 21;
 const SLSF2_BACK_LIGHTING: u64 = 1 << 27;
 const SLSF2_TREE_ANIM: u64 = 1 << 29;
+const NI_ALPHA_BLEND: u64 = 1 << 0;
+const NI_ALPHA_TEST: u64 = 1 << 9;
+const DEFAULT_NI_ALPHA_FLAGS: u64 = 4844;
+const DEFAULT_ALPHA_THRESHOLD: u8 = 128;
+const VF_VERTEX: i64 = 0x0001;
 const VF_SKINNED: i64 = 0x0040;
+const VF_FULL_PRECISION: i64 = 0x0400;
 
 const FO4_FLAGS_1_STATIC_MASK: u64 = (1 << 0)
     | (1 << 3)
@@ -78,19 +84,23 @@ pub(crate) struct MaterialSynthesisReport {
     pub warnings: Vec<String>,
 }
 
-pub(crate) fn validate_static_only(nif: &NifFile) -> Result<(), String> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct AlphaSettings {
+    blend: bool,
+    source_blend_mode: u32,
+    destination_blend_mode: u32,
+    test: bool,
+    threshold: u8,
+}
+
+pub(crate) fn validate_unskinned_geometry(nif: &NifFile) -> Result<(), String> {
     for block in &nif.blocks {
         if matches!(
             block.type_name.as_str(),
-            "BSDynamicTriShape"
-                | "NiSkinInstance"
-                | "BSDismemberSkinInstance"
-                | "NiControllerManager"
-                | "NiControllerSequence"
-        ) || crate::schema::SCHEMA.is_subtype_of(&block.type_name, "NiTimeController")
-        {
+            "BSDynamicTriShape" | "NiSkinInstance" | "BSDismemberSkinInstance"
+        ) {
             return Err(format!(
-                "Skyrim static NIF conversion excludes animated/skinned block {} ({})",
+                "Skyrim NIF conversion excludes dynamic/skinned block {} ({})",
                 block.block_id, block.type_name
             ));
         }
@@ -114,6 +124,7 @@ pub(crate) fn normalize_static_geometry(nif: &mut NifFile) -> usize {
         let vertex_count = array_len(block.get_field("Vertex Data"));
         block.set_field("Num Triangles", NifValue::UInt(triangle_count as u64));
         block.set_field("Num Vertices", NifValue::UInt(vertex_count as u64));
+        retarget_static_vertex_desc(block);
         for key in [
             "Particle Data Size",
             "Particle Vertices",
@@ -130,6 +141,30 @@ pub(crate) fn normalize_static_geometry(nif: &mut NifFile) -> usize {
         normalized += 1;
     }
     normalized
+}
+
+fn retarget_static_vertex_desc(block: &mut NifBlock) {
+    let Some(source_desc) = block.get_field("Vertex Desc").map(NifValue::as_i64) else {
+        return;
+    };
+    let attributes = (source_desc >> 44) & 0xFFF;
+    if attributes & VF_VERTEX == 0 || attributes & VF_FULL_PRECISION != 0 {
+        return;
+    }
+
+    let mut target_desc = source_desc as u64;
+    let source_stride = target_desc & 0xF;
+    if source_stride < 2 {
+        return;
+    }
+    target_desc = (target_desc & !0xF) | (source_stride - 2);
+    for shift in (8..=36).step_by(4) {
+        let source_offset = (target_desc >> shift) & 0xF;
+        if source_offset >= 2 {
+            target_desc = (target_desc & !(0xF << shift)) | ((source_offset - 2) << shift);
+        }
+    }
+    block.set_field("Vertex Desc", NifValue::UInt(target_desc));
 }
 
 pub(crate) fn synthesize_fo4_materials(
@@ -164,8 +199,9 @@ pub(crate) fn synthesize_fo4_materials(
             std::fs::create_dir_all(parent)?;
         }
 
+        let alpha = linked_alpha_settings(nif, shader_id);
         let bytes = if extension == "bgem" {
-            bgem::write(&effect_material(&shader))
+            bgem::write(&effect_material(&shader, alpha))
         } else {
             let textures = shader_texture_paths(nif, &shader);
             if textures.is_empty() {
@@ -173,7 +209,7 @@ pub(crate) fn synthesize_fo4_materials(
                     "Skyrim shader block {shader_id} has no readable BSShaderTextureSet; emitted a default BGSM"
                 ));
             }
-            bgsm::write(&lighting_material(&shader, &textures))
+            bgsm::write(&lighting_material(&shader, &textures, alpha))
         };
         std::fs::write(&output_path, bytes)?;
 
@@ -262,10 +298,68 @@ fn shader_texture_paths(nif: &NifFile, shader: &NifBlock) -> Vec<String> {
         .collect()
 }
 
-fn lighting_material(shader: &NifBlock, textures: &[String]) -> bgsm::BgsmData {
+fn linked_alpha_settings(nif: &NifFile, shader_id: usize) -> Option<AlphaSettings> {
+    nif.blocks
+        .iter()
+        .filter(|block| is_geometry(block))
+        .filter(|shape| {
+            linked_property_id(
+                nif,
+                shape,
+                "Shader Property",
+                &["BSLightingShaderProperty", "BSEffectShaderProperty"],
+            ) == Some(shader_id)
+        })
+        .find_map(|shape| {
+            let alpha_id = linked_property_id(nif, shape, "Alpha Property", &["NiAlphaProperty"])?;
+            let alpha = nif.get_block(alpha_id)?;
+            let flags = numeric(alpha.get_field("Flags")).unwrap_or(DEFAULT_NI_ALPHA_FLAGS);
+            Some(AlphaSettings {
+                blend: flags & NI_ALPHA_BLEND != 0,
+                source_blend_mode: ((flags >> 1) & 0xF) as u32,
+                destination_blend_mode: ((flags >> 5) & 0xF) as u32,
+                test: flags & NI_ALPHA_TEST != 0,
+                threshold: numeric(alpha.get_field("Threshold"))
+                    .and_then(|value| u8::try_from(value).ok())
+                    .unwrap_or(DEFAULT_ALPHA_THRESHOLD),
+            })
+        })
+}
+
+fn linked_property_id(
+    nif: &NifFile,
+    shape: &NifBlock,
+    direct_field: &str,
+    property_types: &[&str],
+) -> Option<usize> {
+    let has_type = |id: usize| {
+        nif.get_block(id)
+            .is_some_and(|block| property_types.contains(&block.type_name.as_str()))
+    };
+    if let Some(id) = block_ref(shape.get_field(direct_field)).filter(|id| has_type(*id)) {
+        return Some(id);
+    }
+    let Some(NifValue::Array(properties)) = shape.get_field("Properties") else {
+        return None;
+    };
+    properties
+        .iter()
+        .filter_map(|property| block_ref(Some(property)))
+        .find(|id| has_type(*id))
+}
+
+fn block_ref(value: Option<&NifValue>) -> Option<usize> {
+    numeric(value).and_then(|value| usize::try_from(value).ok())
+}
+
+fn lighting_material(
+    shader: &NifBlock,
+    textures: &[String],
+    alpha: Option<AlphaSettings>,
+) -> bgsm::BgsmData {
     let flags_1 = numeric(shader.get_field("Shader Flags 1")).unwrap_or(0);
     let flags_2 = numeric(shader.get_field("Shader Flags 2")).unwrap_or(0);
-    let mut header = fo4_material_header(flags_1, flags_2, shader);
+    let mut header = fo4_material_header(flags_1, flags_2, shader, alpha);
     header.signature = bgsm::BGSM_SIGNATURE;
     let mut material = bgsm::BgsmData {
         header,
@@ -302,6 +396,7 @@ fn lighting_material(shader: &NifBlock, textures: &[String]) -> bgsm::BgsmData {
         }),
         ..bgsm::BgsmData::default()
     };
+    material.SmoothSpecTexture = smooth_spec_path(&material.NormalTexture);
     let detail = texture(textures, 2);
     if material.Glowmap || material.EmitEnabled {
         material.GlowTexture = nonempty(detail);
@@ -311,17 +406,37 @@ fn lighting_material(shader: &NifBlock, textures: &[String]) -> bgsm::BgsmData {
     if flags_1 & SLSF1_ENVIRONMENT_MAPPING != 0 {
         material.header.env_mapping = Some(true);
         material.EnvmapTexture = nonempty(texture(textures, 4));
-        if material.GlowTexture.is_none() {
-            material.GlowTexture = nonempty(texture(textures, 5));
-        }
     }
     material
 }
 
-fn effect_material(shader: &NifBlock) -> bgem::BgemData {
+/// Derive the FO4 `_s` path from the normal's path.
+///
+/// The texture conversion engine folds Skyrim's normal-alpha gloss and its
+/// `_em` environment mask into `<normal base>_s.dds`, keyed off the `_n` in the
+/// normal's stem. A normal that does not carry `_n` produces no `_s`, so the
+/// slot stays empty rather than pointing at a file nothing writes.
+fn smooth_spec_path(normal: &str) -> String {
+    let path = Path::new(normal);
+    let Some(stem) = path.file_stem().and_then(|value| value.to_str()) else {
+        return String::new();
+    };
+    let Some(index) = stem.to_ascii_lowercase().rfind("_n") else {
+        return String::new();
+    };
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| format!(".{value}"))
+        .unwrap_or_default();
+    let parent = normal[..normal.len() - stem.len() - extension.len()].to_string();
+    format!("{parent}{}_s{extension}", &stem[..index])
+}
+
+fn effect_material(shader: &NifBlock, alpha: Option<AlphaSettings>) -> bgem::BgemData {
     let flags_1 = numeric(shader.get_field("Shader Flags 1")).unwrap_or(0);
     let flags_2 = numeric(shader.get_field("Shader Flags 2")).unwrap_or(0);
-    let mut header = fo4_material_header(flags_1, flags_2, shader);
+    let mut header = fo4_material_header(flags_1, flags_2, shader, alpha);
     header.signature = bgem::BGEM_SIGNATURE;
     bgem::BgemData {
         header,
@@ -353,7 +468,12 @@ fn effect_material(shader: &NifBlock) -> bgem::BgemData {
     }
 }
 
-fn fo4_material_header(flags_1: u64, flags_2: u64, shader: &NifBlock) -> BaseHeader {
+fn fo4_material_header(
+    flags_1: u64,
+    flags_2: u64,
+    shader: &NifBlock,
+    alpha: Option<AlphaSettings>,
+) -> BaseHeader {
     let uv_offset = tex_coord(shader.get_field("UV Offset")).unwrap_or([0.0, 0.0]);
     let uv_scale = tex_coord(shader.get_field("UV Scale")).unwrap_or([1.0, 1.0]);
     BaseHeader {
@@ -366,11 +486,11 @@ fn fo4_material_header(flags_1: u64, flags_2: u64, shader: &NifBlock) -> BaseHea
         u_scale: uv_scale[0],
         v_scale: uv_scale[1],
         alpha: float(shader.get_field("Alpha")).unwrap_or(1.0),
-        alpha_blend_mode0: 0,
-        alpha_blend_mode1: 6,
-        alpha_blend_mode2: 7,
-        alpha_test_ref: 128,
-        alpha_test: false,
+        alpha_blend_mode0: alpha.is_some_and(|settings| settings.blend) as u8,
+        alpha_blend_mode1: alpha.map_or(6, |settings| settings.source_blend_mode),
+        alpha_blend_mode2: alpha.map_or(7, |settings| settings.destination_blend_mode),
+        alpha_test_ref: alpha.map_or(DEFAULT_ALPHA_THRESHOLD, |settings| settings.threshold),
+        alpha_test: alpha.is_some_and(|settings| settings.test),
         zbuffer_write: flags_2 & SLSF2_ZBUFFER_WRITE != 0,
         zbuffer_test: flags_1 & SLSF1_ZBUFFER_TEST != 0,
         ssr: false,
@@ -551,7 +671,35 @@ mod tests {
         let mut fields = IndexMap::new();
         fields.insert("Skin".to_string(), NifValue::Ref(0));
         nif.add_block("BSTriShape", Some(fields));
-        assert!(validate_static_only(&nif).is_err());
+        assert!(validate_unskinned_geometry(&nif).is_err());
+    }
+
+    #[test]
+    fn rigid_transform_animation_is_supported() {
+        let mut nif = NifFile::new("skyrimse");
+        nif.add_block("NiTransformController", None);
+        nif.add_block("NiTransformInterpolator", None);
+        nif.add_block("NiTransformData", None);
+
+        assert!(validate_unskinned_geometry(&nif).is_ok());
+    }
+
+    #[test]
+    fn static_geometry_retargets_rock_grass_vertex_stream() {
+        let mut nif = NifFile::new("skyrimse");
+        let mut fields = IndexMap::new();
+        fields.insert(
+            "Vertex Desc".to_string(),
+            NifValue::UInt(0x0003_B000_0765_0408),
+        );
+        nif.add_block("BSTriShape", Some(fields));
+
+        normalize_static_geometry(&mut nif);
+
+        assert_eq!(
+            nif.blocks[1].get_field("Vertex Desc").map(NifValue::as_i64),
+            Some(0x0003_B000_0543_0206)
+        );
     }
 
     #[test]
@@ -579,11 +727,12 @@ mod tests {
                 String::new(),
                 "a_s.dds".into(),
             ],
+            None,
         );
         assert_eq!(material.DiffuseTexture, "a_d.dds");
         assert_eq!(material.NormalTexture, "a_n.dds");
         assert_eq!(material.GlowTexture.as_deref(), Some("a_g.dds"));
-        assert!(material.SmoothSpecTexture.is_empty());
+        assert_eq!(material.SmoothSpecTexture, "a_s.dds");
         assert_eq!(material.BackLighting, Some(true));
         assert_eq!(material.BackLightPower, Some(3.5));
         assert!(material.DisplacementTexture.is_none());
@@ -593,7 +742,7 @@ mod tests {
     }
 
     #[test]
-    fn environment_material_uses_skyrim_mask_slot() {
+    fn environment_material_folds_the_mask_into_the_spec_map() {
         let mut shader = NifBlock::new(0, "BSLightingShaderProperty");
         shader.set_field(
             "Shader Flags 1:SK",
@@ -609,9 +758,13 @@ mod tests {
                 "a_cube.dds".into(),
                 "a_em.dds".into(),
             ],
+            None,
         );
         assert_eq!(material.EnvmapTexture.as_deref(), Some("a_cube.dds"));
-        assert_eq!(material.GlowTexture.as_deref(), Some("a_em.dds"));
+        // Slot 5 is the environment mask; the texture engine bakes it into the
+        // FO4 `_s` red channel, so it must not be misrouted to the glow slot.
+        assert!(material.GlowTexture.is_none());
+        assert_eq!(material.SmoothSpecTexture, "a_s.dds");
         assert!(material.header.env_mapping.unwrap_or(false));
         assert!(material.DisplacementTexture.is_none());
         let parsed = bgsm::parse(&bgsm::write(&material)).expect("parse serialized BGSM");
@@ -626,8 +779,88 @@ mod tests {
             parsed
                 .GlowTexture
                 .as_deref()
-                .map(|value| value.trim_end_matches('\0')),
-            Some("a_em.dds")
+                .map(|value| value.trim_end_matches('\0'))
+                .unwrap_or(""),
+            ""
         );
+    }
+
+    #[test]
+    fn smooth_spec_path_mirrors_what_the_texture_engine_writes() {
+        assert_eq!(
+            smooth_spec_path("clutter/common/crate01_n.dds"),
+            "clutter/common/crate01_s.dds"
+        );
+        // No `_n` in the stem means no `_s` output, so the slot stays empty.
+        assert_eq!(smooth_spec_path("clutter/common/crate01.dds"), "");
+        assert_eq!(smooth_spec_path(""), "");
+    }
+
+    #[test]
+    fn tree_tundra_shrub_08_alpha_property_is_propagated_to_bgsm() {
+        let mut nif = NifFile::new("skyrimse");
+        let shader_id = nif.add_block("BSLightingShaderProperty", None);
+        let alpha_id = nif.add_block(
+            "NiAlphaProperty",
+            Some(IndexMap::from([
+                ("Flags".to_string(), NifValue::UInt(4844)),
+                ("Threshold".to_string(), NifValue::UInt(180)),
+            ])),
+        );
+        nif.add_block(
+            "BSTriShape",
+            Some(IndexMap::from([
+                (
+                    "Shader Property".to_string(),
+                    NifValue::Ref(shader_id as i32),
+                ),
+                ("Alpha Property".to_string(), NifValue::Ref(alpha_id as i32)),
+            ])),
+        );
+
+        let output = tempfile::tempdir().expect("grass material output");
+        let report = synthesize_fo4_materials(
+            &mut nif,
+            Path::new(r"Meshes\Landscape\Plants\TreeTundraShrub08.nif"),
+            output.path(),
+        )
+        .expect("synthesize grass BGSM");
+        assert_eq!(report.emitted.len(), 1);
+        let parsed =
+            bgsm::parse(&std::fs::read(&report.emitted[0]).expect("read synthesized grass BGSM"))
+                .expect("parse synthesized grass BGSM");
+
+        assert!(parsed.header.alpha_test);
+        assert_eq!(parsed.header.alpha_test_ref, 180);
+        assert_eq!(parsed.header.alpha_blend_mode0, 0);
+        assert_eq!(parsed.header.alpha_blend_mode1, 6);
+        assert_eq!(parsed.header.alpha_blend_mode2, 7);
+    }
+
+    #[test]
+    fn opaque_material_without_alpha_property_keeps_alpha_disabled() {
+        let shader = NifBlock::new(0, "BSLightingShaderProperty");
+        let material = lighting_material(&shader, &[], None);
+
+        assert!(!material.header.alpha_test);
+        assert_eq!(material.header.alpha_test_ref, 128);
+        assert_eq!(material.header.alpha_blend_mode0, 0);
+    }
+
+    #[test]
+    fn alpha_blend_is_enabled_only_when_the_property_requests_it() {
+        let settings = AlphaSettings {
+            blend: true,
+            source_blend_mode: 6,
+            destination_blend_mode: 7,
+            test: true,
+            threshold: 90,
+        };
+        let shader = NifBlock::new(0, "BSLightingShaderProperty");
+        let material = lighting_material(&shader, &[], Some(settings));
+
+        assert_eq!(material.header.alpha_blend_mode0, 1);
+        assert_eq!(material.header.alpha_blend_mode1, 6);
+        assert_eq!(material.header.alpha_blend_mode2, 7);
     }
 }

@@ -18,9 +18,7 @@ fn fixture_bytes(relative: &str) -> Vec<u8> {
 }
 
 fn fo76_tag0_fixture() -> Vec<u8> {
-    fixture_bytes(
-        "python/creation_lib/hkxpack/tests/fixtures/fo76_snallygastercharacter.hkx",
-    )
+    fixture_bytes("python/creation_lib/hkxpack/tests/fixtures/fo76_snallygastercharacter.hkx")
 }
 
 fn hff_leaf(tag: &[u8; 4], content: &[u8]) -> Vec<u8> {

@@ -19,9 +19,36 @@ pub struct CompressedMeshData {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RawCompressedMeshDataRun {
-    pub value: u8,
-    pub index: u16,
+    /// `hknpCompressedMeshShapeTreeDataRunData::data` (`hkUint16`).
+    pub value: u16,
+    /// `hkcdStaticMeshTreeBase::PrimitiveDataRunBase::index` (`hkUint8`).
+    pub index: u8,
     pub count: u8,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RawCompressedMeshSparseMap {
+    pub secondary_key_mask: u32,
+    pub secondary_key_bits: u32,
+    pub primary_key_to_index: Vec<u16>,
+    pub value_and_secondary_keys: Vec<u16>,
+}
+
+impl Default for RawCompressedMeshSparseMap {
+    fn default() -> Self {
+        Self {
+            secondary_key_mask: u32::MAX,
+            secondary_key_bits: 0,
+            primary_key_to_index: Vec::new(),
+            value_and_secondary_keys: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct RawCompressedMeshBitField {
+    pub words: Vec<u32>,
+    pub num_bits: u32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -44,6 +71,11 @@ pub struct RawCompressedMeshSection {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RawCompressedMeshData {
+    pub user_data: u64,
+    pub edge_welding_map: RawCompressedMeshSparseMap,
+    pub quad_is_flat: RawCompressedMeshBitField,
+    pub triangle_is_interior: RawCompressedMeshBitField,
+    pub materials: Vec<MaterialEntry>,
     pub object_aabb_min: [f32; 3],
     pub object_aabb_max: [f32; 3],
     pub num_primitive_keys: u32,
@@ -1057,6 +1089,72 @@ pub fn parse_fo4_compressed_mesh(blob: &[u8]) -> HavokResult<CompressedMeshData>
     })
 }
 
+pub(crate) fn fo4_compressed_mesh_flat_convex_markers(blob: &[u8]) -> HavokResult<Vec<u8>> {
+    if blob.len() < 0x100 || blob.get(0..8) != Some(HKX_MAGIC.as_slice()) {
+        return Err(HavokError::InvalidInput(
+            "missing Havok packfile magic for FO4 compressed mesh payload".to_string(),
+        ));
+    }
+    let headers = parse_packfile_section_headers(blob)?;
+    let data_header = headers.get("__data__").ok_or_else(|| {
+        HavokError::InvalidInput("Missing __data__ section in packfile".to_string())
+    })?;
+    let classnames_start = headers
+        .get("__classnames__")
+        .map(|header| header.abs_start)
+        .unwrap_or(0);
+    let objects = parse_virtual_fixups(blob, data_header, classnames_start)?;
+    objects
+        .into_iter()
+        .filter(|(_, class_name)| class_name.contains("hknpCompressedMeshShapeData"))
+        .map(|(object_rel, _)| {
+            blob.get(data_header.abs_start + object_rel + 0x4C)
+                .copied()
+                .ok_or_else(|| {
+                    HavokError::InvalidInput(
+                        "compressed mesh flat-convex marker is out of bounds".to_string(),
+                    )
+                })
+        })
+        .collect()
+}
+
+pub(crate) fn patch_fo4_compressed_mesh_flat_convex_markers(
+    blob: &mut [u8],
+    markers: &[u8],
+) -> HavokResult<()> {
+    let headers = parse_packfile_section_headers(blob)?;
+    let data_header = headers.get("__data__").ok_or_else(|| {
+        HavokError::InvalidInput("Missing __data__ section in packfile".to_string())
+    })?;
+    let classnames_start = headers
+        .get("__classnames__")
+        .map(|header| header.abs_start)
+        .unwrap_or(0);
+    let objects = parse_virtual_fixups(blob, data_header, classnames_start)?;
+    let data_objects = objects
+        .into_iter()
+        .filter(|(_, class_name)| class_name.contains("hknpCompressedMeshShapeData"))
+        .collect::<Vec<_>>();
+    if data_objects.len() != markers.len() {
+        return Err(HavokError::InvalidInput(format!(
+            "compressed mesh marker count {} does not match shape-data count {}",
+            markers.len(),
+            data_objects.len()
+        )));
+    }
+    for ((object_rel, _), marker) in data_objects.into_iter().zip(markers) {
+        let offset = data_header.abs_start + object_rel + 0x4C;
+        let target = blob.get_mut(offset).ok_or_else(|| {
+            HavokError::InvalidInput(
+                "compressed mesh flat-convex marker is out of bounds".to_string(),
+            )
+        })?;
+        *target = *marker;
+    }
+    Ok(())
+}
+
 // local versions to avoid cross-module dep cycle; mod.rs already has the public ones
 fn unpack_vertex_11_11_10_local(packed: u32) -> (u32, u32, u32) {
     (
@@ -1209,35 +1307,63 @@ fn write_bitfield_header(buf: &mut Vec<u8>, off: usize, num_bits: u32) {
     write_u32_le_into(buf, off + 0x10, num_bits);
 }
 
-fn filled_bitfield_storage(num_bits: u32) -> Vec<u8> {
-    let word_count = bitfield_word_count(num_bits);
-    let mut data = Vec::with_capacity(word_count * 4);
-    for word_index in 0..word_count {
-        let used_bits = (word_index as u32) * 32;
-        let remaining = num_bits.saturating_sub(used_bits);
-        let word = if remaining >= 32 {
-            u32::MAX
-        } else if remaining == 0 {
-            0
-        } else {
-            (1u32 << remaining) - 1
-        };
-        data.extend_from_slice(&word.to_le_bytes());
+fn quad_is_flat_bitfield_storage(
+    encoded_sections: &[EncodedCompressedMeshSection],
+    num_bits: u32,
+    primitive_stores_is_flat_convex: u8,
+) -> Vec<u8> {
+    let mut words = vec![0u32; bitfield_word_count(num_bits)];
+    for (section_index, section) in encoded_sections.iter().enumerate() {
+        for (local_primitive_index, primitive) in
+            section.primitive_bytes.chunks_exact(4).enumerate()
+        {
+            let is_quad = primitive[2] != primitive[3];
+            let is_flat = primitive_stores_is_flat_convex != u8::MAX || primitive[1] > primitive[3];
+            if !is_quad || !is_flat {
+                continue;
+            }
+
+            let bit_index = (section_index << 7) | local_primitive_index;
+            debug_assert!(bit_index < num_bits as usize);
+            words[bit_index >> 5] |= 1u32 << (bit_index & 31);
+        }
     }
-    data
+
+    words.into_iter().flat_map(u32::to_le_bytes).collect()
 }
 
 fn build_compressed_mesh_shape_header(
     num_shape_key_bits: u8,
     user_data: u64,
+    edge_welding_map: Option<&RawCompressedMeshSparseMap>,
     quad_is_flat_bits: u32,
     triangle_is_interior_bits: u32,
 ) -> Vec<u8> {
     let mut buf = PF_CM_SHAPE_HDR.to_vec();
     buf[0x12] = num_shape_key_bits;
     buf[0x18..0x20].copy_from_slice(&user_data.to_le_bytes());
-    buf[0x58..0x5C].copy_from_slice(&u32::MAX.to_le_bytes());
-    buf[0x68..0x98].fill(0);
+    buf[0x30..0x98].fill(0);
+    if let Some(map) = edge_welding_map {
+        write_u32_le_into(&mut buf, 0x30, map.secondary_key_mask);
+        write_u32_le_into(&mut buf, 0x34, map.secondary_key_bits);
+        write_u32_le_into(&mut buf, 0x40, map.primary_key_to_index.len() as u32);
+        write_u32_le_into(
+            &mut buf,
+            0x44,
+            map.primary_key_to_index.len() as u32 | 0x8000_0000,
+        );
+        write_u32_le_into(&mut buf, 0x50, map.value_and_secondary_keys.len() as u32);
+        write_u32_le_into(
+            &mut buf,
+            0x54,
+            map.value_and_secondary_keys.len() as u32 | 0x8000_0000,
+        );
+    } else {
+        write_u32_le_into(&mut buf, 0x30, u32::MAX);
+        write_u32_le_into(&mut buf, 0x44, 0x8000_0000);
+        write_u32_le_into(&mut buf, 0x54, 0x8000_0000);
+    }
+    write_u32_le_into(&mut buf, 0x58, u32::MAX);
     write_bitfield_header(&mut buf, 0x68, quad_is_flat_bits);
     write_bitfield_header(&mut buf, 0x80, triangle_is_interior_bits);
     buf
@@ -1713,8 +1839,6 @@ fn encode_compressed_mesh_section(section: &CompressedMeshSection) -> EncodedCom
         encode_triangle_primitives(&section.vertices, &section.triangles);
     let section_tree_nodes = build_section_tree_nodes(&primitive_aabbs, &aabb);
     let primitive_count = primitive_bytes.len() / 4;
-    let primitive_data_run = [0u8, 0u8, 0u8, primitive_count as u8];
-
     EncodedCompressedMeshSection {
         aabb,
         base: [min_x, min_y, min_z],
@@ -1724,9 +1848,9 @@ fn encode_compressed_mesh_section(section: &CompressedMeshSection) -> EncodedCom
         primitive_bytes,
         section_tree_nodes,
         primitive_data_runs: vec![RawCompressedMeshDataRun {
-            value: primitive_data_run[0],
-            index: u16::from_le_bytes([primitive_data_run[1], primitive_data_run[2]]),
-            count: primitive_data_run[3],
+            value: 0,
+            index: 0,
+            count: primitive_count as u8,
         }],
         leaf_index: 0,
         page: 0,
@@ -1749,6 +1873,7 @@ fn build_cm_data_section(
     primitive_stores_is_flat_convex: u8,
     master_tree_nodes: &[u8],
     shared_vertices: &[u64],
+    source_shape: Option<&RawCompressedMeshData>,
     name_offs: &std::collections::HashMap<String, usize>,
     opts: &BuildOptions,
 ) -> (Vec<u8>, FixupBuilder) {
@@ -1823,13 +1948,21 @@ fn build_cm_data_section(
 
     // -- hknpCompressedMeshShape (0xC0 bytes) --
     let shape_rel = rel!();
-    let triangle_is_interior_bits = max_key_value.saturating_add(1);
-    let quad_is_flat_bits = triangle_is_interior_bits.saturating_add(1) / 2;
+    let generated_triangle_bits = max_key_value.saturating_add(1);
+    let triangle_is_interior_bits = source_shape
+        .map(|shape| shape.triangle_is_interior.num_bits)
+        .filter(|bits| *bits > 0)
+        .unwrap_or(generated_triangle_bits);
+    let quad_is_flat_bits = source_shape
+        .map(|shape| shape.quad_is_flat.num_bits)
+        .filter(|bits| *bits > 0)
+        .unwrap_or_else(|| generated_triangle_bits.saturating_add(1) / 2);
     let quad_is_flat_words = bitfield_word_count(quad_is_flat_bits);
     let triangle_is_interior_words = bitfield_word_count(triangle_is_interior_bits);
     let shape_hdr = build_compressed_mesh_shape_header(
         bits_per_key as u8,
         opts.user_data.unwrap_or(0),
+        source_shape.map(|shape| &shape.edge_welding_map),
         quad_is_flat_bits,
         triangle_is_interior_bits,
     );
@@ -1846,11 +1979,49 @@ fn build_cm_data_section(
     let shape_refprop_ptr_rel = shape_rel + 0x20;
     let shape_data_ptr_rel = shape_rel + 0x60;
 
+    // -- hknpCompressedMeshShape edge-welding arrays --
+    if let Some(shape) = source_shape {
+        if !shape.edge_welding_map.primary_key_to_index.is_empty() {
+            let primary_key_to_index_rel = rel!();
+            fx.add_local(shape_rel + 0x38, primary_key_to_index_rel);
+            for value in &shape.edge_welding_map.primary_key_to_index {
+                data.extend_from_slice(&value.to_le_bytes());
+            }
+            while data.len() % 16 != 0 {
+                data.push(0);
+            }
+        }
+        if !shape.edge_welding_map.value_and_secondary_keys.is_empty() {
+            let value_and_secondary_keys_rel = rel!();
+            fx.add_local(shape_rel + 0x48, value_and_secondary_keys_rel);
+            for value in &shape.edge_welding_map.value_and_secondary_keys {
+                data.extend_from_slice(&value.to_le_bytes());
+            }
+            while data.len() % 16 != 0 {
+                data.push(0);
+            }
+        }
+    }
+
     // -- hknpCompressedMeshShape bitfield storage --
     let quad_is_flat_words_rel = rel!();
     if quad_is_flat_words > 0 {
         fx.add_local(shape_rel + 0x68, quad_is_flat_words_rel);
-        data.extend_from_slice(&filled_bitfield_storage(quad_is_flat_bits));
+        if let Some(words) = source_shape
+            .map(|shape| &shape.quad_is_flat)
+            .filter(|bitfield| bitfield.num_bits > 0)
+            .map(|bitfield| &bitfield.words)
+        {
+            for word in words {
+                data.extend_from_slice(&word.to_le_bytes());
+            }
+        } else {
+            data.extend_from_slice(&quad_is_flat_bitfield_storage(
+                encoded_sections,
+                quad_is_flat_bits,
+                primitive_stores_is_flat_convex,
+            ));
+        }
         while data.len() % 16 != 0 {
             data.push(0);
         }
@@ -1858,7 +2029,17 @@ fn build_cm_data_section(
     let triangle_is_interior_words_rel = rel!();
     if triangle_is_interior_words > 0 {
         fx.add_local(shape_rel + 0x80, triangle_is_interior_words_rel);
-        data.extend(std::iter::repeat(0u8).take(triangle_is_interior_words * 4));
+        if let Some(words) = source_shape
+            .map(|shape| &shape.triangle_is_interior)
+            .filter(|bitfield| bitfield.num_bits > 0)
+            .map(|bitfield| &bitfield.words)
+        {
+            for word in words {
+                data.extend_from_slice(&word.to_le_bytes());
+            }
+        } else {
+            data.extend(std::iter::repeat(0u8).take(triangle_is_interior_words * 4));
+        }
         while data.len() % 16 != 0 {
             data.push(0);
         }
@@ -2148,8 +2329,8 @@ fn build_cm_data_section(
     // -- Primitive data runs --
     for section in encoded_sections {
         for run in &section.primitive_data_runs {
-            data.push(run.value);
-            data.extend_from_slice(&run.index.to_le_bytes());
+            data.extend_from_slice(&run.value.to_le_bytes());
+            data.push(run.index);
             data.push(run.count);
         }
     }
@@ -2269,6 +2450,7 @@ struct CompressedMeshPackfileInput<'a> {
     primitive_stores_is_flat_convex: u8,
     master_tree_nodes: &'a [u8],
     shared_vertices: &'a [u64],
+    source_shape: Option<&'a RawCompressedMeshData>,
 }
 
 fn build_compressed_mesh_packfile_from_encoded(
@@ -2291,6 +2473,7 @@ fn build_compressed_mesh_packfile_from_encoded(
         input.primitive_stores_is_flat_convex,
         input.master_tree_nodes,
         input.shared_vertices,
+        input.source_shape,
         &name_offs,
         &opts,
     );
@@ -2400,6 +2583,32 @@ fn validate_encoded_compressed_mesh(
                 "compressed mesh section {index} must have 1..255 primitive data runs"
             )));
         }
+        let primitive_count = section.primitive_bytes.len() / 4;
+        let mut covered_primitives = 0usize;
+        for (run_index, run) in section.primitive_data_runs.iter().enumerate() {
+            if run.count == 0 {
+                return Err(HavokError::InvalidInput(format!(
+                    "compressed mesh section {index} primitive data run {run_index} has zero count"
+                )));
+            }
+            if usize::from(run.index) != covered_primitives {
+                return Err(HavokError::InvalidInput(format!(
+                    "compressed mesh section {index} primitive data run {run_index} starts at {} but expected {covered_primitives}",
+                    run.index
+                )));
+            }
+            covered_primitives += usize::from(run.count);
+            if covered_primitives > primitive_count {
+                return Err(HavokError::InvalidInput(format!(
+                    "compressed mesh section {index} primitive data runs cover {covered_primitives} primitives but the section has {primitive_count}"
+                )));
+            }
+        }
+        if covered_primitives != primitive_count {
+            return Err(HavokError::InvalidInput(format!(
+                "compressed mesh section {index} primitive data runs cover {covered_primitives} primitives but the section has {primitive_count}"
+            )));
+        }
         if first_vertex > 0x00FF_FFFF
             || first_shared > 0x00FF_FFFF
             || first_primitive > 0x00FF_FFFF
@@ -2484,6 +2693,7 @@ pub fn build_compressed_mesh_collision(
             primitive_stores_is_flat_convex: 0,
             master_tree_nodes: &master_tree_nodes,
             shared_vertices: &[],
+            source_shape: None,
         },
         opts,
     )
@@ -2491,8 +2701,20 @@ pub fn build_compressed_mesh_collision(
 
 pub fn build_compressed_mesh_collision_from_raw(
     raw: &RawCompressedMeshData,
-    opts: BuildOptions,
+    mut opts: BuildOptions,
 ) -> HavokResult<Vec<u8>> {
+    validate_raw_shape_metadata(raw)?;
+    opts.user_data = Some(raw.user_data);
+    if !raw.materials.is_empty() {
+        opts.materials = raw
+            .materials
+            .iter()
+            .map(|material| MaterialEntry {
+                filter_info: (material.filter_info & !0xFF) | u32::from(opts.layer),
+                material_crc: material.material_crc,
+            })
+            .collect();
+    }
     let encoded_sections = raw
         .sections
         .iter()
@@ -2529,9 +2751,33 @@ pub fn build_compressed_mesh_collision_from_raw(
             primitive_stores_is_flat_convex: raw.primitive_stores_is_flat_convex,
             master_tree_nodes: &raw.master_tree_nodes,
             shared_vertices: &raw.shared_vertices,
+            source_shape: Some(raw),
         },
         opts,
     )
+}
+
+fn validate_raw_shape_metadata(raw: &RawCompressedMeshData) -> HavokResult<()> {
+    for (name, bitfield) in [
+        ("quadIsFlat", &raw.quad_is_flat),
+        ("triangleIsInterior", &raw.triangle_is_interior),
+    ] {
+        if bitfield.num_bits > 0 && bitfield.words.len() != bitfield_word_count(bitfield.num_bits) {
+            return Err(HavokError::InvalidInput(format!(
+                "raw compressed mesh {name} has {} words for {} bits",
+                bitfield.words.len(),
+                bitfield.num_bits
+            )));
+        }
+    }
+    if raw.edge_welding_map.primary_key_to_index.is_empty()
+        != raw.edge_welding_map.value_and_secondary_keys.is_empty()
+    {
+        return Err(HavokError::InvalidInput(
+            "raw compressed mesh edge welding map has only one populated array".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -2548,6 +2794,72 @@ mod tests {
             ],
             vec![[0, 1, 2], [0, 2, 3]],
         )
+    }
+
+    fn encoded_section_with_primitives(primitive_bytes: Vec<u8>) -> EncodedCompressedMeshSection {
+        EncodedCompressedMeshSection {
+            aabb: CmAabb {
+                min: [0.0, 0.0, 0.0],
+                max: [1.0, 1.0, 1.0],
+            },
+            base: [0.0, 0.0, 0.0],
+            scale: [1.0, 1.0, 1.0],
+            packed_vertices: vec![0; 4],
+            shared_vertices_index: Vec::new(),
+            primitive_data_runs: vec![RawCompressedMeshDataRun {
+                value: 0,
+                index: 0,
+                count: (primitive_bytes.len() / 4) as u8,
+            }],
+            primitive_bytes,
+            section_tree_nodes: vec![0; 4],
+            leaf_index: 0,
+            page: 0,
+            flags: 0,
+            layer_data: 0,
+            unused_data: 0,
+        }
+    }
+
+    fn first_bitfield_word(storage: &[u8]) -> u32 {
+        u32::from_le_bytes(storage[..4].try_into().unwrap())
+    }
+
+    #[test]
+    fn rebuilt_quad_bitfield_does_not_mark_triangles() {
+        let section = encoded_section_with_primitives(vec![
+            0, 3, 2, 1, // quad
+            0, 1, 2, 2, // triangle
+        ]);
+
+        let storage = quad_is_flat_bitfield_storage(&[section], 2, 0);
+
+        assert_eq!(first_bitfield_word(&storage) & 0b11, 0b01);
+    }
+
+    #[test]
+    fn raw_quad_bitfield_translates_flat_convex_marker() {
+        let section = encoded_section_with_primitives(vec![
+            0, 1, 2, 3, // non-flat quad
+            0, 3, 2, 1, // flat quad (b > d)
+            0, 1, 2, 2, // triangle
+        ]);
+
+        let storage = quad_is_flat_bitfield_storage(&[section], 3, u8::MAX);
+
+        assert_eq!(first_bitfield_word(&storage) & 0b111, 0b010);
+    }
+
+    #[test]
+    fn quad_bitfield_uses_shape_key_section_stride() {
+        let triangle = encoded_section_with_primitives(vec![0, 1, 2, 2]);
+        let quad = encoded_section_with_primitives(vec![0, 3, 2, 1]);
+
+        let storage = quad_is_flat_bitfield_storage(&[triangle, quad], 129, 0);
+        let section_one_word = u32::from_le_bytes(storage[16..20].try_into().unwrap());
+
+        assert_eq!(first_bitfield_word(&storage), 0);
+        assert_eq!(section_one_word & 1, 1);
     }
 
     #[test]
@@ -2660,6 +2972,70 @@ mod tests {
         assert_eq!(parsed.sections.len(), 1);
         assert_eq!(parsed.sections[0].vertices.len(), 4);
         assert_eq!(parsed.sections[0].triangles.len(), 2);
+    }
+
+    #[test]
+    fn raw_data_run_round_trips_sdk_u16_u8_u8_layout() {
+        let verts = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 1.0],
+        ];
+        let tris = vec![[0, 1, 2], [0, 2, 3]];
+        let source_blob = build_compressed_mesh_collision(&verts, &tris, BuildOptions::default())
+            .expect("source compressed mesh should build");
+        let mut raw =
+            crate::collision::preview::extract_raw_compressed_meshes_from_blob(&source_blob, None)
+                .expect("source raw compressed mesh should parse")
+                .into_iter()
+                .next()
+                .expect("source raw compressed mesh missing");
+
+        assert_eq!(raw.sections[0].primitive_bytes.len() / 4, 2);
+        let expected = vec![
+            RawCompressedMeshDataRun {
+                value: 0xBEEF,
+                index: 0,
+                count: 1,
+            },
+            RawCompressedMeshDataRun {
+                value: u16::MAX,
+                index: 1,
+                count: 1,
+            },
+        ];
+        raw.sections[0].primitive_data_runs = expected.clone();
+        let blob = build_compressed_mesh_collision_from_raw(&raw, BuildOptions::default())
+            .expect("raw compressed mesh should rebuild");
+
+        let hdrs = parse_packfile_section_headers(&blob).expect("section headers");
+        let data_hdr = hdrs.get("__data__").expect("__data__ section");
+        let data_start = data_hdr.abs_start;
+        let classnames_start = hdrs.get("__classnames__").unwrap().abs_start;
+        let fixups = parse_local_fixups(&blob, data_hdr).expect("local fixups");
+        let objects =
+            parse_virtual_fixups(&blob, data_hdr, classnames_start).expect("virtual fixups");
+        let mesh_rel = objects
+            .iter()
+            .find(|(_, class_name)| class_name == "hknpCompressedMeshShapeData")
+            .map(|(rel, _)| *rel)
+            .expect("compressed mesh shape data");
+        let run_abs =
+            hkarray_abs(&fixups, data_start, mesh_rel, 0xA0).expect("primitive data run pointer");
+
+        assert_eq!(
+            &blob[run_abs..run_abs + 8],
+            &[0xEF, 0xBE, 0x00, 0x01, 0xFF, 0xFF, 0x01, 0x01]
+        );
+
+        let round_trip =
+            crate::collision::preview::extract_raw_compressed_meshes_from_blob(&blob, None)
+                .expect("rebuilt raw compressed mesh should parse")
+                .into_iter()
+                .next()
+                .expect("rebuilt raw compressed mesh missing");
+        assert_eq!(round_trip.sections[0].primitive_data_runs, expected);
     }
 
     #[test]
@@ -2925,6 +3301,11 @@ mod tests {
         // 129 primitives -> primitiveIndex overflows the 7-bit shape-key field.
         let section = EncodedCompressedMeshSection {
             primitive_bytes: vec![0u8; 129 * 4], // 129 primitives
+            primitive_data_runs: vec![RawCompressedMeshDataRun {
+                value: 0,
+                index: 0,
+                count: 129,
+            }],
             ..test_minimal_encoded_section()
         };
         assert!(
@@ -2934,12 +3315,44 @@ mod tests {
         // 128 primitives must be accepted.
         let section_ok = EncodedCompressedMeshSection {
             primitive_bytes: vec![0u8; 128 * 4], // 128 primitives
+            primitive_data_runs: vec![RawCompressedMeshDataRun {
+                value: 0,
+                index: 0,
+                count: 128,
+            }],
             ..test_minimal_encoded_section()
         };
         assert!(
             validate_encoded_compressed_mesh(&[section_ok], &[0u8; 5]).is_ok(),
             "128 primitives must be accepted (7-bit key max 128)"
         );
+    }
+
+    #[test]
+    fn rejects_primitive_data_run_gaps_and_zero_counts() {
+        let gap = EncodedCompressedMeshSection {
+            primitive_data_runs: vec![RawCompressedMeshDataRun {
+                value: 0,
+                index: 1,
+                count: 1,
+            }],
+            ..test_minimal_encoded_section()
+        };
+        let gap_error = validate_encoded_compressed_mesh(&[gap], &[0u8; 5])
+            .expect_err("a data-run gap must be rejected");
+        assert!(format!("{gap_error}").contains("starts at 1 but expected 0"));
+
+        let zero_count = EncodedCompressedMeshSection {
+            primitive_data_runs: vec![RawCompressedMeshDataRun {
+                value: 0,
+                index: 0,
+                count: 0,
+            }],
+            ..test_minimal_encoded_section()
+        };
+        let zero_error = validate_encoded_compressed_mesh(&[zero_count], &[0u8; 5])
+            .expect_err("a zero-count data run must be rejected");
+        assert!(format!("{zero_error}").contains("has zero count"));
     }
 
     fn decoded_triangle_count(decoded: &CompressedMeshData) -> usize {

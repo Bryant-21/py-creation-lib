@@ -22,7 +22,7 @@ use crate::pex::{
 };
 use crate::profile::GameProfile;
 use crate::source_resolver::SourceResolver;
-use crate::typeck::{NodeId, PapyrusType, TypeckResult};
+use crate::typeck::{NodeId, PapyrusType, TypeckResult, binary_result_type};
 use std::collections::{HashMap, HashSet};
 
 // --- opcodes ------------------------------------------------------------------
@@ -800,8 +800,9 @@ impl<'a> Codegen<'a> {
                 pos,
             } => {
                 let line = pos.line as u16;
-                // Compound ops (`+=` …) are a later batch; `=` only here.
                 if op != "=" {
+                    self.lower_compound_assignment(target, op, value, line);
+                    self.mark_all_temps_unused();
                     return;
                 }
                 match target {
@@ -908,6 +909,146 @@ impl<'a> Codegen<'a> {
                 self.mark_all_temps_unused();
             }
         }
+    }
+
+    fn lower_compound_assignment(&mut self, target: &Expr, op: &str, value: &Expr, line: u16) {
+        let Some(arithmetic_op) = op.strip_suffix('=').filter(|op| !op.is_empty()) else {
+            return;
+        };
+        match target {
+            Expr::NameExpr { name, .. } => {
+                let target_ty = self.type_of_expr(target);
+                let target_name = self.resolve_name(name);
+                let result = self.lower_compound_value(
+                    ident(&target_name),
+                    &target_ty,
+                    arithmetic_op,
+                    value,
+                    line,
+                );
+                self.emit(OP_ASSIGN, vec![ident(&target_name), result], line);
+            }
+            Expr::ArrayAccessExpr { array, index, .. } => {
+                let target_ty = self.type_of_expr(target);
+                let array_value = self.lower_expr(array, line);
+                let index_value = self.lower_expr(index, line);
+                let current = self.alloc_temp(&target_ty);
+                self.emit(
+                    OP_ARRAYGETELEMENT,
+                    vec![ident(&current), array_value.clone(), index_value.clone()],
+                    line,
+                );
+                let result = self.lower_compound_value(
+                    ident(&current),
+                    &target_ty,
+                    arithmetic_op,
+                    value,
+                    line,
+                );
+                self.emit(
+                    OP_ARRAYSETELEMENT,
+                    vec![array_value, index_value, result],
+                    line,
+                );
+            }
+            Expr::DotExpr { object, member, .. } => {
+                let target_ty = self.type_of_expr(target);
+                let object_ty = self.type_of_expr(object);
+                let is_struct = self
+                    .struct_member_ty(&object_ty.to_string(), member)
+                    .is_some();
+                let object_value = self.lower_expr(object, line);
+                let current = self.alloc_temp(&target_ty);
+                if is_struct {
+                    self.emit(
+                        OP_STRUCTGET,
+                        vec![ident(&current), object_value.clone(), ident(member)],
+                        line,
+                    );
+                } else {
+                    self.emit(
+                        OP_PROPGET,
+                        vec![ident(member), object_value.clone(), ident(&current)],
+                        line,
+                    );
+                }
+                let result = self.lower_compound_value(
+                    ident(&current),
+                    &target_ty,
+                    arithmetic_op,
+                    value,
+                    line,
+                );
+                if is_struct {
+                    self.emit(
+                        OP_STRUCTSET,
+                        vec![object_value, ident(member), result],
+                        line,
+                    );
+                } else {
+                    self.emit(OP_PROPSET, vec![ident(member), object_value, result], line);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn lower_compound_value(
+        &mut self,
+        current: PexValuePayload,
+        target_ty: &PapyrusType,
+        op: &str,
+        value: &Expr,
+        line: u16,
+    ) -> PexValuePayload {
+        let value_ty = self.type_of_expr(value);
+        let result_ty = binary_result_type(op, target_ty, &value_ty);
+        let current_cast = if would_cast(target_ty, &result_ty) {
+            let index = self.instrs.len();
+            self.emit(
+                OP_CAST,
+                vec![ident(CAST_PLACEHOLDER), current.clone()],
+                line,
+            );
+            Some(index)
+        } else {
+            None
+        };
+        let value_base = self.lower_expr(value, line);
+        let value_cast = if would_cast(&value_ty, &result_ty) {
+            let index = self.instrs.len();
+            self.emit(
+                OP_CAST,
+                vec![ident(CAST_PLACEHOLDER), value_base.clone()],
+                line,
+            );
+            Some(index)
+        } else {
+            None
+        };
+        let current_value = match current_cast {
+            Some(index) => {
+                let temp = self.alloc_temp(&result_ty);
+                self.instrs[index].args[0] = ident(&temp);
+                ident(&temp)
+            }
+            None => current,
+        };
+        let value_value = match value_cast {
+            Some(index) => {
+                let temp = self.alloc_temp(&result_ty);
+                self.instrs[index].args[0] = ident(&temp);
+                ident(&temp)
+            }
+            None => value_base,
+        };
+        let result = self.alloc_temp(&result_ty);
+        self.emit(
+            arith_opcode(op, &result_ty),
+            vec![ident(&result), current_value, value_value],
+            line,
+        );
+        self.cast_to(ident(&result), result_ty, target_ty, line)
     }
 
     /// One `if`/`elseif` clause: `cond`; `JMPF cond → elseLabel`; `body`;
@@ -2542,6 +2683,28 @@ mod tests {
         compile_src_with_source_name(src, None)
     }
 
+    fn compile_src_with_imports(src: &str, imports: &[String]) -> PexFilePayload {
+        let parsed = crate::parser::parse_script(src);
+        let script_docstring = parsed.script_docstring.clone();
+        let property_groups = parsed.property_groups.clone();
+        let struct_names = parsed.struct_names.clone();
+        let ast = parsed.ast.expect("parse");
+        let resolver = SourceResolver::new(imports);
+        let profile = GameProfile::for_game(Game::Fo4);
+        let tc = crate::typeck::typeck(&ast, &resolver, profile);
+        compile(
+            &ast,
+            &tc,
+            &resolver,
+            profile,
+            None,
+            &script_docstring,
+            &property_groups,
+            &struct_names,
+            None,
+        )
+    }
+
     fn compile_src_with_source_name(src: &str, source_script_name: Option<&str>) -> PexFilePayload {
         let parsed = crate::parser::parse_script(src);
         let script_docstring = parsed.script_docstring.clone();
@@ -2776,6 +2939,95 @@ mod tests {
         "Scriptname GArrSet\nFunction F(Int[] a)\n  a[0] = 5\nEndFunction\n",
         "GArrSet.pex"
     );
+
+    #[test]
+    fn compound_local_assignments_emit_arithmetic_and_store_results() {
+        let p = compile_src(
+            "Scriptname GCompoundLocal\nFunction F()\n  Int i = 1\n  Float f = 2.0\n  String s = \"x\"\n  i += 2\n  i -= 1\n  i *= 3\n  i /= 2\n  i %= 2\n  f += 1\n  s += 1\nEndFunction\n",
+        );
+        let instructions = &p.objects[0].states[0].functions[0].instructions;
+        let arithmetic: Vec<u8> = instructions
+            .iter()
+            .map(|instruction| instruction.opcode)
+            .filter(|opcode| {
+                matches!(
+                    *opcode,
+                    OP_IADD | OP_ISUB | OP_IMUL | OP_IDIV | OP_IMOD | OP_FADD | OP_STRCAT
+                )
+            })
+            .collect();
+
+        assert_eq!(
+            arithmetic,
+            vec![
+                OP_IADD, OP_ISUB, OP_IMUL, OP_IDIV, OP_IMOD, OP_FADD, OP_STRCAT
+            ]
+        );
+        assert_eq!(
+            instructions
+                .iter()
+                .filter(|instruction| instruction.opcode == OP_ASSIGN)
+                .count(),
+            10
+        );
+    }
+
+    #[test]
+    fn compound_array_assignment_reads_and_writes_the_same_element() {
+        let p = compile_src(
+            "Scriptname GCompoundArray\nFunction F(Int[] values, Int index)\n  values[index] += 2\nEndFunction\n",
+        );
+        let opcodes: Vec<u8> = p.objects[0].states[0].functions[0]
+            .instructions
+            .iter()
+            .map(|instruction| instruction.opcode)
+            .collect();
+
+        assert_eq!(
+            opcodes,
+            vec![OP_ARRAYGETELEMENT, OP_IADD, OP_ARRAYSETELEMENT]
+        );
+    }
+
+    #[test]
+    fn compound_struct_assignment_reads_and_writes_the_same_member() {
+        let p = compile_src(
+            "Scriptname GCompoundStruct\nStruct Point\n  Int X\nEndStruct\nFunction F()\n  Point p = new Point\n  p.X += 2\nEndFunction\n",
+        );
+        let opcodes: Vec<u8> = p.objects[0].states[0].functions[0]
+            .instructions
+            .iter()
+            .map(|instruction| instruction.opcode)
+            .collect();
+
+        assert_eq!(&opcodes[2..], &[OP_STRUCTGET, OP_IADD, OP_STRUCTSET]);
+    }
+
+    #[test]
+    fn compound_property_assignment_reads_and_writes_the_same_receiver() {
+        let type_name = format!("GCompoundBox{}", std::process::id());
+        let import_dir = std::env::temp_dir().join(&type_name);
+        std::fs::create_dir_all(&import_dir).expect("create import dir");
+        std::fs::write(
+            import_dir.join(format!("{type_name}.psc")),
+            format!("Scriptname {type_name}\nInt Property Count Auto\n"),
+        )
+        .expect("write imported script");
+        let p = compile_src_with_imports(
+            &format!(
+                "Scriptname GCompoundProperty\nFunction F({type_name} box)\n  box.Count += 2\nEndFunction\n"
+            ),
+            &[import_dir.to_string_lossy().into_owned()],
+        );
+        std::fs::remove_dir_all(&import_dir).expect("remove import dir");
+        let opcodes: Vec<u8> = p.objects[0].states[0].functions[0]
+            .instructions
+            .iter()
+            .map(|instruction| instruction.opcode)
+            .collect();
+
+        assert_eq!(opcodes, vec![OP_PROPGET, OP_IADD, OP_PROPSET]);
+    }
     golden_test!(
         golden_arr_new,
         "Scriptname GArrNew\nInt[] Function F()\n  Int[] a = new Int[4]\n  Return a\nEndFunction\n",

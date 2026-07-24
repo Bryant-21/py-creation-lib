@@ -50,6 +50,7 @@ _FNV_PROJ_NAM2 = bytes.fromhex(
     "B1B0106696E60762313010669BE6076273741074B3E1C96DB2B011662D9C07A13"
     "2301166329C07A173651E74E527EFD8"
 )
+_FO4_PATHING_CELL_CRC_HASH = 0xA5E9A03C
 
 
 def _valid_fo4_nvmi(*, island: bool = False) -> bytes:
@@ -62,7 +63,8 @@ def _valid_fo4_nvmi(*, island: bool = False) -> bytes:
         data.extend(b"\0" * 24)  # bounds
         data.extend((0).to_bytes(4, "little"))  # triangles
         data.extend((0).to_bytes(4, "little"))  # vertices
-    data.extend(b"\0" * 12)  # CRC, parent world, parent cell/coordinates
+    data.extend(_FO4_PATHING_CELL_CRC_HASH.to_bytes(4, "little"))
+    data.extend(b"\0" * 8)  # parent world, parent cell/coordinates
     return bytes(data)
 
 
@@ -89,6 +91,7 @@ def _valid_fo4_wthr_subrecords(
         "UNAM": 24,
         "VNAM": 4,
         "WNAM": 4,
+        "WGDR": 32,
     }
     sizes.update(size_overrides or {})
     subrecords = [
@@ -762,6 +765,57 @@ def test_accepts_valid_fo4_wthr_target_shape():
     assert report.hazards == []
 
 
+def test_accepts_missing_wthr_wgdr():
+    record = _record(
+        0x07003006,
+        *_valid_fo4_wthr_subrecords(omit=frozenset({"WGDR"})),
+        signature="WTHR",
+    )
+
+    report = scan_runtime_hazard_records(
+        {"WTHR": [record]},
+        plugin_name="Converted.esm",
+        game="fo4",
+    )
+
+    assert report.hazards == []
+
+
+def test_flags_wrong_sized_wthr_wgdr():
+    record = _record(
+        0x07003007,
+        *_valid_fo4_wthr_subrecords(size_overrides={"WGDR": 31}),
+        signature="WTHR",
+    )
+
+    report = scan_runtime_hazard_records(
+        {"WTHR": [record]},
+        plugin_name="Converted.esm",
+        game="fo4",
+    )
+
+    assert [hazard.rule_id for hazard in report.hazards] == [
+        "fo4-loader-wthr-wgdr-size"
+    ]
+    assert report.hazards[0].path == "WTHR.WGDR[0]"
+
+
+def test_accepts_32_byte_wthr_wgdr():
+    record = _record(
+        0x07003008,
+        *_valid_fo4_wthr_subrecords(size_overrides={"WGDR": 32}),
+        signature="WTHR",
+    )
+
+    report = scan_runtime_hazard_records(
+        {"WTHR": [record]},
+        plugin_name="Converted.esm",
+        game="fo4",
+    )
+
+    assert report.hazards == []
+
+
 def test_flags_missing_and_wrong_sized_wthr_nam0():
     missing = _record(
         0x07003002,
@@ -881,15 +935,98 @@ def test_flags_legacy_navi_nver11_and_source_nvmi_shape():
     )
 
     assert [hazard.rule_id for hazard in report.hazards] == [
+        "fo4-loader-navi-record-formid",
         "fo4-loader-navi-legacy-nver11",
         "fo4-loader-navi-nvmi-shape",
     ]
-    assert "edge links rows exceed payload" in report.hazards[1].message
+    assert "edge links rows exceed payload" in report.hazards[2].message
+
+
+def test_flags_noncanonical_fo4_navi_record_formid():
+    record = _record(
+        0x00014B92,
+        _subrecord("NVER", (15).to_bytes(4, "little")),
+        _subrecord("NVMI", _valid_fo4_nvmi()),
+        signature="NAVI",
+    )
+
+    report = scan_runtime_hazard_records(
+        {"NAVI": [record]},
+        plugin_name="FNV_FO3_Merged.esm",
+        game="fo4",
+    )
+
+    assert [hazard.rule_id for hazard in report.hazards] == [
+        "fo4-loader-navi-record-formid"
+    ]
+    assert "00014B92" in report.hazards[0].message
+    assert "00000FF1" in report.hazards[0].message
+
+
+def test_flags_zero_fo4_navi_pathing_cell_crc_once_for_multiple_rows():
+    zero_crc_nvmi = bytearray(_valid_fo4_nvmi())
+    zero_crc_nvmi[-12:-8] = b"\0" * 4
+    record = _record(
+        0x00000FF1,
+        _subrecord("NVER", (15).to_bytes(4, "little")),
+        _subrecord("NVMI", bytes(zero_crc_nvmi)),
+        _subrecord("NVMI", bytes(zero_crc_nvmi)),
+        signature="NAVI",
+    )
+
+    report = scan_runtime_hazard_records(
+        {"NAVI": [record]},
+        plugin_name="FNV_FO3_Merged.esm",
+        game="fo4",
+    )
+
+    assert [hazard.rule_id for hazard in report.hazards] == [
+        "fo4-loader-navi-pathing-cell-crc"
+    ]
+    assert "2 NVMI rows" in report.hazards[0].message
+    assert "00000000" in report.hazards[0].message
+    assert "A5E9A03C" in report.hazards[0].message
+
+
+def test_flags_zero_fo4_navm_pathing_cell_crc_once_for_multiple_records():
+    zero_crc_nvnm = (15).to_bytes(4, "little") + b"\0" * 4
+    records = [
+        _record(0x00000800, _subrecord("NVNM", zero_crc_nvnm), signature="NAVM"),
+        _record(0x00000801, _subrecord("NVNM", zero_crc_nvnm), signature="NAVM"),
+    ]
+
+    report = scan_runtime_hazard_records(
+        {"NAVM": records},
+        plugin_name="FNV_FO3_Merged.esm",
+        game="fo4",
+    )
+
+    assert [hazard.rule_id for hazard in report.hazards] == [
+        "fo4-loader-navm-pathing-cell-crc"
+    ]
+    assert "2 NAVM NVNM rows" in report.hazards[0].message
+    assert "00000000" in report.hazards[0].message
+    assert "A5E9A03C" in report.hazards[0].message
+
+
+def test_accepts_fo4_navm_pathing_cell_crc():
+    nvnm = (15).to_bytes(4, "little") + _FO4_PATHING_CELL_CRC_HASH.to_bytes(
+        4, "little"
+    )
+    record = _record(0x00000800, _subrecord("NVNM", nvnm), signature="NAVM")
+
+    report = scan_runtime_hazard_records(
+        {"NAVM": [record]},
+        plugin_name="FNV_FO3_Merged.esm",
+        game="fo4",
+    )
+
+    assert report.hazards == []
 
 
 def test_accepts_fo4_navi_v15_nvmi_shapes_with_and_without_island_data():
     record = _record(
-        0x01004000,
+        0x00000FF1,
         _subrecord("NVER", (15).to_bytes(4, "little")),
         _subrecord("NVMI", _valid_fo4_nvmi()),
         _subrecord("NVMI", _valid_fo4_nvmi(island=True)),

@@ -398,6 +398,57 @@ mod tests {
     }
 
     #[test]
+    fn compile_source_rejects_mismatched_inherited_event_signature() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let import_dir = std::env::temp_dir().join(format!(
+            "papyrus_event_signature_{}_{}",
+            std::process::id(),
+            unique,
+        ));
+        std::fs::create_dir_all(&import_dir).expect("create import dir");
+        std::fs::write(
+            import_dir.join("TopicInfoSignatureParent.psc"),
+            "ScriptName TopicInfoSignatureParent\n\
+             Event OnBegin(ObjectReference akSpeakerRef, Bool abHasBeenSaid)\n\
+             EndEvent\n",
+        )
+        .expect("write parent source");
+        let imports = vec![import_dir.to_string_lossy().into_owned()];
+
+        let mismatch = compile_source(
+            "ScriptName TopicInfoSignatureMismatch Extends TopicInfoSignatureParent\n\
+             Event OnBegin(ObjectReference akSpeakerRef, ObjectReference akTargetRef, Quest akQuestInstance, Bool abHasBeenSaid)\n\
+             EndEvent\n",
+            &imports,
+            Game::Fo4,
+            None,
+        );
+        let matching = compile_source(
+            "ScriptName TopicInfoSignatureMatch Extends TopicInfoSignatureParent\n\
+             Event OnBegin(ObjectReference akSpeakerRef, Bool abHasBeenSaid)\n\
+             EndEvent\n",
+            &imports,
+            Game::Fo4,
+            None,
+        );
+        std::fs::remove_dir_all(&import_dir).expect("remove import dir");
+
+        assert!(!mismatch.ok, "{:?}", mismatch.diagnostics);
+        assert!(
+            mismatch
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("does not match inherited signature")),
+            "{:?}",
+            mismatch.diagnostics,
+        );
+        assert!(matching.ok, "{:?}", matching.diagnostics);
+    }
+
+    #[test]
     fn source_path_script_name_lowercases_lowercase_file_stem() {
         let imports = vec!["User".to_string()];
         assert_eq!(

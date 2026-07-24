@@ -34,9 +34,9 @@ const DIRECT_PACK_MEMORY_BUDGET: usize = 256 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Fo4WriterKind {
-    /// `"fo4"` archive type: v8, GNRL, Zip, force_compress off.
+    /// `"fo4"` / `"fo4og"` / `"fo76"` archive types: GNRL, Zip, force_compress off.
     Gnrl,
-    /// `"fo4dds"` archive type: v8, DX10, Zip, force_compress on.
+    /// `"fo4dds"` / `"fo4ogdds"` / `"fo76dds"` archive types: DX10, Zip, force_compress on.
     Dx10,
 }
 
@@ -110,10 +110,15 @@ struct DirectEntry {
     chunks: Vec<StreamedChunk>,
 }
 
-struct DirectArchiveState {
-    file: File,
-    next_offset: u64,
-    entries: Vec<DirectEntry>,
+/// A compressed entry queued for the dedicated writer thread. The memory
+/// guard rides along so the in-flight budget is released only once the
+/// payload has actually been written.
+struct QueuedDirectEntry<'a> {
+    rel_backslash: String,
+    header: fo4::FileHeader,
+    chunk_plans: Vec<ChunkPlan>,
+    payload: Vec<u8>,
+    _memory_guard: InFlightMemoryGuard<'a>,
 }
 
 struct InFlightMemory {
@@ -185,7 +190,7 @@ impl IncrementalFo4Writer {
             }
         }
         let file = File::create(&spill_path).map_err(|e| format!("spill create: {e}"))?;
-        let encoder = EntryEncoder::new(kind, settings);
+        let encoder = EntryEncoder::new(kind, fo4::Version::v8, settings);
         Ok(Self {
             encoder,
             spill_path,
@@ -402,9 +407,9 @@ impl IncrementalFo4Writer {
 }
 
 impl EntryEncoder {
-    fn new(kind: Fo4WriterKind, settings: CompressionSettings) -> Self {
+    fn new(kind: Fo4WriterKind, version: fo4::Version, settings: CompressionSettings) -> Self {
         let opts = PackOptions {
-            version: fo4::Version::v8,
+            version,
             format: match kind {
                 Fo4WriterKind::Gnrl => fo4::Format::GNRL,
                 Fo4WriterKind::Dx10 => fo4::Format::DX10,
@@ -729,6 +734,7 @@ pub(crate) fn pack_fo4_direct(
     entries: &[FileEntry],
     output_path: &Path,
     writer_kind: Fo4WriterKind,
+    version: fo4::Version,
     settings: CompressionSettings,
 ) -> PackResult<()> {
     if let Some(parent) = output_path.parent() {
@@ -737,7 +743,7 @@ pub(crate) fn pack_fo4_direct(
         }
     }
 
-    let encoder = EntryEncoder::new(writer_kind, settings);
+    let encoder = EntryEncoder::new(writer_kind, version, settings);
     let reserved_chunk_count = entries
         .len()
         .checked_mul(4)
@@ -747,97 +753,132 @@ pub(crate) fn pack_fo4_direct(
         reserved_chunk_count as u64,
         &encoder.opts,
     )?;
-    let mut file = File::create(output_path).map_err(|e| format!("output create: {e}"))?;
+    let file = File::create(output_path).map_err(|e| format!("output create: {e}"))?;
     file.set_len(payload_start)
         .map_err(|e| format!("output reserve: {e}"))?;
-    file.seek(SeekFrom::Start(payload_start))
-        .map_err(|e| format!("output seek: {e}"))?;
 
-    let state = Mutex::new(DirectArchiveState {
-        file,
-        next_offset: payload_start,
-        entries: Vec::with_capacity(entries.len()),
-    });
     let memory_budget = InFlightMemory::new(DIRECT_PACK_MEMORY_BUDGET);
 
-    entries.par_iter().try_for_each(|entry| -> PackResult<()> {
-        let source_len = entry
-            .full_path
-            .metadata()
-            .map_err(|e| format!("stat {}: {e}", entry.full_path.display()))?
-            .len();
-        let requested_memory = usize::try_from(source_len)
-            .unwrap_or(usize::MAX)
-            .saturating_add((source_len / 8).try_into().unwrap_or(usize::MAX))
-            .saturating_add(1024 * 1024);
-        let _memory_guard = memory_budget.acquire(requested_memory);
-        let prepared = encoder.prepare_file(entry)?;
-        let mut state = state.lock().expect("direct archive mutex poisoned");
-        let mut next_offset = state.next_offset;
-        state
-            .file
-            .write_all(&prepared.payload)
-            .map_err(|e| format!("archive payload write: {e}"))?;
-
-        let mut chunks = Vec::with_capacity(prepared.chunks.len());
-        for chunk in prepared.chunks {
-            chunks.push(StreamedChunk {
-                payload_offset: next_offset,
-                packed_len: chunk.packed_len,
-                unpacked_len: chunk.unpacked_len,
-                mips: chunk.mips,
+    // Workers compress in parallel and hand finished payloads to a single
+    // writer thread that appends them sequentially and assigns offsets in
+    // arrival order. Sequential appends keep NTFS from zero-filling gaps
+    // (positional out-of-order writes are pathologically slow there), and no
+    // worker ever blocks on disk I/O — only on the in-flight memory budget,
+    // which the writer drains, so the pipeline cannot deadlock.
+    let (mut direct_entries, next_offset, mut file) =
+        std::thread::scope(|scope| -> PackResult<(Vec<DirectEntry>, u64, File)> {
+            let (tx, rx) = std::sync::mpsc::channel::<QueuedDirectEntry<'_>>();
+            let writer = scope.spawn(move || -> PackResult<(Vec<DirectEntry>, u64, File)> {
+                let mut file = file;
+                file.seek(SeekFrom::Start(payload_start))
+                    .map_err(|e| format!("output seek: {e}"))?;
+                let mut next_offset = payload_start;
+                let mut written_entries = Vec::new();
+                for item in rx {
+                    file.write_all(&item.payload)
+                        .map_err(|e| format!("archive payload write: {e}"))?;
+                    let mut chunks = Vec::with_capacity(item.chunk_plans.len());
+                    for chunk in item.chunk_plans {
+                        chunks.push(StreamedChunk {
+                            payload_offset: next_offset,
+                            packed_len: chunk.packed_len,
+                            unpacked_len: chunk.unpacked_len,
+                            mips: chunk.mips,
+                        });
+                        next_offset = next_offset
+                            .checked_add(chunk.stored_len)
+                            .ok_or_else(|| "BA2 payload offsets overflowed u64".to_string())?;
+                    }
+                    written_entries.push(DirectEntry {
+                        rel_backslash: item.rel_backslash,
+                        header: item.header,
+                        chunks,
+                    });
+                }
+                Ok((written_entries, next_offset, file))
             });
-            next_offset = next_offset
-                .checked_add(chunk.stored_len)
-                .ok_or_else(|| "BA2 payload offsets overflowed u64".to_string())?;
-        }
-        state.next_offset = next_offset;
-        state.entries.push(DirectEntry {
-            rel_backslash: prepared.rel_backslash,
-            header: prepared.header,
-            chunks,
-        });
-        Ok(())
-    })?;
 
-    let mut state = state
-        .into_inner()
-        .map_err(|_| "direct archive mutex poisoned".to_string())?;
-    state
-        .entries
-        .sort_by(|a, b| a.rel_backslash.cmp(&b.rel_backslash));
-    let string_table_offset = state.next_offset;
+            let pack_result = entries.par_iter().try_for_each(|entry| -> PackResult<()> {
+                let source_len = match entry.source_size {
+                    Some(source_size) => source_size,
+                    None => entry
+                        .full_path
+                        .metadata()
+                        .map_err(|e| format!("stat {}: {e}", entry.full_path.display()))?
+                        .len(),
+                };
+                let requested_memory = usize::try_from(source_len)
+                    .unwrap_or(usize::MAX)
+                    .saturating_add((source_len / 8).try_into().unwrap_or(usize::MAX))
+                    .saturating_add(1024 * 1024);
+                let memory_guard = memory_budget.acquire(requested_memory);
+                let prepared = encoder.prepare_file(entry)?;
+                tx.send(QueuedDirectEntry {
+                    rel_backslash: prepared.rel_backslash,
+                    header: prepared.header,
+                    chunk_plans: prepared.chunks,
+                    payload: prepared.payload,
+                    _memory_guard: memory_guard,
+                })
+                .map_err(|_| "archive payload writer stopped".to_string())
+            });
+            drop(tx);
+            let writer_result = writer
+                .join()
+                .map_err(|_| "archive payload writer panicked".to_string())?;
+            match (pack_result, writer_result) {
+                (_, Err(err)) => Err(err),
+                (Err(err), _) => Err(err),
+                (Ok(()), Ok(written)) => Ok(written),
+            }
+        })?;
 
-    state
-        .file
-        .seek(SeekFrom::Start(string_table_offset))
-        .map_err(|e| format!("string table seek: {e}"))?;
-    for entry in &state.entries {
-        let (_, name) = make_hash_and_name(&entry.rel_backslash);
-        write_wstring(&mut state.file, &name)?;
+    direct_entries.sort_by(|a, b| a.rel_backslash.cmp(&b.rel_backslash));
+    let string_table_offset = next_offset;
+
+    let actual_chunk_count: u64 = direct_entries
+        .iter()
+        .map(|entry| entry.chunks.len() as u64)
+        .sum();
+    let actual_front = archive_front_size_counts(
+        direct_entries.len() as u64,
+        actual_chunk_count,
+        &encoder.opts,
+    )?;
+    if actual_front > payload_start {
+        return Err(format!(
+            "BA2 front matter ({actual_front} bytes, {actual_chunk_count} chunks) exceeds the \
+             reserved region ({payload_start} bytes, {reserved_chunk_count} chunk slots); \
+             refusing to overwrite payload"
+        ));
     }
 
-    state
-        .file
-        .seek(SeekFrom::Start(0))
+    file.seek(SeekFrom::Start(string_table_offset))
+        .map_err(|e| format!("string table seek: {e}"))?;
+    for entry in &direct_entries {
+        let (_, name) = make_hash_and_name(&entry.rel_backslash);
+        write_wstring(&mut file, &name)?;
+    }
+
+    file.seek(SeekFrom::Start(0))
         .map_err(|e| format!("header seek: {e}"))?;
     write_header(
-        &mut state.file,
+        &mut file,
         &encoder.opts,
-        state.entries.len(),
+        direct_entries.len(),
         string_table_offset,
     )?;
-    for entry in &state.entries {
+    for entry in &direct_entries {
         let (hash, _) = make_hash_and_name(&entry.rel_backslash);
         write_file_record_parts(
-            &mut state.file,
+            &mut file,
             &hash,
             &entry.header,
             &entry.chunks,
             &encoder.opts,
         )?;
     }
-    state.file.flush().map_err(|e| format!("output flush: {e}"))
+    file.flush().map_err(|e| format!("output flush: {e}"))
 }
 
 struct ChunkPlan {
@@ -924,6 +965,7 @@ mod tests {
             .map(|(abs, rel)| PackEntrySpec {
                 source_path: abs.clone(),
                 archive_path: rel.clone(),
+                source_size: fs::metadata(abs).ok().map(|metadata| metadata.len()),
             })
             .collect();
         pack_archive_entries(&specs, output, archive_type, true, 9, false, None, None)

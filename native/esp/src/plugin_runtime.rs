@@ -49,6 +49,8 @@ const DEFAULT_SYNTHETIC_OBJECT_ID: u32 = 0x0000_0800;
 const NAVI_ISLAND_TRIANGLE_LIMIT: usize = 240;
 const NAVI_ISLAND_VERTEX_LIMIT: usize = 240;
 const NAVI_NVMI_FLAG_IS_ISLAND: u32 = 0x20;
+pub const FO4_CANONICAL_NAVI_FORM_ID: u32 = 0x0000_0FF1;
+pub const FO4_PATHING_CELL_CRC_HASH: u32 = 0xA5E9_A03C;
 const RECORD_FLAG_DELETED: u32 = 0x0000_0020;
 const RECORD_FLAG_INITIALLY_DISABLED: u32 = 0x0000_0800;
 const PLAYER_FORM_ID: u32 = 0x0000_0014;
@@ -73,6 +75,9 @@ pub use marker_type::*;
 #[path = "worldspace_header.rs"]
 mod worldspace_header;
 pub use worldspace_header::*;
+#[path = "worldspace_offsets.rs"]
+mod worldspace_offsets;
+pub use worldspace_offsets::*;
 #[path = "asset_collect.rs"]
 mod asset_collect;
 pub use asset_collect::*;
@@ -887,6 +892,17 @@ fn collect_record_object_ids(items: &[ParsedItem], used_object_ids: &mut BTreeSe
                 }
             }
             ParsedItem::Group(group) => collect_record_object_ids(&group.children, used_object_ids),
+        }
+    }
+}
+
+fn collect_record_form_ids(items: &[ParsedItem], used_form_ids: &mut HashSet<u32>) {
+    for item in items {
+        match item {
+            ParsedItem::Record(record) => {
+                used_form_ids.insert(record.form_id);
+            }
+            ParsedItem::Group(group) => collect_record_form_ids(&group.children, used_form_ids),
         }
     }
 }
@@ -6556,23 +6572,7 @@ fn navmesh_parent_from_record(record: &ParsedRecord) -> Result<Option<NavmeshPar
 }
 
 fn find_cell_form_id_by_grid(items: &[ParsedItem], cell: (i16, i16)) -> Option<u32> {
-    for item in items {
-        match item {
-            ParsedItem::Record(record)
-                if record.signature.as_str() == "CELL"
-                    && projected_cell_grid_from_record(record) == Some(cell) =>
-            {
-                return Some(record.form_id);
-            }
-            ParsedItem::Group(group) => {
-                if let Some(form_id) = find_cell_form_id_by_grid(&group.children, cell) {
-                    return Some(form_id);
-                }
-            }
-            _ => {}
-        }
-    }
-    None
+    build_cell_grid_index(items).get(&cell).copied()
 }
 
 fn find_cell_child_group_mut_in_items(
@@ -7257,25 +7257,34 @@ pub fn insert_projected_navmesh_record_in_slot(
     }
 }
 
-/// First-match grid index over a world-children subtree: same DFS recursion
-/// and match predicate as `find_cell_form_id_by_grid`, collecting every grid's
-/// FIRST matching CELL form id in walk order.
+/// First-match grid index over true exterior CELL block/subblock topology.
+/// Worldspace persistent CELLs can carry XCLC=(0,0), but they are not valid
+/// parents for exterior NAVM records and must never win the grid lookup.
 fn build_cell_grid_index(items: &[ParsedItem]) -> HashMap<(i16, i16), u32> {
-    fn walk(items: &[ParsedItem], out: &mut HashMap<(i16, i16), u32>) {
+    fn walk(items: &[ParsedItem], inside_exterior_group: bool, out: &mut HashMap<(i16, i16), u32>) {
         for item in items {
             match item {
-                ParsedItem::Record(record) if record.signature.as_str() == "CELL" => {
+                ParsedItem::Record(record)
+                    if inside_exterior_group && record.signature.as_str() == "CELL" =>
+                {
                     if let Some(grid) = projected_cell_grid_from_record(record) {
                         out.entry(grid).or_insert(record.form_id);
                     }
                 }
-                ParsedItem::Group(group) => walk(&group.children, out),
+                ParsedItem::Group(group)
+                    if matches!(
+                        group.group_type,
+                        EXTERIOR_CELL_BLOCK | EXTERIOR_CELL_SUBBLOCK
+                    ) =>
+                {
+                    walk(&group.children, true, out)
+                }
                 _ => {}
             }
         }
     }
     let mut out = HashMap::new();
-    walk(items, &mut out);
+    walk(items, false, &mut out);
     out
 }
 
@@ -7529,11 +7538,18 @@ pub fn rebuild_projected_navi_record_in_slot(
 
     let mut used_object_ids = BTreeSet::new();
     collect_record_object_ids(&slot.parsed.root_items, &mut used_object_ids);
+    let mut used_form_ids = HashSet::new();
+    collect_record_form_ids(&slot.parsed.root_items, &mut used_form_ids);
+    let preferred_form_id = match slot.parsed.game.as_deref() {
+        Some("fo4") => Some(FO4_CANONICAL_NAVI_FORM_ID),
+        _ => preferred_form_id,
+    };
     let navi_form_id = choose_projected_navi_form_id(
         &mut slot.parsed.header,
         existing_navi_form_id,
         preferred_form_id,
         &mut used_object_ids,
+        &used_form_ids,
     );
     let mut subrecords = Vec::with_capacity(infos.len() + 2);
     subrecords.push(ParsedSubrecord {
@@ -7705,11 +7721,18 @@ pub fn rebuild_projected_navi_record_from_source_in_slot_with_nver(
 
     let mut used_object_ids = BTreeSet::new();
     collect_record_object_ids(&slot.parsed.root_items, &mut used_object_ids);
+    let mut used_form_ids = HashSet::new();
+    collect_record_form_ids(&slot.parsed.root_items, &mut used_form_ids);
+    let preferred_form_id = match slot.parsed.game.as_deref() {
+        Some("fo4") => Some(FO4_CANONICAL_NAVI_FORM_ID),
+        _ => preferred_form_id,
+    };
     let navi_form_id = choose_projected_navi_form_id(
         &mut slot.parsed.header,
         existing_navi_form_id,
         preferred_form_id,
         &mut used_object_ids,
+        &used_form_ids,
     );
 
     let target_nver = if slot.parsed.game.as_deref() == Some("fo4") {
@@ -7938,10 +7961,10 @@ fn collect_navmesh_info_inputs(
     }
 }
 
-/// Normalize a version-marker-only mismatch on otherwise valid FO4 NVNM
+/// Normalize FO4's version and PathingCell markers on otherwise valid NVNM
 /// payloads. A true legacy layout is rejected before any target record is
-/// changed; stamping version 15 onto bytes that do not fully parse as FO4 would
-/// merely hide corruption and make the NAVI rebuild unsafe.
+/// changed; stamping target markers onto bytes that do not fully parse as FO4
+/// would merely hide corruption and make the NAVI rebuild unsafe.
 fn normalize_finalized_fo4_navmesh_versions(items: &mut [ParsedItem]) -> Result<(), String> {
     let mut errors = Vec::new();
     collect_non_fo4_navmesh_version_errors(items, &mut errors);
@@ -7952,7 +7975,7 @@ fn normalize_finalized_fo4_navmesh_versions(items: &mut [ParsedItem]) -> Result<
             errors.join("; ")
         ));
     }
-    normalize_fo4_navmesh_version_markers(items);
+    normalize_fo4_navmesh_markers(items);
     Ok(())
 }
 
@@ -7971,9 +7994,9 @@ fn collect_non_fo4_navmesh_version_errors(items: &[ParsedItem], errors: &mut Vec
                 if nvnm.is_empty() {
                     continue;
                 }
-                if nvnm.len() < 4 {
+                if nvnm.len() < 8 {
                     errors.push(format!(
-                        "NAVM {:08X} NVNM has {} bytes; version requires 4",
+                        "NAVM {:08X} NVNM has {} bytes; FO4 markers require 8",
                         record.form_id,
                         nvnm.len()
                     ));
@@ -8000,22 +8023,25 @@ fn collect_non_fo4_navmesh_version_errors(items: &[ParsedItem], errors: &mut Vec
     }
 }
 
-fn normalize_fo4_navmesh_version_markers(items: &mut [ParsedItem]) {
+fn normalize_fo4_navmesh_markers(items: &mut [ParsedItem]) {
     for item in items {
         match item {
             ParsedItem::Record(record) if record.signature.as_str() == "NAVM" => {
                 let mut subrecords = effective_subrecords_for_record(record).into_owned();
                 let mut changed = false;
                 for subrecord in &mut subrecords {
-                    if subrecord.signature.as_str() != "NVNM" || subrecord.data.len() < 4 {
+                    if subrecord.signature.as_str() != "NVNM" || subrecord.data.len() < 8 {
                         continue;
                     }
                     let version = u32::from_le_bytes(subrecord.data[0..4].try_into().unwrap());
-                    if version == 15 {
+                    let pathing_cell_crc =
+                        u32::from_le_bytes(subrecord.data[4..8].try_into().unwrap());
+                    if version == 15 && pathing_cell_crc == FO4_PATHING_CELL_CRC_HASH {
                         continue;
                     }
                     let mut data = subrecord.data.to_vec();
                     data[0..4].copy_from_slice(&15u32.to_le_bytes());
+                    data[4..8].copy_from_slice(&FO4_PATHING_CELL_CRC_HASH.to_le_bytes());
                     subrecord.data = Bytes::from(data);
                     changed = true;
                 }
@@ -8024,7 +8050,7 @@ fn normalize_fo4_navmesh_version_markers(items: &mut [ParsedItem]) {
                     record.raw_payload = None;
                 }
             }
-            ParsedItem::Group(group) => normalize_fo4_navmesh_version_markers(&mut group.children),
+            ParsedItem::Group(group) => normalize_fo4_navmesh_markers(&mut group.children),
             _ => {}
         }
     }
@@ -8409,11 +8435,11 @@ fn remap_source_nvmi_for_projected_navi(
         out.extend_from_slice(&data[vert_start..offset]);
     }
 
-    let crc_hash = read_u32_le(data, offset, "NVMI pathing cell CRC")?;
+    let _source_crc_hash = read_u32_le(data, offset, "NVMI pathing cell CRC")?;
     offset += 4;
     let parent_world = read_u32_le(data, offset, "NVMI parent world")?;
     offset += 4;
-    out.extend_from_slice(&crc_hash.to_le_bytes());
+    out.extend_from_slice(&FO4_PATHING_CELL_CRC_HASH.to_le_bytes());
     if parent_world == 0 {
         out.extend_from_slice(&0u32.to_le_bytes());
         let parent_cell = read_u32_le(data, offset, "NVMI parent cell")?;
@@ -8661,12 +8687,15 @@ fn choose_projected_navi_form_id(
     existing_navi_form_id: Option<u32>,
     preferred_form_id: Option<u32>,
     used_object_ids: &mut BTreeSet<u32>,
+    used_form_ids: &HashSet<u32>,
 ) -> u32 {
     // Official FO4 DLC masters keep the top-level NAVI raw FormID as 00000FF1;
     // rewriting it to the file's own master index makes CK report a duplicate map.
     if let Some(form_id) = preferred_form_id {
         let object_id = form_id & 0x00FF_FFFF;
-        if object_id != 0 && used_object_ids.insert(object_id) {
+        let canonical_fo4_override =
+            form_id == FO4_CANONICAL_NAVI_FORM_ID && !used_form_ids.contains(&form_id);
+        if object_id != 0 && (canonical_fo4_override || used_object_ids.insert(object_id)) {
             advance_next_object_id_past(header, object_id);
             return form_id;
         }
@@ -8674,7 +8703,9 @@ fn choose_projected_navi_form_id(
 
     if let Some(form_id) = existing_navi_form_id {
         let object_id = form_id & 0x00FF_FFFF;
-        if object_id != 0 && used_object_ids.insert(object_id) {
+        let canonical_fo4_override =
+            form_id == FO4_CANONICAL_NAVI_FORM_ID && !used_form_ids.contains(&form_id);
+        if object_id != 0 && (canonical_fo4_override || used_object_ids.insert(object_id)) {
             advance_next_object_id_past(header, object_id);
             return form_id;
         }
@@ -8929,7 +8960,20 @@ pub fn remap_formids_in_record(
     // one FormID actually changes after remapping; this keeps the
     // common no-op path (matched master tables) zero-alloc.
     let is_land_record = record.signature.as_str() == "LAND";
+    let is_navm_record = record.signature.as_str() == "NAVM";
     for sub in record.subrecords.iter_mut() {
+        if is_navm_record && sub.signature.as_str() == "NVNM" {
+            if let Some(remapped) = remap_nvnm_formids(
+                sub.data.as_ref(),
+                source_masters,
+                target_masters,
+                source_own_index,
+                target_own_index,
+            ) {
+                sub.data = Bytes::from(remapped);
+            }
+            continue;
+        }
         let is_land_texture_layer =
             is_land_record && matches!(sub.signature.as_str(), "BTXT" | "ATXT");
         if (sub.semantic_type.as_deref() == Some("formid") || is_land_texture_layer)
@@ -8977,6 +9021,65 @@ pub fn remap_formids_in_record(
             }
         }
     }
+}
+
+fn remap_nvnm_formids(
+    data: &[u8],
+    source_masters: &[String],
+    target_masters: &[String],
+    source_own_index: u8,
+    target_own_index: u8,
+) -> Option<Vec<u8>> {
+    let mut payload = crate::nvnm::parse_nvnm(data).ok()?;
+    let mut changed = false;
+    match &mut payload.parent {
+        crate::nvnm::NvnmParent::Interior { cell } => {
+            let remapped = remap_formid_index(
+                *cell,
+                source_masters,
+                target_masters,
+                source_own_index,
+                target_own_index,
+            );
+            changed |= remapped != *cell;
+            *cell = remapped;
+        }
+        crate::nvnm::NvnmParent::Exterior { world, .. } => {
+            let remapped = remap_formid_index(
+                *world,
+                source_masters,
+                target_masters,
+                source_own_index,
+                target_own_index,
+            );
+            changed |= remapped != *world;
+            *world = remapped;
+        }
+    }
+    for edge_link in &mut payload.edge_links {
+        let raw = u32::from_le_bytes(edge_link.row[4..8].try_into().ok()?);
+        let remapped = remap_formid_index(
+            raw,
+            source_masters,
+            target_masters,
+            source_own_index,
+            target_own_index,
+        );
+        changed |= remapped != raw;
+        edge_link.row[4..8].copy_from_slice(&remapped.to_le_bytes());
+    }
+    for door_ref in &mut payload.door_refs {
+        let remapped = remap_formid_index(
+            door_ref.door_ref_form_id,
+            source_masters,
+            target_masters,
+            source_own_index,
+            target_own_index,
+        );
+        changed |= remapped != door_ref.door_ref_form_id;
+        door_ref.door_ref_form_id = remapped;
+    }
+    changed.then(|| crate::nvnm::write_nvnm(&payload))
 }
 
 fn remap_formid_index(
@@ -17363,6 +17466,101 @@ mod tests {
     }
 
     #[test]
+    fn projected_navmesh_insertion_ignores_persistent_cell_origin_grid() {
+        let handle_id = create_empty_plugin_handle("Test.esp", Some("fo4"));
+        let world_payload = serde_json::json!({
+            "signature": "WRLD",
+            "form_id": "000800:Test.esp",
+            "eid": "TestWorld",
+            "subrecords": [
+                { "signature": "EDID", "data_hex": "54657374576F726C6400" }
+            ]
+        });
+        let cell_payload = serde_json::json!({
+            "signature": "CELL",
+            "form_id": "000801:Test.esp",
+            "eid": "TestExteriorOrigin",
+            "subrecords": [
+                { "signature": "EDID", "data_hex": "546573744578746572696F724F726967696E00" },
+                { "signature": "XCLC", "data_hex": "000000000000000000000000" }
+            ],
+            "Landscape": {
+                "form_id": "000803:Test.esp",
+                "subrecords": []
+            }
+        });
+        let relative_path = "records/WRLD/TestWorld - 000800_Test.esp/0,0/0,0/0,0/RecordData.yaml";
+
+        plugin_handle_replace_authoring_record_value(handle_id, &world_payload)
+            .expect("WRLD import");
+        plugin_handle_replace_projected_cell_authoring_record_value(
+            handle_id,
+            &cell_payload,
+            relative_path,
+        )
+        .expect("projected CELL import");
+
+        let mut store = plugin_handle_store_ref().lock().unwrap();
+        let slot = store.get_mut(&handle_id).unwrap();
+        {
+            let world_children =
+                projected_world_children_group_mut(&mut slot.parsed.root_items, 0x000800)
+                    .expect("WRLD children");
+            let mut persistent_cell = make_record("CELL", 0x000802, Some("TestPersistentCell"));
+            ensure_projected_cell_grid_subrecord(&mut persistent_cell, (0, 0));
+            world_children.children.insert(
+                0,
+                ParsedItem::Group(ParsedGroup {
+                    label: 0x000802u32.to_le_bytes(),
+                    group_type: CELL_CHILD_GROUP,
+                    tail: Bytes::from(vec![0u8; MODERN_HEADER_SIZE - 16]),
+                    children: Vec::new(),
+                }),
+            );
+            world_children
+                .children
+                .insert(0, ParsedItem::Record(persistent_cell));
+            assert_eq!(
+                build_cell_grid_index(&world_children.children).get(&(0, 0)),
+                Some(&0x000801)
+            );
+        }
+
+        assert!(
+            insert_projected_navmesh_record_in_slot(
+                slot,
+                exterior_navmesh_record(0x000900, 0x000800, (0, 0)),
+            )
+            .expect("single NAVM insert")
+        );
+        assert_eq!(
+            insert_projected_navmeshes_batch_in_slot(
+                slot,
+                vec![exterior_navmesh_record(0x000901, 0x000800, (0, 0))],
+            ),
+            vec![Ok(true)]
+        );
+
+        let world_children =
+            projected_world_children_group_mut(&mut slot.parsed.root_items, 0x000800)
+                .expect("WRLD children");
+        let exterior_group =
+            find_cell_child_group_mut_in_items(&mut world_children.children, 0x000801)
+                .expect("exterior CELL children");
+        assert_eq!(
+            count_test_records_by_signature(&exterior_group.children, "NAVM"),
+            2
+        );
+        let persistent_group =
+            find_cell_child_group_mut_in_items(&mut world_children.children, 0x000802)
+                .expect("persistent CELL children");
+        assert_eq!(
+            count_test_records_by_signature(&persistent_group.children, "NAVM"),
+            0
+        );
+    }
+
+    #[test]
     fn insert_projected_navmesh_record_uses_exterior_cell_temporary_group() {
         let handle_id = create_empty_plugin_handle("Test.esp", Some("fo4"));
         let world_payload = serde_json::json!({
@@ -18033,8 +18231,48 @@ mod tests {
         assert_eq!(&nvmi[69..75], &[0, 0, 1, 0, 2, 0]);
         assert_eq!(u32::from_le_bytes(nvmi[75..79].try_into().unwrap()), 3);
         assert_eq!(
+            u32::from_le_bytes(nvmi[nvmi.len() - 12..nvmi.len() - 8].try_into().unwrap()),
+            FO4_PATHING_CELL_CRC_HASH
+        );
+        assert_eq!(
             u32::from_le_bytes(nvmi[nvmi.len() - 8..nvmi.len() - 4].try_into().unwrap()),
             0x000B00
+        );
+    }
+
+    #[test]
+    fn rebuild_projected_navi_stamps_fo4_pathing_cell_crc() {
+        let handle_id = create_empty_plugin_handle("Test.esp", Some("fo4"));
+        let mut store = plugin_handle_store_ref().lock().unwrap();
+        let slot = store.get_mut(&handle_id).unwrap();
+        slot.parsed
+            .root_items
+            .push(ParsedItem::Record(exterior_navmesh_record_with_edges(
+                0x000A00,
+                0x000B00,
+                (3, -2),
+                &[],
+            )));
+
+        rebuild_projected_navi_record_in_slot(slot, Some(0x000FF1)).expect("NAVI rebuild");
+
+        let navm = find_record_mut(&mut slot.parsed.root_items, 0x000A00).expect("target NAVM");
+        let nvnm = effective_subrecords_for_record(navm)
+            .iter()
+            .find(|subrecord| subrecord.signature.as_str() == "NVNM")
+            .expect("target NVNM")
+            .data
+            .clone();
+        assert_eq!(
+            u32::from_le_bytes(nvnm[4..8].try_into().unwrap()),
+            FO4_PATHING_CELL_CRC_HASH
+        );
+
+        let navi = first_top_level_record(&slot.parsed.root_items, "NAVI").expect("top-level NAVI");
+        let nvmi = navmesh_info_subrecord(navi, 0x000A00);
+        assert_eq!(
+            u32::from_le_bytes(nvmi[nvmi.len() - 12..nvmi.len() - 8].try_into().unwrap()),
+            FO4_PATHING_CELL_CRC_HASH
         );
     }
 
@@ -18128,7 +18366,7 @@ mod tests {
     }
 
     #[test]
-    fn rebuild_projected_navi_uses_preferred_source_form_id() {
+    fn rebuild_projected_navi_uses_fo4_canonical_form_id_with_owned_object_id_collision() {
         let handle_id = create_empty_plugin_handle("Test.esp", Some("fo4"));
         let world_payload = serde_json::json!({
             "signature": "WRLD",
@@ -18174,21 +18412,25 @@ mod tests {
                 "DLCworkshop03.esm".into(),
                 "DLCNukaWorld.esm".into(),
             ];
-            insert_parsed_record_in_slot(slot, make_record("NAVI", 0x07000FF1, None));
+            insert_parsed_record_in_slot(slot, make_record("REFR", 0x07000FF1, None));
             insert_projected_navmesh_record_in_slot(
                 slot,
                 exterior_navmesh_record_with_edges(0x000900, 0x000800, (3, -2), &[]),
             )
             .expect("NAVM insert");
 
-            rebuild_projected_navi_record_in_slot(slot, Some(0x000FF1)).expect("NAVI rebuild");
+            rebuild_projected_navi_record_in_slot(slot, Some(0x0001_4B92)).expect("NAVI rebuild");
             assert_eq!(
                 first_top_level_record(&slot.parsed.root_items, "NAVI")
                     .expect("top-level NAVI")
                     .form_id,
-                0x000FF1
+                FO4_CANONICAL_NAVI_FORM_ID
             );
             assert!(slot.parsed.header.next_object_id > 0x000FF1);
+            assert_eq!(
+                find_first_record_form_id_by_signature(&slot.parsed.root_items, "REFR"),
+                Some(0x0700_0FF1)
+            );
         }
     }
 

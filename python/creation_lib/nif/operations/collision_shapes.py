@@ -52,15 +52,10 @@ def _elongation_ratio(verts: np.ndarray) -> tuple[float, np.ndarray, np.ndarray,
 def create_capsule_shape(nif, verts_nif: np.ndarray,
                          radius: float = DEFAULT_RADIUS,
                          havok_scale_factor: float = HAVOK_SCALE_FO4) -> int | None:
-    """Create bhkCapsuleShape from NIF-space vertices via PCA.
+    """Create bhkCapsuleShape from NIF-space vertices via PCA; return its block_id or None.
 
-    The capsule axis is aligned with the principal component. Endpoints sit
-    at min/max projection, radius equals max perpendicular distance.
-
-    Args:
-        havok_scale_factor: NIF-to-Havok scale (default HAVOK_SCALE_FO4).
-
-    Returns block_id of the capsule shape, or None.
+    The axis follows the principal component, endpoints sit at the min/max
+    projection, and the radius is the max perpendicular distance.
     """
     if len(verts_nif) < 2:
         return None
@@ -268,7 +263,7 @@ def create_optimized_collision(nif, verts_nif: np.ndarray,
     outlier_mask = ~is_inlier
     n_outliers = int(outlier_mask.sum())
 
-    # Step 3: If few outliers, just create the dominant primitive
+    # Step 3: Create the dominant primitive; stop there if outliers are under 10%
     shape_ids = []
     if ratio > 2.0:
         prim_id = create_capsule_shape(nif, verts_nif, radius)

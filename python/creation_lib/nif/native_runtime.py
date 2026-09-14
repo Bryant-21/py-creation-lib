@@ -1,4 +1,5 @@
 """Thin Python boundary for native nif_core_native entrypoints."""
+
 from __future__ import annotations
 
 from importlib import import_module
@@ -131,6 +132,67 @@ def convert_nif_file_raw(
         target_game,
         bgsm_output_dir,
         options or {},
+    )
+
+
+def validate_nif_file_raw(
+    path: str,
+    output_path: str | None = None,
+    fix: bool = False,
+    include_optional: bool = False,
+) -> dict[str, Any]:
+    """Audit a NIF and optionally apply safe fixes selected by its header."""
+    module = load_native_module()
+    if module is None:
+        raise RuntimeError("nif_core_native is not available")
+    validate_nif_file = getattr(module, "validate_nif_file", None)
+    if not callable(validate_nif_file):
+        raise RuntimeError("nif_core_native.validate_nif_file is not available")
+    return validate_nif_file(path, output_path, fix, include_optional)
+
+
+def nif_features_raw() -> dict[str, Any]:
+    module = load_native_module()
+    if module is None:
+        raise RuntimeError("nif_core_native is not available")
+    nif_features = getattr(module, "nif_features", None)
+    if not callable(nif_features):
+        raise RuntimeError("nif_core_native.nif_features is not available")
+    return nif_features()
+
+
+def nif_report_raw(
+    path: str,
+    processor: str,
+    options: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    import json
+
+    module = load_native_module()
+    if module is None:
+        raise RuntimeError("nif_core_native is not available")
+    nif_report = getattr(module, "nif_report", None)
+    if not callable(nif_report):
+        raise RuntimeError("nif_core_native.nif_report is not available")
+    return json.loads(nif_report(path, processor, json.dumps(options or {})))
+
+
+def nif_process_raw(
+    path: str,
+    output_path: str,
+    processor: str,
+    options: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    import json
+
+    module = load_native_module()
+    if module is None:
+        raise RuntimeError("nif_core_native is not available")
+    nif_process = getattr(module, "nif_process", None)
+    if not callable(nif_process):
+        raise RuntimeError("nif_core_native.nif_process is not available")
+    return json.loads(
+        nif_process(path, output_path, processor, json.dumps(options or {}))
     )
 
 

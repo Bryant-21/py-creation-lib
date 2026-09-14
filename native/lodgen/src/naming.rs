@@ -14,14 +14,14 @@ pub fn bto(world: &str, level: i32, x: i32, y: i32, season: &str) -> String {
 
 /// Data-relative path for a terrain diffuse DDS tile.
 /// Pattern: `Textures\Terrain\{world}\{world}.{level}.{x}.{y}{season}.dds`
-/// Season is inserted before `.dds` (R3 §5).
+/// Season is inserted before `.dds`.
 pub fn terrain_diffuse(world: &str, level: i32, x: i32, y: i32, season: &str) -> String {
     format!(r"Textures\Terrain\{world}\{world}.{level}.{x}.{y}{season}.dds")
 }
 
 /// Data-relative path for a terrain micro-surface normal (_msn) DDS tile.
 /// Pattern: `Textures\Terrain\{world}\{world}.{level}.{x}.{y}{season}_msn.dds`
-/// (TerrainLOD.cs:1681-1684, R3 §5)
+/// (TerrainLOD.cs:1681-1684)
 pub fn terrain_msn(world: &str, level: i32, x: i32, y: i32, season: &str) -> String {
     format!(r"Textures\Terrain\{world}\{world}.{level}.{x}.{y}{season}_msn.dds")
 }
@@ -34,9 +34,9 @@ pub fn lodsettings(world: &str) -> String {
 
 /// Data-relative path for the object LOD texture atlas.
 /// Pattern: `Textures\Terrain\{world}\Objects\{world}.Objects.dds` (DOT separator).
-/// Verified against the golden corpus + the `.bto` texture-set slot strings, which
+/// Verified against the golden corpus and the `.bto` texture-set slot strings, which
 /// reference `data\textures\terrain\<world>\objects\<world>.objects.dds`
-/// (R3 §2c / §5; golden DLC03FarHarbor.16.-9.5.bto block 4).
+/// (golden DLC03FarHarbor.16.-9.5.bto block 4).
 pub fn object_atlas(world: &str) -> String {
     format!(r"Textures\Terrain\{world}\Objects\{world}.Objects.dds")
 }
@@ -97,14 +97,14 @@ mod tests {
             terrain_msn("DLC03FarHarbor", 16, -25, -11, ""),
             r"Textures\Terrain\DLC03FarHarbor\DLC03FarHarbor.16.-25.-11_msn.dds"
         );
-        // season inserted BEFORE extension (R3 §5)
+        // season inserted BEFORE extension
         assert_eq!(
             terrain_diffuse("Commonwealth", 4, 0, 0, ".Winter"),
             r"Textures\Terrain\Commonwealth\Commonwealth.4.0.0.Winter.dds"
         );
         assert_eq!(lodsettings("Commonwealth"), r"LODSettings\Commonwealth.lod");
         // DOT separator — matches the golden `.bto` texture-set slot strings
-        // (data\textures\terrain\<world>\objects\<world>.objects.dds) and R3 §2c/§5.
+        // (data\textures\terrain\<world>\objects\<world>.objects.dds).
         assert_eq!(
             object_atlas("Commonwealth"),
             r"Textures\Terrain\Commonwealth\Objects\Commonwealth.Objects.dds"

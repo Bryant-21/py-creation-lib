@@ -1182,6 +1182,23 @@ impl<'bytes> File<'bytes> {
         }
     }
 
+    pub(crate) fn write_to_vec(&self, bytes: &mut Vec<u8>, options: &WriteOptions) -> Result<()> {
+        match &self.header {
+            Header::GNRL => (),
+            Header::DX10(dx10) => bytes.extend_from_slice(&Self::dx10_header(*dx10)?),
+            Header::GNMF(_) => return Err(Error::NotImplemented),
+        }
+        let options: ChunkCompressionOptions = (*options).into();
+        for chunk in self {
+            if chunk.is_compressed() {
+                chunk.decompress_into(bytes, &options)?;
+            } else {
+                bytes.extend_from_slice(chunk.as_bytes());
+            }
+        }
+        Ok(())
+    }
+
     fn do_reserve(&mut self) {
         match self.len() {
             0 | 3 => self.chunks.reserve_exact(1),
@@ -1511,6 +1528,11 @@ impl<'bytes> File<'bytes> {
     where
         Out: ?Sized + Write,
     {
+        stream.write_all(&Self::dx10_header(dx10)?)?;
+        self.write_gnrl(stream, options)
+    }
+
+    fn dx10_header(dx10: DX10) -> Result<Box<[u8]>> {
         let is_cubemap = (dx10.flags & 1) != 0;
         let meta = TexMetadata {
             width: dx10.width.into(),
@@ -1530,9 +1552,7 @@ impl<'bytes> File<'bytes> {
 
         // Preserve legacy DDS headers for DX9-era formats instead of always
         // upgrading them to a DX10 extension header.
-        let header = meta.encode_dds_header(DDS_FLAGS::DDS_FLAGS_NONE)?;
-        stream.write_all(&header)?;
-        self.write_gnrl(stream, options)
+        Ok(meta.encode_dds_header(DDS_FLAGS::DDS_FLAGS_NONE)?)
     }
 
     #[allow(unused)]

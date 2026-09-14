@@ -77,13 +77,10 @@ class ArraySpec:
     count_field: str | None = None
     count_codec: str | None = None
     count_transform: str | None = None
-    # Cross-subrecord count source: looks up `count_record_field` in the
-    # record-level context populated by previously-decoded subrecords.
-    # Used for xEdit `SetCountPath('..\\<SIG>\\<Field>')` patterns where the
-    # array length is stored in a sibling subrecord (e.g. FSTS.DATA arrays
-    # sized by FSTS.XCNT counts). Mutually exclusive with count_field /
-    # count_codec / count_transform — when set, no count prefix is consumed
-    # from the array's own subrecord bytes.
+    # Array length read from a sibling subrecord already decoded into the record
+    # context (xEdit `SetCountPath('..\\<SIG>\\<Field>')`, e.g. FSTS.DATA sized by
+    # FSTS.XCNT). Excludes count_field/count_codec/count_transform; no count
+    # prefix is consumed from the array's own subrecord bytes.
     count_record_field: str | None = None
     notes: str = ""
 

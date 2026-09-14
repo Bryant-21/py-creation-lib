@@ -275,15 +275,12 @@ _SHARED_CTX = None  # module-cached standalone context (see _require_standalone_
 def _require_standalone_context(ctx: "object | None"):
     """Return a usable moderngl standalone context, or raise BillboardRenderError.
 
-    moderngl is imported lazily here so the deterministic packing/manifest code
-    has no hard moderngl dependency.
+    moderngl is imported lazily so the packing/manifest code doesn't need it.
 
-    When the caller passes no context, a single module-level context is created
-    and reused. This is deliberate and load-bearing for determinism: a fresh
-    standalone context per call produces driver-dependent first-vs-later-render
-    differences, whereas reusing one context renders byte-identically run to
-    run. ``generate_billboards`` likewise renders every species through one
-    shared context.
+    With no ``ctx``, one module-level context is created and reused: a fresh
+    standalone context per call renders the first frame differently depending
+    on the driver, while one reused context renders byte-identically run to
+    run. ``generate_billboards`` renders every species through one context too.
     """
     if ctx is not None:
         return ctx
@@ -365,16 +362,13 @@ def _render_species_tile_with_bounds(
     Front-facing view (the canonical billboard is a flat front card), framed on
     the model's geometry bounding sphere. A very narrow field of view from far
     away approximates an orthographic projection (SceneRenderer's camera is
-    perspective-only). Alpha is reconstructed as coverage by keying out the
-    background; RGB is multiplied by ``brightness``. Returns H×W×4 uint8.
+    perspective-only). Alpha is coverage from keying out the background; RGB is
+    multiplied by ``brightness``. Returns H×W×4 uint8.
 
     Requires ``moderngl`` and the repo SceneRenderer (creation_lib.renderer).
-    Raises ``BillboardRenderError`` if the GL context cannot be created — callers
-    and tests should guard with pytest.importorskip / try/except for headless CI.
-
-    No os.environ reads for game config — texture_dirs come from ``data_dirs``.
-
-    FBO readback pattern: ui/editor/exporters/screenshot.py:38-43.
+    Raises ``BillboardRenderError`` if the GL context cannot be created; headless
+    CI should guard with pytest.importorskip / try/except. Texture dirs come
+    from ``data_dirs``. FBO readback pattern: ui/editor/exporters/screenshot.py:38-43.
     """
     import glm  # noqa: PLC0415
 
@@ -491,11 +485,9 @@ def generate_billboards(
     """Full generator: render each species, pack, encode atlas DDS + _n, write manifest.
 
     ``species`` rows: {model, billboard, index, width, height, shift_z}.
-    Each species is rendered at ``tile_size``×``tile_size``; tiles are packed
-    (and the atlas grown) up to ``atlas_size`` (the ``billboard_atlas_size``
-    setting). Species are rendered in deterministic (model-sorted) order.
-    Returns the manifest path. Headless — no UI interaction. No os.environ for
-    game config.
+    Each species renders at ``tile_size``×``tile_size`` in model-sorted order;
+    the atlas grows up to ``atlas_size`` (the ``billboard_atlas_size``
+    setting). Returns the manifest path. Headless.
 
     Raises ``BillboardRenderError`` if the GL context is unavailable.
     """

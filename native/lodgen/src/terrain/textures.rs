@@ -1,25 +1,23 @@
 //! Per-quad terrain LOD texture compositing (diffuse + `_msn` normal).
 //!
-//! REPRODUCE node: no source code exists in any corpus for FO4 terrain texture
-//! compositing — only the behavioral contract in
-//! `tmp/lod_research/findings/R3_textures_settings_contract.md` §3 and the
-//! xLODGen readme. The compositing math below is reproduced from that contract.
-//! Places where the exact xLODGen blend is unknown are marked `APPROXIMATION`.
+//! No source exists for FO4 terrain texture compositing, so the math is
+//! reconstructed from the xLODGen readme and its golden output. Places where the
+//! exact xLODGen blend is unknown are marked `APPROXIMATION`.
 //!
-//! Pipeline (R3 §3):
-//!   1. Target res = `settings.terrain.levels[lod].diffuse_size` (256/512/1024/2048).
-//!      The golden corpus confirms output size is governed by the *settings* size,
-//!      not raw 64-px/cell native res (higher settings upscale).
+//! Pipeline:
+//!   1. Target res = `settings.terrain.levels[lod].diffuse_size`, or
+//!      `default_diffuse_size` for quads with no LTEX layer. Output size follows the
+//!      settings size, not the raw 64-px/cell native res (higher settings upscale).
 //!   2. For each of the `level×level` cells in the quad, composite the cell's LTEX
 //!      layers (base + alpha layers blended by per-layer alpha) into that cell's
 //!      sub-region of the tile.
-//!   3. Multiply by `Textures\Terrain\Noise.dds` (skip + warn if absent).
-//!   4. Apply brightness / contrast / gamma to diffuse only.
-//!   5. Overlay VCLR vertex colors at `vertex_color_intensity`.
-//!   6. Build `_msn` from layer normals (Rise via `normal_rise`).
+//!   3. Apply brightness / contrast / gamma to diffuse only.
+//!   4. Overlay VCLR vertex colors at `vertex_color_intensity`.
+//!   5. Build `_msn` from the cell heightmap slopes (Rise via `normal_rise`).
 //!
-//! Source textures and Noise.dds are loaded via `directxtex_native`; any miss is
-//! handled with deterministic fallbacks so unit tests run without the FO4 install.
+//! No Noise.dds multiply is applied (see `composite_quad`). Source textures are
+//! loaded via `directxtex_native`; any miss is handled with deterministic fallbacks
+//! so unit tests run without the FO4 install.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -41,7 +39,7 @@ pub struct CompositeTile {
     pub normal_height: u32,
     pub diffuse_rgba: Vec<u8>,
     pub normal_rgba: Vec<u8>,
-    /// Non-fatal notes (e.g. missing Noise.dds, missing source textures).
+    /// Non-fatal notes; `composite_quad` currently adds none.
     pub warnings: Vec<String>,
 }
 
@@ -52,11 +50,12 @@ pub struct CompositeTile {
 /// heightmap.
 const FLAT_MSN_NORMAL: [u8; 4] = [128, 255, 128, 255];
 
-/// Fallback diffuse color for an empty region / unresolved texture (mid-gray).
-/// xLODGen uses the worldspace default land texture for empty regions; when even
-/// that is unavailable we fall back to this neutral gray so the buffer is still
-/// produced (spec §6 edge handling, R3 §3).
-const FALLBACK_DIFFUSE: [u8; 4] = [128, 128, 128, 255];
+/// Linear-RGB fallback diffuse color for an empty region / unresolved texture.
+/// 55 linear encodes to approximately 128 sRGB, yielding display mid-gray in
+/// the final FO4 UNORM terrain tile.
+/// xLODGen uses the worldspace default land texture for empty regions; when that
+/// is unavailable too, this neutral gray keeps the buffer valid.
+const FALLBACK_DIFFUSE: [u8; 4] = [55, 55, 55, 255];
 
 fn lod_index(level: i32) -> usize {
     match level {
@@ -107,13 +106,12 @@ impl SourceTexture {
     }
 
     /// Box/area-average downscale to `target`×`target` px. Averaging over each
-    /// output texel's source footprint is what kills the aliasing that
-    /// nearest-neighbour point-sampling produced when a 512–1024px LTEX diffuse
-    /// was crushed into a ~64px cell region (the olive/black grid noise). xLODGen
-    /// Lanczos-resizes the source before compositing; a box average is the minimum
-    /// faithful equivalent. Per-axis: if the source already fits within `target`
-    /// that axis is left unchanged (upscaling is the 1:1 UV sampler's job). When
-    /// both axes already fit, the texture is returned unchanged.
+    /// output texel's source footprint avoids the aliasing (olive/black grid noise)
+    /// that point-sampling a 512–1024px LTEX diffuse into a ~64px cell region
+    /// causes. xLODGen Lanczos-resizes the source before compositing; a box average
+    /// is the minimum faithful equivalent. An axis already within `target` is left
+    /// unchanged (upscaling is the 1:1 UV sampler's job); if both are, the texture
+    /// is returned as-is.
     fn downscaled_to(&self, target: u32) -> SourceTexture {
         let target = target.max(1);
         if self.width <= target && self.height <= target {
@@ -159,19 +157,10 @@ impl SourceTexture {
     }
 }
 
-/// Resolve a Data-relative texture path against the search dirs and load it as
-/// RGBA8. Backslash / forward-slash agnostic. Returns None on miss.
-///
-/// FO4 TXST diffuse/normal slots (TX00/TX01) are stored relative to
-/// `Data\Textures\` — the `Textures\` component is stripped. So a landscape
-/// path arrives here as e.g. `terrain/appalachia/foo_d.dds`, which lives on disk
-/// at `<data_dir>/textures/terrain/appalachia/foo_d.dds`. We probe the raw path
-/// first (so already-`textures/`-prefixed callers — Noise.dds, test fixtures —
-/// keep matching) and then a `textures/`-prefixed variant.
-/// Largest source-texture edge we will decode. A malformed/corrupt DDS whose
-/// header claims absurd dimensions makes the DirectXTex C++ decoder allocate
-/// gigabytes and ABORT the whole native process (no Rust panic to catch). The
-/// cheap header probe rejects such files before the expensive/decoding read.
+/// Largest source-texture edge to decode. A malformed/corrupt DDS whose header
+/// claims absurd dimensions makes the DirectXTex C++ decoder allocate gigabytes and
+/// abort the whole native process (no Rust panic to catch). The cheap header probe
+/// rejects such files before the decoding read.
 const MAX_SOURCE_DDS_EDGE: u32 = 16384;
 
 /// Load + VALIDATE a single DDS file as RGBA8, or `None` if it is missing,
@@ -220,26 +209,29 @@ fn load_valid_dds(asset: &ResolvedAsset, sources: &[PathBuf]) -> Option<SourceTe
         }
         return None;
     }
+    let rgba = if directxtex_native::is_srgb_dxgi_format(img.dxgi_format) {
+        img.rgba
+    } else {
+        directxtex_native::convert_srgb_texels_to_linear_unorm(img.width, img.height, &img.rgba)
+            .ok()?
+    };
     if std::env::var_os("LODGEN_TRACE_TEX").is_some() {
         eprintln!("[tex] OK {}x{} {label}", img.width, img.height);
     }
     Some(SourceTexture {
         width: img.width,
         height: img.height,
-        rgba: img.rgba,
+        rgba,
     })
 }
 
-/// Decode + box-downscale memoization cache, keyed by `(resolved absolute path,
-/// target square edge px)` → the decoded-and-resized texture (or `None` if that
-/// file is missing/invalid). The compositor samples the same ~100 LTEX diffuse
-/// textures across every cell of a terrain level; without this each access
-/// re-decodes the DDS. The driver clears the cache between levels so decoded
-/// images do not accumulate for the entire LOD run. The expensive
-/// decode+resize runs OUTSIDE the lock, so the rayon-parallel quad loop never
-/// blocks all workers on a single decode; a racing duplicate decode is harmless
-/// (idempotent) and far cheaper than holding a global lock across a decode. The
-/// `Arc` lets readers clone the entry out cheaply.
+/// Decode + box-downscale memo cache, keyed by `(resolved absolute path, target
+/// square edge px)` → the resized texture (or `None` if that file is
+/// missing/invalid). The compositor samples the same ~100 LTEX diffuse textures
+/// across every cell of a terrain level; the driver clears the cache between
+/// levels. Decode+resize runs outside the lock so the rayon quad loop never blocks
+/// all workers on one decode; a racing duplicate decode is harmless (idempotent).
+/// The `Arc` lets readers clone entries out cheaply.
 type TexCache = HashMap<(ResolvedAsset, u32), Option<Arc<SourceTexture>>>;
 
 fn texture_cache() -> &'static Mutex<TexCache> {
@@ -329,9 +321,9 @@ const QUADRANT_ALPHA_EDGE: usize = 17;
 /// Sample a layer's per-quadrant alpha at cell-local UV (0..1 over the whole
 /// cell). The 17x17 quadrant alpha grid covers half the cell per axis, so the
 /// quadrant id selects which half. APPROXIMATION: xLODGen blends the 5 ATXT
-/// alpha layers per quadrant; we treat each `LayerTexture.alpha` as the opacity
-/// field for its quadrant and sample it with clamping. Layers whose alpha vec is
-/// not 17x17 are treated as uniformly opaque inside their quadrant only.
+/// alpha layers per quadrant; here each `LayerTexture.alpha` is the opacity field
+/// for its quadrant, sampled with clamping. Layers whose alpha vec is not 17x17 are
+/// treated as uniformly opaque inside their quadrant only.
 fn sample_layer_alpha(alpha: &[f32], quadrant: u8, cu: f32, cv: f32) -> f32 {
     // Map cell UV into the quadrant the layer owns.
     // Quadrant layout matches decode_hidden_quadrants: 0=SW,1=SE,2=NW,3=NE.
@@ -371,7 +363,7 @@ fn blend(dst: &mut [u8; 4], src: [u8; 4], a: f32) {
     dst[3] = 255;
 }
 
-/// `ModifyContrastBrightness(contrast, brightness)` + per-channel gamma (R3 §3).
+/// `ModifyContrastBrightness(contrast, brightness)` + per-channel gamma.
 /// brightness is additive in [-1,1]-ish units scaled to 0..255; contrast scales
 /// around mid-gray. Matches the Imaging primitive shape used by the atlas path
 /// (`wbLOD.pas:1664-1672`). APPROXIMATION: xLODGen's brightness is `b/10` in the
@@ -467,7 +459,7 @@ fn heightmap_normal(heights: &[f32], cu: f32, cv: f32) -> [u8; 4] {
 }
 
 /// Apply tangent-space "rise" steepness to a normal pixel: scales the XY
-/// deviation from flat (R3 §3 "Rise steepness"). rise==1 is identity.
+/// deviation from flat ("Rise steepness"). rise==1 is identity.
 fn apply_normal_rise(px: &mut [u8; 4], rise: f32) {
     if (rise - 1.0).abs() <= f32::EPSILON {
         return;
@@ -479,7 +471,7 @@ fn apply_normal_rise(px: &mut [u8; 4], rise: f32) {
 }
 
 /// Composite the diffuse + `_msn` normal for one quad at the per-level target
-/// resolution. Reproduced from R3 §3 (no source corpus for the exact blend).
+/// resolution. The exact xLODGen blend has no source; see the module doc.
 pub fn composite_quad(
     world: &WorldspaceInput,
     quad: &QuadDesc,
@@ -497,7 +489,7 @@ pub fn composite_quad(
         world.cells.iter().find(|c| c.x == cx && c.y == cy)
     };
 
-    // Gap 5: default/landless tile sizing. A quad whose cells carry NO LTEX layer
+    // Default/landless tile sizing. A quad whose cells carry NO LTEX layer
     // (default-textured or landless) is emitted at default_diffuse_size /
     // default_normal_size (128) instead of the per-level 256. xLODGen sizes the
     // default-land tile by the worldspace default texture, which the golden corpus
@@ -531,7 +523,7 @@ pub fn composite_quad(
 
     // --- diffuse pass (at diffuse_size) ---
     // The worldspace default land texture (used as the opaque base for cells with
-    // no resolvable layer, R3 §3) is resolved per-cell inside composite_pass via
+    // no resolvable layer) is resolved per-cell inside composite_pass via
     // the decode+resize cache, so it is downscaled to the cell size like every
     // other layer and shared across cells/quads through the cache.
     let dw = diffuse_size as usize;
@@ -550,12 +542,11 @@ pub fn composite_quad(
         &mut diffuse_rgba,
     );
 
-    // Noise.dds multiply intentionally DISABLED: the prior full red-channel
-    // multiply (tiled 4×) injected per-texel speckle and over-darkening that the
-    // xLODGen golden corpus does not have (its terrain diffuse is smooth). The
-    // exact xLODGen noise blend is unknown and near-identity at default
-    // brightness (Noise.dds mean red ≈ 0.95), so omitting it matches the golden's
-    // continuous, speckle-free surface.
+    // No Noise.dds multiply: a full red-channel multiply (tiled 4×) adds per-texel
+    // speckle and over-darkening the xLODGen golden corpus lacks (its terrain
+    // diffuse is smooth). The exact xLODGen noise blend is unknown and
+    // near-identity at default brightness (Noise.dds mean red ≈ 0.95), so omitting
+    // it matches the golden's continuous surface.
 
     // brightness / contrast / gamma (diffuse only)
     let b = settings.terrain.brightness;
@@ -663,11 +654,11 @@ fn composite_pass<'a, F>(
 
             // Diffuse composites the cell's LTEX layers; `_msn` is derived from
             // the cell heightmap slopes (FO4 terrain `_msn` is the geometry
-            // normal, green-up — the golden corpus bakes no source detail
-            // normals: its flat tiles decode to a constant (126,253,126)).
-            // Each layer remembers whether its diffuse genuinely RESOLVED on disk
-            // (vs. a substituted fallback); the opaque full-cell base comes from
-            // world default/fallback below, while LAND layers stay quadrant-scoped.
+            // normal, green-up; the golden corpus bakes no source detail normals,
+            // and its flat tiles decode to a constant (126,253,126)).
+            // Each layer records whether its diffuse resolved on disk (vs. a
+            // substituted fallback); the opaque full-cell base comes from world
+            // default/fallback below, while LAND layers stay quadrant-scoped.
             let layers: Vec<(Arc<SourceTexture>, &crate::input::LayerTexture, bool)> =
                 match (channel, cell) {
                     (Channel::Diffuse, Some(c)) => c
@@ -841,7 +832,7 @@ pub fn write_tile_dds(
         std::fs::create_dir_all(parent)?;
     }
 
-    directxtex_native::write_dds_rgba_image(
+    directxtex_native::write_dds_rgba_image_srgb_payload_unorm_header(
         diffuse_path,
         tile.width,
         tile.height,
@@ -1044,7 +1035,7 @@ mod tests {
             .find(|q| q.x == 0 && q.y == 0)
             .unwrap();
         let tile = composite_quad(&w, &quad, &s, &test_paths()).unwrap();
-        // L4 native diffuse size = 256 (R3 appendix)
+        // L4 native diffuse size = 256
         assert_eq!(tile.width, 256);
         assert_eq!(tile.height, 256);
         assert_eq!(tile.diffuse_rgba.len(), 256 * 256 * 4);
@@ -1198,6 +1189,53 @@ mod tests {
         let nprobe = directxtex_native::read_dds_probe(&msn).unwrap();
         assert_eq!(nprobe.width, s.terrain.levels[0].normal_size);
         assert_eq!(nprobe.dxgi_format, 71); // BC1 normal, matches golden _msn
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_tile_dds_encodes_linear_diffuse_but_keeps_normal_linear() {
+        let mut settings = LodSettings::fo4_default();
+        settings.terrain.levels[0].diffuse_format = Format::Bc3;
+        settings.terrain.levels[0].normal_format = Format::Bc3;
+        let tile = CompositeTile {
+            width: 4,
+            height: 4,
+            normal_width: 4,
+            normal_height: 4,
+            diffuse_rgba: vec![55, 13, 4, 255].repeat(16),
+            normal_rgba: vec![128, 255, 128, 255].repeat(16),
+            warnings: Vec::new(),
+        };
+        let dir = std::env::temp_dir().join(format!(
+            "lodgen_linear_diffuse_write_{}",
+            std::process::id()
+        ));
+        let diffuse = dir.join("W.4.0.0.dds");
+        let normal = dir.join("W.4.0.0_msn.dds");
+
+        write_tile_dds(&tile, &diffuse, &normal, &settings, 4).unwrap();
+
+        let diffuse_image = directxtex_native::read_dds_rgba_image(&diffuse).unwrap();
+        let normal_image = directxtex_native::read_dds_rgba_image(&normal).unwrap();
+        assert_eq!(diffuse_image.dxgi_format, 77);
+        assert_eq!(normal_image.dxgi_format, 77);
+        assert!(
+            (115..=140).contains(&diffuse_image.rgba[0]),
+            "linear 55 should encode near sRGB 128, got {}",
+            diffuse_image.rgba[0]
+        );
+        assert!(
+            (50..=80).contains(&diffuse_image.rgba[1]),
+            "linear 13 should encode near sRGB 64, got {}",
+            diffuse_image.rgba[1]
+        );
+        assert!(
+            (110..=145).contains(&normal_image.rgba[0]),
+            "normal red must remain linear, got {}",
+            normal_image.rgba[0]
+        );
+        assert!(normal_image.rgba[1] >= 240);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

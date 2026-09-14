@@ -1,29 +1,36 @@
 //! AnimTextData bucket body writers (CK-free).
 //!
-//! Per design `docs/superpowers/specs/2026-06-19-animtextdata-generator-design.md`:
-//! filenames are byte-identical to CK (load-bearing — see `anim_text_data.rs`), and
-//! the content-list **format** is byte-exact, but the content-list **order** is a
-//! deterministic order of our choosing. CK's internal order is an hkbHkxDB
-//! data-structure artifact that is not reproducible offline and has no runtime
-//! effect (the engine reads the body into a lookup; order does not change which
-//! animations play). See `docs/re/animtextdata_generation.md`.
+//! Filenames are byte-identical to CK (the engine opens them by name) and the content
+//! format is byte-exact, but content-list order is ours: CK's order is an hkbHkxDB
+//! artifact, not reproducible offline, and the engine reads the body into a lookup, so
+//! order does not change which animations play. See `docs/re/animtextdata_generation.md`.
 
 use std::collections::HashSet;
 
 /// Build the `AnimationFileData/<id>.txt` body bytes.
 ///
-/// `files` are full FO4 animation paths (e.g. `Actors\X\Animations\Y.hkx`), emitted
-/// in the given order. Exact format (matches CK):
-/// `"3\n" "1\n" "<id>\n" "<count>\n"` then each file followed by `'\n'`
-/// (trailing newline after the last file included).
+/// `files` are full FO4 animation paths (e.g. `Actors\X\Animations\Y.hkx`), emitted in
+/// order. CK format: `"3\n" "1\n" "<id>\n" "<count>\n"`, then each file plus `'\n'`
+/// (including after the last).
+///
+/// Entries are deduplicated case-insensitively, keeping the first spelling: no vanilla
+/// file lists a path twice (969690 entries across 3759 shipped files), but graph closure
+/// and the on-disk SAPT sweep can reach the same clip with different casing. `count` is
+/// the deduplicated length.
 pub fn animation_file_data_body(id: u64, files: &[String]) -> Vec<u8> {
-    let mut s = String::with_capacity(48 + files.len() * 48);
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let unique: Vec<&String> = files
+        .iter()
+        .filter(|f| seen.insert(f.replace('/', "\\").to_ascii_lowercase()))
+        .collect();
+
+    let mut s = String::with_capacity(48 + unique.len() * 48);
     s.push_str("3\n1\n"); // version, flag (1 = hash-named subgraph)
     s.push_str(&id.to_string());
     s.push('\n');
-    s.push_str(&files.len().to_string());
+    s.push_str(&unique.len().to_string());
     s.push('\n');
-    for f in files {
+    for f in unique {
         s.push_str(f);
         s.push('\n');
     }
@@ -88,14 +95,13 @@ pub fn sync_anim_data_body_existing() -> Vec<u8> {
 // Named project manifest (AnimationFileData/<projectname>.txt, flag 0)
 // ===========================================================================
 
-/// Body for the flag-0 **named** project manifest that lives in the
-/// `AnimationFileData/` bucket dir next to the numeric `<id>.txt` files.
+/// Body for the flag-0 named project manifest in the `AnimationFileData/` bucket dir,
+/// next to the numeric `<id>.txt` files.
 ///
-/// Differs from `animation_file_data_body` in three ways (RE:
-/// `text_project_manifests.md`): version line `3`, flag line `0`, a project-name
-/// line (instead of the decimal id), **CRLF** line endings (the numeric body uses
-/// bare LF), and a trailing `0` line after the file list. `files` are
-/// project-relative paths (`Behaviors\…RootBehavior.hkx`, `Animations\Idle.hkx`).
+/// Versus [`animation_file_data_body`] (RE: `text_project_manifests.md`): flag line `0`,
+/// a project-name line instead of the decimal id, CRLF line endings instead of LF, and a
+/// trailing `0` line after the file list. `files` are project-relative
+/// (`Behaviors\…RootBehavior.hkx`, `Animations\Idle.hkx`).
 pub fn project_manifest_body(project_name: &str, files: &[String]) -> Vec<u8> {
     let mut s = String::with_capacity(32 + files.len() * 40);
     s.push_str("3\r\n0\r\n");
@@ -116,7 +122,7 @@ pub fn project_manifest_body(project_name: &str, files: &[String]) -> Vec<u8> {
 // ===========================================================================
 
 /// One `hkbClipTrigger` of a clip: the event name, its (signed) local time, and a
-/// flag byte (`1` in every observed sample).
+/// flag byte (nonzero means the engine evaluates `clipDuration - time`).
 pub struct ClipTrigger {
     pub name: String,
     pub time: f32,
@@ -143,9 +149,8 @@ pub struct ClipGenEntry {
 /// Format (RE: `text_clipgeneratordata.md`, round-trips byte-identical on the
 /// Snallygaster oracles): `"V4\n"`, `pstr(behaviorPath)`, `u32(count)`, then per
 /// entry `pstr(clip) pstr(anim) f32 f32 f32 u8 u8 u32(nTrig)` and per trigger
-/// `pstr(name) f32(time) u8(flag)`. No trailing padding. The entry **count/order**
-/// is a behavior-arena traversal artifact, relaxed-to-functional (same decision as
-/// AnimationFileData); the byte format is exact.
+/// `pstr(name) f32(time) u8(flag)`. No trailing padding. CK's entry count/order is a
+/// behavior-arena traversal artifact and is not reproduced; the byte format is exact.
 pub fn clip_generator_data_body(behavior_path: &str, entries: &[ClipGenEntry]) -> Vec<u8> {
     let mut out = Vec::with_capacity(16 + behavior_path.len() + entries.len() * 32);
     out.extend_from_slice(b"V4\n");
@@ -173,14 +178,13 @@ pub fn clip_generator_data_body(behavior_path: &str, entries: &[ClipGenEntry]) -
 // AnimationOffsets (binary, despite .txt)
 // ===========================================================================
 
-/// Build the **empty** `AnimationOffsets/<id>.txt` body: `"V4\n"`,
-/// `pstr(core_behavior)`, `u32(0)` (section-1 count), `u32(0)` (section-2 count).
+/// Build the empty `AnimationOffsets/<id>.txt` body: `"V4\n"`, `pstr(core_behavior)`,
+/// `u32(0)` (section-1 count), `u32(0)` (section-2 count).
 ///
-/// This is the fully-offline-reproducible case (RE: `binary_AnimationOffsets.md` —
-/// the ROOT behavior `1776463414.txt`). It is emitted **only** for behaviors that
-/// genuinely carry no root-motion/offset data (the ROOT behavior). Never an empty
-/// file for a subgraph that HAS motion: the engine *trusts* a present-but-empty cache
-/// and would suppress root motion rather than rebuild it.
+/// Emitted only for behaviors with no root-motion/offset data, such as the ROOT behavior
+/// (`1776463414.txt`, RE: `binary_AnimationOffsets.md`). Never for a subgraph with motion:
+/// the engine trusts a present-but-empty cache and suppresses root motion instead of
+/// rebuilding it.
 pub fn animation_offsets_empty_body(core_behavior: &str) -> Vec<u8> {
     let mut out = Vec::with_capacity(12 + core_behavior.len());
     out.extend_from_slice(b"V4\n");
@@ -215,10 +219,9 @@ pub struct OffsetsMotion {
 /// {f32 time, f32 X, f32 Y, f32 Z} u32(nR) {f32 time, f32 qx, f32 qy, f32 qz, f32 qw}
 /// u32(nAnn) {f32 time, pstr(name)}]`.
 ///
-/// The FORMAT is byte-exact. Section-2 SAMPLES are keyframe-reduced by
-/// `anim_text_data_offsets::reduce_lanes` (selection/count/time byte-exact vs CK; values
-/// within ≤1 ULP); `annotations` come from the annotation tracks and `duration` is the
-/// clip duration. Driven by the dispatcher for every moving subgraph.
+/// Section-2 samples are keyframe-reduced by `offsets::reduce_lanes` (selection/count/time
+/// byte-exact vs CK; values within 1 ULP); `annotations` come from the annotation tracks
+/// and `duration` is the clip duration.
 pub fn animation_offsets_populated_body(
     core_behavior: &str,
     section1: &[OffsetsClipNoMotion],
@@ -650,16 +653,12 @@ pub fn animation_stance_data_multipose_body(
     Ok(out)
 }
 
-/// Build the **empty** AnimationStanceData body (RE: `binary_AnimationStanceData.md`
-/// empty case `14636681807525876636.txt`, 36 bytes): `pstr(header)` + `u32 version(1)`
-/// + `u32 entry-count(0)` + a trailing `u32(0)`.
+/// Build the empty AnimationStanceData body, 36 bytes (RE: `binary_AnimationStanceData.md`,
+/// `14636681807525876636.txt`): `pstr(header)`, `u32 version(1)`, `u32 entry-count(0)`, and
+/// a trailing `u32(0)`.
 ///
-/// The bone-transform unit (28-byte `hkQsTransform`, quaternion in **(w,x,y,z)**
-/// order — cross-validated EXACT on 4 creatures, `stance_deep.md`) is decoded — see
-/// [`push_bone_transform`]. The count=1 populated form is emitted per subgraph (see
-/// `anim_text_data_stance`); only the count>1 GROUP container (group index + bone
-/// count + packed metadata), used solely by the base-game human `Character`, remains
-/// partially decoded. This empty writer ships no placeholder.
+/// Only the count>1 group container (group index + bone count + packed metadata), used
+/// solely by the base-game human `Character`, is still partially decoded.
 pub fn animation_stance_data_empty_body() -> Vec<u8> {
     let mut out = Vec::with_capacity(36);
     push_pstr(&mut out, STANCE_HEADER);
@@ -669,12 +668,10 @@ pub fn animation_stance_data_empty_body() -> Vec<u8> {
     out
 }
 
-/// Serialize one decoded stance bone transform: quaternion in **(w,x,y,z)** order
-/// then translation (x,y,z), 7 little-endian f32 = 28 bytes (RE:
-/// `stance_deep.md` — the CONFIRMED byte-exact bone unit, wxyz quaternion storage
-/// cross-validated exact on MirelurkKing / LibertyPrime / SentryBot / MoleRat). The
-/// QsTransform scale is the constant `1.0` lane written after the last bone, not
-/// per-bone.
+/// Serialize one stance bone transform: quaternion (w,x,y,z), then translation (x,y,z),
+/// 7 LE f32 = 28 bytes (RE: `stance_deep.md`; wxyz storage cross-validated exact on
+/// MirelurkKing / LibertyPrime / SentryBot / MoleRat). There is no per-bone scale: the
+/// `1.0` after the last bone is the `w` of the identity slot ([`STANCE_IDENTITY`]).
 pub fn push_bone_transform(out: &mut Vec<u8>, quat_wxyz: [f32; 4], trans_xyz: [f32; 3]) {
     for c in quat_wxyz {
         out.extend_from_slice(&c.to_le_bytes());
@@ -684,23 +681,21 @@ pub fn push_bone_transform(out: &mut Vec<u8>, quat_wxyz: [f32; 4], trans_xyz: [f
     }
 }
 
-/// The IDENTITY stance slot: quat (1,0,0,0) wxyz + translation (0,0,0). slot2 of a
-/// count=1 pose is always this (the prior decode's "scale 1.0 + zero pad" tail is
-/// exactly this 28-byte identity QsTransform). (RE: `stance_deep.md` REFINED spec.)
+/// Identity stance slot: quat (1,0,0,0) wxyz + translation (0,0,0). Slot2 of a count=1
+/// pose is always this; it is the `1.0` + zeros tail after slot1. (RE: `stance_deep.md`.)
 const STANCE_IDENTITY: ([f32; 4], [f32; 3]) = ([1.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0]);
 
-/// Build the **count=1** AnimationStanceData body (124 B for a 2-slot pose) — the form
-/// EVERY self-contained creature emits (RE: `stance_deep.md` "REFINED + CONCLUSIVE
-/// container spec": count>1 occurs only on the base-game human `Character`).
+/// Build the count=1 AnimationStanceData body (124 B, 2-slot pose), the form every
+/// self-contained creature emits; count>1 occurs only on the base-game human `Character`
+/// (RE: `stance_deep.md`).
 ///
 /// Layout: `pstr("AnimationBoneTransform")`(24) + `u32 version=1` + `u32 count=1` +
 /// `u32 0` (pose-0 header: poseIdx 0, variant 0) + slot0 + slot1 + slot2(IDENTITY) +
-/// `u32 0` (section-2 count). slot0 = the **Head** model-space frame-0 pose; slot1 =
-/// the torso/spine camera-pivot (Head's COM-adjacent ancestor); each slot is 28 B
-/// (`push_bone_transform`, quat W-FIRST). Byte-identical to the CK oracle container
-/// (proven by `reemit.py` on MirelurkKing 124 B: the `1.0`+trailing-zeros tail equals
-/// slot2 IDENTITY + the section-2 `u32 0`); bone floats match to the `hkaPose`
-/// accumulation residual (~1e-3 on deep bones).
+/// `u32 0` (section-2 count). slot0 is the Head model-space frame-0 pose; slot1 is the
+/// torso/spine camera pivot (Head's COM-adjacent ancestor); each slot is 28 B
+/// ([`push_bone_transform`], quat W-first). The container is byte-identical to the CK
+/// oracle (MirelurkKing, 124 B); bone floats match to the `hkaPose` accumulation residual
+/// (~1e-3 on deep bones).
 pub fn animation_stance_data_count1_body(
     slot0: ([f32; 4], [f32; 3]),
     slot1: ([f32; 4], [f32; 3]),
@@ -721,17 +716,16 @@ pub fn animation_stance_data_count1_body(
 /// (LE `u32` `0x0200_0000`) — constant across every observed entry.
 const STANCE_SEC2_TAG: u32 = 0x0200_0000;
 
-/// Build the **head-tracking** AnimationStanceData body (174 B) — the FO76→FO4
-/// **converted-creature** form, emitted when the core behavior declares head-tracking
-/// (`bGraphWantsHeadTracking` / `isActiveModifier_HeadTracking`). It is the 124 B
-/// [`animation_stance_data_count1_body`] container with `sec2_count = 1` plus one
-/// 50-byte section-2 record: `u32 tag(0x0200_0000)` + the head-track look-at reference
-/// bone (28 B, quat W-FIRST) + 18 zero pad bytes. `174 = 124 + 50`.
+/// Build the head-tracking AnimationStanceData body (174 B), the FO76→FO4 converted-creature
+/// form, emitted when the core behavior declares head-tracking (`bGraphWantsHeadTracking` /
+/// `isActiveModifier_HeadTracking`). It is the 124 B [`animation_stance_data_count1_body`]
+/// container with `sec2_count = 1` plus one 50-byte section-2 record: `u32 tag(0x0200_0000)`,
+/// the head-track look-at reference bone (28 B, quat W-first), and 18 zero pad bytes.
 ///
-/// RE: `stance_converted_174b.md` — the container is byte-exact on the Snallygaster CK
-/// oracle (all 4 files 174 B); slot0/slot1 are float-exact from idle frame-0; only the
-/// `sec2` look-at residual is approximated (the engine recomputes head-track at runtime,
-/// so it degrades gracefully). Vanilla creatures without head-tracking keep the 124 B form.
+/// RE: `stance_converted_174b.md`. The container is byte-exact on the Snallygaster CK oracle;
+/// slot0/slot1 are float-exact from idle frame 0; only the `sec2` look-at residual is
+/// approximated (the engine recomputes head-track at runtime). Vanilla creatures without
+/// head-tracking keep the 124 B form.
 pub fn animation_stance_data_headtrack_body(
     slot0: ([f32; 4], [f32; 3]),
     slot1: ([f32; 4], [f32; 3]),
@@ -826,6 +820,21 @@ mod tests {
         let (v, fl, id, got) = parse(&animation_file_data_body(7, &files));
         assert_eq!((v.as_str(), fl.as_str(), id), ("3", "1", 7));
         assert_eq!(got, files);
+    }
+
+    #[test]
+    fn body_drops_case_and_separator_duplicates_keeping_first_spelling() {
+        let files = vec![
+            r"Actors\X\Animations\ChargeStrike.hkx".to_string(),
+            r"Actors\X\Animations\TuskSwipe_Front.hkx".to_string(),
+            r"Actors\X\Animations\chargestrike.hkx".to_string(),
+            r"Actors/X/Animations/tuskswipe_front.hkx".to_string(),
+        ];
+        let (_, _, _, got) = parse(&animation_file_data_body(1, &files));
+        assert_eq!(got, files[..2].to_vec());
+        // The declared count must describe the rows actually written.
+        let text = String::from_utf8(animation_file_data_body(1, &files)).unwrap();
+        assert_eq!(text.lines().nth(3).unwrap(), "2");
     }
 
     // ---- SyncAnimData -----------------------------------------------------
@@ -965,5 +974,4 @@ mod tests {
                 | Err(StanceDataCodecError::Section2Stride { .. })
         ));
     }
-
 }

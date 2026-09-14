@@ -1,6 +1,4 @@
-// Rust convex hull — 3D Quickhull algorithm producing Havok polytope topology.
-//
-// Output contract matches Python's _compute_hull_topology return value:
+// 3D Quickhull producing Havok polytope topology:
 //   hull_verts  — deduplicated vertices used by the hull (subset of input)
 //   planes      — [nx, ny, nz, d] per face (outward normals, d = –dot(n, point))
 //   faces       — (firstIndex u16, numIndices u8, minHalfAngle u8) per face
@@ -8,9 +6,8 @@
 //   edges       — (faceIdx u16, edgeIdx u8, padding u8) per edge
 //   vertex_edges — per-vertex first-edge: face_idx | (edge_idx << 16)
 //
-// The Quickhull implementation follows the standard recursive algorithm with
-// epsilon-based coplanarity testing.  It produces triangular facets which are
-// kept as-is (numIndices = 3) matching the previous ConvexHull simplices.
+// Quickhull emits triangles (epsilon coplanarity tests); coplanar neighbors
+// are then merged into polygonal faces (Step 8 of `compute_hull_topology`).
 
 use crate::error::{HavokError, HavokResult};
 
@@ -423,17 +420,12 @@ pub fn compute_hull_topology(input: &[[f32; 3]]) -> HavokResult<HullTopology> {
 
     // Step 8: merge coplanar adjacent facets into polygonal faces.
     //
-    // Quickhull emits triangulated facets each carrying its own plane.
-    // When the source has coplanar vertex groups (e.g. flat sides of an
-    // extruded box), each flat side becomes N triangles with the SAME plane
-    // equation. At runtime, hknpConvexPolytopeShape builds an edge-dihedral
-    // table from `faces` + `indices`; two coplanar adjacent triangles have
-    // dihedral = 0 (or 180°) and a downstream SDK lookup derefs null on
-    // that singular case — workshop sphere casts crash in the broadphase
+    // hknpConvexPolytopeShape builds an edge-dihedral table from `faces` +
+    // `indices`. Two coplanar adjacent triangles give a 0°/180° dihedral, an SDK
+    // lookup derefs null, and workshop sphere casts crash in the broadphase
     // (Fallout4.exe+13E82D0). Vanilla FO4 (and pynifly's pack_convex_polytope)
-    // emit one polygon per planar face. Group facets by plane, extract the
-    // boundary loop of each group, emit one face per group with the shared
-    // plane. See crash-2026-05-11-16-21-53.log.
+    // emit one polygon per plane, so facets are grouped by plane and each
+    // group's boundary loop becomes one face.
     let merged = merge_coplanar_facets(&facets, &old_to_new);
 
     let mut out_planes: Vec<[f32; 4]> = Vec::with_capacity(merged.len());
@@ -576,15 +568,11 @@ fn extract_boundary_loop(
         *edges.entry((c, a)).or_insert(0) += 1;
     }
 
-    // Boundary edges: those that have NO matching reverse partner in the
-    // group. (a→b) is internal iff (b→a) also appears.
+    // Boundary edges: (a→b) with no (b→a) in the group.
     //
-    // `edges` is a HashMap, so `.iter()` order is random per build. When a
-    // source vertex has more than one boundary edge (a pinched/non-manifold
-    // boundary, which degenerate near-coplanar thin-slab groups produce), the
-    // collected `a -> b` map would keep whichever pair iteration yielded last
-    // — randomly rotating/reshaping the emitted face per build. Collect to a
-    // sorted Vec first so the kept edge per source vertex is canonical.
+    // A pinched boundary (from degenerate thin-slab groups) can give one source
+    // vertex several boundary edges; sorting makes the kept edge independent of
+    // HashMap iteration order, so the emitted face is reproducible.
     let mut boundary_edges: Vec<(usize, usize)> = edges
         .iter()
         .filter_map(|(&(a, b), &count)| {
@@ -675,9 +663,8 @@ mod tests {
     use super::*;
 
     /// Box with two coplanar triangles per face (8 verts → 12 triangles before
-    /// merging) must emit exactly 6 unique planes after the coplanar-merge
-    /// post-pass. Duplicate planes are the workshop-sweep CTD trigger — see
-    /// crash-2026-05-11-16-21-53.log and the merge_coplanar_facets doc-comment.
+    /// merging) must emit exactly 6 unique planes after the coplanar merge.
+    /// Duplicate planes trigger the workshop-sweep CTD (see Step 8).
     #[test]
     fn unit_cube_merges_to_six_polygonal_faces() {
         let verts: Vec<[f32; 3]> = vec![

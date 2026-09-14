@@ -74,14 +74,10 @@ fn emit_expr_with_prec(node: &Expr, parent_prec: u8) -> String {
         Expr::CastExpr {
             expr, target_type, ..
         } => {
-            let inner = match expr.as_ref() {
-                Expr::BinaryExpr { .. } => format!("({})", emit_expr(expr)),
-                _ => emit_expr(expr),
-            };
-            format!("{inner} as {target_type}")
+            format!("{} as {target_type}", emit_operand(expr))
         }
         Expr::DotExpr { object, member, .. } => {
-            format!("{}.{member}", emit_expr(object))
+            format!("{}.{member}", emit_operand(object))
         }
         Expr::CallExpr { function, args, .. } => {
             if function.starts_with("new ") && args.is_empty() {
@@ -97,10 +93,10 @@ fn emit_expr_with_prec(node: &Expr, parent_prec: u8) -> String {
             ..
         } => {
             let a = args.iter().map(emit_expr).collect::<Vec<_>>().join(", ");
-            format!("{}.{method}({a})", emit_expr(object))
+            format!("{}.{method}({a})", emit_operand(object))
         }
         Expr::ArrayAccessExpr { array, index, .. } => {
-            format!("{}[{}]", emit_expr(array), emit_expr(index))
+            format!("{}[{}]", emit_operand(array), emit_expr(index))
         }
         Expr::NewArrayExpr {
             element_type, size, ..
@@ -108,6 +104,23 @@ fn emit_expr_with_prec(node: &Expr, parent_prec: u8) -> String {
             format!("new {element_type}[{}]", emit_expr(size))
         }
         Expr::ParentExpr { .. } => "parent".into(),
+    }
+}
+
+/// Render an operand that Papyrus parses more tightly than the surrounding
+/// operator: the left side of `.` or `[]`, and the value being cast by `as`.
+///
+/// `.` and `[]` bind tighter than `as`, so a bare cast receiver reads as
+/// `x as (Actor.EquipItem(...))` and is rejected with "unexpected token Dot in
+/// statement". A cast atom also accepts exactly one `as`, so a chained cast has
+/// to spell the inner one out: `(Self as Perk) as MyScript`. Unary and binary
+/// operands need the same treatment in both positions.
+fn emit_operand(node: &Expr) -> String {
+    match node {
+        Expr::CastExpr { .. } | Expr::BinaryExpr { .. } | Expr::UnaryExpr { .. } => {
+            format!("({})", emit_expr(node))
+        }
+        _ => emit_expr(node),
     }
 }
 
@@ -450,6 +463,100 @@ mod tests {
             pos: Pos::ZERO,
         };
         assert_eq!(emit_expr(&e), "Game.GetPlayer()");
+    }
+
+    fn name(n: &str) -> Expr {
+        Expr::NameExpr {
+            name: n.into(),
+            pos: Pos::ZERO,
+        }
+    }
+
+    fn cast(inner: Expr, ty: &str) -> Expr {
+        Expr::CastExpr {
+            expr: Box::new(inner),
+            target_type: ty.into(),
+            pos: Pos::ZERO,
+        }
+    }
+
+    #[test]
+    fn cast_receiver_of_dot_call_is_parenthesised() {
+        let e = Expr::DotCallExpr {
+            object: Box::new(cast(name("akActionRef"), "Actor")),
+            method: "EquipItem".into(),
+            args: vec![name("PipboyCharGen")],
+            pos: Pos::ZERO,
+        };
+        assert_eq!(
+            emit_expr(&e),
+            "(akActionRef as Actor).EquipItem(PipboyCharGen)"
+        );
+    }
+
+    #[test]
+    fn chained_cast_spells_out_the_inner_cast() {
+        let e = Expr::DotCallExpr {
+            object: Box::new(cast(
+                cast(name("Self"), "Perk"),
+                "surv_collectwaterperkscript",
+            )),
+            method: "CollectDirtyWater".into(),
+            args: vec![name("akActor")],
+            pos: Pos::ZERO,
+        };
+        assert_eq!(
+            emit_expr(&e),
+            "((Self as Perk) as surv_collectwaterperkscript).CollectDirtyWater(akActor)"
+        );
+    }
+
+    #[test]
+    fn cast_receiver_of_dot_and_index_is_parenthesised() {
+        let member = Expr::DotExpr {
+            object: Box::new(cast(name("akTargetRef"), "Actor")),
+            member: "myProp".into(),
+            pos: Pos::ZERO,
+        };
+        assert_eq!(emit_expr(&member), "(akTargetRef as Actor).myProp");
+
+        let index = Expr::ArrayAccessExpr {
+            array: Box::new(cast(name("items"), "Form[]")),
+            index: Box::new(Expr::LiteralExpr {
+                value: LiteralValue::Int(0),
+                ty: "int".into(),
+                pos: Pos::ZERO,
+            }),
+            pos: Pos::ZERO,
+        };
+        assert_eq!(emit_expr(&index), "(items as Form[])[0]");
+    }
+
+    #[test]
+    fn plain_receiver_keeps_no_parens() {
+        let e = Expr::DotCallExpr {
+            object: Box::new(Expr::DotCallExpr {
+                object: Box::new(name("Game")),
+                method: "GetPlayer".into(),
+                args: vec![],
+                pos: Pos::ZERO,
+            }),
+            method: "EvaluatePackage".into(),
+            args: vec![],
+            pos: Pos::ZERO,
+        };
+        assert_eq!(emit_expr(&e), "Game.GetPlayer().EvaluatePackage()");
+    }
+
+    #[test]
+    fn cast_argument_is_not_parenthesised() {
+        let e = Expr::DotCallExpr {
+            object: Box::new(name("akActor")),
+            method: "Revive".into(),
+            args: vec![cast(name("akTargetRef"), "Actor")],
+            pos: Pos::ZERO,
+        };
+        assert_eq!(emit_expr(&e), "akActor.Revive(akTargetRef as Actor)");
     }
 
     #[test]

@@ -14,6 +14,7 @@ const TILE_VERTEX_COLOR_WIDTH: usize = TILE_CELLS * 32;
 const TILE_VERTEX_COLOR_SAMPLE_COUNT: usize = TILE_VERTEX_COLOR_WIDTH * TILE_VERTEX_COLOR_WIDTH;
 const ZLIB_ENTRY_LEN: usize = 8;
 const HEIGHT_LAND_BLOCK_LEN: usize = 49152;
+const STARFIELD_HEIGHT_LAND_BLOCK_LEN: usize = 65536;
 const GROUND_COVER_BLOCK_LEN: usize = 16384;
 const VERTEX_COLOR_BLOCK_LEN: usize = 32768;
 
@@ -114,6 +115,16 @@ pub struct BtdFile {
     ltex_form_ids: Vec<u32>,
     gcvr_form_ids: Vec<u32>,
     tile_cache: HashMap<u32, TileData>,
+    tile_cache_hits: u64,
+    tile_cache_misses: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BtdTileCacheStats {
+    pub hits: u64,
+    pub misses: u64,
+    pub cached_tiles: u64,
+    pub cached_payload_bytes: u64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -167,11 +178,32 @@ impl BtdFile {
             ltex_form_ids,
             gcvr_form_ids,
             tile_cache: HashMap::new(),
+            tile_cache_hits: 0,
+            tile_cache_misses: 0,
         })
     }
 
     pub fn header(&self) -> &BtdHeader {
         &self.header
+    }
+
+    pub fn tile_cache_stats(&self) -> BtdTileCacheStats {
+        let cached_payload_bytes = self
+            .tile_cache
+            .values()
+            .map(|tile| {
+                tile.heights.len() * std::mem::size_of::<u16>()
+                    + tile.land_alphas.len() * std::mem::size_of::<u16>()
+                    + tile.ground_cover.len()
+                    + tile.vertex_color.len() * std::mem::size_of::<u16>()
+            })
+            .sum::<usize>();
+        BtdTileCacheStats {
+            hits: self.tile_cache_hits,
+            misses: self.tile_cache_misses,
+            cached_tiles: self.tile_cache.len() as u64,
+            cached_payload_bytes: cached_payload_bytes as u64,
+        }
     }
 
     pub fn land_texture_form_id(&self, index: usize) -> Option<u32> {
@@ -306,7 +338,7 @@ impl BtdFile {
         }
 
         let version = read_u32(bytes, 0x04)?;
-        if version != 6 {
+        if version != 5 && version != 6 {
             return Err(BtdError::UnsupportedVersion(version));
         }
 
@@ -314,10 +346,40 @@ impl BtdFile {
         let world_height_max = read_f32(bytes, 0x0c)?;
         let resolution_x = read_u32(bytes, 0x10)?;
         let resolution_y = read_u32(bytes, 0x14)?;
-        let cell_min_x = read_i32(bytes, 0x18)?;
-        let cell_min_y = read_i32(bytes, 0x1c)?;
-        let cell_max_x = read_i32(bytes, 0x20)?;
-        let cell_max_y = read_i32(bytes, 0x24)?;
+        let mut cell_min_x = read_i32(bytes, 0x18)?;
+        let mut cell_min_y = read_i32(bytes, 0x1c)?;
+        let mut cell_max_x = read_i32(bytes, 0x20)?;
+        let mut cell_max_y = read_i32(bytes, 0x24)?;
+
+        // Starfield BTD reuses the FO76 BTDB container (same version numbers)
+        // but zeroes the SW/NE cell coordinates and carries no ground-cover
+        // or vertex-color sections; real cell bounds are derived from the
+        // height-map resolution instead. `resolution_x/y > 128` (more than a
+        // single cell) rules out a degenerate one-cell FO76 world that would
+        // otherwise also read as all-zero bounds. Ground truth:
+        // refs/fo76utils-main/src/btdfile.cpp (BTDFile::BTDFile, isStarfieldBTD).
+        let is_starfield_layout = cell_min_x == 0
+            && cell_min_y == 0
+            && cell_max_x == 0
+            && cell_max_y == 0
+            && resolution_x > 128
+            && resolution_y > 128;
+        if is_starfield_layout {
+            // No x8 here: unlike fo76utils' `worldHeightMin *= 8.0f` (its own
+            // `FIXME`), Starfield's header floats are already world units, as
+            // placed-ref Z ranges, WRLD LandData and slope plausibility confirm.
+            cell_min_x =
+                -(i32::try_from(resolution_x >> 8).map_err(|_| BtdError::BadOffset(0x10))?);
+            cell_min_y =
+                -(i32::try_from(resolution_y >> 8).map_err(|_| BtdError::BadOffset(0x14))?);
+            cell_max_x = cell_min_x
+                + i32::try_from(resolution_x >> 7).map_err(|_| BtdError::BadOffset(0x10))?
+                - 1;
+            cell_max_y = cell_min_y
+                + i32::try_from(resolution_y >> 7).map_err(|_| BtdError::BadOffset(0x14))?
+                - 1;
+        }
+
         let ltex_count =
             usize::try_from(read_u32(bytes, 0x28)?).map_err(|_| BtdError::BadOffset(0x28))?;
         let cells_x = checked_cell_span(cell_min_x, cell_max_x, 0x20)?;
@@ -331,49 +393,83 @@ impl BtdFile {
             cell_height_minmax_offset,
             checked_mul(cell_count, 8, cell_height_minmax_offset)?,
         )?;
-        let gcvr_count_offset = checked_add(
-            ltex_map_offset,
-            checked_mul(cell_count, 32, ltex_map_offset)?,
-        )?;
-        let gcvr_count = usize::try_from(read_u32(bytes, gcvr_count_offset)?)
-            .map_err(|_| BtdError::BadOffset(gcvr_count_offset))?;
-        let gcvr_offset = checked_add(gcvr_count_offset, 4)?;
-        let gcvr_map_offset = checked_add(gcvr_offset, checked_mul(gcvr_count, 4, gcvr_offset)?)?;
-        let height_lod4_offset = checked_add(
-            gcvr_map_offset,
-            checked_mul(cell_count, 32, gcvr_map_offset)?,
-        )?;
+
+        // Starfield BTD carries no GCVR section at all (ground cover isn't
+        // baked into terrain there); LOD4 height data starts right after the
+        // LTEX quadrant map instead of after a gcvr count/table/map block.
+        let (gcvr_count, gcvr_offset, gcvr_map_offset, height_lod4_offset) = if is_starfield_layout
+        {
+            let after_ltex_map = checked_add(
+                ltex_map_offset,
+                checked_mul(cell_count, 32, ltex_map_offset)?,
+            )?;
+            (0usize, ltex_offset, ltex_offset, after_ltex_map)
+        } else {
+            let gcvr_count_offset = checked_add(
+                ltex_map_offset,
+                checked_mul(cell_count, 32, ltex_map_offset)?,
+            )?;
+            let gcvr_count = usize::try_from(read_u32(bytes, gcvr_count_offset)?)
+                .map_err(|_| BtdError::BadOffset(gcvr_count_offset))?;
+            let gcvr_offset = checked_add(gcvr_count_offset, 4)?;
+            let gcvr_map_offset =
+                checked_add(gcvr_offset, checked_mul(gcvr_count, 4, gcvr_offset)?)?;
+            let after_gcvr_map = checked_add(
+                gcvr_map_offset,
+                checked_mul(cell_count, 32, gcvr_map_offset)?,
+            )?;
+            (gcvr_count, gcvr_offset, gcvr_map_offset, after_gcvr_map)
+        };
+
         let land_texture_lod4_offset = checked_add(
             height_lod4_offset,
             checked_mul(cell_count, 128, height_lod4_offset)?,
         )?;
-        let vertex_color_lod4_offset = checked_add(
-            land_texture_lod4_offset,
-            checked_mul(cell_count, 128, land_texture_lod4_offset)?,
-        )?;
-        let zlib_table_offset = checked_add(
-            vertex_color_lod4_offset,
-            checked_mul(cell_count, 128, vertex_color_lod4_offset)?,
-        )?;
 
+        // Starfield BTD also carries no vertex-color LOD4 section; the ZLib
+        // block table follows the land-texture LOD4 data directly.
+        let (vertex_color_lod4_offset, zlib_table_offset) = if is_starfield_layout {
+            let zlib_table_offset = checked_add(
+                land_texture_lod4_offset,
+                checked_mul(cell_count, 128, land_texture_lod4_offset)?,
+            )?;
+            (land_texture_lod4_offset, zlib_table_offset)
+        } else {
+            let vertex_color_lod4_offset = checked_add(
+                land_texture_lod4_offset,
+                checked_mul(cell_count, 128, land_texture_lod4_offset)?,
+            )?;
+            let zlib_table_offset = checked_add(
+                vertex_color_lod4_offset,
+                checked_mul(cell_count, 128, vertex_color_lod4_offset)?,
+            )?;
+            (vertex_color_lod4_offset, zlib_table_offset)
+        };
+
+        // Starfield ZLib block tables hold one entry per block at every LOD
+        // (no ground-cover/vertex-color second stream to interleave).
         let zlib_lod3_offset = zlib_table_offset;
-        let zlib_lod3_count = checked_mul(
-            checked_mul(cells_y.div_ceil(8), cells_x.div_ceil(8), zlib_lod3_offset)?,
-            2,
-            zlib_lod3_offset,
-        )?;
+        let zlib_lod3_block_count =
+            checked_mul(cells_y.div_ceil(8), cells_x.div_ceil(8), zlib_lod3_offset)?;
+        let zlib_lod3_entry_count = if is_starfield_layout {
+            zlib_lod3_block_count
+        } else {
+            checked_mul(zlib_lod3_block_count, 2, zlib_lod3_offset)?
+        };
         let zlib_lod2_offset = checked_add(
             zlib_lod3_offset,
-            checked_mul(zlib_lod3_count, ZLIB_ENTRY_LEN, zlib_lod3_offset)?,
+            checked_mul(zlib_lod3_entry_count, ZLIB_ENTRY_LEN, zlib_lod3_offset)?,
         )?;
-        let zlib_lod2_count = checked_mul(
-            checked_mul(cells_y.div_ceil(4), cells_x.div_ceil(4), zlib_lod2_offset)?,
-            2,
-            zlib_lod2_offset,
-        )?;
+        let zlib_lod2_block_count =
+            checked_mul(cells_y.div_ceil(4), cells_x.div_ceil(4), zlib_lod2_offset)?;
+        let zlib_lod2_entry_count = if is_starfield_layout {
+            zlib_lod2_block_count
+        } else {
+            checked_mul(zlib_lod2_block_count, 2, zlib_lod2_offset)?
+        };
         let zlib_lod1_offset = checked_add(
             zlib_lod2_offset,
-            checked_mul(zlib_lod2_count, ZLIB_ENTRY_LEN, zlib_lod2_offset)?,
+            checked_mul(zlib_lod2_entry_count, ZLIB_ENTRY_LEN, zlib_lod2_offset)?,
         )?;
         let zlib_lod1_count =
             checked_mul(cells_y.div_ceil(2), cells_x.div_ceil(2), zlib_lod1_offset)?;
@@ -381,10 +477,14 @@ impl BtdFile {
             zlib_lod1_offset,
             checked_mul(zlib_lod1_count, ZLIB_ENTRY_LEN, zlib_lod1_offset)?,
         )?;
-        let zlib_lod0_count = checked_mul(cell_count, 2, zlib_lod0_offset)?;
+        let zlib_lod0_entry_count = if is_starfield_layout {
+            cell_count
+        } else {
+            checked_mul(cell_count, 2, zlib_lod0_offset)?
+        };
         let zlib_data_offset = checked_add(
             zlib_lod0_offset,
-            checked_mul(zlib_lod0_count, ZLIB_ENTRY_LEN, zlib_lod0_offset)?,
+            checked_mul(zlib_lod0_entry_count, ZLIB_ENTRY_LEN, zlib_lod0_offset)?,
         )?;
         ensure_range(bytes, zlib_data_offset, 0)?;
 
@@ -416,7 +516,7 @@ impl BtdFile {
             zlib_lod1_offset,
             zlib_lod0_offset,
             zlib_data_offset,
-            is_starfield_layout: false,
+            is_starfield_layout,
         })
     }
 
@@ -526,8 +626,11 @@ impl BtdFile {
         let cache_key =
             (kind_key << 28) | ((u32::from(lod)) << 24) | u32::try_from(tile_index).unwrap();
         if !self.tile_cache.contains_key(&cache_key) {
+            self.tile_cache_misses = self.tile_cache_misses.saturating_add(1);
             let tile = self.read_tile(tile_x, tile_y, lod, kind)?;
             self.tile_cache.insert(cache_key, tile);
+        } else {
+            self.tile_cache_hits = self.tile_cache_hits.saturating_add(1);
         }
         Ok(self.tile_cache.get(&cache_key).unwrap())
     }
@@ -568,6 +671,14 @@ impl BtdFile {
         };
 
         if matches!(kind, ExtractKind::TerrainColor) {
+            if self.header.is_starfield_layout {
+                // Starfield BTD bakes no per-vertex terrain color at all;
+                // report the "no data" sentinel instead of reading a
+                // vertex-color section that does not exist in the file.
+                tile.vertex_color.fill(0xFFFF);
+                tile.block_mask = 0x02A0;
+                return Ok(tile);
+            }
             self.load_lod4_vertex_color(&mut tile, x0, y0)?;
             for block_lod in (lod.max(2)..4u8).rev() {
                 let lod_scale = 1usize << block_lod;
@@ -606,7 +717,16 @@ impl BtdFile {
         }
 
         self.load_lod4_height_land(&mut tile, x0, y0)?;
-        for block_lod in (lod..4u8).rev() {
+        // FO76 blocks are progressive refinements (only samples absent from
+        // coarser LODs are stored), so the tile must be assembled LOD3->LOD0.
+        // Starfield blocks are complete rasters at their own LOD (see the `break`
+        // in fo76utils btdfile.cpp), so coarser levels would be wasted reads.
+        let block_lods: Vec<u8> = if self.header.is_starfield_layout {
+            if lod <= 3 { vec![lod] } else { Vec::new() }
+        } else {
+            (lod..4u8).rev().collect()
+        };
+        for block_lod in block_lods {
             let lod_scale = 1usize << block_lod;
             let block_width = 8usize >> block_lod;
             let row_width = self.header.cells_x.div_ceil(lod_scale);
@@ -623,14 +743,30 @@ impl BtdFile {
                     }
                     let block_index = block_y * row_width + block_x;
                     let data_offset = ((yy << 10) + xx) << (usize::from(block_lod) + 7);
-                    let decoded = self.read_zlib_block(block_lod, block_index, 0)?;
-                    load_height_land_block(
-                        &mut tile.heights,
-                        &mut tile.land_alphas,
-                        data_offset,
-                        block_lod,
-                        &decoded,
-                    )?;
+                    if self.header.is_starfield_layout {
+                        let decoded = self.read_zlib_block_len(
+                            block_lod,
+                            block_index,
+                            0,
+                            STARFIELD_HEIGHT_LAND_BLOCK_LEN,
+                        )?;
+                        load_height_land_block_starfield(
+                            &mut tile.heights,
+                            &mut tile.land_alphas,
+                            data_offset,
+                            block_lod,
+                            &decoded,
+                        )?;
+                    } else {
+                        let decoded = self.read_zlib_block(block_lod, block_index, 0)?;
+                        load_height_land_block(
+                            &mut tile.heights,
+                            &mut tile.land_alphas,
+                            data_offset,
+                            block_lod,
+                            &decoded,
+                        )?;
+                    }
                 }
             }
         }
@@ -715,7 +851,9 @@ impl BtdFile {
             3 => self.header.zlib_lod3_offset,
             _ => return Err(BtdError::UnsupportedLod(lod)),
         };
-        let table_index = if lod == 0 && stream != 0 {
+        let table_index = if self.header.is_starfield_layout {
+            block_index
+        } else if lod == 0 && stream != 0 {
             block_index + (self.header.cells_x * self.header.cells_y)
         } else if lod >= 2 {
             (block_index << 1) + stream
@@ -812,6 +950,46 @@ fn load_height_land_block(
             yd,
         )?;
         cursor += 384;
+    }
+    Ok(())
+}
+
+// Starfield blocks carry the full 128x128 height grid followed by the full
+// 128x128 land-alpha grid (no lower-LOD delta/skip trick, unlike FO76's
+// `load_height_land_block`). Ground truth: refs/fo76utils-main/src/btdfile.cpp
+// `BTDFile::loadBlock_SF`.
+fn load_height_land_block_starfield(
+    heights: &mut [u16],
+    land_alphas: &mut [u16],
+    data_offset: usize,
+    lod: u8,
+    bytes: &[u8],
+) -> Result<(), BtdError> {
+    if bytes.len() != STARFIELD_HEIGHT_LAND_BLOCK_LEN {
+        return Err(BtdError::Zlib(format!(
+            "unexpected starfield height/land block size {}",
+            bytes.len()
+        )));
+    }
+    let xd = 1usize << usize::from(lod);
+    let mut cursor = 0usize;
+    for y in 0..CELL_SAMPLES {
+        let mut index = data_offset + (y << (usize::from(lod) + 10));
+        for _ in 0..CELL_SAMPLES {
+            ensure_index_u16(heights, index)?;
+            heights[index] = u16::from_le_bytes([bytes[cursor], bytes[cursor + 1]]);
+            cursor += 2;
+            index += xd;
+        }
+    }
+    for y in 0..CELL_SAMPLES {
+        let mut index = data_offset + (y << (usize::from(lod) + 10));
+        for _ in 0..CELL_SAMPLES {
+            ensure_index_u16(land_alphas, index)?;
+            land_alphas[index] = u16::from_le_bytes([bytes[cursor], bytes[cursor + 1]]);
+            cursor += 2;
+            index += xd;
+        }
     }
     Ok(())
 }
@@ -980,6 +1158,16 @@ fn ensure_index_u16(values: &[u16], index: usize) -> Result<(), BtdError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn starfield_btd(name: &str) -> std::path::PathBuf {
+        let root = std::env::var_os("STARFIELD_EXTRACTED_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../../extracted/starfield")
+            });
+        root.join("terrain").join(name)
+    }
     use std::io::Write;
 
     /// Verifies that BtdFile::open uses the mmap path and reaches the same
@@ -1038,6 +1226,106 @@ mod tests {
         for bit in 0..8 {
             assert_eq!(reorder_ground_cover_bits(1 << bit), 1 << (7 - bit));
         }
+    }
+
+    #[test]
+    fn one_cell_zero_bounds_fixture_still_parses_as_fo76_layout() {
+        // A one-cell FO76 world at the origin (as in tests/btd_header.rs) also has
+        // all-zero cell bounds; resolution 128 must keep it on the FO76 layout.
+        // 600 zero bytes cover the one-cell, zero-ltex layout through
+        // zlib_data_offset (560) and make gcvr_count read as 0.
+        let mut bytes = vec![0u8; 600];
+        bytes[0..4].copy_from_slice(b"BTDB");
+        bytes[4..8].copy_from_slice(&6u32.to_le_bytes());
+        bytes[16..20].copy_from_slice(&128u32.to_le_bytes());
+        bytes[20..24].copy_from_slice(&128u32.to_le_bytes());
+        let header = BtdFile::parse_header(&bytes).expect("minimal one-cell header parses");
+        assert!(!header.is_starfield_layout);
+        assert_eq!(header.cells_x, 1);
+        assert_eq!(header.cells_y, 1);
+    }
+
+    #[test]
+    fn reads_starfield_akilacity_btd() {
+        let path = starfield_btd("akilacity.btd");
+        if !path.exists() {
+            eprintln!("skip: starfield extracted data not present");
+            return;
+        }
+        let path_str = path.to_str().unwrap();
+
+        let header = BtdFile::open_header(path_str).expect("starfield btd header parses");
+        assert!(header.is_starfield_layout);
+        assert_eq!(header.version, 6);
+        assert!(header.cell_max_x > header.cell_min_x);
+        assert!(header.cell_max_y > header.cell_min_y);
+        assert_eq!(header.cell_min_x, -4);
+        assert_eq!(header.cell_max_x, 4);
+        assert_eq!(header.cells_x, 9);
+        assert_eq!(header.cells_y, 9);
+        assert_eq!(header.ltex_count, 11);
+        assert_eq!(header.gcvr_count, 0);
+
+        let mut btd = BtdFile::open(path_str).expect("starfield btd opens");
+        let heights = btd
+            .cell_height_map_u16(0, 0, 0)
+            .expect("starfield height block decodes");
+        assert_eq!(heights.len(), 128 * 128);
+        // Cross-checked against an independent Python zlib-decode of the same
+        // LOD0 block (cell (0,0), block_index 40) straight from the real file.
+        assert_eq!(
+            &heights[0..10],
+            &[
+                23385, 23379, 23381, 23382, 23383, 23382, 23379, 23374, 23357, 23359
+            ]
+        );
+        assert_eq!(heights[16383], 23551);
+        assert_eq!(heights.iter().copied().min().unwrap(), 22952);
+        assert_eq!(heights.iter().copied().max().unwrap(), 23570);
+
+        let alphas = btd
+            .cell_land_alpha_u16(0, 0, 0)
+            .expect("starfield land alpha block decodes");
+        assert_eq!(alphas.len(), 128 * 128);
+        assert!(alphas.iter().any(|value| *value != alphas[0]));
+    }
+
+    /// Expected values come from a vanilla decode (see
+    /// `bacup/docs/starfield_target/R4-btd-layout.md`). Starfield header floats
+    /// are already world units; a stray `*= 8.0` would break every downstream
+    /// height dequantization.
+    #[test]
+    fn starfield_newatlantis_header_matches_r4_recorded_stats() {
+        let path = starfield_btd("newatlantis.btd");
+        if !path.exists() {
+            eprintln!("skip: starfield extracted data not present");
+            return;
+        }
+        let path_str = path.to_str().unwrap();
+
+        let header = BtdFile::open_header(path_str).expect("newatlantis btd header parses");
+        assert!(header.is_starfield_layout);
+        assert_eq!(header.version, 6);
+        assert_eq!(header.resolution_x, 1792);
+        assert_eq!(header.resolution_y, 1792);
+        assert_eq!(header.cell_min_x, -7);
+        assert_eq!(header.cell_min_y, -7);
+        assert_eq!(header.cell_max_x, 6);
+        assert_eq!(header.cell_max_y, 6);
+        assert_eq!(header.cells_x, 14);
+        assert_eq!(header.cells_y, 14);
+        assert_eq!(header.ltex_count, 7);
+        assert_eq!(header.gcvr_count, 0);
+        assert!(
+            (header.world_height_min - 0.0).abs() < 1e-6,
+            "world_height_min = {} (expected 0.0, dumps/R4/vanilla_decode.json)",
+            header.world_height_min
+        );
+        assert!(
+            (header.world_height_max - 260.502_04).abs() < 1e-3,
+            "world_height_max = {} (expected 260.5020446777344, dumps/R4/vanilla_decode.json)",
+            header.world_height_max
+        );
     }
 
     fn short_ltex(objid: u32) -> String {

@@ -1,14 +1,7 @@
-"""Pack archives (BA2/BSA) for PC and/or Xbox platforms.
+"""Pack archives (BA2/BSA) for PC, Xbox, and/or PlayStation platforms.
 
-Default packer: native `bsarchive_native`.
-Optional tool:  Archive2.exe when explicitly requested.
-
-Public API:
-    pack_mod(
-        mod_name, *, pc, xbox, pc_max_res, pc_effects_max_res,
-        xbox_max_res, xbox_effects_max_res, game, use_archive2,
-        expanded_archives
-    )
+Packs with native `bsarchive_native`, or Archive2.exe when explicitly
+requested. Entry point: `pack_mod`.
 """
 from __future__ import annotations
 
@@ -25,6 +18,7 @@ from pathlib import Path
 
 from creation_lib.core.game_profiles import get_profile
 from creation_lib.ba2 import native_runtime
+from creation_lib.audio import native_runtime as audio_native_runtime
 from creation_lib.build.archive_plan import (
     DEFAULT_ARCHIVE_MAX_BYTES,
     ArchiveEntry,
@@ -34,6 +28,7 @@ from creation_lib.build.archive_plan import (
 )
 
 _log = logging.getLogger("modkit.packer")
+_ATRAC9_SUBFORMAT_GUID = bytes.fromhex("d242e147ba368d4d88fc61654f8c836c")
 
 
 def _find_archive2(game: str, game_dir: str = "") -> str:
@@ -64,10 +59,17 @@ def _find_xtexconv(resource_dir: Path | str) -> str:
 
 
 def _native_archive_type(
-    game: str, texture_archive: bool, *, xbox: bool = False, og: bool = False
+    game: str,
+    texture_archive: bool,
+    *,
+    xbox: bool = False,
+    ps: bool = False,
+    og: bool = False,
 ) -> str | None:
     if xbox and game == "fo4":
         return "fo4xboxdds" if texture_archive else "fo4xbox"
+    if ps and game == "fo4":
+        return "fo4psdds" if texture_archive else "fo4ps"
     suffix = "dds" if texture_archive else ""
     if og and game == "fo4":
         return f"fo4og{suffix}"
@@ -90,6 +92,8 @@ def _run_native_pack(
     *,
     texture_archive: bool = False,
     xbox: bool = False,
+    ps: bool = False,
+    og: bool = False,
     compress: bool = True,
     compression_level: int | None = None,
     manifest_path: str | None = None,
@@ -98,7 +102,7 @@ def _run_native_pack(
     jobs: int | None = None,
 ):
     """Pack via the native Rust backend when the binding is available."""
-    archive_type = _native_archive_type(game, texture_archive, xbox=xbox)
+    archive_type = _native_archive_type(game, texture_archive, xbox=xbox, ps=ps, og=og)
     if archive_type is None:
         raise RuntimeError(f"native packer does not support game: {game}")
     if not native_runtime.native_function_available("pack_archive"):
@@ -143,6 +147,7 @@ def _run_native_pack_entries(
     *,
     texture_archive: bool = False,
     xbox: bool = False,
+    ps: bool = False,
     og: bool = False,
     compress: bool = True,
     compression_level: int | None = None,
@@ -150,7 +155,7 @@ def _run_native_pack_entries(
     jobs: int | None = None,
 ):
     """Pack a planned archive directly from source files without staging."""
-    archive_type = _native_archive_type(game, texture_archive, xbox=xbox, og=og)
+    archive_type = _native_archive_type(game, texture_archive, xbox=xbox, ps=ps, og=og)
     if archive_type is None:
         raise RuntimeError(f"native packer does not support game: {game}")
     if texture_archive and game in {"fo4", "fo76", "starfield"}:
@@ -453,7 +458,181 @@ def _is_platform_archive(path: Path, platform_suffix: str) -> bool:
         return False
     if platform_suffix == "_xbox":
         return label.endswith("_xbox")
-    return not label.endswith("_xbox")
+    if platform_suffix == "_ps":
+        return label.endswith("_ps")
+    return not label.endswith(("_xbox", "_ps"))
+
+
+def _repack_playstation_fuz(
+    source_fuz: Path,
+    source_audio: Path,
+    output_fuz: Path,
+    *,
+    require_at9: bool = False,
+) -> None:
+    fuz_bytes = source_fuz.read_bytes()
+    if len(fuz_bytes) < 12 or fuz_bytes[:4] != b"FUZE":
+        raise ValueError(f"invalid FUZ file for PlayStation: {source_fuz}")
+    lip_size = struct.unpack_from("<I", fuz_bytes, 8)[0]
+    audio_offset = 12 + lip_size
+    if audio_offset > len(fuz_bytes):
+        raise ValueError(f"invalid FUZ lip size for PlayStation: {source_fuz}")
+
+    audio_bytes = source_audio.read_bytes()
+    wave_format = _riff_wave_format_tag(audio_bytes)
+    if wave_format is None or 0x0160 <= wave_format <= 0x0166:
+        raise ValueError(f"PlayStation FUZ companion is not supported audio: {source_audio}")
+    if require_at9 and not _is_atrac9_wave(audio_bytes):
+        raise ValueError(f"PlayStation FUZ companion is not ATRAC9: {source_audio}")
+
+    output_fuz.parent.mkdir(parents=True, exist_ok=True)
+    output_fuz.write_bytes(fuz_bytes[:audio_offset] + audio_bytes)
+
+
+def _riff_wave_format_tag(payload: bytes) -> int | None:
+    if len(payload) < 12 or payload[:4] != b"RIFF" or payload[8:12] != b"WAVE":
+        return None
+    offset = 12
+    while offset + 8 <= len(payload):
+        chunk_size = struct.unpack_from("<I", payload, offset + 4)[0]
+        chunk_data = offset + 8
+        chunk_end = chunk_data + chunk_size
+        if chunk_end > len(payload):
+            return None
+        if payload[offset : offset + 4] == b"fmt " and chunk_size >= 2:
+            return struct.unpack_from("<H", payload, chunk_data)[0]
+        offset = chunk_end + (chunk_size & 1)
+    return None
+
+
+def _is_atrac9_wave(payload: bytes) -> bool:
+    if _riff_wave_format_tag(payload) != 0xFFFE:
+        return False
+    offset = 12
+    while offset + 8 <= len(payload):
+        chunk_size = struct.unpack_from("<I", payload, offset + 4)[0]
+        chunk_data = offset + 8
+        chunk_end = chunk_data + chunk_size
+        if chunk_end > len(payload):
+            return False
+        if payload[offset : offset + 4] == b"fmt ":
+            return (
+                chunk_size >= 40
+                and payload[chunk_data + 24 : chunk_data + 40]
+                == _ATRAC9_SUBFORMAT_GUID
+            )
+        offset = chunk_end + (chunk_size & 1)
+    return False
+
+
+def _fuz_embeds_atrac9(path: Path) -> bool:
+    payload = path.read_bytes()
+    if len(payload) < 12 or payload[:4] != b"FUZE":
+        return False
+    audio_offset = 12 + struct.unpack_from("<I", payload, 8)[0]
+    return audio_offset <= len(payload) and _is_atrac9_wave(payload[audio_offset:])
+
+
+def _prepare_playstation_audio_entries(
+    entries: list[ArchiveEntry],
+    temp_dir: Path,
+    *,
+    convert_to_at9: bool = False,
+) -> tuple[list[ArchiveEntry], bool]:
+    use_at9 = convert_to_at9
+    prepared: list[ArchiveEntry] = []
+    adjusted = False
+    missing_wavs: list[str] = []
+    emitted_paths: set[str] = set()
+    existing_at9 = {
+        entry.relative_path.lower(): entry.source_path
+        for entry in entries
+        if Path(entry.relative_path).suffix.lower() == ".at9"
+    }
+    encoded_at9: dict[str, Path] = {}
+
+    def at9_for(source_wav: Path, relative_at9: str) -> Path:
+        key = relative_at9.lower()
+        if key in existing_at9:
+            return existing_at9[key]
+        if key not in encoded_at9:
+            output_at9 = temp_dir / "ps_audio" / "at9" / Path(relative_at9)
+            audio_native_runtime.encode_at9(os.fspath(source_wav), os.fspath(output_at9))
+            encoded_at9[key] = output_at9
+        return encoded_at9[key]
+
+    for entry in entries:
+        suffix = Path(entry.relative_path).suffix.lower()
+        if not use_at9 and suffix not in {".xwm", ".fuz"}:
+            prepared.append(entry)
+            continue
+        if use_at9 and suffix not in {".wav", ".xwm", ".fuz"}:
+            key = entry.relative_path.lower()
+            if key not in emitted_paths:
+                prepared.append(entry)
+                emitted_paths.add(key)
+            continue
+
+        wav_path = entry.source_path if suffix == ".wav" else entry.source_path.with_suffix(".wav")
+        if use_at9 and suffix == ".fuz" and not wav_path.is_file():
+            relative_at9 = Path(entry.relative_path).with_suffix(".at9").as_posix()
+            source_at9 = existing_at9.get(relative_at9.lower())
+            if source_at9 is not None:
+                output_fuz = temp_dir / "ps_audio" / Path(entry.relative_path)
+                _repack_playstation_fuz(
+                    entry.source_path, source_at9, output_fuz, require_at9=True
+                )
+                prepared.append(
+                    ArchiveEntry(entry.relative_path, output_fuz, output_fuz.stat().st_size)
+                )
+                adjusted = True
+                continue
+            if _fuz_embeds_atrac9(entry.source_path):
+                prepared.append(entry)
+                continue
+        if not wav_path.is_file():
+            missing_wavs.append(entry.relative_path)
+            continue
+
+        adjusted = True
+        if use_at9 and suffix in {".wav", ".xwm"}:
+            relative_at9 = Path(entry.relative_path).with_suffix(".at9").as_posix()
+            key = relative_at9.lower()
+            if key not in emitted_paths and key not in existing_at9:
+                source_at9 = at9_for(wav_path, relative_at9)
+                prepared.append(
+                    ArchiveEntry(relative_at9, source_at9, source_at9.stat().st_size)
+                )
+                emitted_paths.add(key)
+            continue
+        if suffix == ".xwm":
+            continue
+
+        output_fuz = temp_dir / "ps_audio" / Path(entry.relative_path)
+        source_audio = wav_path
+        if use_at9:
+            relative_at9 = Path(entry.relative_path).with_suffix(".at9").as_posix()
+            source_audio = at9_for(wav_path, relative_at9)
+        _repack_playstation_fuz(
+            entry.source_path, source_audio, output_fuz, require_at9=use_at9
+        )
+        prepared.append(
+            ArchiveEntry(
+                relative_path=entry.relative_path,
+                source_path=output_fuz,
+                size=output_fuz.stat().st_size,
+            )
+        )
+
+    if missing_wavs:
+        examples = ", ".join(missing_wavs[:3])
+        extra = "" if len(missing_wavs) <= 3 else f" (+{len(missing_wavs) - 3} more)"
+        raise ValueError(
+            "PlayStation audio requires a companion WAV for every XWM/FUZ file: "
+            f"{examples}{extra}"
+        )
+
+    return prepared, adjusted
 
 
 def _cleanup_obsolete_platform_archives(
@@ -469,7 +648,7 @@ def _cleanup_obsolete_platform_archives(
         _log.info("Removed old archive: %s", archive.name)
 
 
-def _can_use_direct_pc_ba2_path(
+def _can_use_direct_compact_ba2_path(
     plans: list[PlannedArchive],
     *,
     mod_name: str,
@@ -564,40 +743,75 @@ def _prepare_texture_root(
             )
 
 
-def pack_mod(mod_name: str, *, pc: bool = True, xbox: bool = False,
+def pack_mod(mod_name: str, *, pc: bool = True, xbox: bool = False, ps: bool = False,
              pc_max_res: int = 0, pc_effects_max_res: int | None = None,
-             xbox_max_res: int = 1024, xbox_effects_max_res: int | None = None,
+             xbox_max_res: int = 0, xbox_effects_max_res: int | None = None,
+             ps_max_res: int = 0, ps_effects_max_res: int | None = None,
              game: str = "fo4", use_archive2: bool = False, game_dir: str = "",
              project_root: Path | str | None = None,
              resource_dir: Path | str | None = None,
              archive_max_bytes: int | None = None,
              expanded_archives: bool = False,
-             archive_workers: int = 0):
-    """Pack archives for a mod.
-
-    Default: native Rust packer when available.
-    Native packing is required unless Archive2 is explicitly requested.
+             archive_workers: int = 0,
+             archive_output_dir: Path | str | None = None,
+             plugin_base_name: str | None = None,
+             ps_at9: bool = False,
+             fo4_ba2_target: str = "auto"):
+    """Pack archives for a mod with the native packer, or Archive2 when
+    ``use_archive2`` is set.
 
     Args:
         game_dir: Game install directory (value of {GAME}_DIR). Required when
                   use_archive2=True so Archive2.exe can be located.
-        archive_workers: Native worker count. 0 means the same default worker
-                  count used by regen conversion. When >1 and the direct-entries
-                  fallback path is in use
-                  (PC BA2, no resize/tile/staging), pack that many archives
-                  concurrently. Each in-flight archive stages up to
-                  archive_max_bytes of temp payloads, so raise with disk in mind.
+        archive_workers: Native worker count; 0 uses regen conversion's
+                  default. When >1 on the direct-entries path (PC BA2, no
+                  resize/tile/staging), that many archives pack concurrently.
+                  Each in-flight archive stages up to archive_max_bytes of
+                  temp payloads, so raise with disk in mind.
+        archive_max_bytes: Per-archive size cap used only when
+                  expanded_archives is enabled.
+        archive_output_dir: Directory for completed BA2/BSA files. Defaults to
+                  the mod directory.
+        fo4_ba2_target: ``"auto"`` detects game_dir; ``"og"`` emits FO4 v1 BA2s;
+                  ``"nextgen"`` emits v8. Unknown installs default to nextgen.
+        ps_at9: Encode PlayStation WAV/XWM audio as ATRAC9 and embed ATRAC9
+                  audio in FUZ files using the built-in native encoder.
     """
+    fo4_ba2_target = str(fo4_ba2_target).strip().lower()
+    if fo4_ba2_target not in {"auto", "og", "nextgen"}:
+        raise ValueError("fo4_ba2_target must be 'auto', 'og' or 'nextgen'")
+    if game == "fo4" and fo4_ba2_target == "auto":
+        from creation_lib.core.fo4_version import detect_ba2_target
+        fo4_ba2_target, version = detect_ba2_target(game_dir)
+        if version is None:
+            _log.warning("Could not detect Fallout4.exe version; using nextgen BA2s. Set --ba2-target og for an older install.")
+        else:
+            _log.info("Fallout 4 %s: using %s BA2s", version, fo4_ba2_target)
+    og_target = game == "fo4" and fo4_ba2_target == "og"
+    og_pack_kwargs = {"og": True} if og_target else {}
     profile = get_profile(game)
     archive_format = profile.archive_format
     archive_ext = "ba2" if archive_format == "ba2" else "bsa"
-    archive_cap = DEFAULT_ARCHIVE_MAX_BYTES if archive_max_bytes is None else int(archive_max_bytes)
-    if archive_cap <= 0:
-        raise ValueError("archive_max_bytes must be greater than 0")
+    if expanded_archives:
+        archive_cap = (
+            DEFAULT_ARCHIVE_MAX_BYTES
+            if archive_max_bytes is None
+            else int(archive_max_bytes)
+        )
+        if archive_cap <= 0:
+            raise ValueError("archive_max_bytes must be greater than 0")
+    else:
+        archive_cap = DEFAULT_ARCHIVE_MAX_BYTES
+
+    def _validate_packed_archive_size(output_path: Path) -> None:
+        if expanded_archives:
+            _validate_archive_size(output_path, archive_cap)
     if pc_effects_max_res is None:
         pc_effects_max_res = pc_max_res
     if xbox_effects_max_res is None:
         xbox_effects_max_res = xbox_max_res
+    if ps_effects_max_res is None:
+        ps_effects_max_res = ps_max_res
 
     # Archive2 only supports BA2 -- use the native packer for BSA games.
     if use_archive2 and archive_format != "ba2":
@@ -605,12 +819,13 @@ def pack_mod(mod_name: str, *, pc: bool = True, xbox: bool = False,
         use_archive2 = False
 
     archive2_path = ""
-    if use_archive2:
+    if use_archive2 and (pc or xbox):
         archive2_path = _find_archive2(game, game_dir=game_dir)
-        if use_archive2:
-            _log.info("Using Archive2: %s", archive2_path)
+        _log.info("Using Archive2: %s", archive2_path)
     elif not native_runtime.native_function_available("pack_archive"):
         raise RuntimeError("bsarchive_native.pack_archive() is required for archive packing")
+    if ps and not native_runtime.native_function_available("pack_archive"):
+        raise RuntimeError("bsarchive_native.pack_archive() is required for PlayStation archives")
 
     if project_root is None:
         raise ValueError("project_root is required")
@@ -619,6 +834,9 @@ def pack_mod(mod_name: str, *, pc: bool = True, xbox: bool = False,
     project_root = Path(project_root)
     xtexconv_path = _find_xtexconv(resource_dir) if xbox else ""
     mod_dir_path = project_root / "mods" / mod_name
+    archive_output_dir_path = (
+        Path(archive_output_dir) if archive_output_dir is not None else mod_dir_path
+    )
     data_dir_path = mod_dir_path / "data"
     strings_dir_path = mod_dir_path / "Strings"
     mod_dir = str(mod_dir_path)
@@ -632,11 +850,16 @@ def pack_mod(mod_name: str, *, pc: bool = True, xbox: bool = False,
         raise RuntimeError(f"{mod_dir} not found")
     if not data_dir_path.is_dir():
         raise RuntimeError(f"{data_dir} not found -- nothing to pack")
+    archive_output_dir_path.mkdir(parents=True, exist_ok=True)
+
+    archive_base = plugin_base_name or mod_name
 
     can_use_native_mod_pack = (
         not use_archive2
+        and not og_target
         and pc
         and not xbox
+        and not ps
         and pc_max_res <= 0
         and pc_effects_max_res <= 0
         and native_runtime.native_function_available("pack_mod_archives")
@@ -657,8 +880,8 @@ def pack_mod(mod_name: str, *, pc: bool = True, xbox: bool = False,
 
         result = native_runtime.pack_mod_archives(
             {
-                "mod_name": mod_name,
-                "mod_dir": str(mod_dir_path),
+                "mod_name": archive_base,
+                "mod_dir": str(archive_output_dir_path),
                 "data_dir": str(data_dir_path),
                 "strings_dir": str(strings_dir_path),
                 "game": game,
@@ -675,7 +898,7 @@ def pack_mod(mod_name: str, *, pc: bool = True, xbox: bool = False,
         for archive in result.get("archives", []):
             archive_name = archive.get("name")
             if archive_name:
-                _validate_archive_size(mod_dir_path / archive_name, archive_cap)
+                _validate_packed_archive_size(archive_output_dir_path / archive_name)
         return None
 
     temp_dir = os.path.join(mod_dir, "_deploy_tmp")
@@ -706,9 +929,13 @@ def pack_mod(mod_name: str, *, pc: bool = True, xbox: bool = False,
         platforms.append(("pc", "", pc_max_res, pc_effects_max_res, False))
     if xbox:
         platforms.append(("xbox", "_xbox", xbox_max_res, xbox_effects_max_res, True))
+    if ps:
+        platforms.append(("ps", "_ps", ps_max_res, ps_effects_max_res, False))
 
     try:
         for platform, suffix, max_res, effects_max_res, is_xbox in platforms:
+            is_ps = platform == "ps"
+            ps_pack_kwargs = {"ps": True} if is_ps else {}
             _log.info("=== Packing %s %ss (%s) ===", platform.upper(), archive_ext.upper(), game)
 
             # Clean temp dir for this platform so each archive build starts from a fresh staging tree.
@@ -720,6 +947,13 @@ def pack_mod(mod_name: str, *, pc: bool = True, xbox: bool = False,
             _log.info("Archive inventory: scanning non-texture data for platform=%s", platform)
             main_entries = _inventory_data_entries(data_dir_path, include_textures=False)
             main_entries.extend(_inventory_root_strings_entries(strings_dir_path))
+            ps_audio_adjusted = False
+            if is_ps:
+                main_entries, ps_audio_adjusted = _prepare_playstation_audio_entries(
+                    main_entries,
+                    Path(temp_dir),
+                    convert_to_at9=ps_at9,
+                )
             texture_entries: list[ArchiveEntry] = []
             texture_needs_stage = has_textures and (max_res > 0 or effects_max_res > 0 or is_xbox)
             if has_textures:
@@ -761,7 +995,7 @@ def pack_mod(mod_name: str, *, pc: bool = True, xbox: bool = False,
 
             planning_started = time.perf_counter()
             plans = plan_archive_outputs(
-                mod_name,
+                archive_base,
                 all_entries,
                 archive_ext,
                 suffix,
@@ -777,24 +1011,27 @@ def pack_mod(mod_name: str, *, pc: bool = True, xbox: bool = False,
             )
             expected_names = {plan.output_name for plan in plans}
 
-            can_pack_pc_ba2_direct = (
+            can_pack_compact_ba2_direct = (
                 archive_format == "ba2"
                 and not use_archive2
                 and not is_xbox
                 and max_res <= 0
                 and effects_max_res <= 0
                 and not has_root_strings
-                and _can_use_direct_pc_ba2_path(
+                and not ps_audio_adjusted
+                and _can_use_direct_compact_ba2_path(
                     plans,
-                    mod_name=mod_name,
+                    mod_name=archive_base,
                     archive_ext=archive_ext,
                     platform_suffix=suffix,
                 )
             )
-            if can_pack_pc_ba2_direct:
+            if can_pack_compact_ba2_direct:
                 planned_by_label = {plan.label: plan for plan in plans}
                 if "Main" in planned_by_label:
-                    main_archive = os.path.join(mod_dir, planned_by_label["Main"].output_name)
+                    main_archive = str(
+                        archive_output_dir_path / planned_by_label["Main"].output_name
+                    )
                     main_manifest_path = manifest_path
                     reference_main_manifest = _write_ba2_reference_manifest(
                         main_archive,
@@ -809,13 +1046,17 @@ def pack_mod(mod_name: str, *, pc: bool = True, xbox: bool = False,
                         game,
                         manifest_path=main_manifest_path,
                         include_prefixes=main_include_prefixes,
+                        **og_pack_kwargs,
+                        **ps_pack_kwargs,
                     )
-                    _validate_archive_size(Path(main_archive), archive_cap)
+                    _validate_packed_archive_size(Path(main_archive))
                 else:
                     _log.info("No non-texture assets -- skipping Main archive")
 
                 if "Textures" in planned_by_label:
-                    tex_archive = os.path.join(mod_dir, planned_by_label["Textures"].output_name)
+                    tex_archive = str(
+                        archive_output_dir_path / planned_by_label["Textures"].output_name
+                    )
                     tex_manifest_path = manifest_path
                     reference_tex_manifest = _write_ba2_reference_manifest(
                         tex_archive,
@@ -830,16 +1071,22 @@ def pack_mod(mod_name: str, *, pc: bool = True, xbox: bool = False,
                         texture_archive=True,
                         manifest_path=tex_manifest_path,
                         include_prefixes=["Textures/"],
+                        **og_pack_kwargs,
+                        **ps_pack_kwargs,
                     )
-                    _validate_archive_size(Path(tex_archive), archive_cap)
+                    _validate_packed_archive_size(Path(tex_archive))
                 else:
                     _log.info("No textures -- skipping Textures archive")
-                _cleanup_obsolete_platform_archives(mod_dir_path, mod_name, suffix, expected_names)
+                _cleanup_obsolete_platform_archives(
+                    archive_output_dir_path, archive_base, suffix, expected_names
+                )
                 continue
 
             if not plans:
                 _log.info("No assets -- skipping archive packing")
-                _cleanup_obsolete_platform_archives(mod_dir_path, mod_name, suffix, expected_names)
+                _cleanup_obsolete_platform_archives(
+                    archive_output_dir_path, archive_base, suffix, expected_names
+                )
                 continue
 
             # `can_pack_plan_entries_direct` is plan-independent — it depends only
@@ -856,7 +1103,7 @@ def pack_mod(mod_name: str, *, pc: bool = True, xbox: bool = False,
             )
 
             def _pack_plan(plan):
-                output_path = mod_dir_path / plan.output_name
+                output_path = archive_output_dir_path / plan.output_name
                 plan_manifest_path = manifest_path
                 reference_manifest = _write_ba2_reference_manifest(
                     str(output_path),
@@ -874,6 +1121,8 @@ def pack_mod(mod_name: str, *, pc: bool = True, xbox: bool = False,
                         game,
                         texture_archive=plan.texture_archive,
                         manifest_path=plan_manifest_path,
+                        **og_pack_kwargs,
+                        **ps_pack_kwargs,
                     )
                     _log.info(
                         "Archive packed direct: name=%s files=%d bytes=%.1f MB elapsed=%.3fs",
@@ -882,7 +1131,7 @@ def pack_mod(mod_name: str, *, pc: bool = True, xbox: bool = False,
                         plan_bytes,
                         time.perf_counter() - pack_started,
                     )
-                    _validate_archive_size(output_path, archive_cap)
+                    _validate_packed_archive_size(output_path)
                     return
 
                 source_root = Path(temp_dir) / f"planned_{plan.label.lower()}"
@@ -896,22 +1145,24 @@ def pack_mod(mod_name: str, *, pc: bool = True, xbox: bool = False,
                     time.perf_counter() - stage_started,
                 )
 
-                if use_archive2:
+                if use_archive2 and not is_ps:
                     if plan.texture_archive:
                         tex_fmt = "XBoxDDS" if is_xbox else "DDS"
                         tex_comp = "XBox" if is_xbox else "Default"
                         _run_archive2(archive2_path, str(source_root), str(output_path), tex_fmt, tex_comp)
                     else:
                         _run_archive2(archive2_path, str(source_root), str(output_path), "General", "None")
-                elif is_xbox and archive_format == "ba2":
+                elif (is_xbox or is_ps) and archive_format == "ba2":
                     _run_native_pack(
                         str(source_root),
                         str(output_path),
                         game,
                         texture_archive=plan.texture_archive,
-                        xbox=True,
-                        compress=plan.texture_archive,
+                        xbox=is_xbox,
+                        compress=plan.texture_archive if is_xbox else True,
                         manifest_path=plan_manifest_path,
+                        **og_pack_kwargs,
+                        **ps_pack_kwargs,
                     )
                 else:
                     _run_native_pack(
@@ -920,8 +1171,9 @@ def pack_mod(mod_name: str, *, pc: bool = True, xbox: bool = False,
                         game,
                         texture_archive=plan.texture_archive,
                         manifest_path=plan_manifest_path,
+                        **og_pack_kwargs,
                     )
-                _validate_archive_size(output_path, archive_cap)
+                _validate_packed_archive_size(output_path)
 
             pack_workers = (
                 min(archive_workers, len(plans))
@@ -949,7 +1201,9 @@ def pack_mod(mod_name: str, *, pc: bool = True, xbox: bool = False,
                 for plan in plans:
                     _pack_plan(plan)
 
-            _cleanup_obsolete_platform_archives(mod_dir_path, mod_name, suffix, expected_names)
+            _cleanup_obsolete_platform_archives(
+                archive_output_dir_path, archive_base, suffix, expected_names
+            )
     finally:
         if os.path.isdir(temp_dir):
             shutil.rmtree(temp_dir)

@@ -82,17 +82,26 @@ def test_non_string_value_not_translatable():
 
 def test_build_localized_field_structure():
     from creation_lib.mod.translation import build_localized_field
-    result = build_localized_field(1)
+    result = build_localized_field({"English": "Barrel", "German": "Lauf"})
     assert result["TargetLanguage"] == "English"
-    # Little-endian u32 for ID 1.
-    assert result["raw_hex"] == "01000000"
+    rows = {row["Language"]: row["String"] for row in result["Values"]}
+    assert rows["English"] == "Barrel"
+    assert rows["German"] == "Lauf"
 
 
-def test_build_localized_field_higher_id():
+def test_build_localized_field_carries_no_raw_hex():
+    """The text stays in the record. raw_hex moved it into a Strings/ sidecar
+    that never merged with the table the packer ships, so the id resolved to
+    nothing in game and every translation was lost on override."""
     from creation_lib.mod.translation import build_localized_field
-    # 0x123 = 291 → little-endian "23010000"
-    result = build_localized_field(0x123)
-    assert result["raw_hex"] == "23010000"
+    result = build_localized_field({"English": "Barrel"})
+    assert "raw_hex" not in result
+
+
+def test_build_localized_field_orders_rows_by_language_order():
+    from creation_lib.mod.translation import LANGUAGE_ORDER, build_localized_field
+    result = build_localized_field({lang: lang for lang in LANGUAGE_ORDER})
+    assert [row["Language"] for row in result["Values"]] == LANGUAGE_ORDER
 
 
 # ── find_translatable_paths ────────────────────────────────────────────────────
@@ -189,23 +198,161 @@ def test_translate_mod_rewrites_record_yaml(tmp_path):
         doc = yaml.load(f)
     name_entry = next(e for e in doc["fields"] if "Name" in e)
     assert name_entry["Name"]["TargetLanguage"] == "English"
-    raw_hex = name_entry["Name"]["raw_hex"]
-    assert isinstance(raw_hex, str) and len(raw_hex) == 8
+
+    # The text stays in the record, one row per language, English verbatim.
+    rows = {row["Language"]: row["String"] for row in name_entry["Name"]["Values"]}
+    assert rows["English"] == "Test Barrel"
+    assert rows["German"] == "[deu_Latn]Test Barrel"
+    assert "raw_hex" not in name_entry["Name"]
 
     # plugin.yaml has the Localized bit set.
     with open(yaml_dir / "plugin.yaml", encoding="utf-8") as f:
         plugin_doc = yaml.load(f)
     assert int(plugin_doc["header"]["flags"]) & 0x80
 
-    # Strings sidecars exist for at least English + one translated language.
-    strings_dir = yaml_dir / "Strings"
-    assert (strings_dir / "B21_Test_en.STRINGS").is_file()
-    assert (strings_dir / "B21_Test_de.STRINGS").is_file()
+    # No sidecar tables. Ids and tables are the builder's job -- writing them
+    # here too produced a second set under Strings/ that the packer collided
+    # with and the game never loaded.
+    assert not (yaml_dir / "Strings").exists()
 
-    # English table contains the literal source text.
-    from creation_lib.esp.strings import load_string_tables
-    en_table = load_string_tables("B21_Test.esl", strings_dir=strings_dir, language="English")
-    assert "Test Barrel" in en_table.values()
+
+# ── restore_localized_values ──────────────────────────────────────────────────
+
+def _write_raw_hex_record(yaml_dir, string_id: int) -> "object":
+    raw = string_id.to_bytes(4, "little").hex().upper()
+    path = yaml_dir / "records" / "OMOD" / "B21_Test_mod_Barrel - 000800_B21_Test.esl.yaml"
+    path.write_text(textwrap.dedent(f"""\
+        form_id: "000800"
+        eid: B21_Test_mod_Barrel
+        fields:
+        - Name:
+            TargetLanguage: English
+            raw_hex: "{raw}"
+        - MODL: barrel.nif
+    """), encoding="utf-8")
+    return path
+
+
+def test_restore_localized_values_rewrites_raw_hex(tmp_path):
+    """The text is read back out of the shipped tables and put in the record."""
+    from creation_lib.mod.translation import restore_localized_values
+
+    mod_dir, yaml_dir = _scaffold_mod(tmp_path)
+    record = _write_raw_hex_record(yaml_dir, 7)
+    (mod_dir / "data" / "Strings").mkdir(parents=True)
+
+    # load_all_string_tables keys by language code, not display name.
+    tables = {"en": {7: "Long Barrel"}, "de": {7: "Langer Lauf"}}
+    with patch("creation_lib.mod.translation.load_all_string_tables") as mock_load:
+        mock_load.return_value = (tables, {})
+        result = restore_localized_values(str(mod_dir))
+
+    assert result["fields"] == 1
+    assert result["records"] == 1
+    assert result["unresolved"] == 0
+
+    yaml = YAML()
+    with open(record, encoding="utf-8") as f:
+        doc = yaml.load(f)
+    name = next(e for e in doc["fields"] if "Name" in e)["Name"]
+    assert "raw_hex" not in name
+    rows = {row["Language"]: row["String"] for row in name["Values"]}
+    assert rows == {"English": "Long Barrel", "German": "Langer Lauf"}
+
+
+def test_restore_localized_values_leaves_unresolved_ids_alone(tmp_path):
+    """An id absent from every table must not blank the field -- a partial table
+    would otherwise erase text that is still recoverable from a better one."""
+    from creation_lib.mod.translation import restore_localized_values
+
+    mod_dir, yaml_dir = _scaffold_mod(tmp_path)
+    record = _write_raw_hex_record(yaml_dir, 999)
+    (mod_dir / "data" / "Strings").mkdir(parents=True)
+
+    with patch("creation_lib.mod.translation.load_all_string_tables") as mock_load:
+        mock_load.return_value = ({"en": {7: "Long Barrel"}}, {})
+        result = restore_localized_values(str(mod_dir))
+
+    assert result["fields"] == 0
+    assert result["unresolved"] == 1
+
+    yaml = YAML()
+    with open(record, encoding="utf-8") as f:
+        doc = yaml.load(f)
+    name = next(e for e in doc["fields"] if "Name" in e)["Name"]
+    assert name["raw_hex"] == "E7030000"
+
+
+def test_restore_localized_values_reaches_nested_fields(tmp_path):
+    """A CELL's map-marker Name sits inside MapMarkers, two levels below
+    ``fields``. A top-level-only pass leaves it as an opaque id."""
+    from creation_lib.mod.translation import restore_localized_values
+
+    mod_dir, yaml_dir = _scaffold_mod(tmp_path)
+    (mod_dir / "data" / "Strings").mkdir(parents=True)
+    record = yaml_dir / "records" / "OMOD" / "cell - 000801_B21_Test.esl.yaml"
+    record.write_text(textwrap.dedent("""\
+        form_id: "000801"
+        fields:
+        - XCLL:
+          - MapMarkers:
+            - MapMarkerData: true
+              Name:
+                TargetLanguage: English
+                raw_hex: "07000000"
+    """), encoding="utf-8")
+
+    with patch("creation_lib.mod.translation.load_all_string_tables") as mock_load:
+        mock_load.return_value = ({"en": {7: "My C.A.M.P."}}, {})
+        result = restore_localized_values(str(mod_dir))
+
+    assert result["fields"] == 1
+
+    yaml = YAML()
+    with open(record, encoding="utf-8") as f:
+        doc = yaml.load(f)
+    name = doc["fields"][0]["XCLL"][0]["MapMarkers"][0]["Name"]
+    assert name["Values"][0]["String"] == "My C.A.M.P."
+
+
+def test_restore_localized_values_ignores_unparsed_subrecord_blobs(tmp_path):
+    """COBJ's CTDA is 32 bytes of raw condition data. It carries raw_hex but no
+    TargetLanguage, and its first four bytes must not be read as a string id."""
+    from creation_lib.mod.translation import restore_localized_values
+
+    mod_dir, yaml_dir = _scaffold_mod(tmp_path)
+    (mod_dir / "data" / "Strings").mkdir(parents=True)
+    blob = "070000000000803F4A000000E7C73F07000000000000000000000000FFFFFFFF"
+    record = yaml_dir / "records" / "OMOD" / "cobj - 000802_B21_Test.esl.yaml"
+    record.write_text(textwrap.dedent(f"""\
+        form_id: "000802"
+        fields:
+        - CTDA:
+            raw_hex: "{blob}"
+    """), encoding="utf-8")
+
+    with patch("creation_lib.mod.translation.load_all_string_tables") as mock_load:
+        mock_load.return_value = ({"en": {7: "Long Barrel"}}, {})
+        result = restore_localized_values(str(mod_dir))
+
+    assert result["fields"] == 0
+    assert result["unresolved"] == 0
+
+    yaml = YAML()
+    with open(record, encoding="utf-8") as f:
+        doc = yaml.load(f)
+    assert doc["fields"][0]["CTDA"]["raw_hex"] == blob
+
+
+def test_restore_localized_values_reports_missing_tables(tmp_path):
+    from creation_lib.mod.translation import restore_localized_values
+
+    mod_dir, yaml_dir = _scaffold_mod(tmp_path)
+    _write_raw_hex_record(yaml_dir, 7)
+
+    result = restore_localized_values(str(mod_dir))
+    assert result["fields"] == 0
+    assert result["errors"]
 
 
 def test_translate_mod_skips_already_localized(tmp_path):

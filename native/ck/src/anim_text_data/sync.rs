@@ -1644,7 +1644,10 @@ mod tests {
             sync_base_stem("paireddogmeathumangreetpet_doglead"),
             "paireddogmeathumangreetpet"
         );
-        assert_eq!(sync_base_stem("somepairedmove_moleratkill"), "somepairedmove");
+        assert_eq!(
+            sync_base_stem("somepairedmove_moleratkill"),
+            "somepairedmove"
+        );
         // no underscore → unchanged
         assert_eq!(sync_base_stem("plainstem"), "plainstem");
     }

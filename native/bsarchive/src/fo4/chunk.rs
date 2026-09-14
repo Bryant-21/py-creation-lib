@@ -4,12 +4,16 @@ use crate::{
     fo4::{ArchiveOptions, CompressionFormat, CompressionLevel, Error, FileWriteOptions, Result},
 };
 use core::ops::RangeInclusive;
-use flate2::{
-    Compress, Compression,
-    write::{ZlibDecoder, ZlibEncoder},
-};
+use flate2::{Compress, Compression, write::ZlibEncoder};
+use libdeflater::Decompressor;
 use lz4_flex::block;
+use std::cell::RefCell;
 use std::io::Write;
+
+thread_local! {
+    static LIBDEFLATE_DECOMPRESSOR: RefCell<Decompressor> =
+        RefCell::new(Decompressor::new());
+}
 
 /// See also [`ChunkCompressionOptions`](CompressionOptions).
 #[derive(Debug, Default)]
@@ -254,9 +258,27 @@ impl Chunk<'_> {
     }
 
     fn decompress_into_zlib(&self, out: &mut Vec<u8>) -> Result<usize> {
-        let mut d = ZlibDecoder::new(out);
-        d.write_all(self.as_bytes())?;
-        Ok(d.total_out().try_into()?)
+        let start = out.len();
+        let decompressed_len = self.decompressed_len().ok_or(Error::AlreadyDecompressed)?;
+        out.resize(start.saturating_add(decompressed_len), 0);
+        let result = LIBDEFLATE_DECOMPRESSOR.with(|cell| {
+            cell.borrow_mut()
+                .zlib_decompress(self.as_bytes(), &mut out[start..])
+        });
+        match result {
+            Ok(actual) => {
+                out.truncate(start + actual);
+                Ok(actual)
+            }
+            Err(err) => {
+                out.truncate(start);
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("libdeflate decompression failed: {err:?}"),
+                )
+                .into())
+            }
+        }
     }
 }
 
@@ -293,6 +315,23 @@ mod tests {
 
         let decompressed = compressed.decompress(&options).unwrap();
         assert!(decompressed.is_decompressed());
+        assert_eq!(decompressed.as_bytes(), payload.as_slice());
+    }
+
+    #[test]
+    fn zlib_ng_compression_roundtrips_through_libdeflate() {
+        let payload = (0..256 * 1024)
+            .map(|index| ((index * 31) ^ (index >> 3)) as u8)
+            .collect::<Vec<_>>();
+        let chunk = Chunk::from_decompressed(payload.as_slice());
+        let options = CompressionOptions::builder()
+            .compression_format(CompressionFormat::Zip)
+            .compression_level(CompressionLevel::Custom(4))
+            .build();
+
+        let compressed = chunk.compress(&options).unwrap();
+        let decompressed = compressed.decompress(&options).unwrap();
+
         assert_eq!(decompressed.as_bytes(), payload.as_slice());
     }
 }

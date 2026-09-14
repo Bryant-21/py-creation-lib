@@ -1,11 +1,8 @@
-//! Filtered `_OC.nif` writer for one baked precombine model group (v0 spike).
+//! Filtered `_OC.nif` writer for one baked precombine model group (v0).
 //!
-//! Reads a source STAT model's single eligible inline render shape, packs its
-//! geometry plus one combined-transform row per REFR instance into a
-//! `BSPackedCombinedGeomDataExtra`, and writes the output NIF. Read-only on
-//! the source ESP; no ESP mutation happens here (see `precombine::stamp`).
-//!
-//! Plan: `docs/superpowers/plans/2026-07-12-precombine-generation-v0.md` Task 3.
+//! Reads a source STAT model's eligible inline render shapes, packs their geometry plus
+//! one combined-transform row per REFR instance into a `BSPackedCombinedGeomDataExtra`,
+//! and writes the output NIF. Read-only on the source ESP (see `precombine::stamp`).
 
 use std::collections::HashSet;
 use std::io::Write as _;
@@ -17,12 +14,11 @@ use nif_core_native::model::{NifBlock, NifFile, NifValue};
 
 use crate::precombine::plan::{CellPlan, InstanceRef, ModelGroup, Params};
 
-/// CK Filtered precombine root (`BSFadeNode`) flags. Real CK samples vary in
-/// bit 0x1000 (one sample carries 0x400E, another 0x500E); 0x400E (16398) is
-/// the common-denominator choice. Filtered roots carry no BSXFlags/Havok
-/// extra data; that belongs to the separate `<cell>_Physics.NIF`, never the
-/// render `_OC.nif` (a prior version of this bake wrongly emitted a BSXFlags
-/// block here, copied from a Clean-variant oracle sample).
+/// CK Filtered precombine root (`BSFadeNode`) flags. CK samples vary in bit
+/// 0x1000 (0x400E vs 0x500E); 0x400E (16398) is the common denominator.
+/// Filtered roots carry no BSXFlags/Havok extra data; that belongs to the
+/// separate `<cell>_Physics.NIF`, never the render `_OC.nif` (Clean-variant
+/// samples do carry a BSXFlags block).
 const ROOT_FLAGS: u64 = 0x400E;
 /// CK Filtered precombine inner `NiNode` flags — invariant across samples.
 const INNER_FLAGS: u64 = 14;
@@ -44,7 +40,7 @@ pub struct BakedCell {
 
 /// A possibly-successful bake. A per-group failure is isolated to a warning;
 /// a cell with zero successfully baked meshes is not stampable (`baked` is
-/// `None`), matching the plan's "never stamp a zero-mesh cell" invariant.
+/// `None`), keeping the "never stamp a zero-mesh cell" invariant.
 pub struct BakeReport {
     pub baked: Option<BakedCell>,
     pub warnings: Vec<String>,
@@ -58,7 +54,13 @@ pub fn bake_cell(plan: &CellPlan, params: &Params) -> BakeReport {
     let archives = open_mesh_archives(&params.mesh_archives);
 
     for group in &plan.groups {
-        match bake_group(plan.cell_form_id, group, params, &mut used_mesh_ids, &archives) {
+        match bake_group(
+            plan.cell_form_id,
+            group,
+            params,
+            &mut used_mesh_ids,
+            &archives,
+        ) {
             Ok(mesh) => meshes.push(mesh),
             Err(reason) => {
                 let source_path = resolve_data_relative_path(&params.data_root, &group.model_path);
@@ -113,7 +115,10 @@ fn zero_mesh_missing_files_summary(cell_form_id: u32, missing: &[PathBuf]) -> St
         shown.join(", "),
     );
     if missing.len() > MISSING_MESH_PATHS_SHOWN {
-        message.push_str(&format!(", and {} more", missing.len() - MISSING_MESH_PATHS_SHOWN));
+        message.push_str(&format!(
+            ", and {} more",
+            missing.len() - MISSING_MESH_PATHS_SHOWN
+        ));
     }
     message
 }
@@ -144,18 +149,15 @@ fn bake_group(
 
     let mut out = NifFile::new("fo4");
     // `NifFile::new` already builds a BSFadeNode root at block 0 (see
-    // `ROOT_FLAGS` above) — reuse it instead of dropping it and building a
-    // fresh NiNode, which was the previous (wrong) behavior.
+    // `ROOT_FLAGS`); reuse it rather than building a plain NiNode.
     let root_id = 0;
     let inner_id = out.add_block("NiNode", None);
 
     // One shape+PCD(+shader+texset+alpha) group per eligible source shape
-    // (CK Filtered convention: one pair per material), all packed into this
-    // same `_OC.nif`. `bake_shape` runs the exact per-shape body v0 ran once,
-    // now called per shape via `?` — any single unsupported shape (skin,
-    // controller, unsupported shader/texset/alpha, u16 overflow) still sinks
-    // the WHOLE group, preserving the "no partial geometry per reference"
-    // invariant.
+    // (CK Filtered convention: one pair per material), all in this `_OC.nif`.
+    // Any unsupported shape (skin, controller, unsupported shader/texset/alpha,
+    // u16 overflow) fails the whole group, so a reference never gets partial
+    // geometry.
     let mut shape_ids = Vec::with_capacity(shape_block_ids.len());
     for shape_block_id in &shape_block_ids {
         let shape_id = bake_shape(&source_nif, *shape_block_id, group, &mut out)?;
@@ -166,7 +168,12 @@ fn bake_group(
     out.blocks[inner_id].set_field("Num Children", NifValue::UInt(shape_ids.len() as u64));
     out.blocks[inner_id].set_field(
         "Children",
-        NifValue::Array(shape_ids.iter().map(|&id| NifValue::Ref(id as i32)).collect()),
+        NifValue::Array(
+            shape_ids
+                .iter()
+                .map(|&id| NifValue::Ref(id as i32))
+                .collect(),
+        ),
     );
 
     let root_name = format!("{cell8:08X}_{mesh_id:08X}_OC");
@@ -197,11 +204,8 @@ fn bake_group(
 }
 
 /// Bakes one source shape into `out`: validates its property chain, packs
-/// its geometry plus one Combined row per instance, and emits the
-/// shape+PCD(+shader+texset+alpha) block group — the per-shape body v0 ran
-/// once, now called per eligible shape from `bake_group`'s loop. Block
-/// emission order per shape (CK Filtered convention): shape, then PCD, then
-/// shader, then texset, then alpha.
+/// its geometry plus one Combined row per instance, and emits its blocks in
+/// CK Filtered order: shape, PCD, shader, texset, alpha.
 fn bake_shape(
     source_nif: &NifFile,
     shape_block_id: usize,
@@ -243,15 +247,13 @@ fn bake_shape(
         None => None,
     };
 
-    // CK Filtered `_OC` shapes and the top-level PCD `Vertex Desc` ALWAYS
-    // declare Full_Precision, regardless of the source's actual precision —
-    // the engine unconditionally up-converts half-precision storage into a
-    // runtime buffer sized from the SHAPE desc's stride, so a half shape
-    // desc under-allocates 8 bytes/vertex and heap-overruns. The inner
-    // Object Data desc (and its inline `Vertex Data` bytes) stays exactly
-    // as read from the source — v0 never repacks vertex storage — so the
-    // shape/top-level descs and the inner desc intentionally diverge; see
-    // `promote_to_full_precision` below.
+    // CK Filtered `_OC` shapes and the top-level PCD `Vertex Desc` always
+    // declare Full_Precision, whatever the source precision: the engine
+    // up-converts half-precision storage into a runtime buffer sized from the
+    // shape desc's stride, so a half shape desc under-allocates 8 bytes/vertex
+    // and heap-overruns. The inner Object Data desc and its inline `Vertex
+    // Data` stay as read from the source (v0 never repacks vertex storage), so
+    // the descs intentionally diverge; see `promote_to_full_precision`.
     let vertex_desc = shape
         .get_field("Vertex Desc")
         .cloned()
@@ -303,14 +305,11 @@ fn bake_shape(
         let (bound_center, bound_radius) =
             transform_bound(source_bound, rotation, instance.position, instance.scale);
         transformed_bounds.push((bound_center, bound_radius));
-        // NIF Matrix33 wire order is column-contiguous, but nif_core's
-        // writer serializes the `[[f32;3];3]` array in [row][col]
-        // (row-contiguous) memory order — so the Combined row's stored
-        // rotation must be the TRANSPOSE of the true rotation, or the
-        // engine reconstructs the inverse rotation on load. `transform_bound`
-        // above (and `aggregate_cull_sphere`) must keep using the true
-        // `rotation` for world-space bound math — only this Combined-row
-        // write needs the transpose.
+        // NIF Matrix33 wire order is column-contiguous, but nif_core's writer
+        // serializes the `[[f32;3];3]` array row-contiguous, so the Combined
+        // row stores the transpose; otherwise the engine reconstructs the
+        // inverse rotation. World-space bound math (`transform_bound`,
+        // `aggregate_cull_sphere`) keeps the true `rotation`.
         combined_rows.push(packed_geom_data_combined(
             grayscale,
             transpose3(rotation),
@@ -379,14 +378,11 @@ fn bake_shape(
         NifValue::Ref(alpha_clone_id.map(|id| id as i32).unwrap_or(-1)),
     );
     out.blocks[shape_id].set_field("Vertex Desc", full_precision_vertex_desc);
-    // CK Filtered shapes carry the instance-EXPANDED vertex/triangle counts
-    // (see `expanded_verts`/`expanded_triangles` above) even though Data
-    // Size stays 0 — the counts are independent of dataSize, and the
-    // engine's PCD unpacker sizes its runtime buffers from these counts, so
-    // deduplicated (or 0/0) counts here under-allocate into a buffer-overrun
-    // crash (nif_core's writer still forces DataSize=0 for a shape with no
-    // inline vertex/triangle arrays, so this is byte-safe: the block stays
-    // 122 bytes).
+    // Instance-expanded counts with Data Size 0, as CK Filtered shapes carry
+    // them: the engine's PCD unpacker sizes its runtime buffers from these
+    // counts, so per-instance (or 0/0) counts overrun. nif_core still forces
+    // DataSize=0 for a shape with no inline vertex/triangle arrays, so the
+    // block stays 122 bytes.
     out.blocks[shape_id].set_field("Num Vertices", NifValue::UInt(expanded_verts));
     out.blocks[shape_id].set_field("Num Triangles", NifValue::UInt(expanded_triangles));
     out.blocks[shape_id].set_field("Data Size", NifValue::UInt(0));
@@ -428,14 +424,11 @@ fn write_atomic(nif: &mut NifFile, dest_path: &Path) -> Result<(), String> {
 }
 
 /// Resolve a MODL-style path against a data root, splitting on either
-/// separator so callers don't depend on the host OS's path convention.
-/// Mirrors the resolution pattern used by object LOD's `mnam_abs_path`.
+/// separator. Mirrors object LOD's `mnam_abs_path`.
 ///
-/// By game convention, MODL paths are relative to `Data\Meshes\` and do NOT
-/// carry a leading "meshes" component (e.g. `architecture\cabin\wall01.nif`,
-/// verified against the WhitespringMall01 real run) — a leading "meshes" is
-/// prepended unless the path already starts with one (case-insensitively;
-/// some MODL strings do carry it), so it's never doubled.
+/// MODL paths are relative to `Data\Meshes\` and normally omit the leading
+/// "meshes" (`architecture\cabin\wall01.nif`); it is prepended unless the
+/// path already starts with one (case-insensitive; some MODL strings do).
 fn resolve_data_relative_path(data_root: &Path, model_path: &str) -> PathBuf {
     let mut out = data_root.to_path_buf();
     let normalized = model_path.replace('\\', "/");
@@ -498,7 +491,10 @@ fn archives_consulted_suffix(archives: &[MeshArchive]) -> String {
     if archives.is_empty() {
         return String::new();
     }
-    let names: Vec<String> = archives.iter().map(|a| a.path.display().to_string()).collect();
+    let names: Vec<String> = archives
+        .iter()
+        .map(|a| a.path.display().to_string())
+        .collect();
     format!(", tried archive(s): {}", names.join(", "))
 }
 
@@ -510,21 +506,21 @@ fn extract_roots_tried_suffix(mesh_extract_roots: &[PathBuf], model_path: &str) 
     }
     let tried: Vec<String> = mesh_extract_roots
         .iter()
-        .map(|root| resolve_data_relative_path(root, model_path).display().to_string())
+        .map(|root| {
+            resolve_data_relative_path(root, model_path)
+                .display()
+                .to_string()
+        })
         .collect();
     format!(", tried extract root(s): {}", tried.join(", "))
 }
 
-/// Resolves and loads a group's source NIF. Resolution order: the loose path
-/// under `data_root` (unchanged v0 behavior), then each of `mesh_extract_roots`
-/// in list order (a pre-extracted asset directory mirroring `Data\` layout —
-/// same resolution convention as `data_root`), then each of `archives` in
-/// list order — first hit wins. A member found in an extract root or archive
-/// but corrupt/unparseable is a hard error (mirrors a loose file that fails
-/// to load) — resolution does not fall through to later candidates once a
-/// member is found. Archive hits are read entirely in memory
-/// (`file.write` into a `Vec<u8>` + `NifFile::from_bytes`); no temp file is
-/// ever written for an archive-sourced mesh.
+/// Resolves and loads a group's source NIF. Order: the loose path under
+/// `data_root`, then each of `mesh_extract_roots` (pre-extracted dirs
+/// mirroring `Data\`), then each of `archives`; first hit wins. A member that
+/// is found but fails to parse is a hard error, with no fall-through to later
+/// candidates. Archive hits are read in memory (`NifFile::from_bytes`); no
+/// temp file is written.
 fn resolve_source_nif(
     group: &ModelGroup,
     params: &Params,
@@ -613,7 +609,11 @@ fn resolve_ref_block(nif: &NifFile, block: &NifBlock, field_name: &str) -> Optio
     match block.get_field(field_name) {
         Some(NifValue::Ref(r)) if *r >= 0 => {
             let id = *r as usize;
-            if id < nif.blocks.len() { Some(id) } else { None }
+            if id < nif.blocks.len() {
+                Some(id)
+            } else {
+                None
+            }
         }
         _ => None,
     }
@@ -861,7 +861,10 @@ fn mint_mesh_id(cell_form_id: u32, instances: &[InstanceRef], used: &mut HashSet
 }
 
 fn struct_fields<const N: usize>(entries: [(&str, NifValue); N]) -> IndexMap<String, NifValue> {
-    entries.into_iter().map(|(k, v)| (k.to_string(), v)).collect()
+    entries
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect()
 }
 
 #[cfg(test)]
@@ -922,12 +925,10 @@ mod tests {
         ]))
     }
 
-    /// Mirrors `as_vec3`'s write-only-variant-vs-reloaded-struct handling,
-    /// but for `Matrix33`. On the reloaded `Struct` form, field name `mRC`
-    /// maps to row R-1, column C-1 (matches `nif_core::skeleton_repose`'s
-    /// `read_rotation`), so this decodes to exactly the `[[f32;3];3]` array
-    /// the writer was given — a faithful round-trip, letting the test assert
-    /// on what `bake_group` actually stored.
+    /// Like `as_vec3`, for `Matrix33`. On the reloaded `Struct` form, field
+    /// `mRC` maps to row R-1, column C-1 (as in `nif_core::skeleton_repose`'s
+    /// `read_rotation`), so this decodes to exactly the array the writer was
+    /// given and tests can assert on what `bake_group` stored.
     fn read_matrix33(value: Option<&NifValue>) -> Option<[[f32; 3]; 3]> {
         match value {
             Some(NifValue::Matrix33(m)) => Some(*m),
@@ -1014,7 +1015,8 @@ mod tests {
 
         std::fs::create_dir_all(path.parent().expect("fixture path has a parent"))
             .expect("create fixture dir");
-        nif.save(Some(path.to_path_buf())).expect("write source nif");
+        nif.save(Some(path.to_path_buf()))
+            .expect("write source nif");
         (vertex_count, triangle_count)
     }
 
@@ -1082,7 +1084,11 @@ mod tests {
     /// fixtures can be distinguished by vertex count) and writes it to a
     /// loose path — for `mesh_extract_roots` fixtures, which (unlike
     /// `mesh_archives`) are ordinary loose files under a different root.
-    fn write_fixture_with_geometry(path: &Path, vertex_data: Vec<NifValue>, triangles: Vec<NifValue>) {
+    fn write_fixture_with_geometry(
+        path: &Path,
+        vertex_data: Vec<NifValue>,
+        triangles: Vec<NifValue>,
+    ) {
         let bytes = build_source_fixture_bytes(vertex_data, triangles);
         std::fs::create_dir_all(path.parent().expect("fixture path has a parent"))
             .expect("create fixture dir");
@@ -1119,7 +1125,10 @@ mod tests {
         let m = euler_to_matrix33([0.0, 0.0, std::f32::consts::FRAC_PI_2]);
         let rotated = mat3_apply(&m, [1.0, 0.0, 0.0]);
         assert!(rotated[0].abs() < 1e-5, "x should vanish: {rotated:?}");
-        assert!((rotated[1] - 1.0).abs() < 1e-5, "y should be 1: {rotated:?}");
+        assert!(
+            (rotated[1] - 1.0).abs() < 1e-5,
+            "y should be 1: {rotated:?}"
+        );
         assert!(rotated[2].abs() < 1e-5, "z should vanish: {rotated:?}");
     }
 
@@ -1201,7 +1210,11 @@ mod tests {
         };
 
         let report = bake_cell(&plan, &params);
-        assert!(report.warnings.is_empty(), "unexpected warnings: {:?}", report.warnings);
+        assert!(
+            report.warnings.is_empty(),
+            "unexpected warnings: {:?}",
+            report.warnings
+        );
         let baked = report.baked.expect("bake should succeed");
         assert_eq!(baked.cell_form_id, 0x0062_781C);
         assert_eq!(baked.meshes.len(), 1);
@@ -1210,7 +1223,10 @@ mod tests {
         assert_eq!(mesh.refs, vec![0x0100_0600, 0x0100_0601]);
         assert_ne!(mesh.mesh_id, 0);
         assert_ne!(mesh.mesh_id, u32::MAX);
-        let expected_rel = format!("meshes\\precombined\\Test.esm\\0062781C_{:08X}_OC.nif", mesh.mesh_id);
+        let expected_rel = format!(
+            "meshes\\precombined\\Test.esm\\0062781C_{:08X}_OC.nif",
+            mesh.mesh_id
+        );
         assert_eq!(mesh.rel_path, expected_rel);
 
         let dest = {
@@ -1280,8 +1296,8 @@ mod tests {
         );
         assert_eq!(shape.get_field("Data Size").map(|v| v.as_i64()), Some(0));
         assert_eq!(shape.get_field("Flags").map(|v| v.as_i64()), Some(526));
-        // Round 2: shape Vertex Desc must be promoted to Full_Precision, not
-        // left at the source's half-precision desc.
+        // Shape Vertex Desc must be promoted to Full_Precision, not left at
+        // the source's half-precision desc.
         assert_eq!(
             shape.get_field("Vertex Desc").map(|v| v.as_i64()),
             Some(promote_to_full_precision(basic_vertex_desc() as u64) as i64)
@@ -1289,7 +1305,10 @@ mod tests {
 
         let translation = as_vec3(shape.get_field("Translation")).expect("shape translation vec3");
         // Aggregate center of two instances at x=0 and x=10 is x=5.
-        assert!((translation[0] - 5.0).abs() < 1e-3, "translation: {translation:?}");
+        assert!(
+            (translation[0] - 5.0).abs() < 1e-3,
+            "translation: {translation:?}"
+        );
 
         let bound = match shape.get_field("Bounding Sphere") {
             Some(NifValue::Struct(m)) => m.clone(),
@@ -1317,8 +1336,14 @@ mod tests {
             Some(NifValue::String(s)) => assert_eq!(s, "PCD"),
             other => panic!("expected PCD name, got {other:?}"),
         }
-        assert_eq!(pcd.get_field("Unknown Flags 1").map(|v| v.as_i64()), Some(0));
-        assert_eq!(pcd.get_field("Unknown Flags 2").map(|v| v.as_i64()), Some(0));
+        assert_eq!(
+            pcd.get_field("Unknown Flags 1").map(|v| v.as_i64()),
+            Some(0)
+        );
+        assert_eq!(
+            pcd.get_field("Unknown Flags 2").map(|v| v.as_i64()),
+            Some(0)
+        );
         // Top-level PCD counts must equal the shape's instance-expanded
         // counts, which diverge from the inner Object Data's deduplicated
         // per-instance counts below (this fixture: 2 instances of 4/2).
@@ -1345,7 +1370,10 @@ mod tests {
             NifValue::Struct(m) => m.clone(),
             other => panic!("expected geom struct, got {other:?}"),
         };
-        assert_eq!(geom.get("Num Verts").map(|v| v.as_i64()), Some(vertex_count as i64));
+        assert_eq!(
+            geom.get("Num Verts").map(|v| v.as_i64()),
+            Some(vertex_count as i64)
+        );
         assert_eq!(geom.get("LOD Levels").map(|v| v.as_i64()), Some(3));
         assert_eq!(
             geom.get("Tri Count LOD0").map(|v| v.as_i64()),
@@ -1354,10 +1382,12 @@ mod tests {
         assert_eq!(geom.get("Tri Offset LOD0").map(|v| v.as_i64()), Some(0));
         assert_eq!(geom.get("Tri Offset LOD1").map(|v| v.as_i64()), Some(0));
         assert_eq!(geom.get("Tri Offset LOD2").map(|v| v.as_i64()), Some(0));
-        // Round 2: the inner Object Data desc must stay half-precision
-        // (unchanged from the source) — only the shape and top-level PCD
-        // descs are promoted. The two must intentionally diverge.
-        assert_eq!(geom.get("Vertex Desc").map(|v| v.as_i64()), Some(basic_vertex_desc()));
+        // The inner Object Data desc keeps the source's half precision; only
+        // the shape and top-level PCD descs are promoted.
+        assert_eq!(
+            geom.get("Vertex Desc").map(|v| v.as_i64()),
+            Some(basic_vertex_desc())
+        );
         let combined = match geom.get("Combined") {
             Some(NifValue::Array(items)) => items.clone(),
             other => panic!("expected combined array, got {other:?}"),
@@ -1368,20 +1398,24 @@ mod tests {
                 panic!("expected combined row struct, got {row:?}");
             };
             match fields.get("Grayscale to Palette Scale") {
-                Some(NifValue::Float(f)) => assert!((*f - 1.0).abs() < 1e-6, "grayscale default: {f}"),
+                Some(NifValue::Float(f)) => {
+                    assert!((*f - 1.0).abs() < 1e-6, "grayscale default: {f}")
+                }
                 other => panic!("expected grayscale float, got {other:?}"),
             }
         }
         let second_translation = match &combined[1] {
             NifValue::Struct(fields) => match fields.get("Transform") {
-                Some(NifValue::Struct(t)) => as_vec3(t.get("Translation")).expect("combined translation vec3"),
+                Some(NifValue::Struct(t)) => {
+                    as_vec3(t.get("Translation")).expect("combined translation vec3")
+                }
                 other => panic!("expected transform struct, got {other:?}"),
             },
             other => panic!("expected combined row struct, got {other:?}"),
         };
         assert!((second_translation[0] - 10.0).abs() < 1e-3);
 
-        // Round 4: the Combined row's stored rotation must be the TRANSPOSE
+        // The Combined row's stored rotation must be the TRANSPOSE
         // of the instance's true rotation (decoder mirrors encoder, so the
         // decoded array shows exactly what bake_group stored). The second
         // instance has rot Z=+90deg; true Rz(90) = [[0,-1,0],[1,0,0],[0,0,1]],
@@ -1429,8 +1463,14 @@ mod tests {
             Some(NifValue::Ref(r)) => *r,
             other => panic!("expected texset ref, got {other:?}"),
         };
-        assert!(texset_ref >= 0 && texset_ref != shader_ref, "texset must be remapped");
-        assert_eq!(out.blocks[texset_ref as usize].type_name, "BSShaderTextureSet");
+        assert!(
+            texset_ref >= 0 && texset_ref != shader_ref,
+            "texset must be remapped"
+        );
+        assert_eq!(
+            out.blocks[texset_ref as usize].type_name,
+            "BSShaderTextureSet"
+        );
 
         let alpha_ref = match shape.get_field("Alpha Property") {
             Some(NifValue::Ref(r)) => *r,
@@ -1442,8 +1482,14 @@ mod tests {
         // TIER 3c: emission order per shape is shape, PCD, shader, texset, alpha.
         assert!(shape_ref < pcd_ref, "shape must be emitted before PCD");
         assert!(pcd_ref < shader_ref, "PCD must be emitted before shader");
-        assert!(shader_ref < texset_ref, "shader must be emitted before texset");
-        assert!(texset_ref < alpha_ref, "texset must be emitted before alpha");
+        assert!(
+            shader_ref < texset_ref,
+            "shader must be emitted before texset"
+        );
+        assert!(
+            texset_ref < alpha_ref,
+            "texset must be emitted before alpha"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1451,7 +1497,11 @@ mod tests {
     #[test]
     fn two_material_source_bakes_both_shapes_into_one_oc_file_with_all_invariants() {
         let dir = temp_dir("multishape");
-        let source_path = dir.join("data").join("meshes").join("test").join("multi.nif");
+        let source_path = dir
+            .join("data")
+            .join("meshes")
+            .join("test")
+            .join("multi.nif");
 
         let mut nif = NifFile::new("fo4");
         // Two DISTINCT materials (different texset/shader blocks) so the
@@ -1500,7 +1550,10 @@ mod tests {
         let (vertex_data_b, triangles_b) = small_geometry();
         let vertex_count_b = vertex_data_b.len();
         let triangle_count_b = triangles_b.len();
-        assert_ne!(vertex_count_a, vertex_count_b, "fixtures must be distinguishable");
+        assert_ne!(
+            vertex_count_a, vertex_count_b,
+            "fixtures must be distinguishable"
+        );
 
         let shape_a = nif.add_block(
             "BSTriShape",
@@ -1539,7 +1592,8 @@ mod tests {
             ]),
         );
         std::fs::create_dir_all(source_path.parent().unwrap()).unwrap();
-        nif.save(Some(source_path.clone())).expect("write multi-shape source");
+        nif.save(Some(source_path.clone()))
+            .expect("write multi-shape source");
 
         // 2 instances, second rotated, so expanded-count and
         // transposed-rotation invariants are meaningfully exercised per shape.
@@ -1577,9 +1631,17 @@ mod tests {
         };
 
         let report = bake_cell(&plan, &params);
-        assert!(report.warnings.is_empty(), "unexpected warnings: {:?}", report.warnings);
+        assert!(
+            report.warnings.is_empty(),
+            "unexpected warnings: {:?}",
+            report.warnings
+        );
         let baked = report.baked.expect("two-material group should bake");
-        assert_eq!(baked.meshes.len(), 1, "both materials pack into ONE _OC.nif");
+        assert_eq!(
+            baked.meshes.len(),
+            1,
+            "both materials pack into ONE _OC.nif"
+        );
         let mesh = &baked.meshes[0];
 
         let dest = {
@@ -1730,10 +1792,15 @@ mod tests {
                     other => panic!("expected textures array, got {other:?}"),
                 }
             } else {
-                panic!("output shape's inner vertex count {inner_verts:?} matches neither source shape");
+                panic!(
+                    "output shape's inner vertex count {inner_verts:?} matches neither source shape"
+                );
             }
         }
-        assert!(found_a && found_b, "both source shapes must appear in the output");
+        assert!(
+            found_a && found_b,
+            "both source shapes must appear in the output"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1741,7 +1808,11 @@ mod tests {
     #[test]
     fn one_unsupported_shape_rejects_the_whole_multi_shape_group() {
         let dir = temp_dir("multishape_partial_invalid");
-        let source_path = dir.join("data").join("meshes").join("test").join("mixed.nif");
+        let source_path = dir
+            .join("data")
+            .join("meshes")
+            .join("test")
+            .join("mixed.nif");
 
         let mut nif = NifFile::new("fo4");
         let texset_id = nif.add_block(
@@ -1789,7 +1860,8 @@ mod tests {
             ]),
         );
         std::fs::create_dir_all(source_path.parent().unwrap()).unwrap();
-        nif.save(Some(source_path.clone())).expect("write mixed-validity source");
+        nif.save(Some(source_path.clone()))
+            .expect("write mixed-validity source");
 
         let group = ModelGroup {
             model_path: "meshes\\test\\mixed.nif".to_string(),
@@ -1867,9 +1939,16 @@ mod tests {
         };
 
         let report = bake_cell(&plan, &params);
-        assert!(report.baked.is_none(), "zero-mesh cell must not be stampable");
+        assert!(
+            report.baked.is_none(),
+            "zero-mesh cell must not be stampable"
+        );
 
-        let expected_path = dir.join("data").join("meshes").join("test").join("ba2_only.nif");
+        let expected_path = dir
+            .join("data")
+            .join("meshes")
+            .join("test")
+            .join("ba2_only.nif");
         let expected_path_str = expected_path.display().to_string();
 
         let per_group_warning = report
@@ -1944,7 +2023,10 @@ mod tests {
         assert!(summary.contains("12 of its group(s)"), "{summary}");
         assert!(summary.contains("and 2 more"), "{summary}");
         // Exactly MISSING_MESH_PATHS_SHOWN (10) distinct paths listed by name.
-        assert_eq!(summary.matches("missing_").count(), MISSING_MESH_PATHS_SHOWN);
+        assert_eq!(
+            summary.matches("missing_").count(),
+            MISSING_MESH_PATHS_SHOWN
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1959,7 +2041,11 @@ mod tests {
         let resolved = resolve_data_relative_path(&data_root, "architecture\\cabin\\wall01.nif");
         assert_eq!(
             resolved,
-            data_root.join("meshes").join("architecture").join("cabin").join("wall01.nif")
+            data_root
+                .join("meshes")
+                .join("architecture")
+                .join("cabin")
+                .join("wall01.nif")
         );
     }
 
@@ -1970,7 +2056,10 @@ mod tests {
         // twice.
         let data_root = PathBuf::from("C:\\mod\\data");
         let resolved = resolve_data_relative_path(&data_root, "Meshes\\test\\chair01.nif");
-        assert_eq!(resolved, data_root.join("Meshes").join("test").join("chair01.nif"));
+        assert_eq!(
+            resolved,
+            data_root.join("Meshes").join("test").join("chair01.nif")
+        );
     }
 
     #[test]
@@ -2012,7 +2101,11 @@ mod tests {
         };
 
         let report = bake_cell(&plan, &params);
-        assert!(report.warnings.is_empty(), "unexpected warnings: {:?}", report.warnings);
+        assert!(
+            report.warnings.is_empty(),
+            "unexpected warnings: {:?}",
+            report.warnings
+        );
         assert!(
             report.baked.is_some(),
             "group must bake once the meshes/ prefix is applied to an unprefixed model path"
@@ -2027,7 +2120,11 @@ mod tests {
         // shape's u16 Num Vertices capacity (65,535) — and must reject the
         // whole group loudly rather than truncate or overflow.
         let dir = temp_dir("guard_oversize");
-        let source_path = dir.join("data").join("meshes").join("test").join("huge.nif");
+        let source_path = dir
+            .join("data")
+            .join("meshes")
+            .join("test")
+            .join("huge.nif");
 
         let vertex_count = 40_000usize;
         let mut nif = NifFile::new("fo4");
@@ -2073,7 +2170,8 @@ mod tests {
             NifValue::Array(vec![NifValue::Ref(shape_id as i32)]),
         );
         std::fs::create_dir_all(source_path.parent().unwrap()).unwrap();
-        nif.save(Some(source_path.clone())).expect("write oversized source nif");
+        nif.save(Some(source_path.clone()))
+            .expect("write oversized source nif");
 
         let group = ModelGroup {
             model_path: "meshes\\test\\huge.nif".to_string(),
@@ -2109,7 +2207,10 @@ mod tests {
         };
 
         let report = bake_cell(&plan, &params);
-        assert!(report.baked.is_none(), "oversized expansion must not be stampable");
+        assert!(
+            report.baked.is_none(),
+            "oversized expansion must not be stampable"
+        );
         let warning = report
             .warnings
             .iter()
@@ -2118,7 +2219,11 @@ mod tests {
         assert!(warning.contains("65535"), "{warning}");
         assert!(warning.contains("80000"), "{warning}");
 
-        let out_dir = dir.join("data").join("meshes").join("precombined").join("Test.esm");
+        let out_dir = dir
+            .join("data")
+            .join("meshes")
+            .join("precombined")
+            .join("Test.esm");
         assert!(
             !out_dir.exists() || std::fs::read_dir(&out_dir).unwrap().next().is_none(),
             "rejected group must not leave a truncated output file behind"
@@ -2172,7 +2277,11 @@ mod tests {
         };
 
         let report = bake_cell(&plan, &params);
-        assert!(report.warnings.is_empty(), "unexpected warnings: {:?}", report.warnings);
+        assert!(
+            report.warnings.is_empty(),
+            "unexpected warnings: {:?}",
+            report.warnings
+        );
         let baked = report.baked.expect("archive-sourced group should bake");
         let mesh = &baked.meshes[0];
 
@@ -2256,7 +2365,11 @@ mod tests {
     #[test]
     fn loose_file_wins_over_archive_copy() {
         let dir = temp_dir("loose_wins");
-        let source_path = dir.join("data").join("meshes").join("test").join("dual01.nif");
+        let source_path = dir
+            .join("data")
+            .join("meshes")
+            .join("test")
+            .join("dual01.nif");
         let (loose_vertex_count, _) = write_source_fixture(&source_path, false);
 
         let (archive_vertex_data, archive_triangles) = small_geometry();
@@ -2267,7 +2380,10 @@ mod tests {
         );
         let archive_bytes = build_source_fixture_bytes(archive_vertex_data, archive_triangles);
         let archive_path = dir.join("archives").join("Fallout4 - Meshes.ba2");
-        write_ba2_fixture(&archive_path, &[("meshes\\test\\dual01.nif", &archive_bytes)]);
+        write_ba2_fixture(
+            &archive_path,
+            &[("meshes\\test\\dual01.nif", &archive_bytes)],
+        );
 
         let group = ModelGroup {
             model_path: "meshes\\test\\dual01.nif".to_string(),
@@ -2295,7 +2411,11 @@ mod tests {
         };
 
         let report = bake_cell(&plan, &params);
-        assert!(report.warnings.is_empty(), "unexpected warnings: {:?}", report.warnings);
+        assert!(
+            report.warnings.is_empty(),
+            "unexpected warnings: {:?}",
+            report.warnings
+        );
         let baked = report.baked.expect("group should bake from the loose file");
         let mesh = &baked.meshes[0];
 
@@ -2341,7 +2461,10 @@ mod tests {
         let archive_a = dir.join("archives").join("a_first.ba2");
         let archive_b = dir.join("archives").join("b_second.ba2");
         write_ba2_fixture(&archive_a, &[("meshes\\test\\ordered01.nif", &first_bytes)]);
-        write_ba2_fixture(&archive_b, &[("meshes\\test\\ordered01.nif", &second_bytes)]);
+        write_ba2_fixture(
+            &archive_b,
+            &[("meshes\\test\\ordered01.nif", &second_bytes)],
+        );
 
         let group = ModelGroup {
             model_path: "meshes\\test\\ordered01.nif".to_string(),
@@ -2369,8 +2492,14 @@ mod tests {
         };
 
         let report = bake_cell(&plan, &params);
-        assert!(report.warnings.is_empty(), "unexpected warnings: {:?}", report.warnings);
-        let baked = report.baked.expect("group should bake from the first archive");
+        assert!(
+            report.warnings.is_empty(),
+            "unexpected warnings: {:?}",
+            report.warnings
+        );
+        let baked = report
+            .baked
+            .expect("group should bake from the first archive");
         let mesh = &baked.meshes[0];
 
         let dest = {
@@ -2457,7 +2586,10 @@ mod tests {
     fn mesh_extract_root_wins_over_archive_copy() {
         let dir = temp_dir("extract_root_wins");
         let extract_root = dir.join("extract");
-        let extract_path = extract_root.join("meshes").join("test").join("extracted01.nif");
+        let extract_path = extract_root
+            .join("meshes")
+            .join("test")
+            .join("extracted01.nif");
         let (extract_vertex_count, _) = write_source_fixture(&extract_path, false);
 
         let (archive_vertex_data, archive_triangles) = small_geometry();
@@ -2468,7 +2600,10 @@ mod tests {
         );
         let archive_bytes = build_source_fixture_bytes(archive_vertex_data, archive_triangles);
         let archive_path = dir.join("archives").join("Fallout4 - Meshes.ba2");
-        write_ba2_fixture(&archive_path, &[("meshes\\test\\extracted01.nif", &archive_bytes)]);
+        write_ba2_fixture(
+            &archive_path,
+            &[("meshes\\test\\extracted01.nif", &archive_bytes)],
+        );
 
         let group = ModelGroup {
             model_path: "meshes\\test\\extracted01.nif".to_string(),
@@ -2496,8 +2631,14 @@ mod tests {
         };
 
         let report = bake_cell(&plan, &params);
-        assert!(report.warnings.is_empty(), "unexpected warnings: {:?}", report.warnings);
-        let baked = report.baked.expect("group should bake from the extract root");
+        assert!(
+            report.warnings.is_empty(),
+            "unexpected warnings: {:?}",
+            report.warnings
+        );
+        let baked = report
+            .baked
+            .expect("group should bake from the extract root");
         let mesh = &baked.meshes[0];
 
         let dest = {
@@ -2527,7 +2668,10 @@ mod tests {
     fn extract_root_only_mesh_bakes_successfully_with_all_invariants() {
         let dir = temp_dir("extract_only");
         let extract_root = dir.join("extract");
-        let extract_path = extract_root.join("meshes").join("test").join("exonly01.nif");
+        let extract_path = extract_root
+            .join("meshes")
+            .join("test")
+            .join("exonly01.nif");
         let (vertex_count, triangle_count) = write_source_fixture(&extract_path, false);
 
         let group = ModelGroup {
@@ -2564,7 +2708,11 @@ mod tests {
         };
 
         let report = bake_cell(&plan, &params);
-        assert!(report.warnings.is_empty(), "unexpected warnings: {:?}", report.warnings);
+        assert!(
+            report.warnings.is_empty(),
+            "unexpected warnings: {:?}",
+            report.warnings
+        );
         let baked = report.baked.expect("extract-root-only group should bake");
         let mesh = &baked.meshes[0];
 
@@ -2645,7 +2793,11 @@ mod tests {
     #[test]
     fn loose_file_wins_over_extract_root_copy() {
         let dir = temp_dir("loose_beats_extract");
-        let source_path = dir.join("data").join("meshes").join("test").join("dual02.nif");
+        let source_path = dir
+            .join("data")
+            .join("meshes")
+            .join("test")
+            .join("dual02.nif");
         let (loose_vertex_count, _) = write_source_fixture(&source_path, false);
 
         let extract_root = dir.join("extract");
@@ -2684,7 +2836,11 @@ mod tests {
         };
 
         let report = bake_cell(&plan, &params);
-        assert!(report.warnings.is_empty(), "unexpected warnings: {:?}", report.warnings);
+        assert!(
+            report.warnings.is_empty(),
+            "unexpected warnings: {:?}",
+            report.warnings
+        );
         let baked = report.baked.expect("group should bake from the loose file");
         let mesh = &baked.meshes[0];
 
@@ -2762,8 +2918,14 @@ mod tests {
         };
 
         let report = bake_cell(&plan, &params);
-        assert!(report.warnings.is_empty(), "unexpected warnings: {:?}", report.warnings);
-        let baked = report.baked.expect("group should bake from the first extract root");
+        assert!(
+            report.warnings.is_empty(),
+            "unexpected warnings: {:?}",
+            report.warnings
+        );
+        let baked = report
+            .baked
+            .expect("group should bake from the first extract root");
         let mesh = &baked.meshes[0];
 
         let dest = {

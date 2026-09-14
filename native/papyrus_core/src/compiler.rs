@@ -1,12 +1,11 @@
 //! Compiler orchestration + the single canonical AST walk.
 //!
-//! `walk_preorder` is the ONE deterministic pre-order NodeId assignment used by
-//! both `typeck` (which keys its `TypeTable` by NodeId) and `codegen` (which
-//! looks types up by NodeId). Keeping the walk in one place is what guarantees
-//! the typeck↔codegen lockstep — see `typeck_and_codegen_share_node_ids`.
+//! `walk_preorder` is the one deterministic pre-order NodeId assignment shared
+//! by `typeck` (keys its `TypeTable` by NodeId) and `codegen` (looks types up by
+//! NodeId), which keeps the two in lockstep. See `typeck_and_codegen_share_node_ids`.
 //!
 //! `compile_source` is the end-to-end entry point: parse → typeck → codegen →
-//! neutralize identity (spec §5) → write bytes.
+//! neutralize identity fields → write bytes.
 
 use crate::ast::*;
 use crate::profile::{Game, GameProfile};
@@ -210,7 +209,7 @@ pub struct CompileResult {
     pub diagnostics: Vec<Diagnostic>,
 }
 
-/// Parse → typeck → codegen → neutralize identity (spec §5) → serialize.
+/// Parse → typeck → codegen → neutralize identity fields → serialize.
 pub fn compile_source(
     text: &str,
     imports: &[String],
@@ -248,7 +247,7 @@ pub fn compile_source_with_path(
 
     // The compiler resolves cross-script/inherited references by parsing source
     // off the import path (the exe's `-i` dirs), never via the UI-only script_db.
-    let resolver = crate::source_resolver::SourceResolver::new(imports);
+    let resolver = crate::source_resolver::SourceResolver::with_self_ast(imports, &ast);
     let profile = GameProfile::for_game(game);
     let tc = crate::typeck::typeck(&ast, &resolver, profile);
     if tc
@@ -446,6 +445,89 @@ mod tests {
             mismatch.diagnostics,
         );
         assert!(matching.ok, "{:?}", matching.diagnostics);
+    }
+
+    /// The script under compilation is in memory, not on the import path; its
+    /// own hierarchy must still resolve so same-script calls get their declared
+    /// return type instead of `None`.
+    #[test]
+    fn same_script_call_resolves_return_type_for_every_type() {
+        for (ret_ty, ret_expr) in [
+            ("Int", "1"),
+            ("Float", "1.0"),
+            ("Bool", "True"),
+            ("String", "\"a\""),
+            ("ObjectReference", "None"),
+        ] {
+            for call in ["H()", "Self.H()"] {
+                let src = format!(
+                    "ScriptName SelfCallReturn Extends Quest\n\
+                     {ret_ty} Function H()\n  Return {ret_expr}\nEndFunction\n\
+                     Function C()\n  {ret_ty} x = {call}\nEndFunction\n"
+                );
+                let r = compile_source(&src, &[], Game::Fo4, None);
+                assert!(r.ok, "{ret_ty} via {call}: {:?}", r.diagnostics);
+            }
+        }
+    }
+
+    #[test]
+    fn same_script_call_resolves_array_return_type() {
+        let r = compile_source(
+            "ScriptName SelfCallArrayReturn Extends Quest\n\
+             Int[] Function H()\n  Int[] a = new Int[1]\n  Return a\nEndFunction\n\
+             Function C()\n  Int[] x = H()\n  Int y = x[0]\nEndFunction\n",
+            &[],
+            Game::Fo4,
+            None,
+        );
+        assert!(r.ok, "{:?}", r.diagnostics);
+    }
+
+    /// The self-AST seeding must not make the resolver blind to real type
+    /// errors: a mistyped assignment from a resolved self call still fails.
+    #[test]
+    fn same_script_call_return_type_is_checked_not_ignored() {
+        let r = compile_source(
+            "ScriptName SelfCallMistyped Extends Quest\n\
+             ObjectReference Function H()\n  Return None\nEndFunction\n\
+             Function C()\n  Int x = H()\nEndFunction\n",
+            &[],
+            Game::Fo4,
+            None,
+        );
+        assert!(!r.ok, "expected a type error, got {:?}", r.diagnostics);
+    }
+
+    /// Inherited functions resolve through the seeded script's `Extends` chain.
+    #[test]
+    fn parent_script_call_resolves_return_type() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let import_dir = std::env::temp_dir().join(format!(
+            "papyrus_parent_return_{}_{}",
+            std::process::id(),
+            unique,
+        ));
+        std::fs::create_dir_all(&import_dir).expect("create import dir");
+        std::fs::write(
+            import_dir.join("ParentReturnBase.psc"),
+            "ScriptName ParentReturnBase\nInt Function GetCount()\n  Return 0\nEndFunction\n",
+        )
+        .expect("write parent source");
+        let imports = vec![import_dir.to_string_lossy().into_owned()];
+
+        let r = compile_source(
+            "ScriptName ParentReturnChild Extends ParentReturnBase\n\
+             Function C()\n  Int x = GetCount()\nEndFunction\n",
+            &imports,
+            Game::Fo4,
+            None,
+        );
+        std::fs::remove_dir_all(&import_dir).expect("remove import dir");
+        assert!(r.ok, "{:?}", r.diagnostics);
     }
 
     #[test]

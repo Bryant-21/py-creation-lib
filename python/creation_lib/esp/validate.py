@@ -1,12 +1,8 @@
-"""Authoring-dir validator — checks FormKey references inside a mod's YAML.
+"""Authoring-dir validator: checks FormKey references inside a mod's YAML.
 
-This is the public entry point for "is this mod's YAML internally consistent
-and well-formed?". It uses the native ``validate_authoring`` function and
-applies no Python policy of its own; see
-``py_creation_lib/native/esp/src/authoring_validate.rs`` for the rules.
-
-This validator only reads files inside ``yaml_dir`` and trusts that declared
-masters are valid.
+Wraps native ``validate_authoring`` with no Python policy; the rules live in
+``py_creation_lib/native/esp/src/authoring_validate.rs``. Reads only files inside
+``yaml_dir`` and trusts declared masters.
 """
 
 from __future__ import annotations

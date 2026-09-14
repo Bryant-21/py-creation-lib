@@ -1,7 +1,7 @@
 """Parse Starfield .af animation files (SFBGS Animation Format) — metadata only.
 
 Reads the 64-byte header to extract bone count, frame count, version, and flags.
-Full keyframe transform decoding (prefix folding compression) is deferred.
+Full keyframe transform decoding (prefix folding compression) is not implemented.
 
 Binary layout (little-endian):
   Offset  Type     Field

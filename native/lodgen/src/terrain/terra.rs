@@ -1,7 +1,6 @@
 //! Garland & Heckbert "Terra" greedy-insertion TIN terrain approximation.
 //!
-//! Faithful 1:1 port of the decompiled C# Terra engine under
-//! `tmp/lod_research/lodgen_cs/LODGenerator.Terra*`:
+//! Port of the decompiled C# Terra engine (`LODGenerator.Terra*`):
 //!   - quad-edge incremental Delaunay (`Subdivision.cs`, `Edge.cs`)
 //!   - in-circle / orientation predicates (`GeometryHelpers.cs`)
 //!   - per-triangle plane fit + scan-conversion error metric
@@ -13,14 +12,12 @@
 //! (`EdgeId`) to avoid `Rc<RefCell>` reference cycles; navigation operators map
 //! directly onto the C# `Edge` accessors (`Sym`/`Rot`/`InvRot`/`ONext`/...).
 //!
-//! DETERMINISM DEVIATION (repo rule: no nondeterminism): `Subdivision.Locate`
-//! (`Subdivision.cs:175`) breaks an exact on-edge / zero-area collinear tie with
-//! `rand.Next() & 1`. This port replaces that branch with a fixed deterministic
-//! choice — always take the `oNext` branch — matching the plan's Determinism note.
-//! It only resolves an exact-collinear ambiguity; generic interior points are
-//! unaffected.
+//! Determinism deviation: `Subdivision.Locate` (`Subdivision.cs:175`) breaks an
+//! exact on-edge / zero-area collinear tie with `rand.Next() & 1`; this port always
+//! takes the `oNext` branch instead. Only exact-collinear ambiguities are affected;
+//! generic interior points are not.
 //!
-//! Validation is by triangle-count parity + max-error bound, NOT byte/hash match:
+//! Validation is by triangle-count parity + max-error bound, not byte/hash match:
 //! f32 non-associativity in heap ordering makes exact reproduction of the C#
 //! impossible.
 
@@ -1207,8 +1204,8 @@ mod tests {
     }
 
     /// The quality guarantee: when no point-count cap binds, the greedy loop runs
-    /// until MaxError < threshold (Terrain.GoalMet). Validate the bound holds on a
-    /// structured terrain — this is the plan's "max-error bound" validation.
+    /// until MaxError < threshold (Terrain.GoalMet). Validates that the bound holds
+    /// on a structured terrain.
     #[test]
     fn max_error_bound_satisfied() {
         let w = 17;
@@ -1263,15 +1260,13 @@ mod tests {
 
     /// ScriptedPreInsertion(state=0) marks posts Ignored; the scan-conversion
     /// candidate search then skips Ignored posts (Terrain.cs:40-66,
-    /// GreedySubdivision.cs:204) so an ignored secondary feature is never selected
-    /// even though, without the ignore mark, it would be.
+    /// GreedySubdivision.cs:204), so an ignored secondary feature is never selected
+    /// even though it otherwise would be.
     ///
-    /// Note: faithful to the C#, an Ignored post that is *already* the global-max
-    /// stale candidate from the InitMesh scan can still be inserted (Select only
-    /// guards Used, not Ignored). We avoid that edge case by keeping a dominant
-    /// primary spike so the ignored bump is never the heap top before its
-    /// containing triangle is re-scanned. This mirrors how the production
-    /// underwater-merge ignore list behaves.
+    /// As in the C#, an Ignored post that is already the global-max stale candidate
+    /// from the InitMesh scan can still be inserted (Select only guards Used, not
+    /// Ignored). A dominant primary spike keeps the ignored bump off the heap top
+    /// until its containing triangle is re-scanned, avoiding that case.
     #[test]
     fn ignored_posts_are_never_inserted() {
         let w = 17;

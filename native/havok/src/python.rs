@@ -36,6 +36,27 @@ fn version() -> &'static str {
 }
 
 #[pyfunction]
+fn hk_acc_23_div(numerator: f32, denominator: f32) -> f32 {
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        use std::arch::x86_64::{_mm_cvtss_f32, _mm_mul_ss, _mm_rcp_ss, _mm_set_ss, _mm_sub_ss};
+
+        let denominator = _mm_set_ss(denominator);
+        let reciprocal = _mm_rcp_ss(denominator);
+        let refinement = _mm_sub_ss(_mm_set_ss(2.0), _mm_mul_ss(denominator, reciprocal));
+        return _mm_cvtss_f32(_mm_mul_ss(
+            _mm_set_ss(numerator),
+            _mm_mul_ss(reciprocal, refinement),
+        ));
+    }
+
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        numerator / denominator
+    }
+}
+
+#[pyfunction]
 fn hkx_detect_format(py: Python<'_>, data: &Bound<'_, PyBytes>) -> PyResult<(String, String)> {
     let bytes = data.as_bytes().to_vec();
     py.detach(move || {
@@ -91,6 +112,39 @@ fn havok_convert_batch(
         let result =
             api::havok_convert_batch(src_dir, dst_dir, &target_version, preserve_structure)
                 .map_err(map_error)?;
+        Ok(json!({
+            "converted": result.converted,
+            "skipped": result.skipped,
+            "errors": result
+                .errors
+                .into_iter()
+                .map(|error| json!({"path": error.path, "error": error.error}))
+                .collect::<Vec<_>>(),
+        })
+        .to_string())
+    })
+}
+
+#[pyfunction]
+fn havok_convert_ps4_bytes<'py>(
+    py: Python<'py>,
+    data: &Bound<'_, PyBytes>,
+) -> PyResult<Bound<'py, PyBytes>> {
+    let bytes = data.as_bytes().to_vec();
+    let result = py.detach(move || api::havok_convert_ps4_bytes(&bytes).map_err(map_error))?;
+    Ok(PyBytes::new(py, &result))
+}
+
+#[pyfunction]
+fn havok_convert_ps4_batch(
+    py: Python<'_>,
+    src_dir: String,
+    dst_dir: String,
+    skip_existing: bool,
+) -> PyResult<String> {
+    py.detach(move || {
+        let result =
+            api::havok_convert_ps4_batch(src_dir, dst_dir, skip_existing).map_err(map_error)?;
         Ok(json!({
             "converted": result.converted,
             "skipped": result.skipped,
@@ -555,9 +609,8 @@ fn fo4_multi_body_collision_blob<'py>(
 /// Build a Starfield Havok 2019 TAG0 tagged binary blob for convex collision.
 ///
 /// `vertices`: list of `[x, y, z]` float32 triples (NIF-space).
-/// `friction`, `restitution`, `layer`, `mass`: material and body parameters
-/// (accepted for API parity; material fields are encoded in the embedded
-/// reference defaults — patching is not yet implemented).
+/// `friction`, `restitution`, `layer`, `mass` exist for API parity and are
+/// ignored; the embedded reference defaults are used.
 ///
 /// Returns raw bytes of the Havok 2019 TAG0 blob suitable for bhkPhysicsSystem.
 #[pyfunction]
@@ -576,11 +629,9 @@ fn starfield_convex_collision_blob<'py>(
     Ok(PyBytes::new(py, &result))
 }
 
-/// Round-trip a packfile through `patch_hkx`. Mirrors
-/// `py_creation_lib/python/creation_lib/hkxpack/__init__.py::save_hkx`'s patcher branch — with no model edits
-/// this is byte-exact with the input. Raises `ValueError` when an array's
-/// serialized length no longer matches the source length (Python's
-/// `CannotPatch`).
+/// Round-trip a packfile through `patch_hkx`; byte-exact with no model edits.
+/// Raises `ValueError` when an array's serialized length no longer matches the
+/// source length.
 #[pyfunction]
 fn hkx_patch_roundtrip<'py>(
     py: Python<'py>,
@@ -1399,32 +1450,25 @@ fn hkx_inspect_packfile(py: Python<'_>, data: &Bound<'_, PyBytes>) -> PyResult<S
 // Hkxpack model wrappers — mutation surface
 // ===========================================================================
 //
-// These pyclass types expose `crate::hkx::model::{HkxFile, HkxObject,
-// HkxMember}` and `crate::hkx::descriptors::{DescriptorRegistry, ...}` to
-// Python so callers in `py_creation_lib/python/creation_lib/hkxpack/` can stop round-tripping through
-// TagXML and operate directly on the native model.
+// These pyclasses expose `crate::hkx::model::{HkxFile, HkxObject, HkxMember}`
+// and `crate::hkx::descriptors::{DescriptorRegistry, ...}` so
+// `creation_lib/hkxpack/` operates on the native model instead of TagXML.
 //
-// Storage model: `PyHkxFile` owns the canonical `HkxFile`. All other model
-// pyclasses are either:
-//   * Bound — hold a `Py<PyHkxFile>` plus an address into the file's tree
-//     (object index, member index, nested member-path). Property reads and
-//     writes route through the parent file via `borrow_mut()`. Each setter
-//     marks the file dirty so `save()` re-runs the writer.
-//   * Unbound — hold their own data inline. Constructed via `__new__` from
-//     Python; converted into the Bound form when appended into a file.
+// `PyHkxFile` owns the canonical `HkxFile`. Other model pyclasses are either:
+//   * Bound — a `Py<PyHkxFile>` plus an address into the tree (object index,
+//     member index, nested member path). Reads and writes go through the
+//     parent file via `borrow_mut()`; each setter marks the file dirty so
+//     `save()` re-runs the writer.
+//   * Unbound — own their data. Built via `__new__`; converted to Bound when
+//     appended to a file.
 //
-// Proxy lists (`HKXObjectList`, `HKXMemberList`, `HKXValueList`) are
-// returned from `HKXFile.objects`, `HKXObject.members`, and
-// `HKXArrayMember.contents`. They implement the dunder protocol so caller
-// code keeps working unchanged: `lst.append(x)`, `lst[i] = x`, `lst[i]`,
-// `len(lst)`, `for x in lst`, `lst == [...]`. Mutations forward to the
-// parent file's underlying Vec.
+// Proxy lists (`HKXObjectList`, `HKXMemberList`, `HKXValueList`) returned from
+// `HKXFile.objects`, `HKXObject.members` and `HKXArrayMember.contents`
+// implement the list dunders (`append`, `lst[i] = x`, `lst[i]`, `len`,
+// iteration, `==`) and forward mutations to the parent file's Vec.
 //
-// Identity caching is intentionally NOT implemented in this pass — every
-// `obj.members[0]` call returns a fresh `Py<PyHkxMember>` instance.
-// Callers that need identity comparison must compare addresses manually
-// (e.g. `(obj_idx, mem_idx)`). Documented as a known deviation from the
-// API surface spec.
+// No identity caching: every `obj.members[0]` returns a fresh
+// `Py<PyHkxMember>`, so compare addresses (e.g. `(obj_idx, mem_idx)`).
 
 // --- Address / storage primitives ----------------------------------------
 
@@ -1885,10 +1929,8 @@ fn value_to_py<'py>(py: Python<'py>, value: &HkxValue) -> PyResult<Bound<'py, Py
             Ok(list.into_any())
         }
         HkxValue::Object(_) | HkxValue::TypedObject { .. } => {
-            // Inline struct used as an array element → expose as an unbound
-            // HKXObject snapshot. (Bound nested-object access through the
-            // file tree would require a wider proxy framework; for now array
-            // contents return snapshots.)
+            // Inline struct used as an array element → unbound HKXObject
+            // snapshot (bound nested access would need a wider proxy framework).
             let class_name = match value {
                 HkxValue::TypedObject { class_name, .. } => class_name.clone(),
                 _ => String::new(),
@@ -2508,11 +2550,9 @@ impl PyHkxArrayMember {
     }
 
     fn matches_array_path(member_path: &[String], target: &MemberPath) -> bool {
-        // ArraySource.member_path is a chain of member names; our MemberPath
-        // is a chain of indices. We can't reconcile without the parent
-        // object to look up names. For now, fall back to comparing only the
-        // top-level member: this is enough for the common case where arrays
-        // live directly on top-level members.
+        // ArraySource.member_path holds member names and MemberPath holds
+        // indices. Without the parent object only the top-level member can be
+        // compared, which covers arrays on top-level members.
         if member_path.is_empty() || target.member_index >= member_path.len() {
             return false;
         }
@@ -4534,12 +4574,15 @@ fn pack_xml_to_hkx(py: Python<'_>, xml_path: String, output_path: String) -> PyR
 
 pub fn register_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(version, m)?)?;
+    m.add_function(wrap_pyfunction!(hk_acc_23_div, m)?)?;
     m.add_function(wrap_pyfunction!(hkx_detect_format, m)?)?;
     m.add_function(wrap_pyfunction!(hkx_roundtrip_bytes, m)?)?;
     m.add_function(wrap_pyfunction!(hkx_patch_roundtrip, m)?)?;
     m.add_function(wrap_pyfunction!(havok_convert_bytes, m)?)?;
     m.add_function(wrap_pyfunction!(havok_convert_file, m)?)?;
     m.add_function(wrap_pyfunction!(havok_convert_batch, m)?)?;
+    m.add_function(wrap_pyfunction!(havok_convert_ps4_bytes, m)?)?;
+    m.add_function(wrap_pyfunction!(havok_convert_ps4_batch, m)?)?;
     m.add_function(wrap_pyfunction!(havok_extract_clip, m)?)?;
     m.add_function(wrap_pyfunction!(havok_write_animation_xml, m)?)?;
     m.add_function(wrap_pyfunction!(havok_collision_preview, m)?)?;

@@ -8,6 +8,9 @@ pub struct PackfileHeader {
     pub version_name: String,
     pub padding_size: usize,
     pub pointer_size: u8,
+    pub little_endian: u8,
+    pub reuse_padding_optimization: u8,
+    pub empty_base_class_optimization: u8,
     pub section_header_size: usize,
     pub contents_section_index: u32,
     pub contents_section_offset: u32,
@@ -120,6 +123,9 @@ pub fn parse_header(data: &[u8]) -> HavokResult<PackfileHeader> {
         version_name,
         padding_size,
         pointer_size,
+        little_endian: data[0x11],
+        reuse_padding_optimization: data[0x12],
+        empty_base_class_optimization: data[0x13],
         section_header_size,
         contents_section_index: read_u32(data, 0x18, "contents section index")?,
         contents_section_offset: read_u32(data, 0x1C, "contents section offset")?,
@@ -337,8 +343,10 @@ pub fn write_header(header: &PackfileHeader) -> Vec<u8> {
 
     buf[0..8].copy_from_slice(HKX_MAGIC_BYTES);
     buf[0x0C..0x10].copy_from_slice(&header.version.to_le_bytes());
-    // [pointer_size=8, little_endian=1, reuse_padding=0, base_class_opt=1]
-    buf[0x10..0x14].copy_from_slice(&0x01000108u32.to_le_bytes());
+    buf[0x10] = header.pointer_size;
+    buf[0x11] = header.little_endian;
+    buf[0x12] = header.reuse_padding_optimization;
+    buf[0x13] = header.empty_base_class_optimization;
     // Number of sections = 3
     buf[0x14..0x18].copy_from_slice(&3u32.to_le_bytes());
     buf[0x18..0x1C].copy_from_slice(&header.contents_section_index.to_le_bytes());

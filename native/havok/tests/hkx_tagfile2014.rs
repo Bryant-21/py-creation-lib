@@ -1,10 +1,9 @@
 //! Tagfile2014 (binary tagfile v13) reader tests.
 //!
 //! Bethesda ships this format for FO4 inline animation blobs nested in NIFs
-//! (BSBound / cloth setup) and Skyrim SE .hkt skeleton files. We do not
-//! have a vendored fixture in-tree (Skyrim install path is not guaranteed
-//! present in CI), so these tests synthesize v13 buffers byte-by-byte from
-//! the SDK-documented stream encoding.
+//! (BSBound / cloth setup) and Skyrim SE .hkt skeleton files. There is no
+//! vendored fixture (a Skyrim install is not guaranteed in CI), so these tests
+//! synthesize v13 buffers byte-by-byte from the SDK-documented stream encoding.
 
 use havok_native::hkx::tagfile2014::{
     BINARY_MAGIC_0, BINARY_MAGIC_1, TAGFILE_VERSION_2014_2, is_binary_tagfile_magic, parse_header,
@@ -100,8 +99,8 @@ fn read_with_metadata_before_file_info_is_rejected() {
     buf.extend_from_slice(&vle_signed(SYNTH_TAG_METADATA));
     let err = read_tagfile2014(&buf).unwrap_err();
     assert!(
-        err.to_string()
-            .contains("TAG_METADATA before TAG_FILE_INFO"),
+        err.to_string().contains("starts with tag 2")
+            && err.to_string().contains("expected TAG_FILE_INFO"),
         "unexpected error: {err}"
     );
 }
@@ -226,11 +225,11 @@ fn read_metadata_with_struct_field_consumes_class_name_string() {
 
 #[test]
 fn header_parse_accepts_canonical_little_endian_v13() {
-    let buf = synthesize_header_only(true, 1, TAGFILE_VERSION_2014_2);
+    let mut buf = synthesize_header_only(true, 1, TAGFILE_VERSION_2014_2);
+    buf.extend_from_slice(&vle_signed(SYNTH_TAG_FILE_INFO));
     let header = parse_header(&buf).expect("canonical LE header parses");
     assert!(!header.swap_bytes);
-    assert_eq!(header.tag, 1);
-    assert_eq!(header.version, TAGFILE_VERSION_2014_2);
+    assert_eq!(header.stream_offset, 16);
 }
 
 #[test]
@@ -243,17 +242,17 @@ fn header_parse_detects_byte_swap_from_big_endian_magic() {
     buf.extend_from_slice(&BINARY_MAGIC_1.to_be_bytes());
     buf.extend_from_slice(&1u32.to_be_bytes());
     buf.extend_from_slice(&TAGFILE_VERSION_2014_2.to_be_bytes());
+    buf.extend_from_slice(&vle_signed(SYNTH_TAG_FILE_INFO));
     let header = parse_header(&buf).expect("BE header parses");
     assert!(header.swap_bytes);
-    assert_eq!(header.tag, 1);
-    assert_eq!(header.version, TAGFILE_VERSION_2014_2);
+    assert_eq!(header.stream_offset, 16);
 }
 
 #[test]
 fn header_parse_rejects_truncated_buffer() {
-    let err = parse_header(&[0u8; 15]).unwrap_err();
+    let err = parse_header(&[0u8; 7]).unwrap_err();
     assert!(
-        err.to_string().contains("Tagfile2014 header requires"),
+        err.to_string().contains("Tagfile2014 magic requires"),
         "unexpected error: {err}"
     );
 }
@@ -285,7 +284,7 @@ fn header_parse_rejects_non_v13_layout() {
     let buf = synthesize_header_only(true, 1, 11);
     let err = parse_header(&buf).unwrap_err();
     assert!(
-        err.to_string().contains("layout version 11 not supported"),
+        err.to_string().contains("starts with tag"),
         "unexpected error: {err}"
     );
 }
@@ -295,7 +294,7 @@ fn header_parse_rejects_non_one_tag_word() {
     let buf = synthesize_header_only(true, 7, TAGFILE_VERSION_2014_2);
     let err = parse_header(&buf).unwrap_err();
     assert!(
-        err.to_string().contains("tag word 7"),
+        err.to_string().contains("starts with tag"),
         "unexpected error: {err}"
     );
 }
@@ -598,12 +597,11 @@ fn v6_file_info_double_precision_vec4_narrows_to_f32_list() {
     }
 }
 
-/// KIND_RECORD bitfield-then-row: TUPLE(2)+STRUCT with 2 fields each. The SDK
-/// writes ONE shared presence bitfield covering all `tuple_count * num_fields`
-/// bits, then field values in row-major order (element 0 fields, element 1
-/// fields). Verify the reader assembles two TypedObject elements correctly.
+/// KIND_RECORD field-major encoding: TUPLE(2)+STRUCT with 2 fields each. The
+/// SDK writes one presence bit per struct field, then all values for each
+/// present field (x[0], x[1], y[0], y[1]).
 #[test]
-fn tuple_struct_uses_shared_bitfield_then_row_major_data() {
+fn tuple_struct_uses_shared_field_bitmap_then_column_major_data() {
     const LT_TYPE_REAL: u32 = 3;
     const LT_TYPE_STRUCT_CODE: u32 = 9;
     const LT_TYPE_TUPLE: u32 = 0x20;
@@ -641,14 +639,13 @@ fn tuple_struct_uses_shared_bitfield_then_row_major_data() {
     buf.extend_from_slice(&vle_signed(2)); // class index
     // Outer presence bitfield: 1 field ("pairs"), present.
     buf.extend_from_slice(&presence_bytes(&[true]));
-    // TUPLE(2)+STRUCT "pairs": shared bitfield 2 elements × 2 fields = 4 bits.
-    // All 4 present: element[0].x, element[0].y, element[1].x, element[1].y
-    buf.extend_from_slice(&presence_bytes(&[true, true, true, true]));
-    // element[0].x = 1.0, element[0].y = 2.0
+    // TUPLE(2)+STRUCT "pairs": one shared bit per Pair field; x and y present.
+    buf.extend_from_slice(&presence_bytes(&[true, true]));
+    // x column: element[0].x = 1.0, element[1].x = 3.0
     buf.extend_from_slice(&1.0f32.to_le_bytes());
-    buf.extend_from_slice(&2.0f32.to_le_bytes());
-    // element[1].x = 3.0, element[1].y = 4.0
     buf.extend_from_slice(&3.0f32.to_le_bytes());
+    // y column: element[0].y = 2.0, element[1].y = 4.0
+    buf.extend_from_slice(&2.0f32.to_le_bytes());
     buf.extend_from_slice(&4.0f32.to_le_bytes());
 
     buf.extend_from_slice(&vle_signed(SYNTH_TAG_FILE_END));

@@ -1,14 +1,10 @@
-"""Build Reachable Info — find orphan records via reachability BFS.
+"""Build Reachable Info: find orphan records via reachability BFS.
 
-xEdit equivalent: `mniNavBuildReachable`. Starting from a curated set of
-"entry-point" record types (records the engine loads regardless of refs)
-plus all hardcoded FormIDs, BFS via outbound references and tag everything
-visited as reachable. The complement is the "orphan" set — records present
-in the plugin but not actually loaded by the game.
-
-xEdit's invariant: BuildReachable requires BuildRef first. The native back-
-reference index also serves the forward-ref query, so we don't need an
-explicit pre-build call here.
+xEdit equivalent: `mniNavBuildReachable`. BFS over outbound references from
+entry-point record types (loaded by the engine regardless of refs) and the
+hardcoded FormIDs; unvisited records are orphans the game never loads. xEdit
+requires BuildRef first, but the native back-reference index also answers
+forward-ref queries, so no pre-build is needed.
 """
 
 from __future__ import annotations

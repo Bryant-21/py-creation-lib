@@ -1,21 +1,20 @@
-//! Incremental FO4 BA2 writer: files are compressed/chunked the
-//! moment they arrive ("append-as-complete") into a single append-only spill
-//! file; `finalize` assembles a complete archive equivalent to the one-shot
+//! Incremental FO4 BA2 writer. Files are compressed and chunked as they arrive
+//! into one append-only spill file; `finalize` assembles an archive equivalent to
 //! `pack_fo4_stream::pack_archive` over the same files.
 //!
-//! Mirrors the one-shot path's decision logic exactly (chunk planning,
-//! compression keep/raw, DX10 fast path with fallback, entry sort order). The
-//! final payload copy follows spill append order so large archives do not turn
-//! finalization into a random-read pass over the spill file.
+//! Uses the one-shot path's chunk planning, keep/raw compression choice, DX10 fast
+//! path with fallback, and entry sort order. The final payload copy follows spill
+//! append order so finalizing a large archive never random-reads the spill file.
 
 use std::collections::HashMap;
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::{Condvar, Mutex};
+use std::time::{Duration, Instant};
 
-use memmap2::MmapOptions;
+use libdeflater::{CompressionLvl, Compressor};
 use rayon::prelude::*;
 
 use crate::pack::{
@@ -30,7 +29,10 @@ use crate::{Borrowed, CompressionResult, ReaderWithOptions as _, fo4};
 
 type PackResult<T> = Result<T, String>;
 
-const DIRECT_PACK_MEMORY_BUDGET: usize = 256 * 1024 * 1024;
+const DIRECT_PACK_BASE_MEMORY_BUDGET: usize = 256 * 1024 * 1024;
+const DIRECT_PACK_TEXTURE_MEMORY_PER_WORKER: usize = 128 * 1024 * 1024;
+const DIRECT_PACK_TEXTURE_MEMORY_CAP: usize = 2 * 1024 * 1024 * 1024;
+const DIRECT_PACK_WRITE_BUFFER: usize = 16 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Fo4WriterKind {
@@ -44,6 +46,25 @@ pub enum Fo4WriterKind {
 pub struct CompressionSettings {
     pub compress: bool,
     pub compression_level: u32,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct DirectPackStats {
+    pub(crate) payload_bytes: u64,
+    pub(crate) payload_write_calls: usize,
+    pub(crate) writer_write_secs: f64,
+    pub(crate) writer_flush_secs: f64,
+    pub(crate) writer_idle_secs: f64,
+    pub(crate) prepare_worker_secs: f64,
+    pub(crate) source_read_worker_secs: f64,
+    pub(crate) compression_worker_secs: f64,
+    pub(crate) fallback_worker_secs: f64,
+    pub(crate) prepared_chunk_count: usize,
+    pub(crate) fallback_file_count: usize,
+    pub(crate) memory_budget_bytes: usize,
+    pub(crate) peak_in_flight_bytes: usize,
+    pub(crate) throttle_wait_secs: f64,
+    pub(crate) throttle_wait_count: usize,
 }
 
 impl Default for CompressionSettings {
@@ -102,6 +123,31 @@ struct PreparedEntry {
     header: fo4::FileHeader,
     chunks: Vec<ChunkPlan>,
     payload: Vec<u8>,
+    stats: PrepareStats,
+}
+
+/// A fully encoded group of entries that has not touched the live spill or
+/// entry index yet.
+pub struct PreparedIncrementalFo4Batch {
+    entries: Vec<PreparedEntry>,
+}
+
+/// The exact live-writer state change made by one prepared batch. The token
+/// is intentionally opaque; callers may only use it to restore that change.
+pub struct CommittedIncrementalFo4Batch {
+    start_len: u64,
+    end_len: u64,
+    inserted_keys: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct PrepareStats {
+    elapsed: Duration,
+    source_read_elapsed: Duration,
+    compression_elapsed: Duration,
+    fallback_elapsed: Duration,
+    chunk_count: usize,
+    fallback: bool,
 }
 
 struct DirectEntry {
@@ -118,13 +164,131 @@ struct QueuedDirectEntry<'a> {
     header: fo4::FileHeader,
     chunk_plans: Vec<ChunkPlan>,
     payload: Vec<u8>,
+    prepare_stats: PrepareStats,
     _memory_guard: InFlightMemoryGuard<'a>,
 }
 
+struct TimedReader<R> {
+    inner: R,
+    read_elapsed: Duration,
+}
+
+impl<R> TimedReader<R> {
+    fn new(inner: R) -> Self {
+        Self {
+            inner,
+            read_elapsed: Duration::ZERO,
+        }
+    }
+}
+
+impl<R: Read> Read for TimedReader<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        let started = Instant::now();
+        let result = self.inner.read(buffer);
+        self.read_elapsed += started.elapsed();
+        result
+    }
+}
+
+fn stream_zlib_payload_timed<R: Read, W: Write>(
+    reader: R,
+    writer: &mut W,
+    options: &PackOptions,
+    stats: &mut PrepareStats,
+) -> PackResult<u64> {
+    let mut reader = TimedReader::new(reader);
+    let started = Instant::now();
+    let result = stream_zlib_payload(&mut reader, writer, options);
+    let elapsed = started.elapsed();
+    stats.source_read_elapsed += reader.read_elapsed;
+    stats.compression_elapsed += elapsed.saturating_sub(reader.read_elapsed);
+    result
+}
+
+fn copy_payload_timed<R: Read, W: Write>(
+    reader: R,
+    writer: &mut W,
+    stats: &mut PrepareStats,
+) -> PackResult<u64> {
+    let mut reader = TimedReader::new(reader);
+    let result = io::copy(&mut reader, writer).map_err(|e| e.to_string());
+    stats.source_read_elapsed += reader.read_elapsed;
+    result
+}
+
+fn open_source_file(path: &Path) -> io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        const FILE_FLAG_SEQUENTIAL_SCAN: u32 = 0x0800_0000;
+        options.custom_flags(FILE_FLAG_SEQUENTIAL_SCAN);
+    }
+    options.open(path)
+}
+
+fn read_source_file(path: &Path, source_size: Option<u64>) -> PackResult<Vec<u8>> {
+    let mut source = open_source_file(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    let source_size = match source_size {
+        Some(source_size) => source_size,
+        None => source.metadata().map_err(|e| e.to_string())?.len(),
+    };
+    let capacity = usize::try_from(source_size)
+        .map_err(|_| format!("source file is too large to read: {}", path.display()))?
+        .saturating_add(1);
+    let mut bytes = Vec::with_capacity(capacity);
+    source
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("read {}: {e}", path.display()))?;
+    Ok(bytes)
+}
+
+thread_local! {
+    static LIBDEFLATE_COMPRESSOR: std::cell::RefCell<Option<(i32, Compressor)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+fn compress_zlib_payload(input: &[u8], output: &mut Vec<u8>, level: u32) -> PackResult<u64> {
+    let level = i32::try_from(level)
+        .map_err(|_| format!("invalid libdeflate compression level: {level}"))?;
+    let compression_level = CompressionLvl::new(level)
+        .map_err(|_| format!("invalid libdeflate compression level: {level}"))?;
+    let output_start = output.len();
+    LIBDEFLATE_COMPRESSOR.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        if slot.as_ref().is_none_or(|(current, _)| *current != level) {
+            *slot = Some((level, Compressor::new(compression_level)));
+        }
+        let compressor = &mut slot.as_mut().expect("compressor was initialized").1;
+        let output_bound = compressor.zlib_compress_bound(input.len());
+        output.resize(output_start.saturating_add(output_bound), 0);
+        match compressor.zlib_compress(input, &mut output[output_start..]) {
+            Ok(compressed_len) => {
+                output.truncate(output_start + compressed_len);
+                Ok(compressed_len as u64)
+            }
+            Err(err) => {
+                output.truncate(output_start);
+                Err(format!("libdeflate compression failed: {err:?}"))
+            }
+        }
+    })
+}
+
 struct InFlightMemory {
-    used: Mutex<usize>,
+    state: Mutex<InFlightMemoryState>,
     available: Condvar,
     limit: usize,
+}
+
+struct InFlightMemoryState {
+    used: usize,
+    peak_used: usize,
+    throttle_wait: Duration,
+    throttle_wait_count: usize,
 }
 
 struct InFlightMemoryGuard<'a> {
@@ -132,10 +296,21 @@ struct InFlightMemoryGuard<'a> {
     reserved: usize,
 }
 
+#[derive(Clone, Copy)]
+struct SystemMemory {
+    total_physical_bytes: u64,
+    available_physical_bytes: u64,
+}
+
 impl InFlightMemory {
     fn new(limit: usize) -> Self {
         Self {
-            used: Mutex::new(0),
+            state: Mutex::new(InFlightMemoryState {
+                used: 0,
+                peak_used: 0,
+                throttle_wait: Duration::ZERO,
+                throttle_wait_count: 0,
+            }),
             available: Condvar::new(),
             limit: limit.max(1),
         }
@@ -143,31 +318,106 @@ impl InFlightMemory {
 
     fn acquire(&self, requested: usize) -> InFlightMemoryGuard<'_> {
         let reserved = requested.min(self.limit).max(1);
-        let mut used = self.used.lock().expect("memory budget mutex poisoned");
-        while *used != 0 && used.saturating_add(reserved) > self.limit {
-            used = self
+        let mut state = self.state.lock().expect("memory budget mutex poisoned");
+        let mut wait_started = None;
+        while state.used != 0 && state.used.saturating_add(reserved) > self.limit {
+            wait_started.get_or_insert_with(Instant::now);
+            state = self
                 .available
-                .wait(used)
+                .wait(state)
                 .expect("memory budget mutex poisoned");
         }
-        *used += reserved;
+        if let Some(wait_started) = wait_started {
+            state.throttle_wait += wait_started.elapsed();
+            state.throttle_wait_count += 1;
+        }
+        state.used += reserved;
+        state.peak_used = state.peak_used.max(state.used);
         InFlightMemoryGuard {
             budget: self,
             reserved,
         }
     }
+
+    fn stats(&self) -> (usize, Duration, usize) {
+        let state = self.state.lock().expect("memory budget mutex poisoned");
+        (
+            state.peak_used,
+            state.throttle_wait,
+            state.throttle_wait_count,
+        )
+    }
 }
 
 impl Drop for InFlightMemoryGuard<'_> {
     fn drop(&mut self) {
-        let mut used = self
+        let mut state = self
             .budget
-            .used
+            .state
             .lock()
             .expect("memory budget mutex poisoned");
-        *used -= self.reserved;
+        state.used -= self.reserved;
         self.budget.available.notify_all();
     }
+}
+
+fn direct_pack_memory_budget(worker_count: usize, system_memory: Option<SystemMemory>) -> usize {
+    let desired = worker_count
+        .max(1)
+        .saturating_mul(DIRECT_PACK_TEXTURE_MEMORY_PER_WORKER)
+        .clamp(
+            DIRECT_PACK_BASE_MEMORY_BUDGET,
+            DIRECT_PACK_TEXTURE_MEMORY_CAP,
+        );
+    let Some(system_memory) = system_memory else {
+        return DIRECT_PACK_BASE_MEMORY_BUDGET;
+    };
+    let system_cap =
+        (system_memory.total_physical_bytes / 32).min(system_memory.available_physical_bytes / 8);
+    let system_cap = usize::try_from(system_cap)
+        .unwrap_or(usize::MAX)
+        .max(DIRECT_PACK_BASE_MEMORY_BUDGET);
+    desired.min(system_cap)
+}
+
+#[cfg(windows)]
+fn system_memory() -> Option<SystemMemory> {
+    use core::mem::{size_of, zeroed};
+
+    #[repr(C)]
+    struct MemoryStatusEx {
+        length: u32,
+        memory_load: u32,
+        total_physical: u64,
+        available_physical: u64,
+        total_page_file: u64,
+        available_page_file: u64,
+        total_virtual: u64,
+        available_virtual: u64,
+        available_extended_virtual: u64,
+    }
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GlobalMemoryStatusEx(buffer: *mut MemoryStatusEx) -> i32;
+    }
+
+    let mut status: MemoryStatusEx = unsafe { zeroed() };
+    status.length = size_of::<MemoryStatusEx>()
+        .try_into()
+        .expect("MemoryStatusEx size exceeds u32");
+    if unsafe { GlobalMemoryStatusEx(&raw mut status) } == 0 {
+        return None;
+    }
+    Some(SystemMemory {
+        total_physical_bytes: status.total_physical,
+        available_physical_bytes: status.available_physical,
+    })
+}
+
+#[cfg(not(windows))]
+fn system_memory() -> Option<SystemMemory> {
+    None
 }
 
 pub struct IncrementalFo4Writer {
@@ -292,6 +542,140 @@ impl IncrementalFo4Writer {
         }
         let bytes = fs::read(path).map_err(|e| format!("read {}: {e}", path.display()))?;
         self.add_bytes(rel, &bytes)
+    }
+
+    /// Encode and validate a batch without mutating the live spill or index.
+    pub fn prepare_bytes_batch(
+        &self,
+        entries: &[(&str, &[u8])],
+    ) -> PackResult<PreparedIncrementalFo4Batch> {
+        let mut seen = std::collections::HashSet::with_capacity(entries.len());
+        let mut prepared = Vec::with_capacity(entries.len());
+        for (rel, bytes) in entries {
+            let entry = self.encoder.prepare_bytes(rel, bytes)?;
+            if !seen.insert(entry.rel_lower.clone()) {
+                return Err(format!("duplicate archive path in prepared batch: {rel}"));
+            }
+            prepared.push(entry);
+        }
+
+        let live = self.entries.lock().expect("entries mutex poisoned");
+        if let Some(entry) = prepared
+            .iter()
+            .find(|entry| live.contains_key(&entry.rel_lower))
+        {
+            return Err(format!(
+                "archive path already exists before prepared batch: {}",
+                entry.rel_lower
+            ));
+        }
+        Ok(PreparedIncrementalFo4Batch { entries: prepared })
+    }
+
+    /// Atomically append a prepared batch to this writer. A failed spill
+    /// write truncates back to the exact starting offset before returning.
+    pub fn commit_prepared_batch(
+        &self,
+        batch: PreparedIncrementalFo4Batch,
+    ) -> PackResult<CommittedIncrementalFo4Batch> {
+        let mut live = self.entries.lock().expect("entries mutex poisoned");
+        if let Some(entry) = batch
+            .entries
+            .iter()
+            .find(|entry| live.contains_key(&entry.rel_lower))
+        {
+            return Err(format!(
+                "archive path appeared before prepared batch commit: {}",
+                entry.rel_lower
+            ));
+        }
+
+        let mut spill = self.spill.lock().expect("spill mutex poisoned");
+        let start_len = spill.len;
+        let mut offsets = Vec::with_capacity(batch.entries.len());
+        for entry in &batch.entries {
+            offsets.push(spill.len);
+            if let Err(error) = spill.file.write_all(&entry.payload) {
+                let truncate = spill.file.set_len(start_len);
+                let seek = spill.file.seek(SeekFrom::Start(start_len));
+                spill.len = start_len;
+                return Err(match (truncate, seek) {
+                    (Ok(()), Ok(_)) => format!("spill batch write: {error}"),
+                    (truncate, seek) => format!(
+                        "spill batch write: {error}; rollback truncate={truncate:?} seek={seek:?}"
+                    ),
+                });
+            }
+            spill.len += entry.payload.len() as u64;
+        }
+        let end_len = spill.len;
+
+        let mut inserted_keys = Vec::with_capacity(batch.entries.len());
+        for (entry, base_offset) in batch.entries.into_iter().zip(offsets) {
+            let mut chunks = Vec::with_capacity(entry.chunks.len());
+            let mut running = base_offset;
+            for plan in entry.chunks {
+                chunks.push(SpillChunk {
+                    spill_offset: running,
+                    stored_len: plan.stored_len,
+                    packed_len: plan.packed_len,
+                    unpacked_len: plan.unpacked_len,
+                    mips: plan.mips,
+                });
+                running += plan.stored_len;
+            }
+            inserted_keys.push(entry.rel_lower.clone());
+            live.insert(
+                entry.rel_lower,
+                SpillEntry {
+                    rel_backslash: entry.rel_backslash,
+                    header: entry.header,
+                    chunks,
+                },
+            );
+        }
+        Ok(CommittedIncrementalFo4Batch {
+            start_len,
+            end_len,
+            inserted_keys,
+        })
+    }
+
+    /// Restore the exact state preceding `commit_prepared_batch`.
+    pub fn rollback_committed_batch(
+        &self,
+        committed: CommittedIncrementalFo4Batch,
+    ) -> PackResult<()> {
+        let mut live = self.entries.lock().expect("entries mutex poisoned");
+        let mut spill = self.spill.lock().expect("spill mutex poisoned");
+        if spill.len != committed.end_len {
+            return Err(format!(
+                "cannot rollback prepared batch after later spill writes: expected {}, got {}",
+                committed.end_len, spill.len
+            ));
+        }
+        if let Some(key) = committed
+            .inserted_keys
+            .iter()
+            .find(|key| !live.contains_key(*key))
+        {
+            return Err(format!(
+                "cannot rollback prepared batch with missing index entry: {key}"
+            ));
+        }
+        spill
+            .file
+            .set_len(committed.start_len)
+            .map_err(|error| format!("spill batch rollback truncate: {error}"))?;
+        spill
+            .file
+            .seek(SeekFrom::Start(committed.start_len))
+            .map_err(|error| format!("spill batch rollback seek: {error}"))?;
+        spill.len = committed.start_len;
+        for key in committed.inserted_keys {
+            live.remove(&key);
+        }
+        Ok(())
     }
 
     /// Write a complete BA2 containing exactly `ordered_rels` (membership;
@@ -425,6 +809,7 @@ impl EntryEncoder {
     }
 
     fn prepare_bytes(&self, rel: &str, bytes: &[u8]) -> PackResult<PreparedEntry> {
+        let started = Instant::now();
         let rel_slash = normalize_archive_entry_path(rel)?;
         let rel_lower = rel_slash.to_ascii_lowercase();
         let rel_backslash = rel_slash.replace('/', "\\");
@@ -442,16 +827,24 @@ impl EntryEncoder {
                 .or_else(|_| self.build_fallback_from_bytes(&rel_lower, bytes))?,
         };
 
+        let stats = PrepareStats {
+            elapsed: started.elapsed(),
+            chunk_count: chunk_plans.len(),
+            ..PrepareStats::default()
+        };
         Ok(PreparedEntry {
             rel_lower,
             rel_backslash,
             header,
             chunks: chunk_plans,
             payload,
+            stats,
         })
     }
 
     fn prepare_file(&self, entry: &FileEntry) -> PackResult<PreparedEntry> {
+        let started = Instant::now();
+        let mut stats = PrepareStats::default();
         let rel_slash = normalize_archive_entry_path(&entry.rel_slash)?;
         let rel_lower = rel_slash.to_ascii_lowercase();
         let rel_backslash = rel_slash.replace('/', "\\");
@@ -461,26 +854,46 @@ impl EntryEncoder {
             ));
         }
 
-        let fast_result = match self.kind {
-            Fo4WriterKind::Gnrl => self.build_gnrl_from_file(&rel_lower, &entry.full_path),
-            Fo4WriterKind::Dx10 => self.build_dx10_from_file(&entry.full_path),
-        };
-        let (header, chunks, payload) = match fast_result {
-            Ok(prepared) => prepared,
-            Err(_) if self.kind == Fo4WriterKind::Dx10 => {
-                let bytes = fs::read(&entry.full_path)
-                    .map_err(|e| format!("read {}: {e}", entry.full_path.display()))?;
-                let prepared = self.prepare_bytes(&rel_slash, &bytes)?;
-                return Ok(prepared);
-            }
-            Err(err) => return Err(err),
-        };
+        if self.kind == Fo4WriterKind::Dx10 {
+            let read_started = Instant::now();
+            let bytes = read_source_file(&entry.full_path, entry.source_size)?;
+            stats.source_read_elapsed += read_started.elapsed();
+            let compression_started = Instant::now();
+            let prepared = self.build_dx10_from_bytes(&bytes);
+            stats.compression_elapsed += compression_started.elapsed();
+            let (header, chunks, payload) = match prepared {
+                Ok(prepared) => prepared,
+                Err(_) => {
+                    let fallback_started = Instant::now();
+                    let prepared = self.build_fallback_from_bytes(&rel_lower, &bytes)?;
+                    stats.fallback_elapsed += fallback_started.elapsed();
+                    stats.fallback = true;
+                    prepared
+                }
+            };
+            stats.elapsed = started.elapsed();
+            stats.chunk_count = chunks.len();
+            return Ok(PreparedEntry {
+                rel_lower,
+                rel_backslash,
+                header,
+                chunks,
+                payload,
+                stats,
+            });
+        }
+
+        let (header, chunks, payload) =
+            self.build_gnrl_from_file(&rel_lower, &entry.full_path, &mut stats)?;
+        stats.elapsed = started.elapsed();
+        stats.chunk_count = chunks.len();
         Ok(PreparedEntry {
             rel_lower,
             rel_backslash,
             header,
             chunks,
             payload,
+            stats,
         })
     }
 
@@ -540,8 +953,10 @@ impl EntryEncoder {
         &self,
         rel_slash_lower: &str,
         path: &Path,
+        stats: &mut PrepareStats,
     ) -> PackResult<(fo4::FileHeader, Vec<ChunkPlan>, Vec<u8>)> {
-        let mut source = File::open(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+        let mut source =
+            open_source_file(path).map_err(|e| format!("read {}: {e}", path.display()))?;
         let source_len = source.metadata().map_err(|e| e.to_string())?.len();
         let ranges = plan_gnrl_chunks_for_size(source_len)?;
         let allow_compression = allows_compression_for_path(rel_slash_lower);
@@ -559,10 +974,11 @@ impl EntryEncoder {
                 source
                     .seek(SeekFrom::Start(range.start))
                     .map_err(|e| e.to_string())?;
-                let compressed_len = stream_zlib_payload(
+                let compressed_len = stream_zlib_payload_timed(
                     Read::by_ref(&mut source).take(range_len),
                     &mut payload,
                     &self.opts,
+                    stats,
                 )?;
                 if compressed_len <= u64::from(u32::MAX)
                     && should_keep_compressed(
@@ -585,8 +1001,11 @@ impl EntryEncoder {
             source
                 .seek(SeekFrom::Start(range.start))
                 .map_err(|e| e.to_string())?;
-            let copied = io::copy(&mut Read::by_ref(&mut source).take(range_len), &mut payload)
-                .map_err(|e| e.to_string())?;
+            let copied = copy_payload_timed(
+                Read::by_ref(&mut source).take(range_len),
+                &mut payload,
+                stats,
+            )?;
             plans.push(ChunkPlan {
                 stored_len: copied,
                 packed_len: 0,
@@ -609,7 +1028,7 @@ impl EntryEncoder {
         for range in ranges {
             let slice = &bytes[range.bytes.start as usize..range.bytes.end as usize];
             let before = payload.len();
-            stream_zlib_payload(slice, &mut payload, &self.opts)?;
+            compress_zlib_payload(slice, &mut payload, self.opts.compression_level)?;
             let compressed_len = payload.len() - before;
             let packed_len: u32 = compressed_len
                 .try_into()
@@ -625,42 +1044,6 @@ impl EntryEncoder {
             });
         }
 
-        Ok((fo4::FileHeader::DX10(header), plans, payload))
-    }
-
-    fn build_dx10_from_file(
-        &self,
-        path: &Path,
-    ) -> PackResult<(fo4::FileHeader, Vec<ChunkPlan>, Vec<u8>)> {
-        let mut source = File::open(path).map_err(|e| format!("read {}: {e}", path.display()))?;
-        let source_len = source.metadata().map_err(|e| e.to_string())?.len();
-        let mapping = unsafe { MmapOptions::new().map(&source) }.map_err(|e| e.to_string())?;
-        let (metadata, header_len) = dds_metadata(&mapping)?;
-        let (header, ranges) = plan_dx10_ranges(&metadata, header_len, source_len)?;
-        let mut plans = Vec::with_capacity(ranges.len());
-        let mut payload = Vec::new();
-
-        for range in ranges {
-            let range_len = range.bytes.end - range.bytes.start;
-            source
-                .seek(SeekFrom::Start(range.bytes.start))
-                .map_err(|e| e.to_string())?;
-            let compressed_len = stream_zlib_payload(
-                Read::by_ref(&mut source).take(range_len),
-                &mut payload,
-                &self.opts,
-            )?;
-            plans.push(ChunkPlan {
-                stored_len: compressed_len,
-                packed_len: compressed_len
-                    .try_into()
-                    .map_err(|_| "compressed DX10 chunk size exceeds u32".to_string())?,
-                unpacked_len: range_len
-                    .try_into()
-                    .map_err(|_| "DX10 chunk size exceeds u32".to_string())?,
-                mips: Some(range.mips),
-            });
-        }
         Ok((fo4::FileHeader::DX10(header), plans, payload))
     }
 
@@ -736,7 +1119,7 @@ pub(crate) fn pack_fo4_direct(
     writer_kind: Fo4WriterKind,
     version: fo4::Version,
     settings: CompressionSettings,
-) -> PackResult<()> {
+) -> PackResult<DirectPackStats> {
     if let Some(parent) = output_path.parent() {
         if !parent.as_os_str().is_empty() {
             fs::create_dir_all(parent).map_err(|e| format!("output dir: {e}"))?;
@@ -757,71 +1140,145 @@ pub(crate) fn pack_fo4_direct(
     file.set_len(payload_start)
         .map_err(|e| format!("output reserve: {e}"))?;
 
-    let memory_budget = InFlightMemory::new(DIRECT_PACK_MEMORY_BUDGET);
+    let memory_budget_bytes =
+        direct_pack_memory_budget(crate::worker_pool::current_worker_count(), system_memory());
+    let memory_budget = InFlightMemory::new(memory_budget_bytes);
 
-    // Workers compress in parallel and hand finished payloads to a single
-    // writer thread that appends them sequentially and assigns offsets in
-    // arrival order. Sequential appends keep NTFS from zero-filling gaps
-    // (positional out-of-order writes are pathologically slow there), and no
-    // worker ever blocks on disk I/O — only on the in-flight memory budget,
-    // which the writer drains, so the pipeline cannot deadlock.
-    let (mut direct_entries, next_offset, mut file) =
-        std::thread::scope(|scope| -> PackResult<(Vec<DirectEntry>, u64, File)> {
+    // Sequential appends keep NTFS from zero-filling gaps. Buffering is
+    // important here because large texture archives otherwise issue one
+    // synchronous WriteFile call for every DDS payload.
+    let (mut direct_entries, next_offset, mut file, mut stats) = std::thread::scope(
+        |scope| -> PackResult<(Vec<DirectEntry>, u64, File, DirectPackStats)> {
             let (tx, rx) = std::sync::mpsc::channel::<QueuedDirectEntry<'_>>();
-            let writer = scope.spawn(move || -> PackResult<(Vec<DirectEntry>, u64, File)> {
-                let mut file = file;
-                file.seek(SeekFrom::Start(payload_start))
-                    .map_err(|e| format!("output seek: {e}"))?;
-                let mut next_offset = payload_start;
-                let mut written_entries = Vec::new();
-                for item in rx {
-                    file.write_all(&item.payload)
-                        .map_err(|e| format!("archive payload write: {e}"))?;
-                    let mut chunks = Vec::with_capacity(item.chunk_plans.len());
-                    for chunk in item.chunk_plans {
-                        chunks.push(StreamedChunk {
-                            payload_offset: next_offset,
-                            packed_len: chunk.packed_len,
-                            unpacked_len: chunk.unpacked_len,
-                            mips: chunk.mips,
+            let writer = scope.spawn(
+                move || -> PackResult<(Vec<DirectEntry>, u64, File, DirectPackStats)> {
+                    let mut writer = BufWriter::with_capacity(DIRECT_PACK_WRITE_BUFFER, file);
+                    writer
+                        .seek(SeekFrom::Start(payload_start))
+                        .map_err(|e| format!("output seek: {e}"))?;
+                    let mut next_offset = payload_start;
+                    let mut written_entries = Vec::new();
+                    let mut payload_bytes = 0u64;
+                    let mut payload_write_calls = 0usize;
+                    let mut writer_write_elapsed = Duration::ZERO;
+                    let mut writer_idle_elapsed = Duration::ZERO;
+                    let mut prepare_worker_elapsed = Duration::ZERO;
+                    let mut source_read_worker_elapsed = Duration::ZERO;
+                    let mut compression_worker_elapsed = Duration::ZERO;
+                    let mut fallback_worker_elapsed = Duration::ZERO;
+                    let mut prepared_chunk_count = 0usize;
+                    let mut fallback_file_count = 0usize;
+                    loop {
+                        let idle_started = Instant::now();
+                        let item = match rx.recv() {
+                            Ok(item) => item,
+                            Err(_) => {
+                                writer_idle_elapsed += idle_started.elapsed();
+                                break;
+                            }
+                        };
+                        writer_idle_elapsed += idle_started.elapsed();
+                        prepare_worker_elapsed += item.prepare_stats.elapsed;
+                        source_read_worker_elapsed += item.prepare_stats.source_read_elapsed;
+                        compression_worker_elapsed += item.prepare_stats.compression_elapsed;
+                        fallback_worker_elapsed += item.prepare_stats.fallback_elapsed;
+                        prepared_chunk_count = prepared_chunk_count
+                            .checked_add(item.prepare_stats.chunk_count)
+                            .ok_or_else(|| {
+                                "BA2 prepared chunk count overflowed usize".to_string()
+                            })?;
+                        fallback_file_count += usize::from(item.prepare_stats.fallback);
+                        let write_started = Instant::now();
+                        writer
+                            .write_all(&item.payload)
+                            .map_err(|e| format!("archive payload write: {e}"))?;
+                        writer_write_elapsed += write_started.elapsed();
+                        payload_bytes = payload_bytes
+                            .checked_add(item.payload.len() as u64)
+                            .ok_or_else(|| "BA2 payload byte count overflowed u64".to_string())?;
+                        payload_write_calls += 1;
+                        let mut chunks = Vec::with_capacity(item.chunk_plans.len());
+                        for chunk in item.chunk_plans {
+                            chunks.push(StreamedChunk {
+                                payload_offset: next_offset,
+                                packed_len: chunk.packed_len,
+                                unpacked_len: chunk.unpacked_len,
+                                mips: chunk.mips,
+                            });
+                            next_offset = next_offset
+                                .checked_add(chunk.stored_len)
+                                .ok_or_else(|| "BA2 payload offsets overflowed u64".to_string())?;
+                        }
+                        written_entries.push(DirectEntry {
+                            rel_backslash: item.rel_backslash,
+                            header: item.header,
+                            chunks,
                         });
-                        next_offset = next_offset
-                            .checked_add(chunk.stored_len)
-                            .ok_or_else(|| "BA2 payload offsets overflowed u64".to_string())?;
                     }
-                    written_entries.push(DirectEntry {
-                        rel_backslash: item.rel_backslash,
-                        header: item.header,
-                        chunks,
-                    });
-                }
-                Ok((written_entries, next_offset, file))
-            });
+                    let flush_started = Instant::now();
+                    writer
+                        .flush()
+                        .map_err(|e| format!("archive payload flush: {e}"))?;
+                    let writer_flush_secs = flush_started.elapsed().as_secs_f64();
+                    let file = writer
+                        .into_inner()
+                        .map_err(|e| format!("archive payload writer close: {}", e.error()))?;
+                    Ok((
+                        written_entries,
+                        next_offset,
+                        file,
+                        DirectPackStats {
+                            payload_bytes,
+                            payload_write_calls,
+                            writer_write_secs: writer_write_elapsed.as_secs_f64(),
+                            writer_flush_secs,
+                            writer_idle_secs: writer_idle_elapsed.as_secs_f64(),
+                            prepare_worker_secs: prepare_worker_elapsed.as_secs_f64(),
+                            source_read_worker_secs: source_read_worker_elapsed.as_secs_f64(),
+                            compression_worker_secs: compression_worker_elapsed.as_secs_f64(),
+                            fallback_worker_secs: fallback_worker_elapsed.as_secs_f64(),
+                            prepared_chunk_count,
+                            fallback_file_count,
+                            ..DirectPackStats::default()
+                        },
+                    ))
+                },
+            );
 
-            let pack_result = entries.par_iter().try_for_each(|entry| -> PackResult<()> {
-                let source_len = match entry.source_size {
-                    Some(source_size) => source_size,
-                    None => entry
-                        .full_path
-                        .metadata()
-                        .map_err(|e| format!("stat {}: {e}", entry.full_path.display()))?
-                        .len(),
-                };
-                let requested_memory = usize::try_from(source_len)
-                    .unwrap_or(usize::MAX)
-                    .saturating_add((source_len / 8).try_into().unwrap_or(usize::MAX))
-                    .saturating_add(1024 * 1024);
-                let memory_guard = memory_budget.acquire(requested_memory);
-                let prepared = encoder.prepare_file(entry)?;
-                tx.send(QueuedDirectEntry {
-                    rel_backslash: prepared.rel_backslash,
-                    header: prepared.header,
-                    chunk_plans: prepared.chunks,
-                    payload: prepared.payload,
-                    _memory_guard: memory_guard,
-                })
-                .map_err(|_| "archive payload writer stopped".to_string())
-            });
+            let pack_result = crate::worker_pool::install(None, || {
+                entries
+                    .iter()
+                    .par_bridge()
+                    .try_for_each(|entry| -> PackResult<()> {
+                        let source_len = match entry.source_size {
+                            Some(source_size) => source_size,
+                            None => entry
+                                .full_path
+                                .metadata()
+                                .map_err(|e| format!("stat {}: {e}", entry.full_path.display()))?
+                                .len(),
+                        };
+                        let source_memory = usize::try_from(source_len).unwrap_or(usize::MAX);
+                        let requested_memory = match writer_kind {
+                            Fo4WriterKind::Dx10 => source_memory.saturating_mul(2),
+                            Fo4WriterKind::Gnrl => source_memory
+                                .saturating_add((source_len / 8).try_into().unwrap_or(usize::MAX)),
+                        }
+                        .saturating_add(1024 * 1024);
+                        let memory_guard = memory_budget.acquire(requested_memory);
+                        let prepared = encoder.prepare_file(entry)?;
+                        tx.send(QueuedDirectEntry {
+                            rel_backslash: prepared.rel_backslash,
+                            header: prepared.header,
+                            chunk_plans: prepared.chunks,
+                            payload: prepared.payload,
+                            prepare_stats: prepared.stats,
+                            _memory_guard: memory_guard,
+                        })
+                        .map_err(|_| "archive payload writer stopped".to_string())
+                    })
+            })
+            .map_err(|error| format!("rayon pool error: {error}"))?;
             drop(tx);
             let writer_result = writer
                 .join()
@@ -831,7 +1288,13 @@ pub(crate) fn pack_fo4_direct(
                 (Err(err), _) => Err(err),
                 (Ok(()), Ok(written)) => Ok(written),
             }
-        })?;
+        },
+    )?;
+    let (peak_in_flight_bytes, throttle_wait, throttle_wait_count) = memory_budget.stats();
+    stats.memory_budget_bytes = memory_budget_bytes;
+    stats.peak_in_flight_bytes = peak_in_flight_bytes;
+    stats.throttle_wait_secs = throttle_wait.as_secs_f64();
+    stats.throttle_wait_count = throttle_wait_count;
 
     direct_entries.sort_by(|a, b| a.rel_backslash.cmp(&b.rel_backslash));
     let string_table_offset = next_offset;
@@ -878,7 +1341,8 @@ pub(crate) fn pack_fo4_direct(
             &encoder.opts,
         )?;
     }
-    file.flush().map_err(|e| format!("output flush: {e}"))
+    file.flush().map_err(|e| format!("output flush: {e}"))?;
+    Ok(stats)
 }
 
 struct ChunkPlan {
@@ -1062,6 +1526,34 @@ mod tests {
     }
 
     #[test]
+    fn prepared_batch_has_no_visibility_and_rollback_restores_spill() {
+        let tmp = TestDir::new("prepared-batch");
+        let spill = tmp.path().join("spill.bin");
+        let w = IncrementalFo4Writer::new(
+            spill.clone(),
+            Fo4WriterKind::Gnrl,
+            CompressionSettings::default(),
+        )
+        .unwrap();
+        let prepared = w
+            .prepare_bytes_batch(&[
+                ("Meshes/a.nif", b"a".as_slice()),
+                ("Meshes/b.nif", b"b".as_slice()),
+            ])
+            .unwrap();
+        assert_eq!(w.entry_count(), 0);
+        assert_eq!(fs::metadata(&spill).unwrap().len(), 0);
+
+        let committed = w.commit_prepared_batch(prepared).unwrap();
+        assert_eq!(w.entry_count(), 2);
+        assert!(fs::metadata(&spill).unwrap().len() > 0);
+
+        w.rollback_committed_batch(committed).unwrap();
+        assert_eq!(w.entry_count(), 0);
+        assert_eq!(fs::metadata(&spill).unwrap().len(), 0);
+    }
+
+    #[test]
     fn finalize_subset_membership() {
         let tmp = TestDir::new("subset");
         let files = build_gnrl_fixture_tree(tmp.path());
@@ -1100,6 +1592,56 @@ mod tests {
         assert_eq!(
             CompressionSettings::for_writer_kind(Fo4WriterKind::Gnrl).compression_level,
             6
+        );
+    }
+
+    #[test]
+    fn texture_memory_budget_scales_with_workers_and_system_memory() {
+        const GIB: u64 = 1024 * 1024 * 1024;
+
+        assert_eq!(
+            direct_pack_memory_budget(16, None),
+            DIRECT_PACK_BASE_MEMORY_BUDGET
+        );
+        assert_eq!(
+            direct_pack_memory_budget(
+                16,
+                Some(SystemMemory {
+                    total_physical_bytes: 96 * GIB,
+                    available_physical_bytes: 80 * GIB,
+                }),
+            ),
+            usize::try_from(2 * GIB).unwrap()
+        );
+        assert_eq!(
+            direct_pack_memory_budget(
+                16,
+                Some(SystemMemory {
+                    total_physical_bytes: 16 * GIB,
+                    available_physical_bytes: 12 * GIB,
+                }),
+            ),
+            512 * 1024 * 1024
+        );
+        assert_eq!(
+            direct_pack_memory_budget(
+                16,
+                Some(SystemMemory {
+                    total_physical_bytes: 8 * GIB,
+                    available_physical_bytes: 6 * GIB,
+                }),
+            ),
+            DIRECT_PACK_BASE_MEMORY_BUDGET
+        );
+        assert_eq!(
+            direct_pack_memory_budget(
+                32,
+                Some(SystemMemory {
+                    total_physical_bytes: 96 * GIB,
+                    available_physical_bytes: 80 * GIB,
+                }),
+            ),
+            usize::try_from(2 * GIB).unwrap()
         );
     }
 

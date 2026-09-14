@@ -50,8 +50,8 @@ pub struct FlatDesc {
 
 /// Parse a billboard `.txt` sidecar into `fd`.
 ///
-/// The caller supplies the file contents as `txt: &str`; the file read / BSA lookup
-/// in the C# source is replaced by having the caller resolve the path via `LodPaths`.
+/// `txt` is the file contents; the caller resolves the path via `LodPaths` in place
+/// of the C# file read / BSA lookup.
 ///
 /// Seeds `fd.dimensions` = `[[width, height, 0], [depth, height, 0]]` first, then
 /// applies each KEY=VALUE line. Numeric values strip non-`[\d.-]` characters before
@@ -201,24 +201,23 @@ pub fn parse_billboard_dimensions(txt: &str, fd: &mut FlatDesc) {
 
 /// Build the FlatTrunk billboard geometry (2 crossed quads) for a tree whose LOD model is a `.dds`.
 ///
-/// Returns two `ShapeDesc`s — one per plane of the cross. Each has:
+/// Returns two `ShapeDesc`s, one per plane of the cross. Each has:
 /// - 4 vertices, 2 triangles
 /// - `IS_BILLBOARD` flag set
 /// - `billboard_diffuse` in `textures[0]`
-/// - White vertex colors (grass brightness branches deferred — see port note below)
+/// - White vertex colors (grass brightness is not ported, see below)
 ///
 /// Port: LODApp.cs ParseNif billboard branch :1442-1505 (the `for i in 0..2` two-cross loop).
 ///
-/// DEVIATION/DEFERRED: vertex-color brightness (`:1458-1502`) — `colorVariance`,
-/// `flatDesc.grassBrightnessTop/Bottom`, `vertexColorsMuliplier` — requires
-/// grass-specific fields and a `Random` source. For FO4 3D-tree default (non-grass)
-/// the vertex color path sets all to white when `num` (vertexColor) is in [0,1].
-/// Grass billboard brightness is a later sub-feature. Flat white vertex colors are
-/// correct for the non-grass FO4 tree path.
+/// Not ported: vertex-color brightness (`:1458-1502`: `colorVariance`,
+/// `flatDesc.grassBrightnessTop/Bottom`, `vertexColorsMuliplier`), which needs
+/// grass-specific fields and a `Random` source. For non-grass FO4 trees the C# sets
+/// all vertex colors to white when `num` (vertexColor) is in [0,1], so flat white is
+/// correct there.
 ///
 /// The 90° Z rotation (`:1449`) on the 2nd quad is applied to the vertices directly
-/// (cos90=0, sin90=1) rather than via a NiTriShape rotation matrix, since our
-/// ShapeDesc is geometry-only (no NIF transform hierarchy at this level).
+/// (cos90=0, sin90=1) rather than via a NiTriShape rotation matrix, since ShapeDesc is
+/// geometry-only (no NIF transform hierarchy at this level).
 pub fn build_flat_trunk(
     fd: &FlatDesc,
     billboard_diffuse: &str,
@@ -389,19 +388,18 @@ pub(crate) fn load_flat_desc(dds_model: &str, ctx: &QuadCtx<'_>) -> FlatDesc {
 // generate_quad — 3D-tree per-quad generator (FO4 default, trees_3d=true)
 // ---------------------------------------------------------------------------
 
-/// 3D-tree per-quad generator (default `trees_3d=true`). Returns the same `.bto`
+/// 3D-tree per-quad generator (default `trees_3d=true`). Writes the same `.bto`
 /// the object path writes. Trees with a 3D NIF LOD model flow through the object path
-/// (`parse_nif` → `transform_shape` → `build_bto`). Trees whose LOD model is a
-/// billboard `.dds` build FlatTrunk shapes (`build_flat_trunk`) and fold them into
-/// the same `.bto`.
+/// (`parse_nif` → `transform_shape` → `build_bto`); trees whose LOD model is a
+/// billboard `.dds` build FlatTrunk shapes (`build_flat_trunk`) into the same `.bto`.
 ///
 /// Port: DoLOD FO4 object path (LODApp.cs) + ParseNif billboard branch :1389-1505.
-/// Deviation from C# (noted): refs are sorted by `ref_id` before processing for
-/// determinism (C# `Parallel.For` has nondeterministic insertion order).
+/// Refs are sorted by `ref_id` for determinism (C# `Parallel.For` inserts in
+/// nondeterministic order).
 ///
-/// `atlas` is the REAL object `AtlasResult` (the driver `driver::run_trees`
-/// now threads it in from `build_object_lod`), so tree UVs ARE remapped onto the
-/// shared object atlas via `transform_shape`.
+/// `atlas` is the object `AtlasResult` that `driver::run_trees` threads in from
+/// `build_object_lod`, so tree UVs are remapped onto the shared object atlas via
+/// `transform_shape`.
 pub fn generate_quad(
     quad: &QuadDesc,
     ctx: &QuadCtx<'_>,

@@ -1,16 +1,10 @@
-"""Persistent cache for BA2/BSA archive file tables.
+"""Persistent SQLite cache for BA2/BSA archive file tables.
 
-Stores parsed file tables in SQLite so that unchanged archives don't need
-to be re-parsed on every load.  The cache key is (path, mtime_ns, size) —
-if either the modification time or file size changes, the entry is stale
-and the archive is re-parsed.
-
-Also caches the unified routing table (file_key → archive_path) as a
-single gzip-compressed pickle blob.  This lets BA2Manager skip opening
-all archives on warm starts — archives are opened lazily for extraction
-only when actually needed.
-
-Directories are still scanned every time to pick up new archives.
+Keyed by (path, mtime_ns, size); a changed mtime or size re-parses the archive.
+Also caches the unified routing table (file_key → archive_path) as one
+gzip-compressed pickle blob, so BA2Manager can skip opening archives on warm
+starts and open them lazily for extraction. Directories are still scanned
+every time to pick up new archives.
 """
 from __future__ import annotations
 

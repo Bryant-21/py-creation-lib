@@ -1,8 +1,7 @@
 # Format coverage spec
 
-This is the project audit for the owned `py_creation_lib/native/bsarchive/` fork. The crate was
-reset from an internal reference snapshot, and this document tracks the
-ModBox21 fork rather than the rejected scratch implementation.
+Format coverage for the project-owned `py_creation_lib/native/bsarchive/` fork, which was
+reset from an internal reference snapshot.
 
 ## Format coverage matrix
 
@@ -24,11 +23,11 @@ ModBox21 fork rather than the rejected scratch implementation.
 Cross-referenced against xEdit archive behavior.
 
 1. **Per-call zlib compression level override.** Implemented in the fork for FO4/Starfield chunk compression and TES4 file compression via the native pack wrapper.
-2. **Packed-data MD5 deduplication.** Legacy archive packing keys compressed payloads by `(size, hash)`; when two files compress to identical bytes, they share disk offset. Crate writes every chunk/file verbatim. -> **patch required** (post-M2 optimization; not required for game-load correctness).
+2. **Packed-data MD5 deduplication.** Legacy archive packing keys compressed payloads by `(size, hash)`; when two files compress to identical bytes, they share disk offset. Crate writes every chunk/file verbatim. -> **patch required** (optimization; not required for game-load correctness).
 3. **"Compression must save ≥32 bytes" rule.** Implemented in the native pack wrapper for TES4 files and FO4/Starfield chunks.
 4. **DDS-archive compression enforcement.** Implemented in the native pack wrapper for FO4/FO76/Starfield texture archives.
 5. **TES4 file/archive flag inference.** Implemented in the native pack wrapper for the project-supported TES4-family outputs.
-6. **FO4 file-order preservation.** Legacy archive packing stores FO4 files in caller's submission order. `ba2::fo4::Archive` is a `BTreeMap` keyed by `ArchiveKey`, so output order is hash-sorted. Byte-exact-vs-legacy-tools is a non-goal (plan line 9) but the listing order diverges. -> **accept divergence**; M2 validation compares file sets as sets, not ordered sequences.
+6. **FO4 file-order preservation.** Legacy archive packing stores FO4 files in caller's submission order. `ba2::fo4::Archive` is a `BTreeMap` keyed by `ArchiveKey`, so output order is hash-sorted. Byte-exact output versus legacy tools is a non-goal, but the listing order diverges. -> **accept divergence**; validation compares file sets, not ordered sequences.
 
 ## Format-coverage gaps
 
@@ -38,10 +37,4 @@ None blocking the project-supported scope. TES3 has been intentionally dropped f
 - FO4 GNRL v1 / v7 / v8 — ✓
 - FO4 DX10 v1 / v2 / v3 / v7 / v8 — ✓
 - Starfield GNRL v2 / v3 + LZ4 frame — ✓ (v3 DX10 uses `lz4_flex` block; matches `baSFdds → ctLZ4Block`)
-- BSA v104/v105 `ARCHIVE_EMBEDNAME` edge cases — ✓ (crate handles read side; write side requires the inference patch listed above)
-
-## Implementation status
-
-The fork base is now in place. Native Python bindings and project-specific
-packing behavior are being layered on top of the fork instead of continuing the
-rejected scratch implementation.
+- BSA v104/v105 `ARCHIVE_EMBEDNAME` edge cases — ✓ (read side in the crate; write side via the TES4 flag inference above)

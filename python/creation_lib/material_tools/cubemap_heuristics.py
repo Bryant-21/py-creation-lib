@@ -1,17 +1,10 @@
-"""FO4 environment cubemap heuristic selection.
+"""FO4 environment cubemap selection for FO76→FO4 material downgrades.
 
-FO76→FO4 BGSM/BGEM downgrade strips ``EnvmapTexture`` because FO76 PBR has no
-spec-gloss cubemap concept. FO4 vanilla materials almost always set one — the
-audit at ``cubemap_audit.txt`` shows weapons are 60%+ ``mipblur_DefaultOutside1``
-plus the dielectric / bronze / copper variants for grips and accents. Without a
-cubemap, FO4 metal surfaces render flat-grey — visually obvious on weapons.
-
-This module centralizes cubemap selection for all three downgrade call sites
-(BGSM, BGEM, inline NIF ``BSLightingShaderProperty``) so behavior stays
-consistent.
-
-Public API:
-  select_cubemap(source_path, mat) -> tuple[cubemap_path | None, scale | None]
+FO76 PBR has no spec-gloss cubemap, so the downgrade strips ``EnvmapTexture``.
+FO4 vanilla materials almost always set one (weapons: 60%+
+``mipblur_DefaultOutside1`` plus dielectric/bronze/copper variants for grips and
+accents); without it FO4 metal renders flat grey. Shared by the BGSM, BGEM, and
+inline NIF ``BSLightingShaderProperty`` downgrades.
 
 Heuristic ordering (first match wins; cubemap names verified against
 ``extracted/fo4/Textures/Shared/Cubemaps/``):
@@ -191,21 +184,13 @@ def select_cubemap(
 ) -> tuple[str | None, float | None]:
     """Select an FO4 environment cubemap for a downgraded BGSM/BGEM material.
 
-    Args:
-        source_path: Game-relative source path of the material (e.g.
-            ``"materials/weapons/gausspistol/foo.bgsm"``). May be empty;
-            heuristic still runs against the texture-name keywords.
-        mat: A BGSMData/BGEMData-like object with texture-slot string
-            attributes (DiffuseTexture, NormalTexture, etc.). Only the
-            attribute access is used — duck-typed for synthetic test fakes.
+    ``source_path`` is game-relative (``materials/weapons/...``) and may be empty;
+    texture-name keywords still apply. ``mat`` is duck-typed: only its texture-slot
+    string attributes (DiffuseTexture, NormalTexture, ...) are read.
 
-    Returns:
-        ``(cubemap_path, env_mapping_mask_scale)`` where both are ``None``
-        when the material category should leave EnvmapTexture empty
-        (effects/UI/sky/decals). Otherwise ``cubemap_path`` is a Data-relative
-        path under ``Shared/Cubemaps/`` and ``scale`` is the recommended
-        ``EnvironmentMappingMaskScale`` value (FO4 BGEMs only — BGSM callers
-        ignore the scale).
+    Returns ``(None, None)`` for categories that keep EnvmapTexture empty
+    (effects/UI/sky/decals), else a Data-relative ``Shared/Cubemaps/`` path and
+    the recommended ``EnvironmentMappingMaskScale``.
     """
     norm_path = _normalize_path(source_path)
 

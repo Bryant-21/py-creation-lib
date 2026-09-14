@@ -1,26 +1,20 @@
-"""FormID operations — Change, Renumber, Compact-for-ESL, Inject into Master.
+"""FormID operations: Change, Renumber, Compact-for-ESL, Inject into Master.
 
 xEdit equivalents:
-- `mniNavChangeFormID` — reassign one record's FormID
-- `mniNavRenumberFormIDsFrom` — bulk reassign starting at a base object_id
-- `mniNavCompactFormIDs` — pack object_ids into [0x800, 0x1000) for ESL
-- `mniNavRenumberFormIDsInject` — move records into a master plugin's namespace
+- `mniNavChangeFormID`: reassign one record's FormID
+- `mniNavRenumberFormIDsFrom`: bulk reassign starting at a base object_id
+- `mniNavCompactFormIDs`: pack object_ids into [0x800, 0x1000) for ESL
+- `mniNavRenumberFormIDsInject`: move records into a master plugin's namespace
 
-All four ops are special cases of the same primitive:
-
-    apply_object_id_mapping(session, owning_handle, object_id_map)
-
-which walks every loaded plugin, rewrites the record's own form_id and every
-formid/formid_array subrecord whose object_id is in the map AND whose high
-byte references `owning_handle` in that plugin's master space.
-
-Inject is slightly different: it also changes the *owning plugin* of each
-record from the source to the target master, so the high byte is rewritten
-per-plugin.
+All four go through `apply_object_id_mapping`, which rewrites, in every loaded
+plugin, each record's own form_id and each formid/formid_array subrecord whose
+object_id is in the map and whose high byte points at `owning_handle` in that
+plugin's master space. Inject also moves ownership to the target master, so the
+high byte is rewritten per plugin.
 
 Invariants (matching xEdit):
 - Cannot change a FormID to 0 or 0x14 (player)
-- ESL compact requires the plugin own ≤ 4096 records
+- ESL compact requires the plugin own ≤ 2048 records
 - Renumber's range must not collide with existing object_ids in `owning_handle`
 """
 
@@ -46,16 +40,11 @@ def apply_object_id_mapping(
     *,
     new_owning_handle: int | None = None,
 ) -> int:
-    """Apply `object_id_map` to every record/ref pointing at `owning_handle`.
+    """Apply `object_id_map` (24-bit keys) to every record/ref pointing at `owning_handle`.
 
-    Pre-conditions:
-    - `object_id_map` keys are 24-bit values (0..0xFFFFFF)
-    - If `new_owning_handle` is not None and != owning_handle, this is the
-      "Inject into master" case: every referenced FormID's high byte gets
-      rewritten to point at `new_owning_handle` and target plugins gain
-      `new_owning_handle` as a master.
-
-    Returns the number of records that were rewritten (across all plugins).
+    A `new_owning_handle` other than `owning_handle` is the Inject case: each
+    referenced FormID's high byte is rewritten to it and target plugins gain it as
+    a master. Returns the number of records rewritten across all plugins.
     """
     if not object_id_map:
         return 0

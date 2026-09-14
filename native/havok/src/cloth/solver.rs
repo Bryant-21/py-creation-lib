@@ -1,39 +1,13 @@
-//! XPBD preview solver for FO4 cloth parameter tuning.
+//! XPBD preview solver for FO4 cloth parameter tuning: distance, bend and range
+//! constraints plus capsule collision.
 //!
-//! Extended Position-Based Dynamics with distance constraints, bend constraints,
-//! range constraints, and capsule collision.
+//! Editor preview only. The Havok runtime uses PGS constraint resolution,
+//! continuous collision and material parameters with no XPBD equivalent, so the
+//! goal is output that responds monotonically to parameter changes, not parity.
 //!
-//! # Contract
-//!
-//! This solver is **XPBD (Extended Position-Based Dynamics)**, NOT the Havok
-//! cloth runtime. It is an editor-preview tool only:
-//!
-//! - **Non-goal:** bit-equivalence with in-game Havok cloth simulation.
-//! - **Goal:** "visually plausible and monotonic in parameter changes" — increasing
-//!   stiffness should visually increase resistance, increasing damping should damp
-//!   faster, etc.
-//!
-//! ## Unit conventions
-//!
-//! - **Gravity:** m/s², Z-up. Canonical value is `cloth::units::GRAVITY_Z` (-9.81).
-//!   The `SolverConfig::gravity` default uses this constant.
-//!
-//! ## Compliance mapping
-//!
-//! Havok stiffness [0, 1] maps to XPBD compliance via:
-//! ```text
-//! compliance = (1 - clamp(stiffness, 0, 0.9999)) * 1e-3 + 1e-6
-//! ```
-//! This preserves monotonicity: stiffness=1.0 → compliance ≈ 1e-6 (very stiff),
-//! stiffness=0.0 → compliance ≈ 1e-3 (loose).
-//!
-//! ## Editor preview vs. in-game parity
-//!
-//! The Havok cloth runtime (`hclSimClothData` + `hclConstraintSet`) uses a
-//! proprietary solver with PGS (Projected Gauss-Seidel) constraint resolution,
-//! continuous collision detection, and material-specific parameters that have no
-//! XPBD equivalent. This solver cannot reproduce in-game behaviour; it is only
-//! useful for qualitative parameter exploration in the mod toolkit editor.
+//! Gravity is m/s², Z-up (`cloth::units::GRAVITY_Z`). Havok stiffness [0, 1] maps
+//! to compliance `(1 - clamp(stiffness, 0, 0.9999)) * 1e-3 + 1e-6`: stiffness 1.0
+//! gives ~1e-6 (stiff), 0.0 gives ~1e-3 (loose).
 
 use std::collections::HashSet;
 
@@ -113,12 +87,8 @@ pub struct SolverConfig {
     /// per-substep factor is derived as `r.powf(substep_dt)` so the effective
     /// retention is substep-count–invariant.
     pub damping: f32,
-    /// Optional unit-aware velocity retention per second.
-    ///
-    /// When set, the per-substep damping factor is derived as
-    /// `damping_per_second.powf(dt / substeps)`, making the effective damping
-    /// independent of the number of substeps. Prefer this over `damping` for
-    /// any setup that may run at multiple substep counts.
+    /// Optional velocity retention per second. When set, the per-substep factor
+    /// is `damping_per_second.powf(dt / substeps)`, independent of substep count.
     pub damping_per_second: Option<f32>,
     /// Capsule collision push-out margin.
     pub collision_epsilon: f32,
@@ -248,11 +218,8 @@ impl Solver {
         }
     }
 
-    /// Create a solver with explicit previous positions, encoding an initial velocity.
-    ///
-    /// `prev_positions[i]` is used to derive particle i's initial velocity as
-    /// `(positions[i] - prev_positions[i]) / dt`. This is useful in tests that
-    /// need a non-zero initial velocity without an external force.
+    /// Create a solver whose particles start with velocity
+    /// `(positions[i] - prev_positions[i]) / dt`.
     #[allow(clippy::too_many_arguments)]
     pub fn with_initial_velocities(
         positions: Vec<Vec3>,
@@ -603,17 +570,8 @@ impl Solver {
 // Stiffness ↔ compliance conversion
 // ---------------------------------------------------------------------------
 
-/// Convert Havok stiffness [0, 1] to XPBD compliance.
-///
-/// Mirrors the Python reference:
-/// ```python
-/// s = clamp(stiffness, 0.0, 0.9999)
-/// return (1.0 - s) * 1e-3 + 1e-6
-/// ```
-///
-/// The `dt` parameter is accepted for API symmetry with callers that need
-/// to scale compliance by dt² for per-substep application — not used here
-/// because the solver's `project_distance_constraints` already divides by h².
+/// Convert Havok stiffness [0, 1] to XPBD compliance. `_dt` is unused because
+/// `project_distance_constraints` already divides by h².
 pub fn havok_stiffness_to_compliance(stiffness: f32, _dt: f32) -> f32 {
     let s = stiffness.clamp(0.0, 0.9999);
     (1.0 - s) * 1.0e-3 + 1.0e-6

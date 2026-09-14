@@ -1,20 +1,15 @@
-"""Bethesda archive manager — unified BA2 + BSA file lookup.
+"""Bethesda archive manager: unified BA2 + BSA file lookup.
 
 Scans directories for BA2 (FO4/FO76/Starfield) and BSA (Skyrim LE/SE)
-archives, provides a single `find()` method that searches all loaded
-archives regardless of format.
+archives and exposes one `find()` across all of them.
 
-Archives are opened lazily: scan_directories() collects archive paths but
-does not open them.  The first call to find() that reaches the archive
-layer triggers a one-time batch open of all collected archives.  This
-means archives are never touched when loose-file lookup (done by callers
-via texture_dirs) already satisfies every request.
-
-Unified routing cache (archive_cache.py) persists the combined
-``{file_key: archive_path}`` index to SQLite, keyed by a fingerprint of
-all archive mtimes + sizes.  On warm starts the index is loaded in one
-shot and archives are opened lazily only when extract() is actually
-needed — skipping the ~700 ms per-archive open+parse loop.
+scan_directories() only collects paths. The first find() that reaches the
+archive layer opens them all in one batch, so archives are never touched when
+loose-file lookup (via texture_dirs) satisfies every request. The routing
+cache (archive_cache.py) persists ``{file_key: archive_path}`` keyed by a
+fingerprint of archive mtimes + sizes; on warm starts it loads in one shot and
+archives open only when extract() needs them, skipping the ~700 ms
+per-archive open+parse loop.
 """
 from __future__ import annotations
 
@@ -148,17 +143,10 @@ class _NativeArchive:
 class BA2Manager:
     """Manages multiple archive files (BA2 + BSA) for on-demand extraction.
 
-    Two-phase startup:
-
-    1. ``scan_directories()`` — collect archive *paths* only. Fast (directory
-       listing). No archives opened.
-
-    2. First ``find()`` call triggers ``_ensure_loaded()``:
-       - **Warm start (unified routing cache hit):** load ``{file_key →
-         archive_path}`` from a single SQLite blob (~few ms for fingerprint
-         check + decompress). Archives are then opened lazily per-extraction.
-       - **Cold start (cache miss):** open every archive, build unified
-         routing, persist it for next time.
+    ``scan_directories()`` only lists paths. The first ``find()`` calls
+    ``_ensure_loaded()``: a routing-cache hit loads ``{file_key →
+    archive_path}`` from one SQLite blob (a few ms) and opens archives per
+    extraction; a miss opens every archive, builds the routing, and persists it.
 
     Usage::
 

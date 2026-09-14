@@ -364,10 +364,16 @@ impl<R: Read + Seek> BasicReader<R> {
             "SizedString" => Ok(NifValue::String(self.read_sized_string()?)),
             "SizedString16" => Ok(NifValue::String(self.read_sized_string16()?)),
             "string" | "NiFixedString" => {
-                let s = self.read_ni_fixed_string(version_packed, strings)?;
-                match s {
-                    Some(v) => Ok(NifValue::String(v)),
-                    None => Ok(NifValue::Null),
+                if version_packed < 0x14010003 {
+                    return Ok(NifValue::String(self.read_sized_string()?));
+                }
+                let index = self.read_int()?;
+                if index < 0 {
+                    Ok(NifValue::Null)
+                } else if let Some(value) = strings.get(index as usize) {
+                    Ok(NifValue::String(value.clone()))
+                } else {
+                    Ok(NifValue::Int(index as i64))
                 }
             }
             other => Err(IoError::UnknownType(other.to_string())),
@@ -629,6 +635,11 @@ impl<W: Write> BasicWriter<W> {
                 _ => "",
             }),
             "string" | "NiFixedString" => {
+                if version_packed >= 0x14010003 {
+                    if let NifValue::Int(index) = val {
+                        return self.write_int(*index as i32);
+                    }
+                }
                 let s: Option<&str> = match val {
                     NifValue::Null => None,
                     NifValue::String(s) => Some(s.as_str()),
@@ -760,4 +771,20 @@ fn f32_to_half(f: f32) -> u16 {
         }
     }
     (sign << 15) | ((exp_h & 0x1F) << 10) | (mant_h & 0x3FF)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+
+    use super::*;
+
+    #[test]
+    fn invalid_string_table_index_is_preserved_for_validation() {
+        let mut reader = BasicReader::new(Cursor::new(5i32.to_le_bytes()));
+        let value = reader
+            .read_basic("NiFixedString", 0x1402_0007, &["Only".to_string()])
+            .unwrap();
+        assert_eq!(value, NifValue::Int(5));
+    }
 }

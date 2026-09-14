@@ -8,6 +8,8 @@ themes — only the accent/interactive colors change.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
+import math
 from imgui_bundle import imgui
 
 
@@ -85,11 +87,6 @@ class GameTheme:
     resize_grip_active: tuple[float, float, float, float]
 
 
-def _rgb(r: int, g: int, b: int) -> tuple[float, float, float, float]:
-    """Convert 0-255 RGB to (r, g, b, 1.0) floats."""
-    return (r / 255, g / 255, b / 255, 1.0)
-
-
 def _make_theme(
     theme_id: str,
     name: str,
@@ -98,6 +95,7 @@ def _make_theme(
     highlight: tuple,
     *,
     light: bool = False,
+    checkmark: tuple | None = None,
 ) -> GameTheme:
     """Build a full GameTheme from three semantic colors.
 
@@ -129,7 +127,7 @@ def _make_theme(
         header_hover=_darken(main, 0.50),
         header_active=_darken(highlight, 0.60),
         # Checkmark / sliders
-        checkmark=main,
+        checkmark=main if checkmark is None else checkmark,
         slider_grab=main,
         slider_grab_active=highlight,
         # Resize grip
@@ -172,12 +170,13 @@ SKYRIM = _make_theme(
 )
 
 # Fallout 76 — Amber/gold wasteland
-#   main=#f5cb5b  inactive=#d8b252  highlight=#f9e390
+#   main=#c9a227  inactive=#d8b252  highlight=#f9e390
 FALLOUT76 = _make_theme(
     "fallout76", "Fallout 76",
-    main=_hex("#f5cb5b"),
+    main=_hex("#C9A227"),
     inactive=_hex("#d8b252"),
     highlight=_hex("#f9e390"),
+    checkmark=_hex("#FFF0BE"),
 )
 
 # Fallout 3 — Pip-Boy green
@@ -190,12 +189,13 @@ FALLOUT3 = _make_theme(
 )
 
 # Fallout NV — Pip-Boy amber
-#   main=RGB(255,182,66)  inactive=#767455  highlight=#b8b37a
+#   main=#8f6d17  inactive=#767455  highlight=#b8b37a
 FALLOUTNV = _make_theme(
     "falloutnv", "Fallout: New Vegas",
-    main=_rgb(255, 182, 66),
+    main=_hex("#8F6D17"),
     inactive=_hex("#767455"),
     highlight=_hex("#b8b37a"),
+    checkmark=_hex("#FFB642"),
 )
 
 # Dracula Dark — purple/pink accents on a deep dark base
@@ -400,34 +400,54 @@ def _build_full_colors(theme: GameTheme) -> dict[int, tuple[float, float, float,
     }
 
 
-def apply_theme(theme: GameTheme) -> None:
-    """Apply a GameTheme to the current ImGui style.
+STYLE_COLORS = {imgui.Col_(index).name: imgui.Col_(index) for index in range(int(imgui.Col_.count))}
+STATUS_COLORS = ("status_success", "status_warning", "status_error")
 
-    Call once at startup (in post_init) and then call ``apply_tab_style``
-    each frame to keep tab colors stable against hello_imgui resets.
-    """
+
+def normalize_color_overrides(overrides: dict | None) -> dict[str, tuple]:
+    if not isinstance(overrides, dict):
+        return {}
+    return {
+        name: tuple(rgba) for name, rgba in overrides.items()
+        if (name in STYLE_COLORS or name in STATUS_COLORS)
+        and isinstance(rgba, (list, tuple)) and len(rgba) == 4
+        and all(isinstance(value, (int, float)) and not isinstance(value, bool)
+                and math.isfinite(value) and 0 <= value <= 1 for value in rgba)
+    }
+
+
+@lru_cache(maxsize=32)
+def _default_theme_colors(theme: GameTheme) -> tuple:
+    from .appearance import appearance_tokens, modern_colors
+
+    style = imgui.Style()
+    (imgui.style_colors_light if theme.light else imgui.style_colors_dark)(style)
+    for col, rgba in (_build_full_colors(theme) | modern_colors(theme)).items():
+        style.set_color_(col, imgui.ImVec4(*rgba))
+    colors = {name: tuple(style.color_(col)) for name, col in STYLE_COLORS.items()}
+    tokens = appearance_tokens(theme.light)
+    colors.update({name: getattr(tokens, name.removeprefix("status_")) for name in STATUS_COLORS})
+    return tuple(colors.items())
+
+
+def get_theme_colors(theme: GameTheme, color_overrides: dict | None = None) -> dict[str, tuple]:
+    return dict(_default_theme_colors(theme)) | normalize_color_overrides(color_overrides)
+
+
+def apply_theme(theme: GameTheme, color_overrides: dict | None = None) -> None:
+    apply_tab_style(theme, color_overrides)
+
+
+def apply_tab_style(theme: GameTheme, color_overrides: dict | None = None) -> None:
+    # HelloImGui restores its base palette during focus and docking changes.
+    from .appearance import apply_modern_metrics, set_status_colors
+
+    apply_modern_metrics()
     style = imgui.get_style()
-    style.window_rounding = 4.0
-    style.frame_rounding = 2.0
-    style.grab_rounding = 2.0
-    style.scrollbar_rounding = 4.0
-    style.frame_border_size = 1.0
-
-    sc = style.set_color_
-    for col, rgba in _build_full_colors(theme).items():
-        sc(col, imgui.ImVec4(*rgba))
-
-
-def apply_tab_style(theme: GameTheme) -> None:
-    """Reapply themed tab + interactive colors each frame.
-
-    hello_imgui resets many style colors on certain events (focus change,
-    docking).  We reapply all accent-derived colors, not just tabs.
-    """
-    style = imgui.get_style()
-    s = style.set_color_
-    for col, rgba in _build_full_colors(theme).items():
-        s(col.value, imgui.ImVec4(*rgba))
+    colors = get_theme_colors(theme, color_overrides)
+    for name, col in STYLE_COLORS.items():
+        style.set_color_(col, imgui.ImVec4(*colors[name]))
+    set_status_colors({name.removeprefix("status_"): colors[name] for name in STATUS_COLORS})
 
 
 def draw_theme_selector(current_id: str) -> str | None:

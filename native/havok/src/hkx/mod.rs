@@ -12,4 +12,4 @@ pub mod writer;
 pub use model::{ArraySource, HkxFile, HkxMember, HkxObject, read_packfile};
 pub use patcher::{PatchRange, patch_hkx};
 pub use tagfile::{Tagfile, parse_tagfile};
-pub use writer::write_hkx;
+pub use writer::{write_hkx, write_hkx_with_layout};

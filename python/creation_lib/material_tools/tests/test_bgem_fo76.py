@@ -1,17 +1,10 @@
 """FO76 BGEM round-trip, glass-refraction, and downgrade tests.
 
-The existing BGEM reader/writer in ``creation_lib.material_tools.bgem_bin`` already
-implements the v21+ glass refraction block and the v22-only
-``GlassBlurScaleFactor`` field, matching libfo76utils (refs/fo76texconv/.../
-libfo76utils/src/bgsmfile.cpp::loadBGEMFile, lines 195 and 202-207).
-
-These tests lock in:
-  1. Byte-identical round-trip of a real FO76 v22 BGEM (glass disabled).
-  2. Round-trip of a synthesized v22 BGEM with glass refraction enabled,
-     exercising the v21+ / v22-only branches.
-  3. Downgrade of a v22 BGEM to FO4 v20 via the ground-truth
-     :func:`creation_lib.material_tools.convert.downgrade_bgem`, with all FO76-only
-     Optional fields cleared, and the result re-parseable as a valid v20 BGEM.
+``bgem_bin`` reads the v21+ glass refraction block and the v22-only
+``GlassBlurScaleFactor``, as libfo76utils ``bgsmfile.cpp::loadBGEMFile`` does.
+Covers byte-identical round-trip of a real FO76 v22 BGEM (glass off), round-trip
+of a synthesized v22 BGEM with glass on, and ``convert.downgrade_bgem`` to
+``BGEM_VERSION_FO4`` with FO76-only fields cleared and the result re-parseable.
 """
 
 from __future__ import annotations

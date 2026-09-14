@@ -9,7 +9,9 @@ from creation_lib.swf.tags import (
     SwfTag, RawTag, EndTag, ShowFrameTag, SetBackgroundColorTag,
     DefineShapeTag, PlaceObject2Tag, RemoveObject2Tag,
     DefineSpriteTag, FrameLabelTag, FileAttributesTag, MetadataTag,
+    SymbolClassTag,
 )
+from creation_lib.swf.project import build_document, load_project_file
 from creation_lib.swf.svg_io import shape_to_svg, svg_to_shapes
 from creation_lib.swf.trace import trace_image, trace_image_file, TraceSettings
 
@@ -22,6 +24,8 @@ __all__ = [
     "SwfTag", "RawTag", "EndTag", "ShowFrameTag", "SetBackgroundColorTag",
     "DefineShapeTag", "PlaceObject2Tag", "RemoveObject2Tag",
     "DefineSpriteTag", "FrameLabelTag", "FileAttributesTag", "MetadataTag",
+    "SymbolClassTag",
+    "build_document", "load_project_file",
     "shape_to_svg", "svg_to_shapes",
     "trace_image", "trace_image_file", "TraceSettings",
 ]

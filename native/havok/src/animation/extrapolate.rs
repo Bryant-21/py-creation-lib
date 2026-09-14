@@ -1,11 +1,5 @@
-/// Parameterized motion / extrapolation.
-///
-/// Extends a short clip to a target duration using one of three policies:
-/// - `Cyclic`: repeat the clip (loop).
-/// - `LinearHold`: hold the last frame after the clip ends.
-/// - `Mirror`: reflect the clip back-and-forth (ping-pong).
-///
-/// Mirrors SDK `hkaParametricAnimationExtrapolationUtil` semantics.
+/// Extends a short clip to a target duration by looping, holding the last frame,
+/// or ping-ponging. Follows SDK `hkaParametricAnimationExtrapolationUtil` semantics.
 use crate::animation::clip::{AnimationClip, AnimationKeyframe, BoneChannel};
 
 /// Extension policy for `extrapolate`.

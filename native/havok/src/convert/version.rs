@@ -113,7 +113,7 @@ pub fn parse_target_version(target: &str) -> HavokResult<HavokVersion> {
     }
 
     match trimmed.to_ascii_lowercase().as_str() {
-        "skyrim" | "skyrimse" | "skyrim_se" => get_version(46),
+        "skyrim" | "skyrimse" | "skyrim_se" => get_version(40),
         "fo4" | "fallout4" | "fallout_4" => get_version(53),
         "fo76" | "fallout76" | "fallout_76" => get_version(56),
         _ => get_version_by_name(trimmed),

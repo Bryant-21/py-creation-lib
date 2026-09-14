@@ -112,8 +112,8 @@ impl QuadDesc {
 
 /// Build the list of LOD blocks for a given level and worldspace.
 ///
-/// Ported from `TerrainLOD.GenerateLOD` block-origin loop (R1 §2/§10,
-/// `TerrainLOD.cs:1756-1801`). Steps `level` across the worldspace bbox.
+/// Ported from `TerrainLOD.GenerateLOD` block-origin loop
+/// (`TerrainLOD.cs:1756-1801`). Steps `level` across the worldspace bbox.
 /// If `settings.global.chunk` is Some and its `level` matches, keeps only
 /// blocks within `[w..=e] x [s..=n]`.
 pub fn quads_for(
@@ -173,18 +173,17 @@ pub(crate) fn aligned_sw_cell(sw: (i32, i32), align: i32) -> (i32, i32) {
 ///
 /// Unlike `quads_for` (which steps the full declared SW..NE box and is used by the
 /// object/tree paths), terrain emission is bounded by the land-cell extent
-/// (`bbWorld`) and grid-anchored to the SW corner — a faithful port of the
-/// `GenerateLOD` terrain loop (`TerrainLOD.cs:1756-1758`):
+/// (`bbWorld`) and grid-anchored to the SW corner, as in the `GenerateLOD`
+/// terrain loop (`TerrainLOD.cs:1756-1758`):
 ///
 /// ```text
 /// for j = southWestY + (bbWorld.py1 - southWestY)/level*level; j <= bbWorld.py2; j += level
 ///   for k = southWestX + (bbWorld.px1 - southWestX)/level*level; k <= bbWorld.px2; k += level
 /// ```
 ///
-/// Quads entirely outside `bbWorld` are never emitted (gap 4: stops the
-/// ~1432-extra-btr over-production). In-bounds quads whose cells lack a LAND
-/// record are still emitted — `build_terrain_mesh` synthesizes their terrain
-/// (gap 3). The `chunk` filter is honored identically to `quads_for`.
+/// Quads entirely outside `bbWorld` are never emitted. In-bounds quads whose
+/// cells lack a LAND record are still emitted; `build_terrain_mesh` synthesizes
+/// their terrain. The `chunk` filter is honored as in `quads_for`.
 pub fn terrain_quads_for(
     world: &crate::input::WorldspaceInput,
     level: i32,
@@ -371,7 +370,7 @@ mod tests {
     /// A worldspace whose DECLARED bounds extend far past the cells that carry
     /// LAND. `terrain_quads_for` must enumerate only quads that overlap the
     /// land-cell extent (xLODGen's `bbWorld` loop, TerrainLOD.cs:1756-1758),
-    /// NOT the full declared SW..NE box. This is the over-production fix (gap 4).
+    /// NOT the full declared SW..NE box, which would over-produce quads.
     fn world_land_island() -> crate::input::WorldspaceInput {
         // LAND only in cells x∈[2,5], y∈[2,5]; declared bounds widened to [-4,11].
         let cells: Vec<_> = (2..6)

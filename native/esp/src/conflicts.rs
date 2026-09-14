@@ -148,10 +148,9 @@ fn walk_collect(
 /// `signatures` (optional) restricts the scan to records of those record
 /// signatures (case-insensitive).
 ///
-/// Returns a list of dicts: each has `form_id`, `signature`, `editor_id`,
-/// `status` (one of "override" / "conflict"), `mergeable`, and `chain` —
-/// itself a list of dicts with `plugin_handle`, `plugin_name`,
-/// `load_order_index`, `payload_hash`.
+/// Returns `(form_id, signature, editor_id, status, mergeable, chain)` tuples,
+/// where `status` is "override" or "conflict" and each `chain` entry is
+/// `(plugin_handle, plugin_name, load_order_index, raw_form_id, payload_hash)`.
 #[pyfunction(name = "scan_conflicts_native", signature = (handles, signatures=None))]
 pub(crate) fn scan_conflicts_native(
     py: Python<'_>,

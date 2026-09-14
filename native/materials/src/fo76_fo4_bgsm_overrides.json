@@ -1,4 +1,7 @@
 {
+  "materials/landscape/rocks/rockcliff76chunky.bgsm": {
+    "SmoothSpecTexture": "Landscape/Rocks/RockCliff76_s.dds"
+  },
   "materials/furniture/workstationdistillery/workstationdistillery01_pipes.bgsm": {
     "EnvmapTexture": "Shared/Cubemaps/mipblur_DefaultOutside1_bronze.dds",
     "EnvironmentMapping": true,
@@ -6,6 +9,21 @@
   },
   "materials/setdressing/modifieddistiller/modifieddistiller01.bgsm": {
     "EnvmapTexture": "Shared/Cubemaps/mipblur_DefaultOutside1_bronze.dds",
+    "EnvironmentMapping": true,
+    "EnvironmentMappingMaskScale": 1.0
+  },
+  "materials/setdressing/chargen/chargentrophy01.bgsm": {
+    "EnvmapTexture": "Shared/Cubemaps/MetalBrushedGold_e.dds",
+    "EnvironmentMapping": true,
+    "EnvironmentMappingMaskScale": 1.0
+  },
+  "materials/setdressing/chargen/chargentrophy03.bgsm": {
+    "EnvmapTexture": "Shared/Cubemaps/MetalBrushedGold_e.dds",
+    "EnvironmentMapping": true,
+    "EnvironmentMappingMaskScale": 1.0
+  },
+  "materials/setdressing/chargen/chargentrophy04.bgsm": {
+    "EnvmapTexture": "Shared/Cubemaps/MetalBrushedGold_e.dds",
     "EnvironmentMapping": true,
     "EnvironmentMappingMaskScale": 1.0
   }

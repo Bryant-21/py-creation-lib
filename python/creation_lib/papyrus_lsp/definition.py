@@ -47,23 +47,12 @@ def _find_definition_in_source(source: str, symbol: str) -> int:
 
 
 def get_definition(text: str, line: int, col: int, db) -> DefinitionResult | None:
-    """Resolve the symbol under the cursor to its definition file and line.
+    """Resolve the symbol under the cursor (0-based line, col) to its definition.
 
-    Strategy:
-    1. Get word at (line, col). Return None if not on a word.
-    2. Parse the script to get the AST. Check local definitions first.
-    3. Check if the word is a known script name in db -> jump to its file.
-    4. Check dot context: receiver.member -> jump to member in receiver's script.
-    5. Return None if unresolvable.
-
-    Args:
-        text: Full script text (current buffer content).
-        line: 0-based line index.
-        col: 0-based column index.
-        db: ScriptDB instance.
-
-    Returns:
-        DefinitionResult(path, line) or None.
+    Checks local definitions in the parsed AST, then known script names in db,
+    then ``receiver.member`` in the receiver's script. Returns
+    DefinitionResult(path, line), or None when the cursor isn't on a word or
+    nothing resolves.
     """
     from . import parse_script
 

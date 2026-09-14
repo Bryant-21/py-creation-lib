@@ -1,15 +1,15 @@
 //! codegen — derive a `PexFilePayload` from a type-checked Papyrus AST.
 //!
-//! The writer (`pex_writer::write_pex_bytes`) is already byte-faithful, so
-//! codegen's only job is to produce the correct payload.
+//! `pex_writer::write_pex_bytes` is byte-faithful, so codegen only has to
+//! produce the correct payload.
 //!
 //! ## Determinism note
-//! PapyrusCompiler is NOT byte-deterministic: the user-flag name block in the
-//! string table AND the function order within a state are emitted in per-process
-//! randomized .NET `Hashtable` order. Our codegen is fully deterministic. Parity
-//! is therefore checked by ORDER-CANONICALIZED SEMANTIC equivalence (sorted
-//! string table + user_flags + per-state functions; resolved instruction/local/
-//! debug trees), never raw byte-equality — see the golden tests.
+//! PapyrusCompiler is not byte-deterministic: the user-flag name block in the
+//! string table and the function order within a state follow per-process
+//! randomized .NET `Hashtable` order. This codegen is deterministic, so parity
+//! is checked by order-canonicalized semantic equivalence (sorted string table,
+//! user_flags and per-state functions; resolved instruction/local/debug trees),
+//! never raw bytes. See the golden tests.
 
 use crate::ast::*;
 use crate::parser::ParsedGroup;
@@ -126,6 +126,11 @@ struct Codegen<'a> {
     /// script reads/writes of an auto property hit the backing var directly,
     /// never PROPGET/PROPSET (empirically confirmed).
     prop_vars: HashMap<String, String>,
+    /// Property name (lowercased) → DECLARED casing, for every property that has
+    /// NO backing variable: full Get/Set properties and `AutoReadOnly`. Bare-name
+    /// reads of these must go through PROPGET on `self` — emitting the bare name
+    /// references a variable that does not exist and is a runtime fatal.
+    handler_props: HashMap<String, String>,
     /// Whether the per-function shared `::nonevar` (None) sentinel for discarded
     /// void call results has been allocated yet.
     nonevar_used: bool,
@@ -140,7 +145,7 @@ struct Codegen<'a> {
     debug_lines: Vec<u16>,
     /// Block-scope stack for locals ordering. Each block contributes its own
     /// temps first, then its statements' declared locals / nested blocks, in
-    /// source order — PCompiler's per-block prepend (§4). Flattened depth-first
+    /// source order (PCompiler's per-block prepend). Flattened depth-first
     /// at function exit into the `.localTable`.
     block_stack: Vec<BlockFrame>,
     /// Label id → instruction index it resolves to (the index of the next
@@ -198,16 +203,20 @@ impl<'a> Codegen<'a> {
             }
         });
         let mut prop_vars = HashMap::new();
+        let mut handler_props = HashMap::new();
         let mut members = HashMap::new();
         for p in &ast.properties {
             members.insert(p.name.to_lowercase(), parse_ty(&p.ty));
             if p.flags.iter().any(|f| f.eq_ignore_ascii_case("Auto")) {
                 prop_vars.insert(p.name.to_lowercase(), format!("::{}_var", p.name));
+            } else {
+                handler_props.insert(p.name.to_lowercase(), p.name.clone());
             }
         }
-        // Accessing an INHERITED auto-property reads/writes the declaring
-        // ancestor's backing variable `::Name_var` directly. Own properties take
-        // precedence (or_insert), so an override keeps this script's mapping.
+        // A child cannot access an ancestor's private auto-property backing
+        // variable directly. Inherited properties must dispatch through
+        // PROPGET/PROPSET on self; own auto-properties still use their local
+        // backing variables above.
         if let Some(parent) = &ast.parent {
             for ancestor in resolver.get_hierarchy(parent) {
                 if let Some(anc) = resolver.parsed(&ancestor) {
@@ -217,10 +226,10 @@ impl<'a> Codegen<'a> {
                         members
                             .entry(p.name.to_lowercase())
                             .or_insert_with(|| parse_ty(&p.ty));
-                        if p.flags.iter().any(|f| f.eq_ignore_ascii_case("Auto")) {
-                            prop_vars
+                        if !prop_vars.contains_key(&p.name.to_lowercase()) {
+                            handler_props
                                 .entry(p.name.to_lowercase())
-                                .or_insert_with(|| format!("::{}_var", p.name));
+                                .or_insert_with(|| p.name.clone());
                         }
                     }
                 }
@@ -238,6 +247,7 @@ impl<'a> Codegen<'a> {
             temp_counter: 0,
             unused_temps: HashMap::new(),
             prop_vars,
+            handler_props,
             nonevar_used: false,
             members,
             scope: HashMap::new(),
@@ -277,7 +287,6 @@ impl<'a> Codegen<'a> {
     fn run(mut self) -> PexFilePayload {
         let parent = self.parent_name();
 
-        // Every function/event lives in the unnamed default state for Batch 1.
         // Iterate the ORIGINAL AST nodes (not a clone) so expression addresses
         // match the NodeId map built from `self.ast` — cloning would break the
         // `type_of_expr` lookups.
@@ -482,11 +491,6 @@ impl<'a> Codegen<'a> {
         }
     }
 
-    /// Member variables, then properties. Auto properties emit a property
-    /// (flags read|write|autovar = 7) plus a backing variable `::<Name>_var`.
-    /// Handler properties emit a property whose flags are read|write driven by
-    /// getter/setter presence, with the bodies lowered into `get_<P>`/`set_<P>`
-    /// functions (debug type 1/2, named after the property).
     /// User-flag bitmask for every user-flag-table name present in `flags`
     /// (each flag's table index → bit). Used for the object record's script-level
     /// flags (e.g. `Hidden` → bit 0).
@@ -522,6 +526,11 @@ impl<'a> Codegen<'a> {
         self.user_flags_mask(flags) & !self.conditional_bit()
     }
 
+    /// Member variables, then properties. Auto properties emit a property
+    /// (flags read|write|autovar = 7) plus a backing variable `::<Name>_var`.
+    /// Handler properties emit a property whose flags are read|write driven by
+    /// getter/setter presence, with the bodies lowered into `get_<P>`/`set_<P>`
+    /// functions (debug type 1/2, named after the property).
     fn build_props_and_vars(
         &mut self,
         debug_functions: &mut Vec<PexDebugFunctionPayload>,
@@ -547,7 +556,51 @@ impl<'a> Codegen<'a> {
         }
         for p in &ast.properties {
             let is_auto = p.flags.iter().any(|f| f.eq_ignore_ascii_case("Auto"));
+            let is_auto_read_only = p
+                .flags
+                .iter()
+                .any(|f| f.eq_ignore_ascii_case("AutoReadOnly"));
             let ty = type_string_for_decl(&p.ty);
+            if is_auto_read_only {
+                // AutoReadOnly has no backing variable: the exe emits a read-only
+                // property whose synthesized getter returns the constant directly.
+                // Emitting flags=0 with no getter instead makes the VM reject the
+                // whole class at load time.
+                let value = p
+                    .default
+                    .as_ref()
+                    .and_then(const_value)
+                    .unwrap_or(PexValuePayload {
+                        value_type: VT_NONE,
+                        data: serde_json::Value::Null,
+                    });
+                let line = p.pos.line as u16;
+                properties.push(PexPropertyPayload {
+                    name: p.name.clone(),
+                    ty: ty.clone(),
+                    docstring: p.docstring.clone(),
+                    user_flags: self.prop_user_flags(&p.flags),
+                    flags: 1,
+                    auto_var: String::new(),
+                    getter: Some(PexFunctionPayload {
+                        name: format!("get_{}", p.name),
+                        return_type: ty,
+                        docstring: String::new(),
+                        user_flags: 0,
+                        is_native: false,
+                        is_global: false,
+                        params: Vec::new(),
+                        locals: Vec::new(),
+                        instructions: vec![PexInstructionPayload {
+                            opcode: OP_RETURN,
+                            args: vec![value],
+                        }],
+                    }),
+                    setter: None,
+                });
+                debug_functions.push(self.dbg_fn(&p.name, "", 1, vec![line]));
+                continue;
+            }
             if is_auto {
                 let var_name = format!("::{}_var", p.name);
                 properties.push(PexPropertyPayload {
@@ -808,8 +861,22 @@ impl<'a> Codegen<'a> {
                 match target {
                     Expr::NameExpr { name, .. } => {
                         let target_ty = self.type_of_expr(target);
-                        let v = self.lower_expr_for_target(value, line, &target_ty);
-                        self.emit(OP_ASSIGN, vec![ident(&self.resolve_name(name)), v], line);
+                        // A property with no backing variable is written through
+                        // PROPSET on `self`, same as `obj.Prop =`.
+                        if let Some(member) = self.self_handler_prop(name) {
+                            let dest = self.alloc_temp(&target_ty);
+                            let raw = self.lower_expr(value, line);
+                            let v = self.cast_to(raw, self.type_of_expr(value), &target_ty, line);
+                            self.emit(OP_ASSIGN, vec![ident(&dest), v], line);
+                            self.emit(
+                                OP_PROPSET,
+                                vec![ident(&member), ident("self"), ident(&dest)],
+                                line,
+                            );
+                        } else {
+                            let v = self.lower_expr_for_target(value, line, &target_ty);
+                            self.emit(OP_ASSIGN, vec![ident(&self.resolve_name(name)), v], line);
+                        }
                     }
                     Expr::ArrayAccessExpr { array, index, .. } => {
                         // RHS is materialized into a temp of the element type, then
@@ -828,11 +895,10 @@ impl<'a> Codegen<'a> {
                     // `Prop =` self auto-property is the NameExpr path -> backing
                     // var). Stock numbers the object temps first, then the value
                     // dest, but EMITS the value before the object, and ALWAYS
-                    // materializes the value into its dest via ASSIGN. We lower the
-                    // object first (to number its temps), buffer its instructions,
-                    // emit the value, then re-emit the object. Reordering is only
-                    // safe when the object produced no jumps/labels (no control
-                    // flow) — otherwise the buffered jump indices would shift.
+                    // materializes the value into its dest via ASSIGN. So the object
+                    // is lowered first (to number its temps) and buffered, the value
+                    // emitted, then the object re-emitted. Only valid when the object
+                    // produced no jumps/labels; otherwise buffered jump indices shift.
                     Expr::DotExpr { object, member, .. } => {
                         let prop_ty = self.type_of_expr(target);
                         let jumps_before = self.pending_jumps.len();
@@ -918,6 +984,31 @@ impl<'a> Codegen<'a> {
         match target {
             Expr::NameExpr { name, .. } => {
                 let target_ty = self.type_of_expr(target);
+                if let Some(member) = self.self_handler_prop(name) {
+                    // Stock numbers the PROPSET dest temp BEFORE the operands and
+                    // always materializes the arithmetic result into it via ASSIGN.
+                    let dest = self.alloc_temp(&target_ty);
+                    let current = self.alloc_temp(&target_ty);
+                    self.emit(
+                        OP_PROPGET,
+                        vec![ident(&member), ident("self"), ident(&current)],
+                        line,
+                    );
+                    let result = self.lower_compound_value(
+                        ident(&current),
+                        &target_ty,
+                        arithmetic_op,
+                        value,
+                        line,
+                    );
+                    self.emit(OP_ASSIGN, vec![ident(&dest), result], line);
+                    self.emit(
+                        OP_PROPSET,
+                        vec![ident(&member), ident("self"), ident(&dest)],
+                        line,
+                    );
+                    return;
+                }
                 let target_name = self.resolve_name(name);
                 let result = self.lower_compound_value(
                     ident(&target_name),
@@ -1083,7 +1174,18 @@ impl<'a> Codegen<'a> {
     ) -> PexValuePayload {
         match expr {
             Expr::LiteralExpr { value, ty, .. } => literal_value(value, ty),
-            Expr::NameExpr { name, .. } => ident(&self.resolve_name(name)),
+            Expr::NameExpr { name, .. } => {
+                if let Some(member) = self.self_handler_prop(name) {
+                    let dest = self.alloc_temp(&self.type_of_expr(expr));
+                    self.emit(
+                        OP_PROPGET,
+                        vec![ident(&member), ident("self"), ident(&dest)],
+                        line,
+                    );
+                    return ident(&dest);
+                }
+                ident(&self.resolve_name(name))
+            }
             Expr::BinaryExpr {
                 left, op, right, ..
             } => {
@@ -1463,8 +1565,7 @@ impl<'a> Codegen<'a> {
                 Some(p) => {
                     let from = self.type_of_expr(a);
                     let to = parse_ty(&p.ty);
-                    if from == to
-                        || (type_eq_ci(&from, &to) && self.is_script_member_expr(a))
+                    if type_eq_ci(&from, &to)
                         || to == PapyrusType::None
                         || (is_string_like(&from) && is_string_like(&to))
                     {
@@ -1620,21 +1721,29 @@ impl<'a> Codegen<'a> {
         }
     }
 
-    fn is_script_member_expr(&self, expr: &Expr) -> bool {
-        match expr {
-            Expr::NameExpr { name, .. } => {
-                let key = name.to_lowercase();
-                self.members.contains_key(&key) && !self.scope.contains_key(&key)
-            }
-            _ => false,
-        }
-    }
-
     fn lookup_function(&self, name: &str) -> Option<&'a FunctionDef> {
         self.ast
             .functions
             .iter()
             .find(|f| f.name.eq_ignore_ascii_case(name))
+    }
+
+    /// If a bare name refers to a property on this script with no backing
+    /// variable, return its declared casing — the read must go through PROPGET.
+    /// Locals, params and script variables shadow properties, so they are
+    /// checked first, matching `resolve_name`'s precedence.
+    fn self_handler_prop(&self, name: &str) -> Option<String> {
+        if name.eq_ignore_ascii_case("self") {
+            return None;
+        }
+        let lc = name.to_lowercase();
+        if self.local_aliases.contains_key(&lc)
+            || self.local_names.contains_key(&lc)
+            || self.scope.contains_key(&lc)
+        {
+            return None;
+        }
+        self.handler_props.get(&lc).cloned()
     }
 
     /// Map a bare name to its emitted identifier: a shadowed local resolves to
@@ -1855,7 +1964,11 @@ impl<'a> Codegen<'a> {
         to: &PapyrusType,
         line: u16,
     ) -> PexValuePayload {
-        if &from == to || *to == PapyrusType::None {
+        // Case-insensitive: Papyrus type names are, and an import may spell a
+        // type differently from the local declaration (`Actor` vs `actor`).
+        // Comparing exactly mints a no-op CAST plus a temp, which shifts every
+        // later temp number and diverges from stock output.
+        if type_eq_ci(&from, to) || *to == PapyrusType::None {
             return value;
         }
         // CustomEventName is `string` at the bytecode level, so coercing between
@@ -2217,7 +2330,7 @@ fn type_name(ty: &PapyrusType) -> Option<String> {
 }
 
 /// Canonicalize a payload for order-insensitive semantic comparison: zero the
-/// §5 identity fields and sort every region the stock compiler emits in per-
+/// header identity fields and sort every region the stock compiler emits in per-
 /// process `Hashtable` order (string table, user flags, object property and
 /// variable lists, per-state function lists, debug function list). Everything
 /// else (instructions, operands, temps, locals order, debug line numbers,
@@ -2611,7 +2724,9 @@ fn type_eq_ci(a: &PapyrusType, b: &PapyrusType) -> bool {
 
 /// Whether `cast_to` would emit a CAST instruction (mirrors its elision rules).
 fn would_cast(from: &PapyrusType, to: &PapyrusType) -> bool {
-    from != to && *to != PapyrusType::None && !(is_string_like(from) && is_string_like(to))
+    !type_eq_ci(from, to)
+        && *to != PapyrusType::None
+        && !(is_string_like(from) && is_string_like(to))
 }
 
 fn parse_ty(s: &str) -> PapyrusType {
@@ -2643,16 +2758,15 @@ fn arith_opcode(op: &str, result_ty: &PapyrusType) -> u8 {
         ("/", Float) => OP_FDIV,
         ("/", _) => OP_IDIV,
         ("%", _) => OP_IMOD,
-        _ => OP_IADD, // unreachable for Batch-1 operators
+        _ => OP_IADD, // unreachable for the arithmetic operators above
     }
 }
 
 /// User-flag table emitted into every FO4 `.pex`.
 ///
-/// SLICE-HARDCODED: the six flags from `Institute_Papyrus_Flags.flg`
-/// in one captured `.NET Hashtable` order. The order is non-reproducible across
-/// exe runs; the golden comparison sorts user_flags so this is benign. A real
-/// `.flg` parser is deferred.
+/// Hardcoded: the six flags from `Institute_Papyrus_Flags.flg` in one captured
+/// .NET `Hashtable` order. That order differs between exe runs; the golden
+/// comparison sorts user_flags. There is no `.flg` parser.
 fn default_user_flags(profile: GameProfile) -> Vec<PexUserFlagPayload> {
     if profile.game_id != 2 {
         return Vec::new();
@@ -2689,7 +2803,7 @@ mod tests {
         let property_groups = parsed.property_groups.clone();
         let struct_names = parsed.struct_names.clone();
         let ast = parsed.ast.expect("parse");
-        let resolver = SourceResolver::new(imports);
+        let resolver = SourceResolver::with_self_ast(imports, &ast);
         let profile = GameProfile::for_game(Game::Fo4);
         let tc = crate::typeck::typeck(&ast, &resolver, profile);
         compile(
@@ -2711,7 +2825,7 @@ mod tests {
         let property_groups = parsed.property_groups.clone();
         let struct_names = parsed.struct_names.clone();
         let ast = parsed.ast.expect("parse");
-        let resolver = SourceResolver::new(&[]);
+        let resolver = SourceResolver::with_self_ast(&[], &ast);
         let profile = GameProfile::for_game(Game::Fo4);
         let tc = crate::typeck::typeck(&ast, &resolver, profile);
         compile(
@@ -2727,7 +2841,7 @@ mod tests {
         )
     }
 
-    /// Order-canonicalized view: zeroes §5 identity, sorts the non-deterministic
+    /// Order-canonicalized view: zeroes identity fields, sorts the non-deterministic
     /// regions (string table, user flags, per-state functions, debug functions)
     /// so a semantically-equal payload compares equal regardless of the exe's
     /// per-process `Hashtable` ordering.
@@ -3143,6 +3257,145 @@ mod tests {
     }
 
     #[test]
+    fn auto_read_only_property_emits_read_flag_and_constant_getter() {
+        let p = compile_src("Scriptname GARO\nInt Property T = 3 AutoReadOnly\n");
+        let prop = &p.objects[0].properties[0];
+        assert_eq!(prop.flags, 1);
+        assert!(prop.auto_var.is_empty());
+        assert!(prop.setter.is_none());
+        assert!(!p.objects[0].variables.iter().any(|v| v.name == "::T_var"));
+        let getter = prop.getter.as_ref().unwrap();
+        assert_eq!(getter.name, "get_T");
+        assert_eq!(getter.instructions.len(), 1);
+        assert_eq!(getter.instructions[0].opcode, OP_RETURN);
+        assert_eq!(getter.instructions[0].args, vec![int_value(3)]);
+    }
+
+    #[test]
+    fn bare_read_of_handler_property_emits_propget_on_self() {
+        let p = compile_src(
+            "Scriptname GHandlerRead\nInt Property P\n  Int Function Get()\n    Return 5\n  EndFunction\nEndProperty\nFunction F()\n  Int x = P\nEndFunction\n",
+        );
+        let f = p.objects[0].states[0]
+            .functions
+            .iter()
+            .find(|f| f.name == "F")
+            .unwrap();
+        assert_eq!(f.instructions[0].opcode, OP_PROPGET);
+        assert_eq!(
+            f.instructions[0].args,
+            vec![ident("P"), ident("self"), ident("::temp0")]
+        );
+        assert_eq!(f.instructions[1].opcode, OP_ASSIGN);
+        assert_eq!(f.instructions[1].args, vec![ident("x"), ident("::temp0")]);
+    }
+
+    #[test]
+    fn bare_read_of_auto_read_only_property_emits_propget_on_self() {
+        let p = compile_src(
+            "Scriptname GARORead\nInt Property T = 3 AutoReadOnly\nFunction F()\n  Int x = T\nEndFunction\n",
+        );
+        let f = &p.objects[0].states[0].functions[0];
+        assert_eq!(f.instructions[0].opcode, OP_PROPGET);
+        assert_eq!(
+            f.instructions[0].args,
+            vec![ident("T"), ident("self"), ident("::temp0")]
+        );
+    }
+
+    #[test]
+    fn inherited_auto_property_dispatches_through_self() {
+        let type_name = format!("GInheritedParent{}", std::process::id());
+        let import_dir = std::env::temp_dir().join(&type_name);
+        std::fs::create_dir_all(&import_dir).expect("create import dir");
+        std::fs::write(
+            import_dir.join(format!("{type_name}.psc")),
+            format!("Scriptname {type_name}\nInt Property StateIndex Auto\n"),
+        )
+        .expect("write parent script");
+        let p = compile_src_with_imports(
+            &format!(
+                "Scriptname GInheritedChild extends {type_name}\nFunction F()\n  Int x = StateIndex\n  StateIndex = x + 1\nEndFunction\n"
+            ),
+            &[import_dir.to_string_lossy().into_owned()],
+        );
+        std::fs::remove_dir_all(&import_dir).expect("remove import dir");
+        let f = &p.objects[0].states[0].functions[0];
+        let opcodes: Vec<u8> = f.instructions.iter().map(|i| i.opcode).collect();
+        assert!(opcodes.contains(&OP_PROPGET));
+        assert!(opcodes.contains(&OP_PROPSET));
+        assert!(!f.instructions.iter().flat_map(|i| &i.args).any(|arg| {
+            arg.value_type == VT_IDENT && arg.data.as_str() == Some("::StateIndex_var")
+        }));
+    }
+
+    #[test]
+    fn local_shadows_handler_property_and_reads_the_local() {
+        let p = compile_src(
+            "Scriptname GShadow\nInt Property P\n  Int Function Get()\n    Return 5\n  EndFunction\nEndProperty\nFunction F()\n  Int P = 1\n  Int x = P\nEndFunction\n",
+        );
+        let f = p.objects[0].states[0]
+            .functions
+            .iter()
+            .find(|f| f.name == "F")
+            .unwrap();
+        assert!(!f.instructions.iter().any(|i| i.opcode == OP_PROPGET));
+    }
+
+    #[test]
+    fn bare_write_of_handler_property_emits_propset_on_self() {
+        let p = compile_src(
+            "Scriptname GHandlerWrite\nInt Property P\n  Int Function Get()\n    Return 5\n  EndFunction\n  Function Set(Int v)\n  EndFunction\nEndProperty\nFunction F()\n  P = 7\nEndFunction\n",
+        );
+        let f = p.objects[0].states[0]
+            .functions
+            .iter()
+            .find(|f| f.name == "F")
+            .unwrap();
+        assert_eq!(f.instructions[0].opcode, OP_ASSIGN);
+        assert_eq!(f.instructions[0].args, vec![ident("::temp0"), int_value(7)]);
+        assert_eq!(f.instructions[1].opcode, OP_PROPSET);
+        assert_eq!(
+            f.instructions[1].args,
+            vec![ident("P"), ident("self"), ident("::temp0")]
+        );
+    }
+
+    #[test]
+    fn compound_assign_to_handler_property_round_trips_through_self() {
+        let p = compile_src(
+            "Scriptname GHandlerCompound\nInt Property P\n  Int Function Get()\n    Return 5\n  EndFunction\n  Function Set(Int v)\n  EndFunction\nEndProperty\nFunction F()\n  P += 1\nEndFunction\n",
+        );
+        let f = p.objects[0].states[0]
+            .functions
+            .iter()
+            .find(|f| f.name == "F")
+            .unwrap();
+        // Stock (PapyrusCompiler 2.8.0.4) for `P += 1` on a full property:
+        //   PROPGET P, self, ::temp1 / IADD ::temp2, ::temp1, 1
+        //   ASSIGN ::temp0, ::temp2  / PROPSET P, self, ::temp0
+        // The PROPSET dest temp is allocated first but written last.
+        let opcodes: Vec<u8> = f.instructions.iter().map(|i| i.opcode).collect();
+        assert_eq!(opcodes, vec![OP_PROPGET, OP_IADD, OP_ASSIGN, OP_PROPSET]);
+        assert_eq!(
+            f.instructions[0].args,
+            vec![ident("P"), ident("self"), ident("::temp1")]
+        );
+        assert_eq!(
+            f.instructions[1].args,
+            vec![ident("::temp2"), ident("::temp1"), int_value(1)]
+        );
+        assert_eq!(
+            f.instructions[2].args,
+            vec![ident("::temp0"), ident("::temp2")]
+        );
+        assert_eq!(
+            f.instructions[3].args,
+            vec![ident("P"), ident("self"), ident("::temp0")]
+        );
+    }
+
+    #[test]
     fn call_argument_type_casing_does_not_cast() {
         let p = compile_src(
             "Scriptname GCallTypeCase\nform Property F Auto\nFunction Caller()\n  Callee(F)\nEndFunction\nFunction Callee(Form akForm)\nEndFunction\n",
@@ -3157,8 +3410,12 @@ mod tests {
         assert_eq!(f.locals[0].name, "::nonevar");
     }
 
+    /// A local/parameter argument casts no differently from a script member.
+    /// Stock's `DefaultDisableSelfTrigger.pex` passes an `objectReference`
+    /// parameter into an `ObjectReference` slot with no CAST, and the vanilla
+    /// corpus agrees on every script where the two spellings meet.
     #[test]
-    fn local_argument_type_casing_still_casts() {
+    fn local_argument_type_casing_does_not_cast() {
         let p = compile_src(
             "Scriptname GCallLocalTypeCase\nFunction Caller(Actor akActor)\n  Callee(akActor)\nEndFunction\nFunction Callee(actor akActor)\nEndFunction\n",
         );
@@ -3167,8 +3424,17 @@ mod tests {
             .iter()
             .find(|f| f.name == "Caller")
             .unwrap();
-        assert!(f.instructions.iter().any(|i| i.opcode == OP_CAST));
+        assert!(!f.instructions.iter().any(|i| i.opcode == OP_CAST));
     }
+    // Properties with NO backing variable: full Get/Set and AutoReadOnly. Bare
+    // self-reads/writes go through PROPGET/PROPSET on `self` — the pre-existing
+    // GPropGet/GPropSet goldens only cover `Auto` (backing-var) properties, and
+    // GPropFull never touches the property outside its own accessors.
+    golden_test!(
+        golden_handler_property_self_access,
+        "Scriptname GPropHandler extends Quest\nInt _p\nInt Property P\n  Int Function Get()\n    Return _p\n  EndFunction\n  Function Set(Int v)\n    _p = v\n  EndFunction\nEndProperty\nInt Property RO = 3 AutoReadOnly\nFunction DoRead()\n  Int x = P\n  Int y = RO\nEndFunction\nFunction DoWrite()\n  P = 7\nEndFunction\nFunction DoCompound()\n  P += 1\nEndFunction\n",
+        "GPropHandler.pex"
+    );
     golden_test!(
         golden_self_call,
         "Scriptname GSelfCall\nInt Function F()\n  Return G()\nEndFunction\nInt Function G()\n  Return 1\nEndFunction\n",

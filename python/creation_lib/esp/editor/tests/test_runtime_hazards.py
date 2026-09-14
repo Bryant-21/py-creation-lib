@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from creation_lib.esp.editor import runtime_hazards
 from creation_lib.esp.editor.runtime_hazards import (
     RuntimeHazardReport,
@@ -104,6 +106,51 @@ def _valid_fo4_wthr_subrecords(
     return tuple(subrecords)
 
 
+def _valid_fo4_imad_runtime_subrecords(
+    *,
+    omit: frozenset[str] = frozenset(),
+    size_overrides: dict[str, int] | None = None,
+):
+    sizes = {
+        signature: stride * 2
+        for signature, stride in runtime_hazards._IMAD_RUNTIME_ARRAY_STRIDES.items()
+    }
+    sizes.update(size_overrides or {})
+    return tuple(
+        _subrecord(signature, b"\0" * size)
+        for signature, size in sizes.items()
+        if signature not in omit
+    )
+
+
+def _fo4_imad_dnam(*, count_overrides: dict[str, int] | None = None) -> bytes:
+    offsets = {
+        **{f"{value:c}IAD": 8 + value * 8 for value in range(0x00, 0x15)},
+        **{f"{value:c}IAD": 12 + (value - 0x40) * 8 for value in range(0x40, 0x55)},
+        "TNAM": 176,
+        "BNAM": 180,
+        "VNAM": 184,
+        "RNAM": 188,
+        "SNAM": 192,
+        "UNAM": 196,
+        "WNAM": 212,
+        "XNAM": 216,
+        "YNAM": 220,
+        "NAM1": 228,
+        "NAM2": 232,
+        "NAM3": 236,
+        "NAM4": 240,
+        "NAM5": 244,
+        "NAM6": 248,
+    }
+    counts = {signature: 2 for signature in offsets}
+    counts.update(count_overrides or {})
+    data = bytearray(252)
+    for signature, offset in offsets.items():
+        data[offset : offset + 4] = counts[signature].to_bytes(4, "little")
+    return bytes(data)
+
+
 def test_flags_qust_event_alias_fill_after_alias_table_anchor():
     record = _record(
         0x0710E201,
@@ -150,8 +197,7 @@ def test_flags_empty_imad_runtime_data():
     record = _record(
         0x076E908E,
         _subrecord("EDID", b"Storm_MQ08_HallucGasImod\0"),
-        _subrecord("NAM5", b""),
-        _subrecord("NAM6", b"\x01\x02\x03\x04"),
+        *_valid_fo4_imad_runtime_subrecords(size_overrides={"TNAM": 0}),
     )
 
     report = scan_runtime_hazard_records(
@@ -164,8 +210,119 @@ def test_flags_empty_imad_runtime_data():
     hazard = report.hazards[0]
     assert hazard.rule_id == "fo4-loader-empty-imad-runtime-data"
     assert hazard.form_id == 0x076E908E
-    assert hazard.path == "IMAD.NAM5"
+    assert hazard.path == "IMAD.TNAM"
     assert "Storm_MQ08_HallucGasImod" in hazard.message
+
+
+def test_flags_missing_and_bad_stride_imad_runtime_arrays():
+    record = _record(
+        0x076E908F,
+        *_valid_fo4_imad_runtime_subrecords(
+            omit=frozenset({"NAM6"}),
+            size_overrides={"TNAM": 19},
+        ),
+        signature="IMAD",
+    )
+
+    report = scan_runtime_hazard_records(
+        {"IMAD": [record]},
+        plugin_name="Converted.esm",
+        game="fo4",
+    )
+
+    assert [hazard.rule_id for hazard in report.hazards] == [
+        "fo4-loader-imad-runtime-row-stride",
+        "fo4-loader-missing-imad-runtime-data",
+    ]
+    assert [hazard.path for hazard in report.hazards] == ["IMAD.TNAM", "IMAD.NAM6"]
+
+
+def test_flags_imad_dnam_array_count_mismatch_from_skyrim_crash():
+    record = _record(
+        0x0810FDE4,
+        _subrecord("EDID", b"ChargenImod\0"),
+        _subrecord(
+            "DNAM",
+            _fo4_imad_dnam(count_overrides={"NAM5": 0, "NAM6": 0}),
+        ),
+        *_valid_fo4_imad_runtime_subrecords(),
+        signature="IMAD",
+    )
+
+    report = scan_runtime_hazard_records(
+        {"IMAD": [record]},
+        plugin_name="Skyrim.esm",
+        game="fo4",
+        profile=runtime_hazards.FO4_TARGET_SHAPE_PROFILE,
+    )
+
+    assert [hazard.rule_id for hazard in report.hazards] == [
+        "fo4-loader-imad-dnam-array-count-mismatch",
+        "fo4-loader-imad-dnam-array-count-mismatch",
+    ]
+    assert [hazard.path for hazard in report.hazards] == [
+        "IMAD.NAM5",
+        "IMAD.NAM6",
+    ]
+    assert all(
+        "DNAM count is 0 but the array has 2 rows" in hazard.message
+        for hazard in report.hazards
+    )
+
+
+def test_accepts_imad_arrays_when_dnam_counts_match():
+    record = _record(
+        0x0003F1FF,
+        _subrecord("DNAM", _fo4_imad_dnam()),
+        *_valid_fo4_imad_runtime_subrecords(),
+        signature="IMAD",
+    )
+
+    report = scan_runtime_hazard_records(
+        {"IMAD": [record]},
+        plugin_name="Fallout4.esm",
+        game="fo4",
+        profile=runtime_hazards.FO4_TARGET_SHAPE_PROFILE,
+    )
+
+    assert report.hazards == []
+
+
+def test_session_scan_without_active_target_fails_closed():
+    session = SimpleNamespace(active=None)
+
+    with pytest.raises(RuntimeError, match="No active plugin"):
+        scan_runtime_hazards(session)
+
+
+def test_fo4_target_shape_profile_flags_lgtm_and_misc_layouts_only():
+    lgtm = _record(
+        0x07001000,
+        _subrecord("DALC", b"\0" * 17),
+        signature="LGTM",
+    )
+    misc = _record(
+        0x07001001,
+        _subrecord("DATA", b"\0" * 4),
+        signature="MISC",
+    )
+    npc = _record(
+        0x07001002,
+        _subrecord("TPTA", (0x07001002).to_bytes(4, "little")),
+        signature="NPC_",
+    )
+
+    report = scan_runtime_hazard_records(
+        {"LGTM": [lgtm], "MISC": [misc], "NPC_": [npc]},
+        plugin_name="Converted.esm",
+        game="fo4",
+        profile=runtime_hazards.FO4_TARGET_SHAPE_PROFILE,
+    )
+
+    assert [hazard.rule_id for hazard in report.hazards] == [
+        "fo4-loader-lgtm-dalc-size",
+        "fo4-loader-misc-data-size",
+    ]
 
 
 def test_flags_npc_template_self_slot():
@@ -226,7 +383,7 @@ def test_populates_supplied_empty_report():
     record = _record(
         0x076E908E,
         _subrecord("EDID", b"Storm_MQ08_HallucGasImod\0"),
-        _subrecord("NAM5", b""),
+        *_valid_fo4_imad_runtime_subrecords(size_overrides={"NAM5": 0}),
     )
     report = RuntimeHazardReport(
         plugin_name="SeventySix.esm",
@@ -397,7 +554,7 @@ def test_session_scan_includes_proj_records(monkeypatch):
     monkeypatch.setattr(
         runtime_hazards,
         "_record_payloads",
-        lambda handle: [
+        lambda handle, profile: [
             {
                 "signature": "PROJ",
                 "form_id": 0x070BEDF6,
@@ -1099,7 +1256,7 @@ def test_session_scan_includes_records_with_disallowed_mnam(monkeypatch):
     monkeypatch.setattr(
         runtime_hazards,
         "_record_payloads",
-        lambda handle: [
+        lambda handle, profile: [
             {
                 "signature": "ACTI",
                 "form_id": 0x07005000,

@@ -11,12 +11,8 @@ Prerequisites:
 Usage:
   uv run python py_creation_lib/python/creation_lib/fbx/build_bindings.py
 
-This script:
-  1. Copies the FBX Python Bindings source to build/fbx_bindings/
-  2. Patches pyproject.toml to point to the correct SDK library path
-  3. Installs SIP 6.6.2 if needed
-  4. Builds the bindings with sipbuild
-  5. Copies the resulting .pyd to site-packages
+Copies the bindings source to build/fbx_bindings/, points its pyproject.toml at
+the SDK library path, builds with sipbuild, and copies the .pyd to site-packages.
 """
 
 import os

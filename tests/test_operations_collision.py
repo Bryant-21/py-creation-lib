@@ -540,7 +540,7 @@ def test_get_collision_layers_skyrim():
 
 
 # ---------------------------------------------------------------------------
-# FO4 routing integration tests (Task 2 — Phase 5 validation)
+# FO4 routing integration tests
 # ---------------------------------------------------------------------------
 
 _PF_MAGIC = b'\x57\xE0\xE0\x57\x10\xC0\xC0\x10'
@@ -986,7 +986,7 @@ def test_fo4_geometry_from_path_emits_np_collision(shape_type):
     assert "bhkNPCollisionObject" in block_types
     assert "bhkPhysicsSystem" in block_types
     assert "bhkRigidBody" not in block_types
-    # Confirm the Data ref bug (Phase 5 fix) is also covered on this path
+    # The collision object's Data ref must point at the physics system here too
     coll_obj = next(b for b in nif.blocks if b.type_name == "bhkNPCollisionObject")
     phys_sys = next(b for b in nif.blocks if b.type_name == "bhkPhysicsSystem")
     assert coll_obj.get_field("Data") == phys_sys.block_id

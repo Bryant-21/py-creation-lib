@@ -144,7 +144,7 @@ pub enum CompressionFormat {
     #[default]
     Zip,
 
-    /// A more specialized format leveraging lz4's fast decompression to improve streaming time.
+    /// Uses lz4's fast decompression to speed up streaming.
     ///
     /// Only compatible with Starfield or later.
     LZ4,

@@ -161,10 +161,12 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, FnvScriptError> {
                         break;
                     }
                 }
-                let kind = if KEYWORDS.iter().any(|k| k.eq_ignore_ascii_case(&s)) {
-                    TokenKind::Keyword(s)
-                } else {
-                    TokenKind::Ident(s)
+                let kind = match KEYWORDS
+                    .iter()
+                    .find(|keyword| keyword.eq_ignore_ascii_case(&s))
+                {
+                    Some(keyword) => TokenKind::Keyword((*keyword).to_string()),
+                    None => TokenKind::Ident(s),
                 };
                 out.push(Token {
                     kind,

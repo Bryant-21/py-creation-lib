@@ -1,4 +1,4 @@
-use crate::context::FnvScriptContext;
+use crate::context::{FnvScriptContext, TargetMetadata};
 use crate::decompile::decompile_bytecode;
 use crate::emit::emit_psc;
 use crate::function_map::FunctionMap;
@@ -27,6 +27,7 @@ impl PyContext {
     ) -> PyResult<Self> {
         let function_map = FunctionMap::from_yaml(function_map_yaml)
             .map_err(|err| PyValueError::new_err(err.to_string()))?;
+        let target = TargetMetadata::for_extends(&papyrus_extends);
         Ok(Self {
             inner: FnvScriptContext {
                 function_map,
@@ -35,6 +36,7 @@ impl PyContext {
                 strict,
                 script_class_name,
                 papyrus_extends,
+                target,
             },
         })
     }

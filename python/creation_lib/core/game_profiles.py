@@ -8,6 +8,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+# Game units per Havok unit. Skyrim/FO4-era engines use 69.99125; the
+# Gamebryo-era games (Oblivion, FO3, FNV) use a tenth of that. Matches pynifly's
+# `game_collision_sf` and is confirmed by FNV collision hulls registering exactly
+# against their visible meshes at this factor.
+MODERN_HAVOK_SCALE = 69.99125
+LEGACY_HAVOK_SCALE = MODERN_HAVOK_SCALE / 10.0
+
 
 @dataclass(frozen=True)
 class RemixProfile:
@@ -103,6 +110,12 @@ class GameProfile:
     bgem_version: int = 2  # BGEM header version this game writes
     asset_prefix: str = ""
 
+    # Voice / dialogue audio
+    voice_official_masters: tuple[str, ...] = ()
+    voice_container: str = "wav"  # "fuz" | "ogg" | "wav"
+    voice_lip: str | None = None  # "embedded" | "sidecar" | None
+    facefx_game: str | None = None  # FaceFXWrapper's <Type> argument
+
 
 # ---------------------------------------------------------------------------
 # Profile constants
@@ -167,6 +180,18 @@ FO4_PROFILE = GameProfile(
     steam_app_id=377160,
     is_moddable=True,
     wiki_dir="fo4_wiki",
+    voice_official_masters=(
+        "Fallout4.esm",
+        "DLCRobot.esm",
+        "DLCworkshop01.esm",
+        "DLCCoast.esm",
+        "DLCworkshop02.esm",
+        "DLCworkshop03.esm",
+        "DLCNukaWorld.esm",
+    ),
+    voice_container="fuz",
+    voice_lip="embedded",
+    facefx_game="Fallout4",
 )
 
 SKYRIMSE_PROFILE = GameProfile(
@@ -227,6 +252,18 @@ SKYRIMSE_PROFILE = GameProfile(
     steam_app_id=489830,
     is_moddable=True,
     wiki_dir="skyrim_wiki",
+    voice_official_masters=(
+        "Skyrim.esm",
+        "Update.esm",
+        "Dawnguard.esm",
+        "HearthFires.esm",
+        "Dragonborn.esm",
+        "ccBGSSSE001-Fish.esm",
+        "ccBGSSSE025-AdvDSGS.esm",
+    ),
+    voice_container="fuz",
+    voice_lip="embedded",
+    facefx_game="Skyrim",
 )
 
 FO76_PROFILE = GameProfile(
@@ -315,7 +352,19 @@ STARFIELD_PROFILE = GameProfile(
     bs_version_range=(170, 179),
     nif_version=(20, 2, 0, 7),
     user_version=12,
-    texture_slot_map={},
+    texture_slot_map={
+        # Keyed by source suffix, not role name (unlike the other profiles) --
+        # the remix dispatches on file suffix directly. Values are the FO4
+        # BSTriShape slot each suffix's data lands in (0=diffuse, 1=normal,
+        # 2=glow, 7=specular). _rough/_metal merge into the specular/gloss
+        # slot; _ao multiplies into diffuse rather than owning a slot.
+        "_color": 0,
+        "_normal": 1,
+        "_rough": 7,
+        "_metal": 7,
+        "_ao": 0,
+        "_emissive": 2,
+    },
     texture_suffixes={
         "diffuse": "_color",
         "normal": "_normal",
@@ -359,6 +408,38 @@ STARFIELD_PROFILE = GameProfile(
     steam_app_id=1716740,
     is_moddable=True,
     wiki_dir=None,
+    # Starfield CDB materials are the same CE2Material shape FO76 uses
+    # (see cdb_to_bgsm.py); reuse FO76's proven PBR->spec-gloss tuning and
+    # BC-format table until real Starfield render-compare data says otherwise.
+    texture_remix=RemixProfile(
+        ao_multiplier=0.5,
+        specular_multiplier=1.0,
+        gloss_multiplier=1.0,
+        spec_offset=0.8,
+        role_formats=(
+            ("d", "BC7_UNORM_SRGB"),
+            ("n", "BC5_UNORM"),
+            ("r", "BC7_UNORM"),
+            ("l", "BC4_UNORM"),
+            ("e", "BC7_UNORM_SRGB"),
+            ("m", "BC4_UNORM"),
+            ("g", "BC7_UNORM_SRGB"),
+            ("s", "BC7_UNORM"),
+        ),
+    ),
+    voice_official_masters=(
+        "Starfield.esm",
+        "BlueprintShips-Starfield.esm",
+        "OldMars.esm",
+        "SFBGS003.esm",
+        "SFBGS004.esm",
+        "SFBGS006.esm",
+        "SFBGS007.esm",
+        "SFBGS008.esm",
+        "SFBGS00D.esm",
+        "SFBGS047.esm",
+    ),
+    voice_container="wav",
 )
 
 OBLIVION_PROFILE = GameProfile(
@@ -379,7 +460,7 @@ OBLIVION_PROFILE = GameProfile(
     normal_has_blue_channel=False,
     shader_modules=["common", "lighting", "normal_decode", "specgloss"],
     effect_shader_modules=["common", "effect_emissive"],
-    havok_scale=69.99125,
+    havok_scale=LEGACY_HAVOK_SCALE,
     havok_version=None,
     collision_layer_enum="OblivionLayer",
     physics_material_enum="OblivionHavokMaterial",
@@ -421,7 +502,7 @@ FO3_PROFILE = GameProfile(
     normal_has_blue_channel=False,
     shader_modules=["common", "lighting", "normal_decode", "specgloss"],
     effect_shader_modules=["common", "effect_emissive"],
-    havok_scale=69.99125,
+    havok_scale=LEGACY_HAVOK_SCALE,
     havok_version=None,
     collision_layer_enum="Fallout3Layer",
     physics_material_enum="Fallout3HavokMaterial",
@@ -443,6 +524,21 @@ FO3_PROFILE = GameProfile(
     steam_app_id=22370,
     is_moddable=True,
     wiki_dir="fo3_nv_wiki",
+    voice_official_masters=(
+        "Fallout3.esm",
+        "Anchorage.esm",
+        "ThePitt.esm",
+        "BrokenSteel.esm",
+        "PointLookout.esm",
+        "Zeta.esm",
+    ),
+    voice_container="ogg",
+    voice_lip="sidecar",
+    # FaceFXWrapper has no FO3/FNV type; its Skyrim generator writes the same
+    # version-1 lip header these games use. Verified structurally only - in-game
+    # facial animation is unconfirmed. Reuse of the original .lip is preferred
+    # when regenerating an existing line.
+    facefx_game="Skyrim",
 )
 
 FNV_PROFILE = GameProfile(
@@ -463,7 +559,7 @@ FNV_PROFILE = GameProfile(
     normal_has_blue_channel=False,
     shader_modules=["common", "lighting", "normal_decode", "specgloss"],
     effect_shader_modules=["common", "effect_emissive"],
-    havok_scale=69.99125,
+    havok_scale=LEGACY_HAVOK_SCALE,
     havok_version=None,
     collision_layer_enum="FalloutNVLayer",
     physics_material_enum="FalloutNVHavokMaterial",
@@ -485,6 +581,25 @@ FNV_PROFILE = GameProfile(
     steam_app_id=22380,
     is_moddable=True,
     wiki_dir="fo3_nv_wiki",
+    voice_official_masters=(
+        "FalloutNV.esm",
+        "DeadMoney.esm",
+        "HonestHearts.esm",
+        "OldWorldBlues.esm",
+        "LonesomeRoad.esm",
+        "GunRunnersArsenal.esm",
+        "ClassicPack.esm",
+        "MercenaryPack.esm",
+        "TribalPack.esm",
+        "CaravanPack.esm",
+    ),
+    voice_container="ogg",
+    voice_lip="sidecar",
+    # FaceFXWrapper has no FO3/FNV type; its Skyrim generator writes the same
+    # version-1 lip header these games use. Verified structurally only - in-game
+    # facial animation is unconfirmed. Reuse of the original .lip is preferred
+    # when regenerating an existing line.
+    facefx_game="Skyrim",
 )
 
 # ---------------------------------------------------------------------------

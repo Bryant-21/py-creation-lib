@@ -1,9 +1,8 @@
 # NIF Conversion Roadmap Notes
 
-These notes were migrated from the removed Python NIF conversion stubs.
-`nif_core_native` owns NIF conversion now; do not recreate Python conversion
-pipelines for these routes. Use this file as the future-work map when adding
-native conversion support.
+`nif_core_native` owns NIF conversion; do not recreate Python conversion
+pipelines for these routes. These notes come from the removed Python NIF
+conversion stubs and are the future-work map for native conversion support.
 
 ## FO4 -> FO4
 
@@ -13,7 +12,7 @@ Former same-game normalization sequence:
 - Rewire orphan `BSShaderTextureSet` blocks.
 - Normalize texture paths.
 
-The native converter currently copies same-game NIFs unless a native rewrite is
+The native converter copies same-game NIFs unless a native rewrite is
 needed, such as addon-node index remapping.
 
 ## FO4 -> FNV / FO3
@@ -481,7 +480,7 @@ rebuilt FO4 collision from `BSTriShape` geometry:
 
 ### Skinning And Dismember Notes
 
-`legacy_skin_to_fo4_skin` is now implemented in the native `skin/` module.
+`legacy_skin_to_fo4_skin` is implemented in the native `skin/` module.
 Python threads `translation_maps_dir`, `auto_skin_reference_body`,
 `emit_first_person`, `first_person_reference`, and `morph_weight_cap` through
 `ConversionOrchestrator` -> `_convert_single_nif` ->
@@ -623,7 +622,7 @@ native tests when those features move:
 
 ### Audit Coverage
 
-The notes above were audited from the staged-deleted Python conversion files,
+The notes above were audited from the deleted Python conversion files,
 transform files, and their tests under:
 
 - `py_creation_lib/python/creation_lib/nif/convert.py`

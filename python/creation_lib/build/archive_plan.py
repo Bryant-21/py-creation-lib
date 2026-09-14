@@ -67,12 +67,10 @@ def _normalize_relative_path(relative_path: str) -> str:
 
 # Matches lodgen's terrain-LOD tile naming: `<world>.<level>.<x>.<y>` (signed
 # ints), then anything (an "_msn" normal-map suffix, a ".season" segment,
-# etc.), then ".dds". Mirror of mod_pack.rs::is_lodgen_quad_tile. Per the
-# verified audit (docs/superpowers/specs/appalachia_family_map_verified.md
-# §2c) this is collision-free with convert_terrain output: convert_terrain
-# runs its texture-set name through safe_name, which replaces "." and "-"
-# with "_", so a convert_terrain filename can never contain this
-# dot-separated signed-integer triple.
+# etc.), then ".dds". Mirror of mod_pack.rs::is_lodgen_quad_tile. It can't
+# match convert_terrain output: convert_terrain runs its texture-set name
+# through safe_name, which replaces "." and "-" with "_", so its filenames
+# never contain this dot-separated signed-integer triple.
 _LODGEN_QUAD_TILE_RE = re.compile(r"^[^.]+\.-?\d+\.-?\d+\.-?\d+.*\.dds$")
 
 
@@ -89,25 +87,20 @@ def classify_archive_family(relative_path: str) -> str:
         parts = lower.split("/") if lower else []
     suffix = Path(lower).suffix
 
-    # Terrain (land) assets — kept separate so upgrade-gen can reuse/regenerate
-    # terrain independently of object textures/LOD. Predicate verified against
-    # the deployed Appalachia tree (appalachia_family_map_verified.md §2c):
-    # convert_terrain output -> Terrain; ALL lodgen output (terrain-LOD quad
-    # tiles + object atlas) -> LOD, since a Terrain-only rebuild skips lodgen
-    # and would otherwise ship a Terrain archive missing them.
-    if suffix == ".btd4":
-        return "Terrain"
+    # LOD shares Textures/Terrain with full-resolution land textures. Keep only
+    # lodgen products in the LOD family; the remaining textures and materials
+    # belong in the ordinary Textures/Materials archives.
     if len(parts) > 1 and parts[0] == "textures" and parts[1] == "terrain":
         basename = parts[-1]
         if "objects" in parts:
             return "LOD"
-        if len(parts) > 2 and parts[2] == "lodgen":
+        if "lodgen" in parts:
             return "LOD"
         if _is_lodgen_quad_tile(basename):
             return "LOD"
-        return "Terrain"
+        return "Textures"
     if len(parts) > 1 and parts[0] == "materials" and parts[1] == "terrain":
-        return "Terrain"
+        return "Materials"
 
     if parts and parts[0] == "textures":
         return "Textures"
@@ -162,9 +155,12 @@ def plan_archive_outputs(
 ) -> list[PlannedArchive]:
     from creation_lib.ba2 import native_runtime
 
-    cap = DEFAULT_ARCHIVE_MAX_BYTES if max_bytes is None else max_bytes
-    if cap <= 0:
-        raise ValueError("archive max size must be greater than 0 bytes")
+    if expanded_archives:
+        cap = DEFAULT_ARCHIVE_MAX_BYTES if max_bytes is None else max_bytes
+        if cap <= 0:
+            raise ValueError("archive max size must be greater than 0 bytes")
+    else:
+        cap = DEFAULT_ARCHIVE_MAX_BYTES
 
     native_plans = native_runtime.plan_archives(
         mod_name,
@@ -215,7 +211,9 @@ def discover_mod_archives(
 
 def _is_generated_archive_name(path: Path, prefix: str) -> bool:
     label = path.stem[len(prefix):]
-    if label.endswith("_xbox"):
-        label = label[: -len("_xbox")]
+    for suffix in ("_xbox", "_ps"):
+        if label.endswith(suffix):
+            label = label[: -len(suffix)]
+            break
     label_base = label.rstrip("0123456789")
     return bool(label_base) and label_base in _GENERATED_LABEL_BASES

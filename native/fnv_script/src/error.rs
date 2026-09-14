@@ -10,6 +10,12 @@ pub enum FnvScriptError {
     },
     #[error("script translation error: unmapped {kind} '{name}'")]
     Translate { kind: &'static str, name: String },
+    #[error("script translation error: unsupported {kind} '{name}' ({reason})")]
+    Unsupported {
+        kind: &'static str,
+        name: String,
+        reason: String,
+    },
     #[error("script translation drop: {kind} '{name}' ({reason})")]
     Drop {
         kind: &'static str,

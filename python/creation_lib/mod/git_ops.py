@@ -113,35 +113,55 @@ def _pull(
 
 def git_commit(
     mod_dir: Path, mod_name: str, *, gitea_user: str = "", gitea_token: str = "",
+    paths: list[str] | None = None, message: str | None = None, push: bool = True,
 ) -> str:
-    """Stage all, commit with timestamp, push. Returns commit hash or empty string."""
+    """Commit selected literal paths (None selects all). Returns the commit hash or empty string."""
     _ensure_git_repo(mod_dir)
+    selected = []
+    if paths is not None:
+        if not paths:
+            raise ValueError("Select at least one path to commit.")
+        root = mod_dir.resolve()
+        for path in paths:
+            candidate = Path(path)
+            if candidate.is_absolute():
+                raise ValueError(f"Commit paths must be relative to the mod directory: {path}")
+            try:
+                relative = (root / candidate).resolve().relative_to(root)
+            except ValueError:
+                raise ValueError(f"Commit path is outside the mod directory: {path}") from None
+            if not relative.parts or any(part.casefold() == ".git" for part in relative.parts):
+                raise ValueError(f"Select files or subdirectories, not the repository root or .git: {path}")
+            selected.append(relative.as_posix())
     _run_git(mod_dir, "config", "http.sslVerify", "false", check=False)
 
     if not _has_local_changes(mod_dir):
         _log.info("No local changes to commit.")
         return ""
 
-    _run_git(mod_dir, "add", "-A")
+    _run_git(mod_dir, "--literal-pathspecs", "add", "-A", "--", *selected)
 
     # Check if staging produced anything
-    r = _run_git(mod_dir, "diff", "--cached", "--quiet", "--ignore-submodules", "--", check=False)
+    r = _run_git(mod_dir, "--literal-pathspecs", "diff", "--cached", "--quiet", "--ignore-submodules", "--", *selected, check=False)
     if r.returncode == 0:
         _log.info("No staged changes to commit.")
         return ""
 
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    msg = f"Update {mod_name} via Mod Builder on {timestamp}"
-    _run_git(mod_dir, "commit", "-m", msg)
+    msg = message or f"Update {mod_name} via Mod Builder on {timestamp}"
+    if selected:
+        _run_git(mod_dir, "--literal-pathspecs", "commit", "--only", "-m", msg, "--", *selected)
+    else:
+        _run_git(mod_dir, "commit", "-m", msg)
 
-    branch = _current_branch(mod_dir)
-    has_up = _has_upstream(mod_dir)
-    _push(mod_dir, branch, gitea_user=gitea_user, gitea_token=gitea_token,
-          set_upstream=not has_up)
-
-    # Return commit hash
     r = _run_git(mod_dir, "rev-parse", "HEAD", check=False)
-    return r.stdout.strip()
+    sha = r.stdout.strip()
+    if push:
+        result = _push(mod_dir, _current_branch(mod_dir), gitea_user=gitea_user, gitea_token=gitea_token,
+                       set_upstream=not _has_upstream(mod_dir))
+        if result.returncode != 0:
+            raise RuntimeError(f"Committed {sha}, but push failed (exit {result.returncode}). Retry with modkit git push {mod_name}.")
+    return sha
 
 
 def git_pull(
@@ -204,6 +224,9 @@ release/
 *.tmp
 *_deploy*
 *_import*
+
+# Per-machine Mod Builder tab settings
+.builder.json
 
 # Autosave files (Substance Painter, etc.)
 *_autosave_*.spp

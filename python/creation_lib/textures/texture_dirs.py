@@ -121,15 +121,10 @@ def create_ba2_manager(
     base_archive_dirs: list[Path],
     existing: BA2Manager | None = None,
 ) -> BA2Manager | None:
-    """Create a BA2Manager scanning the given directories.
+    """Create a BA2Manager scanning user mod archive dirs first, then base game dirs.
 
-    If *existing* is provided it is closed first.  Returns None if no
-    directories contain archives.
-
-    Args:
-        user_archive_dirs: Directories with user mod BA2s (checked first).
-        base_archive_dirs: Directories with base game BA2s (checked last).
-        existing: Optional existing manager to close and replace.
+    Closes and replaces *existing*. With no directories at all, returns
+    *existing* unchanged.
     """
     if not user_archive_dirs and not base_archive_dirs:
         return existing

@@ -1,13 +1,10 @@
 //! Hand-written Papyrus tokenizer.
 //!
-//! Replaces the Lark grammar terminals in `grammar.lark`. Pure char dispatch,
-//! no regex engine. Keywords are matched case-insensitively. Positions are
-//! 1-based line / 1-based col, matching Lark/`Pos` in `ast_nodes.py`.
+//! Pure char dispatch, no regex engine. Keywords are matched case-insensitively.
+//! Positions are 1-based line / 1-based col, matching `Pos` in `ast_nodes.py`.
 //!
-//! Negative literals are intentionally **not** pre-classified (the Lark grammar
-//! has NEG_INT/NEG_FLOAT only because Lark's lexer is greedy and would otherwise
-//! collide unary minus with binary minus). The recursive-descent parser handles
-//! unary `-` based on context, so we always emit `Minus` as its own token.
+//! Negative literals are not pre-classified: the parser handles unary `-` by
+//! context, so `Minus` is always its own token.
 
 use std::fmt;
 
@@ -140,8 +137,7 @@ impl fmt::Display for LexError {
 
 impl std::error::Error for LexError {}
 
-/// Source preprocessor: matches the pre-pass in `parse_script` in
-/// `py_creation_lib/python/creation_lib/papyrus_lsp/parser.py`.
+/// Source preprocessor.
 ///
 /// - Normalize CRLF / CR → LF.
 /// - Collapse line continuations (`\` followed by spaces/tabs and a newline → one space).

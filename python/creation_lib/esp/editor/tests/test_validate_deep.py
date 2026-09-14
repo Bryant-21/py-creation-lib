@@ -1,13 +1,9 @@
-"""Integration test for xEdit-parity error checking.
+"""xEdit-parity error checks on B21_AppalachiaCell00Compare.esp.
 
-Loads B21_AppalachiaCell00Compare.esp, runs the deep validator, and asserts:
-1. The walker reaches CELLs nested under WRLD (paths include `World Children of …`).
-2. Subrecord ordering errors fire with xEdit-format text.
-3. Unused-data warnings fire with xEdit-format text.
-
-This is a regression guard for the mechanism, not byte-equal parity with
-xEdit — our FO76 schema is broader than xEdit's so the specific signatures
-flagged will differ.
+Asserts the deep validator reaches CELLs nested under WRLD (`World Children of …`
+paths) and emits subrecord-ordering errors and unused-data warnings in xEdit's
+text format. Guards the mechanism only: the FO76 schema is broader than xEdit's,
+so the flagged signatures differ.
 """
 from __future__ import annotations
 

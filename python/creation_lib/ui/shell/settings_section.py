@@ -12,6 +12,12 @@ class SettingsContext:
     mark_dirty: Callable[[], None]
     active_workspace: object | None = None
 
+    @property
+    def scale(self) -> float:
+        from creation_lib.ui.widgets.modern import scaled
+
+        return scaled(1)
+
 
 @dataclass
 class SettingsSection:

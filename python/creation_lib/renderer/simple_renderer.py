@@ -19,19 +19,10 @@ def compute_tangents(
     uvs: np.ndarray,
     faces: np.ndarray,
 ) -> np.ndarray:
-    """Compute per-vertex tangents from UV gradients.
+    """Compute normalized (N, 3) float32 per-vertex tangents from UV gradients.
 
-    Standard MikkTSpace-compatible approach: accumulate per-triangle tangents
-    then normalize per-vertex.
-
-    Args:
-        positions: (N, 3) float32
-        normals: (N, 3) float32
-        uvs: (N, 2) float32
-        faces: (F, 3) int32
-
-    Returns:
-        tangents: (N, 3) float32, normalized
+    MikkTSpace-compatible: accumulate per-triangle tangents, then normalize per
+    vertex.
     """
     tangents = np.zeros_like(positions)
 

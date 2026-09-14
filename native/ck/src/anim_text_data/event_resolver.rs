@@ -1,61 +1,47 @@
 //! AnimEventInfo event→clip resolver: a behavior-graph state-machine walk (CK-free).
 //!
-//! The event→clip mapping is **NOT** ESP-derivable (RACE `ATKD` carries no anim field —
-//! confirmed vs the FO4 schema + live DeathclawRace). The clip names live ONLY inside
-//! the behavior graph, reached by a state-machine traversal. This module mirrors the
-//! byte-exact-validated reference resolvers one-for-one:
-//!   * `scratchpad/atd_re/{resolve_clips_v2,validate}.py` — Snallygaster 15/15, Floaters 19/19
-//!   * `scratchpad/{walk5,flagcheck}.py` — deathclaw 26/28 (+flags 26/26), nested-SM recursion
+//! The event→clip mapping is not ESP-derivable (RACE `ATKD` has no anim field); clip names
+//! live only in the behavior graph. Validated byte-exact against CK oracles: Snallygaster
+//! 15/15, Floaters 19/19, deathclaw 26/28 (flags 26/26).
 //!
-//! ## Emission model — one entry per *transition*, not per event
+//! ## One entry per transition, not per event
 //!
-//! A single ESP event can fire **several** transitions that resolve to **different**
-//! clips with **different** flags, and CK emits each as its own line. E.g. deathclaw
-//! `ThrowAttackStart` → `ThrowAttackMoving` (flag 1) **and** `ThrowAttackStart` →
-//! `ThrowAttack` (flag 0); `evadeLeft` resolves twice. So we collect `(event, flag,
-//! clips)` per transition and de-duplicate by `(event, clip-set)` (case-insensitive),
-//! keeping the moving-gated flag on a tie.
+//! One ESP event can fire several transitions that resolve to different clips with different
+//! flags, and CK emits each as its own line: deathclaw `ThrowAttackStart` → `ThrowAttackMoving`
+//! (flag 1) and → `ThrowAttack` (flag 0); `evadeLeft` resolves twice. Entries are collected per
+//! transition and de-duplicated by `(event, clip-set)` (case-insensitive), keeping the
+//! moving-gated flag on a tie.
 //!
-//! For each transition of every `hkbStateMachine` (`wildcardTransitions` + each state's
-//! local `transitions`):
-//! 1. **eventId** → event name via `hkbBehaviorGraphStringData.eventNames[]`. Emitted
-//!    under the matching ESP candidate's spelling (CK's one case-insensitive table).
-//! 2. **clips** — resolve the transition's target state to its clip name(s):
-//!    - **nested SM** — if `flags & 0x2000` (`FLAG_TO_NESTED_STATE_ID_IS_VALID`), descend
-//!      the target state's generator to the first nested `hkbStateMachine` (`find_sm`)
-//!      and pick the state whose `stateId == toNestedStateId`, then resolve **its**
-//!      generator. This is what selects the specific attack inside `AttackRoot_Behavior`
-//!      (the side-swipes) — missing it drops the 2nd clip on multi-clip events.
-//!    - otherwise resolve the target state's generator directly.
-//!    Generator descent recurses `hkbModifierGenerator.generator`,
-//!    `DynamicAnimationTaggingGenerator.pDefaultGenerator`,
+//! For each transition of every `hkbStateMachine` (`wildcardTransitions` + each state's local
+//! `transitions`):
+//! 1. eventId → event name via `hkbBehaviorGraphStringData.eventNames[]`, emitted under the
+//!    matching ESP candidate's spelling (CK's one case-insensitive table).
+//! 2. Clips. If `flags & 0x2000` (`FLAG_TO_NESTED_STATE_ID_IS_VALID`), descend the target
+//!    state's generator to the first nested `hkbStateMachine` (`find_sm`), pick the state
+//!    whose `stateId == toNestedStateId`, and resolve its generator. This selects the specific
+//!    attack inside `AttackRoot_Behavior` (the side-swipes); without it multi-clip events lose
+//!    their 2nd clip. Otherwise resolve the target state's generator directly. Descent recurses
+//!    `hkbModifierGenerator.generator`, `DynamicAnimationTaggingGenerator.pDefaultGenerator`,
 //!    `hkbBlenderGenerator.children[]→hkbBlenderGeneratorChild.generator`,
-//!    `hkbManualSelectorGenerator`/`hkbPoseMatchingGenerator.generators[]`+`children[]`,
-//!    and **into nested `hkbStateMachine`s via `startStateId`**, to every reachable
-//!    `hkbClipGenerator.name`.
-//! 3. **flag** — `1` **iff** the triggering transition's `condition` is a *moving* speed
-//!    gate (`Speed >= N` / `Speed > N …`); `0` otherwise. It is NOT a `transition.flags`
-//!    bit (flag-0 and flag-1 oracle entries both carry `flags=8192`), NOT `clip.mode`,
-//!    NOT `clip.flags`. Proven via the `ThrowAttackStart` minimal pair (`Speed >= 20` ⇒ 1,
-//!    `Speed <= 20` ⇒ 0) — `scratchpad/flagcheck.py`, 26/26.
-//! 4. **case substitution** — a resolved clip name that case-insensitively equals an ESP
-//!    event name is emitted with the **event's** spelling (clip-gen `EvadeLeft` collides
-//!    with event `evadeLeft` → prints `evadeLeft`).
-//! 5. Drop any candidate that resolves to no clip (→ root behaviors emit the empty form).
+//!    `hkbManualSelectorGenerator`/`hkbPoseMatchingGenerator.generators[]`+`children[]`, and
+//!    nested `hkbStateMachine`s via `startStateId`, to every reachable `hkbClipGenerator.name`.
+//! 3. Flag: `1` iff the triggering transition's `condition` is a moving speed gate
+//!    (`Speed >= N` / `Speed > N …`), else `0`. Not a `transition.flags` bit (flag-0 and
+//!    flag-1 oracle entries both carry `flags=8192`), not `clip.mode`, not `clip.flags`; shown
+//!    by the `ThrowAttackStart` minimal pair (`Speed >= 20` ⇒ 1, `Speed <= 20` ⇒ 0).
+//! 4. A clip name that case-insensitively equals an ESP event name takes the event's spelling
+//!    (clip-gen `EvadeLeft` vs event `evadeLeft` → `evadeLeft`).
+//! 5. Candidates that resolve to no clip are dropped (root behaviors emit the empty form).
 //!
-//! ## Known residual (honest gap)
+//! ## Known gap
 //!
-//! Two deathclaw oracle entries are **not** offline-derivable: `evadeLeft → DeathClaw
-//! EvadeForwardMirrored` and `evadeRight → DeathClaw EvadeForward.HKT00`. The nested evade
-//! SM contains only Left/Right (stateId 0/1) states; the *forward*-evade variant is chosen
-//! at runtime by a movement-direction variable binding, not by the evade event — the same
-//! runtime variable-index class as the deathclaw melee shared-selector. So the honest
-//! ceiling on deathclaw is 26/28; the resolver reproduces those 26 with byte-exact clips
-//! **and** flags, and emits no false positives. The remaining 2 require CK's runtime.
+//! Two deathclaw oracle entries are not offline-derivable: `evadeLeft → DeathClaw
+//! EvadeForwardMirrored` and `evadeRight → DeathClaw EvadeForward.HKT00`. The nested evade SM
+//! has only Left/Right (stateId 0/1) states; the forward variant is chosen at runtime by a
+//! movement-direction variable binding, like the deathclaw melee shared-selector.
 //!
-//! NOTE: this resolver reads `states` / `transitions` / `generators` pointer arrays,
-//! which require the TAG0 8-byte pointer-array stride; a 4-byte stride returns them
-//! half-null and the walk silently yields 0 clips.
+//! The walk reads `states` / `transitions` / `generators` pointer arrays, which need the TAG0
+//! 8-byte pointer-array stride; a 4-byte stride returns them half-null and yields 0 clips.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
@@ -63,7 +49,6 @@ use std::sync::OnceLock;
 
 use regex::Regex;
 
-use havok_native::hkx::read_packfile;
 use havok_native::hkx::types::HkxValue;
 use havok_native::hkx::{HkxMember, HkxObject};
 
@@ -464,10 +449,7 @@ fn collect_entries(objects: &[HkxObject]) -> Vec<(i64, u32, BTreeSet<String>)> {
 /// moving-gated `flag=1` on a tie. Returns empty when nothing resolves (a wrong
 /// AnimEventInfo is worse than none — caller emits no file).
 pub fn resolve_anim_events(behavior_file: &Path, candidates: &[String]) -> Vec<AnimEvent> {
-    let Ok(data) = std::fs::read(behavior_file) else {
-        return Vec::new();
-    };
-    let Ok(hkx) = read_packfile(&data) else {
+    let Some(hkx) = super::hkx_cache::behavior_packfile(behavior_file) else {
         return Vec::new();
     };
     let objects = hkx.objects();
@@ -654,5 +636,4 @@ mod tests {
             "ThrowAttackStart standing variant must be flag=0"
         );
     }
-
 }

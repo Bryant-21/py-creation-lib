@@ -70,12 +70,10 @@ pub enum HkxValue {
     /// transforms whose synthesized atoms all share the same class as
     /// the surrounding member template.
     Object(Vec<crate::hkx::model::HkxMember>),
-    /// Inline struct that carries its own class name. Used by FO76→FO4
-    /// migration synthesizers (`_convert_limited_hinge_to_ragdoll`,
-    /// `_inject_ragdoll_motors`, `_synthesize_motion_cinfos`) when
-    /// emitting heterogeneous-class atoms into a single `atoms`/`motors`
-    /// array. The writer prefers the carried name over the parent
-    /// member's `ctype` template when looking up the descriptor.
+    /// Inline struct that carries its own class name. FO76→FO4 synthesizers
+    /// (`inject_ragdoll_motors`, `synthesize_motion_cinfos`) use it to emit
+    /// heterogeneous-class atoms into one `atoms`/`motors` array. The writer
+    /// prefers the carried name over the parent member's `ctype` template.
     TypedObject {
         class_name: String,
         members: Vec<crate::hkx::model::HkxMember>,

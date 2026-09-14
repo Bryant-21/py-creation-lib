@@ -1,15 +1,5 @@
-// Cloth template registry.
-//
-// Each template stores vanilla-derived particle geometry and constraint
-// configuration. Mirrors py_creation_lib/python/creation_lib/havok_cloth/templates/*.py.
-//
-// The `template_blob` function runs the Havok-side pipeline:
-//   1. Use template particle positions (relax step omitted — native solver
-//      path is identical to Python's 30-step zero-gravity relax)
-//   2. Generate cloth bones from particle positions
-//   3. Auto-skin particles to bones
-//   4. Build ClothSetupObject
-//   5. Bake to HKX
+// Cloth template registry: vanilla-derived particle geometry and constraint
+// configuration per template. `template_blob` bakes one into an HCL blob.
 use std::f32::consts::PI;
 
 use crate::cloth::units::GRAVITY_Z;

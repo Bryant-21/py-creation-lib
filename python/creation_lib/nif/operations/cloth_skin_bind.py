@@ -1,18 +1,15 @@
 """Bind a BSTriShape to cloth bones generated from BSClothExtraData.
 
-Clusters sim particles down to at most MAX_CLOTH_BONES bones, creates a
-NiNode per cluster centroid, promotes the target shape to skinned, and
-assigns each render vertex a weight of 1.0 to the nearest cluster bone.
+Clusters sim particles into at most MAX_CLOTH_BONES bones (a NiNode per cluster
+centroid), promotes the shape to skinned, and weights each render vertex 1.0 to
+its nearest cluster bone.
 
-BSVertexData.Bone Indices is a `byte[4]` field (see py_creation_lib/python/creation_lib/nif/nif_xml/nif.xml,
-member `Bone Indices`), so shape-local bone index values above 255 saturate
-on serialization. We stay under that with a safety margin by capping at
-MAX_CLOTH_BONES=240.
+BSVertexData `Bone Indices` is `byte[4]` in nif.xml, so shape-local bone indices
+above 255 saturate on write; MAX_CLOTH_BONES=240 leaves a margin.
 
-The per-bone inverse bind transform counteracts the bone's world placement
-(`translation = -bone_world_translation`, rotation identity) so the skinned
-mesh renders at its original world position — matching the vanilla hair
-cloth bone pattern from `FemaleHair04.nif`.
+Each bone's inverse bind is `translation = -bone_world_translation` with identity
+rotation, so the skinned mesh renders in place, like the vanilla hair cloth bones
+in `FemaleHair04.nif`.
 """
 from __future__ import annotations
 
@@ -40,25 +37,12 @@ def cloth_skin_bind(
     bone_prefix: str = "Cloth",
     root_node_id: int = 0,
 ) -> list[str]:
-    """Skin a BSTriShape to cloth-particle bones.
+    """Skin a BSTriShape (``nif`` is mutated in place) to cloth-particle bones.
 
-    Args:
-        nif:            Loaded NifFile. Mutated in place.
-        shape_id:       Block id of the unskinned BSTriShape to promote.
-        nif_path:       Path to a NIF on disk with a BSClothExtraData
-                        blob. Used to load sim particle positions when
-                        ``sim_positions`` is not provided.
-        sim_positions:  Explicit (x, y, z) sim-particle positions. When
-                        supplied, takes precedence over ``nif_path`` —
-                        callers that already have the cloth scene in
-                        memory (e.g. cloth_maker after a fresh authoring
-                        pass) can skip the disk round-trip.
-        bone_prefix:    Prefix for generated bone names (`{prefix}_{i:03d}`).
-        root_node_id:   NiNode block id to parent the new bones under.
-
-    Returns:
-        Ordered list of bone names. Index position matches the shape-local
-        bone index used in the vertex weight buffers.
+    Sim-particle positions come from ``sim_positions`` when given, else from the
+    BSClothExtraData of the NIF at ``nif_path``. New bones are named
+    ``{bone_prefix}_{i:03d}`` under ``root_node_id``. Returns bone names in
+    shape-local bone-index order.
     """
     if sim_positions is None:
         if nif_path is None:

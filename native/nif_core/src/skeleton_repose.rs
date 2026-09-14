@@ -14,6 +14,10 @@
 //! invariant (and all non-skinned helper nodes) are left untouched, so an
 //! already-correct skeleton round-trips byte-identically (no write).
 //!
+//! [`rebind_skin_to_skeleton`] restores the same invariant from the other
+//! side, for meshes bound to a skeleton that cannot be modified — humanoids
+//! all share FO4's `skeleton.nif`, so there the mesh's binds must move.
+//!
 //! Matrix convention is verified against a known-good fan skeleton: the NIF
 //! rotation struct `m11..m33` maps to the math matrix `M[r][c]` as
 //! `M[0][0]=m11, M[0][1]=m21, M[0][2]=m31, M[1][0]=m12, ...` (the same
@@ -121,6 +125,25 @@ pub fn skeleton_bind_consistency(
     (consistent, total)
 }
 
+/// Translation of `world(bone) @ bind` for every bind that names a node in
+/// `skel`, case-insensitively (the engine's own bone lookup ignores case). A
+/// coherent skin yields one repeated vector — per-bone disagreement is what
+/// deforms the mesh. Diagnostics and tests.
+pub fn skeleton_bind_offsets(
+    skel: &NifFile,
+    bind_by_name: &HashMap<String, BindMatrix>,
+) -> Vec<[f64; 3]> {
+    let worlds = skeleton_world_by_name(skel);
+    bind_by_name
+        .iter()
+        .filter_map(|(name, bind)| {
+            let world = worlds.get(&name.to_ascii_lowercase())?;
+            let residual = mat4_mul(world, bind);
+            Some([residual[0][3], residual[1][3], residual[2][3]])
+        })
+        .collect()
+}
+
 /// Max per-component spread between bone residuals for the field to count as
 /// one common rigid offset (scorched source spreads ~2.9; genuinely broken
 /// skeletons spread 100–240).
@@ -135,7 +158,7 @@ const CONVENTION_MIN_OFFSET: f64 = 10.0;
 /// offset on every bone) and the engine resolves it at skinning time, so it
 /// is not a broken rest pose. Reposing such a skeleton shifts every bone the
 /// engine drives through the humanoid rig by that offset and smears the
-/// actor (FO76 Scorched regression). A uniform offset never deforms a skin;
+/// actor (seen on FO76 Scorched). A uniform offset never deforms a skin;
 /// only per-bone disagreement does.
 fn uniform_convention_offset(residuals: &[BindMatrix]) -> bool {
     let Some(first) = residuals.first() else {
@@ -262,9 +285,127 @@ pub fn repose_skeleton_to_inverse_bind(
     report
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct RebindReport {
+    /// Bind matrices rewritten to `inverse(world)`.
+    pub rebound: usize,
+    /// Distinct bound bone names with no node in the target skeleton. Their
+    /// binds are left untouched.
+    pub unmatched: Vec<String>,
+}
+
+/// Rebind a mesh's skin to `skeleton`'s rest pose.
+///
+/// The dual of [`repose_skeleton_to_inverse_bind`], for meshes that must bind
+/// to a skeleton they cannot modify — every humanoid shares FO4's single
+/// `skeleton.nif`, so the mesh is the side that has to move. A translated
+/// legacy skin carries its source game's bind matrices; renaming the bones to
+/// FO4 leaves those binds describing the Gamebryo rest pose, and each bone
+/// then displaces its own vertex cluster (FNV arms land ~150 units out).
+/// Setting `bind := inverse(world)` restores `world @ bind == I`, rendering
+/// the mesh exactly as authored.
+///
+/// Bones with no same-named skeleton node keep their existing bind. Lookup is
+/// case-insensitive because FO4's skeleton spells the spine `SPINE1`/`SPINE2`
+/// while the translation maps emit `Spine1`/`Spine2`; the engine's own bone
+/// lookup ignores case too.
+pub fn rebind_skin_to_skeleton(nif: &mut NifFile, skeleton: &NifFile) -> RebindReport {
+    let worlds = skeleton_world_by_name(skeleton);
+    let mut report = RebindReport::default();
+
+    // Resolve every bind first: the bone names live on nodes in `nif`, which
+    // cannot be read while the BoneData blocks are being mutated.
+    let mut writes: Vec<(usize, usize, BindMatrix)> = Vec::new();
+    for block in &nif.blocks {
+        if block.type_name != "BSSkin::Instance" {
+            continue;
+        }
+        let Some(NifValue::Array(bones)) = block.get_field("Bones") else {
+            continue;
+        };
+        let Some(data_id) = ref_value(block.get_field("Data")) else {
+            continue;
+        };
+        for (index, bone) in bones.iter().enumerate() {
+            let Some(name) = ref_value(Some(bone))
+                .and_then(|id| nif.get_block(id))
+                .and_then(node_name)
+            else {
+                continue;
+            };
+            match worlds
+                .get(&name.to_ascii_lowercase())
+                .and_then(mat4_affine_inverse)
+            {
+                Some(bind) => writes.push((data_id, index, bind)),
+                None => report.unmatched.push(name),
+            }
+        }
+    }
+
+    for (data_id, index, bind) in writes {
+        let Some(data) = nif.blocks.get_mut(data_id) else {
+            continue;
+        };
+        let Some(NifValue::Array(bone_list)) = data.fields.get_mut("Bone List") else {
+            continue;
+        };
+        let Some(NifValue::Struct(entry)) = bone_list.get_mut(index) else {
+            continue;
+        };
+        let rot = [
+            [bind[0][0], bind[0][1], bind[0][2]],
+            [bind[1][0], bind[1][1], bind[1][2]],
+            [bind[2][0], bind[2][1], bind[2][2]],
+        ];
+        let rot_value = write_rotation_value(entry.get("Rotation"), rot);
+        entry.insert("Rotation".to_string(), rot_value);
+        let trans_value = write_translation_value(
+            entry.get("Translation"),
+            [bind[0][3], bind[1][3], bind[2][3]],
+        );
+        entry.insert("Translation".to_string(), trans_value);
+        report.rebound += 1;
+    }
+
+    // The mesh carries its own copies of the bone nodes, still holding source
+    // locals. Pull them onto the same rest pose so the file satisfies
+    // `world @ bind == I` on its own, the way a native FO4 mesh does.
+    if report.rebound > 0 {
+        let binds = collect_bind_matrices_by_name(nif);
+        repose_skeleton_to_inverse_bind(nif, &binds, 1e-4);
+    }
+
+    report.unmatched.sort();
+    report.unmatched.dedup();
+    report
+}
+
 // ---------------------------------------------------------------------------
 // Skeleton traversal
 // ---------------------------------------------------------------------------
+
+/// Accumulated world transform of every skeleton node, keyed by lowercased
+/// name. First occurrence wins when a name repeats.
+fn skeleton_world_by_name(skel: &NifFile) -> HashMap<String, BindMatrix> {
+    let (order, parents) = node_order_and_parents(skel);
+    let mut world: HashMap<usize, BindMatrix> = HashMap::new();
+    let mut by_name: HashMap<String, BindMatrix> = HashMap::new();
+    for &bid in &order {
+        let block = &skel.blocks[bid];
+        let parent_world = parents
+            .get(&bid)
+            .and_then(|p| world.get(p))
+            .copied()
+            .unwrap_or_else(identity4);
+        let current = mat4_mul(&parent_world, &local_of(block));
+        world.insert(bid, current);
+        if let Some(name) = node_name(block) {
+            by_name.entry(name.to_ascii_lowercase()).or_insert(current);
+        }
+    }
+    by_name
+}
 
 /// Return node block ids in parent-before-child order, plus a `child → parent`
 /// map. Nodes are every `NiNode` (and subtype) block.

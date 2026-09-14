@@ -25,16 +25,10 @@ def compile_mopp(
     radius: float = 0.005,
     output_ids: list[int] | None = None,
 ) -> tuple[bytes, tuple[float, float, float], float]:
-    """Build MOPP bytecode for a set of triangles.
+    """Build MOPP bytecode for triangles in Havok space; return ``(mopp_bytes, origin, scale)``.
 
-    Args:
-        verts: Vertex positions in Havok space.
-        triangles: Triangle index triples.
-        radius: Collision radius (0.005 for Skyrim SE, 0.1 for Oblivion/FO3).
-        output_ids: Per-triangle uint32 output IDs. If None, sequential 0,1,2,...
-
-    Returns:
-        (mopp_bytes, origin, scale)
+    ``radius`` is 0.005 for Skyrim SE, 0.1 for Oblivion/FO3. ``output_ids`` are
+    per-triangle uint32 ids, sequential by default.
     """
     if not triangles:
         return b"", (0.0, 0.0, 0.0), 0.0
@@ -89,15 +83,9 @@ def disassemble_mopp(
     origin: tuple[float, float, float] | None = None,
     scale: float | None = None,
 ) -> list[str]:
-    """Disassemble MOPP bytecode to human-readable indented tree.
+    """Disassemble MOPP bytecode into indented tree lines.
 
-    Args:
-        mopp_bytes: Raw MOPP bytecode.
-        origin: Optional origin for world-space annotation.
-        scale: Optional scale for world-space annotation.
-
-    Returns:
-        List of text lines with tree-structured indentation.
+    ``origin`` and ``scale`` only add world-space annotations.
     """
     if not mopp_bytes:
         return []

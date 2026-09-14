@@ -1,14 +1,11 @@
 """Authoring-dir → ESP build emits top-level GRUPs in the engine's canonical
 record-type order, not alphabetical.
 
-Regression test for the CK error
-``[FORMS] Unable to find keyword (XXXXXXXX)``: when KYWD records appear
-*after* records that reference them (COBJ.FNAM, CONT.KWDA, ACTI.KWDA, …),
-CK's forward-pass loader can't resolve the references. Native authoring
-must emit groups in the canonical order extracted from each game's vanilla
-ESM, matching the order Bethesda's tools expect. Our streaming build
-previously sorted record-type subdirs alphabetically, which placed
-ACTI/ARTO/COBJ/CONT before KYWD and broke keyword resolution on first load.
+When KYWD records appear *after* records that reference them (COBJ.FNAM,
+CONT.KWDA, ACTI.KWDA, …), CK's forward-pass loader can't resolve the
+references and logs ``[FORMS] Unable to find keyword (XXXXXXXX)``.
+Alphabetical order puts ACTI/ARTO/COBJ/CONT before KYWD, so native authoring
+must emit groups in the canonical order extracted from each game's vanilla ESM.
 
 These tests scaffold authoring dirs whose record-type subdirs would sort
 alphabetically into the *wrong* order, build, and assert the resulting

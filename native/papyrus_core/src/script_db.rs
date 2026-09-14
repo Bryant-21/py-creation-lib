@@ -1,13 +1,12 @@
 //! SQLite wrapper for `fo4_scripts.db` — script symbol lookups with disk fallback.
 //!
-//! Mirrors `py_creation_lib/python/creation_lib/papyrus_lsp/script_db.py`. Pure-Rust: uses `rusqlite` and the
-//! existing parser. No PyO3 references — the bindings layer wraps this.
+//! Pure Rust over `rusqlite` and the parser; no PyO3 (the bindings layer wraps
+//! this).
 //!
 //! The DB schema is whatever `modkit index build --domain scripts` produces:
 //! a `scripts` table with `script_name`, `extends`, `functions`, `events`,
-//! `properties`, `script_path`, `source` columns. Format strings inside those
-//! columns: `"RetType FuncName(params); ..."` for functions, etc. — the parsing
-//! regexes here match the Python originals at `script_db.py:301-356`.
+//! `properties`, `script_path`, `source` columns. Those columns hold format
+//! strings such as `"RetType FuncName(params); ..."` for functions.
 
 use crate::parser::parse_script;
 use rusqlite::{Connection, OpenFlags, params};

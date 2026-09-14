@@ -2,7 +2,9 @@
 //! Temporary-group REFRs, grouped by model path. Read-only — no NIF or ESP
 //! mutation happens here (see `precombine::bake` / `precombine::stamp`).
 
-use esp_authoring_core::plugin_runtime::{plugin_handle_store_ref, ParsedGroup, ParsedItem, ParsedRecord};
+use esp_authoring_core::plugin_runtime::{
+    ParsedGroup, ParsedItem, ParsedRecord, plugin_handle_store_ref,
+};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -126,7 +128,9 @@ pub fn build_plan(params: &Params) -> Result<PrecombinePlan, String> {
         .collect();
     groups.sort_by(|a, b| a.model_path.cmp(&b.model_path));
     for group in &mut groups {
-        group.instances.sort_by_key(|instance| instance.refr_form_id);
+        group
+            .instances
+            .sort_by_key(|instance| instance.refr_form_id);
     }
 
     Ok(PrecombinePlan {
@@ -226,11 +230,7 @@ fn model_path_of(record: &ParsedRecord) -> Option<String> {
         .trim_end_matches('\0')
         .trim()
         .to_ascii_lowercase();
-    if text.is_empty() {
-        None
-    } else {
-        Some(text)
-    }
+    if text.is_empty() { None } else { Some(text) }
 }
 
 fn eligible_instance(
@@ -306,9 +306,9 @@ mod tests {
     use super::*;
     use bytes::Bytes;
     use esp_authoring_core::plugin_runtime::{
-        ensure_interior_cell_and_child_group, insert_parsed_record,
+        ParsedSubrecord, ensure_interior_cell_and_child_group, insert_parsed_record,
         insert_placed_child_into_cell_group, plugin_handle_add_master_native,
-        plugin_handle_new_native, ParsedSubrecord,
+        plugin_handle_new_native,
     };
     use smol_str::SmolStr;
 
@@ -393,7 +393,9 @@ mod tests {
         scale: f32,
     ) -> ParsedRecord {
         let mut record = plain_refr(form_id, base_form_id, pos, rot);
-        record.subrecords.push(sub("XSCL", scale.to_le_bytes().to_vec()));
+        record
+            .subrecords
+            .push(sub("XSCL", scale.to_le_bytes().to_vec()));
         record
     }
 
@@ -419,7 +421,10 @@ mod tests {
     fn unknown_handle_is_rejected() {
         let params = base_params(999_999, 0x001000);
         let err = build_plan(&params).expect_err("unknown handle must fail");
-        assert!(err.contains("999999"), "error should name the handle: {err}");
+        assert!(
+            err.contains("999999"),
+            "error should name the handle: {err}"
+        );
     }
 
     #[test]
@@ -490,8 +495,11 @@ mod tests {
     fn accepts_plain_stat_backed_refr_with_default_and_explicit_scale() {
         let target = new_target();
         ensure_interior_cell_and_child_group(target, interior_cell(0x001000, "Cell")).unwrap();
-        insert_parsed_record(target, stat_base(0x000500, "Meshes\\Furniture\\Chair01.nif"))
-            .unwrap();
+        insert_parsed_record(
+            target,
+            stat_base(0x000500, "Meshes\\Furniture\\Chair01.nif"),
+        )
+        .unwrap();
         insert_placed_child_into_cell_group(
             target,
             0x001000,
@@ -575,7 +583,10 @@ mod tests {
             .collect();
         assert_eq!(refr_ids, vec![0x000800]);
         for excluded in expected_excluded {
-            assert!(!refr_ids.contains(&excluded), "{excluded:06X} must be excluded");
+            assert!(
+                !refr_ids.contains(&excluded),
+                "{excluded:06X} must be excluded"
+            );
         }
     }
 
@@ -630,8 +641,11 @@ mod tests {
         let target = new_target();
         ensure_interior_cell_and_child_group(target, interior_cell(0x001000, "Cell")).unwrap();
         insert_parsed_record(target, stat_base(0x000500, "meshes\\a.nif")).unwrap();
-        insert_parsed_record(target, parsed_record("STAT", 0x000501, vec![edid("NoModl")]))
-            .unwrap();
+        insert_parsed_record(
+            target,
+            parsed_record("STAT", 0x000501, vec![edid("NoModl")]),
+        )
+        .unwrap();
 
         let no_data = parsed_record(
             "REFR",
@@ -640,8 +654,7 @@ mod tests {
         );
         insert_placed_child_into_cell_group(target, 0x001000, TEMPORARY, no_data).unwrap();
         let no_modl_base_ref = plain_refr(0x000601, 0x000501, [0.0; 3], [0.0; 3]);
-        insert_placed_child_into_cell_group(target, 0x001000, TEMPORARY, no_modl_base_ref)
-            .unwrap();
+        insert_placed_child_into_cell_group(target, 0x001000, TEMPORARY, no_modl_base_ref).unwrap();
 
         let params = base_params(target, 0x001000);
         let plan = build_plan(&params).expect("plan");
@@ -681,7 +694,11 @@ mod tests {
         let params = base_params(target, 0x001000);
         let plan = build_plan(&params).expect("plan");
         let groups = &plan.cells[0].groups;
-        assert_eq!(groups.len(), 2, "same path, different case, collapses to one group");
+        assert_eq!(
+            groups.len(),
+            2,
+            "same path, different case, collapses to one group"
+        );
         assert_eq!(groups[0].model_path, "meshes\\bar.nif");
         assert_eq!(groups[1].model_path, "meshes\\foo.nif");
         assert_eq!(groups[1].instances.len(), 2);

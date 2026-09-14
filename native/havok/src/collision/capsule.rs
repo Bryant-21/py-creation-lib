@@ -1,26 +1,19 @@
 // FO4 Havok 2014.1.0 packfile builder — hknpCapsuleShape.
 //
-// A capsule is NOT a sphere-like primitive: per the Havok 2018 SDK
-// (`hknpCapsuleShape : public hknpConvexPolytopeShape`) it is a full convex
-// polytope — 8 vertices forming a thin box along the capsule axis — plus the
-// two endpoint vectors `m_a` / `m_b`. FO76 stores the physical radius in
-// `m_a.w` and the rounded core radius in `convexRadius`; FO4 normalizes both
-// endpoint W lanes to 1.0. The hull
-// geometry is generated exactly as `convert::fo76::capsule_hull_from_endpoints`
-// does (the converter already emits valid FO4 capsules this way), so this
-// builder reproduces the source FO76 capsule faithfully by carrying its own
-// `a` / `b` / `convexRadius` — it never synthesizes the radius split.
+// Per the Havok 2018 SDK a capsule is a full convex polytope
+// (`hknpCapsuleShape : public hknpConvexPolytopeShape`): 8 vertices forming a
+// thin box along the axis, plus endpoints `m_a` / `m_b`. FO76 stores the
+// physical radius in `m_a.w` and the rounded core radius in `convexRadius`; FO4
+// normalizes both endpoint W lanes to 1.0. The hull matches
+// `convert::fo76::capsule_hull_from_endpoints`, and the source `a` / `b` /
+// `convexRadius` are carried as-is; the radius split is never synthesized.
 //
-// Build strategy: take a single-body sphere packfile as the system template
-// (hknpPhysicsSystemData + one static body + one material, and — like a capsule
-// — NO hknpShapeMassProperties), then morph its `hknpSphereShape` into an
-// `hknpCapsuleShape` and serialize through the descriptor writer
-// (`HkxFile::from_tagxml` → `save`). Unlike the sphere shape (whose
-// descriptor-unknown trailer bytes can't round-trip), the capsule is fully
-// descriptor-covered, so the writer lays it out correctly.
-//
-// NOT YET WIRED: `classify_source_body` in the FO76->FO4 conversion still
-// tessellates source capsules to hulls rather than routing them here.
+// The system comes from a single-body sphere packfile template
+// (hknpPhysicsSystemData + one static body + one material, no
+// hknpShapeMassProperties). Its `hknpSphereShape` is morphed into an
+// `hknpCapsuleShape` and serialized through the descriptor writer
+// (`HkxFile::from_tagxml` → `save`); unlike the sphere's descriptor-unknown
+// trailer bytes, the capsule is fully descriptor-covered.
 
 use super::compressed_mesh::BuildOptions;
 use super::polytope::SourcePolytopeShape;

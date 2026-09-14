@@ -1,9 +1,5 @@
-/// Footstep timing / analysis.
-///
-/// Detects planted-foot events from per-frame ankle/heel world-space
-/// velocities. Emits `FootstepEvent` candidates at velocity zero-crossings.
-/// Used to auto-derive footstep events for sound-tag injection on imported
-/// animations.
+/// Footstep detection: emits candidates at zero-crossings of per-frame
+/// ankle/heel world-space velocity, for footstep sound tags on imported animations.
 
 /// A detected footstep event candidate.
 #[derive(Debug, Clone, PartialEq)]

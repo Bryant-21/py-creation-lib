@@ -114,10 +114,63 @@ pub(crate) fn validate_unskinned_geometry(nif: &NifFile) -> Result<(), String> {
     Ok(())
 }
 
+pub(crate) fn validate_supported_geometry(nif: &NifFile) -> Result<(), String> {
+    for block in &nif.blocks {
+        if block.type_name == "BSDynamicTriShape" && !shape_is_skinned(block) {
+            return Err(format!(
+                "Skyrim NIF conversion excludes unskinned dynamic block {} ({})",
+                block.block_id, block.type_name
+            ));
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn contains_skinned_geometry(nif: &NifFile) -> bool {
+    nif.blocks.iter().any(|block| {
+        matches!(
+            block.type_name.as_str(),
+            "NiSkinInstance" | "BSDismemberSkinInstance"
+        ) || (is_geometry(block) && shape_is_skinned(block))
+    })
+}
+
+pub(crate) fn load_static_tree_fallback(
+    source_path: &Path,
+    nif: &NifFile,
+) -> Result<Option<(NifFile, PathBuf)>, crate::io::ReadError> {
+    if !nif
+        .blocks
+        .iter()
+        .any(|block| block.type_name == "BSTreeNode")
+    {
+        return Ok(None);
+    }
+    let Some(parent) = source_path.parent() else {
+        return Ok(None);
+    };
+    let Some(stem) = source_path.file_stem().and_then(|stem| stem.to_str()) else {
+        return Ok(None);
+    };
+    let fallback_path = parent
+        .join("switchnodechildren")
+        .join(format!("{stem}_1.nif"));
+    if !fallback_path.is_file() {
+        return Ok(None);
+    }
+    let fallback = NifFile::load(fallback_path.clone())?;
+    if validate_unskinned_geometry(&fallback).is_err()
+        || !fallback.blocks.iter().any(|block| is_geometry(block))
+    {
+        return Ok(None);
+    }
+    Ok(Some((fallback, fallback_path)))
+}
+
 pub(crate) fn normalize_static_geometry(nif: &mut NifFile) -> usize {
     let mut normalized = 0;
     for block in &mut nif.blocks {
-        if !is_geometry(block) {
+        if !is_geometry(block) || shape_is_skinned(block) {
             continue;
         }
         let triangle_count = array_len(block.get_field("Triangles"));
@@ -382,7 +435,7 @@ fn lighting_material(
         ModelSpaceNormals: flags_1 & SLSF1_MODEL_SPACE_NORMALS != 0,
         ExternalEmittance: flags_1 & SLSF1_EXTERNAL_EMIT != 0,
         ReceiveShadows: flags_1 & SLSF1_RECEIVE_SHADOWS != 0,
-        CastShadows: flags_1 & SLSF1_CAST_SHADOWS != 0,
+        CastShadows: true,
         AssumeShadowmask: flags_2 & SLSF2_ASSUME_SHADOWMASK != 0,
         Glowmap: flags_2 & SLSF2_GLOW_MAP != 0,
         AnisoLighting: flags_2 & SLSF2_ANISOTROPIC_LIGHTING != 0,
@@ -672,6 +725,15 @@ mod tests {
         fields.insert("Skin".to_string(), NifValue::Ref(0));
         nif.add_block("BSTriShape", Some(fields));
         assert!(validate_unskinned_geometry(&nif).is_err());
+        assert!(validate_supported_geometry(&nif).is_ok());
+        assert!(contains_skinned_geometry(&nif));
+    }
+
+    #[test]
+    fn dynamic_geometry_remains_unsupported() {
+        let mut nif = NifFile::new("skyrimse");
+        nif.add_block("BSDynamicTriShape", None);
+        assert!(validate_supported_geometry(&nif).is_err());
     }
 
     #[test]
@@ -682,6 +744,42 @@ mod tests {
         nif.add_block("NiTransformData", None);
 
         assert!(validate_unskinned_geometry(&nif).is_ok());
+    }
+
+    #[test]
+    fn skinned_tree_loads_static_switch_child() {
+        let temp = tempfile::tempdir().unwrap();
+        let tree_dir = temp.path().join("Landscape").join("Trees");
+        std::fs::create_dir_all(&tree_dir).unwrap();
+        let source_path = tree_dir.join("TreePineForest01.nif");
+
+        let mut source = NifFile::new("skyrimse");
+        source.blocks[0].type_name = "BSTreeNode".to_string();
+        let mut skinned_fields = IndexMap::new();
+        skinned_fields.insert("Skin".to_string(), NifValue::Ref(0));
+        source.add_block("BSTriShape", Some(skinned_fields));
+        source.rebuild_header();
+        source.save(Some(source_path.clone())).unwrap();
+
+        let fallback_dir = tree_dir.join("switchnodechildren");
+        std::fs::create_dir_all(&fallback_dir).unwrap();
+        let fallback_path = fallback_dir.join("TreePineForest01_1.nif");
+        let mut fallback = NifFile::new("skyrimse");
+        fallback.blocks[0].type_name = "BSLeafAnimNode".to_string();
+        let mut static_fields = IndexMap::new();
+        static_fields.insert("Skin".to_string(), NifValue::Ref(-1));
+        fallback.add_block("BSTriShape", Some(static_fields));
+        fallback.rebuild_header();
+        fallback.save(Some(fallback_path.clone())).unwrap();
+
+        let source = NifFile::load(source_path.clone()).unwrap();
+        let (loaded, loaded_path) = load_static_tree_fallback(&source_path, &source)
+            .unwrap()
+            .expect("static switch child");
+
+        assert_eq!(loaded_path, fallback_path);
+        assert_eq!(loaded.blocks[0].type_name, "BSLeafAnimNode");
+        assert!(validate_unskinned_geometry(&loaded).is_ok());
     }
 
     #[test]
@@ -699,6 +797,24 @@ mod tests {
         assert_eq!(
             nif.blocks[1].get_field("Vertex Desc").map(NifValue::as_i64),
             Some(0x0003_B000_0543_0206)
+        );
+    }
+
+    #[test]
+    fn static_geometry_normalization_skips_skinned_shapes() {
+        let mut nif = NifFile::new("skyrimse");
+        let mut fields = IndexMap::new();
+        fields.insert(
+            "Vertex Desc".to_string(),
+            NifValue::UInt(0x0003_B000_0765_0408),
+        );
+        fields.insert("Skin".to_string(), NifValue::Ref(2));
+        nif.add_block("BSTriShape", Some(fields));
+
+        assert_eq!(normalize_static_geometry(&mut nif), 0);
+        assert_eq!(
+            nif.blocks[1].get_field("Vertex Desc").map(NifValue::as_i64),
+            Some(0x0003_B000_0765_0408)
         );
     }
 
@@ -842,6 +958,7 @@ mod tests {
         let shader = NifBlock::new(0, "BSLightingShaderProperty");
         let material = lighting_material(&shader, &[], None);
 
+        assert!(material.CastShadows);
         assert!(!material.header.alpha_test);
         assert_eq!(material.header.alpha_test_ref, 128);
         assert_eq!(material.header.alpha_blend_mode0, 0);

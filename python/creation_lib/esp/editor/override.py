@@ -1,22 +1,15 @@
-"""Copy-as-override and copy-as-new-record implementations.
+"""Copy-as-override and copy-as-new-record, as in xEdit.
 
-Cloning a record from a master into another plugin is the central authoring
-operation. xEdit calls this:
+- "Copy as override": same FormID; the target gains the source plugin and the
+  plugins owning the record's outbound FormIDs as masters.
+- "Copy as new record": fresh FormID in the target's own slot; the target only
+  needs masters for plugins the record still references.
 
-- "Copy as override" — same FormID, target gets the source plugin (and any
-  plugins reachable via the record's outbound FormIDs) as required masters.
-- "Copy as new record" — fresh FormID allocated in the target's own slot;
-  target only needs masters for plugins still referenced by the record.
-
-Both variants support `deep=True`, which pulls in records reachable via
-outbound FormID references (BFS, deduped).
-
-Master-add follows xEdit's `AddRequiredMasters`: a target may not take a
-master that loads after itself in load order, so we skip those and log.
-
-FormID remap (high-byte translation) is applied to the record's own form_id
-*and* to subrecord bytes tagged `formid` / `formid_array` by the parser —
-matching `remap_formids_in_record` in the native crate.
+`deep=True` also copies records reachable via outbound FormIDs (BFS, deduped).
+Master-add follows xEdit's `AddRequiredMasters`: a target may not take a master
+that loads after it, so such a record is skipped and logged. High-byte remap
+covers the record's own form_id and subrecord bytes tagged `formid` /
+`formid_array` (native `remap_formids_in_record`).
 """
 
 from __future__ import annotations
@@ -112,7 +105,6 @@ def _copy_records(
         if source_plugin is None:
             continue
 
-        # Phase 1: gather required masters for this record's references.
         required_masters = _collect_required_masters(
             session, source_handle, record_summary.form_id, include_source=not as_new
         )

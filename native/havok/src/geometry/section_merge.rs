@@ -19,13 +19,8 @@ pub struct MeshSection {
 // Public API
 // ---------------------------------------------------------------------------
 
-/// Merge multiple mesh sections into one.
-///
-/// Sections are concatenated in order.  Triangle indices are offset by the
-/// running vertex count so each section maps into the correct sub-range of
-/// the merged vertex array.
-///
-/// Returns the merged section.  An empty input produces an empty section.
+/// Concatenate mesh sections in order, offsetting triangle indices by the
+/// running vertex count.
 pub fn merge_sections(sections: &[MeshSection]) -> MeshSection {
     let total_verts: usize = sections.iter().map(|s| s.vertices.len()).sum();
     let total_tris: usize = sections.iter().map(|s| s.triangles.len()).sum();

@@ -98,12 +98,71 @@ def test_deploy_forwards_archive_workers_to_pack_mod(tmp_path: Path):
             game="fo4",
             game_data_dir=game_data_dir,
             skip_build=True,
+            ps=True,
+            ps_max_res=4096,
+            ps_effects_max_res=2048,
             archive_workers=7,
             project_root=tmp_path,
             resource_dir=tmp_path / "resource",
         )
 
     assert pack_calls[0]["archive_workers"] == 7
+    assert pack_calls[0]["ps"] is True
+    assert pack_calls[0]["ps_max_res"] == 4096
+    assert pack_calls[0]["ps_effects_max_res"] == 2048
+
+
+def test_deploy_can_pack_archives_directly_to_target(tmp_path: Path, monkeypatch):
+    mod_name = "B21_Test"
+    mod_dir = tmp_path / "mods" / mod_name
+    game_data_dir = tmp_path / "Game" / "Data"
+    (mod_dir / "data" / "Meshes").mkdir(parents=True)
+    game_data_dir.mkdir(parents=True)
+    (mod_dir / f"{mod_name}.esp").write_bytes(b"esp")
+    (mod_dir / f"{mod_name} - Main.ba2").write_bytes(b"old local")
+    (game_data_dir / f"{mod_name} - Main.ba2").write_bytes(b"old main")
+    (game_data_dir / f"{mod_name} - Textures.ba2").write_bytes(b"old textures")
+    manual_archive = game_data_dir / f"{mod_name} - HiRes.ba2"
+    manual_archive.write_bytes(b"manual")
+    observed_output_dirs: list[Path] = []
+
+    def fake_pack_mod(*args, **kwargs):
+        output_dir = Path(kwargs["archive_output_dir"])
+        observed_output_dirs.append(output_dir)
+        assert not (output_dir / f"{mod_name} - Main.ba2").exists()
+        assert not (output_dir / f"{mod_name} - Textures.ba2").exists()
+        assert manual_archive.read_bytes() == b"manual"
+        (output_dir / f"{mod_name} - Main.ba2").write_bytes(b"new main")
+        (output_dir / f"{mod_name} - Textures.ba2").write_bytes(b"new textures")
+
+    monkeypatch.setattr(deployer, "pack_mod", fake_pack_mod)
+
+    def fail_transfer(*args, **kwargs):
+        raise AssertionError("direct-packed archives must not be transferred")
+
+    monkeypatch.setattr(deployer, "_transfer_archive", fail_transfer)
+
+    result = deploy_mod(
+        mod_name,
+        game="fo4",
+        game_data_dir=game_data_dir,
+        skip_build=True,
+        skip_papyrus_compile=True,
+        project_root=tmp_path,
+        resource_dir=tmp_path / "resource",
+        archive_transfer_mode="move",
+        pack_archives_to_deploy_target=True,
+    )
+
+    assert observed_output_dirs == [game_data_dir]
+    assert result.archives_deployed == [
+        f"{mod_name} - Main.ba2",
+        f"{mod_name} - Textures.ba2",
+    ]
+    assert not (mod_dir / f"{mod_name} - Main.ba2").exists()
+    assert (game_data_dir / f"{mod_name} - Main.ba2").read_bytes() == b"new main"
+    assert (game_data_dir / f"{mod_name} - Textures.ba2").read_bytes() == b"new textures"
+    assert manual_archive.read_bytes() == b"manual"
 
 
 def test_deploy_removes_stale_generated_archives_but_keeps_manual_archives(tmp_path: Path):
@@ -314,6 +373,9 @@ def test_compile_papyrus_uses_native_compiler(tmp_path: Path, monkeypatch):
     (source_dir / "B21").mkdir(parents=True)
     scripts_base.mkdir(parents=True)
     (scripts_base / "Institute_Papyrus_Flags.flg").write_text("", encoding="utf-8")
+    (scripts_base / "ScriptObject.psc").write_text(
+        "Scriptname ScriptObject\n", encoding="utf-8"
+    )
     (source_dir / "B21" / "Foo.psc").write_text("Scriptname B21:Foo\n", encoding="utf-8")
     (source_dir / "B21" / "Bar.psc").write_text("Scriptname B21:Bar\n", encoding="utf-8")
     (source_dir / "Baz.psc").write_text("Scriptname Baz\n", encoding="utf-8")
@@ -348,17 +410,23 @@ def test_compile_papyrus_uses_native_compiler(tmp_path: Path, monkeypatch):
     assert (mod_dir / "data" / "Scripts" / "Baz.pex").read_bytes() == b"pex"
 
 
-def test_no_esp_deploy_copies_xse_tree_and_f4fx_data_root(tmp_path: Path):
+def test_no_esp_deploy_copies_xse_tree_and_fo4cs_data_root(tmp_path: Path):
     mod_name = "B21_Test"
     mod_dir = tmp_path / "mods" / mod_name
     game_data_dir = tmp_path / "Game" / "Data"
     plugin_dir = mod_dir / "F4SE" / "Plugins"
-    lut_dir = mod_dir / "F4FX" / "LUTs"
+    lut_dir = mod_dir / "FO4CS" / "LUTs"
+    mcm_dir = mod_dir / "MCM" / "Config" / mod_name
+    materials_dir = mod_dir / "Materials" / "Weapons" / "M2"
     plugin_dir.mkdir(parents=True)
     lut_dir.mkdir(parents=True)
+    mcm_dir.mkdir(parents=True)
+    materials_dir.mkdir(parents=True)
     game_data_dir.mkdir(parents=True)
     (plugin_dir / f"{mod_name}.dll").write_bytes(b"dll")
     (lut_dir / "neutral_32.dds").write_bytes(b"lut")
+    (mcm_dir / "config.json").write_text("{}", encoding="utf-8")
+    (materials_dir / "M2Barrel.bgsm").write_bytes(b"bgsm")
 
     result = deploy_mod(
         mod_name,
@@ -369,28 +437,40 @@ def test_no_esp_deploy_copies_xse_tree_and_f4fx_data_root(tmp_path: Path):
         resource_dir=tmp_path / "resource",
     )
 
-    assert result.loose_files_deployed == 2
+    assert result.loose_files_deployed == 4
     assert (game_data_dir / "F4SE" / "Plugins" / f"{mod_name}.dll").read_bytes() == b"dll"
-    assert (game_data_dir / "F4FX" / "LUTs" / "neutral_32.dds").read_bytes() == b"lut"
+    assert (game_data_dir / "FO4CS" / "LUTs" / "neutral_32.dds").read_bytes() == b"lut"
+    assert (game_data_dir / "MCM" / "Config" / mod_name / "config.json").read_text(encoding="utf-8") == "{}"
+    # A renderer mod ships its .bgsm/.bgem beside the DLL; without this the only
+    # route was writing to the game Data dir by hand.
+    assert (
+        game_data_dir / "Materials" / "Weapons" / "M2" / "M2Barrel.bgsm"
+    ).read_bytes() == b"bgsm"
 
 
-def test_no_esp_undeploy_removes_xse_tree_and_f4fx_data_root(tmp_path: Path):
+def test_no_esp_undeploy_removes_xse_tree_and_fo4cs_data_root(tmp_path: Path):
     mod_name = "B21_Test"
     mod_dir = tmp_path / "mods" / mod_name
     game_data_dir = tmp_path / "Game" / "Data"
     plugin_dir = mod_dir / "F4SE" / "Plugins"
-    lut_dir = mod_dir / "F4FX" / "LUTs"
+    lut_dir = mod_dir / "FO4CS" / "LUTs"
     deployed_plugin_dir = game_data_dir / "F4SE" / "Plugins"
-    deployed_lut_dir = game_data_dir / "F4FX" / "LUTs"
+    deployed_lut_dir = game_data_dir / "FO4CS" / "LUTs"
+    mcm_dir = mod_dir / "MCM" / "Config" / mod_name
+    deployed_mcm_dir = game_data_dir / "MCM" / "Config" / mod_name
     plugin_dir.mkdir(parents=True)
     lut_dir.mkdir(parents=True)
     deployed_plugin_dir.mkdir(parents=True)
     deployed_lut_dir.mkdir(parents=True)
+    mcm_dir.mkdir(parents=True)
+    deployed_mcm_dir.mkdir(parents=True)
     (plugin_dir / f"{mod_name}.dll").write_bytes(b"dll")
     (lut_dir / "neutral_32.dds").write_bytes(b"lut")
     (deployed_plugin_dir / f"{mod_name}.dll").write_bytes(b"dll")
     (deployed_lut_dir / "neutral_32.dds").write_bytes(b"lut")
-    (game_data_dir / "F4FX" / "other_mod_file.txt").write_bytes(b"keep")
+    (mcm_dir / "config.json").write_text("{}", encoding="utf-8")
+    (deployed_mcm_dir / "config.json").write_text("{}", encoding="utf-8")
+    (game_data_dir / "FO4CS" / "other_mod_file.txt").write_bytes(b"keep")
 
     removed = undeploy_mod(
         mod_name,
@@ -402,10 +482,12 @@ def test_no_esp_undeploy_removes_xse_tree_and_f4fx_data_root(tmp_path: Path):
     removed = [path.replace("\\", "/") for path in removed]
 
     assert "F4SE/Plugins/B21_Test.dll" in removed
-    assert "F4FX/LUTs/neutral_32.dds" in removed
+    assert "FO4CS/LUTs/neutral_32.dds" in removed
+    assert f"MCM/Config/{mod_name}/config.json" in removed
     assert not (deployed_plugin_dir / f"{mod_name}.dll").exists()
     assert not (deployed_lut_dir / "neutral_32.dds").exists()
-    assert (game_data_dir / "F4FX" / "other_mod_file.txt").read_bytes() == b"keep"
+    assert not (deployed_mcm_dir / "config.json").exists()
+    assert (game_data_dir / "FO4CS" / "other_mod_file.txt").read_bytes() == b"keep"
 
 
 def test_deploy_does_not_copy_root_strings_for_archive_deploy(tmp_path: Path):
@@ -519,3 +601,85 @@ def test_undeploy_removes_generated_archives_but_keeps_manual_archives(tmp_path:
     assert not (game_data_dir / f"{mod_name} - Main.ba2").exists()
     assert (game_data_dir / f"{mod_name} - HiRes.ba2").read_bytes() == b"manual"
     assert (strings_dir / f"{mod_name}Other_en.STRINGS").read_bytes() == b"other"
+
+
+def _mod_calling_into_the_base_game(tmp_path: Path) -> tuple[Path, Path]:
+    mod_dir = tmp_path / "mod"
+    source_dir = mod_dir / "Scripts" / "Source" / "User"
+    source_dir.mkdir(parents=True)
+    (source_dir / "S.psc").write_text(
+        "Scriptname S extends Quest\nFunction F()\n  Int x = GetStage()\nEndFunction\n",
+        encoding="utf-8",
+    )
+    game_data = tmp_path / "Data"
+    (game_data / "Scripts" / "Source" / "Base").mkdir(parents=True)
+    return mod_dir, game_data
+
+
+def test_compile_papyrus_falls_back_to_the_bundled_corpus(tmp_path: Path):
+    """No game install is not an error — the shipped type universe covers it.
+
+    An empty Source/Base satisfies `is_dir()` and resolves nothing, so without a
+    fallback every base-game call types as None and the diagnostics land on the
+    mod's own lines as "cannot assign None to Int".
+    """
+    from creation_lib.build.deployer import compile_papyrus
+
+    mod_dir, game_data = _mod_calling_into_the_base_game(tmp_path)
+    messages: list[str] = []
+    assert compile_papyrus(mod_dir, "fo4", game_data, on_progress=messages.append) == 1
+    assert any("bundled fo4 type universe" in m for m in messages)
+    assert (mod_dir / "data" / "Scripts" / "S.pex").is_file()
+
+
+def test_compile_papyrus_names_the_missing_vanilla_sources(tmp_path: Path, monkeypatch):
+    """With no install and no corpus, name what is missing.
+
+    Asserts the diagnostic rather than the compile failure on purpose: the
+    resolver memoizes parsed ASTs process-globally, keyed by script name with no
+    import root in the key, so once another test in this process has compiled
+    against a type universe the callees stay resolvable here no matter what this
+    test imports. The message is what this test is about, and it is unaffected.
+    """
+    from creation_lib.build import deployer
+
+    monkeypatch.setattr("creation_lib.pex.corpus.bundled_corpus_root", lambda game: None)
+    mod_dir, game_data = _mod_calling_into_the_base_game(tmp_path)
+
+    messages: list[str] = []
+    try:
+        deployer.compile_papyrus(mod_dir, "fo4", game_data, on_progress=messages.append)
+    except RuntimeError as error:
+        assert "no Creation Kit sources" in str(error)
+
+    assert any("no bundled fo4 corpus" in m for m in messages)
+
+
+def test_compile_papyrus_finds_skyrims_reversed_source_layout(tmp_path: Path, monkeypatch):
+    """Skyrim keeps vanilla sources at Data/Source/Scripts, not Scripts/Source/Base.
+
+    Looking only where Fallout 4 puts them meant a Skyrim install with its
+    sources present was treated as having none.
+    """
+    from creation_lib.build import deployer
+
+    mod_dir, game_data = _mod_calling_into_the_base_game(tmp_path)
+    skyrim_base = game_data / "Source" / "Scripts"
+    skyrim_base.mkdir(parents=True)
+    (skyrim_base / "Quest.psc").write_text(
+        "Scriptname Quest\nInt Function GetStage() native\n", encoding="utf-8"
+    )
+
+    captured: list[list[str]] = []
+    real = deployer.compile_papyrus
+
+    def _spy(source, *, imports, game, flags, source_path=None):
+        captured.append(list(imports))
+        from creation_lib.pex.native_runtime import CompileResult
+
+        return CompileResult(ok=True, pex_bytes=b"pex")
+
+    monkeypatch.setattr("creation_lib.pex.native_runtime.compile_psc", _spy)
+    real(mod_dir, "skyrimse", game_data)
+
+    assert any(str(skyrim_base) in parts for parts in captured)

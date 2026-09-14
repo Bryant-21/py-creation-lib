@@ -7,20 +7,69 @@ loading converted plugins.
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Iterable, Mapping
 
-from creation_lib.esp.native_runtime import plugin_handle_call
+from creation_lib.esp.native_runtime import (
+    plugin_handle_close,
+    plugin_handle_get,
+    plugin_handle_inspection_records,
+    plugin_handle_load_index,
+)
 
 
 FO76_TO_FO4_PROFILE = "fo76-to-fo4"
-SUPPORTED_PROFILES = (FO76_TO_FO4_PROFILE,)
+FO4_TARGET_SHAPE_PROFILE = "fo4-target-shape"
+SUPPORTED_PROFILES = (FO76_TO_FO4_PROFILE, FO4_TARGET_SHAPE_PROFILE)
 
-_FO76_TO_FO4_RECORD_SIGS = ("IMAD", "NPC_", "PROJ", "QUST", "TERM")
+_FO76_TO_FO4_RECORD_SIGS = ("IMAD", "LGTM", "MISC", "NPC_", "PROJ", "QUST", "TERM")
+_FO4_TARGET_SHAPE_RECORD_SIGS = frozenset({"IMAD", "LGTM", "MISC"})
 _FO4_LAYOUT_RECORD_SIGS = frozenset({"EFSH", "NAVI", "NAVM", "REFR", "WTHR"})
 _QUST_EVENT_ALIAS_FILL_SIGS = {"ALFE", "ALFD"}
-_IMAD_EMPTY_UNSAFE_SIGS = {"NAM5", "NAM6"}
+_IMAD_RUNTIME_ARRAY_STRIDES = {
+    "TNAM": 20,
+    "NAM3": 20,
+    "RNAM": 8,
+    "SNAM": 8,
+    "UNAM": 8,
+    "NAM1": 8,
+    "NAM2": 8,
+    "WNAM": 8,
+    "XNAM": 8,
+    "YNAM": 8,
+    "NAM5": 8,
+    "NAM6": 8,
+    **{f"{value:c}IAD": 8 for value in range(0x00, 0x15)},
+    **{f"{value:c}IAD": 8 for value in range(0x40, 0x55)},
+}
+_IMAD_DNAM_COUNTED_ARRAY_STRIDES = {
+    **_IMAD_RUNTIME_ARRAY_STRIDES,
+    "BNAM": 8,
+    "VNAM": 8,
+    "NAM4": 8,
+}
+_IMAD_DNAM_COUNT_OFFSETS = {
+    **{f"{value:c}IAD": 8 + value * 8 for value in range(0x00, 0x15)},
+    **{f"{value:c}IAD": 12 + (value - 0x40) * 8 for value in range(0x40, 0x55)},
+    "TNAM": 176,
+    "BNAM": 180,
+    "VNAM": 184,
+    "RNAM": 188,
+    "SNAM": 192,
+    "UNAM": 196,
+    "WNAM": 212,
+    "XNAM": 216,
+    "YNAM": 220,
+    "NAM1": 228,
+    "NAM2": 232,
+    "NAM3": 236,
+    "NAM4": 240,
+    "NAM5": 244,
+    "NAM6": 248,
+}
+_FO4_LGTM_DALC_SIZE = 32
+_FO4_MISC_DATA_SIZE = 8
 _FO4_TERM_MARKER_ROW_VERSION = 125
 _FO4_TERM_MARKER_ROW_SIZE = 24
 _FO4_MODEL_INFO_COUNTER4_VERSION = 131
@@ -140,26 +189,58 @@ def scan_runtime_hazards(
     handle: int | None = None,
     profile: str = FO76_TO_FO4_PROFILE,
 ) -> RuntimeHazardReport:
-    """Scan the active plugin for known FO4 runtime hazards."""
+    """Scan one loaded plugin for known FO4 runtime hazards."""
     _validate_profile(profile)
     active = session.active if handle is None else session.get_by_handle(handle)
     if active is None:
-        return RuntimeHazardReport(plugin_name="", game="", profile=profile)
+        raise RuntimeError(
+            "No active plugin to scan; pass handle=loaded.handle when scanning a master"
+        )
 
     plugin_name = str(_field(active, "plugin_name", "") or "")
     game = str(_field(active, "game", "") or "").casefold()
+    return _scan_runtime_hazards(active.handle, plugin_name, game, profile)
+
+
+def scan_runtime_hazards_path(
+    plugin_path: str | Path,
+    *,
+    game: str,
+    profile: str = FO76_TO_FO4_PROFILE,
+) -> RuntimeHazardReport:
+    _validate_profile(profile)
+    path = Path(plugin_path)
+    if game.casefold() != "fo4":
+        return RuntimeHazardReport(plugin_name=path.name, game=game, profile=profile)
+    handle = plugin_handle_load_index(str(path), game=game)
+    if handle is None:
+        raise RuntimeError("Native index loading is required for runtime-hazard inspection")
+    try:
+        return _scan_runtime_hazards(handle, path.name, game, profile)
+    finally:
+        plugin_handle_close(handle)
+
+
+def _scan_runtime_hazards(
+    handle: int, plugin_name: str, game: str, profile: str
+) -> RuntimeHazardReport:
+    game = game.casefold()
     report = RuntimeHazardReport(plugin_name=plugin_name, game=game, profile=profile)
     if game != "fo4":
         return report
 
     records_by_sig: dict[str, Iterable[object]] = {}
-    for record in _record_payloads(active.handle):
+    for record in _record_payloads(handle, profile):
         record_sig = str(_field(record, "signature", "") or "")
-        if (
-            record_sig in _FO76_TO_FO4_RECORD_SIGS
-            or record_sig in _FO4_LAYOUT_RECORD_SIGS
-            or _has_any_subrecord(record, _FO4_MODEL_INFO_SIGS | {"MNAM"})
-        ):
+        if profile == FO4_TARGET_SHAPE_PROFILE:
+            selected = record_sig in _FO4_TARGET_SHAPE_RECORD_SIGS
+        else:
+            selected = (
+                record_sig in _FO76_TO_FO4_RECORD_SIGS
+                or record_sig in _FO4_LAYOUT_RECORD_SIGS
+                or _has_any_subrecord(record, _FO4_MODEL_INFO_SIGS | {"MNAM"})
+            )
+        if selected:
             records_by_sig.setdefault(record_sig, []).append(record)
 
     scan_runtime_hazard_records(
@@ -191,7 +272,28 @@ def scan_runtime_hazard_records(
         return result
 
     for record in _flatten_iter(records_by_sig.get("IMAD", ())):
-        _scan_imad_empty_runtime_data(result, plugin_name, record)
+        _scan_imad_runtime_arrays(result, plugin_name, record)
+    for record in _flatten_iter(records_by_sig.get("LGTM", ())):
+        _scan_exact_subrecord_size(
+            result,
+            plugin_name,
+            record,
+            record_sig="LGTM",
+            subrecord_sig="DALC",
+            expected_size=_FO4_LGTM_DALC_SIZE,
+        )
+    for record in _flatten_iter(records_by_sig.get("MISC", ())):
+        _scan_exact_subrecord_size(
+            result,
+            plugin_name,
+            record,
+            record_sig="MISC",
+            subrecord_sig="DATA",
+            expected_size=_FO4_MISC_DATA_SIZE,
+            required=False,
+        )
+    if profile == FO4_TARGET_SHAPE_PROFILE:
+        return result
     for record in _flatten_iter(records_by_sig.get("NPC_", ())):
         _scan_npc_template_self_slots(result, plugin_name, record)
     for record in _flatten_iter(records_by_sig.get("PROJ", ())):
@@ -977,33 +1079,159 @@ def _scan_proj_target_shape(
         )
 
 
-def _scan_imad_empty_runtime_data(
+def _scan_imad_runtime_arrays(
     report: RuntimeHazardReport,
     plugin_name: str,
     record,
 ) -> None:
-    for subrecord in _subrecords(record):
-        subrecord_sig = str(_field(subrecord, "signature", "") or "")
-        if subrecord_sig not in _IMAD_EMPTY_UNSAFE_SIGS:
+    by_sig = _subrecords_by_signature(record)
+    for subrecord_sig, row_stride in _IMAD_RUNTIME_ARRAY_STRIDES.items():
+        display_sig = _display_subrecord_signature(subrecord_sig)
+        rows = by_sig.get(subrecord_sig, ())
+        if not rows:
+            report.add(
+                RuntimeHazard(
+                    rule_id="fo4-loader-missing-imad-runtime-data",
+                    plugin_name=plugin_name,
+                    form_id=_record_form_id(record),
+                    record_sig="IMAD",
+                    subrecord_sig=subrecord_sig,
+                    path=f"IMAD.{display_sig}",
+                    message=(
+                        f"{_record_label('IMAD', record)} is missing {display_sig}; "
+                        "FO4 requires every fixed-stride image-space runtime array"
+                    ),
+                )
+            )
             continue
-        data = bytes(_field(subrecord, "data", b"") or b"")
-        if len(data) != 0:
+        for subrecord in rows:
+            data = bytes(_field(subrecord, "data", b"") or b"")
+            if data and len(data) % row_stride == 0:
+                continue
+            rule_id = (
+                "fo4-loader-empty-imad-runtime-data"
+                if not data
+                else "fo4-loader-imad-runtime-row-stride"
+            )
+            report.add(
+                RuntimeHazard(
+                    rule_id=rule_id,
+                    plugin_name=plugin_name,
+                    form_id=_record_form_id(record),
+                    record_sig="IMAD",
+                    subrecord_sig=subrecord_sig,
+                    path=f"IMAD.{display_sig}",
+                    message=(
+                        f"{_record_label('IMAD', record)} has {len(data)}-byte "
+                        f"{display_sig}; FO4 requires one or more {row_stride}-byte "
+                        "image-space runtime rows"
+                    ),
+                )
+            )
+
+    _scan_imad_dnam_array_counts(report, plugin_name, record, by_sig)
+
+
+def _scan_imad_dnam_array_counts(
+    report: RuntimeHazardReport,
+    plugin_name: str,
+    record,
+    by_sig: Mapping[str, Iterable[object]],
+) -> None:
+    dnam_rows = list(by_sig.get("DNAM", ()))
+    if len(dnam_rows) != 1:
+        return
+    dnam = bytes(_field(dnam_rows[0], "data", b"") or b"")
+
+    for subrecord_sig, row_stride in _IMAD_DNAM_COUNTED_ARRAY_STRIDES.items():
+        count_offset = _IMAD_DNAM_COUNT_OFFSETS[subrecord_sig]
+        if len(dnam) < count_offset + 4:
             continue
-        form_id = _record_form_id(record)
+
+        rows = list(by_sig.get(subrecord_sig, ()))
+        if not rows:
+            continue
+        payloads = [bytes(_field(row, "data", b"") or b"") for row in rows]
+        if any(not payload or len(payload) % row_stride for payload in payloads):
+            continue
+
+        expected_count = int.from_bytes(dnam[count_offset : count_offset + 4], "little")
+        actual_count = sum(len(payload) // row_stride for payload in payloads)
+        if expected_count == actual_count:
+            continue
+
+        display_sig = _display_subrecord_signature(subrecord_sig)
         report.add(
             RuntimeHazard(
-                rule_id="fo4-loader-empty-imad-runtime-data",
+                rule_id="fo4-loader-imad-dnam-array-count-mismatch",
                 plugin_name=plugin_name,
-                form_id=form_id,
+                form_id=_record_form_id(record),
                 record_sig="IMAD",
                 subrecord_sig=subrecord_sig,
-                path=f"IMAD.{subrecord_sig}",
+                path=f"IMAD.{display_sig}",
                 message=(
-                    f"{_record_label('IMAD', record)} has empty {subrecord_sig}; "
-                    "FO4 can fault while reading image-space runtime data"
+                    f"{_record_label('IMAD', record)} {display_sig} DNAM count is "
+                    f"{expected_count} but the array has {actual_count} rows; FO4 "
+                    "allocates from DNAM before reading the fixed-stride payload"
                 ),
             )
         )
+
+
+def _scan_exact_subrecord_size(
+    report: RuntimeHazardReport,
+    plugin_name: str,
+    record,
+    *,
+    record_sig: str,
+    subrecord_sig: str,
+    expected_size: int,
+    required: bool = True,
+) -> None:
+    rows = _subrecords_by_signature(record).get(subrecord_sig, ())
+    if not rows:
+        if not required:
+            return
+        report.add(
+            RuntimeHazard(
+                rule_id=f"fo4-loader-{record_sig.casefold()}-missing-{subrecord_sig.casefold()}",
+                plugin_name=plugin_name,
+                form_id=_record_form_id(record),
+                record_sig=record_sig,
+                subrecord_sig=subrecord_sig,
+                path=f"{record_sig}.{subrecord_sig}",
+                message=(
+                    f"{_record_label(record_sig, record)} is missing {subrecord_sig}; "
+                    f"FO4 requires exactly {expected_size} bytes"
+                ),
+            )
+        )
+        return
+    for occurrence, subrecord in enumerate(rows):
+        data = bytes(_field(subrecord, "data", b"") or b"")
+        if len(data) == expected_size:
+            continue
+        report.add(
+            RuntimeHazard(
+                rule_id=f"fo4-loader-{record_sig.casefold()}-{subrecord_sig.casefold()}-size",
+                plugin_name=plugin_name,
+                form_id=_record_form_id(record),
+                record_sig=record_sig,
+                subrecord_sig=subrecord_sig,
+                path=f"{record_sig}.{subrecord_sig}[{occurrence}]",
+                message=(
+                    f"{_record_label(record_sig, record)} has {len(data)}-byte "
+                    f"{subrecord_sig}; FO4 requires exactly {expected_size} bytes"
+                ),
+            )
+        )
+
+
+def _display_subrecord_signature(signature: str) -> str:
+    return "".join(
+        character if character.isprintable() else f"\\x{ord(character):02X}"
+        for character in signature
+    )
 
 
 def _scan_npc_template_self_slots(
@@ -1257,25 +1485,26 @@ def _field(item, name: str, default=None):
     return getattr(item, name, default)
 
 
-def _record_payloads(handle: int) -> list[dict]:
-    try:
-        payload = json.loads(
-            plugin_handle_call(handle, "export_plugin_text", "lossless", "json")
-        )
-    except Exception:
-        return []
-    return list(_iter_record_payloads(payload))
-
-
-def _iter_record_payloads(payload):
-    if isinstance(payload, dict):
-        if "signature" in payload and "subrecords" in payload:
-            yield payload
-        for value in payload.values():
-            yield from _iter_record_payloads(value)
-    elif isinstance(payload, list):
-        for item in payload:
-            yield from _iter_record_payloads(item)
+def _record_payloads(handle: int, profile: str) -> list[dict]:
+    if profile == FO4_TARGET_SHAPE_PROFILE:
+        signatures = _FO4_TARGET_SHAPE_RECORD_SIGS
+        subrecord_signatures = frozenset()
+    else:
+        signatures = set(_FO76_TO_FO4_RECORD_SIGS) | _FO4_LAYOUT_RECORD_SIGS
+        subrecord_signatures = _FO4_MODEL_INFO_SIGS | {"MNAM"}
+    records = plugin_handle_inspection_records(
+        handle, sorted(signatures), sorted(subrecord_signatures)
+    )
+    master_count = len(plugin_handle_get(handle, "masters") or [])
+    for record in records:
+        raw_form_id = record["form_id"]
+        record["raw_form_id"] = raw_form_id
+        index = raw_form_id >> 24
+        # Lossless export used object IDs for resolved owners and FF-local IDs.
+        # Retain that diagnostic convention while keeping the raw identity too.
+        if index <= master_count or index == 0xFF:
+            record["form_id"] = raw_form_id & 0x00FFFFFF
+    return records
 
 
 def _iter_u32_slots(data: bytes):

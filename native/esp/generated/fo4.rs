@@ -59928,18 +59928,13 @@ pub const AUTHORING_SCHEMA_JSON: &str = r##"{
           "id": "WBDT",
           "kind": "parsed_with_raw_fallback",
           "display_label": "Workbench Data",
-          "codec": "struct:B,B",
+          "codec": "struct:B",
           "fields": [
             {
               "id": "bench_type",
               "kind": "uint8",
               "display_label": "Bench Type",
               "enum_ref": "FURN.WBDT.bench_type"
-            },
-            {
-              "id": "unknown_u8_1",
-              "kind": "uint8",
-              "display_label": "Unknown Byte 2"
             }
           ]
         },
@@ -118956,7 +118951,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r##"{
               "id": "unknown_u8_4",
               "kind": "uint8",
               "display_label": "Unknown Byte 5",
-              "default_value": 66
+              "default_value": 0
             }
           ]
         },
@@ -177179,12 +177174,12 @@ pub const AUTHORING_SCHEMA_JSON: &str = r##"{
               "id": "flags",
               "kind": "uint32",
               "display_label": "Flags",
-              "enum_ref": "QUST.FNAM.flags"
+              "enum_ref": "QUST.FNAM.flags@aliases"
             }
           ],
           "repeatable": true,
           "required": true,
-          "enum_ref": "QUST.FNAM.flags",
+          "enum_ref": "QUST.FNAM.flags@aliases",
           "scope_id": "aliases"
         },
         {
@@ -181298,12 +181293,12 @@ pub const AUTHORING_SCHEMA_JSON: &str = r##"{
               "id": "flags",
               "kind": "uint32",
               "display_label": "Flags",
-              "enum_ref": "QUST.FNAM.flags"
+              "enum_ref": "QUST.FNAM.flags@aliases"
             }
           ],
           "repeatable": true,
           "required": true,
-          "enum_ref": "QUST.FNAM.flags",
+          "enum_ref": "QUST.FNAM.flags@aliases",
           "scope_id": "aliases"
         },
         {
@@ -192996,6 +192991,46 @@ pub const AUTHORING_SCHEMA_JSON: &str = r##"{
           ]
         },
         {
+          "id": "INDX",
+          "kind": "parsed",
+          "display_label": "Head Part Number",
+          "codec": "uint32",
+          "fields": [
+            {
+              "id": "head_part_number",
+              "kind": "uint32",
+              "display_label": "Head Part Number"
+            }
+          ],
+          "repeatable": true,
+          "scope_id": "male_head_parts"
+        },
+        {
+          "id": "HEAD",
+          "kind": "parsed",
+          "display_label": "Head",
+          "codec": "formid",
+          "fields": [
+            {
+              "id": "head",
+              "kind": "formid",
+              "display_label": "Head",
+              "formlink_target": "HDPT",
+              "formlink_targets": [
+                "HDPT"
+              ],
+              "null_allowed": true
+            }
+          ],
+          "repeatable": true,
+          "formlink_target": "HDPT",
+          "formlink_targets": [
+            "HDPT"
+          ],
+          "null_allowed": true,
+          "scope_id": "male_head_parts"
+        },
+        {
           "id": "RPRM",
           "kind": "parsed",
           "display_label": "Preset NPC",
@@ -196696,6 +196731,36 @@ pub const AUTHORING_SCHEMA_JSON: &str = r##"{
           "scope_id": "male_morph_groups"
         },
         {
+          "id": "FMRI",
+          "kind": "parsed",
+          "display_label": "Index",
+          "codec": "uint32",
+          "fields": [
+            {
+              "id": "index",
+              "kind": "uint32",
+              "display_label": "Index"
+            }
+          ],
+          "repeatable": true,
+          "scope_id": "male_face_morphs"
+        },
+        {
+          "id": "FMRN",
+          "kind": "parsed",
+          "display_label": "Name",
+          "codec": "lstring",
+          "fields": [
+            {
+              "id": "lstring_0",
+              "kind": "lstring"
+            }
+          ],
+          "repeatable": true,
+          "localized": true,
+          "scope_id": "male_face_morphs"
+        },
+        {
           "id": "WMAP",
           "kind": "parsed",
           "display_label": "Male Wrinkle Map Path",
@@ -196775,6 +196840,46 @@ pub const AUTHORING_SCHEMA_JSON: &str = r##"{
               "display_label": "Y"
             }
           ]
+        },
+        {
+          "id": "INDX",
+          "kind": "parsed",
+          "display_label": "Head Part Number",
+          "codec": "uint32",
+          "fields": [
+            {
+              "id": "head_part_number",
+              "kind": "uint32",
+              "display_label": "Head Part Number"
+            }
+          ],
+          "repeatable": true,
+          "scope_id": "female_head_parts"
+        },
+        {
+          "id": "HEAD",
+          "kind": "parsed",
+          "display_label": "Head",
+          "codec": "formid",
+          "fields": [
+            {
+              "id": "head",
+              "kind": "formid",
+              "display_label": "Head",
+              "formlink_target": "HDPT",
+              "formlink_targets": [
+                "HDPT"
+              ],
+              "null_allowed": true
+            }
+          ],
+          "repeatable": true,
+          "formlink_target": "HDPT",
+          "formlink_targets": [
+            "HDPT"
+          ],
+          "null_allowed": true,
+          "scope_id": "female_head_parts"
         },
         {
           "id": "RPRF",
@@ -200477,6 +200582,36 @@ pub const AUTHORING_SCHEMA_JSON: &str = r##"{
           "scope_id": "female_morph_groups"
         },
         {
+          "id": "FMRI",
+          "kind": "parsed",
+          "display_label": "Index",
+          "codec": "uint32",
+          "fields": [
+            {
+              "id": "index",
+              "kind": "uint32",
+              "display_label": "Index"
+            }
+          ],
+          "repeatable": true,
+          "scope_id": "female_face_morphs"
+        },
+        {
+          "id": "FMRN",
+          "kind": "parsed",
+          "display_label": "Name",
+          "codec": "lstring",
+          "fields": [
+            {
+              "id": "lstring_0",
+              "kind": "lstring"
+            }
+          ],
+          "repeatable": true,
+          "localized": true,
+          "scope_id": "female_face_morphs"
+        },
+        {
           "id": "WMAP",
           "kind": "parsed",
           "display_label": "Female Wrinkle Map Path",
@@ -200956,20 +201091,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r##"{
           "scope_id": "bone_scale_data"
         },
         {
-          "id": "HEAD",
-          "kind": "parsed",
-          "display_label": "Head",
-          "codec": "formid",
-          "fields": [
-            {
-              "id": "head",
-              "kind": "formid",
-              "display_label": "Head"
-            }
-          ],
-          "repeatable": true
-        },
-        {
           "id": "ICON",
           "kind": "parsed",
           "display_label": "Icon FileName",
@@ -200983,35 +201104,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r##"{
           ],
           "repeatable": true,
           "required": true
-        },
-        {
-          "id": "FMRI",
-          "kind": "parsed",
-          "display_label": "Index",
-          "codec": "uint32",
-          "fields": [
-            {
-              "id": "index",
-              "kind": "uint32",
-              "display_label": "Index"
-            }
-          ],
-          "repeatable": true
-        },
-        {
-          "id": "FMRN",
-          "kind": "parsed",
-          "display_label": "Name",
-          "codec": "lstring",
-          "fields": [
-            {
-              "id": "name",
-              "kind": "lstring",
-              "display_label": "Name"
-            }
-          ],
-          "repeatable": true,
-          "localized": true
         }
       ],
       "display_label": "Race",
@@ -215003,12 +215095,12 @@ pub const AUTHORING_SCHEMA_JSON: &str = r##"{
               "id": "flags",
               "kind": "uint16",
               "display_label": "Flags",
-              "enum_ref": "SCEN.FNAM.flags"
+              "enum_ref": "SCEN.FNAM.flags@phases"
             }
           ],
           "repeatable": true,
           "required": true,
-          "enum_ref": "SCEN.FNAM.flags",
+          "enum_ref": "SCEN.FNAM.flags@phases",
           "scope_id": "phases"
         },
         {
@@ -215176,12 +215268,12 @@ pub const AUTHORING_SCHEMA_JSON: &str = r##"{
               "id": "flags",
               "kind": "uint32",
               "display_label": "Flags",
-              "enum_ref": "SCEN.FNAM.flags"
+              "enum_ref": "SCEN.FNAM.flags@actions"
             }
           ],
           "repeatable": true,
           "required": true,
-          "enum_ref": "SCEN.FNAM.flags",
+          "enum_ref": "SCEN.FNAM.flags@actions",
           "scope_id": "actions"
         },
         {
@@ -237660,14 +237752,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r##"{
           ],
           "repeatable": true,
           "scope_id": "rates_of_fire"
-        },
-        {
-          "id": "MaxH",
-          "kind": "raw"
-        },
-        {
-          "id": "andD",
-          "kind": "raw"
         }
       ],
       "display_label": "Sound Descriptor",
@@ -288937,6 +289021,214 @@ pub const AUTHORING_SCHEMA_JSON: &str = r##"{
       "storage_kind": "flags"
     },
     {
+      "id": "QUST.FNAM.flags@aliases",
+      "values": [
+        {
+          "value": 1,
+          "id": "reserves_location_reference"
+        },
+        {
+          "value": 2,
+          "id": "optional"
+        },
+        {
+          "value": 4,
+          "id": "quest_object"
+        },
+        {
+          "value": 8,
+          "id": "allow_reuse_in_quest"
+        },
+        {
+          "value": 16,
+          "id": "allow_dead"
+        },
+        {
+          "value": 32,
+          "id": "matching_ref_in_loaded_area"
+        },
+        {
+          "value": 64,
+          "id": "essential"
+        },
+        {
+          "value": 128,
+          "id": "allow_disabled"
+        },
+        {
+          "value": 256,
+          "id": "stores_text"
+        },
+        {
+          "value": 512,
+          "id": "allow_reserved"
+        },
+        {
+          "value": 1024,
+          "id": "protected"
+        },
+        {
+          "value": 2048,
+          "id": "forced_by_aliases"
+        },
+        {
+          "value": 4096,
+          "id": "allow_destroyed"
+        },
+        {
+          "value": 8192,
+          "id": "matching_ref_closest"
+        },
+        {
+          "value": 16384,
+          "id": "uses_stored_text"
+        },
+        {
+          "value": 32768,
+          "id": "initially_disabled"
+        },
+        {
+          "value": 65536,
+          "id": "allow_cleared"
+        },
+        {
+          "value": 131072,
+          "id": "clear_names_when_removed"
+        },
+        {
+          "value": 262144,
+          "id": "matching_ref_actors_only"
+        },
+        {
+          "value": 524288,
+          "id": "create_ref_temp"
+        },
+        {
+          "value": 1048576,
+          "id": "external_alias_linked"
+        },
+        {
+          "value": 2097152,
+          "id": "no_pickpocket"
+        },
+        {
+          "value": 4194304,
+          "id": "can_apply_data_to_non_aliased_refs"
+        },
+        {
+          "value": 8388608,
+          "id": "is_companion"
+        },
+        {
+          "value": 16777216,
+          "id": "optional_all_scenes"
+        }
+      ],
+      "labels": [
+        {
+          "value": 1,
+          "label": "Reserves Location/Reference"
+        },
+        {
+          "value": 2,
+          "label": "Optional"
+        },
+        {
+          "value": 4,
+          "label": "Quest Object"
+        },
+        {
+          "value": 8,
+          "label": "Allow Reuse in Quest"
+        },
+        {
+          "value": 16,
+          "label": "Allow Dead"
+        },
+        {
+          "value": 32,
+          "label": "Matching Ref - In Loaded Area"
+        },
+        {
+          "value": 64,
+          "label": "Essential"
+        },
+        {
+          "value": 128,
+          "label": "Allow Disabled"
+        },
+        {
+          "value": 256,
+          "label": "Stores Text"
+        },
+        {
+          "value": 512,
+          "label": "Allow Reserved"
+        },
+        {
+          "value": 1024,
+          "label": "Protected"
+        },
+        {
+          "value": 2048,
+          "label": "Forced by Aliases"
+        },
+        {
+          "value": 4096,
+          "label": "Allow Destroyed"
+        },
+        {
+          "value": 8192,
+          "label": "Matching Ref - Closest"
+        },
+        {
+          "value": 16384,
+          "label": "Uses Stored Text"
+        },
+        {
+          "value": 32768,
+          "label": "Initially Disabled"
+        },
+        {
+          "value": 65536,
+          "label": "Allow Cleared"
+        },
+        {
+          "value": 131072,
+          "label": "Clear Names When Removed"
+        },
+        {
+          "value": 262144,
+          "label": "Matching Ref - Actors Only"
+        },
+        {
+          "value": 524288,
+          "label": "Create Ref - Temp"
+        },
+        {
+          "value": 1048576,
+          "label": "External Alias - Linked"
+        },
+        {
+          "value": 2097152,
+          "label": "No Pickpocket"
+        },
+        {
+          "value": 4194304,
+          "label": "Can Apply Data To Non-Aliased Refs"
+        },
+        {
+          "value": 8388608,
+          "label": "Is Companion"
+        },
+        {
+          "value": 16777216,
+          "label": "Optional All Scenes"
+        }
+      ],
+      "storage_kind": "flags"
+    },
+    {
       "id": "QUST.INDX.flags",
       "values": [
         {
@@ -292096,6 +292388,295 @@ pub const AUTHORING_SCHEMA_JSON: &str = r##"{
         }
       ],
       "storage_kind": "flags"
+    },
+    {
+      "id": "SCEN.FNAM.flags@actions",
+      "values": [
+        {
+          "value": 1,
+          "id": "unknown_0"
+        },
+        {
+          "value": 2,
+          "id": "unknown_1"
+        },
+        {
+          "value": 4,
+          "id": "unknown_2"
+        },
+        {
+          "value": 8,
+          "id": "unknown_3"
+        },
+        {
+          "value": 16,
+          "id": "unknown_4"
+        },
+        {
+          "value": 32,
+          "id": "unknown_5"
+        },
+        {
+          "value": 64,
+          "id": "unknown_6"
+        },
+        {
+          "value": 128,
+          "id": "player_positive_use_dialogue_subtype_hold_into_next_scene"
+        },
+        {
+          "value": 256,
+          "id": "player_negative_use_dialogue_subtype"
+        },
+        {
+          "value": 512,
+          "id": "player_neutral_use_dialogue_subtype"
+        },
+        {
+          "value": 1024,
+          "id": "use_dialogue_subtype"
+        },
+        {
+          "value": 2048,
+          "id": "player_question_use_dialogue_subtype"
+        },
+        {
+          "value": 4096,
+          "id": "keep_clear_target_on_action_end"
+        },
+        {
+          "value": 8192,
+          "id": "unknown_13"
+        },
+        {
+          "value": 16384,
+          "id": "run_on_end_of_phase"
+        },
+        {
+          "value": 32768,
+          "id": "face_target"
+        },
+        {
+          "value": 65536,
+          "id": "looping"
+        },
+        {
+          "value": 131072,
+          "id": "headtrack_player"
+        },
+        {
+          "value": 262144,
+          "id": "unknown_18"
+        },
+        {
+          "value": 524288,
+          "id": "ignore_for_completion"
+        },
+        {
+          "value": 1048576,
+          "id": "unknown_20"
+        },
+        {
+          "value": 2097152,
+          "id": "camera_speaker_target"
+        },
+        {
+          "value": 4194304,
+          "id": "complete_face_target"
+        },
+        {
+          "value": 8388608,
+          "id": "unknown_23"
+        },
+        {
+          "value": 16777216,
+          "id": "unknown_24"
+        },
+        {
+          "value": 33554432,
+          "id": "unknown_25"
+        },
+        {
+          "value": 67108864,
+          "id": "unknown_26"
+        },
+        {
+          "value": 134217728,
+          "id": "npc_positive_use_dialogue_subtype"
+        },
+        {
+          "value": 268435456,
+          "id": "npc_negative_use_dialogue_subtype"
+        },
+        {
+          "value": 536870912,
+          "id": "npc_neutral_use_dialogue_subtype"
+        },
+        {
+          "value": 1073741824,
+          "id": "npc_question_use_dialogue_subtype"
+        }
+      ],
+      "labels": [
+        {
+          "value": 1,
+          "label": "Unknown 0"
+        },
+        {
+          "value": 2,
+          "label": "Unknown 1"
+        },
+        {
+          "value": 4,
+          "label": "Unknown 2"
+        },
+        {
+          "value": 8,
+          "label": "Unknown 3"
+        },
+        {
+          "value": 16,
+          "label": "Unknown 4"
+        },
+        {
+          "value": 32,
+          "label": "Unknown 5"
+        },
+        {
+          "value": 64,
+          "label": "Unknown 6"
+        },
+        {
+          "value": 128,
+          "label": "Player Positive Use Dialogue Subtype / Hold Into Next Scene"
+        },
+        {
+          "value": 256,
+          "label": "Player Negative Use Dialogue Subtype"
+        },
+        {
+          "value": 512,
+          "label": "Player Neutral Use Dialogue Subtype"
+        },
+        {
+          "value": 1024,
+          "label": "Use Dialogue Subtype"
+        },
+        {
+          "value": 2048,
+          "label": "Player Question Use Dialogue Subtype"
+        },
+        {
+          "value": 4096,
+          "label": "Keep/Clear Target on Action End"
+        },
+        {
+          "value": 8192,
+          "label": "Unknown 13"
+        },
+        {
+          "value": 16384,
+          "label": "Run on End of Phase"
+        },
+        {
+          "value": 32768,
+          "label": "Face Target"
+        },
+        {
+          "value": 65536,
+          "label": "Looping"
+        },
+        {
+          "value": 131072,
+          "label": "Headtrack Player"
+        },
+        {
+          "value": 262144,
+          "label": "Unknown 18"
+        },
+        {
+          "value": 524288,
+          "label": "Ignore For Completion"
+        },
+        {
+          "value": 1048576,
+          "label": "Unknown 20"
+        },
+        {
+          "value": 2097152,
+          "label": "Camera Speaker Target"
+        },
+        {
+          "value": 4194304,
+          "label": "Complete Face Target"
+        },
+        {
+          "value": 8388608,
+          "label": "Unknown 23"
+        },
+        {
+          "value": 16777216,
+          "label": "Unknown 24"
+        },
+        {
+          "value": 33554432,
+          "label": "Unknown 25"
+        },
+        {
+          "value": 67108864,
+          "label": "Unknown 26"
+        },
+        {
+          "value": 134217728,
+          "label": "NPC Positive Use Dialogue Subtype"
+        },
+        {
+          "value": 268435456,
+          "label": "NPC Negative Use Dialogue Subtype"
+        },
+        {
+          "value": 536870912,
+          "label": "NPC Neutral Use Dialogue Subtype"
+        },
+        {
+          "value": 1073741824,
+          "label": "NPC Question Use Dialogue Subtype"
+        }
+      ],
+      "storage_kind": "flags"
+    },
+    {
+      "id": "SCEN.FNAM.flags@phases",
+      "values": [
+        {
+          "value": 1,
+          "id": "start_walkaway_phase"
+        },
+        {
+          "value": 2,
+          "id": "don_t_run_end_scripts_on_scene_jump"
+        },
+        {
+          "value": 4,
+          "id": "start_inherit_in_templated_scenes"
+        }
+      ],
+      "labels": [
+        {
+          "value": 1,
+          "label": "Start - WalkAway Phase"
+        },
+        {
+          "value": 2,
+          "label": "Don't Run End Scripts on Scene Jump"
+        },
+        {
+          "value": 4,
+          "label": "Start - Inherit In Templated Scenes"
+        }
+      ],
+      "storage_kind": "flags",
+      "byte_width": 2
     },
     {
       "id": "SCEN.LNAM.flags",
@@ -300188,6 +300769,74 @@ pub const AUTHORING_SCHEMA_JSON: &str = r##"{
         {
           "value": 16384,
           "id": "torch"
+        },
+        {
+          "value": 32768,
+          "id": "unknown_15"
+        },
+        {
+          "value": 65536,
+          "id": "unknown_16"
+        },
+        {
+          "value": 131072,
+          "id": "unknown_17"
+        },
+        {
+          "value": 262144,
+          "id": "unknown_18"
+        },
+        {
+          "value": 524288,
+          "id": "unknown_19"
+        },
+        {
+          "value": 1048576,
+          "id": "unknown_20"
+        },
+        {
+          "value": 2097152,
+          "id": "unknown_21"
+        },
+        {
+          "value": 4194304,
+          "id": "unknown_22"
+        },
+        {
+          "value": 8388608,
+          "id": "unknown_23"
+        },
+        {
+          "value": 16777216,
+          "id": "unknown_24"
+        },
+        {
+          "value": 33554432,
+          "id": "unknown_25"
+        },
+        {
+          "value": 67108864,
+          "id": "unknown_26"
+        },
+        {
+          "value": 134217728,
+          "id": "unknown_27"
+        },
+        {
+          "value": 268435456,
+          "id": "unknown_28"
+        },
+        {
+          "value": 536870912,
+          "id": "unknown_29"
+        },
+        {
+          "value": 1073741824,
+          "id": "unknown_30"
+        },
+        {
+          "value": 2147483648,
+          "id": "unknown_31"
         }
       ],
       "labels": [
@@ -300250,6 +300899,74 @@ pub const AUTHORING_SCHEMA_JSON: &str = r##"{
         {
           "value": 16384,
           "label": "Torch"
+        },
+        {
+          "value": 32768,
+          "label": "Unknown 15"
+        },
+        {
+          "value": 65536,
+          "label": "Unknown 16"
+        },
+        {
+          "value": 131072,
+          "label": "Unknown 17"
+        },
+        {
+          "value": 262144,
+          "label": "Unknown 18"
+        },
+        {
+          "value": 524288,
+          "label": "Unknown 19"
+        },
+        {
+          "value": 1048576,
+          "label": "Unknown 20"
+        },
+        {
+          "value": 2097152,
+          "label": "Unknown 21"
+        },
+        {
+          "value": 4194304,
+          "label": "Unknown 22"
+        },
+        {
+          "value": 8388608,
+          "label": "Unknown 23"
+        },
+        {
+          "value": 16777216,
+          "label": "Unknown 24"
+        },
+        {
+          "value": 33554432,
+          "label": "Unknown 25"
+        },
+        {
+          "value": 67108864,
+          "label": "Unknown 26"
+        },
+        {
+          "value": 134217728,
+          "label": "Unknown 27"
+        },
+        {
+          "value": 268435456,
+          "label": "Unknown 28"
+        },
+        {
+          "value": 536870912,
+          "label": "Unknown 29"
+        },
+        {
+          "value": 1073741824,
+          "label": "Unknown 30"
+        },
+        {
+          "value": 2147483648,
+          "label": "Unknown 31"
         }
       ],
       "storage_kind": "flags"
@@ -303047,12 +303764,24 @@ pub const AUTHORING_SCHEMA_JSON: &str = r##"{
           "id": "must_complete"
         },
         {
+          "value": 8,
+          "id": "maintain_speed_at_goal"
+        },
+        {
+          "value": 16,
+          "id": "treat_as_player_follower"
+        },
+        {
           "value": 64,
           "id": "unlock_doors_at_package_start"
         },
         {
           "value": 128,
           "id": "unlock_doors_at_package_end"
+        },
+        {
+          "value": 256,
+          "id": "request_block_idles"
         },
         {
           "value": 512,
@@ -303063,6 +303792,14 @@ pub const AUTHORING_SCHEMA_JSON: &str = r##"{
           "id": "once_per_day"
         },
         {
+          "value": 4096,
+          "id": "skip_load_into_furniture"
+        },
+        {
+          "value": 8192,
+          "id": "preferred_speed"
+        },
+        {
           "value": 131072,
           "id": "always_sneak"
         },
@@ -303071,8 +303808,20 @@ pub const AUTHORING_SCHEMA_JSON: &str = r##"{
           "id": "allow_swimming"
         },
         {
+          "value": 1048576,
+          "id": "ignore_combat"
+        },
+        {
           "value": 2097152,
           "id": "weapons_unequipped"
+        },
+        {
+          "value": 8388608,
+          "id": "weapon_drawn"
+        },
+        {
+          "value": 134217728,
+          "id": "no_combat_alert"
         }
       ],
       "labels": [
@@ -303085,12 +303834,24 @@ pub const AUTHORING_SCHEMA_JSON: &str = r##"{
           "label": "Must Complete"
         },
         {
+          "value": 8,
+          "label": "Maintain Speed At Goal"
+        },
+        {
+          "value": 16,
+          "label": "Treat As Player Follower"
+        },
+        {
           "value": 64,
           "label": "Unlock Doors At Package Start"
         },
         {
           "value": 128,
           "label": "Unlock Doors At Package End"
+        },
+        {
+          "value": 256,
+          "label": "Request Block Idles"
         },
         {
           "value": 512,
@@ -303101,6 +303862,14 @@ pub const AUTHORING_SCHEMA_JSON: &str = r##"{
           "label": "Once Per Day"
         },
         {
+          "value": 4096,
+          "label": "Skip Load Into Furniture"
+        },
+        {
+          "value": 8192,
+          "label": "Preferred Speed"
+        },
+        {
           "value": 131072,
           "label": "Always Sneak"
         },
@@ -303109,8 +303878,20 @@ pub const AUTHORING_SCHEMA_JSON: &str = r##"{
           "label": "Allow Swimming"
         },
         {
+          "value": 1048576,
+          "label": "Ignore Combat"
+        },
+        {
           "value": 2097152,
           "label": "Weapons Unequipped"
+        },
+        {
+          "value": 8388608,
+          "label": "Weapon Drawn"
+        },
+        {
+          "value": 134217728,
+          "label": "No Combat Alert"
         }
       ],
       "storage_kind": "flags"

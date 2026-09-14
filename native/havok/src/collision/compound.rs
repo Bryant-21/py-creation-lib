@@ -845,13 +845,9 @@ fn build_compound_data_section(
     // Pointer to boundingVolumeData (DynCompShapeData)
     let bvd_ptr_rel = compound_shape_rel + 0xc0;
 
-    // Write sub-shape objects.
-    //
-    // Each child receives an equal share of the body's total mass.  This is
-    // the simplest aggregation that preserves the global m_inverse_mass = 1/M
-    // invariant for the parent body; a parallel-axis aggregation can be added
-    // later if precise dynamics are required (FO4 vanilla compounds are
-    // overwhelmingly static, so the per-child split is currently a no-op).
+    // Write sub-shape objects. Each child gets an equal share of the body mass,
+    // which keeps the parent's m_inverse_mass = 1/M. No parallel-axis aggregation:
+    // FO4 vanilla compounds are almost all static.
     let n_children = sub_shapes.len().max(1) as f32;
     let per_child_mass = if opts.mass > 0.0 {
         opts.mass / n_children

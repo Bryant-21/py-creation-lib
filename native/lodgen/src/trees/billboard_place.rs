@@ -5,9 +5,9 @@
 /// For each tree ref in the quad: look up its species in the manifest,
 /// bucket by tree-list index, push a `TreeRef` with a deterministic rotation.
 ///
-/// Determinism: xLODGen uses `2*Pi*Random` for billboard rotation (wbLOD.pas:994).
-/// This port replaces that with a deterministic FNV-1a hash of the ref_id so two
-/// runs produce identical `.btt` bytes. Documented deviation from the Pascal source.
+/// Determinism: xLODGen uses `2*Pi*Random` for billboard rotation (wbLOD.pas:994);
+/// this uses an FNV-1a hash of the ref_id instead so runs produce identical `.btt`
+/// bytes.
 use std::collections::BTreeMap;
 use std::f32::consts::PI;
 use std::path::PathBuf;
@@ -24,13 +24,8 @@ use crate::progress::{QuadCtx, QuadOutputs};
 // deterministic_rotation — deterministic stand-in for 2*Pi*Random
 // ---------------------------------------------------------------------------
 
-/// Deterministic stand-in for xLODGen's `2*Pi*Random` (wbLOD.pas:994).
-///
-/// Uses FNV-1a 32-bit over the UTF-8 bytes of `ref_id`, then maps the hash
-/// uniformly into `[0, 2π)`. Two runs with the same input produce identical
-/// output; this is a required deviation from the Pascal source.
-///
-/// port: wbLOD.pas:994 `2*Pi*Random` replaced by FNV-1a(ref_id)
+/// Deterministic stand-in for xLODGen's `2*Pi*Random` (wbLOD.pas:994): FNV-1a
+/// 32-bit over the UTF-8 bytes of `ref_id`, mapped uniformly into `[0, 2π)`.
 pub fn deterministic_rotation(ref_id: &str) -> f32 {
     // FNV-1a 32-bit
     const FNV_PRIME: u32 = 16777619;
@@ -50,16 +45,13 @@ pub fn deterministic_rotation(ref_id: &str) -> f32 {
 
 /// Per-quad 2D billboard placement.
 ///
-/// For each tree ref in `trees`: look up its species in `manifest`, bucket by
-/// tree-list index (`BTreeMap` for deterministic ordering), push a `TreeRef`
-/// with position/scale from the `StaticDesc` and deterministic rotation.
-/// Writes the `.btt` block to `ctx.paths.output_dir / naming::btt(...)`.
+/// For each tree ref in `trees` (sorted by `ref_id`): look up its species in
+/// `manifest`, bucket by tree-list index (`BTreeMap` for deterministic ordering), and
+/// push a `TreeRef` with position/scale from the `StaticDesc` and a deterministic
+/// rotation. Writes the `.btt` block to `ctx.paths.output_dir / naming::btt(...)`.
 ///
-/// Unknown species (model not in manifest) are skipped and a warning is emitted
-/// via the `QuadOutputs.warnings` (returned in `stats` by the driver).
-///
-/// `manifest` is `None` when the caller could not load it — returns empty and
-/// logs a note (not an error) so the driver can surface it.
+/// Refs whose model is not in the manifest are skipped silently. When `manifest` is
+/// `None` this returns empty outputs; the driver warns about the missing manifest.
 ///
 /// port: TwbLodTES5TreeBlock.AddReference (wbLOD.pas:963-998)
 pub fn generate_quad(
@@ -73,7 +65,7 @@ pub fn generate_quad(
         Some(m) => m,
         None => {
             // Billboard mode needs the generator to have run first.
-            // Return empty — caller (trees::generate_quad) will emit a warning.
+            // Return empty; the driver warns about the missing manifest.
             return Ok(QuadOutputs::default());
         }
     };
@@ -105,7 +97,7 @@ pub fn generate_quad(
         let entry = match manifest.by_model(model) {
             Some(e) => e,
             None => {
-                // Unknown species — skip silently (caller collects warnings).
+                // Unknown species: skip silently.
                 continue;
             }
         };

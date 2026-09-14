@@ -1,10 +1,5 @@
-/// Cyclic Coordinate Descent (CCD) iterative N-bone IK solver.
-///
-/// Per-iteration, walks from end-effector back toward the root, rotating each
-/// joint to minimize end-effector distance to the target. Converges within
-/// `tolerance` or after `max_iterations` passes.
-///
-/// Standard CCD; parameters mirror `hkaCcdIkSolver` semantics.
+/// Cyclic Coordinate Descent (CCD) N-bone IK solver. Parameters follow
+/// `hkaCcdIkSolver` semantics.
 use crate::animation::pose::{
     quat_from_axis_angle, quat_mul, quat_normalize, quat_rotate, vec3_cross, vec3_dot, vec3_len,
     vec3_normalize, vec3_sub,
@@ -31,14 +26,8 @@ impl Default for CcdParams {
     }
 }
 
-/// Solve N-bone IK via CCD.
-///
-/// `joint_positions` — world-space positions of joints 0 (root) .. N-1 (end effector).
-/// `joint_rotations` — world-space rotations for each joint (x,y,z,w).
-/// `target` — world-space target position for the end effector.
-///
-/// Returns updated world-space rotations for all joints. The caller is
-/// responsible for converting back to local space.
+/// Solve N-bone IK via CCD. Joints run 0 (root) .. N-1 (end effector); all
+/// inputs and the returned rotations (xyzw) are world-space.
 pub fn solve_ccd(
     joint_positions: &[[f32; 3]],
     joint_rotations: &[[f32; 4]],

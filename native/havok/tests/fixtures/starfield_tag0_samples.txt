@@ -1,0 +1,53 @@
+# Starfield collision payload locations — discovery result (2026-08-10, plan task 6).
+#
+# WHERE STARFIELD COLLISION LIVES
+#   Inside the .nif itself, exactly as FO76 does. A collision-bearing Starfield
+#   NIF carries a `bhkPhysicsSystem` block whose "Binary Data" byte array is a
+#   self-contained Havok TAG0 tagfile. It is NOT in the external `.mesh`
+#   geometry files: 6,000 files under extracted/starfield/geometries/ were
+#   scanned for the TAG0 magic and produced zero hits. LOD NIFs under
+#   meshes/lod/ likewise carry none (500 scanned, zero hits).
+#
+#   Locating the payload in a NIF: find the ASCII magic `TAG0`; the tagfile
+#   starts 4 bytes earlier, at the HFF section header — a big-endian u32 whose
+#   low 30 bits are the total tagfile size and whose top 2 bits are the section
+#   scope. Immediately before that header sits the NIF byte-array length as a
+#   little-endian u32. A NIF may hold more than one payload (14 of 2,694
+#   sampled NIFs had two; cloth/banner assets).
+#
+#   Coverage over 2,694 NIFs spanning architecture, landscape, setdressing,
+#   furniture, items, plants, outpost, ships, actors, effects, space and
+#   starstations: 2,168 carry a payload (80.5%), yielding 2,182 tagfiles.
+#
+# FORMAT DELTA vs FO76
+#   Every sampled payload reports SDKV `20190200` (Havok 2019.2.0); FO76 is
+#   `20150100`. The 2018+ SDK renamed the type sections: TST1/FST1/TNA1/TBDY
+#   where FO76 writes TSTR/FSTR/TNAM/TBOD. The tagfile body encoding is
+#   otherwise unchanged, so the reflective TAG0 reader handles both once the
+#   section names are accepted.
+#
+# SHAPE-CLASS CENSUS (2,182 payloads, instance counts)
+#   hknpConvexShape           5197
+#   hknpShapeMassProperties   5077
+#   hknpCompressedMeshShape   1291  (+1291 hknpCompressedMeshShapeData)
+#   hknpCompoundShape          665
+#   hknpBoxShape               644
+#   hknpLodShape               596
+#   hknpCapsuleShape           434  (concentrated in actors/ ragdolls)
+#   hknpSphereShape            115
+#   hknpCylinderShape           20
+#   hknpTriangleShape            5
+#
+# Format below: <nif-path>|<tagfile-byte-offset>|<tagfile-byte-length>|<label>
+# Paths are relative to STARFIELD_EXTRACTED_DIR. Tests skip cleanly when that
+# directory and the repository-local extracted data tree are absent.
+
+meshes/architecture/city/akila/aggriculture/ak_agggreenhouse_pod_floor_01.nif|542|6168|box
+meshes/architecture/catwalks/industrial/addons/catindaddon_panelsmmid01.nif|797|7588|lod+box+convex
+meshes/architecture/city/akila/bridge/ak_coiled_wire_01.nif|470|17908|compound+convex
+meshes/architecture/catwalks/industrial/addons/catindaddon_platform_scanner01.nif|1086|9064|compressed-mesh
+meshes/architecture/catwalks/industrial/decks/catinddecksmmid_dmg_m01.nif|633|10884|lod+compressed-mesh
+meshes/architecture/catwalks/industrial/decks/catinddecksmcorin01.nif|1040|22988|compound+compressed-mesh+convex+lod
+meshes/architecture/city/akila/buildingparts/addon/greeble/ak_bld_addonwalla_greeble_1x1_corin01.nif|1314|28716|building-piece compound+compressed-mesh+convex
+meshes/furniture/stools/stoolshort_01.nif|888|6300|cylinder
+meshes/setdressing/akila/ak_soccer/ak_soccer_ball_01.nif|476|5796|sphere

@@ -3,7 +3,7 @@
 //! If you are uncertain of the origins of your archive, then you may use [`guess_format`] to find a starting point.
 //!
 //! # A note on strings
-//! The Creation Engine absolutely does not handle unicode correctly, and even has some nasty, extant bugs which exist related to characters that utilize the extended ascii range. As such, all strings are marked as binary strings, without encoding (see also [`BStr`] or [`BString`]). If you must re-encode strings, then, generally speaking, they are encoded using the system code page of whatever computer happened to write the archive. That means English copies of the game are encoded using Windows-1252, Russian copies using Windows-1251, etc. However, this is not a guarantee and is the source of much consternation when writing internationalized applications for the Creation Engine games.
+//! The Creation Engine mishandles Unicode and has bugs with extended-ASCII characters, so all strings are binary strings with no encoding (see [`BStr`] and [`BString`]). Archives usually use the writing machine's system code page (Windows-1252 for English copies, Windows-1251 for Russian), but that isn't guaranteed.
 
 #![warn(
     clippy::pedantic,
@@ -30,8 +30,10 @@ mod mod_pack;
 mod pack;
 mod pack_fo4_stream;
 mod protocols;
+mod ps_audio;
 pub mod python;
 pub mod tes4;
+mod worker_pool;
 
 pub use guess::{FileFormat, guess_format};
 pub use python::{list_archive_files, register_module};

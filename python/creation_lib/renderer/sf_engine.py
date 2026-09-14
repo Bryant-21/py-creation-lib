@@ -1,17 +1,14 @@
-"""Starfield render engine — direct port of tools/sf_render_test.py.
+"""Starfield render engine, ported from tools/sf_render_test.py.
 
-This is a parallel rendering path used by the editor whenever a Starfield NIF
-is loaded. It bypasses the editor's shared shaders, Material/Mesh dataclasses,
-material pipeline, and `_draw_node` walk entirely. Instead it builds its own
-scene from the .nif file (using creation_lib.nif), parses .mat files itself, builds its
-own VBO/VAO + GL program, and renders into the editor's existing FBO.
+The editor uses this separate path for Starfield NIFs. It bypasses the shared
+shaders, Material/Mesh dataclasses, material pipeline, and `_draw_node` walk:
+it builds its own scene from the .nif (via creation_lib.nif), parses .mat files,
+owns its VBO/VAO and GL program, and renders into the editor's FBO. The shared
+SF shader had diverged from NifSkope's stf_default math in hard-to-pin-down
+ways, so the working standalone was lifted whole.
 
-Why a parallel path: the editor's shared SF shader and material backend
-diverged from NifSkope's stf_default math in subtle, hard-to-pin-down ways.
-Rather than keep patching, we lift the working standalone wholesale.
-
-Source of truth: tools/sf_render_test.py. If something looks wrong here,
-diff against that file — it must stay byte-equivalent for the GLSL/math.
+Source of truth: tools/sf_render_test.py. Keep the GLSL/math byte-equivalent
+and diff against it when something looks wrong.
 
 Editor integration:
     sf_scene = SFScene(ctx, nif_path, extracted_dir, exr_path)
@@ -1299,16 +1296,12 @@ class SFScene:
 
     def add_attached_nif(self, nif_path: Path,
                          parent_xform: np.ndarray) -> list[RenderMesh]:
-        """Load an additional NIF as an attachment with a parent transform.
+        """Load an additional NIF as an attachment under ``parent_xform``.
 
-        Walks the attached NIF and appends every BSGeometry it finds to
-        ``self.meshes`` with ``parent_xform`` as the root transform — so
-        the meshes inherit the connect-point world matrix the caller
-        computed. Returns the list of newly added meshes so callers can
-        track them (e.g. for set_visible toggles or later removal).
-
-        Used by ``SfBackend.attach_nif`` to make Connect Points-based
-        attachments visible in the wholesale-port draw path.
+        Appends every BSGeometry in it to ``self.meshes`` with ``parent_xform``
+        (the connect point's world matrix) as the root transform, and returns
+        the new meshes for visibility toggles or removal. Used by
+        ``SfBackend.attach_nif``.
         """
         before = len(self.meshes)
         try:
@@ -1584,12 +1577,10 @@ class SFScene:
         # exactly like the FO4 path.
         prog["mrtEnabled"].value = 1.0 if ssao_enabled else 0.0
 
-        # Shadow uniforms. When the host renderer hands us an
-        # active shadow_map texture + light_space_matrix, bind them to the
-        # SF program so calcShadow() in FRAG_SRC samples them. We use a
-        # high texture unit (MAX_TEXTURES + 7) to avoid stomping the BRDF
-        # LUT (MAX_TEXTURES) and the prefilter cubes (MAX_TEXTURES+1..6)
-        # and the irradiance cube (MAX_TEXTURES+7 → bumped to +8 below).
+        # Shadow uniforms: bind the host's shadow_map and light_space_matrix so
+        # calcShadow() in FRAG_SRC samples them. The shadow map takes unit
+        # MAX_TEXTURES + 8, above the BRDF LUT (MAX_TEXTURES), the prefilter
+        # cubes (+1..6), and the irradiance cube (+7).
         if "uShadowEnabled" in prog:
             sf_shadow_active = (
                 shadow_enabled
@@ -1785,11 +1776,9 @@ class SFScene:
 
     # -- Overlay programs (vertex points, selection outline) -----------------
     #
-    # These are tiny programs created lazily so the SF main program +
-    # cubemap pipeline aren't burdened with extra compile work for users
-    # who never toggle on the overlays. Per-mesh alternate VAOs are
-    # cached on the RenderMesh itself via private ``_aux_*`` attributes
-    # so we don't have to hash/lookup on each frame.
+    # Compiled lazily, so the main SF program and cubemap pipeline pay nothing
+    # while overlays stay off. Per-mesh alternate VAOs are cached on the
+    # RenderMesh as ``_points_vao`` / ``_outline_vao``.
 
     def _ensure_points_prog(self):
         if getattr(self, "_points_prog", None) is not None:

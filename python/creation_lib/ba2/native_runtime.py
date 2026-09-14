@@ -13,6 +13,7 @@ BackendName = Literal["auto", "native"]
 _NATIVE_CAPABILITIES = (
     "list_archive",
     "archive_info",
+    "archive_entry_count",
     "extract_one",
     "extract_archive",
     "pack_archive",
@@ -27,6 +28,7 @@ _TEXTURE_ARCHIVE_TYPES = frozenset(
         "fo4ogdds",
         "fo4dds",
         "fo4xboxdds",
+        "fo4psdds",
         "starfielddds",
         "sfdds",
     }
@@ -133,6 +135,10 @@ def list_archive(path: str) -> list[str] | None:
 
 def archive_info(path: str) -> dict | None:
     return _require_native_function("archive_info")(path)
+
+
+def archive_entry_count(path: str) -> int:
+    return int(_require_native_function("archive_entry_count")(path))
 
 
 def extract_one(archive: str, file_path: str) -> bytes | None:

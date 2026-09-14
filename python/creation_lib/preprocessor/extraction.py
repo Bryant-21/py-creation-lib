@@ -1,17 +1,4 @@
-"""Unified native BSA/BA2 extraction for multi-game support.
-
-Public API:
-    resolve_install_dir(game_id, explicit_dir) -> Path | None
-    find_archives(data_dir, archive_format) -> list[Path]
-    group_archives_by_update_phase(archives) -> list[list[Path]]
-    plan_archive_extraction_batches(archives, total_workers) -> list[list[ArchiveExtractionTask]]
-    load_manifest(output_dir) -> dict | None
-    build_manifest(game, source_dir, archives) -> dict
-    manifest_matches(manifest, source_dir, archives) -> bool
-    save_manifest(output_dir, manifest) -> None
-    extract_one(archive, output_dir, archive_format, file_workers) -> tuple
-    extract_with_native_archive(archive_path, output_dir, archive_format, file_workers) -> int
-"""
+"""Unified native BSA/BA2 extraction for multi-game support."""
 from __future__ import annotations
 
 import datetime
@@ -22,6 +9,7 @@ import os
 import re
 import shutil
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -162,10 +150,7 @@ def group_archives_by_update_phase(archives: list[Path]) -> list[list[Path]]:
 
 def archive_entry_count(archive: Path) -> int:
     try:
-        info = native_runtime.archive_info(str(archive))
-        if not isinstance(info, dict):
-            return 0
-        return max(0, int(info.get("file_count", 0) or 0))
+        return max(0, native_runtime.archive_entry_count(str(archive)))
     except Exception:
         return 0
 
@@ -405,12 +390,18 @@ def extract_one(
         return archive, 0, f"unknown format: {archive_format}"
 
     try:
+        started = time.perf_counter()
         count = extract_with_native_archive(
             archive,
             output_dir,
             archive_format,
             file_workers=file_workers,
             progress=progress,
+        )
+        elapsed = time.perf_counter() - started
+        _log.info(
+            "Archive extracted: archive=%s files=%d workers=%d elapsed_s=%.3f",
+            archive.name, count, file_workers, elapsed,
         )
         return archive, count, None
     except Exception as e:

@@ -428,16 +428,11 @@ def build_field_def_map(schema, type_name: str) -> dict[str, "FieldDef"]:
     """Build a `{field_name: FieldDef}` lookup for displaying / editing fields
     of a given NIF block type.
 
-    When the inheritance chain carries multiple fields with the same name
-    (e.g. `BSLightingShaderProperty.Shader Type` exists on `NiObjectNET` with
-    `type=BSLightingShaderType` AND on `BSShaderProperty` with the legacy
-    `type=BSShaderType`), a naive `{f.name: f}` dict picks whichever was
-    iterated last and binds the wrong enum to the displayed value.
-
-    `nif_core`'s reader gates these duplicates with `vercond` / `only_t` so
-    only one is actually deserialized — but display code never re-evaluates
-    those gates. Prefer the FieldDef whose `only_t` targets the concrete
-    block type, since that's the binding the reader honored. Both bare-name
+    The inheritance chain can repeat a name: `BSLightingShaderProperty.Shader
+    Type` is `BSLightingShaderType` on `NiObjectNET` and the legacy `BSShaderType`
+    on `BSShaderProperty`. `nif_core`'s reader deserializes only one via
+    `vercond` / `only_t`, but display code doesn't re-evaluate those gates, so the
+    FieldDef whose `only_t` targets the concrete block type wins. Both bare-name
     and `name:suffix` keys are populated.
     """
     fdefs: dict[str, "FieldDef"] = {}

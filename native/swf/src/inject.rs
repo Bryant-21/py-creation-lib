@@ -5,9 +5,8 @@
 //!
 //! Untouched destination tags are preserved as opaque byte ranges (the splice
 //! inserts the new defines immediately before the SymbolClass tag and replaces
-//! only that tag). Fonts/text/buttons in a closure are rejected — the FO76
-//! marker icons are pure shape/sprite art (no bitmaps), which is the supported
-//! MVP scope.
+//! only that tag). Fonts/text/buttons in a closure are rejected; the FO76
+//! marker icons are pure shape/sprite art with no bitmaps.
 
 use std::collections::{HashMap, HashSet};
 

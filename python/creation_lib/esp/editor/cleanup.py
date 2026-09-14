@@ -1,21 +1,15 @@
-"""Cleanup operations — Remove ITM, Undelete and Disable References.
+"""Cleanup operations: Remove ITM, and Undelete and Disable References.
 
 xEdit equivalents:
-- `mniNavRemoveIdenticalToMaster` — drop overrides that are byte-identical
-  to their master (commonly created by the Creation Kit's "save also saves
-  unmodified records" bug).
-- `mniNavUndeleteAndDisableReferences` — restore deleted reference records
-  and flag them as initially disabled with a player-parent XESP.
+- `mniNavRemoveIdenticalToMaster`: drop overrides byte-identical to their master
+  (the Creation Kit's "save also saves unmodified records" bug creates these).
+- `mniNavUndeleteAndDisableReferences`: restore deleted refs and flag them
+  initially disabled with a player-parent XESP.
 
-Both use the existing native validate report (which already detects ITM and
-deleted records) as their input. The `validate.py` module is the source of
-truth for "what's wrong"; this module fixes it.
-
-Invariants (matching xEdit):
-- Cannot remove injected master records (records owned by the source plugin
-  but with a master's high byte). The native ITM check already excludes them.
-- Cannot undelete NAVM (no XESP slot, navmesh-specific cleanup needed).
-- Cannot undelete injected refs (record's plugin owner != current plugin).
+Both act on the native validate report; `validate.py` detects, this module fixes.
+As in xEdit, injected master records (source-owned but with a master's high byte)
+are never removed (the native ITM check excludes them), NAVM is never undeleted
+(no XESP slot), and injected refs are never undeleted.
 """
 
 from __future__ import annotations
@@ -84,14 +78,9 @@ def undelete_and_disable_refs(
 ) -> list[int]:
     """Undelete deleted REFR/ACHR/etc. records and set them initially disabled.
 
-    Returns the FormIDs that were undeleted.
-
-    For each candidate record:
-      1. Clear the RECORD_FLAG_DELETED bit
-      2. Set the RECORD_FLAG_INITIALLY_DISABLED bit
-      3. Drop XTEL (teleport target), DATA (position) is preserved
-      4. Add or replace XESP — parent ref = player (0x14), flag = 0x01
-         (set enable state to opposite of parent → effectively disabled)
+    Returns the undeleted FormIDs. Each record gets RECORD_FLAG_DELETED cleared,
+    RECORD_FLAG_INITIALLY_DISABLED set, XTEL dropped (DATA position kept), and an
+    XESP with parent = player (0x14) and flag 0x01 (opposite of parent, so disabled).
     """
     targets = handles if handles is not None else (
         [session.active.handle] if session.active else []

@@ -1,4 +1,5 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, hash_map::DefaultHasher};
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -7,10 +8,9 @@ use thiserror::Error;
 
 use crate::fo76_collision::{
     CollisionRoute, ExtractedCollisionBody, FO4_CLUTTER_LAYER, FO4_STATIC_LAYER,
-    PlannedCollisionBody, RouteCounts, SourceBodyMetadata, classify_source_body,
-    collision_summary_is_invalid, extract_source_collision_body, is_dynamic_from_nif_signals,
-    motion_type_label, nif_vertices_to_havok, source_body_metadata,
-    summary_has_degenerate_collision_shape,
+    PlannedCollisionBody, RouteCounts, SourceBodyMetadata, SourceCollisionContext,
+    classify_source_body, collision_summary_is_invalid, is_dynamic_from_nif_signals,
+    motion_type_label, nif_vertices_to_havok, summary_has_degenerate_collision_shape,
 };
 use crate::model::{NifBlock, NifFile, NifValue};
 use havok_native::collision::multi_body::{
@@ -18,7 +18,7 @@ use havok_native::collision::multi_body::{
 };
 use havok_native::collision::{
     BuildOptions, CompoundChildKind, GraftCinfo, GraftedConstraints, MultiBodyShape,
-    with_collision_diagnostic_context,
+    convert_fo76_embedded_static_collision_direct, with_collision_diagnostic_context,
 };
 
 const VF_VERTEX: i64 = 0x0001;
@@ -30,13 +30,16 @@ const VF_SKINNED: i64 = 0x0040;
 const SLSF1_SPECULAR: u64 = 1 << 0;
 const SLSF1_SKINNED: u64 = 1 << 1;
 const SLSF1_VERTEX_ALPHA: u64 = 1 << 3;
+const SLSF1_USE_FALLOFF: u64 = 1 << 6;
 const SLSF1_ENVIRONMENT_MAPPING: u64 = 1 << 7;
 const SLSF1_CAST_SHADOWS: u64 = 1 << 9;
 const SLSF1_HAIR: u64 = 1 << 18;
 const SLSF1_SCREENDOOR_ALPHA_FADE: u64 = 1 << 19;
 const SLSF1_OWN_EMIT: u64 = 1 << 22;
+const SLSF1_EXTERNAL_EMITTANCE: u64 = 1 << 29;
 const SLSF1_DECAL: u64 = 1 << 26;
 const SLSF1_DYNAMIC_DECAL: u64 = 1 << 27;
+const SLSF1_SOFT_EFFECT: u64 = 1 << 30;
 const SLSF1_ZBUFFER_TEST: u64 = 1 << 31;
 const SLSF2_TRANSFORM_CHANGED: u64 = 1 << 7;
 
@@ -56,6 +59,8 @@ const SLSF2_DOUBLE_SIDED: u32 = 1 << 4;
 const SLSF2_VERTEX_COLORS: u32 = 1 << 5;
 const SLSF2_GLOW_MAP: u64 = 1 << 6;
 const SLSF2_TREE_ANIM: u32 = 1 << 29;
+const SLSF2_EFFECT_LIGHTING: u64 = 1 << 30;
+const FO4_PARTICLE_VERTEX_DESC: u64 = 594_510_335_218_548_785;
 const FO4_LEGACY_PP_SHADER_FLAGS_1_MASK: u64 = (1 << 0)
     | (1 << 1)
     | (1 << 3)
@@ -95,8 +100,18 @@ const FO4_TALL_GRASS_SHADER_FLAGS_2: u64 =
 const BSX_DYNAMIC_FLAG: u64 = 0x40;
 const BSX_COMPLEX_FLAG: u64 = 0x08;
 const BSX_ARTICULATED_FLAG: u64 = 0x80;
+const BSX_ANIMATED_FLAG: u64 = 0x01;
+const BSX_RAGDOLL_FLAG: u64 = 0x04;
+const BSX_ADDON_FLAG: u64 = 0x10;
+const BSX_EDITOR_MARKER_FLAG: u64 = 0x20;
+const BSX_EXTERNAL_EMIT_FLAG: u64 = 0x200;
 const FO4_TEXTURE_SLOT_COUNT: usize = 10;
 const HAVOK_SCALE: f32 = 69.99125;
+const LEGACY_HAVOK_SCALE: f32 = 10.0;
+/// Gamebryo-era (FO3/FNV) Havok units per FO4 Havok unit. Matches pynifly's
+/// `game_collision_sf["FONV"]` and is confirmed by source assets whose collision
+/// hull registers exactly against the visible mesh at this factor.
+const LEGACY_HAVOK_UNIT_SCALE: f32 = 1.0 / LEGACY_HAVOK_SCALE;
 const DEFAULT_COLLISION_RADIUS: f64 = 0.01;
 const FO76_PBR_SHADER_FLAG_CRC: u64 = 731263983;
 const FO76_TEMP_GROUND_DECAL_MATERIAL: &str =
@@ -120,13 +135,22 @@ pub struct ConvertFileOptions {
     pub material_namespace_paths: HashSet<String>,
     pub addon_index_map: HashMap<i64, i64>,
     pub translation_maps_dir: Option<PathBuf>,
+    pub skin_policy: crate::skin::LegacySkinPolicy,
+    /// Target-game skeleton the translated skin must bind to (FO4's shared
+    /// humanoid `skeleton.nif`). Set for `TranslateSkeleton` conversions:
+    /// remapping bone names leaves the source game's bind matrices in place,
+    /// which explodes the mesh, so the binds are recomputed against this rest
+    /// pose. `PreserveSourceRig` (creatures) ships its own skeleton and
+    /// ignores this.
+    pub target_skeleton: Option<PathBuf>,
     pub auto_skin_reference_body: Option<PathBuf>,
     pub emit_first_person: bool,
     pub first_person_reference: Option<PathBuf>,
     pub morph_weight_cap: f32,
     pub weapon_role: Option<String>,
+    pub strip_cloth: bool,
     /// Source-game data root (e.g. the FO76 `extracted/fo76` dir). When set, the
-    /// FO76→FO4 external-BGSM normalizer reads each referenced source material to
+    /// FO76→FO4 external-material normalizers read each referenced source BGSM/BGEM to
     /// restore FO4 shader flags and texture fallbacks. None disables it.
     pub source_material_dir: Option<PathBuf>,
     /// Source material substitutions keyed by canonical `materials/...` paths.
@@ -144,11 +168,14 @@ impl Default for ConvertFileOptions {
             material_namespace_paths: HashSet::new(),
             addon_index_map: HashMap::new(),
             translation_maps_dir: None,
+            skin_policy: crate::skin::LegacySkinPolicy::default(),
+            target_skeleton: None,
             auto_skin_reference_body: None,
             emit_first_person: false,
             first_person_reference: None,
             morph_weight_cap: 0.5,
             weapon_role: None,
+            strip_cloth: false,
             source_material_dir: None,
             material_source_overrides: HashMap::new(),
         }
@@ -162,7 +189,9 @@ pub struct ConvertFileReport {
     pub warnings: Vec<String>,
     pub errors: Vec<String>,
     pub emitted_bgsms: Vec<String>,
+    pub emitted_textures: Vec<String>,
     pub emitted_first_person: Option<String>,
+    pub final_dependencies: Option<FinalNifDependencies>,
     pub shapes_skinned: usize,
     pub vertices_repacked: usize,
     pub bones_remapped: usize,
@@ -170,6 +199,27 @@ pub struct ConvertFileReport {
     pub weights_redistributed: usize,
     pub vertices_morph_weighted: usize,
     pub timings_ms: Vec<(String, u64)>,
+}
+
+#[derive(Debug, Clone)]
+pub struct FinalNifDependencies {
+    pub digest: [u8; 32],
+    pub materials: Vec<String>,
+}
+
+impl FinalNifDependencies {
+    pub fn capture(nif: &NifFile, bytes: &[u8]) -> Self {
+        Self {
+            digest: *blake3::hash(bytes).as_bytes(),
+            materials: nif.referenced_asset_paths().materials,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct PlannedTextureEmission {
+    target_path: PathBuf,
+    target_relative_path: String,
 }
 
 impl ConvertFileReport {
@@ -189,6 +239,123 @@ pub enum ConvertFileError {
     Io(#[from] std::io::Error),
     #[error("legacy skin conversion: {0}")]
     LegacySkin(#[from] crate::skin::ConvertLegacySkinError),
+    #[error("preserve-source-rig conversion rejected {path}: {reason}")]
+    PreserveSourceRig { path: PathBuf, reason: String },
+    #[error("invalid source-rig target-relative path {path:?}: {reason}")]
+    InvalidSourceRigTargetPath { path: String, reason: String },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceRigNifKind {
+    Body,
+    Skeleton,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceRigNifOutputProvenance {
+    PreserveSourceRigConversion,
+}
+
+#[derive(Debug, Clone)]
+pub struct SourceRigNifStageReceipt {
+    pub kind: SourceRigNifKind,
+    pub output_provenance: SourceRigNifOutputProvenance,
+    pub source_path: PathBuf,
+    pub staged_target_path: PathBuf,
+    pub target_relative_path: String,
+    pub output_len: u64,
+    pub output_fingerprint: u64,
+    pub report: ConvertFileReport,
+}
+
+pub fn stage_preserve_source_rig_nif(
+    kind: SourceRigNifKind,
+    source_path: &Path,
+    staged_target_path: &Path,
+    target_relative_path: &str,
+    source_game: &str,
+    bgsm_output_dir: Option<&Path>,
+    base_options: &ConvertFileOptions,
+) -> Result<SourceRigNifStageReceipt, ConvertFileError> {
+    let target_relative_path = normalize_source_rig_target_path(target_relative_path)?;
+    let mut options = base_options.clone();
+    options.skin_policy = crate::skin::LegacySkinPolicy::PreserveSourceRig;
+    let report = convert_nif_file(
+        source_path,
+        staged_target_path,
+        source_game,
+        "fo4",
+        bgsm_output_dir,
+        &options,
+    )?;
+    if !report.supported {
+        return Err(ConvertFileError::PreserveSourceRig {
+            path: source_path.to_path_buf(),
+            reason: if report.errors.is_empty() {
+                "conversion did not produce a supported FO4 NIF".to_string()
+            } else {
+                report.errors.join("; ")
+            },
+        });
+    }
+    let output = std::fs::read(staged_target_path)?;
+    Ok(SourceRigNifStageReceipt {
+        kind,
+        output_provenance: SourceRigNifOutputProvenance::PreserveSourceRigConversion,
+        source_path: source_path.to_path_buf(),
+        staged_target_path: staged_target_path.to_path_buf(),
+        target_relative_path,
+        output_len: output.len() as u64,
+        output_fingerprint: output.iter().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(0x100_0000_01b3)
+        }),
+        report,
+    })
+}
+
+fn normalize_source_rig_target_path(path: &str) -> Result<String, ConvertFileError> {
+    if Path::new(path).is_absolute()
+        || path.trim_start().starts_with('/')
+        || path.trim_start().starts_with('\\')
+    {
+        return Err(ConvertFileError::InvalidSourceRigTargetPath {
+            path: path.to_string(),
+            reason: "path must stay relative to the staging root".to_string(),
+        });
+    }
+    let mut parts = Vec::new();
+    for part in path.trim().replace('\\', "/").split('/') {
+        let part = part.trim();
+        if part.is_empty() || part == "." {
+            continue;
+        }
+        if part == ".." || part.contains(':') {
+            return Err(ConvertFileError::InvalidSourceRigTargetPath {
+                path: path.to_string(),
+                reason: "path must stay relative to the staging root".to_string(),
+            });
+        }
+        parts.push(part.to_ascii_lowercase());
+    }
+    if parts.is_empty() {
+        return Err(ConvertFileError::InvalidSourceRigTargetPath {
+            path: path.to_string(),
+            reason: "path is empty".to_string(),
+        });
+    }
+    Ok(parts.join("/"))
+}
+
+pub fn load_skyrim_material_source_nif(
+    source_path: &Path,
+) -> Result<NifFile, crate::io::ReadError> {
+    let source = NifFile::load(source_path.to_path_buf())?;
+    if crate::skyrim::validate_unskinned_geometry(&source).is_err()
+        && let Some((fallback, _)) = crate::skyrim::load_static_tree_fallback(source_path, &source)?
+    {
+        return Ok(fallback);
+    }
+    Ok(source)
 }
 
 pub fn convert_nif_file(
@@ -228,7 +395,11 @@ pub fn convert_nif_file(
     if source_game != target_game
         && !matches!(
             (source_game.as_str(), target_game.as_str()),
-            ("fnv", "fo4") | ("fo3", "fo4") | ("fo76", "fo4") | ("skyrimse", "fo4")
+            ("fnv", "fo4")
+                | ("fo3", "fo4")
+                | ("fo76", "fo4")
+                | ("skyrimse", "fo4")
+                | ("starfield", "fo4")
         )
     {
         report.errors.push(format!(
@@ -249,13 +420,96 @@ pub fn convert_nif_file(
     }
     report.record_timing_ms("preflight", preflight_started);
 
+    if source_game == "starfield" && target_game == "fo4" {
+        let sf_started = Instant::now();
+        let sf_opts = crate::sf_convert::SfConvertOptions {
+            geometries_root: crate::sf_convert::default_geometries_root(src),
+            material_path_rewriter: None,
+        };
+        match crate::sf_convert::convert_starfield_nif(src, dst, &sf_opts) {
+            Ok(sf_report) => {
+                report.supported = true;
+                report.changes.push(format!(
+                    "Starfield BSGeometry -> FO4 BSTriShape: {} shape(s); collision decoded={} fallback={} none={}",
+                    sf_report.shapes,
+                    sf_report.collision_decoded,
+                    sf_report.collision_fallback,
+                    sf_report.collision_none
+                ));
+            }
+            Err(error) => report.errors.push(error),
+        }
+        report.record_timing_ms("sf_convert", sf_started);
+        report.record_timing_ms("total", total_started);
+        return Ok(report);
+    }
+
     let load_started = Instant::now();
-    let mut nif = NifFile::load(src.to_path_buf())?;
+    let mut nif = if source_game == "fo76" && target_game == "fo4" {
+        NifFile::load_for_header_retarget(src.to_path_buf(), &target_game)?
+    } else {
+        NifFile::load(src.to_path_buf())?
+    };
     report.record_timing_ms("load", load_started);
+    let required_legacy_glow_textures =
+        required_legacy_glow_texture_paths(&nif, &source_game, &target_game);
+    let mut planned_texture_emissions = Vec::new();
     let skyrim_to_fo4 = source_game == "skyrimse" && target_game == "fo4";
-    if skyrim_to_fo4 {
+    let defer_legacy_source_rig_ragdoll = should_defer_legacy_source_rig_ragdoll(
+        &nif,
+        &source_game,
+        &target_game,
+        options.skin_policy,
+    );
+    if skyrim_to_fo4
+        && nif
+            .blocks
+            .iter()
+            .any(|block| block.type_name == "BSTreeNode")
+    {
         if let Err(error) = crate::skyrim::validate_unskinned_geometry(&nif) {
+            match crate::skyrim::load_static_tree_fallback(src, &nif)? {
+                Some((fallback, fallback_path)) => {
+                    nif = fallback;
+                    report.changes.push(format!(
+                        "Skyrim tree skinning: used static switch child {}",
+                        fallback_path.display()
+                    ));
+                }
+                None => {
+                    report.errors.push(error);
+                    report.record_timing_ms("total", total_started);
+                    return Ok(report);
+                }
+            }
+        }
+    }
+    if skyrim_to_fo4 {
+        if let Err(error) = crate::skyrim::validate_supported_geometry(&nif) {
+            if matches!(
+                options.skin_policy,
+                crate::skin::LegacySkinPolicy::PreserveSourceRig
+            ) {
+                return Err(ConvertFileError::PreserveSourceRig {
+                    path: src.to_path_buf(),
+                    reason: error,
+                });
+            }
             report.errors.push(error);
+            report.record_timing_ms("total", total_started);
+            return Ok(report);
+        }
+        if crate::skyrim::contains_skinned_geometry(&nif)
+            && matches!(
+                options.skin_policy,
+                crate::skin::LegacySkinPolicy::TranslateSkeleton
+            )
+            && options.translation_maps_dir.is_none()
+        {
+            report.errors.push(
+                "Skyrim skinned NIF conversion requires translation_maps_dir for skeleton remapping"
+                    .to_string(),
+            );
             report.record_timing_ms("total", total_started);
             return Ok(report);
         }
@@ -265,6 +519,18 @@ pub fn convert_nif_file(
         retarget_header(&mut nif, &target_game, &mut report);
         report.record_timing_ms("retarget_header", step_started);
         if skyrim_to_fo4 {
+            let step_started = Instant::now();
+            run_legacy_skin_conversion(
+                &mut nif,
+                src,
+                &source_game,
+                &target_game,
+                options,
+                &mut report,
+            )?;
+            mark_skinned_shape_shaders(&mut nif);
+            report.record_timing_ms("skyrim_skin_conversion", step_started);
+
             let step_started = Instant::now();
             let normalized = crate::skyrim::normalize_static_geometry(&mut nif);
             if normalized > 0 {
@@ -321,16 +587,40 @@ pub fn convert_nif_file(
             report.record_timing_ms("skyrim_fo4_shader_defaults", step_started);
 
             let step_started = Instant::now();
-            let collision_report = crate::skyrim_collision::bridge_static_collision(&mut nif);
+            let preserve_source_rig = matches!(
+                options.skin_policy,
+                crate::skin::LegacySkinPolicy::PreserveSourceRig
+            );
+            let had_active_legacy_collision = !preserve_source_rig
+                && matches!(weapon_role, Some("melee"))
+                && nif.blocks.iter().any(|block| {
+                    block.type_name == "bhkCollisionObject"
+                        && value_u64(block.get_field("Flags"))
+                            .is_some_and(|flags| flags & 0x01 != 0)
+                });
+            let collision_report = if preserve_source_rig {
+                strip_source_rig_collision(&mut nif)
+            } else {
+                crate::skyrim_collision::bridge_static_collision(&mut nif)
+            };
             if collision_report.converted > 0 || collision_report.stripped > 0 {
                 report.changes.push(format!(
                     "Skyrim static collision: converted {} chain(s), stripped {} unsupported chain(s)",
                     collision_report.converted, collision_report.stripped
                 ));
             }
+            if had_active_legacy_collision && collision_report.stripped > 0 {
+                report.warnings.push(
+                    "Skyrim melee weapon active collision is not FO4-compatible and was stripped; the Havok BSX flag will be cleared when no converted collision remains"
+                        .to_string(),
+                );
+            }
             report.warnings.extend(collision_report.warnings);
             report.record_timing_ms("skyrim_static_collision", step_started);
         } else if source_game == "fo76" && target_game == "fo4" {
+            let step_started = Instant::now();
+            repair_fo76_held_prop_transform(&mut nif, src, &mut report);
+            report.record_timing_ms("fo76_held_prop_transform", step_started);
             let step_started = Instant::now();
             fix_fo76_float_controllers(&mut nif, &mut report);
             report.record_timing_ms("fo76_float_controllers", step_started);
@@ -373,7 +663,15 @@ pub fn convert_nif_file(
             );
             report.record_timing_ms("fo4_external_bgsm_shader_data", step_started);
             let step_started = Instant::now();
-            clear_fo76_invalid_environment_mapping(&mut nif, &mut report);
+            normalize_external_bgem_shader_data_with_overrides(
+                &mut nif,
+                options.source_material_dir.as_deref(),
+                &options.material_source_overrides,
+                &mut report,
+            );
+            report.record_timing_ms("fo4_external_bgem_shader_data", step_started);
+            let step_started = Instant::now();
+            normalize_fo76_environment_mapping(&mut nif, &mut report);
             report.record_timing_ms("fo76_environment_mapping", step_started);
             let step_started = Instant::now();
             rebuild_fo76_np_collision(&mut nif, &mut report);
@@ -385,7 +683,11 @@ pub fn convert_nif_file(
             convert_fo76_havok_blobs(&mut nif, &mut report);
             report.record_timing_ms("fo76_havok_blobs", step_started);
             let step_started = Instant::now();
-            convert_fo76_cloth_blobs(&mut nif, &mut report);
+            if options.strip_cloth {
+                strip_fo76_cloth_blobs(&mut nif, &mut report);
+            } else {
+                convert_fo76_cloth_blobs(&mut nif, &mut report);
+            }
             report.record_timing_ms("fo76_cloth_blobs", step_started);
             let step_started = Instant::now();
             normalize_fo76_headwear_segments(&mut nif, &mut report);
@@ -395,16 +697,50 @@ pub fn convert_nif_file(
             strips_to_tri_shape(&mut nif, &mut report);
             report.record_timing_ms("strips_to_tri_shape", step_started);
             let step_started = Instant::now();
-            run_legacy_skin_conversion(&mut nif, &source_game, &target_game, options, &mut report)?;
+            run_legacy_skin_conversion(
+                &mut nif,
+                src,
+                &source_game,
+                &target_game,
+                options,
+                &mut report,
+            )?;
             report.record_timing_ms("legacy_skin_conversion", step_started);
+            let step_started = Instant::now();
+            let static_shapes = crate::skin::convert_unskinned_legacy_shapes(&mut nif);
+            if static_shapes > 0 {
+                report.changes.push(format!(
+                    "Legacy static geometry -> FO4 geometry: converted {static_shapes} shape(s)"
+                ));
+            }
+            report.record_timing_ms("legacy_static_geometry", step_started);
             let step_started = Instant::now();
             legacy_shader_to_lighting(&mut nif, &mut report);
             report.record_timing_ms("legacy_shader_to_lighting", step_started);
             let step_started = Instant::now();
+            normalize_legacy_particle_systems(&mut nif, &mut report);
+            report.record_timing_ms("legacy_particle_systems", step_started);
+            if matches!(source_game.as_str(), "fnv" | "fo3") && target_game == "fo4" {
+                let step_started = Instant::now();
+                normalize_legacy_furniture_markers(&mut nif, &mut report);
+                report.record_timing_ms("legacy_furniture_markers", step_started);
+            }
+            let step_started = Instant::now();
             mark_skinned_shape_shaders(&mut nif);
             report.record_timing_ms("mark_skinned_shape_shaders", step_started);
             let step_started = Instant::now();
-            regenerate_fo4_collision(&mut nif, &mut report);
+            if defer_legacy_source_rig_ragdoll {
+                let collision_report = strip_source_rig_collision(&mut nif);
+                if collision_report.stripped > 0 {
+                    report.changes.push(format!(
+                        "Legacy source-rig collision: stripped {} deferred ragdoll chain(s)",
+                        collision_report.stripped
+                    ));
+                }
+                report.warnings.extend(collision_report.warnings);
+            } else {
+                regenerate_fo4_collision(&mut nif, &source_game, &mut report);
+            }
             report.record_timing_ms("regenerate_fo4_collision", step_started);
         }
         if !skyrim_to_fo4 {
@@ -436,6 +772,26 @@ pub fn convert_nif_file(
                 &mut report,
             );
             report.record_timing_ms("normalize_texture_sets", step_started);
+            if source_game == "fo76" && target_game == "fo4" {
+                let step_started = Instant::now();
+                normalize_fo76_inline_texture_paths(&mut nif, &mut report);
+                report.record_timing_ms("fo76_inline_texture_paths", step_started);
+            }
+            if matches!(source_game.as_str(), "fnv" | "fo3")
+                && target_game == "fo4"
+                && matches!(weapon_role, Some("melee"))
+            {
+                let step_started = Instant::now();
+                planned_texture_emissions = close_legacy_melee_texture_gaps(
+                    &mut nif,
+                    src,
+                    dst,
+                    bgsm_output_dir,
+                    &required_legacy_glow_textures,
+                    &mut report,
+                )?;
+                report.record_timing_ms("legacy_melee_texture_closure", step_started);
+            }
         }
         if source_game == "fo76" && target_game == "fo4" {
             let step_started = Instant::now();
@@ -444,13 +800,14 @@ pub fn convert_nif_file(
         }
     }
     let step_started = Instant::now();
-    let preserve_scol_root_flags =
-        source_game == "fo76" && target_game == "fo4" && is_scol_aggregate_nif(src, &nif);
+    let preserve_fo76_static_root_flag = source_game == "fo76"
+        && target_game == "fo4"
+        && (is_scol_aggregate_nif(src, &nif) || nif_is_facegen(&nif));
     normalize_fo4_root_node(
         &mut nif,
         weapon_role,
         source_game == "fo76" && target_game == "fo4",
-        preserve_scol_root_flags,
+        preserve_fo76_static_root_flag,
         &mut report,
     );
     report.record_timing_ms("normalize_fo4_root_node", step_started);
@@ -458,22 +815,74 @@ pub fn convert_nif_file(
         let step_started = Instant::now();
         normalize_fo76_fo4_scene_node_flags(&mut nif, &mut report);
         report.record_timing_ms("fo76_fo4_scene_node_flags", step_started);
+    } else if matches!(source_game.as_str(), "fnv" | "fo3") && target_game == "fo4" {
+        let step_started = Instant::now();
+        normalize_legacy_fo4_av_flags(&mut nif, &mut report);
+        report.record_timing_ms("legacy_fo4_av_flags", step_started);
     }
     let step_started = Instant::now();
     patch_addon_node_indices(&mut nif, &options.addon_index_map, &mut report);
     report.record_timing_ms("patch_addon_node_indices", step_started);
+    if source_game == "fo76" && target_game == "fo4" {
+        let step_started = Instant::now();
+        normalize_fo76_animation_contract(&mut nif, &mut report);
+        report.record_timing_ms("fo76_animation_contract", step_started);
+    }
     if target_game == "fo4" {
         let step_started = Instant::now();
         mark_skinned_shape_shaders(&mut nif);
         report.record_timing_ms("mark_skinned_shape_shaders_final", step_started);
+        if source_game == "fo76" {
+            let step_started = Instant::now();
+            deduplicate_fo76_exact_vertices(&mut nif, &mut report);
+            report.record_timing_ms("fo76_exact_vertex_dedup", step_started);
+            let step_started = Instant::now();
+            normalize_fo76_vertex_color_shader_flags(&mut nif, &mut report);
+            report.record_timing_ms("fo76_vertex_color_shader_flags", step_started);
+        }
         let step_started = Instant::now();
         reconcile_havok_bsx_flags(&mut nif, &mut report);
         report.record_timing_ms("reconcile_havok_bsx_flags", step_started);
+        if source_game == "fo76" {
+            let step_started = Instant::now();
+            normalize_fo76_bsx_contract(&mut nif, &mut report);
+            report.record_timing_ms("fo76_bsx_contract", step_started);
+        }
+    }
+    if matches!(source_game.as_str(), "fnv" | "fo3") && target_game == "fo4" {
+        let step_started = Instant::now();
+        prune_legacy_material_controller_links(&mut nif, &mut report);
+        detach_legacy_decal_placement_vector_nodes(&mut nif, &mut report);
+        detach_legacy_blocks_without_fo4_equivalent(&mut nif, &mut report);
+        prune_unreachable_legacy_blocks(&mut nif, &mut report);
+        report.record_timing_ms("prune_legacy_orphans", step_started);
+    }
+
+    if target_game == "fo4" {
+        let step_started = Instant::now();
+        audit_fo4_block_types(&nif, &mut report);
+        report.record_timing_ms("audit_fo4_block_types", step_started);
+        if !report.errors.is_empty() {
+            if matches!(
+                options.skin_policy,
+                crate::skin::LegacySkinPolicy::PreserveSourceRig
+            ) {
+                return Err(ConvertFileError::PreserveSourceRig {
+                    path: src.to_path_buf(),
+                    reason: report.errors.join("; "),
+                });
+            }
+            // Bail before writing: a NIF the runtime cannot load is worse than
+            // no NIF, because it ships as a silent red "!" instead of a failure.
+            report.record_timing_ms("total", total_started);
+            return Ok(report);
+        }
     }
 
     if let Some(parent) = dst.parent() {
         std::fs::create_dir_all(parent)?;
     }
+    emit_planned_textures(&planned_texture_emissions, &mut report)?;
     let save_started = Instant::now();
     let encode_started = Instant::now();
     let bytes = nif.to_bytes()?;
@@ -481,41 +890,97 @@ pub fn convert_nif_file(
     let write_started = Instant::now();
     std::fs::write(dst, &bytes)?;
     report.record_timing_ms("save_write", write_started);
+    if target_game == "fo4" {
+        let dependencies_started = Instant::now();
+        report.final_dependencies = Some(FinalNifDependencies::capture(&nif, &bytes));
+        report.record_timing_ms("capture_dependencies", dependencies_started);
+    }
     nif.path = Some(PathBuf::from(dst));
     report.record_timing_ms("save", save_started);
     let first_person_started = Instant::now();
     emit_first_person_sibling(&nif, dst, &target_game, options, &mut report);
     report.record_timing_ms("emit_first_person_sibling", first_person_started);
     report.supported = true;
+    let cleanup_started = Instant::now();
+    drop(nif);
+    drop(bytes);
+    report.record_timing_ms("cleanup", cleanup_started);
     report.record_timing_ms("total", total_started);
     Ok(report)
 }
 
+pub fn prepare_legacy_face_part_for_fo4(nif: &mut NifFile) -> usize {
+    let converted = crate::skin::convert_unskinned_legacy_shapes(nif);
+    if converted == 0 {
+        return 0;
+    }
+
+    let mut report = ConvertFileReport::default();
+    legacy_shader_to_lighting(nif, &mut report);
+    normalize_texture_sets(nif, "fnv", "fo4", None, &HashSet::new(), &mut report);
+    normalize_legacy_fo4_av_flags(nif, &mut report);
+    normalize_facegen_hair_shaders(nif, &mut report);
+    nif.rebuild_header();
+    converted
+}
+
+pub fn finalize_assembled_facegeom_for_fo4(nif: &mut NifFile) {
+    let mut report = ConvertFileReport::default();
+    normalize_legacy_fo4_av_flags(nif, &mut report);
+    normalize_facegen_hair_shaders(nif, &mut report);
+    nif.rebuild_header();
+}
+
 fn run_legacy_skin_conversion(
     nif: &mut NifFile,
+    source_path: &Path,
     source_game: &str,
     target_game: &str,
     options: &ConvertFileOptions,
     report: &mut ConvertFileReport,
 ) -> Result<(), ConvertFileError> {
-    if target_game != "fo4" || !matches!(source_game, "fnv" | "fo3") {
+    if target_game != "fo4" || !matches!(source_game, "fnv" | "fo3" | "skyrimse") {
         return Ok(());
     }
-    let Some(maps_dir) = options.translation_maps_dir.as_deref() else {
+    if matches!(
+        options.skin_policy,
+        crate::skin::LegacySkinPolicy::TranslateSkeleton
+    ) && options.translation_maps_dir.is_none()
+    {
         return Ok(());
-    };
+    }
 
-    let skin_report = crate::skin::convert_legacy_skin_for_games(
+    let skin_report = crate::skin::convert_legacy_skin_for_games_with_policy(
         nif,
-        maps_dir,
+        options.translation_maps_dir.as_deref(),
         source_game,
         target_game,
         options.auto_skin_reference_body.as_deref(),
         options.morph_weight_cap,
-    )?;
+        options.skin_policy,
+    )
+    .map_err(|error| match error {
+        crate::skin::ConvertLegacySkinError::PreserveSourceRig(reason) => {
+            ConvertFileError::PreserveSourceRig {
+                path: source_path.to_path_buf(),
+                reason,
+            }
+        }
+        other => ConvertFileError::LegacySkin(other),
+    })?;
     if skin_report.shapes_skinned > 0 {
+        let source_label = if matches!(
+            options.skin_policy,
+            crate::skin::LegacySkinPolicy::PreserveSourceRig
+        ) {
+            "Source-rig skin"
+        } else if source_game == "skyrimse" {
+            "Skyrim skin"
+        } else {
+            "Legacy skin"
+        };
         report.changes.push(format!(
-            "Legacy skin -> FO4 skin: skinned {} shape(s), repacked {} vertex/vertices",
+            "{source_label} -> FO4 skin: skinned {} shape(s), repacked {} vertex/vertices",
             skin_report.shapes_skinned, skin_report.vertices_repacked
         ));
     }
@@ -526,7 +991,118 @@ fn run_legacy_skin_conversion(
     report.weights_redistributed += skin_report.weights_redistributed;
     report.vertices_morph_weighted += skin_report.vertices_morph_weighted;
     report.warnings.extend(skin_report.warnings);
+
+    if skin_report.shapes_skinned > 0 {
+        rebind_translated_skin(nif, options, report);
+    }
     Ok(())
+}
+
+/// Recompute translated bind matrices against the target skeleton's rest pose.
+///
+/// Only for `TranslateSkeleton`: the bones were just renamed to target-game
+/// names, but their binds still describe the source rest pose. Creatures
+/// (`PreserveSourceRig`) keep their own rig and are reposed from the other
+/// side by `skeleton_repose`, so they must not be touched here.
+fn rebind_translated_skin(
+    nif: &mut NifFile,
+    options: &ConvertFileOptions,
+    report: &mut ConvertFileReport,
+) {
+    if !matches!(
+        options.skin_policy,
+        crate::skin::LegacySkinPolicy::TranslateSkeleton
+    ) {
+        return;
+    }
+    let Some(skeleton_path) = options.target_skeleton.as_deref() else {
+        report.warnings.push(
+            "Translated skin kept its source-game bind matrices: no target_skeleton supplied"
+                .to_string(),
+        );
+        return;
+    };
+    let skeleton = match NifFile::load(skeleton_path) {
+        Ok(skeleton) => skeleton,
+        Err(error) => {
+            report.warnings.push(format!(
+                "Translated skin kept its source-game bind matrices: load {} failed: {error}",
+                skeleton_path.display()
+            ));
+            return;
+        }
+    };
+
+    let rebind = crate::skeleton_repose::rebind_skin_to_skeleton(nif, &skeleton);
+    if rebind.rebound > 0 {
+        report.changes.push(format!(
+            "Skin rebind -> target skeleton rest pose: {} bind matrix/matrices",
+            rebind.rebound
+        ));
+    }
+    if !rebind.unmatched.is_empty() {
+        report.warnings.push(format!(
+            "Skin rebind: {} bone(s) absent from {} kept their source bind: {}",
+            rebind.unmatched.len(),
+            skeleton_path.display(),
+            rebind.unmatched.join(", ")
+        ));
+    }
+}
+
+fn strip_source_rig_collision(nif: &mut NifFile) -> crate::skyrim_collision::SkyrimCollisionReport {
+    let remove = nif
+        .blocks
+        .iter()
+        .filter(|block| block.type_name.starts_with("bhk"))
+        .map(|block| block.block_id)
+        .collect::<Vec<_>>();
+    if remove.is_empty() {
+        return crate::skyrim_collision::SkyrimCollisionReport::default();
+    }
+    let stripped = nif
+        .blocks
+        .iter()
+        .filter(|block| {
+            matches!(
+                block.type_name.as_str(),
+                "bhkCollisionObject"
+                    | "bhkBlendCollisionObject"
+                    | "bhkPCollisionObject"
+                    | "bhkSPCollisionObject"
+            )
+        })
+        .count();
+    nif.remove_blocks(&remove);
+    crate::skyrim_collision::SkyrimCollisionReport {
+        converted: 0,
+        stripped,
+        warnings: vec![
+            "Preserve-source-rig skin policy stripped legacy creature collision; ragdoll conversion is a separate gate"
+                .to_string(),
+        ],
+    }
+}
+
+fn should_defer_legacy_source_rig_ragdoll(
+    nif: &NifFile,
+    source_game: &str,
+    target_game: &str,
+    skin_policy: crate::skin::LegacySkinPolicy,
+) -> bool {
+    matches!(source_game, "fnv" | "fo3")
+        && target_game == "fo4"
+        && matches!(
+            skin_policy,
+            crate::skin::LegacySkinPolicy::PreserveSourceRig
+        )
+        && (crate::skyrim::contains_skinned_geometry(nif)
+            || nif.blocks.iter().any(|block| {
+                matches!(
+                    block.type_name.as_str(),
+                    "bhkBlendCollisionObject" | "bhkRagdollConstraint"
+                )
+            }))
 }
 
 fn emit_first_person_sibling(
@@ -559,18 +1135,20 @@ fn emit_first_person_sibling(
 /// Reconcile every `BSValueNode` addon-node block.
 ///
 /// Runs unconditionally (not gated on a non-empty `index_map`) because FO76
-/// names carry a `@#N` suffix that FO4 rejects — even a node with no index
-/// remap must have its name normalized to plain `AddOnNode<digits>`.
+/// names can carry whitespace before the index. The `@#N` suffix is identity:
+/// several distinct nodes can share one numeric add-on index, so it must survive
+/// normalization and remapping.
 ///
-/// * mapped (`index_map[old]` present) → `Value = new`, `Name = AddOnNode<new>`;
-/// * unmapped → `Value = old`, `Name = AddOnNode<original_digits>` (strips the
-///   `@…` suffix, preserves zero-padding). Already-clean FO4 nodes with matching
-///   values are a no-op.
+/// * mapped (`index_map[old]` present) → `Value = new`, numeric name portion =
+///   `AddOnNode<new>`, original suffix preserved;
+/// * unmapped → `Value = old`, canonical prefix + original digits and suffix.
+///   Already-clean nodes with matching values are a no-op.
 fn patch_addon_node_indices(
     nif: &mut NifFile,
     index_map: &HashMap<i64, i64>,
     report: &mut ConvertFileReport,
 ) {
+    let mut renamed_nodes = HashMap::new();
     for block in &mut nif.blocks {
         if block.type_name != "BSValueNode" {
             continue;
@@ -583,14 +1161,18 @@ fn patch_addon_node_indices(
         };
         match index_map.get(&old_index).copied() {
             Some(new_index) => {
+                let normalized = normalized_addon_node_name(&name, &new_index.to_string());
                 block.set_field("Value", NifValue::Int(new_index));
-                block.set_field("Name", NifValue::String(format!("AddOnNode{new_index}")));
+                block.set_field("Name", NifValue::String(normalized.clone()));
+                if normalized != name {
+                    renamed_nodes.insert(name.clone(), normalized);
+                }
                 report.changes.push(format!(
                     "BSValueNode AddOnNode{old_index} -> AddOnNode{new_index} (Value {old_index} -> {new_index})"
                 ));
             }
             None => {
-                let normalized = format!("AddOnNode{digits}");
+                let normalized = normalized_addon_node_name(&name, digits);
                 let current_value = int_field(block, "Value");
                 if current_value != Some(old_index) {
                     block.set_field("Value", NifValue::Int(old_index));
@@ -602,35 +1184,334 @@ fn patch_addon_node_indices(
                     ));
                 }
                 if normalized != name {
-                    report.changes.push(format!(
-                        "BSValueNode {name} -> {normalized} (@ suffix stripped)"
-                    ));
-                    block.set_field("Name", NifValue::String(normalized));
+                    report
+                        .changes
+                        .push(format!("BSValueNode {name} -> {normalized}"));
+                    block.set_field("Name", NifValue::String(normalized.clone()));
+                    renamed_nodes.insert(name, normalized);
                 }
             }
         }
     }
+
+    if renamed_nodes.is_empty() {
+        return;
+    }
+
+    let mut references = 0usize;
+    for block in &mut nif.blocks {
+        if block.type_name == "NiControllerSequence" {
+            if let Some(NifValue::String(name)) = block.get_field("Accum Root Name").cloned()
+                && let Some(normalized) = renamed_nodes.get(&name)
+            {
+                block.set_field("Accum Root Name", NifValue::String(normalized.clone()));
+                references += 1;
+            }
+            if let Some(NifValue::Array(mut entries)) =
+                block.get_field("Controlled Blocks").cloned()
+            {
+                let mut changed = false;
+                for entry in &mut entries {
+                    let NifValue::Struct(fields) = entry else {
+                        continue;
+                    };
+                    let Some(NifValue::String(name)) = fields.get("Node Name") else {
+                        continue;
+                    };
+                    let Some(normalized) = renamed_nodes.get(name) else {
+                        continue;
+                    };
+                    fields.insert(
+                        "Node Name".to_string(),
+                        NifValue::String(normalized.clone()),
+                    );
+                    changed = true;
+                    references += 1;
+                }
+                if changed {
+                    block.set_field("Controlled Blocks", NifValue::Array(entries));
+                }
+            }
+        } else if block.type_name == "NiDefaultAVObjectPalette"
+            && let Some(NifValue::Array(mut entries)) = block.get_field("Objs").cloned()
+        {
+            let mut changed = false;
+            for entry in &mut entries {
+                let NifValue::Struct(fields) = entry else {
+                    continue;
+                };
+                let Some(NifValue::String(name)) = fields.get("Name") else {
+                    continue;
+                };
+                let Some(normalized) = renamed_nodes.get(name) else {
+                    continue;
+                };
+                fields.insert("Name".to_string(), NifValue::String(normalized.clone()));
+                changed = true;
+                references += 1;
+            }
+            if changed {
+                block.set_field("Objs", NifValue::Array(entries));
+            }
+        }
+    }
+    if references > 0 {
+        report.changes.push(format!(
+            "BSValueNode: propagated add-on node renames to {references} animation name reference(s)"
+        ));
+    }
 }
 
-/// Parse a `BSValueNode` name of the form `AddOnNode<digits>[@…]`.
+fn normalize_fo76_animation_contract(nif: &mut NifFile, report: &mut ConvertFileReport) {
+    let manager_ids = nif
+        .blocks
+        .iter()
+        .filter(|block| block.type_name == "NiControllerManager")
+        .map(|block| block.block_id)
+        .collect::<Vec<_>>();
+    let reachable_before =
+        (!manager_ids.is_empty()).then(|| reachable_block_ids_excluding(nif, &HashSet::new()));
+    let mut names = HashMap::new();
+    for block in nif
+        .blocks
+        .iter()
+        .filter(|block| crate::schema::SCHEMA.is_subtype_of(&block.type_name, "NiAVObject"))
+    {
+        if let Some(name) = string_field(block, "Name").filter(|name| !name.is_empty()) {
+            names.entry(name).or_insert(block.block_id);
+        }
+    }
+
+    let mut target_repairs = Vec::new();
+    for owner in &nif.blocks {
+        if !crate::schema::SCHEMA.is_subtype_of(&owner.type_name, "NiObjectNET") {
+            continue;
+        }
+        let mut controller = field_ref(owner, "Controller").unwrap_or(-1);
+        let mut seen = HashSet::new();
+        while controller >= 0 && seen.insert(controller) {
+            let Some(controller_block) = nif.get_block(controller as usize) else {
+                break;
+            };
+            if !crate::schema::SCHEMA.is_subtype_of(&controller_block.type_name, "NiTimeController")
+            {
+                break;
+            }
+            if field_ref(controller_block, "Target") != Some(owner.block_id as i32) {
+                target_repairs.push((controller as usize, owner.block_id));
+            }
+            controller = field_ref(controller_block, "Next Controller").unwrap_or(-1);
+        }
+    }
+    for (controller_id, target_id) in &target_repairs {
+        if let Some(controller) = nif.blocks.get_mut(*controller_id) {
+            controller.set_field("Target", NifValue::Ref(*target_id as i32));
+        }
+    }
+
+    let mut manager_links = 0usize;
+    let mut invalid_entries = 0usize;
+    let mut sorted_sequences = 0usize;
+    let mut accum_roots = 0usize;
+    let mut palettes = 0usize;
+    let mut extra_targets = 0usize;
+
+    for manager_id in manager_ids {
+        let Some(manager) = nif.get_block(manager_id) else {
+            continue;
+        };
+        let manager_target = field_ref(manager, "Target")
+            .filter(|target| *target >= 0)
+            .map(|target| target as usize);
+        let manager_target_name = manager_target
+            .and_then(|target| nif.get_block(target))
+            .and_then(|target| string_field(target, "Name"));
+        let sequence_ids = ref_array(manager.get_field("Controller Sequences"));
+        let palette_id = field_ref(manager, "Object Palette")
+            .filter(|target| *target >= 0)
+            .map(|target| target as usize);
+        let multitarget_id = field_ref(manager, "Next Controller")
+            .filter(|target| *target >= 0)
+            .map(|target| target as usize);
+        let mut controlled_targets = BTreeSet::new();
+
+        for sequence_id in sequence_ids {
+            let sequence_id = sequence_id as usize;
+            let Some(sequence) = nif.get_block(sequence_id) else {
+                continue;
+            };
+            if sequence.type_name != "NiControllerSequence" {
+                continue;
+            }
+            let update_manager = sequence.get_field("Manager").is_some()
+                && field_ref(sequence, "Manager") != Some(manager_id as i32);
+            let update_accum_root = manager_target_name.as_ref().is_some_and(|target_name| {
+                string_field(sequence, "Accum Root Name").as_deref() != Some(target_name)
+            });
+            let entries = value_array(sequence.get_field("Controlled Blocks"));
+            let old_len = entries.len();
+            let mut valid = entries
+                .into_iter()
+                .filter_map(|entry| {
+                    let target = fo76_controlled_block_target(&entry, &names)?;
+                    controlled_targets.insert(target);
+                    Some((target, entry))
+                })
+                .collect::<Vec<_>>();
+            invalid_entries += old_len - valid.len();
+            let old_order = valid.iter().map(|(target, _)| *target).collect::<Vec<_>>();
+            valid.sort_by_key(|(target, _)| *target);
+            if old_order != valid.iter().map(|(target, _)| *target).collect::<Vec<_>>() {
+                sorted_sequences += 1;
+            }
+            let entries = valid
+                .into_iter()
+                .map(|(_, entry)| entry)
+                .collect::<Vec<_>>();
+            let sequence = &mut nif.blocks[sequence_id];
+            if update_manager {
+                sequence.set_field("Manager", NifValue::Ref(manager_id as i32));
+                manager_links += 1;
+            }
+            if update_accum_root {
+                sequence.set_field(
+                    "Accum Root Name",
+                    NifValue::String(manager_target_name.clone().unwrap_or_default()),
+                );
+                accum_roots += 1;
+            }
+            sequence.set_field(
+                "Num Controlled Blocks",
+                NifValue::UInt(entries.len() as u64),
+            );
+            sequence.set_field("Controlled Blocks", NifValue::Array(entries));
+        }
+
+        let target_ids = controlled_targets.into_iter().collect::<Vec<_>>();
+        let objects = target_ids
+            .iter()
+            .filter_map(|target| {
+                let target_block = nif.get_block(*target)?;
+                let name = string_field(target_block, "Name")?;
+                Some(NifValue::Struct(IndexMap::from([
+                    ("Name".to_string(), NifValue::String(name)),
+                    ("AV Object".to_string(), NifValue::Ref(*target as i32)),
+                ])))
+            })
+            .collect::<Vec<_>>();
+        let palette_id = palette_id
+            .filter(|palette_id| {
+                nif.get_block(*palette_id)
+                    .is_some_and(|palette| palette.type_name == "NiDefaultAVObjectPalette")
+            })
+            .or_else(|| {
+                (!target_ids.is_empty()).then(|| {
+                    let palette_id = nif.add_block("NiDefaultAVObjectPalette", None);
+                    nif.blocks[manager_id]
+                        .set_field("Object Palette", NifValue::Ref(palette_id as i32));
+                    palette_id
+                })
+            });
+        if let Some(palette_id) = palette_id {
+            let palette_differs = nif
+                .get_block(palette_id)
+                .and_then(|palette| palette.get_field("Objs"))
+                != Some(&NifValue::Array(objects.clone()));
+            if palette_differs && let Some(palette) = nif.blocks.get_mut(palette_id) {
+                palette.set_field("Num Objs", NifValue::UInt(objects.len() as u64));
+                palette.set_field("Objs", NifValue::Array(objects));
+                palettes += 1;
+            }
+        }
+
+        if let Some(multitarget_id) = multitarget_id
+            && nif
+                .get_block(multitarget_id)
+                .is_some_and(|block| block.type_name == "NiMultiTargetTransformController")
+        {
+            let current = nif
+                .get_block(multitarget_id)
+                .and_then(|block| block.get_field("Extra Targets"))
+                .map(|value| ref_array(Some(value)))
+                .unwrap_or_default();
+            if current.iter().any(|target| *target < 0)
+                && current
+                    .iter()
+                    .filter_map(|target| usize::try_from(*target).ok())
+                    .collect::<BTreeSet<_>>()
+                    == target_ids.iter().copied().collect::<BTreeSet<_>>()
+            {
+                continue;
+            }
+            let targets = target_ids
+                .iter()
+                .map(|target| NifValue::Ref(*target as i32))
+                .collect::<Vec<_>>();
+            let differs = nif
+                .get_block(multitarget_id)
+                .and_then(|block| block.get_field("Extra Targets"))
+                != Some(&NifValue::Array(targets.clone()));
+            if differs && let Some(multitarget) = nif.blocks.get_mut(multitarget_id) {
+                multitarget.set_field("Num Extra Targets", NifValue::UInt(targets.len() as u64));
+                multitarget.set_field("Extra Targets", NifValue::Array(targets));
+                extra_targets += 1;
+            }
+        }
+    }
+
+    if invalid_entries > 0 {
+        let reachable_after = reachable_block_ids_excluding(nif, &HashSet::new());
+        let newly_unreachable = reachable_before
+            .expect("invalid controller entries require a controller manager")
+            .difference(&reachable_after)
+            .copied()
+            .collect::<HashSet<_>>();
+        remove_blocks(nif, newly_unreachable);
+    }
+
+    let total = target_repairs.len()
+        + manager_links
+        + invalid_entries
+        + sorted_sequences
+        + accum_roots
+        + palettes
+        + extra_targets;
+    if total > 0 {
+        report.changes.push(format!(
+            "Animation contract: targets={} manager-links={manager_links} invalid-blocks={invalid_entries} sorted={sorted_sequences} accumulation-roots={accum_roots} palettes={palettes} extra-targets={extra_targets}",
+            target_repairs.len()
+        ));
+    }
+}
+
+fn fo76_controlled_block_target(entry: &NifValue, names: &HashMap<String, usize>) -> Option<usize> {
+    let NifValue::Struct(fields) = entry else {
+        return None;
+    };
+    fields
+        .get("Node Name")
+        .and_then(nif_value_string)
+        .filter(|name| !name.is_empty())
+        .and_then(|name| names.get(name).copied())
+}
+
+/// Parse a `BSValueNode` name of the form `AddOnNode[whitespace]<digits>[@…]`.
 ///
 /// Returns `(index, digit_substring)` where the digit substring preserves the
 /// original zero-padding and excludes any FO76-only `@…` suffix (e.g.
 /// `"AddOnNode078@#0"` → `(78, "078")`). Returns `None` when the name isn't an
 /// addon node or carries no leading digits.
 fn addon_node_index(name: &str) -> Option<(i64, &str)> {
-    let prefix = "addonnode";
-    if !name.get(..prefix.len())?.eq_ignore_ascii_case(prefix) {
-        return None;
-    }
-    let rest = name.get(prefix.len()..)?;
+    crate::validation::parse_addon_node_index(name)
+}
+
+fn normalized_addon_node_name(name: &str, digits: &str) -> String {
+    let rest = name
+        .get("addonnode".len()..)
+        .unwrap_or_default()
+        .trim_start();
     let digit_len = rest.bytes().take_while(u8::is_ascii_digit).count();
-    if digit_len == 0 {
-        return None;
-    }
-    let digits = &rest[..digit_len];
-    let index = digits.parse::<i64>().ok()?;
-    Some((index, digits))
+    format!("AddOnNode{digits}{}", &rest[digit_len..])
 }
 
 fn copy_file(src: &Path, dst: &Path) -> Result<(), std::io::Error> {
@@ -642,7 +1523,13 @@ fn copy_file(src: &Path, dst: &Path) -> Result<(), std::io::Error> {
 }
 
 fn has_nif_header(path: &Path) -> Result<bool, std::io::Error> {
-    let bytes = std::fs::read(path)?;
+    use std::io::Read;
+
+    const PREFIX_BYTES: u64 = b"NetImmerse File Format".len() as u64;
+    let mut bytes = Vec::with_capacity(PREFIX_BYTES as usize);
+    std::fs::File::open(path)?
+        .take(PREFIX_BYTES)
+        .read_to_end(&mut bytes)?;
     Ok(bytes.starts_with(b"Gamebryo File Format") || bytes.starts_with(b"NetImmerse File Format"))
 }
 
@@ -750,7 +1637,7 @@ fn strip_fo76_position_data(nif: &mut NifFile, report: &mut ConvertFileReport) {
 
     let mut sorted_remove_ids: Vec<usize> = remove_ids.iter().copied().collect();
     sorted_remove_ids.sort_unstable();
-    nif.remove_blocks(&sorted_remove_ids);
+    remove_blocks(nif, remove_ids);
     report.changes.push(format!(
         "Removed {} FO76 BSPositionData block(s) from FO4 NIF output",
         sorted_remove_ids.len()
@@ -1123,6 +2010,7 @@ fn strips_to_tri_shape(nif: &mut NifFile, report: &mut ConvertFileReport) {
                 "NiAlphaProperty" => alpha_ref = prop_ref,
                 "TallGrassShaderProperty"
                 | "BSShaderPPLightingProperty"
+                | "BSShaderNoLightingProperty"
                 | "BSLightingShaderProperty"
                 | "BSEffectShaderProperty"
                 | "Lighting30ShaderProperty" => shader_ref = prop_ref,
@@ -1186,7 +2074,7 @@ fn strips_to_tri_shape(nif: &mut NifFile, report: &mut ConvertFileReport) {
         fields.insert("Triangles".to_string(), NifValue::Array(triangles));
 
         let new_shape_id = nif.add_block("BSTriShape", Some(fields));
-        replace_child_ref(nif, strip_id as i32, new_shape_id as i32);
+        replace_block_ref(nif, strip_id as i32, new_shape_id as i32);
         remove.insert(strip_id);
         remove.insert(data_ref as usize);
         converted += 1;
@@ -1316,6 +2204,7 @@ fn legacy_shader_to_lighting(nif: &mut NifFile, report: &mut ConvertFileReport) 
     let mut remove: HashSet<usize> = HashSet::new();
     let mut converted_grass = 0usize;
     let mut converted_pp = 0usize;
+    let mut converted_unlit = 0usize;
 
     let shader_ids: Vec<usize> = nif
         .blocks
@@ -1323,7 +2212,9 @@ fn legacy_shader_to_lighting(nif: &mut NifFile, report: &mut ConvertFileReport) 
         .filter(|block| {
             matches!(
                 block.type_name.as_str(),
-                "TallGrassShaderProperty" | "BSShaderPPLightingProperty"
+                "TallGrassShaderProperty"
+                    | "BSShaderPPLightingProperty"
+                    | "BSShaderNoLightingProperty"
             )
         })
         .map(|block| block.block_id)
@@ -1333,20 +2224,35 @@ fn legacy_shader_to_lighting(nif: &mut NifFile, report: &mut ConvertFileReport) 
         let Some(shader) = nif.get_block(shader_id).cloned() else {
             continue;
         };
-        let new_id = if shader.type_name == "TallGrassShaderProperty" {
-            converted_grass += 1;
-            convert_tall_grass(nif, &shader)
-        } else {
-            converted_pp += 1;
-            let lighting_id = convert_pp_lighting(nif, &shader);
-            if let Some(material_id) = direct_materials.get(&shader.block_id) {
-                if let Some(material) = nif.get_block(*material_id).cloned() {
-                    if let Some(lighting) = nif.blocks.get_mut(lighting_id) {
-                        apply_material(lighting, &material);
-                    }
-                }
+        let material = direct_materials
+            .get(&shader.block_id)
+            .and_then(|material_id| nif.get_block(*material_id))
+            .cloned();
+        let new_id = match shader.type_name.as_str() {
+            "TallGrassShaderProperty" => {
+                converted_grass += 1;
+                convert_tall_grass(nif, &shader)
             }
-            lighting_id
+            "BSShaderPPLightingProperty" => {
+                converted_pp += 1;
+                let lighting_id = convert_pp_lighting(nif, &shader);
+                if let (Some(material), Some(lighting)) =
+                    (material.as_ref(), nif.blocks.get_mut(lighting_id))
+                {
+                    apply_material(lighting, material);
+                }
+                lighting_id
+            }
+            "BSShaderNoLightingProperty" => {
+                converted_unlit += 1;
+                convert_no_lighting_effect(
+                    nif,
+                    &shader,
+                    material.as_ref(),
+                    legacy_shader_uses_vertex_colors(nif, shader.block_id),
+                )
+            }
+            _ => continue,
         };
         remap.insert(shader_id, new_id);
         remove.insert(shader_id);
@@ -1367,6 +2273,40 @@ fn legacy_shader_to_lighting(nif: &mut NifFile, report: &mut ConvertFileReport) 
         }
     }
 
+    let particle_bindings = nif
+        .blocks
+        .iter()
+        .filter(|block| {
+            matches!(
+                block.type_name.as_str(),
+                "NiParticleSystem" | "NiMeshParticleSystem"
+            )
+        })
+        .map(|block| {
+            let properties = ref_array(block.get_field("Properties"));
+            let shader = properties
+                .iter()
+                .find_map(|property| remap.get(&(*property as usize)).copied())
+                .map(|id| id as i32)
+                .unwrap_or(-1);
+            let alpha = properties
+                .iter()
+                .find(|property| {
+                    nif.get_block(**property as usize)
+                        .is_some_and(|block| block.type_name == "NiAlphaProperty")
+                })
+                .copied()
+                .unwrap_or(-1);
+            (block.block_id, shader, alpha)
+        })
+        .collect::<Vec<_>>();
+    for (block_id, shader, alpha) in particle_bindings {
+        if let Some(block) = nif.blocks.get_mut(block_id) {
+            block.set_field("Shader Property", NifValue::Ref(shader));
+            block.set_field("Alpha Property", NifValue::Ref(alpha));
+        }
+    }
+
     for block in nif.blocks.iter() {
         if block.type_name == "NiMaterialProperty" {
             remove.insert(block.block_id);
@@ -1374,11 +2314,339 @@ fn legacy_shader_to_lighting(nif: &mut NifFile, report: &mut ConvertFileReport) 
     }
     remove_blocks(nif, remove);
 
-    if converted_grass > 0 || converted_pp > 0 {
+    if converted_grass > 0 || converted_pp > 0 || converted_unlit > 0 {
         report.changes.push(format!(
-            "Legacy shader properties -> BSLightingShaderProperty: {converted_grass} grass + {converted_pp} pp-lighting"
+            "Legacy shader properties -> FO4 shaders: {converted_grass} grass + {converted_pp} pp-lighting + {converted_unlit} unlit-effect"
         ));
     }
+}
+
+fn legacy_shader_uses_vertex_colors(nif: &NifFile, shader_id: usize) -> bool {
+    nif.blocks
+        .iter()
+        .any(|block| match block.type_name.as_str() {
+            "BSTriShape" | "BSSubIndexTriShape" => {
+                field_ref(block, "Shader Property") == Some(shader_id as i32)
+                    && value_u64(block.get_field("Vertex Desc"))
+                        .is_some_and(|desc| desc & ((VF_VERTEX_COLORS as u64) << 44) != 0)
+            }
+            "NiParticleSystem" | "NiMeshParticleSystem" => {
+                if !ref_array(block.get_field("Properties")).contains(&(shader_id as i32)) {
+                    return false;
+                }
+                field_ref(block, "Data")
+                    .filter(|id| *id >= 0)
+                    .and_then(|id| nif.get_block(id as usize))
+                    .and_then(|data| data.get_field("Has Vertex Colors"))
+                    .is_some_and(|value| match value {
+                        NifValue::Bool(value) => *value,
+                        value => value.as_i64() != 0,
+                    })
+            }
+            _ => false,
+        })
+}
+
+fn convert_no_lighting_effect(
+    nif: &mut NifFile,
+    block: &NifBlock,
+    material: Option<&NifBlock>,
+    uses_vertex_colors: bool,
+) -> usize {
+    let source_flags_1 = value_u64(block.get_field("Shader Flags"))
+        .unwrap_or_else(|| flag_names_to_bits(block.get_field("Shader Flags"), true));
+    let source_flags_2 = value_u64(block.get_field("Shader Flags 2"))
+        .unwrap_or_else(|| flag_names_to_bits(block.get_field("Shader Flags 2"), false));
+    let mut flags_1 = source_flags_1
+        & (SLSF1_SPECULAR
+            | SLSF1_SKINNED
+            | SLSF1_VERTEX_ALPHA
+            | SLSF1_ENVIRONMENT_MAPPING
+            | (1 << 15)
+            | SLSF1_HAIR
+            | SLSF1_DECAL
+            | SLSF1_DYNAMIC_DECAL
+            | (1 << 29)
+            | SLSF1_ZBUFFER_TEST);
+    if source_flags_1 & (1 << 8) != 0 || legacy_flag_name_present(block, "Alpha_Texture") {
+        flags_1 |= SLSF1_VERTEX_ALPHA;
+    }
+    let mut flags_2 =
+        source_flags_2 & (SLSF2_ZBUFFER_WRITE as u64 | (1 << 3) | SLSF2_VERTEX_COLORS as u64);
+    if uses_vertex_colors {
+        flags_2 |= SLSF2_VERTEX_COLORS as u64;
+    }
+
+    let alpha = material
+        .and_then(|material| value_f64(material.get_field("Alpha")))
+        .unwrap_or(1.0) as f32;
+    let mut fields = IndexMap::new();
+    fields.insert(
+        "Name".to_string(),
+        NifValue::String(string_field(block, "Name").unwrap_or_default()),
+    );
+    fields.insert("Num Extra Data List".to_string(), NifValue::UInt(0));
+    fields.insert("Extra Data List".to_string(), NifValue::Array(Vec::new()));
+    fields.insert(
+        "Controller".to_string(),
+        block
+            .get_field("Controller")
+            .cloned()
+            .unwrap_or(NifValue::Ref(-1)),
+    );
+    fields.insert("Shader Flags 1".to_string(), NifValue::UInt(flags_1));
+    fields.insert("Shader Flags 1:FO4".to_string(), NifValue::UInt(flags_1));
+    fields.insert("Shader Flags 2".to_string(), NifValue::UInt(flags_2));
+    fields.insert("Shader Flags 2:FO4".to_string(), NifValue::UInt(flags_2));
+    fields.insert("UV Offset".to_string(), tex_coord([0.0, 0.0]));
+    fields.insert("UV Scale".to_string(), tex_coord([1.0, 1.0]));
+    fields.insert(
+        "Source Texture".to_string(),
+        NifValue::String(string_field(block, "File Name").unwrap_or_default()),
+    );
+    fields.insert(
+        "Texture Clamp Mode".to_string(),
+        NifValue::UInt(value_u64(block.get_field("Texture Clamp Mode")).unwrap_or(3)),
+    );
+    fields.insert("Lighting Influence".to_string(), NifValue::UInt(255));
+    fields.insert("Env Map Min LOD".to_string(), NifValue::UInt(0));
+    fields.insert("Unused Byte".to_string(), NifValue::UInt(0));
+    fields.insert(
+        "Falloff Start Angle".to_string(),
+        NifValue::Float(value_f64(block.get_field("Falloff Start Angle")).unwrap_or(1.0)),
+    );
+    fields.insert(
+        "Falloff Stop Angle".to_string(),
+        NifValue::Float(value_f64(block.get_field("Falloff Stop Angle")).unwrap_or(1.0)),
+    );
+    fields.insert(
+        "Falloff Start Opacity".to_string(),
+        NifValue::Float(value_f64(block.get_field("Falloff Start Opacity")).unwrap_or(1.0)),
+    );
+    fields.insert(
+        "Falloff Stop Opacity".to_string(),
+        NifValue::Float(value_f64(block.get_field("Falloff Stop Opacity")).unwrap_or(0.0)),
+    );
+    fields.insert(
+        "Base Color".to_string(),
+        NifValue::Color4([1.0, 1.0, 1.0, alpha]),
+    );
+    fields.insert("Base Color Scale".to_string(), NifValue::Float(1.0));
+    fields.insert("Soft Falloff Depth".to_string(), NifValue::Float(100.0));
+    fields.insert(
+        "Greyscale Texture".to_string(),
+        NifValue::String(String::new()),
+    );
+    fields.insert(
+        "Env Map Texture".to_string(),
+        NifValue::String(String::new()),
+    );
+    fields.insert(
+        "Normal Texture".to_string(),
+        NifValue::String(String::new()),
+    );
+    fields.insert(
+        "Env Mask Texture".to_string(),
+        NifValue::String(String::new()),
+    );
+    fields.insert("Environment Map Scale".to_string(), NifValue::Float(1.0));
+    nif.add_block("BSEffectShaderProperty", Some(fields))
+}
+
+fn legacy_flag_name_present(block: &NifBlock, expected: &str) -> bool {
+    let expected = expected.replace('_', "").to_ascii_lowercase();
+    value_array(block.get_field("Shader Flags"))
+        .iter()
+        .filter_map(|value| match value {
+            NifValue::String(value) => Some(value),
+            _ => None,
+        })
+        .any(|value| value.replace('_', "").to_ascii_lowercase() == expected)
+}
+
+fn normalize_legacy_furniture_markers(nif: &mut NifFile, report: &mut ConvertFileReport) {
+    let mut converted = 0usize;
+    for block in &mut nif.blocks {
+        if block.type_name != "BSFurnitureMarker" {
+            continue;
+        }
+
+        let positions = value_array(block.get_field("Positions"))
+            .into_iter()
+            .map(|position| match position {
+                NifValue::Struct(fields) => {
+                    let orientation = value_u64(fields.get("Orientation")).unwrap_or_default();
+                    NifValue::Struct(IndexMap::from([
+                        (
+                            "Offset".to_string(),
+                            fields
+                                .get("Offset")
+                                .cloned()
+                                .unwrap_or(NifValue::Vec3([0.0, 0.0, 0.0])),
+                        ),
+                        (
+                            "Heading".to_string(),
+                            NifValue::Float(orientation as f64 / 1000.0),
+                        ),
+                        ("Animation Type".to_string(), NifValue::UInt(0)),
+                        ("Entry Properties".to_string(), NifValue::UInt(0)),
+                    ]))
+                }
+                value => value,
+            })
+            .collect::<Vec<_>>();
+
+        block.type_name = "BSFurnitureMarkerNode".to_string();
+        block.set_field("Num Positions", NifValue::UInt(positions.len() as u64));
+        block.set_field("Positions", NifValue::Array(positions));
+        block.remainder.clear();
+        converted += 1;
+    }
+
+    if converted > 0 {
+        report.changes.push(format!(
+            "Legacy furniture markers: converted {converted} BSFurnitureMarker block(s) to FO4 layout"
+        ));
+    }
+}
+
+fn normalize_legacy_particle_systems(nif: &mut NifFile, report: &mut ConvertFileReport) {
+    let particle_ids = nif
+        .blocks
+        .iter()
+        .filter(|block| {
+            matches!(
+                block.type_name.as_str(),
+                "NiParticleSystem" | "NiMeshParticleSystem"
+            )
+        })
+        .map(|block| block.block_id)
+        .collect::<Vec<_>>();
+
+    for particle_id in &particle_ids {
+        let Some(source) = nif.get_block(*particle_id).cloned() else {
+            continue;
+        };
+        let data_ref = field_ref(&source, "Data").unwrap_or(-1);
+        let bounding_sphere = (data_ref >= 0)
+            .then(|| nif.get_block(data_ref as usize))
+            .flatten()
+            .map(|data| cloned_field(data, "Bounding Sphere"))
+            .unwrap_or_else(zero_bounding_sphere);
+        let modifiers = ref_array(source.get_field("Modifiers"));
+        let extra_data = ref_array(source.get_field("Extra Data List"));
+        let mut fields = IndexMap::new();
+        fields.insert(
+            "Name".to_string(),
+            NifValue::String(string_field(&source, "Name").unwrap_or_default()),
+        );
+        fields.insert(
+            "Num Extra Data List".to_string(),
+            NifValue::UInt(extra_data.len() as u64),
+        );
+        fields.insert(
+            "Extra Data List".to_string(),
+            NifValue::Array(extra_data.into_iter().map(NifValue::Ref).collect()),
+        );
+        fields.insert(
+            "Controller".to_string(),
+            NifValue::Ref(field_ref(&source, "Controller").unwrap_or(-1)),
+        );
+        fields.insert("Flags".to_string(), NifValue::UInt(14));
+        fields.insert(
+            "Translation".to_string(),
+            source
+                .get_field("Translation")
+                .cloned()
+                .unwrap_or(NifValue::Vec3([0.0, 0.0, 0.0])),
+        );
+        fields.insert(
+            "Rotation".to_string(),
+            source.get_field("Rotation").cloned().unwrap_or_else(|| {
+                NifValue::Matrix33([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
+            }),
+        );
+        fields.insert(
+            "Scale".to_string(),
+            NifValue::Float(value_f64(source.get_field("Scale")).unwrap_or(1.0)),
+        );
+        fields.insert(
+            "Collision Object".to_string(),
+            NifValue::Ref(field_ref(&source, "Collision Object").unwrap_or(-1)),
+        );
+        fields.insert("Bounding Sphere".to_string(), bounding_sphere);
+        fields.insert("Skin".to_string(), NifValue::Ref(-1));
+        fields.insert(
+            "Shader Property".to_string(),
+            NifValue::Ref(field_ref(&source, "Shader Property").unwrap_or(-1)),
+        );
+        fields.insert(
+            "Alpha Property".to_string(),
+            NifValue::Ref(field_ref(&source, "Alpha Property").unwrap_or(-1)),
+        );
+        fields.insert(
+            "Vertex Desc".to_string(),
+            NifValue::UInt(FO4_PARTICLE_VERTEX_DESC),
+        );
+        fields.insert("Far Begin".to_string(), NifValue::UInt(0));
+        fields.insert("Far End".to_string(), NifValue::UInt(0));
+        fields.insert("Near Begin".to_string(), NifValue::UInt(0));
+        fields.insert("Near End".to_string(), NifValue::UInt(0));
+        fields.insert("Data".to_string(), NifValue::Ref(data_ref));
+        fields.insert(
+            "World Space".to_string(),
+            NifValue::UInt(value_u64(source.get_field("World Space")).unwrap_or(1)),
+        );
+        fields.insert(
+            "Num Modifiers".to_string(),
+            NifValue::UInt(modifiers.len() as u64),
+        );
+        fields.insert(
+            "Modifiers".to_string(),
+            NifValue::Array(modifiers.into_iter().map(NifValue::Ref).collect()),
+        );
+        if let Some(block) = nif.blocks.get_mut(*particle_id) {
+            block.fields = fields;
+            block.remainder.clear();
+        }
+    }
+
+    let mut data_count = 0usize;
+    for block in nif
+        .blocks
+        .iter_mut()
+        .filter(|block| matches!(block.type_name.as_str(), "NiPSysData" | "NiMeshPSysData"))
+    {
+        let subtexture_count = value_u64(block.get_field("Num Subtexture Offsets"))
+            .unwrap_or_else(|| value_array(block.get_field("Subtexture Offsets")).len() as u64);
+        set_missing(block, "Material CRC", NifValue::UInt(0));
+        set_missing(
+            block,
+            "Has Texture Indices",
+            NifValue::Bool(subtexture_count > 0),
+        );
+        set_missing(block, "Aspect Ratio", NifValue::Float(1.0));
+        set_missing(block, "Aspect Flags", NifValue::UInt(0));
+        set_missing(block, "Speed to Aspect Aspect 2", NifValue::Float(0.0));
+        set_missing(block, "Speed to Aspect Speed 1", NifValue::Float(0.0));
+        set_missing(block, "Speed to Aspect Speed 2", NifValue::Float(0.0));
+        block.remainder.clear();
+        data_count += 1;
+    }
+
+    if !particle_ids.is_empty() || data_count > 0 {
+        report.changes.push(format!(
+            "Legacy particles -> FO4 layout: {} system(s) + {data_count} data block(s)",
+            particle_ids.len()
+        ));
+    }
+}
+
+fn zero_bounding_sphere() -> NifValue {
+    NifValue::Struct(IndexMap::from([
+        ("Center".to_string(), NifValue::Vec3([0.0, 0.0, 0.0])),
+        ("Radius".to_string(), NifValue::Float(0.0)),
+    ]))
 }
 
 fn mark_skinned_shape_shaders(nif: &mut NifFile) {
@@ -1638,17 +2906,20 @@ fn resize_texture_set(texset: &mut NifBlock) {
 
 fn pair_direct_materials(nif: &NifFile) -> HashMap<usize, usize> {
     let mut pairs = HashMap::new();
-    let mut last_pp_id = None;
+    let mut last_shader_id = None;
     let mut blocks = nif.blocks.clone();
     blocks.sort_by_key(|block| block.block_id);
     for block in blocks {
-        if block.type_name == "BSShaderPPLightingProperty" {
-            last_pp_id = Some(block.block_id);
+        if matches!(
+            block.type_name.as_str(),
+            "BSShaderPPLightingProperty" | "BSShaderNoLightingProperty"
+        ) {
+            last_shader_id = Some(block.block_id);
             continue;
         }
         if block.type_name == "NiMaterialProperty" {
-            if let Some(pp_id) = last_pp_id.take() {
-                pairs.insert(pp_id, block.block_id);
+            if let Some(shader_id) = last_shader_id.take() {
+                pairs.insert(shader_id, block.block_id);
             }
         }
     }
@@ -1673,6 +2944,90 @@ fn apply_material(shader: &mut NifBlock, material: &NifBlock) {
     if let Some(emissive_mult) = value_f64(material.get_field("Emissive Mult")) {
         shader.set_field("Emissive Multiple", NifValue::Float(emissive_mult));
     }
+}
+
+fn repair_fo76_held_prop_transform(nif: &mut NifFile, src: &Path, report: &mut ConvertFileReport) {
+    let filename = src
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_ascii_lowercase();
+    let (attachment, replace_motion) = match filename.as_str() {
+        "animobjectacousticguitar.nif" => ("AnimObjectL1", false),
+        "animobject_atx_alienwhackamole_mallet.nif" => ("AnimObjectR1", true),
+        _ => return,
+    };
+    let Some(root) = nif.get_block(0) else { return };
+    if !ref_array(root.get_field("Extra Data List"))
+        .iter()
+        .any(|id| {
+            usize::try_from(*id)
+                .ok()
+                .and_then(|id| nif.get_block(id))
+                .is_some_and(|block| {
+                    block.type_name == "NiStringExtraData"
+                        && string_field(block, "Name")
+                            .is_some_and(|name| name.eq_ignore_ascii_case("Prn"))
+                        && string_field(block, "String Data").as_deref() == Some(attachment)
+                })
+        })
+    {
+        return;
+    }
+    let Some(controller_id) = field_ref(root, "Controller").filter(|id| *id >= 0) else {
+        return;
+    };
+    let Some(controller) = nif.get_block(controller_id as usize) else {
+        return;
+    };
+    if controller.type_name != "NiTransformController" || field_ref(controller, "Target") != Some(0)
+    {
+        return;
+    }
+    let Some(interpolator_id) = field_ref(controller, "Interpolator").filter(|id| *id >= 0) else {
+        return;
+    };
+    let Some(interpolator) = nif.get_block(interpolator_id as usize) else {
+        return;
+    };
+    if interpolator.type_name != "NiTransformInterpolator"
+        || (!replace_motion && field_ref(interpolator, "Data") != Some(-1))
+    {
+        return;
+    }
+    let Some(NifValue::Struct(mut transform)) = interpolator.get_field("Transform").cloned() else {
+        return;
+    };
+    // The actor's attachment bone already supplies placement. These exports add
+    // a stale guitar offset or a second, furniture-space mallet motion on top.
+    transform.insert("Translation".into(), NifValue::Vec3([0.0; 3]));
+    if replace_motion {
+        transform.insert(
+            "Rotation".into(),
+            NifValue::Quaternion([1.0, 0.0, 0.0, 0.0]),
+        );
+        transform.insert("Scale".into(), NifValue::Float(1.0));
+    }
+    let transform = NifValue::Struct(transform);
+    if interpolator.get_field("Transform") == Some(&transform)
+        && field_ref(interpolator, "Data") == Some(-1)
+    {
+        return;
+    }
+    let reachable_before = reachable_block_ids_excluding(nif, &HashSet::new());
+    nif.blocks[interpolator_id as usize].set_field("Transform", transform);
+    if replace_motion {
+        nif.blocks[interpolator_id as usize].set_field("Data", NifValue::Ref(-1));
+        let reachable_after = reachable_block_ids_excluding(nif, &HashSet::new());
+        let orphaned = reachable_before
+            .difference(&reachable_after)
+            .copied()
+            .collect::<Vec<_>>();
+        nif.remove_blocks(&orphaned);
+    }
+    report.changes.push(format!(
+        "Pinned FO76 held-prop root transform to {attachment}: {filename}"
+    ));
 }
 
 fn fix_fo76_float_controllers(nif: &mut NifFile, report: &mut ConvertFileReport) {
@@ -1715,6 +3070,7 @@ fn fix_fo76_float_controllers(nif: &mut NifFile, report: &mut ConvertFileReport)
 
     let mut rewired = 0usize;
     if !dropped_ids.is_empty() {
+        let reachable_before = reachable_block_ids_excluding(nif, &HashSet::new());
         let next_by_id: HashMap<usize, i32> = nif
             .blocks
             .iter()
@@ -1741,7 +3097,13 @@ fn fix_fo76_float_controllers(nif: &mut NifFile, report: &mut ConvertFileReport)
                 }
             }
         }
-        remove_blocks(nif, dropped_ids.clone());
+        let reachable_after = reachable_block_ids_excluding(nif, &dropped_ids);
+        let mut newly_unreachable = reachable_before
+            .difference(&reachable_after)
+            .copied()
+            .collect::<HashSet<_>>();
+        newly_unreachable.extend(dropped_ids.iter().copied());
+        remove_blocks(nif, newly_unreachable);
     }
 
     if effect_remapped > 0 || lighting_remapped > 0 || !dropped_ids.is_empty() {
@@ -1750,6 +3112,47 @@ fn fix_fo76_float_controllers(nif: &mut NifFile, report: &mut ConvertFileReport)
             dropped_ids.len()
         ));
     }
+}
+
+fn reachable_block_ids_excluding(nif: &NifFile, excluded: &HashSet<usize>) -> HashSet<usize> {
+    let mut reachable = HashSet::new();
+    let mut pending = nif
+        .header
+        .footer_roots
+        .iter()
+        .copied()
+        .filter(|root| *root >= 0)
+        .map(|root| root as usize)
+        .filter(|root| !excluded.contains(root))
+        .collect::<Vec<_>>();
+    while let Some(block_id) = pending.pop() {
+        if block_id >= nif.blocks.len()
+            || excluded.contains(&block_id)
+            || !reachable.insert(block_id)
+        {
+            continue;
+        }
+        pending.extend(
+            conversion_block_refs(&nif.blocks[block_id])
+                .into_iter()
+                .filter(|reference| *reference >= 0)
+                .map(|reference| reference as usize)
+                .filter(|reference| !excluded.contains(reference)),
+        );
+    }
+    reachable
+}
+
+fn conversion_block_refs(block: &NifBlock) -> Vec<i32> {
+    let mut refs = block.get_refs(&crate::schema::SCHEMA);
+    if block.type_name == "BSProceduralLightningController" {
+        refs.extend(
+            (1..=9)
+                .filter_map(|index| field_ref(block, &format!("Interpolator {index}")))
+                .filter(|reference| *reference >= 0),
+        );
+    }
+    refs
 }
 
 fn next_alive_controller(
@@ -2441,9 +3844,12 @@ fn shape_has_vertex_colors(block: &NifBlock) -> bool {
     {
         return true;
     }
-    value_array(block.get_field("Vertex Data")).iter().any(
-        |value| matches!(value, NifValue::Struct(fields) if fields.contains_key("Vertex Colors")),
-    )
+    match block.get_field("Vertex Data") {
+        Some(NifValue::Array(vertices)) => vertices.iter().any(
+            |value| matches!(value, NifValue::Struct(fields) if fields.contains_key("Vertex Colors")),
+        ),
+        _ => false,
+    }
 }
 
 fn set_missing(block: &mut NifBlock, name: &str, value: NifValue) {
@@ -2678,6 +4084,219 @@ fn remap_fo76_texture_slots(nif: &mut NifFile, report: &mut ConvertFileReport) {
     }
 }
 
+fn normalize_external_bgem_shader_data_with_overrides(
+    nif: &mut NifFile,
+    source_material_dir: Option<&Path>,
+    material_source_overrides: &HashMap<String, String>,
+    report: &mut ConvertFileReport,
+) {
+    let shaders: Vec<(usize, String)> = nif
+        .blocks
+        .iter()
+        .filter(|block| block.type_name == "BSEffectShaderProperty")
+        .filter_map(|block| {
+            let material_path = string_field(block, "Name")?;
+            material_path
+                .to_ascii_lowercase()
+                .ends_with(".bgem")
+                .then_some((block.block_id, material_path))
+        })
+        .collect();
+
+    let mut normalized = 0usize;
+    for (shader_id, material_path) in shaders {
+        let (source_material_path, _) =
+            material_source_override_path(&material_path, material_source_overrides);
+        let Some(material) = converted_source_bgem(&source_material_path, source_material_dir)
+        else {
+            continue;
+        };
+        let Some(shader) = nif.blocks.get_mut(shader_id) else {
+            continue;
+        };
+
+        for field in ["Shader Flags 1", "Shader Flags 1:FO4"] {
+            sync_shader_flag(shader, field, SLSF1_USE_FALLOFF, material.FalloffEnabled);
+            sync_shader_flag(
+                shader,
+                field,
+                SLSF1_ENVIRONMENT_MAPPING,
+                material.EnvironmentMapping == Some(true)
+                    || material.header.env_mapping == Some(true)
+                    || nonempty_material_texture(&material.EnvmapTexture),
+            );
+            sync_shader_flag(shader, field, SLSF1_SOFT_EFFECT, material.SoftEnabled);
+            sync_shader_flag(
+                shader,
+                field,
+                SLSF1_ZBUFFER_TEST,
+                material.header.zbuffer_test,
+            );
+            sync_shader_flag(
+                shader,
+                field,
+                SLSF1_DECAL,
+                material.header.decal || material.header.decal_nofade,
+            );
+            sync_shader_flag(
+                shader,
+                field,
+                SLSF1_DYNAMIC_DECAL,
+                material.header.decal_nofade,
+            );
+        }
+        for field in ["Shader Flags 2", "Shader Flags 2:FO4"] {
+            sync_shader_flag(
+                shader,
+                field,
+                SLSF2_ZBUFFER_WRITE as u64,
+                material.header.zbuffer_write,
+            );
+            sync_shader_flag(
+                shader,
+                field,
+                SLSF2_DOUBLE_SIDED as u64,
+                material.header.two_sided,
+            );
+            sync_shader_flag(
+                shader,
+                field,
+                SLSF2_EFFECT_LIGHTING,
+                material.EffectLightingEnabled,
+            );
+        }
+
+        shader.set_field(
+            "UV Offset",
+            tex_coord([material.header.u_offset, material.header.v_offset]),
+        );
+        shader.set_field(
+            "UV Scale",
+            tex_coord([material.header.u_scale, material.header.v_scale]),
+        );
+        shader.set_field(
+            "Source Texture",
+            NifValue::String(canonical_bgem_texture_path(&material.BaseTexture)),
+        );
+        shader.set_field(
+            "Texture Clamp Mode",
+            NifValue::UInt(texture_clamp_mode(
+                material.header.tile_u,
+                material.header.tile_v,
+            )),
+        );
+        shader.set_field(
+            "Lighting Influence",
+            NifValue::UInt(
+                (material.LightingInfluence.clamp(0.0, 1.0) * u8::MAX as f32).round() as u64,
+            ),
+        );
+        shader.set_field(
+            "Env Map Min LOD",
+            NifValue::UInt(material.EnvmapMinLOD as u64),
+        );
+        shader.set_field(
+            "Falloff Start Angle",
+            NifValue::Float(material.FalloffStartAngle as f64),
+        );
+        shader.set_field(
+            "Falloff Stop Angle",
+            NifValue::Float(material.FalloffStopAngle as f64),
+        );
+        shader.set_field(
+            "Falloff Start Opacity",
+            NifValue::Float(material.FalloffStartOpacity as f64),
+        );
+        shader.set_field(
+            "Falloff Stop Opacity",
+            NifValue::Float(material.FalloffStopOpacity as f64),
+        );
+        shader.set_field(
+            "Base Color",
+            NifValue::Color4([
+                material.BaseColor[0],
+                material.BaseColor[1],
+                material.BaseColor[2],
+                material.header.alpha.clamp(0.0, 1.0),
+            ]),
+        );
+        shader.set_field(
+            "Base Color Scale",
+            NifValue::Float(material.BaseColorScale as f64),
+        );
+        shader.set_field(
+            "Soft Falloff Depth",
+            NifValue::Float(material.SoftDepth as f64),
+        );
+        shader.set_field(
+            "Greyscale Texture",
+            NifValue::String(canonical_bgem_texture_path(&material.GrayscaleTexture)),
+        );
+        shader.set_field(
+            "Env Map Texture",
+            NifValue::String(canonical_bgem_texture_path(&material.EnvmapTexture)),
+        );
+        shader.set_field(
+            "Normal Texture",
+            NifValue::String(canonical_bgem_texture_path(&material.NormalTexture)),
+        );
+        shader.set_field(
+            "Env Mask Texture",
+            NifValue::String(canonical_bgem_texture_path(&material.EnvmapMaskTexture)),
+        );
+        shader.set_field(
+            "Environment Map Scale",
+            NifValue::Float(
+                material
+                    .EnvironmentMappingMaskScale
+                    .or(material.header.env_mapping_mask_scale)
+                    .unwrap_or(1.0) as f64,
+            ),
+        );
+        normalized += 1;
+    }
+
+    if normalized > 0 {
+        report.changes.push(format!(
+            "BSEffectShaderProperty: normalized {normalized} external BGEM shader(s) from converted source material data"
+        ));
+    }
+}
+
+fn converted_source_bgem(
+    material_path: &str,
+    source_material_dir: Option<&Path>,
+) -> Option<materials_native::bgem::BgemData> {
+    let (bytes, relative, _) = read_source_material(material_path, source_material_dir)?;
+    let bgem = materials_native::bgem::parse(&bytes).ok()?;
+    Some(materials_native::convert::downgrade_bgem(
+        bgem,
+        &relative,
+        materials_native::convert::Game::Fo76,
+        materials_native::convert::Game::Fo4,
+    ))
+}
+
+fn canonical_bgem_texture_path(path: &str) -> String {
+    if !nonempty_material_texture(path) {
+        return String::new();
+    }
+    canonical_texture_path(path, "", "")
+}
+
+fn nonempty_material_texture(path: &str) -> bool {
+    !path.trim_end_matches('\0').trim().is_empty()
+}
+
+fn texture_clamp_mode(tile_u: bool, tile_v: bool) -> u64 {
+    match (tile_u, tile_v) {
+        (false, false) => 0,
+        (false, true) => 1,
+        (true, false) => 2,
+        (true, true) => 3,
+    }
+}
+
 fn normalize_external_bgsm_shader_data_with_overrides(
     nif: &mut NifFile,
     source_material_dir: Option<&Path>,
@@ -2703,12 +4322,21 @@ fn normalize_external_bgsm_shader_data_with_overrides(
     let mut texture_sets_normalized = 0usize;
     let mut texture_sets_created = 0usize;
     let mut glow_flags_set = 0usize;
+    let mut non_emitting_shaders: HashSet<usize> = HashSet::new();
+    let mut emissive_capable_shaders: HashSet<usize> = HashSet::new();
     for (shader_id, material_path, texset_id) in shader_texture_sets {
         let (source_material_path, source_overridden) =
             material_source_override_path(&material_path, material_source_overrides);
         let source_shader_flags =
             source_bgsm_shader_flags(&source_material_path, source_material_dir);
         let wants_glow_map = source_shader_flags.is_some_and(|flags| flags.glow_map);
+        // An unreadable material is treated as emissive-capable so a missing
+        // source never silently darkens a shader.
+        if source_shader_flags.is_some_and(|flags| !flags.emits) {
+            non_emitting_shaders.insert(shader_id);
+        } else {
+            emissive_capable_shaders.insert(shader_id);
+        }
         let material_texture_paths =
             converted_source_bgsm_texture_paths(&source_material_path, source_material_dir);
         {
@@ -2845,6 +4473,82 @@ fn normalize_external_bgsm_shader_data_with_overrides(
             "BSLightingShaderProperty: set Glow_Map flag for {glow_flags_set} external BGSM shader(s) whose material emits a glow map"
         ));
     }
+
+    let (controllers_neutralized, sequence_driven) = neutralize_dormant_emissive_controllers(
+        nif,
+        &non_emitting_shaders,
+        &emissive_capable_shaders,
+    );
+    if controllers_neutralized > 0 {
+        report.changes.push(format!(
+            "BSLightingShaderPropertyColorController: pinned {controllers_neutralized} emissive colour interpolator(s) to black for shaders whose source BGSM disables emittance"
+        ));
+    }
+    if sequence_driven > 0 {
+        report.changes.push(format!(
+            "BSLightingShaderPropertyColorController: {sequence_driven} dormant emissive controller(s) are sequence-driven and were left alone (colour still comes from NiControllerSequence)"
+        ));
+    }
+}
+
+/// FO76 gates emittance on the BGSM (`EmitEnabled`), so a mesh can ship an
+/// emissive colour controller that never fires. FO4 has no such gate once
+/// `Own_Emit` is on — which is FO4's external-BGSM baseline — so those dormant
+/// controllers wake up and wash the whole surface in their key colour. Pin the
+/// interpolator to constant black instead of deleting blocks: renumbering would
+/// desync `NiControllerSequence` controlled-block arrays.
+fn neutralize_dormant_emissive_controllers(
+    nif: &mut NifFile,
+    non_emitting: &HashSet<usize>,
+    emissive_capable: &HashSet<usize>,
+) -> (usize, usize) {
+    if non_emitting.is_empty() {
+        return (0, 0);
+    }
+    const LSCC_EMISSIVE_COLOR: u64 = 1;
+
+    let mut dormant: HashSet<usize> = HashSet::new();
+    let mut in_use: HashSet<usize> = HashSet::new();
+    for block in nif.blocks.iter() {
+        if block.type_name != "BSLightingShaderPropertyColorController"
+            || value_u64(block.get_field("Controlled Color")) != Some(LSCC_EMISSIVE_COLOR)
+        {
+            continue;
+        }
+        let Some(interpolator) = field_ref(block, "Interpolator").filter(|id| *id >= 0) else {
+            continue;
+        };
+        let target = field_ref(block, "Target").unwrap_or(-1);
+        // An interpolator shared with any shader that may legitimately emit
+        // stays untouched, even if another controller says it is dormant.
+        if target >= 0
+            && non_emitting.contains(&(target as usize))
+            && !emissive_capable.contains(&(target as usize))
+        {
+            dormant.insert(interpolator as usize);
+        } else {
+            in_use.insert(interpolator as usize);
+        }
+    }
+
+    let mut neutralized = 0usize;
+    let mut sequence_driven = 0usize;
+    let candidates: Vec<usize> = dormant.difference(&in_use).copied().collect();
+    for id in candidates {
+        let Some(block) = nif.blocks.get_mut(id) else {
+            continue;
+        };
+        if block.type_name != "NiPoint3Interpolator" {
+            // NiBlendPoint3Interpolator gets its value from the owning
+            // NiControllerSequence, not from this block.
+            sequence_driven += 1;
+            continue;
+        }
+        block.set_field("Value", NifValue::Vec3([0.0; 3]));
+        block.set_field("Data", NifValue::Ref(-1));
+        neutralized += 1;
+    }
+    (neutralized, sequence_driven)
 }
 
 fn normalize_external_bgsm_texture_set(
@@ -3036,6 +4740,7 @@ fn sync_shader_flag(block: &mut NifBlock, field: &str, flag: u64, enabled: bool)
 #[derive(Clone, Copy, Default)]
 struct SourceBgsmShaderFlags {
     glow_map: bool,
+    emits: bool,
     decal: bool,
     dynamic_decal: bool,
     double_sided: bool,
@@ -3045,13 +4750,16 @@ fn source_bgsm_shader_flags(
     material_path: &str,
     source_material_dir: Option<&Path>,
 ) -> Option<SourceBgsmShaderFlags> {
-    let Some((bytes, relative, _resolved)) = read_source_bgsm(material_path, source_material_dir)
+    let Some((bytes, relative, _resolved)) =
+        read_source_material(material_path, source_material_dir)
     else {
         return None;
     };
     let bgsm = materials_native::bgsm::parse(&bytes).ok()?;
+    let glow_map = materials_native::convert::source_bgsm_enables_fo4_glowmap(&bgsm, &relative);
     Some(SourceBgsmShaderFlags {
-        glow_map: materials_native::convert::source_bgsm_enables_fo4_glowmap(&bgsm, &relative),
+        glow_map,
+        emits: glow_map || bgsm.EmitEnabled,
         decal: bgsm.header.decal || bgsm.header.decal_nofade,
         dynamic_decal: bgsm.header.decal_nofade,
         double_sided: bgsm.header.two_sided,
@@ -3062,7 +4770,7 @@ fn converted_source_bgsm_texture_paths(
     material_path: &str,
     source_material_dir: Option<&Path>,
 ) -> Option<Vec<(usize, String)>> {
-    let (bytes, relative, resolved) = read_source_bgsm(material_path, source_material_dir)?;
+    let (bytes, relative, resolved) = read_source_material(material_path, source_material_dir)?;
     let mut bgsm = materials_native::bgsm::parse(&bytes).ok()?;
     materials_native::convert::repair_missing_fo76_smoothspec_from_specular(
         &mut bgsm,
@@ -3096,7 +4804,7 @@ fn push_bgsm_texture_slot(paths: &mut Vec<(usize, String)>, slot: usize, path: &
     paths.push((slot, canonical_texture_path(clean, "", "")));
 }
 
-fn read_source_bgsm(
+fn read_source_material(
     material_path: &str,
     source_material_dir: Option<&Path>,
 ) -> Option<(Vec<u8>, String, PathBuf)> {
@@ -3111,8 +4819,16 @@ fn read_source_bgsm(
     Some((bytes, relative, resolved))
 }
 
-fn clear_fo76_invalid_environment_mapping(nif: &mut NifFile, report: &mut ConvertFileReport) {
-    let mut shader_ids = Vec::new();
+// FO4 picks the BSLightingShaderMaterial subclass from Shader Type but gates
+// render setup on the Environment_Mapping flag, so the two must agree: only
+// type 1 allocates the envTexture member MakeValidForRendering reads. An
+// env-flagged type-0 shader makes it read that pointer out of the material's
+// float block -> IsTextureCubeMap derefs garbage -> CTD on cell load. FO76
+// carries the flag as a name CRC independent of its own shader type, so a
+// flattened shader can land on either side of the mismatch.
+fn normalize_fo76_environment_mapping(nif: &mut NifFile, report: &mut ConvertFileReport) {
+    let mut clear_ids = Vec::new();
+    let mut promote_ids = Vec::new();
     for block in &nif.blocks {
         if block.type_name != "BSLightingShaderProperty" {
             continue;
@@ -3121,22 +4837,28 @@ fn clear_fo76_invalid_environment_mapping(nif: &mut NifFile, report: &mut Conver
         if flags & SLSF1_ENVIRONMENT_MAPPING == 0 {
             continue;
         }
-        let Some(texset_id) = field_ref(block, "Texture Set").filter(|id| *id >= 0) else {
-            continue;
-        };
-        let has_cubemap = nif.get_block(texset_id as usize).is_some_and(|texset| {
-            texset.type_name == "BSShaderTextureSet"
-                && value_array(texset.get_field("Textures"))
-                    .get(4)
-                    .is_some_and(non_empty_texture)
-        });
-        if !has_cubemap {
-            shader_ids.push(block.block_id);
+        let has_cubemap = field_ref(block, "Texture Set")
+            .filter(|id| *id >= 0)
+            .and_then(|id| nif.get_block(id as usize))
+            .is_some_and(|texset| {
+                texset.type_name == "BSShaderTextureSet"
+                    && value_array(texset.get_field("Textures"))
+                        .get(4)
+                        .is_some_and(non_empty_texture)
+            });
+        match value_u64(block.get_field("Shader Type")) {
+            // Already consistent.
+            Some(BSLSP_SHADER_TYPE_ENVIRONMENT_MAP) if has_cubemap => {}
+            // A usable cubemap: keep the reflection and promote the type.
+            Some(BSLSP_SHADER_TYPE_DEFAULT) if has_cubemap => promote_ids.push(block.block_id),
+            // No cubemap to reflect, or a more specific type (glow, skin tint)
+            // whose technique outranks the reflection -- drop the flag instead.
+            _ => clear_ids.push(block.block_id),
         }
     }
 
     let mut cleared = 0usize;
-    for shader_id in shader_ids {
+    for shader_id in clear_ids {
         let Some(shader) = nif.blocks.get_mut(shader_id) else {
             continue;
         };
@@ -3157,9 +4879,29 @@ fn clear_fo76_invalid_environment_mapping(nif: &mut NifFile, report: &mut Conver
         cleared += 1;
     }
 
+    let mut promoted = 0usize;
+    for shader_id in promote_ids {
+        let Some(shader) = nif.blocks.get_mut(shader_id) else {
+            continue;
+        };
+        shader.set_field(
+            "Shader Type",
+            NifValue::UInt(BSLSP_SHADER_TYPE_ENVIRONMENT_MAP),
+        );
+        // Type 1 turns on the schema's cond-gated tail; without the defaults
+        // the block would serialize short.
+        ensure_fo4_lighting_shader_conditional_fields(shader);
+        promoted += 1;
+    }
+
     if cleared > 0 {
         report.changes.push(format!(
             "BSLightingShaderProperty: cleared Environment_Mapping on {cleared} FO76 shader(s) without FO4 cubemap texture"
+        ));
+    }
+    if promoted > 0 {
+        report.changes.push(format!(
+            "BSLightingShaderProperty: promoted {promoted} env-mapped FO76 shader(s) to FO4 Environment Map shader type"
         ));
     }
 }
@@ -3322,12 +5064,22 @@ fn normalize_facegen_hair_shaders(nif: &mut NifFile, report: &mut ConvertFileRep
                 | SLSF1_SPECULAR
                 | SLSF1_OWN_EMIT;
             shader.set_field("Shader Flags 1", NifValue::UInt(flags1));
+            if shader.fields.contains_key("Shader Flags 1:FO4") {
+                shader
+                    .fields
+                    .insert("Shader Flags 1:FO4".to_string(), NifValue::UInt(flags1));
+            }
             let flags2 = value_u64(shader.get_field("Shader Flags 2")).unwrap_or(0)
                 | SLSF2_DOUBLE_SIDED as u64
                 | SLSF2_VERTEX_COLORS as u64
                 | SLSF2_GLOW_MAP
                 | SLSF2_TRANSFORM_CHANGED;
             shader.set_field("Shader Flags 2", NifValue::UInt(flags2));
+            if shader.fields.contains_key("Shader Flags 2:FO4") {
+                shader
+                    .fields
+                    .insert("Shader Flags 2:FO4".to_string(), NifValue::UInt(flags2));
+            }
         }
         if let Some(texset) = texset_id.and_then(|id| nif.blocks.get_mut(id)) {
             normalize_facegen_hair_texture_set(texset);
@@ -3519,6 +5271,31 @@ fn convert_fo76_cloth_blobs(nif: &mut NifFile, report: &mut ConvertFileReport) {
     {
         fold_fo76_cloth_skin_bones(nif, report);
     }
+}
+
+fn strip_fo76_cloth_blobs(nif: &mut NifFile, report: &mut ConvertFileReport) {
+    let cloth_ids: HashSet<usize> = nif
+        .blocks
+        .iter()
+        .filter(|block| block.type_name == "BSClothExtraData")
+        .map(|block| block.block_id)
+        .collect();
+    if cloth_ids.is_empty() {
+        return;
+    }
+
+    let removed_count = cloth_ids.len();
+    let detached_refs = detach_extra_data_refs(nif, &cloth_ids);
+    remove_blocks(nif, cloth_ids);
+    report.changes.push(format!(
+        "Havok cloth: stripped {removed_count} BSClothExtraData block(s) for a static model variant"
+    ));
+    if detached_refs > 0 {
+        report.changes.push(format!(
+            "Havok cloth: detached {detached_refs} extra-data reference(s)"
+        ));
+    }
+    fold_fo76_cloth_skin_bones(nif, report);
 }
 
 fn validate_fo4_cloth_blob(blob: &[u8]) -> Result<(), String> {
@@ -4119,6 +5896,17 @@ struct NifCollisionIntent {
     bsx_flags: u64,
     has_dynamic_bsx: bool,
     has_complex_bsx: bool,
+    /// Whether the NIF is an inventory ground-object world model (`GO_*` /
+    /// `*_GO`). Set dressing and ground objects are indistinguishable by every
+    /// in-mesh signal — both ship as dynamic-motion, dynamic-BSX, non-complex
+    /// compounds on CLUTTER — so the role is the only thing that separates a
+    /// lamp that must stay static from a dropped power armor piece that must
+    /// fall. Vanilla FO4 ships its own ground objects (`go_t51_helmet.nif`)
+    /// as dynamic compounds with the same BSX 194.
+    is_ground_object: bool,
+    /// `Prn=WEAPON` distinguishes held/dropped weapon models from static set
+    /// dressing when both use the same dynamic, non-complex compound layout.
+    is_weapon_model: bool,
 }
 
 fn nif_collision_intent(nif: &NifFile) -> NifCollisionIntent {
@@ -4132,6 +5920,8 @@ fn nif_collision_intent(nif: &NifFile) -> NifCollisionIntent {
         bsx_flags,
         has_dynamic_bsx: bsx_flags & BSX_DYNAMIC_FLAG != 0,
         has_complex_bsx: bsx_flags & BSX_COMPLEX_FLAG != 0,
+        is_ground_object: is_fo76_ground_object_nif(nif),
+        is_weapon_model: is_fo76_weapon_nif(nif),
     }
 }
 
@@ -4154,13 +5944,36 @@ fn source_body_is_dynamic_for_nif(
     if metadata.motion_type == Some(1) {
         return false;
     }
+    // FO76 keeps ground-object motion at runtime: none of its ground-object
+    // NIFs carry motionCinfos, and most declare BSX without Dynamic plus
+    // hknpMotionType::STATIC, so the BSX-gated routes below would ship them as
+    // STATIC(1) bodies that read in-game as having no collision. Vanilla FO4
+    // ships 189 of 192 `go*.nif` as dynamic clutter, so the ground-object role
+    // decides. The source layer is inconsistent (Hellcat torso on CLUTTER,
+    // Vulcan torso on STATIC), so accept exactly those two: 405 of the 410
+    // affected meshes. Stragglers on other layers, and any volume layer reached
+    // through the root-node-name fallback in `is_fo76_ground_object_nif`, keep
+    // their source behaviour.
+    if intent.is_ground_object
+        && matches!(metadata.layer, Some(FO4_STATIC_LAYER | FO4_CLUTTER_LAYER))
+    {
+        return true;
+    }
     let is_single_convex = body.is_some_and(source_body_is_single_convex);
     // FO76 set dressing can carry Dynamic motion and BSX Dynamic without being
-    // loose clutter. Non-complex compounds must remain static for FO4.
+    // loose clutter. Non-complex compounds must remain static for FO4 —
+    // EXCEPT inventory ground objects, which are genuinely loose: a dropped
+    // power armor piece (`GO_Ultra_Helmet`) is byte-identical to
+    // `WhitespringLamp03Off` on every in-mesh signal (BSX 194, layer 4,
+    // flags 128, motionType 2, compound_polytope), so only the ground-object
+    // role separates them. Vanilla FO4 ships `go_t51_helmet.nif` as a dynamic
+    // compound with that same BSX.
     if metadata.motion_type == Some(2)
         && intent.has_dynamic_bsx
         && !intent.has_complex_bsx
         && !is_single_convex
+        && !intent.is_ground_object
+        && !intent.is_weapon_model
     {
         return false;
     }
@@ -4267,6 +6080,8 @@ fn synthesize_fo76_ground_object_collision(nif: &mut NifFile, report: &mut Conve
             bsx_flags: BSX_HAVOK_FLAG | BSX_DYNAMIC_FLAG | BSX_ARTICULATED_FLAG,
             has_dynamic_bsx: true,
             has_complex_bsx: false,
+            is_ground_object: true,
+            is_weapon_model: false,
         },
         in_multi_body_assembly: false,
         body_mass: None,
@@ -4322,8 +6137,21 @@ fn is_fo76_ground_object_nif(nif: &NifFile) -> bool {
         .any(|name| is_ground_object_name(&name))
 }
 
+fn is_fo76_weapon_nif(nif: &NifFile) -> bool {
+    nif.blocks
+        .iter()
+        .filter(|block| block.type_name == "NiStringExtraData")
+        .any(|block| {
+            string_field(block, "Name")
+                .is_some_and(|name| name.trim_end_matches('\0').eq_ignore_ascii_case("Prn"))
+                && string_field(block, "String Data").is_some_and(|value| {
+                    value.trim_end_matches('\0').eq_ignore_ascii_case("WEAPON")
+                })
+        })
+}
+
 fn rebuild_fo76_np_collision(nif: &mut NifFile, report: &mut ConvertFileReport) {
-    let collision_ids: Vec<usize> = nif
+    let mut collision_ids: Vec<usize> = nif
         .blocks
         .iter()
         .filter(|block| block.type_name == "bhkNPCollisionObject")
@@ -4333,18 +6161,52 @@ fn rebuild_fo76_np_collision(nif: &mut NifFile, report: &mut ConvertFileReport) 
     if collision_ids.is_empty() {
         return;
     }
+    let source_collision_count = collision_ids.len();
+    let mut source_blobs = BTreeMap::new();
+    for collision_id in collision_ids.iter().copied() {
+        let Some(collision) = nif.get_block(collision_id) else {
+            continue;
+        };
+        let system_id = field_ref(collision, "Data")
+            .filter(|id| *id >= 0)
+            .map(|id| id as usize)
+            .unwrap_or(collision_id);
+        source_blobs
+            .entry(system_id)
+            .or_insert_with(|| collision_physics_blob(nif, collision));
+    }
+    let source_contexts = source_blobs
+        .iter()
+        .filter_map(|(system_id, blob)| {
+            blob.as_deref()
+                .ok()
+                .map(|blob| (*system_id, SourceCollisionContext::new(blob)))
+        })
+        .collect::<BTreeMap<_, _>>();
+    let directly_converted = direct_convert_eligible_fo76_static_np_collision_systems(
+        nif,
+        &collision_ids,
+        &source_blobs,
+        &source_contexts,
+        report,
+    );
+    collision_ids.retain(|collision_id| !directly_converted.contains(collision_id));
+    if collision_ids.is_empty() {
+        return;
+    }
     // Several physics-system collision objects usually means a static assembly
     // (SCOL combined mesh, multi-part static, ...). Loose multi-part clutter can
     // also have several collision objects; keep those dynamic when BSX says the
     // NIF itself is dynamic.
     let nif_intent = nif_collision_intent(nif);
-    let in_multi_body_assembly = collision_ids.len() > 1 && !nif_intent.has_dynamic_bsx;
+    let in_multi_body_assembly = source_collision_count > 1 && !nif_intent.has_dynamic_bsx;
 
     let mut remove = HashSet::new();
     let mut pending: Vec<CollisionPlanEntry> = Vec::new();
     let mut route_counts = RouteCounts::default();
     let mut regenerated = 0usize;
     let mut degenerate = 0usize;
+    let mut degenerate_by_system = BTreeMap::new();
     for collision_id in collision_ids.iter().copied() {
         let Some(collision) = nif.get_block(collision_id).cloned() else {
             continue;
@@ -4353,7 +6215,15 @@ fn rebuild_fo76_np_collision(nif: &mut NifFile, report: &mut ConvertFileReport) 
             .get_field("Body ID")
             .and_then(value_usize)
             .unwrap_or(0);
-        if collision_data_has_degenerate_shapes(nif, &collision) {
+        let has_degenerate_shapes = field_ref(&collision, "Data")
+            .filter(|id| *id >= 0)
+            .map(|system_id| {
+                *degenerate_by_system
+                    .entry(system_id as usize)
+                    .or_insert_with(|| collision_data_has_degenerate_shapes(nif, &collision))
+            })
+            .unwrap_or(false);
+        if has_degenerate_shapes {
             degenerate += 1;
         }
         let Some(parent_ref) = field_ref(&collision, "Target").filter(|id| *id >= 0) else {
@@ -4380,29 +6250,34 @@ fn rebuild_fo76_np_collision(nif: &mut NifFile, report: &mut ConvertFileReport) 
             .get_block(parent_ref as usize)
             .and_then(|block| string_field(block, "Name"))
             .unwrap_or_default();
-        let source_blob = collision_physics_blob(nif, &collision);
-        let mut source_metadata = source_blob
-            .as_deref()
-            .ok()
-            .map(|blob| source_body_metadata(blob, body_id))
+        let source_system_id = field_ref(&collision, "Data")
+            .filter(|id| *id >= 0)
+            .map(|id| id as usize)
+            .unwrap_or(collision_id);
+        let source_blob = source_blobs
+            .get(&source_system_id)
+            .expect("source collision blob entry");
+        let source_context = source_contexts.get(&source_system_id);
+        let mut source_metadata = source_context
+            .map(|context| context.body_metadata(body_id))
             .unwrap_or_default();
         source_metadata = source_metadata_for_nif_intent(source_metadata, nif_intent);
         // Decode this body's true mass distribution from the source blob so the
         // builder can use the real COM / volume / inertia instead of the AABB
         // approximation. `None` for statics / undecodable; the builder's
         // `mass > 0` guard keeps it from touching static bodies.
-        let mass_distribution = source_blob.as_deref().ok().and_then(|blob| {
-            havok_native::collision::decode_source_mass_distributions(blob)
-                .get(body_id)
-                .copied()
-                .flatten()
-        });
+        let mass_distribution =
+            source_context.and_then(|context| context.mass_distribution(body_id));
         let mut planned_parent_ref = parent_ref as usize;
         let mut source_summary = None;
         let planned = match source_blob
             .as_ref()
             .map_err(|error| error.clone())
-            .and_then(|blob| extract_source_collision_body(blob, body_id))
+            .and_then(|_| {
+                source_context
+                    .expect("successful blob has source context")
+                    .extract_body(body_id)
+            })
             .and_then(|mut body| {
                 source_metadata.is_dynamic =
                     source_body_is_dynamic_for_nif(source_metadata, nif_intent, Some(&body));
@@ -4468,10 +6343,7 @@ fn rebuild_fo76_np_collision(nif: &mut NifFile, report: &mut ConvertFileReport) 
             .unwrap_or_default();
         pending.push(CollisionPlanEntry {
             source_collision_id: collision_id,
-            source_system_id: field_ref(&collision, "Data")
-                .filter(|id| *id >= 0)
-                .map(|id| id as usize)
-                .unwrap_or(collision_id),
+            source_system_id,
             source_parent_id: parent_ref as usize,
             source_parent_name,
             parent_id: planned_parent_ref,
@@ -4508,7 +6380,7 @@ fn rebuild_fo76_np_collision(nif: &mut NifFile, report: &mut ConvertFileReport) 
         // partitioning: FO4 binds a layer-31 stair helper to the step body of
         // its OWN system (vanilla stairs pair them two-per-system; vanilla
         // SCOLs never share a system across members). Merging every SCOL
-        // member into one 5-body system left the helpers unbound and the
+        // member into one 5-body system leaves the helpers unbound and the
         // stairs unclimbable (Point Pleasant SCOLs 00491AE1 / 00491B05).
         let install_result = if grafted_constraints.is_some() {
             install_fo4_np_collision_system(nif, &pending, grafted_constraints.as_ref())
@@ -4574,6 +6446,133 @@ fn rebuild_fo76_np_collision(nif: &mut NifFile, report: &mut ConvertFileReport) 
     }
 }
 
+fn direct_convert_eligible_fo76_static_np_collision_systems(
+    nif: &mut NifFile,
+    collision_ids: &[usize],
+    source_blobs: &BTreeMap<usize, Result<Vec<u8>, String>>,
+    source_contexts: &BTreeMap<usize, SourceCollisionContext<'_>>,
+    report: &mut ConvertFileReport,
+) -> HashSet<usize> {
+    let nif_intent = nif_collision_intent(nif);
+    let has_animation_blocks = nif.blocks.iter().any(|block| {
+        block.type_name.contains("Controller")
+            || block.type_name.contains("Interpolator")
+            || block.type_name.contains("Sequence")
+    });
+    let mut collisions_by_system: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for collision_id in collision_ids {
+        let Some(system_id) = nif
+            .get_block(*collision_id)
+            .and_then(|collision| field_ref(collision, "Data"))
+            .filter(|id| *id >= 0)
+            .map(|id| id as usize)
+        else {
+            continue;
+        };
+        collisions_by_system
+            .entry(system_id)
+            .or_default()
+            .push(*collision_id);
+    }
+
+    let mut converted_collision_ids = HashSet::new();
+    let mut converted_system_count = 0usize;
+    for (system_id, system_collision_ids) in collisions_by_system {
+        let mut body_ids = Vec::with_capacity(system_collision_ids.len());
+        let mut target_ids = Vec::with_capacity(system_collision_ids.len());
+        let bindings_are_complete = system_collision_ids.iter().all(|collision_id| {
+            let Some(collision) = nif.get_block(*collision_id) else {
+                return false;
+            };
+            let Some(body_id) = collision.get_field("Body ID").and_then(value_usize) else {
+                return false;
+            };
+            let Some(target_id) = field_ref(collision, "Target")
+                .filter(|id| *id >= 0)
+                .map(|id| id as usize)
+            else {
+                return false;
+            };
+            body_ids.push(body_id);
+            target_ids.push(target_id);
+            true
+        });
+        if !bindings_are_complete {
+            continue;
+        }
+
+        let Some(source_blob) = source_blobs.get(&system_id).and_then(|blob| blob.as_ref().ok())
+        else {
+            continue;
+        };
+        let Some(source_context) = source_contexts.get(&system_id) else {
+            continue;
+        };
+        let source_body_count = source_context.body_count();
+        let requires_rebuild = nif_intent.has_dynamic_bsx
+            || body_ids.iter().copied().any(|body_id| {
+                let metadata = source_metadata_for_nif_intent(
+                    source_context.body_metadata(body_id),
+                    nif_intent,
+                );
+                metadata.is_dynamic
+                    || !metadata.layer.is_some_and(is_direct_static_collision_layer)
+                    || (metadata
+                        .motion_type
+                        .is_some_and(|motion_type| motion_type != 0)
+                        && (metadata.has_ref_mass_distribution || has_animation_blocks))
+            })
+            || target_ids.iter().copied().any(|target_id| {
+                nif.get_block(target_id)
+                    .and_then(|target| string_field(target, "Name"))
+                    .is_some_and(|name| name.to_ascii_lowercase().contains("navcut"))
+            });
+        if requires_rebuild {
+            continue;
+        }
+        body_ids.sort_unstable();
+        if source_body_count == 0
+            || source_body_count != body_ids.len()
+            || !body_ids.iter().copied().eq(0..source_body_count)
+        {
+            continue;
+        }
+
+        let Ok(converted_blob) = convert_fo76_embedded_static_collision_direct(source_blob) else {
+            continue;
+        };
+        let Some(system) = nif.blocks.get_mut(system_id) else {
+            continue;
+        };
+        system.set_field(
+            "Binary Data",
+            crate::cloth::bytes_to_byte_array(&converted_blob),
+        );
+        converted_system_count += 1;
+        converted_collision_ids.extend(system_collision_ids);
+        for target_id in target_ids {
+            ensure_root_havok_bsx_flag(nif, target_id);
+        }
+    }
+
+    if converted_system_count > 0 {
+        report.changes.push(format!(
+            "FO76 hknp collision: direct-transcoded {converted_system_count} static physics system(s) in place; preserved {} bhkNPCollisionObject binding(s)",
+            converted_collision_ids.len()
+        ));
+    }
+    converted_collision_ids
+}
+
+fn is_direct_static_collision_layer(layer: u8) -> bool {
+    matches!(
+        layer,
+        // STATIC, ANIM_STATIC, TRANSPARENT, TREES, PROPS, TERRAIN, GROUND, DEBRIS,
+        // TRANSPARENT_SMALL, INVISIBLE_WALL, STAIRHELPER, COLLISIONBOX.
+        1 | 2 | 3 | 9 | 10 | 13 | 17 | 19 | 20 | 26 | 27 | 31 | 35
+    )
+}
+
 /// Lift the constraint sub-graph from the shared source physics system and remap
 /// its `constraintCinfos` body handles (source physics-system body indices) onto
 /// the rebuilt output body order (position in `pending`). Returns `None` when the
@@ -4620,11 +6619,11 @@ fn grafted_constraints_for_pending(
 /// animated door/shutter/container part: it MUST be emitted as a keyframed
 /// body (motionId → motionCinfo). Emitting it as Static yields motionId =
 /// HK_INVALID, which FO4 treats as a static collision object — the engine then
-/// never plays the NIF's Open/Close NiControllerSequence. Multi-body systems
-/// masked this (the `bodies.len() > 1 && cm_count > 0` rule in
-/// `build_fo4_multi_body_collision` grants a motionCinfo anyway), so only
-/// single-body doors (e.g. CivWarDoor01/02) regressed. Mirrors the Python
-/// `_motion_type_for_layer` in `nif/operations/collision.py`.
+/// never plays the NIF's Open/Close NiControllerSequence. Multi-body systems get
+/// a motionCinfo anyway (the `bodies.len() > 1 && cm_count > 0` rule in
+/// `build_fo4_multi_body_collision`); single-body doors (e.g. CivWarDoor01/02)
+/// depend on this. Mirrors the Python `_motion_type_for_layer` in
+/// `nif/operations/collision.py`.
 const FO4_ANIMSTATIC_LAYER: u8 = 2;
 
 fn body_motion_type_for_layer(layer: u8) -> BodyMotionType {
@@ -5323,6 +7322,18 @@ fn install_fo4_np_collision_systems_grouped(
     nif: &mut NifFile,
     entries: &mut [CollisionPlanEntry],
 ) -> Result<usize, String> {
+    let initial_block_count = nif.blocks.len();
+    let original_parent_collisions = entries
+        .iter()
+        .map(|entry| {
+            (
+                entry.parent_id,
+                nif.get_block(entry.parent_id)
+                    .and_then(|parent| parent.get_field("Collision Object"))
+                    .cloned(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
     let mut group_rank: Vec<usize> = Vec::new();
     for entry in entries.iter() {
         if !group_rank.contains(&entry.source_system_id) {
@@ -5343,7 +7354,23 @@ fn install_fo4_np_collision_systems_grouped(
         while end < entries.len() && entries[end].source_system_id == key {
             end += 1;
         }
-        regenerated += install_fo4_np_collision_system(nif, &entries[start..end], None)?;
+        match install_fo4_np_collision_system(nif, &entries[start..end], None) {
+            Ok(count) => regenerated += count,
+            Err(error) => {
+                nif.blocks.truncate(initial_block_count);
+                for (parent_id, collision) in original_parent_collisions {
+                    let Some(parent) = nif.blocks.get_mut(parent_id) else {
+                        continue;
+                    };
+                    match collision {
+                        Some(value) => parent.set_field("Collision Object", value),
+                        None => parent.fields.retain(|name, _| name != "Collision Object"),
+                    }
+                }
+                nif.rebuild_header();
+                return Err(error);
+            }
+        }
         start = end;
     }
     Ok(regenerated)
@@ -5584,7 +7611,7 @@ fn bounded_aabb_vertices(vertices: &[[f32; 3]]) -> Option<Vec<[f32; 3]>> {
 
 fn collision_build_sort_rank(shape: &MultiBodyShape) -> usize {
     match shape {
-        MultiBodyShape::CompressedMesh { .. } => 0,
+        MultiBodyShape::CompressedMesh { .. } | MultiBodyShape::RawCompressedMesh { .. } => 0,
         _ => 1,
     }
 }
@@ -5638,7 +7665,17 @@ fn fo4_havok_blob_needs_collision_rebuild(bytes: &[u8]) -> bool {
     }
 }
 
-fn regenerate_fo4_collision(nif: &mut NifFile, report: &mut ConvertFileReport) {
+#[derive(Debug, Clone)]
+struct LegacyDynamicCollision {
+    shape: Option<MultiBodyShape>,
+    position: [f32; 4],
+    orientation: [f32; 4],
+    mass: f32,
+    friction: f32,
+    restitution: f32,
+}
+
+fn regenerate_fo4_collision(nif: &mut NifFile, source_game: &str, report: &mut ConvertFileReport) {
     let collision_ids: Vec<usize> = nif
         .blocks
         .iter()
@@ -5649,6 +7686,9 @@ fn regenerate_fo4_collision(nif: &mut NifFile, report: &mut ConvertFileReport) {
         return;
     }
 
+    let collision_intent = nif_collision_intent(nif);
+    // Built once per NIF: the render mesh decides which way collision faces.
+    let visible = crate::skyrim_collision::VisibleFacets::new(collect_visible_facets(nif));
     let mut pending = Vec::new();
     let mut remove = HashSet::new();
     for collision_id in collision_ids.iter().copied() {
@@ -5664,9 +7704,21 @@ fn regenerate_fo4_collision(nif: &mut NifFile, report: &mut ConvertFileReport) {
         let Some(parent) = nif.get_block(parent_ref as usize).cloned() else {
             continue;
         };
+        let dynamic_collision =
+            legacy_dynamic_collision(nif, &collision, source_game, collision_intent);
+        // The source shape chain is about to be stripped, so decode it now. A
+        // failure here falls back to the visible-mesh AABB rather than dropping
+        // collision outright.
+        let decoded = if dynamic_collision.is_none() {
+            decode_legacy_source_shape(nif, &collision, source_game, &parent, &visible, report)
+        } else {
+            None
+        };
         pending.push((
             string_field(&parent, "Name").unwrap_or_default(),
             parent.type_name.clone(),
+            dynamic_collision,
+            decoded,
         ));
         if let Some(parent_mut) = nif.blocks.get_mut(parent_ref as usize) {
             parent_mut.set_field("Collision Object", NifValue::Ref(-1));
@@ -5677,30 +7729,189 @@ fn regenerate_fo4_collision(nif: &mut NifFile, report: &mut ConvertFileReport) {
     remove_blocks(nif, remove);
 
     let mut regenerated = 0usize;
-    for (parent_name, parent_type) in pending {
+    let mut dynamic = 0usize;
+    let mut source_shapes = 0usize;
+    for (parent_name, parent_type, dynamic_collision, decoded) in pending {
         let Some(parent_id) = find_node_by_name_and_type(nif, &parent_name, &parent_type) else {
             report.warnings.push(format!(
                 "Legacy collision parent {parent_name:?} not found after strip; skipping"
             ));
             continue;
         };
-        let vertices = collect_geometry_vertices(nif, parent_id);
-        if vertices.len() < 3 {
-            report.warnings.push(format!(
-                "Node {parent_name:?} has no FO4 triangle geometry after strip; skipping FO4 collision regeneration"
-            ));
-            continue;
-        }
-        if build_box_collision(nif, parent_id, &vertices).is_some() {
+        let is_dynamic = dynamic_collision.is_some();
+        let is_source_shape = decoded.is_some();
+        let built = match (dynamic_collision, decoded) {
+            (Some(spec), _) => {
+                let vertices = collect_geometry_vertices(nif, parent_id);
+                if vertices.len() < 3 {
+                    report.warnings.push(format!(
+                        "Node {parent_name:?} has no FO4 triangle geometry after strip; skipping FO4 collision regeneration"
+                    ));
+                    continue;
+                }
+                build_dynamic_legacy_collision(nif, parent_id, &vertices, spec)
+            }
+            (None, Some(shape)) => {
+                crate::skyrim_collision::install_static_collision(nif, parent_id, shape)
+            }
+            (None, None) => {
+                let vertices = collect_geometry_vertices(nif, parent_id);
+                if vertices.len() < 3 {
+                    report.warnings.push(format!(
+                        "Node {parent_name:?} has no FO4 triangle geometry after strip; skipping FO4 collision regeneration"
+                    ));
+                    continue;
+                }
+                build_box_collision(nif, parent_id, &vertices)
+                    .ok_or_else(|| "visible geometry has no collision volume".to_string())
+            }
+        };
+        if built.is_ok() {
             ensure_root_havok_bsx_flag(nif, parent_id);
             regenerated += 1;
+            if is_dynamic {
+                dynamic += 1;
+            }
+            if is_source_shape {
+                source_shapes += 1;
+            }
+        } else if let Err(error) = built {
+            report.warnings.push(format!(
+                "Legacy collision parent {parent_name:?}: FO4 rebuild failed ({error})"
+            ));
         }
     }
 
     report.changes.push(format!(
-        "Legacy collision: stripped {} chain(s); regenerated {regenerated} FO4 collision object(s)",
-        collision_ids.len()
+        "Legacy collision: stripped {} chain(s); regenerated {regenerated} FO4 collision object(s) ({dynamic} dynamic, {source_shapes} from source shapes, {} from visible-mesh AABB)",
+        collision_ids.len(),
+        regenerated.saturating_sub(dynamic + source_shapes),
     ));
+}
+
+/// Decode the source rigid body's real collision shape for FO3/FNV. Returns
+/// `None` when the chain is unsupported so the caller can fall back to the
+/// visible-mesh AABB.
+fn decode_legacy_source_shape(
+    nif: &NifFile,
+    collision: &NifBlock,
+    source_game: &str,
+    parent: &NifBlock,
+    visible: &crate::skyrim_collision::VisibleFacets,
+    report: &mut ConvertFileReport,
+) -> Option<MultiBodyShape> {
+    if !matches!(source_game, "fnv" | "fo3") {
+        return None;
+    }
+    let body_id = field_ref(collision, "Body").filter(|id| *id >= 0)? as usize;
+    match crate::skyrim_collision::decode_legacy_static_shape(
+        nif,
+        body_id,
+        LEGACY_HAVOK_UNIT_SCALE,
+        visible,
+    ) {
+        Ok(shape) => Some(shape),
+        Err(error) => {
+            report.warnings.push(format!(
+                "Legacy collision parent {:?}: source shape unsupported ({error}); using visible-mesh AABB",
+                string_field(parent, "Name").unwrap_or_default()
+            ));
+            None
+        }
+    }
+}
+
+fn legacy_dynamic_collision(
+    nif: &NifFile,
+    collision: &NifBlock,
+    source_game: &str,
+    intent: NifCollisionIntent,
+) -> Option<LegacyDynamicCollision> {
+    if !matches!(source_game, "fnv" | "fo3") || !intent.has_dynamic_bsx {
+        return None;
+    }
+    let body_id = field_ref(collision, "Body").filter(|id| *id >= 0)? as usize;
+    let body = nif.get_block(body_id)?;
+    let info = struct_fields(body.get_field("Rigid Body Info:550_660"))?;
+    let layer = struct_fields(info.get("Havok Filter"))
+        .and_then(|filter| value_u64(filter.get("Layer:FO")))?;
+    let motion_system = value_u64(info.get("Motion System"))?;
+    let mass = value_f64(info.get("Mass"))? as f32;
+    if layer != u64::from(FO4_CLUTTER_LAYER)
+        || motion_system != 2
+        || !mass.is_finite()
+        || mass <= 0.0
+    {
+        return None;
+    }
+
+    let scale = LEGACY_HAVOK_UNIT_SCALE;
+    let position = vec4_value(info.get("Translation")).unwrap_or([0.0; 4]);
+    let position = [
+        position[0] * scale,
+        position[1] * scale,
+        position[2] * scale,
+        position[3],
+    ];
+    let orientation = vec4_value(info.get("Rotation")).unwrap_or([0.0, 0.0, 0.0, 1.0]);
+    let shape = field_ref(body, "Shape")
+        .filter(|id| *id >= 0)
+        .and_then(|id| nif.get_block(id as usize))
+        .and_then(|shape| match shape.type_name.as_str() {
+            "bhkSphereShape" => value_f64(shape.get_field("Radius"))
+                .map(|radius| dynamic_sphere_polytope(radius as f32 * scale)),
+            _ => None,
+        });
+
+    Some(LegacyDynamicCollision {
+        shape,
+        position,
+        orientation,
+        mass,
+        friction: value_f64(info.get("Friction")).unwrap_or(0.5) as f32,
+        restitution: value_f64(info.get("Restitution")).unwrap_or(0.4) as f32,
+    })
+}
+
+fn struct_fields(value: Option<&NifValue>) -> Option<&IndexMap<String, NifValue>> {
+    match value? {
+        NifValue::Struct(fields) => Some(fields),
+        _ => None,
+    }
+}
+
+fn vec4_value(value: Option<&NifValue>) -> Option<[f32; 4]> {
+    match value? {
+        NifValue::Vec4(value) | NifValue::Color4(value) => Some(*value),
+        NifValue::Struct(fields) => Some([
+            value_f64(fields.get("x"))? as f32,
+            value_f64(fields.get("y"))? as f32,
+            value_f64(fields.get("z"))? as f32,
+            value_f64(fields.get("w"))? as f32,
+        ]),
+        _ => None,
+    }
+}
+
+fn dynamic_sphere_polytope(radius: f32) -> MultiBodyShape {
+    let mut vertices = Vec::with_capacity(26);
+    for x in -1..=1 {
+        for y in -1..=1 {
+            for z in -1..=1 {
+                if x == 0 && y == 0 && z == 0 {
+                    continue;
+                }
+                let direction = [x as f32, y as f32, z as f32];
+                let length = direction
+                    .iter()
+                    .map(|value| value * value)
+                    .sum::<f32>()
+                    .sqrt();
+                vertices.push(direction.map(|value| value * radius / length));
+            }
+        }
+    }
+    MultiBodyShape::Polytope { vertices }
 }
 
 fn collect_collision_subtree(nif: &NifFile, root_id: usize, out: &mut HashSet<usize>) {
@@ -5710,7 +7921,7 @@ fn collect_collision_subtree(nif: &NifFile, root_id: usize, out: &mut HashSet<us
     let Some(block) = nif.get_block(root_id) else {
         return;
     };
-    for field_name in ["Body", "Data", "Shape", "Sub Shapes"] {
+    for field_name in ["Body", "Data", "Shape", "Sub Shapes", "Strips Data"] {
         let Some(value) = block.get_field(field_name) else {
             continue;
         };
@@ -5730,7 +7941,90 @@ fn collect_collision_subtree(nif: &NifFile, root_id: usize, out: &mut HashSet<us
     }
 }
 
+fn build_dynamic_legacy_collision(
+    nif: &mut NifFile,
+    parent_id: usize,
+    vertices: &[[f32; 3]],
+    spec: LegacyDynamicCollision,
+) -> Result<(), String> {
+    let LegacyDynamicCollision {
+        shape,
+        position,
+        orientation,
+        mass,
+        friction,
+        restitution,
+    } = spec;
+    let (shape, position, orientation) = match shape {
+        Some(shape) => (shape, position, orientation),
+        None => (
+            box_collision_shape(vertices)
+                .ok_or_else(|| "visible geometry has no collision volume".to_string())?,
+            [0.0; 4],
+            [0.0, 0.0, 0.0, 1.0],
+        ),
+    };
+    let bodies = [shape];
+    let material_crcs = [None];
+    let body_metas = [BodyMeta {
+        collision_filter_info: None,
+        layer: FO4_CLUTTER_LAYER,
+        body_flags: None,
+        material_flags: None,
+        material_trigger_type: None,
+        position,
+        orientation,
+        motion_type: BodyMotionType::Static,
+        body_mass: Some(mass),
+        mass_distribution: None,
+    }];
+    let options = BuildOptions {
+        friction,
+        restitution,
+        layer: FO4_CLUTTER_LAYER,
+        mass,
+        convex_radius: DEFAULT_COLLISION_RADIUS as f32,
+        materials: Vec::new(),
+        user_data: None,
+        body_props_raw: None,
+        mass_distribution: None,
+    };
+    let diagnostic_context = format!("legacy dynamic collision parent block {parent_id}");
+    let blob = build_validated_np_blob(
+        &bodies,
+        &material_crcs,
+        &body_metas,
+        &options,
+        None,
+        &diagnostic_context,
+    )?;
+
+    let mut physics_fields = IndexMap::new();
+    physics_fields.insert(
+        "Binary Data".to_string(),
+        crate::cloth::bytes_to_byte_array(blob.as_slice()),
+    );
+    let physics_id = nif.add_block("bhkPhysicsSystem", Some(physics_fields));
+
+    let mut collision_fields = IndexMap::new();
+    collision_fields.insert("Flags".to_string(), NifValue::UInt(0x80));
+    collision_fields.insert("Target".to_string(), NifValue::Ref(parent_id as i32));
+    collision_fields.insert("Data".to_string(), NifValue::Ref(physics_id as i32));
+    collision_fields.insert("Body ID".to_string(), NifValue::UInt(0));
+    let collision_id = nif.add_block("bhkNPCollisionObject", Some(collision_fields));
+    nif.blocks[parent_id].set_field("Collision Object", NifValue::Ref(collision_id as i32));
+    Ok(())
+}
+
 fn build_box_collision(nif: &mut NifFile, parent_id: usize, vertices: &[[f32; 3]]) -> Option<()> {
+    let shape = box_collision_shape(vertices)?;
+    crate::skyrim_collision::install_static_collision(nif, parent_id, shape).ok()
+}
+
+fn box_collision_shape(vertices: &[[f32; 3]]) -> Option<MultiBodyShape> {
+    if vertices.is_empty() {
+        return None;
+    }
     let mut mins = vertices[0];
     let mut maxs = vertices[0];
     for vertex in vertices.iter().skip(1) {
@@ -5739,54 +8033,87 @@ fn build_box_collision(nif: &mut NifFile, parent_id: usize, vertices: &[[f32; 3]
             maxs[axis] = maxs[axis].max(vertex[axis]);
         }
     }
-    let half_extents = [
-        (maxs[0] - mins[0]) * 0.5 / HAVOK_SCALE,
-        (maxs[1] - mins[1]) * 0.5 / HAVOK_SCALE,
-        (maxs[2] - mins[2]) * 0.5 / HAVOK_SCALE,
+    let mins = mins.map(|value| value / HAVOK_SCALE);
+    let maxs = maxs.map(|value| value / HAVOK_SCALE);
+    let box_vertices = vec![
+        [mins[0], mins[1], mins[2]],
+        [maxs[0], mins[1], mins[2]],
+        [mins[0], maxs[1], mins[2]],
+        [maxs[0], maxs[1], mins[2]],
+        [mins[0], mins[1], maxs[2]],
+        [maxs[0], mins[1], maxs[2]],
+        [mins[0], maxs[1], maxs[2]],
+        [maxs[0], maxs[1], maxs[2]],
     ];
-
-    let mut box_fields = IndexMap::new();
-    box_fields.insert("Dimensions".to_string(), NifValue::Vec3(half_extents));
-    box_fields.insert(
-        "Radius".to_string(),
-        NifValue::Float(DEFAULT_COLLISION_RADIUS),
-    );
-    let box_id = nif.add_block("bhkBoxShape", Some(box_fields));
-
-    let mut rigid_fields = IndexMap::new();
-    rigid_fields.insert("Shape".to_string(), NifValue::Ref(box_id as i32));
-    rigid_fields.insert("Havok Filter".to_string(), havok_filter_struct(1));
-    let rigid_id = nif.add_block("bhkRigidBody", Some(rigid_fields));
-    if let Some(rigid) = nif.blocks.get_mut(rigid_id) {
-        let mut info = match rigid.get_field("Rigid Body Info").cloned() {
-            Some(NifValue::Struct(fields)) => fields,
-            _ => IndexMap::new(),
-        };
-        info.insert("Havok Filter".to_string(), havok_filter_struct(1));
-        info.insert("Mass".to_string(), NifValue::Float(0.0));
-        info.insert("Friction".to_string(), NifValue::Float(0.5));
-        info.insert("Restitution".to_string(), NifValue::Float(0.4));
-        info.insert("Motion System".to_string(), NifValue::UInt(7));
-        info.insert("Quality Type".to_string(), NifValue::UInt(1));
-        rigid.set_field("Rigid Body Info", NifValue::Struct(info));
-    }
-
-    let mut collision_fields = IndexMap::new();
-    collision_fields.insert("Flags".to_string(), NifValue::UInt(0x81));
-    collision_fields.insert("Target".to_string(), NifValue::Ref(parent_id as i32));
-    collision_fields.insert("Body".to_string(), NifValue::Ref(rigid_id as i32));
-    let collision_id = nif.add_block("bhkCollisionObject", Some(collision_fields));
-    let parent = nif.blocks.get_mut(parent_id)?;
-    parent.set_field("Collision Object", NifValue::Ref(collision_id as i32));
-    Some(())
+    Some(MultiBodyShape::Polytope {
+        vertices: box_vertices,
+    })
 }
 
-fn havok_filter_struct(layer: u64) -> NifValue {
-    let mut filter = IndexMap::new();
-    filter.insert("Layer".to_string(), NifValue::UInt(layer));
-    filter.insert("Flags".to_string(), NifValue::UInt(0));
-    filter.insert("Group".to_string(), NifValue::UInt(0));
-    NifValue::Struct(filter)
+/// Render-mesh facets in FO4 Havok units, used to decide which way a converted
+/// collision surface should face. Runs after `strips_to_tri_shape`, so the
+/// geometry is already `BSTriShape`.
+fn collect_visible_facets(nif: &NifFile) -> Vec<crate::skyrim_collision::VisibleFacet> {
+    let mut facets = Vec::new();
+    for block in &nif.blocks {
+        if !matches!(
+            block.type_name.as_str(),
+            "BSTriShape" | "BSSubIndexTriShape"
+        ) {
+            continue;
+        }
+        let vertices: Vec<[f32; 3]> = value_array(block.get_field("Vertex Data"))
+            .iter()
+            .filter_map(|vertex| match vertex {
+                NifValue::Struct(fields) => fields
+                    .get("Vertex")
+                    .and_then(|value| vec3_value(Some(value))),
+                _ => None,
+            })
+            .map(|vertex| vertex.map(|value| value / HAVOK_SCALE))
+            .collect();
+        if vertices.len() < 3 {
+            continue;
+        }
+        for triangle in value_array(block.get_field("Triangles")) {
+            let NifValue::Struct(fields) = triangle else {
+                continue;
+            };
+            let indices = ["v1", "v2", "v3"]
+                .into_iter()
+                .filter_map(|key| value_usize(fields.get(key)?))
+                .collect::<Vec<_>>();
+            if indices.len() != 3 || indices.iter().any(|index| *index >= vertices.len()) {
+                continue;
+            }
+            let (a, b, c) = (
+                vertices[indices[0]],
+                vertices[indices[1]],
+                vertices[indices[2]],
+            );
+            let edge1 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+            let edge2 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+            let normal = [
+                edge1[1] * edge2[2] - edge1[2] * edge2[1],
+                edge1[2] * edge2[0] - edge1[0] * edge2[2],
+                edge1[0] * edge2[1] - edge1[1] * edge2[0],
+            ];
+            if !normal.iter().all(|value| value.is_finite())
+                || normal.iter().all(|value| *value == 0.0)
+            {
+                continue;
+            }
+            facets.push(crate::skyrim_collision::VisibleFacet {
+                centroid: [
+                    (a[0] + b[0] + c[0]) / 3.0,
+                    (a[1] + b[1] + c[1]) / 3.0,
+                    (a[2] + b[2] + c[2]) / 3.0,
+                ],
+                normal,
+            });
+        }
+    }
+    facets
 }
 
 fn collect_geometry_vertices(nif: &NifFile, parent_id: usize) -> Vec<[f32; 3]> {
@@ -5895,6 +8222,465 @@ fn ensure_root_bsx_flags(nif: &mut NifFile, node_id: usize, flags: u64) {
 
 const BSX_HAVOK_FLAG: u64 = 0x02;
 
+fn deduplicate_fo76_exact_vertices(nif: &mut NifFile, report: &mut ConvertFileReport) {
+    enum VertexBucket {
+        One(usize),
+        Collisions(Vec<usize>),
+    }
+
+    let skin_use_counts = nif
+        .blocks
+        .iter()
+        .filter(|block| {
+            matches!(
+                block.type_name.as_str(),
+                "BSTriShape" | "BSSubIndexTriShape" | "BSMeshLODTriShape"
+            )
+        })
+        .filter_map(|shape| field_ref(shape, "Skin").filter(|skin| *skin >= 0))
+        .fold(HashMap::<i32, usize>::new(), |mut counts, skin| {
+            *counts.entry(skin).or_default() += 1;
+            counts
+        });
+    let shape_ids = nif
+        .blocks
+        .iter()
+        .filter(|block| {
+            matches!(
+                block.type_name.as_str(),
+                "BSTriShape" | "BSSubIndexTriShape" | "BSMeshLODTriShape"
+            )
+        })
+        .map(|block| block.block_id)
+        .collect::<Vec<_>>();
+    let mut shapes = 0usize;
+    let mut removed = 0usize;
+    let mut skipped_shared_skin = 0usize;
+
+    for shape_id in shape_ids {
+        let shape = &nif.blocks[shape_id];
+        let has_array_values = |field| matches!(shape.get_field(field), Some(NifValue::Array(values)) if !values.is_empty());
+        if has_array_values("Particle Vertices")
+            || has_array_values("Particle Normals")
+            || has_array_values("Vertices")
+        {
+            continue;
+        }
+        let skin_id = field_ref(shape, "Skin").filter(|skin| *skin >= 0);
+        if skin_id.is_some_and(|skin| skin_use_counts.get(&skin).copied().unwrap_or(0) > 1) {
+            skipped_shared_skin += 1;
+            continue;
+        }
+        let Some(NifValue::Array(vertices)) = shape.get_field("Vertex Data") else {
+            continue;
+        };
+        if vertices.len() < 2 {
+            continue;
+        }
+        let old_vertex_count = vertices.len();
+        let mut unique_source_indices = Vec::with_capacity(vertices.len());
+        let mut buckets = HashMap::<u64, VertexBucket>::with_capacity(vertices.len());
+        let mut vertex_remap = Vec::with_capacity(vertices.len());
+        for (source_id, vertex) in vertices.iter().enumerate() {
+            let hash = conversion_value_hash(vertex);
+            let unique_id = match buckets.entry(hash) {
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    let unique_id = unique_source_indices.len();
+                    unique_source_indices.push(source_id);
+                    entry.insert(VertexBucket::One(unique_id));
+                    unique_id
+                }
+                std::collections::hash_map::Entry::Occupied(entry) => {
+                    let bucket = entry.into_mut();
+                    match bucket {
+                        VertexBucket::One(candidate) => {
+                            let first = *candidate;
+                            if &vertices[unique_source_indices[first]] == vertex {
+                                first
+                            } else {
+                                let unique_id = unique_source_indices.len();
+                                unique_source_indices.push(source_id);
+                                *bucket = VertexBucket::Collisions(vec![first, unique_id]);
+                                unique_id
+                            }
+                        }
+                        VertexBucket::Collisions(candidates) => candidates
+                            .iter()
+                            .copied()
+                            .find(|candidate| &vertices[unique_source_indices[*candidate]] == vertex)
+                            .unwrap_or_else(|| {
+                                let unique_id = unique_source_indices.len();
+                                unique_source_indices.push(source_id);
+                                candidates.push(unique_id);
+                                unique_id
+                            }),
+                    }
+                }
+            };
+            vertex_remap.push(unique_id);
+        }
+        let duplicate_count = old_vertex_count - unique_source_indices.len();
+        if duplicate_count == 0 {
+            continue;
+        }
+        let vertices = match nif.blocks[shape_id].get_field_mut("Vertex Data") {
+            Some(NifValue::Array(vertices)) => std::mem::take(vertices),
+            _ => unreachable!("vertex data was validated as an array"),
+        };
+        let mut retained = unique_source_indices.into_iter();
+        let mut next_retained = retained.next();
+        let unique = vertices
+            .into_iter()
+            .enumerate()
+            .filter_map(|(source_id, vertex)| {
+                (next_retained == Some(source_id)).then(|| {
+                    next_retained = retained.next();
+                    vertex
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let mut triangles = match nif.blocks[shape_id].get_field_mut("Triangles") {
+            Some(NifValue::Array(triangles)) => std::mem::take(triangles),
+            _ => Vec::new(),
+        };
+        for triangle in &mut triangles {
+            remap_triangle_vertex_indices(triangle, &vertex_remap);
+        }
+        let triangle_count = triangles.len();
+        if let Some(skin_id) = skin_id {
+            for partition_id in reachable_skin_partition_ids(nif, skin_id as usize) {
+                if let Some(partition) = nif.blocks.get_mut(partition_id) {
+                    for value in partition.fields.values_mut() {
+                        remap_skin_vertex_maps(value, &vertex_remap);
+                    }
+                }
+            }
+        }
+
+        let shape = &mut nif.blocks[shape_id];
+        shape.set_field("Num Vertices", NifValue::UInt(unique.len() as u64));
+        shape.set_field("Vertex Data", NifValue::Array(unique));
+        shape.set_field("Triangles", NifValue::Array(triangles));
+        if shape.get_field("Data Size").is_some() {
+            let stride_words = value_u64(shape.get_field("Vertex Desc")).unwrap_or(0) & 0x0f;
+            let data_size = stride_words * 4 * (old_vertex_count - duplicate_count) as u64
+                + triangle_count as u64 * 6;
+            shape.set_field("Data Size", NifValue::UInt(data_size));
+        }
+        shapes += 1;
+        removed += duplicate_count;
+    }
+
+    if removed > 0 {
+        report.changes.push(format!(
+            "Exact vertex deduplication: collapsed {removed} full-payload duplicate(s) across {shapes} shape(s)"
+        ));
+    }
+    if skipped_shared_skin > 0 {
+        report.warnings.push(format!(
+            "Exact vertex deduplication skipped {skipped_shared_skin} shape(s) sharing a skin object; independent vertex remaps would be ambiguous"
+        ));
+    }
+}
+
+fn conversion_value_hash(value: &NifValue) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    hash_conversion_value(value, &mut hasher);
+    hasher.finish()
+}
+
+fn hash_conversion_value(value: &NifValue, hasher: &mut DefaultHasher) {
+    std::mem::discriminant(value).hash(hasher);
+    match value {
+        NifValue::Null => {}
+        NifValue::Bool(value) => value.hash(hasher),
+        NifValue::Int(value) => value.hash(hasher),
+        NifValue::UInt(value) => value.hash(hasher),
+        NifValue::Float(value) => value.to_bits().hash(hasher),
+        NifValue::FloatNan(value) => value.hash(hasher),
+        NifValue::String(value) | NifValue::Char(value) => value.hash(hasher),
+        NifValue::Ref(value) => value.hash(hasher),
+        NifValue::Vec3(values) | NifValue::Color3(values) => {
+            for value in values {
+                value.to_bits().hash(hasher);
+            }
+        }
+        NifValue::Vec4(values) | NifValue::Color4(values) | NifValue::Quaternion(values) => {
+            for value in values {
+                value.to_bits().hash(hasher);
+            }
+        }
+        NifValue::Matrix33(values) => {
+            for row in values {
+                for value in row {
+                    value.to_bits().hash(hasher);
+                }
+            }
+        }
+        NifValue::Matrix44(values) => {
+            for row in values {
+                for value in row {
+                    value.to_bits().hash(hasher);
+                }
+            }
+        }
+        NifValue::Array(values) => {
+            values.len().hash(hasher);
+            for value in values {
+                hash_conversion_value(value, hasher);
+            }
+        }
+        NifValue::Struct(fields) => {
+            fields.len().hash(hasher);
+            for (key, value) in fields {
+                key.hash(hasher);
+                hash_conversion_value(value, hasher);
+            }
+        }
+        NifValue::Bytes(values) => values.hash(hasher),
+    }
+}
+
+fn remap_triangle_vertex_indices(value: &mut NifValue, vertex_remap: &[usize]) {
+    let NifValue::Struct(fields) = value else {
+        return;
+    };
+    for (field, index) in fields.iter_mut() {
+        if matches!(field.split(':').next(), Some("v1" | "v2" | "v3")) {
+            remap_numeric_vertex_index(index, vertex_remap);
+        } else {
+            remap_triangle_vertex_indices(index, vertex_remap);
+        }
+    }
+}
+
+fn remap_numeric_vertex_index(value: &mut NifValue, vertex_remap: &[usize]) {
+    match value {
+        NifValue::Int(index) if *index >= 0 && (*index as usize) < vertex_remap.len() => {
+            *index = vertex_remap[*index as usize] as i64;
+        }
+        NifValue::UInt(index) if (*index as usize) < vertex_remap.len() => {
+            *index = vertex_remap[*index as usize] as u64;
+        }
+        _ => {}
+    }
+}
+
+fn reachable_skin_partition_ids(nif: &NifFile, skin_id: usize) -> Vec<usize> {
+    let mut found = Vec::new();
+    let mut seen = HashSet::new();
+    let mut pending = vec![skin_id];
+    while let Some(block_id) = pending.pop() {
+        if block_id >= nif.blocks.len() || !seen.insert(block_id) {
+            continue;
+        }
+        let block = &nif.blocks[block_id];
+        if block.type_name == "NiSkinPartition" {
+            found.push(block_id);
+        }
+        pending.extend(
+            conversion_block_refs(block)
+                .into_iter()
+                .filter_map(|reference| usize::try_from(reference).ok()),
+        );
+    }
+    found
+}
+
+fn remap_skin_vertex_maps(value: &mut NifValue, vertex_remap: &[usize]) {
+    match value {
+        NifValue::Struct(fields) => {
+            for (field, value) in fields {
+                if field.split(':').next() == Some("Vertex Map") {
+                    if let NifValue::Array(indices) = value {
+                        for index in indices {
+                            remap_numeric_vertex_index(index, vertex_remap);
+                        }
+                    }
+                } else {
+                    remap_skin_vertex_maps(value, vertex_remap);
+                }
+            }
+        }
+        NifValue::Array(values) => {
+            for value in values {
+                remap_skin_vertex_maps(value, vertex_remap);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn normalize_fo76_vertex_color_shader_flags(nif: &mut NifFile, report: &mut ConvertFileReport) {
+    let counts = shader_vertex_color_counts(nif);
+    let mut added = 0usize;
+    let mut removed = 0usize;
+    for (shader_id, (total, with_colors)) in counts {
+        let Some(shader) = nif.blocks.get_mut(shader_id) else {
+            continue;
+        };
+        let old_flags2 = value_u64(shader.get_field("Shader Flags 2")).unwrap_or(0);
+        let new_flags2 = if with_colors > 0 {
+            old_flags2 | u64::from(SLSF2_VERTEX_COLORS)
+        } else {
+            old_flags2 & !u64::from(SLSF2_VERTEX_COLORS)
+        };
+        if new_flags2 != old_flags2 {
+            shader.set_field("Shader Flags 2", NifValue::UInt(new_flags2));
+            if shader.fields.contains_key("Shader Flags 2:FO4") {
+                shader
+                    .fields
+                    .insert("Shader Flags 2:FO4".to_string(), NifValue::UInt(new_flags2));
+            }
+            if new_flags2 & u64::from(SLSF2_VERTEX_COLORS) != 0 {
+                added += 1;
+            } else {
+                removed += 1;
+            }
+        }
+        if with_colors == 0 {
+            let old_flags1 = value_u64(shader.get_field("Shader Flags 1")).unwrap_or(0);
+            let new_flags1 = old_flags1 & !SLSF1_VERTEX_ALPHA;
+            if new_flags1 != old_flags1 {
+                shader.set_field("Shader Flags 1", NifValue::UInt(new_flags1));
+                if shader.fields.contains_key("Shader Flags 1:FO4") {
+                    shader
+                        .fields
+                        .insert("Shader Flags 1:FO4".to_string(), NifValue::UInt(new_flags1));
+                }
+            }
+        }
+        if with_colors > 0 && with_colors < total {
+            report.warnings.push(format!(
+                "Shader block {shader_id} is shared by FO4 geometry with and without vertex colors; Vertex_Colors was enabled"
+            ));
+        }
+    }
+    if added + removed > 0 {
+        report.changes.push(format!(
+            "Vertex-color shader contract: enabled {added}, disabled {removed} shader flag(s)"
+        ));
+    }
+}
+
+fn normalize_fo76_bsx_contract(nif: &mut NifFile, report: &mut ConvertFileReport) {
+    // Switch-node flora authors External Emit only on BSX, so the shader graph
+    // cannot reconstruct that runtime intent after the flag is stripped.
+    let has_authored_external_emit = nif.blocks.iter().any(|block| {
+        block.type_name == "BSXFlags"
+            && value_u64(block.get_field("Integer Data")).unwrap_or(0) & BSX_EXTERNAL_EMIT_FLAG != 0
+    });
+    let has_bounds = nif
+        .blocks
+        .iter()
+        .any(|block| crate::schema::SCHEMA.is_subtype_of(&block.type_name, "BSBound"));
+    let has_controllers = nif
+        .blocks
+        .iter()
+        .any(|block| crate::schema::SCHEMA.is_subtype_of(&block.type_name, "NiTimeController"));
+    let has_addons = nif
+        .blocks
+        .iter()
+        .any(|block| block.type_name == "BSValueNode");
+    // FO4/FO76 express a ragdoll as one `bhkRagdollSystem` holding an embedded
+    // Havok blob, not as the `bhkConstraint` blocks Skyrim-era NIFs use — 0 of
+    // 29 vanilla FO4 actor skeletons carry a `bhkConstraint`, so the legacy
+    // clauses alone can never fire on an FO4-format skeleton.
+    let has_ragdoll = nif.blocks.iter().any(|block| {
+        block.type_name == "bhkRagdollSystem"
+            || crate::schema::SCHEMA.is_subtype_of(&block.type_name, "bhkConstraint")
+            || crate::schema::SCHEMA.is_subtype_of(&block.type_name, "bhkBallSocketConstraintChain")
+    });
+    let has_marker = nif.blocks.iter().any(|block| {
+        string_field(block, "Name")
+            .is_some_and(|name| name.to_ascii_lowercase().contains("editormarker"))
+    });
+    let has_external_emittance = nif.blocks.iter().any(|block| {
+        crate::schema::SCHEMA.is_subtype_of(&block.type_name, "BSShaderProperty")
+            && value_u64(block.get_field("Shader Flags 1")).unwrap_or(0) & SLSF1_EXTERNAL_EMITTANCE
+                != 0
+    });
+
+    let mut structural = 0u64;
+    if (has_controllers || has_addons) && !has_bounds {
+        structural |= BSX_ANIMATED_FLAG;
+    }
+    if has_live_collision_object(nif) {
+        structural |= BSX_HAVOK_FLAG;
+    }
+    if has_ragdoll {
+        structural |= BSX_RAGDOLL_FLAG;
+    }
+    if has_addons {
+        structural |= BSX_ADDON_FLAG;
+    }
+    if has_marker {
+        structural |= BSX_EDITOR_MARKER_FLAG;
+    }
+    if has_authored_external_emit || has_external_emittance {
+        structural |= BSX_EXTERNAL_EMIT_FLAG;
+    }
+
+    // Ragdoll is added structurally but never cleared: vanilla FO4 ships actor
+    // skeletons carrying the flag with no ragdoll blocks at all (`robot`,
+    // `createabot`), so an authored bit is intent we cannot re-derive.
+    let managed = BSX_ANIMATED_FLAG
+        | BSX_HAVOK_FLAG
+        | BSX_ADDON_FLAG
+        | BSX_EDITOR_MARKER_FLAG
+        | BSX_EXTERNAL_EMIT_FLAG;
+    let bsx_ids = nif
+        .blocks
+        .iter()
+        .filter(|block| block.type_name == "BSXFlags")
+        .map(|block| block.block_id)
+        .collect::<Vec<_>>();
+    if bsx_ids.is_empty() {
+        if structural != 0 {
+            let root_id = nif
+                .header
+                .footer_roots
+                .iter()
+                .copied()
+                .find(|root| *root >= 0)
+                .map(|root| root as usize)
+                .unwrap_or(0);
+            ensure_root_bsx_flags(nif, root_id, structural);
+            report.changes.push(format!(
+                "BSX target contract: added missing flags {structural}"
+            ));
+        }
+        return;
+    }
+
+    let mut remove = HashSet::new();
+    let mut changes = Vec::new();
+    for block_id in bsx_ids {
+        let block = &mut nif.blocks[block_id];
+        let current = value_u64(block.get_field("Integer Data")).unwrap_or(0);
+        let desired = (current & !managed) | structural;
+        if desired == 0 {
+            remove.insert(block_id);
+            changes.push(format!("{current}->removed"));
+            continue;
+        }
+        block.set_field("Name", NifValue::String("BSX".to_string()));
+        if desired != current {
+            block.set_field("Integer Data", NifValue::UInt(desired));
+            changes.push(format!("{current}->{desired}"));
+        }
+    }
+    detach_extra_data_refs(nif, &remove);
+    remove_blocks(nif, remove);
+    if !changes.is_empty() {
+        report.changes.push(format!(
+            "BSX target contract: normalized {}",
+            changes.join(", ")
+        ));
+    }
+}
+
 fn reconcile_havok_bsx_flags(nif: &mut NifFile, report: &mut ConvertFileReport) {
     if has_live_collision_object(nif) {
         return;
@@ -5964,7 +8750,7 @@ fn normalize_fo4_root_node(
     nif: &mut NifFile,
     weapon_role: Option<&str>,
     normalize_fo76_static_flags: bool,
-    preserve_scol_root_flags: bool,
+    preserve_fo76_static_root_flag: bool,
     report: &mut ConvertFileReport,
 ) {
     let mut roots: Vec<usize> = nif
@@ -5976,9 +8762,11 @@ fn normalize_fo4_root_node(
     if roots.is_empty() && !nif.blocks.is_empty() {
         roots.push(0);
     }
+    let melee_root = matches!(weapon_role, Some("melee"))
+        .then(|| roots.first().copied())
+        .flatten();
     let mut converted = 0usize;
     for root_id in roots {
-        let add_melee_marker = matches!(weapon_role, Some("melee"));
         let root_controller_is_manager = nif
             .blocks
             .get(root_id)
@@ -6014,7 +8802,7 @@ fn normalize_fo4_root_node(
                 root.set_field("Flags", NifValue::UInt(FO4_NINODE_ROOT_FLAGS));
                 converted += 1;
             } else if normalize_fo76_static_flags
-                && !preserve_scol_root_flags
+                && !preserve_fo76_static_root_flag
                 && root.type_name == "NiNode"
                 && value_u64(root.get_field("Flags"))
                     .is_some_and(|flags| flags & FO76_STATIC_ROOT_FLAG != 0)
@@ -6047,9 +8835,11 @@ fn normalize_fo4_root_node(
                 }
             }
         }
-        if add_melee_marker && ensure_root_weapon_marker(nif, root_id) {
-            converted += 1;
-        }
+    }
+    if let Some(root_id) = melee_root
+        && ensure_root_weapon_marker(nif, root_id)
+    {
+        converted += 1;
     }
     if converted > 0 {
         nif.rebuild_header();
@@ -6108,55 +8898,384 @@ fn normalize_fo76_fo4_scene_node_flags(nif: &mut NifFile, report: &mut ConvertFi
     }
 }
 
+fn normalize_legacy_fo4_av_flags(nif: &mut NifFile, report: &mut ConvertFileReport) {
+    let mut normalized = 0usize;
+    for block in &mut nif.blocks {
+        if !crate::schema::SCHEMA.is_subtype_of(&block.type_name, "NiAVObject") {
+            continue;
+        }
+        let Some(flags) = value_u64(block.get_field("Flags")) else {
+            continue;
+        };
+        if flags & NIF_NODE_PRESERVE_HIGH_FLAG_COMPANION == 0 {
+            continue;
+        }
+        block.set_field(
+            "Flags",
+            NifValue::UInt(flags & !NIF_NODE_PRESERVE_HIGH_FLAG_COMPANION),
+        );
+        normalized += 1;
+    }
+    if normalized > 0 {
+        report.changes.push(format!(
+            "Removed pre-FO4 0x80000 flag from {normalized} AV object(s)"
+        ));
+    }
+}
+
 fn ensure_root_weapon_marker(nif: &mut NifFile, root_id: usize) -> bool {
-    let mut extra_ids = nif
+    let original_extra_ids = nif
         .get_block(root_id)
         .and_then(|root| root.get_field("Extra Data List"))
-        .and_then(|value| match value {
-            NifValue::Array(items) => Some(
-                items
-                    .iter()
-                    .filter_map(|item| match item {
-                        NifValue::Ref(id) if *id >= 0 => Some(*id),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>(),
-            ),
-            _ => None,
-        })
+        .map(|value| ref_array(Some(value)))
         .unwrap_or_default();
-    if extra_ids.iter().copied().any(|extra_id| {
-        nif.get_block(extra_id as usize).is_some_and(|extra| {
-            extra.type_name == "NiStringExtraData"
-                && string_field(extra, "Name").unwrap_or_default() == "WEAPON"
-        })
-    }) {
-        return false;
+    let candidate_ids = original_extra_ids
+        .iter()
+        .filter_map(|id| usize::try_from(*id).ok())
+        .filter(|id| nif.get_block(*id).is_some_and(is_weapon_marker_candidate))
+        .collect::<Vec<_>>();
+    let marker_id = candidate_ids
+        .iter()
+        .copied()
+        .find(|id| extra_data_parent_ids(nif, *id) == [root_id])
+        .unwrap_or_else(|| nif.add_block("NiStringExtraData", None));
+    let mut changed = candidate_ids.as_slice() != [marker_id];
+    if let Some(marker) = nif.blocks.get_mut(marker_id) {
+        if string_field(marker, "Name").unwrap_or_default() != "Prn" {
+            marker.set_field("Name", NifValue::String("Prn".to_string()));
+            changed = true;
+        }
+        if string_field(marker, "String Data").unwrap_or_default() != "WEAPON" {
+            marker.set_field("String Data", NifValue::String("WEAPON".to_string()));
+            changed = true;
+        }
     }
 
-    let marker_id = nif.blocks.len();
-    let mut marker = NifBlock::new(marker_id, "NiStringExtraData");
-    marker.set_field("Name", NifValue::String("WEAPON".to_string()));
-    marker.set_field("String Data", NifValue::String("WEAPON".to_string()));
-    nif.blocks.push(marker);
-    extra_ids.push(marker_id as i32);
+    let candidate_set = candidate_ids.into_iter().collect::<HashSet<_>>();
+    let mut extra_ids = Vec::with_capacity(original_extra_ids.len() + 1);
+    for extra_id in original_extra_ids.iter().copied() {
+        let Some(id) = usize::try_from(extra_id).ok() else {
+            continue;
+        };
+        if candidate_set.contains(&id) {
+            if id == marker_id && !extra_ids.contains(&extra_id) {
+                extra_ids.push(extra_id);
+            }
+        } else if !extra_ids.contains(&extra_id) {
+            extra_ids.push(extra_id);
+        }
+    }
+    if !extra_ids.contains(&(marker_id as i32)) {
+        extra_ids.push(marker_id as i32);
+    }
+    changed |= original_extra_ids != extra_ids;
     if let Some(root) = nif.blocks.get_mut(root_id) {
         root.set_field(
             "Extra Data List",
-            NifValue::Array(
-                extra_ids
-                    .iter()
-                    .copied()
-                    .map(|id| NifValue::Int(id as i64))
-                    .collect(),
-            ),
+            NifValue::Array(extra_ids.iter().copied().map(NifValue::Ref).collect()),
         );
         root.set_field(
             "Num Extra Data List",
             NifValue::UInt(extra_ids.len() as u64),
         );
     }
-    true
+    changed
+}
+
+fn is_weapon_marker_candidate(block: &NifBlock) -> bool {
+    block.type_name == "NiStringExtraData"
+        && matches!(
+            string_field(block, "Name")
+                .unwrap_or_default()
+                .to_ascii_lowercase()
+                .as_str(),
+            "prn" | "weapon"
+        )
+}
+
+fn extra_data_parent_ids(nif: &NifFile, extra_id: usize) -> Vec<usize> {
+    nif.blocks
+        .iter()
+        .filter(|block| {
+            block
+                .get_field("Extra Data List")
+                .map(|value| ref_array(Some(value)))
+                .is_some_and(|ids| ids.contains(&(extra_id as i32)))
+        })
+        .map(|block| block.block_id)
+        .collect()
+}
+
+fn required_legacy_glow_texture_paths(
+    nif: &NifFile,
+    source_game: &str,
+    target_game: &str,
+) -> HashSet<String> {
+    if !matches!(source_game, "fnv" | "fo3") || target_game != "fo4" {
+        return HashSet::new();
+    }
+    nif.blocks
+        .iter()
+        .filter(|shader| shader.type_name == "BSShaderPPLightingProperty")
+        .filter(|shader| {
+            value_u64(shader.get_field("Shader Type")) == Some(BSLSP_SHADER_TYPE_GLOW)
+                || string_field(shader, "Shader Type")
+                    .is_some_and(|value| value.to_ascii_lowercase().contains("glow"))
+                || flag_names_to_bits(shader.get_field("Shader Flags 2"), false) & SLSF2_GLOW_MAP
+                    != 0
+        })
+        .filter_map(|shader| field_ref(shader, "Texture Set"))
+        .filter(|id| *id >= 0)
+        .filter_map(|id| nif.get_block(id as usize))
+        .filter_map(|texture_set| {
+            value_array(texture_set.get_field("Textures"))
+                .get(2)
+                .cloned()
+        })
+        .filter_map(|value| match value {
+            NifValue::String(path) if !path.trim_end_matches('\0').trim().is_empty() => {
+                Some(canonical_texture_path(&path, "", "").to_ascii_lowercase())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn close_legacy_melee_texture_gaps(
+    nif: &mut NifFile,
+    source_nif: &Path,
+    target_nif: &Path,
+    bgsm_output_dir: Option<&Path>,
+    required_glow_textures: &HashSet<String>,
+    report: &mut ConvertFileReport,
+) -> Result<Vec<PlannedTextureEmission>, std::io::Error> {
+    let Some(source_data_root) = asset_data_root(source_nif, "meshes") else {
+        report.warnings.push(format!(
+            "Legacy melee textures: could not locate source Data root for {}",
+            source_nif.display()
+        ));
+        return Ok(Vec::new());
+    };
+    let target_data_root = bgsm_output_dir
+        .and_then(|path| asset_data_root(path, "materials"))
+        .or_else(|| asset_data_root(target_nif, "meshes"));
+    let mut cleared_glow_texture_sets = HashSet::new();
+    let mut emissions = Vec::new();
+    let mut planned_targets = HashSet::new();
+
+    for texture_set in nif
+        .blocks
+        .iter_mut()
+        .filter(|block| block.type_name == "BSShaderTextureSet")
+    {
+        let mut textures = value_array(texture_set.get_field("Textures"));
+        textures.resize(FO4_TEXTURE_SLOT_COUNT, NifValue::String(String::new()));
+        let mut changed = false;
+
+        if let Some(NifValue::String(glow_path)) = textures.get(2) {
+            let source_key = canonical_texture_path(glow_path, "", "");
+            let source_path = asset_path(&source_data_root, &source_key);
+            if source_key.to_ascii_lowercase().ends_with("_g.dds")
+                && source_path.as_ref().is_some_and(|path| !path.is_file())
+                && !required_glow_textures.contains(&source_key.to_ascii_lowercase())
+            {
+                textures[2] = NifValue::String(String::new());
+                cleared_glow_texture_sets.insert(texture_set.block_id);
+                changed = true;
+                report.changes.push(format!(
+                    "Legacy melee textures: cleared optional missing glow {source_key}"
+                ));
+            }
+        }
+
+        if let Some(NifValue::String(normal_path)) = textures.get(1) {
+            let source_key = canonical_texture_path(normal_path, "", "");
+            let source_path = asset_path(&source_data_root, &source_key);
+            if source_key.to_ascii_lowercase().ends_with("_n.dds")
+                && source_path.as_ref().is_some_and(|path| !path.is_file())
+            {
+                let Some(target_data_root) = target_data_root.as_ref() else {
+                    report.warnings.push(format!(
+                        "Legacy melee textures: cannot emit missing normal fallback without a target Data root: {normal_path}"
+                    ));
+                    continue;
+                };
+                let Some(target_path) = asset_path(target_data_root, normal_path) else {
+                    report.warnings.push(format!(
+                        "Legacy melee textures: rejected unsafe target normal path {normal_path}"
+                    ));
+                    continue;
+                };
+                if target_path.exists() && !target_path.is_file() {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!(
+                            "legacy melee normal target is not a file: {}",
+                            target_path.display()
+                        ),
+                    ));
+                }
+                if !target_path.is_file() && planned_targets.insert(target_path.clone()) {
+                    emissions.push(PlannedTextureEmission {
+                        target_path,
+                        target_relative_path: normal_path.clone(),
+                    });
+                }
+            }
+        }
+
+        if changed {
+            texture_set.set_field("Textures", NifValue::Array(textures));
+        }
+    }
+
+    if !cleared_glow_texture_sets.is_empty() {
+        for shader in nif
+            .blocks
+            .iter_mut()
+            .filter(|block| block.type_name == "BSLightingShaderProperty")
+        {
+            let Some(texture_set_id) = field_ref(shader, "Texture Set").filter(|id| *id >= 0)
+            else {
+                continue;
+            };
+            if !cleared_glow_texture_sets.contains(&(texture_set_id as usize)) {
+                continue;
+            }
+            clear_shader_flag(shader, "Shader Flags 2", SLSF2_GLOW_MAP);
+            clear_shader_flag(shader, "Shader Flags 2:FO4", SLSF2_GLOW_MAP);
+            if value_u64(shader.get_field("Shader Type")) == Some(BSLSP_SHADER_TYPE_GLOW) {
+                shader.set_field("Shader Type", NifValue::UInt(BSLSP_SHADER_TYPE_DEFAULT));
+            }
+        }
+    }
+
+    Ok(emissions)
+}
+
+fn asset_data_root(path: &Path, asset_directory: &str) -> Option<PathBuf> {
+    path.ancestors()
+        .find(|ancestor| {
+            ancestor
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.eq_ignore_ascii_case(asset_directory))
+        })
+        .and_then(Path::parent)
+        .map(Path::to_path_buf)
+}
+
+fn asset_path(data_root: &Path, asset_path: &str) -> Option<PathBuf> {
+    let normalized = asset_path.trim_end_matches('\0').trim().replace('/', "\\");
+    if normalized.is_empty()
+        || Path::new(&normalized).is_absolute()
+        || normalized
+            .split('\\')
+            .any(|component| component.is_empty() || component == ".." || component == ".")
+    {
+        return None;
+    }
+    let mut parts = normalized.split('\\');
+    let root = parts.next()?;
+    if !matches!(
+        root.to_ascii_lowercase().as_str(),
+        "textures" | "materials" | "meshes"
+    ) {
+        return None;
+    }
+    let mut output = data_root.join(root);
+    for part in parts {
+        output.push(part);
+    }
+    Some(output)
+}
+
+fn emit_planned_textures(
+    emissions: &[PlannedTextureEmission],
+    report: &mut ConvertFileReport,
+) -> Result<(), std::io::Error> {
+    static TEMP_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let bytes = flat_fo4_normal_dds();
+    for emission in emissions {
+        if let Some(parent) = emission.target_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let sequence = TEMP_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let extension = emission
+            .target_path
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or("dds");
+        let temporary = emission.target_path.with_extension(format!(
+            "{extension}.tmp.{}.{}",
+            std::process::id(),
+            sequence
+        ));
+        let write_result = (|| {
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temporary)?;
+            use std::io::Write;
+            file.write_all(&bytes)?;
+            file.sync_all()
+        })();
+        if let Err(error) = write_result {
+            let _ = std::fs::remove_file(&temporary);
+            return Err(error);
+        }
+        if let Err(error) = std::fs::hard_link(&temporary, &emission.target_path) {
+            let _ = std::fs::remove_file(&temporary);
+            if !emission.target_path.is_file() {
+                return Err(error);
+            }
+        } else {
+            std::fs::remove_file(&temporary)?;
+        }
+        report.changes.push(format!(
+            "Legacy melee textures: emitted deterministic flat FO4 BC5 normal {}",
+            emission.target_relative_path
+        ));
+        report
+            .emitted_textures
+            .push(emission.target_path.to_string_lossy().into_owned());
+    }
+    Ok(())
+}
+
+fn flat_fo4_normal_dds() -> Vec<u8> {
+    fn push_u32(bytes: &mut Vec<u8>, value: u32) {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+
+    let mut bytes = Vec::with_capacity(176);
+    bytes.extend_from_slice(b"DDS ");
+    push_u32(&mut bytes, 124);
+    push_u32(&mut bytes, 0x000a_1007);
+    push_u32(&mut bytes, 4);
+    push_u32(&mut bytes, 4);
+    push_u32(&mut bytes, 16);
+    push_u32(&mut bytes, 0);
+    push_u32(&mut bytes, 3);
+    for _ in 0..11 {
+        push_u32(&mut bytes, 0);
+    }
+    push_u32(&mut bytes, 32);
+    push_u32(&mut bytes, 0x0000_0004);
+    bytes.extend_from_slice(b"ATI2");
+    for _ in 0..5 {
+        push_u32(&mut bytes, 0);
+    }
+    push_u32(&mut bytes, 0x0040_1008);
+    for _ in 0..4 {
+        push_u32(&mut bytes, 0);
+    }
+    let flat_channel = [128, 128, 0, 0, 0, 0, 0, 0];
+    for _ in 0..3 {
+        bytes.extend_from_slice(&flat_channel);
+        bytes.extend_from_slice(&flat_channel);
+    }
+    bytes
 }
 
 fn normalize_texture_sets(
@@ -6168,6 +9287,7 @@ fn normalize_texture_sets(
     report: &mut ConvertFileReport,
 ) {
     let mut normalized = 0usize;
+    let mut invalid = 0usize;
     for block in nif.blocks.iter_mut() {
         if block.type_name != "BSShaderTextureSet" {
             continue;
@@ -6185,6 +9305,19 @@ fn normalize_texture_sets(
                     *path = String::new();
                     changed = true;
                 }
+                continue;
+            }
+            if path.chars().any(char::is_control)
+                || Path::new(path).is_absolute()
+                || path.split(['/', '\\']).any(|component| component == "..")
+                || !path
+                    .trim_end_matches('\0')
+                    .to_ascii_lowercase()
+                    .ends_with(".dds")
+            {
+                *path = String::new();
+                changed = true;
+                invalid += 1;
                 continue;
             }
             let source_key = canonical_texture_path(path, "", "");
@@ -6212,6 +9345,50 @@ fn normalize_texture_sets(
     if normalized > 0 {
         report.changes.push(format!(
             "BSShaderTextureSet: normalized {normalized} block's texture paths"
+        ));
+    }
+    if invalid > 0 {
+        report.warnings.push(format!(
+            "BSShaderTextureSet: cleared {invalid} invalid source texture path(s)"
+        ));
+    }
+}
+
+fn normalize_fo76_inline_texture_paths(nif: &mut NifFile, report: &mut ConvertFileReport) {
+    let mut changed = 0usize;
+    for block in &mut nif.blocks {
+        let fields: &[&str] = match block.type_name.as_str() {
+            "BSEffectShaderProperty" => &[
+                "Source Texture",
+                "Grayscale Texture",
+                "Greyscale Texture",
+                "Env Map Texture",
+                "Normal Texture",
+                "Env Mask Texture",
+            ],
+            "BSSkyShaderProperty" => &["Source Texture"],
+            "BSShaderNoLightingProperty" | "TallGrassShaderProperty" | "TileShaderProperty" => {
+                &["File Name"]
+            }
+            _ => &[],
+        };
+        for field in fields {
+            let Some(NifValue::String(path)) = block.get_field(field).cloned() else {
+                continue;
+            };
+            if path.trim_end_matches('\0').trim().is_empty() {
+                continue;
+            }
+            let normalized = canonical_texture_path(&path, "fo76", "fo4");
+            if normalized != path {
+                block.set_field(field, NifValue::String(normalized));
+                changed += 1;
+            }
+        }
+    }
+    if changed > 0 {
+        report.changes.push(format!(
+            "Inline shader textures: normalized {changed} FO76 texture path(s) for FO4"
         ));
     }
 }
@@ -6485,28 +9662,431 @@ fn remove_blocks(nif: &mut NifFile, remove: HashSet<usize>) {
     }
     let mut ids: Vec<usize> = remove.into_iter().collect();
     ids.sort_unstable();
+    let lightning_refs = nif
+        .blocks
+        .iter()
+        .filter(|block| block.type_name == "BSProceduralLightningController")
+        .map(|block| {
+            let refs = (1..=9)
+                .filter_map(|index| {
+                    let field = format!("Interpolator {index}");
+                    field_ref(block, &field).map(|reference| (field, reference))
+                })
+                .collect::<Vec<_>>();
+            (block.block_id, refs)
+        })
+        .collect::<Vec<_>>();
+    let old_len = nif.blocks.len();
+    let removed = ids.iter().copied().collect::<HashSet<_>>();
+    let remap = (0..old_len)
+        .map(|old_id| {
+            let new_id = if removed.contains(&old_id) {
+                -1
+            } else {
+                (old_id - ids.partition_point(|removed_id| *removed_id < old_id)) as i32
+            };
+            (old_id as i32, new_id)
+        })
+        .collect::<HashMap<_, _>>();
     nif.remove_blocks(&ids);
+    for (old_controller, refs) in lightning_refs {
+        let Some(new_controller) = remap
+            .get(&(old_controller as i32))
+            .copied()
+            .filter(|controller| *controller >= 0)
+            .map(|controller| controller as usize)
+        else {
+            continue;
+        };
+        let Some(block) = nif.blocks.get_mut(new_controller) else {
+            continue;
+        };
+        for (field, old_reference) in refs {
+            let new_reference = if old_reference < 0 {
+                old_reference
+            } else {
+                remap.get(&old_reference).copied().unwrap_or(-1)
+            };
+            block.set_field(&field, NifValue::Ref(new_reference));
+        }
+    }
 }
 
-fn replace_child_ref(nif: &mut NifFile, old_ref: i32, new_ref: i32) {
+fn replace_block_ref(nif: &mut NifFile, old_ref: i32, new_ref: i32) {
+    for block in nif.blocks.iter_mut() {
+        for value in block.fields.values_mut() {
+            replace_value_ref(value, old_ref, new_ref);
+        }
+        if block.type_name == "NiDefaultAVObjectPalette"
+            && let Some(NifValue::Array(entries)) = block.get_field("Objs").cloned()
+        {
+            let entries = entries
+                .into_iter()
+                .map(|entry| match entry {
+                    NifValue::Struct(mut fields)
+                        if value_ref(fields.get("AV Object")) == Some(old_ref) =>
+                    {
+                        fields.insert("AV Object".to_string(), NifValue::Ref(new_ref));
+                        NifValue::Struct(fields)
+                    }
+                    entry => entry,
+                })
+                .collect();
+            block.set_field("Objs", NifValue::Array(entries));
+        }
+    }
+}
+
+fn replace_value_ref(value: &mut NifValue, old_ref: i32, new_ref: i32) {
+    match value {
+        NifValue::Ref(reference) if *reference == old_ref => *reference = new_ref,
+        NifValue::Array(values) => {
+            for value in values {
+                replace_value_ref(value, old_ref, new_ref);
+            }
+        }
+        NifValue::Struct(fields) => {
+            for value in fields.values_mut() {
+                replace_value_ref(value, old_ref, new_ref);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn prune_legacy_material_controller_links(nif: &mut NifFile, report: &mut ConvertFileReport) {
+    let mut removed = 0usize;
+    for sequence in nif
+        .blocks
+        .iter_mut()
+        .filter(|block| block.type_name == "NiControllerSequence")
+    {
+        let Some(NifValue::Array(controlled_blocks)) =
+            sequence.get_field("Controlled Blocks").cloned()
+        else {
+            continue;
+        };
+        let retained = controlled_blocks
+            .into_iter()
+            .filter(|controlled_block| {
+                let NifValue::Struct(fields) = controlled_block else {
+                    return true;
+                };
+                let property_type = fields
+                    .get("Property Type")
+                    .and_then(nif_value_string)
+                    .unwrap_or_default();
+                let controller_type = fields
+                    .get("Controller Type")
+                    .and_then(nif_value_string)
+                    .unwrap_or_default();
+                let incompatible =
+                    matches!(property_type, "NiMaterialProperty" | "NiTexturingProperty")
+                        || matches!(
+                            controller_type,
+                            "NiAlphaController"
+                                | "NiMaterialColorController"
+                                | "NiTextureTransformController"
+                        );
+                if incompatible {
+                    removed += 1;
+                }
+                !incompatible
+            })
+            .collect::<Vec<_>>();
+        sequence.set_field(
+            "Num Controlled Blocks",
+            NifValue::UInt(retained.len() as u64),
+        );
+        sequence.set_field("Controlled Blocks", NifValue::Array(retained));
+    }
+    if removed > 0 {
+        report.changes.push(format!(
+            "Legacy controllers: removed {removed} sequence link(s) targeting discarded material properties"
+        ));
+    }
+}
+
+fn nif_value_string(value: &NifValue) -> Option<&str> {
+    match value {
+        NifValue::String(value) => Some(value),
+        _ => None,
+    }
+}
+
+fn prune_unreachable_legacy_blocks(nif: &mut NifFile, report: &mut ConvertFileReport) {
+    let mut reachable = HashSet::new();
+    let mut pending = nif
+        .header
+        .footer_roots
+        .iter()
+        .copied()
+        .filter(|root| *root >= 0)
+        .map(|root| root as usize)
+        .collect::<Vec<_>>();
+    if pending.is_empty() && !nif.blocks.is_empty() {
+        pending.push(0);
+    }
+    while let Some(block_id) = pending.pop() {
+        if block_id >= nif.blocks.len() || !reachable.insert(block_id) {
+            continue;
+        }
+        let mut references = Vec::new();
+        for value in nif.blocks[block_id].fields.values() {
+            collect_value_refs(value, &mut references);
+        }
+        collect_legacy_nested_refs(&nif.blocks[block_id], &mut references);
+        pending.extend(references);
+    }
+
+    let remove = nif
+        .blocks
+        .iter()
+        .filter(|block| !reachable.contains(&block.block_id))
+        .map(|block| block.block_id)
+        .collect::<HashSet<_>>();
+    if remove.is_empty() {
+        return;
+    }
+    let removed = remove.len();
+    remove_blocks(nif, remove);
+    report.changes.push(format!(
+        "Legacy cleanup: pruned {removed} unreachable property/controller block(s)"
+    ));
+}
+
+fn detach_legacy_decal_placement_vector_nodes(nif: &mut NifFile, report: &mut ConvertFileReport) {
+    let decal_nodes = nif
+        .blocks
+        .iter()
+        .filter(|block| {
+            is_node_type(&block.type_name)
+                && string_field(block, "Name")
+                    .is_some_and(|name| name.starts_with("DecalPlacementVector"))
+        })
+        .map(|block| block.block_id as i32)
+        .collect::<HashSet<_>>();
+    if decal_nodes.is_empty() {
+        return;
+    }
+
+    let mut detached = 0usize;
     for block in nif.blocks.iter_mut() {
         let Some(NifValue::Array(children)) = block.get_field("Children").cloned() else {
             continue;
         };
-        let mut changed = false;
-        let updated = children
+        let retained = children
             .into_iter()
-            .map(|value| {
-                if value_ref(Some(&value)) == Some(old_ref) {
-                    changed = true;
-                    NifValue::Ref(new_ref)
-                } else {
-                    value
-                }
+            .filter(|child| {
+                let remove = value_ref(Some(child)).is_some_and(|id| decal_nodes.contains(&id));
+                detached += usize::from(remove);
+                !remove
             })
-            .collect();
-        if changed {
-            block.set_field("Children", NifValue::Array(updated));
+            .collect::<Vec<_>>();
+        block.set_field("Num Children", NifValue::UInt(retained.len() as u64));
+        block.set_field("Children", NifValue::Array(retained));
+    }
+    if detached > 0 {
+        report.changes.push(format!(
+            "Legacy decals: detached {detached} placement-vector node reference(s)"
+        ));
+    }
+}
+
+/// Legacy Gamebryo block types the FO4 runtime has no RTTI entry for.
+///
+/// Every name here was measured absent from the shipped Fallout4.exe. FO4
+/// resolves blocks by RTTI name, so a single survivor fails the *whole* file
+/// load and the engine draws the red "!" marker instead of the mesh. These are
+/// detached from their referrers and then garbage-collected by
+/// [`prune_unreachable_legacy_blocks`].
+///
+/// This is a reviewed list rather than "everything [`is_fo4_block_type`]
+/// rejects" on purpose: stripping is destructive, so a list harvested from a
+/// binary must never drive it. The harvested list only drives the audit.
+static LEGACY_BLOCK_TYPES_WITHOUT_FO4_EQUIVALENT: &[&str] = &[
+    // Controllers with no FO4 counterpart. The geometry survives; only the
+    // FNV/FO3-specific animated effect is lost.
+    "BSRefractionFirePeriodController",
+    "BSRefractionStrengthController",
+    "NiBSBoneLODController",
+    "NiGeomMorpherController",
+    // FO4's BSLightingShaderPropertyFloatController can animate UV offset/scale,
+    // so a mapping is conceivable -- but the FO4 "Controlled Variable" enum
+    // values for U/V offset/scale are not pinned down anywhere in this repo, and
+    // guessing wrong animates an unrelated channel (glossiness, emissive) which
+    // is far harder to spot than a missing UV scroll. Dropped until the enum is
+    // confirmed against a vanilla FO4 NIF that animates UVs.
+    "NiTextureTransformController",
+    "bhkBlendController",
+    // Fixed-function properties superseded by BSLightingShaderProperty, which
+    // `legacy_shader_to_lighting` has already synthesized by this point.
+    "Lighting30ShaderProperty",
+    "NiSourceTexture",
+    "NiStencilProperty",
+    "NiTexturingProperty",
+    // FO3/FNV decal placement; FO4 drives decals from the record side.
+    "BSDecalPlacementVectorExtraData",
+    // Legacy Havok. Anything `regenerate_fo4_collision` can rebuild is already
+    // gone by the time this runs, so these are the chains it does not handle.
+    // Phantoms are trigger volumes -- rebuilding them as real FO4 collision
+    // would turn every trigger into an invisible wall, so they are dropped.
+    "bhkAabbPhantom",
+    "bhkBlendCollisionObject",
+    "bhkBoxShape",
+    "bhkCapsuleShape",
+    "bhkConvexTransformShape",
+    "bhkConvexVerticesShape",
+    "bhkLimitedHingeConstraint",
+    "bhkListShape",
+    "bhkMalleableConstraint",
+    "bhkMoppBvTreeShape",
+    "bhkPCollisionObject",
+    "bhkPackedNiTriStripsShape",
+    "bhkRagdollConstraint",
+    "bhkRigidBody",
+    "bhkRigidBodyT",
+    "bhkSPCollisionObject",
+    "bhkSimpleShapePhantom",
+    "bhkSphereShape",
+    "bhkTransformShape",
+    "hkPackedNiTriStripsData",
+];
+
+/// Ref-bearing arrays that carry a paired count field which must stay in sync.
+const COUNTED_REF_ARRAYS: &[(&str, &str)] = &[
+    ("Children", "Num Children"),
+    ("Controlled Blocks", "Num Controlled Blocks"),
+    ("Effects", "Num Effects"),
+    ("Extra Data List", "Num Extra Data List"),
+    ("Objs", "Num Objs"),
+    ("Properties", "Num Properties"),
+];
+
+fn detach_legacy_blocks_without_fo4_equivalent(nif: &mut NifFile, report: &mut ConvertFileReport) {
+    let doomed: HashSet<i32> = nif
+        .blocks
+        .iter()
+        .filter(|block| {
+            LEGACY_BLOCK_TYPES_WITHOUT_FO4_EQUIVALENT.contains(&block.type_name.as_str())
+        })
+        .map(|block| block.block_id as i32)
+        .collect();
+    if doomed.is_empty() {
+        return;
+    }
+
+    let mut dropped: BTreeMap<String, usize> = BTreeMap::new();
+    for block in &nif.blocks {
+        if doomed.contains(&(block.block_id as i32)) {
+            *dropped.entry(block.type_name.clone()).or_default() += 1;
+        }
+    }
+
+    for block in nif.blocks.iter_mut() {
+        if doomed.contains(&(block.block_id as i32)) {
+            continue;
+        }
+        for (array_field, count_field) in COUNTED_REF_ARRAYS {
+            let Some(NifValue::Array(items)) = block.get_field(array_field).cloned() else {
+                continue;
+            };
+            let original = items.len();
+            // An entry goes if any ref inside it is doomed: plain child refs are
+            // bare Refs, but a controlled block is a struct whose Interpolator /
+            // Controller refs are what point at the dead controller.
+            let retained: Vec<NifValue> = items
+                .into_iter()
+                .filter(|item| {
+                    let mut refs = Vec::new();
+                    collect_value_refs(item, &mut refs);
+                    !refs.iter().any(|id| doomed.contains(&(*id as i32)))
+                })
+                .collect();
+            if retained.len() == original {
+                continue;
+            }
+            block.set_field(count_field, NifValue::UInt(retained.len() as u64));
+            block.set_field(array_field, NifValue::Array(retained));
+        }
+        for value in block.fields.values_mut() {
+            null_doomed_refs(value, &doomed);
+        }
+    }
+
+    let detail = dropped
+        .iter()
+        .map(|(name, count)| format!("{name} x{count}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    report.changes.push(format!(
+        "Legacy blocks without an FO4 equivalent: detached {detail}"
+    ));
+}
+
+fn null_doomed_refs(value: &mut NifValue, doomed: &HashSet<i32>) {
+    match value {
+        NifValue::Ref(id) if doomed.contains(id) => *id = -1,
+        NifValue::Array(values) => {
+            for value in values {
+                null_doomed_refs(value, doomed);
+            }
+        }
+        NifValue::Struct(fields) => {
+            for value in fields.values_mut() {
+                null_doomed_refs(value, doomed);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Fail the file rather than shipping a NIF the FO4 runtime cannot load.
+///
+/// Without this the conversion phase reports `failed=0` while writing meshes
+/// that render as the red "!" marker -- a silent failure with no log line.
+fn audit_fo4_block_types(nif: &NifFile, report: &mut ConvertFileReport) {
+    let mut unsupported: BTreeMap<&str, usize> = BTreeMap::new();
+    for block in &nif.blocks {
+        if !crate::fo4_block_types::is_fo4_block_type(&block.type_name) {
+            *unsupported.entry(block.type_name.as_str()).or_default() += 1;
+        }
+    }
+    if unsupported.is_empty() {
+        return;
+    }
+    let detail = unsupported
+        .iter()
+        .map(|(name, count)| format!("{name} x{count}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    report.errors.push(format!(
+        "block types absent from the FO4 runtime would fail the whole file load: {detail}"
+    ));
+}
+
+fn collect_legacy_nested_refs(block: &NifBlock, references: &mut Vec<usize>) {
+    let entries = match block.type_name.as_str() {
+        "NiDefaultAVObjectPalette" => block.get_field("Objs"),
+        "NiControllerSequence" => block.get_field("Controlled Blocks"),
+        _ => None,
+    };
+    let Some(NifValue::Array(entries)) = entries else {
+        return;
+    };
+    let field_names: &[&str] = if block.type_name == "NiDefaultAVObjectPalette" {
+        &["AV Object"]
+    } else {
+        &["Interpolator", "Controller"]
+    };
+    for entry in entries {
+        let NifValue::Struct(fields) = entry else {
+            continue;
+        };
+        for field_name in field_names {
+            if let Some(reference) = fields.get(*field_name).and_then(value_usize) {
+                references.push(reference);
+            }
         }
     }
 }
@@ -6705,6 +10285,543 @@ mod tests {
     use crate::schema::NifSchema;
 
     #[test]
+    fn nif_header_probe_accepts_both_prefixes_and_short_non_nifs() {
+        let temp = tempfile::tempdir().unwrap();
+        for (name, bytes, expected) in [
+            ("gamebryo", b"Gamebryo File Format trailing data".as_slice(), true),
+            ("netimmerse", b"NetImmerse File Format trailing data".as_slice(), true),
+            ("short", b"Gamebryo".as_slice(), false),
+            ("other", b"not a nif".as_slice(), false),
+        ] {
+            let path = temp.path().join(name);
+            std::fs::write(&path, bytes).unwrap();
+            assert_eq!(has_nif_header(&path).unwrap(), expected, "{name}");
+        }
+        assert!(has_nif_header(&temp.path().join("missing")).is_err());
+    }
+
+    #[test]
+    fn final_dependencies_match_written_outputs_for_every_fo4_source_pair() {
+        let temp = tempfile::tempdir().unwrap();
+        for game in ["fo76", "skyrimse", "fnv", "fo3"] {
+            let mut nif = NifFile::new(game);
+            let root = nif.add_block("NiNode", None);
+            nif.blocks[root].set_field("Name", NifValue::String("root".into()));
+            let source = temp.path().join(format!("{game}.nif"));
+            let output = temp.path().join(format!("{game}-fo4.nif"));
+            std::fs::write(&source, nif.to_bytes().unwrap()).unwrap();
+            let report = convert_nif_file(&source, &output, game, "fo4", None, &ConvertFileOptions::default()).unwrap();
+            assert!(report.supported, "{game}: {:?}", report.errors);
+            let captured = report.final_dependencies.unwrap();
+            let bytes = std::fs::read(&output).unwrap();
+            let actual = NifFile::from_bytes(&bytes, Some(output)).unwrap();
+            assert_eq!(captured.digest, *blake3::hash(&bytes).as_bytes());
+            assert_eq!(captured.materials, actual.referenced_asset_paths().materials);
+        }
+    }
+
+    fn test_vertex(uv: [f64; 2], normal: [f32; 3], color: [f32; 4], weights: [f64; 4]) -> NifValue {
+        NifValue::Struct(IndexMap::from([
+            ("Vertex".to_string(), NifValue::Vec3([1.0, 2.0, 3.0])),
+            (
+                "UV".to_string(),
+                NifValue::Array(uv.into_iter().map(NifValue::Float).collect()),
+            ),
+            ("Normal".to_string(), NifValue::Vec3(normal)),
+            ("Vertex Colors".to_string(), NifValue::Color4(color)),
+            (
+                "Bone Weights".to_string(),
+                NifValue::Array(weights.into_iter().map(NifValue::Float).collect()),
+            ),
+            (
+                "Bone Indices".to_string(),
+                NifValue::Array([0, 1, 2, 3].into_iter().map(NifValue::UInt).collect()),
+            ),
+        ]))
+    }
+
+    fn test_triangle(v1: u64, v2: u64, v3: u64) -> NifValue {
+        NifValue::Struct(IndexMap::from([
+            ("v1".to_string(), NifValue::UInt(v1)),
+            ("v2".to_string(), NifValue::UInt(v2)),
+            ("v3".to_string(), NifValue::UInt(v3)),
+        ]))
+    }
+
+    #[test]
+    fn exact_vertex_dedup_remaps_triangles_and_preserves_semantic_seams() {
+        let base = test_vertex(
+            [0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 1.0, 1.0, 1.0],
+            [1.0, 0.0, 0.0, 0.0],
+        );
+        let different_uv = test_vertex(
+            [1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 1.0, 1.0, 1.0],
+            [1.0, 0.0, 0.0, 0.0],
+        );
+        let different_normal = test_vertex(
+            [0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 1.0, 1.0, 1.0],
+            [1.0, 0.0, 0.0, 0.0],
+        );
+        let different_color = test_vertex(
+            [0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.5, 1.0, 1.0, 1.0],
+            [1.0, 0.0, 0.0, 0.0],
+        );
+        let different_weights = test_vertex(
+            [0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 1.0, 1.0, 1.0],
+            [0.5, 0.5, 0.0, 0.0],
+        );
+        let mut nif = NifFile::new("fo4");
+        let shape_id = nif.add_block("BSTriShape", None);
+        let vertices = vec![
+            base.clone(),
+            base,
+            different_uv,
+            different_normal,
+            different_color,
+            different_weights,
+        ];
+        nif.blocks[shape_id].set_field("Vertex Desc", NifValue::UInt(0x65));
+        nif.blocks[shape_id].set_field("Num Vertices", NifValue::UInt(vertices.len() as u64));
+        nif.blocks[shape_id].set_field("Vertex Data", NifValue::Array(vertices));
+        nif.blocks[shape_id].set_field("Triangles", NifValue::Array(vec![test_triangle(0, 1, 5)]));
+        nif.blocks[shape_id].set_field("Num Triangles", NifValue::UInt(1));
+        nif.blocks[shape_id].set_field("Data Size", NifValue::UInt(0));
+
+        let mut report = ConvertFileReport::default();
+        deduplicate_fo76_exact_vertices(&mut nif, &mut report);
+
+        assert_eq!(
+            value_u64(nif.blocks[shape_id].get_field("Num Vertices")),
+            Some(5)
+        );
+        assert_eq!(
+            value_array(nif.blocks[shape_id].get_field("Vertex Data")).len(),
+            5
+        );
+        assert_eq!(
+            value_array(nif.blocks[shape_id].get_field("Triangles")),
+            vec![test_triangle(0, 0, 4)]
+        );
+        assert!(
+            report
+                .changes
+                .iter()
+                .any(|change| change.contains("collapsed 1"))
+        );
+    }
+
+    #[test]
+    fn exact_vertex_dedup_remaps_skin_partitions() {
+        let duplicate = test_vertex(
+            [0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 1.0, 1.0, 1.0],
+            [1.0, 0.0, 0.0, 0.0],
+        );
+        let unique = test_vertex(
+            [1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 1.0, 1.0, 1.0],
+            [1.0, 0.0, 0.0, 0.0],
+        );
+        let mut nif = NifFile::new("fo4");
+        let shape_id = nif.add_block("BSTriShape", None);
+        let skin_id = nif.add_block("NiSkinInstance", None);
+        let partition_id = nif.add_block("NiSkinPartition", None);
+        nif.blocks[shape_id].set_field("Skin", NifValue::Ref(skin_id as i32));
+        nif.blocks[shape_id].set_field("Vertex Desc", NifValue::UInt(0x65));
+        nif.blocks[shape_id].set_field("Num Vertices", NifValue::UInt(3));
+        nif.blocks[shape_id].set_field(
+            "Vertex Data",
+            NifValue::Array(vec![duplicate.clone(), duplicate, unique]),
+        );
+        nif.blocks[shape_id]
+            .set_field("Triangles", NifValue::Array(vec![test_triangle(0, 1, 2)]));
+        nif.blocks[skin_id].set_field("Skin Partition", NifValue::Ref(partition_id as i32));
+        nif.blocks[partition_id].set_field(
+            "Partitions",
+            NifValue::Array(vec![NifValue::Struct(IndexMap::from([(
+                "Vertex Map".to_string(),
+                NifValue::Array(vec![
+                    NifValue::UInt(0),
+                    NifValue::UInt(1),
+                    NifValue::UInt(2),
+                ]),
+            )]))]),
+        );
+
+        deduplicate_fo76_exact_vertices(&mut nif, &mut ConvertFileReport::default());
+
+        let Some(NifValue::Array(partitions)) =
+            nif.blocks[partition_id].get_field("Partitions")
+        else {
+            panic!("missing skin partitions");
+        };
+        let NifValue::Struct(partition) = &partitions[0] else {
+            panic!("skin partition must be a struct");
+        };
+        assert_eq!(
+            partition.get("Vertex Map"),
+            Some(&NifValue::Array(vec![
+                NifValue::UInt(0),
+                NifValue::UInt(0),
+                NifValue::UInt(1),
+            ]))
+        );
+    }
+
+    #[test]
+    fn exact_vertex_dedup_keeps_particle_geometry_untouched() {
+        let vertex = test_vertex(
+            [0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 1.0, 1.0, 1.0],
+            [1.0, 0.0, 0.0, 0.0],
+        );
+        let vertices = NifValue::Array(vec![vertex.clone(), vertex]);
+        let mut nif = NifFile::new("fo4");
+        let shape_id = nif.add_block("BSTriShape", None);
+        nif.blocks[shape_id].set_field(
+            "Particle Vertices",
+            NifValue::Array(vec![NifValue::Vec3([0.0, 0.0, 0.0])]),
+        );
+        nif.blocks[shape_id].set_field("Vertex Data", vertices.clone());
+        let mut report = ConvertFileReport::default();
+
+        deduplicate_fo76_exact_vertices(&mut nif, &mut report);
+
+        assert_eq!(nif.blocks[shape_id].get_field("Vertex Data"), Some(&vertices));
+        assert!(report.changes.is_empty());
+    }
+
+    #[test]
+    fn exact_vertex_dedup_keeps_same_hash_unequal_nan_payloads() {
+        let nan_bits = 0x7ff8_0000_0000_0042;
+        let first = NifValue::Float(f64::from_bits(nan_bits));
+        let second = NifValue::Float(f64::from_bits(nan_bits));
+        assert_eq!(conversion_value_hash(&first), conversion_value_hash(&second));
+        assert_ne!(first, second);
+        let mut nif = NifFile::new("fo4");
+        let shape_id = nif.add_block("BSTriShape", None);
+        nif.blocks[shape_id].set_field("Num Vertices", NifValue::UInt(2));
+        nif.blocks[shape_id].set_field("Vertex Data", NifValue::Array(vec![first, second]));
+        let mut report = ConvertFileReport::default();
+
+        deduplicate_fo76_exact_vertices(&mut nif, &mut report);
+
+        assert_eq!(
+            value_u64(nif.blocks[shape_id].get_field("Num Vertices")),
+            Some(2)
+        );
+        assert_eq!(
+            value_array(nif.blocks[shape_id].get_field("Vertex Data")).len(),
+            2
+        );
+        assert!(report.changes.is_empty());
+    }
+
+    #[test]
+    fn exact_vertex_dedup_skips_shapes_that_share_a_skin() {
+        let vertex = test_vertex(
+            [0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 1.0, 1.0, 1.0],
+            [1.0, 0.0, 0.0, 0.0],
+        );
+        let mut nif = NifFile::new("fo4");
+        let skin_id = nif.add_block("NiSkinInstance", None);
+        for _ in 0..2 {
+            let shape_id = nif.add_block("BSTriShape", None);
+            nif.blocks[shape_id].set_field("Skin", NifValue::Ref(skin_id as i32));
+            nif.blocks[shape_id].set_field("Num Vertices", NifValue::UInt(2));
+            nif.blocks[shape_id].set_field(
+                "Vertex Data",
+                NifValue::Array(vec![vertex.clone(), vertex.clone()]),
+            );
+        }
+        let mut report = ConvertFileReport::default();
+
+        deduplicate_fo76_exact_vertices(&mut nif, &mut report);
+
+        for shape in nif
+            .blocks
+            .iter()
+            .filter(|block| block.type_name == "BSTriShape")
+        {
+            assert_eq!(value_array(shape.get_field("Vertex Data")).len(), 2);
+        }
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("skipped 2 shape(s) sharing a skin object"))
+        );
+    }
+
+    #[test]
+    fn vertex_colors_fall_back_to_borrowed_vertex_payload() {
+        let mut shape = NifBlock::new(0, "BSTriShape");
+        shape.set_field("Vertex Desc", NifValue::UInt(0));
+        shape.set_field(
+            "Vertex Data",
+            NifValue::Array(vec![NifValue::Struct(IndexMap::from([(
+                "Vertex Colors".to_string(),
+                NifValue::Color4([1.0; 4]),
+            )]))]),
+        );
+        assert!(shape_has_vertex_colors(&shape));
+
+        shape.set_field("Vertex Data", NifValue::UInt(1));
+        assert!(!shape_has_vertex_colors(&shape));
+    }
+
+    #[test]
+    fn animation_contract_without_manager_still_repairs_controller_target() {
+        let mut nif = NifFile::new("fo4");
+        let owner_id = nif.add_block("NiNode", None);
+        let controller_id = nif.add_block("NiTimeController", None);
+        nif.blocks[owner_id].set_field("Controller", NifValue::Ref(controller_id as i32));
+        nif.blocks[controller_id].set_field("Target", NifValue::Ref(-1));
+        nif.blocks[controller_id].set_field("Next Controller", NifValue::Ref(-1));
+        let mut report = ConvertFileReport::default();
+
+        normalize_fo76_animation_contract(&mut nif, &mut report);
+
+        assert_eq!(
+            field_ref(&nif.blocks[controller_id], "Target"),
+            Some(owner_id as i32)
+        );
+        assert!(
+            report
+                .changes
+                .iter()
+                .any(|change| change.contains("targets=1"))
+        );
+    }
+
+    #[test]
+    fn procedural_lightning_refs_follow_conversion_block_removal() {
+        let mut nif = NifFile::new("fo4");
+        let dropped_id = nif.add_block("BSLightingShaderPropertyFloatController", None);
+        let controller_id = nif.add_block("BSProceduralLightningController", None);
+        let generation_id = nif.add_block("NiBlendBoolInterpolator", None);
+        let arc_id = nif.add_block("NiBlendFloatInterpolator", None);
+        nif.blocks[controller_id].set_field("Interpolator 1", NifValue::Ref(generation_id as i32));
+        nif.blocks[controller_id].set_field("Interpolator 9", NifValue::Ref(arc_id as i32));
+
+        remove_blocks(&mut nif, HashSet::from([dropped_id]));
+
+        let controller = &nif.blocks[1];
+        assert_eq!(field_ref(controller, "Interpolator 1"), Some(2));
+        assert_eq!(field_ref(controller, "Interpolator 9"), Some(3));
+        assert_eq!(nif.blocks[2].type_name, "NiBlendBoolInterpolator");
+        assert_eq!(nif.blocks[3].type_name, "NiBlendFloatInterpolator");
+    }
+
+    #[test]
+    fn float_controller_pruning_preserves_preexisting_detached_blocks() {
+        let mut nif = NifFile::new("fo4");
+        let root_id = nif.add_block("NiNode", None);
+        let controller_id = nif.add_block("BSLightingShaderPropertyFloatController", None);
+        let interpolator_id = nif.add_block("NiBlendFloatInterpolator", None);
+        let detached_id = nif.add_block("NiStringExtraData", None);
+        nif.header.footer_roots = vec![root_id as i32];
+        nif.blocks[root_id].set_field("Controller", NifValue::Ref(controller_id as i32));
+        nif.blocks[controller_id].set_field("Controlled Variable", NifValue::UInt(4));
+        nif.blocks[controller_id].set_field("Interpolator", NifValue::Ref(interpolator_id as i32));
+        nif.blocks[detached_id].set_field("Name", NifValue::String("detached".to_string()));
+
+        let mut report = ConvertFileReport::default();
+        fix_fo76_float_controllers(&mut nif, &mut report);
+
+        assert!(nif.blocks.iter().all(|block| {
+            block.type_name != "BSLightingShaderPropertyFloatController"
+                && block.type_name != "NiBlendFloatInterpolator"
+        }));
+        assert!(nif.blocks.iter().any(|block| {
+            block.type_name == "NiStringExtraData"
+                && string_field(block, "Name").as_deref() == Some("detached")
+        }));
+    }
+
+    #[test]
+    fn inline_texture_paths_and_external_emit_bsx_are_fo4_normalized() {
+        let mut nif = NifFile::new("fo4");
+        let root_id = nif.add_block("NiNode", None);
+        let bsx_id = nif.add_block("BSXFlags", None);
+        let shader_id = nif.add_block("BSEffectShaderProperty", None);
+        nif.header.footer_roots = vec![root_id as i32];
+        nif.blocks[root_id].set_field(
+            "Extra Data List",
+            NifValue::Array(vec![NifValue::Ref(bsx_id as i32)]),
+        );
+        nif.blocks[bsx_id].set_field("Name", NifValue::String("BSX".to_string()));
+        nif.blocks[bsx_id].set_field("Integer Data", NifValue::UInt(2049));
+        nif.blocks[shader_id].set_field(
+            "Name",
+            NifValue::String("materials/effects/test.bgem".to_string()),
+        );
+        nif.blocks[shader_id].set_field(
+            "Source Texture",
+            NifValue::String("Shared/Black01_d.dds".to_string()),
+        );
+        nif.blocks[shader_id].set_field("Shader Flags 1", NifValue::UInt(SLSF1_EXTERNAL_EMITTANCE));
+        nif.add_block("BSEffectShaderPropertyFloatController", None);
+
+        let mut report = ConvertFileReport::default();
+        normalize_fo76_inline_texture_paths(&mut nif, &mut report);
+        normalize_fo76_bsx_contract(&mut nif, &mut report);
+
+        assert_eq!(
+            string_field(&nif.blocks[shader_id], "Source Texture").as_deref(),
+            Some(r"textures\Shared\Black01_d.dds")
+        );
+        assert_eq!(
+            string_field(&nif.blocks[shader_id], "Name").as_deref(),
+            Some("materials/effects/test.bgem")
+        );
+        assert_eq!(
+            value_u64(nif.blocks[bsx_id].get_field("Integer Data")),
+            Some(2049 | BSX_EXTERNAL_EMIT_FLAG)
+        );
+    }
+
+    #[test]
+    fn removed_bsx_is_detached_from_extra_data_owner() {
+        let mut nif = NifFile::new("fo4");
+        let root_id = nif.add_block("NiNode", None);
+        let bsx_id = nif.add_block("BSXFlags", None);
+        nif.header.footer_roots = vec![root_id as i32];
+        nif.blocks[root_id].set_field("Num Extra Data List", NifValue::UInt(1));
+        nif.blocks[root_id].set_field(
+            "Extra Data List",
+            NifValue::Array(vec![NifValue::Ref(bsx_id as i32)]),
+        );
+        nif.blocks[bsx_id].set_field("Integer Data", NifValue::UInt(0));
+
+        normalize_fo76_bsx_contract(&mut nif, &mut ConvertFileReport::default());
+
+        assert!(nif.blocks.iter().all(|block| block.type_name != "BSXFlags"));
+        assert_eq!(
+            value_u64(nif.blocks[root_id].get_field("Num Extra Data List")),
+            Some(0)
+        );
+        assert!(value_array(nif.blocks[root_id].get_field("Extra Data List")).is_empty());
+    }
+
+    #[test]
+    fn vertex_color_flags_and_animation_metadata_are_target_derived() {
+        let mut nif = NifFile::new("fo4");
+        let root_id = nif.add_block("NiNode", None);
+        let manager_id = nif.add_block("NiControllerManager", None);
+        let multitarget_id = nif.add_block("NiMultiTargetTransformController", None);
+        let sequence_id = nif.add_block("NiControllerSequence", None);
+        let palette_id = nif.add_block("NiDefaultAVObjectPalette", None);
+        let second_target_id = nif.add_block("NiNode", None);
+        let first_target_id = nif.add_block("BSTriShape", None);
+        let shader_id = nif.add_block("BSEffectShaderProperty", None);
+        nif.header.footer_roots = vec![root_id as i32];
+        nif.blocks[root_id].set_field("Name", NifValue::String("Root".to_string()));
+        nif.blocks[root_id].set_field("Controller", NifValue::Ref(manager_id as i32));
+        nif.blocks[root_id].set_field(
+            "Children",
+            NifValue::Array(vec![
+                NifValue::Ref(second_target_id as i32),
+                NifValue::Ref(first_target_id as i32),
+            ]),
+        );
+        nif.blocks[manager_id].set_field("Target", NifValue::Ref(-1));
+        nif.blocks[manager_id].set_field("Next Controller", NifValue::Ref(multitarget_id as i32));
+        nif.blocks[manager_id].set_field(
+            "Controller Sequences",
+            NifValue::Array(vec![NifValue::Ref(sequence_id as i32)]),
+        );
+        nif.blocks[manager_id].set_field("Object Palette", NifValue::Ref(palette_id as i32));
+        nif.blocks[second_target_id].set_field("Name", NifValue::String("Second".to_string()));
+        nif.blocks[first_target_id].set_field("Name", NifValue::String("First".to_string()));
+        nif.blocks[first_target_id].set_field("Shader Property", NifValue::Ref(shader_id as i32));
+        nif.blocks[first_target_id].set_field(
+            "Vertex Desc",
+            NifValue::UInt((VF_VERTEX_COLORS as u64) << 44),
+        );
+        nif.blocks[shader_id].set_field("Shader Flags 2", NifValue::UInt(0));
+        let controlled = |name: &str| {
+            NifValue::Struct(IndexMap::from([(
+                "Node Name".to_string(),
+                NifValue::String(name.to_string()),
+            )]))
+        };
+        nif.blocks[sequence_id].set_field(
+            "Controlled Blocks",
+            NifValue::Array(vec![
+                controlled("First"),
+                controlled("Second"),
+                controlled("Missing"),
+            ]),
+        );
+        nif.blocks[sequence_id].set_field("Accum Root Name", NifValue::String("Wrong".to_string()));
+
+        let mut report = ConvertFileReport::default();
+        normalize_fo76_animation_contract(&mut nif, &mut report);
+        normalize_fo76_vertex_color_shader_flags(&mut nif, &mut report);
+
+        assert_eq!(
+            field_ref(&nif.blocks[manager_id], "Target"),
+            Some(root_id as i32)
+        );
+        assert_eq!(
+            string_field(&nif.blocks[sequence_id], "Accum Root Name").as_deref(),
+            Some("Root")
+        );
+        let entries = value_array(nif.blocks[sequence_id].get_field("Controlled Blocks"));
+        assert_eq!(entries.len(), 2);
+        let names = HashMap::from([
+            ("Second".to_string(), second_target_id),
+            ("First".to_string(), first_target_id),
+        ]);
+        assert_eq!(
+            fo76_controlled_block_target(&entries[0], &names),
+            Some(second_target_id)
+        );
+        assert_eq!(
+            fo76_controlled_block_target(&entries[1], &names),
+            Some(first_target_id)
+        );
+        assert_eq!(
+            field_ref(&nif.blocks[sequence_id], "Manager"),
+            Some(manager_id as i32)
+        );
+        assert_eq!(
+            ref_array(nif.blocks[multitarget_id].get_field("Extra Targets")),
+            vec![second_target_id as i32, first_target_id as i32]
+        );
+        let palette_objects = value_array(nif.blocks[palette_id].get_field("Objs"));
+        assert_eq!(palette_objects.len(), 2);
+        let NifValue::Struct(first_palette_entry) = &palette_objects[0] else {
+            panic!("palette entry must be a struct");
+        };
+        assert_eq!(
+            value_ref(first_palette_entry.get("AV Object")),
+            Some(second_target_id as i32)
+        );
+        assert_eq!(
+            value_u64(nif.blocks[shader_id].get_field("Shader Flags 2")).unwrap_or_default()
+                & u64::from(SLSF2_VERTEX_COLORS),
+            u64::from(SLSF2_VERTEX_COLORS)
+        );
+    }
+
+    #[test]
     fn animstatic_layer_bodies_are_keyframed() {
         // FO76→FO4 regression: an ANIMSTATIC (layer 2) collision body — an
         // animated door/shutter — must convert to a keyframed body so FO4 plays
@@ -6740,6 +10857,16 @@ mod tests {
     }
 
     #[test]
+    fn prn_weapon_marks_weapon_collision_intent() {
+        let mut nif = NifFile::new("fo76");
+        let prn_id = nif.add_block("NiStringExtraData", None);
+        nif.blocks[prn_id].set_field("Name", NifValue::String("Prn".to_string()));
+        nif.blocks[prn_id].set_field("String Data", NifValue::String("WEAPON".to_string()));
+
+        assert!(nif_collision_intent(&nif).is_weapon_model);
+    }
+
+    #[test]
     fn source_keyframed_motion_blocks_single_convex_dynamic_fallback() {
         let metadata = SourceBodyMetadata {
             collision_filter_info: None,
@@ -6751,6 +10878,8 @@ mod tests {
             bsx_flags: BSX_DYNAMIC_FLAG | BSX_COMPLEX_FLAG,
             has_dynamic_bsx: true,
             has_complex_bsx: true,
+            is_ground_object: false,
+            is_weapon_model: false,
         };
         let body = ExtractedCollisionBody {
             body_id: 1,
@@ -6775,7 +10904,7 @@ mod tests {
     }
 
     #[test]
-    fn dynamic_noncomplex_compound_is_not_loose_clutter() {
+    fn dynamic_noncomplex_compound_requires_loose_item_role() {
         let metadata = SourceBodyMetadata {
             collision_filter_info: None,
             motion_type: Some(2), // hknpMotionType::DYNAMIC
@@ -6786,6 +10915,8 @@ mod tests {
             bsx_flags: BSX_DYNAMIC_FLAG,
             has_dynamic_bsx: true,
             has_complex_bsx: false,
+            is_ground_object: false,
+            is_weapon_model: false,
         };
         let body = ExtractedCollisionBody {
             body_id: 0,
@@ -6814,6 +10945,199 @@ mod tests {
             !source_body_is_dynamic_for_nif(metadata, intent, Some(&body)),
             "WhitespringLamp03Off-style non-complex compounds must not become FO4 DynamicCompound shapes"
         );
+        assert!(
+            source_body_is_dynamic_for_nif(
+                metadata,
+                NifCollisionIntent {
+                    is_weapon_model: true,
+                    ..intent
+                },
+                Some(&body),
+            ),
+            "Prn=WEAPON compounds must remain dynamic loose clutter"
+        );
+    }
+
+    /// A dropped power armor piece (`GO_Ultra_Helmet`) carries the SAME source
+    /// signals as `WhitespringLamp03Off` — BSX 194 (dynamic, non-complex),
+    /// layer 4, flags 128, motionType 2, compound_polytope — so the static
+    /// compound rule above alone would ship power armor with no motionCinfo,
+    /// no mass and a STATIC filter. Vanilla FO4 ships its own
+    /// ground objects (`go_t51_helmet.nif`, BSX 194, dynamic compound with
+    /// inverseMass 1/7.0) exactly this way, so the ground-object role must
+    /// re-admit them.
+    #[test]
+    fn dynamic_noncomplex_compound_ground_object_is_loose_clutter() {
+        let metadata = SourceBodyMetadata {
+            collision_filter_info: None,
+            motion_type: Some(2), // hknpMotionType::DYNAMIC
+            has_ref_mass_distribution: true,
+            ..SourceBodyMetadata::default()
+        };
+        let intent = NifCollisionIntent {
+            bsx_flags: BSX_DYNAMIC_FLAG,
+            has_dynamic_bsx: true,
+            has_complex_bsx: false,
+            is_ground_object: true,
+            is_weapon_model: false,
+        };
+        let body = ExtractedCollisionBody {
+            body_id: 0,
+            source_polytopes: Vec::new(),
+            source_compound_children: Vec::new(),
+            source_compressed_mesh: None,
+            source_primitive: None,
+            meshes: vec![
+                havok_native::collision::PreviewMesh {
+                    shape_type: "convex_hull".to_string(),
+                    vertices: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+                    triangles: vec![[0, 1, 2]],
+                },
+                havok_native::collision::PreviewMesh {
+                    shape_type: "convex_hull".to_string(),
+                    vertices: vec![[0.0, 0.0, 1.0], [1.0, 0.0, 1.0], [0.0, 1.0, 1.0]],
+                    triangles: vec![[0, 1, 2]],
+                },
+            ],
+            layer: Some(FO4_CLUTTER_LAYER),
+            material_crc: None,
+            is_dynamic: true,
+        };
+
+        assert!(
+            source_body_is_dynamic_for_nif(metadata, intent, Some(&body)),
+            "GO_Ultra_Helmet-style ground objects must stay dynamic loose clutter"
+        );
+    }
+
+    /// FO76 authors ~a third of its ground objects with BSX 130
+    /// (Havok|Articulated, no Dynamic) and `hknpMotionType::STATIC`, keeping the
+    /// motion purely at runtime — `Headwear_Fasnacht_Mask_Bigfoot`
+    /// (`BigfootFasnachtMaskHeadwear_GO.nif`, 7AC159) is one. Requiring
+    /// `has_dynamic_bsx` would ship those as STATIC(1) bodies with no
+    /// `motionCinfos` that read in-game as having no collision.
+    /// Vanilla FO4 ships 189 of 192 `go*.nif` as dynamic clutter, so the
+    /// ground-object role — not the source BSX — has to decide it.
+    #[test]
+    fn clutter_layer_ground_object_without_dynamic_bsx_is_loose_clutter() {
+        let metadata = SourceBodyMetadata {
+            layer: Some(FO4_CLUTTER_LAYER),
+            motion_type: Some(0), // hknpMotionType::STATIC
+            has_ref_mass_distribution: false,
+            ..SourceBodyMetadata::default()
+        };
+        let intent = NifCollisionIntent {
+            bsx_flags: BSX_HAVOK_FLAG | BSX_ARTICULATED_FLAG,
+            has_dynamic_bsx: false,
+            has_complex_bsx: false,
+            is_ground_object: true,
+            is_weapon_model: false,
+        };
+        let body = ExtractedCollisionBody {
+            body_id: 0,
+            source_polytopes: Vec::new(),
+            source_compound_children: Vec::new(),
+            source_compressed_mesh: None,
+            source_primitive: None,
+            meshes: vec![havok_native::collision::PreviewMesh {
+                shape_type: "convex_hull".to_string(),
+                vertices: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+                triangles: vec![[0, 1, 2]],
+            }],
+            layer: Some(FO4_CLUTTER_LAYER),
+            material_crc: None,
+            is_dynamic: false,
+        };
+
+        assert!(
+            source_body_is_dynamic_for_nif(metadata, intent, Some(&body)),
+            "clutter-layer ground objects must be loose clutter even when the source BSX omits Dynamic"
+        );
+    }
+
+    /// FO76 authors the same class of ground object on either layer — the
+    /// Hellcat torso (`GO_HellcatsMercenaryPA_Body.nif`, 60D5B8) lands on
+    /// CLUTTER(4) while the Vulcan torso (`ATX_PA_Vulcan_Torso_GO.nif`, 788D0E)
+    /// lands on STATIC(1), both with BSX 130 and no `motionCinfos`. Layer 1 is
+    /// therefore inconsistent authoring, not an instruction to stay static: a
+    /// dropped power armor torso must be loose clutter in FO4 either way.
+    #[test]
+    fn static_layer_ground_object_without_dynamic_bsx_is_loose_clutter() {
+        let metadata = SourceBodyMetadata {
+            layer: Some(FO4_STATIC_LAYER),
+            motion_type: Some(0), // hknpMotionType::STATIC
+            has_ref_mass_distribution: false,
+            ..SourceBodyMetadata::default()
+        };
+        let intent = NifCollisionIntent {
+            bsx_flags: BSX_HAVOK_FLAG | BSX_ARTICULATED_FLAG,
+            has_dynamic_bsx: false,
+            has_complex_bsx: false,
+            is_ground_object: true,
+            is_weapon_model: false,
+        };
+        let body = ExtractedCollisionBody {
+            body_id: 0,
+            source_polytopes: Vec::new(),
+            source_compound_children: Vec::new(),
+            source_compressed_mesh: None,
+            source_primitive: None,
+            meshes: vec![havok_native::collision::PreviewMesh {
+                shape_type: "convex_hull".to_string(),
+                vertices: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+                triangles: vec![[0, 1, 2]],
+            }],
+            layer: Some(FO4_STATIC_LAYER),
+            material_crc: None,
+            is_dynamic: false,
+        };
+
+        assert!(
+            source_body_is_dynamic_for_nif(metadata, intent, Some(&body)),
+            "Vulcan-torso-style layer-1 ground objects must be loose clutter too"
+        );
+    }
+
+    /// The promotion is confined to the two ordinary solid layers FO76 actually
+    /// authors ground objects on (STATIC/CLUTTER, 405 of the 410 broken
+    /// meshes). Anything else — the handful on layer 8, or a trigger/volume
+    /// layer reached via the root-node-name fallback in
+    /// `is_fo76_ground_object_nif` — keeps its source behaviour.
+    #[test]
+    fn ground_object_on_unusual_layer_is_not_promoted() {
+        let metadata = SourceBodyMetadata {
+            layer: Some(8),
+            motion_type: Some(0), // hknpMotionType::STATIC
+            has_ref_mass_distribution: false,
+            ..SourceBodyMetadata::default()
+        };
+        let intent = NifCollisionIntent {
+            bsx_flags: BSX_HAVOK_FLAG | BSX_ARTICULATED_FLAG,
+            has_dynamic_bsx: false,
+            has_complex_bsx: false,
+            is_ground_object: true,
+            is_weapon_model: false,
+        };
+        let body = ExtractedCollisionBody {
+            body_id: 0,
+            source_polytopes: Vec::new(),
+            source_compound_children: Vec::new(),
+            source_compressed_mesh: None,
+            source_primitive: None,
+            meshes: vec![havok_native::collision::PreviewMesh {
+                shape_type: "convex_hull".to_string(),
+                vertices: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+                triangles: vec![[0, 1, 2]],
+            }],
+            layer: Some(8),
+            material_crc: None,
+            is_dynamic: false,
+        };
+
+        assert!(
+            !source_body_is_dynamic_for_nif(metadata, intent, Some(&body)),
+            "ground objects on layers outside STATIC/CLUTTER must keep source behaviour"
+        );
     }
 
     #[test]
@@ -6828,6 +11152,8 @@ mod tests {
             bsx_flags: BSX_DYNAMIC_FLAG,
             has_dynamic_bsx: true,
             has_complex_bsx: false,
+            is_ground_object: false,
+            is_weapon_model: false,
         };
         let body = ExtractedCollisionBody {
             body_id: 0,
@@ -6912,6 +11238,1128 @@ mod tests {
         assert!(report.warnings.is_empty());
     }
 
+    /// Build the shape of an FO4/FO76 actor skeleton: root with BSBound, a
+    /// `bhkNPCollisionObject` on a bone, and the ragdoll as one
+    /// `bhkRagdollSystem` blob — no `bhkConstraint` blocks anywhere.
+    fn fo4_actor_skeleton(bsx_flags: u64, with_ragdoll_system: bool) -> NifFile {
+        let mut nif = NifFile::default();
+        let mut root = NifBlock::new(0, "NiNode");
+        root.set_field("Extra Data List", NifValue::Array(vec![NifValue::Ref(1)]));
+        root.set_field("Num Extra Data List", NifValue::UInt(1));
+        root.set_field("Children", NifValue::Array(vec![NifValue::Ref(3)]));
+        let mut bsx = NifBlock::new(1, "BSXFlags");
+        bsx.set_field("Integer Data", NifValue::UInt(bsx_flags));
+        let bound = NifBlock::new(2, "BSBound");
+        let mut bone = NifBlock::new(3, "NiNode");
+        bone.set_field("Collision Object", NifValue::Ref(4));
+        let collision = NifBlock::new(4, "bhkNPCollisionObject");
+        nif.blocks.push(root);
+        nif.blocks.push(bsx);
+        nif.blocks.push(bound);
+        nif.blocks.push(bone);
+        nif.blocks.push(collision);
+        if with_ragdoll_system {
+            nif.blocks.push(NifBlock::new(5, "bhkRagdollSystem"));
+        }
+        nif
+    }
+
+    #[test]
+    fn bsx_contract_keeps_the_ragdoll_flag_on_an_fo4_format_skeleton() {
+        // 198 = Havok | Ragdoll | Dynamic | Articulated, what all 29 vanilla FO4
+        // actor skeletons and all 65 FO76 source skeletons author.
+        let mut nif = fo4_actor_skeleton(198, true);
+        let mut report = ConvertFileReport::default();
+        normalize_fo76_bsx_contract(&mut nif, &mut report);
+        assert_eq!(
+            value_u64(nif.blocks[1].get_field("Integer Data")),
+            Some(198),
+            "bhkRagdollSystem must satisfy the ragdoll contract; dropping to 194 \
+             strips the flag from every converted creature skeleton"
+        );
+    }
+
+    #[test]
+    fn bsx_contract_adds_the_ragdoll_flag_when_the_source_omitted_it() {
+        let mut nif = fo4_actor_skeleton(194, true);
+        let mut report = ConvertFileReport::default();
+        normalize_fo76_bsx_contract(&mut nif, &mut report);
+        assert_eq!(
+            value_u64(nif.blocks[1].get_field("Integer Data")),
+            Some(198)
+        );
+    }
+
+    #[test]
+    fn bsx_contract_preserves_an_authored_ragdoll_flag_without_ragdoll_blocks() {
+        // Vanilla FO4 `robot` / `createabot` ship BSX 70 with no ragdoll blocks,
+        // so the flag is authored intent the structure cannot re-derive.
+        let mut nif = fo4_actor_skeleton(70, false);
+        let mut report = ConvertFileReport::default();
+        normalize_fo76_bsx_contract(&mut nif, &mut report);
+        assert_eq!(value_u64(nif.blocks[1].get_field("Integer Data")), Some(70));
+    }
+
+    #[test]
+    fn legacy_aabb_collision_uses_fo4_np_blocks() {
+        let mut nif = NifFile::new("fo4");
+        let parent_id = nif.add_block("NiNode", None);
+        let vertices = [
+            [-69.99125, -139.9825, -209.97375],
+            [69.99125, 139.9825, 209.97375],
+        ];
+
+        build_box_collision(&mut nif, parent_id, &vertices).expect("build collision");
+
+        assert!(
+            nif.blocks
+                .iter()
+                .any(|block| block.type_name == "bhkNPCollisionObject")
+        );
+        assert!(
+            nif.blocks
+                .iter()
+                .any(|block| block.type_name == "bhkPhysicsSystem")
+        );
+        assert!(nif.blocks.iter().all(|block| !matches!(
+            block.type_name.as_str(),
+            "bhkCollisionObject" | "bhkRigidBody" | "bhkRigidBodyT" | "bhkBoxShape"
+        )));
+        let collision = nif
+            .blocks
+            .iter()
+            .find(|block| block.type_name == "bhkNPCollisionObject")
+            .expect("collision object");
+        let blob = collision_physics_blob(&nif, collision).expect("collision blob");
+        let summary = havok_native::api::havok_collision_summary(&blob).expect("collision summary");
+        assert!(!summary.contains("\"n_vertices\":0"));
+    }
+
+    #[test]
+    fn legacy_dynamic_sphere_preserves_clutter_body_intent() {
+        let mut nif = NifFile::default();
+        let mut bsx = NifBlock::new(0, "BSXFlags");
+        bsx.set_field("Integer Data", NifValue::UInt(0x42));
+        let mut collision = NifBlock::new(1, "bhkCollisionObject");
+        collision.set_field("Body", NifValue::Ref(2));
+        let mut body = NifBlock::new(2, "bhkRigidBodyT");
+        body.set_field("Shape", NifValue::Ref(3));
+        body.set_field(
+            "Rigid Body Info:550_660",
+            NifValue::Struct(IndexMap::from([
+                (
+                    "Havok Filter".to_string(),
+                    NifValue::Struct(IndexMap::from([(
+                        "Layer:FO".to_string(),
+                        NifValue::UInt(FO4_CLUTTER_LAYER.into()),
+                    )])),
+                ),
+                ("Motion System".to_string(), NifValue::UInt(2)),
+                ("Mass".to_string(), NifValue::Float(2.5)),
+                ("Friction".to_string(), NifValue::Float(0.75)),
+                ("Restitution".to_string(), NifValue::Float(0.9)),
+                (
+                    "Translation".to_string(),
+                    NifValue::Vec4([1.0, 2.0, 3.0, 0.0]),
+                ),
+                ("Rotation".to_string(), NifValue::Vec4([0.0, 0.0, 0.0, 1.0])),
+            ])),
+        );
+        let mut sphere = NifBlock::new(3, "bhkSphereShape");
+        sphere.set_field("Radius", NifValue::Float(7.0));
+        nif.blocks.extend([bsx, collision, body, sphere]);
+
+        let spec =
+            legacy_dynamic_collision(&nif, &nif.blocks[1], "fnv", nif_collision_intent(&nif))
+                .expect("legacy dynamic collision");
+
+        assert_eq!(spec.mass, 2.5);
+        assert_eq!(spec.friction, 0.75);
+        assert_eq!(spec.restitution, 0.9);
+        assert!((spec.position[0] - LEGACY_HAVOK_UNIT_SCALE).abs() < 0.0001);
+        let Some(MultiBodyShape::Polytope { vertices }) = spec.shape else {
+            panic!("expected rounded dynamic polytope");
+        };
+        assert_eq!(vertices.len(), 26);
+    }
+
+    #[test]
+    fn legacy_collision_subtree_includes_tri_strips_data() {
+        let mut nif = NifFile::default();
+
+        let root = NifBlock::new(0, "NiNode");
+        let mut collision = NifBlock::new(1, "bhkCollisionObject");
+        collision.set_field("Body", NifValue::Ref(2));
+        let mut body = NifBlock::new(2, "bhkRigidBody");
+        body.set_field("Shape", NifValue::Ref(3));
+        let mut mopp = NifBlock::new(3, "bhkMoppBvTreeShape");
+        mopp.set_field("Shape", NifValue::Ref(4));
+        let mut strips = NifBlock::new(4, "bhkNiTriStripsShape");
+        strips.set_field("Strips Data", NifValue::Array(vec![NifValue::Ref(5)]));
+        let data = NifBlock::new(5, "NiTriStripsData");
+        nif.blocks
+            .extend([root, collision, body, mopp, strips, data]);
+
+        let mut subtree = HashSet::new();
+        collect_collision_subtree(&nif, 1, &mut subtree);
+
+        assert_eq!(subtree, HashSet::from([1, 2, 3, 4, 5]));
+    }
+
+    /// Builds the FNV/FO3 shape a rock or building uses: a MOPP-wrapped packed
+    /// tri-strips mesh under a `bhkRigidBodyT`, whose translation is baked into
+    /// the shape. Geometry is a unit tetrahedron offset by the body translation.
+    fn fnv_packed_strips_nif(body_type: &str, translation: [f32; 4]) -> NifFile {
+        let mut nif = NifFile::new("fnv");
+        let mut root = NifBlock::new(0, "NiNode");
+        root.set_field("Name", NifValue::String("Rock01".to_string()));
+        root.set_field("Collision Object", NifValue::Ref(1));
+
+        let mut collision = NifBlock::new(1, "bhkCollisionObject");
+        collision.set_field("Target", NifValue::Ref(0));
+        collision.set_field("Body", NifValue::Ref(2));
+
+        let mut body = NifBlock::new(2, body_type);
+        body.set_field("Shape", NifValue::Ref(3));
+        body.set_field(
+            "Rigid Body Info:550_660",
+            NifValue::Struct(IndexMap::from([
+                (
+                    "Havok Filter".to_string(),
+                    NifValue::Struct(IndexMap::from([(
+                        "Layer:FO".to_string(),
+                        NifValue::UInt(1),
+                    )])),
+                ),
+                ("Motion System".to_string(), NifValue::UInt(7)),
+                ("Mass".to_string(), NifValue::Float(0.0)),
+                ("Translation".to_string(), NifValue::Vec4(translation)),
+                ("Rotation".to_string(), NifValue::Vec4([0.0, 0.0, 0.0, 1.0])),
+            ])),
+        );
+
+        let mut mopp = NifBlock::new(3, "bhkMoppBvTreeShape");
+        mopp.set_field("Shape", NifValue::Ref(4));
+
+        let mut shape = NifBlock::new(4, "bhkPackedNiTriStripsShape");
+        shape.set_field("Data", NifValue::Ref(5));
+        shape.set_field("Scale", NifValue::Vec4([1.0, 1.0, 1.0, 0.0]));
+
+        let mut data = NifBlock::new(5, "hkPackedNiTriStripsData");
+        data.set_field("Compressed", NifValue::UInt(0));
+        data.set_field(
+            "Vertices",
+            NifValue::Array(vec![
+                NifValue::Vec3([0.0, 0.0, 0.0]),
+                NifValue::Vec3([10.0, 0.0, 0.0]),
+                NifValue::Vec3([0.0, 10.0, 0.0]),
+                NifValue::Vec3([0.0, 0.0, 10.0]),
+            ]),
+        );
+        let triangle = |v1: u64, v2: u64, v3: u64| {
+            NifValue::Struct(IndexMap::from([(
+                "Triangle".to_string(),
+                NifValue::Struct(IndexMap::from([
+                    ("v1".to_string(), NifValue::UInt(v1)),
+                    ("v2".to_string(), NifValue::UInt(v2)),
+                    ("v3".to_string(), NifValue::UInt(v3)),
+                ])),
+            )]))
+        };
+        data.set_field(
+            "Triangles",
+            NifValue::Array(vec![
+                triangle(0, 1, 2),
+                triangle(0, 1, 3),
+                triangle(0, 2, 3),
+                triangle(1, 2, 3),
+            ]),
+        );
+
+        nif.blocks.clear();
+        nif.blocks
+            .extend([root, collision, body, mopp, shape, data]);
+        nif
+    }
+
+    fn physics_blob(nif: &NifFile) -> Vec<u8> {
+        let physics = nif
+            .blocks
+            .iter()
+            .find(|block| block.type_name == "bhkPhysicsSystem")
+            .expect("physics system");
+        crate::cloth::byte_array_to_bytes(physics.get_field("Binary Data").expect("binary data"))
+            .expect("blob")
+    }
+
+    #[test]
+    fn fnv_packed_tri_strips_collision_becomes_fo4_mesh_not_a_box() {
+        let mut nif = fnv_packed_strips_nif("bhkRigidBody", [0.0, 0.0, 0.0, 0.0]);
+        let mut report = ConvertFileReport::default();
+        regenerate_fo4_collision(&mut nif, "fnv", &mut report);
+
+        let summary =
+            havok_native::api::havok_collision_summary(&physics_blob(&nif)).expect("summary");
+        assert!(
+            summary.contains("hknpCompressedMeshShape"),
+            "packed tri strips must convert to an FO4 mesh, got {summary}"
+        );
+        assert!(
+            !summary.contains("hknpConvexPolytopeShape"),
+            "packed tri strips must not collapse to an AABB box, got {summary}"
+        );
+    }
+
+    #[test]
+    fn fnv_packed_tri_strips_collision_uses_legacy_havok_units() {
+        let mut nif = fnv_packed_strips_nif("bhkRigidBody", [0.0, 0.0, 0.0, 0.0]);
+        let mut report = ConvertFileReport::default();
+        regenerate_fo4_collision(&mut nif, "fnv", &mut report);
+
+        // The source tetrahedron spans 10 legacy Havok units per axis, which is
+        // 1.0 FO4 Havok unit — roughly 70 game units.
+        let preview = havok_native::api::havok_collision_preview(&physics_blob(&nif), 1.0, Some(0))
+            .expect("preview");
+        let mut max = f32::MIN;
+        for axis in ["\"x\":", "\"y\":", "\"z\":"] {
+            for chunk in preview.split(axis).skip(1) {
+                let value = chunk
+                    .trim_start()
+                    .split(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-' || c == 'e'))
+                    .next()
+                    .unwrap_or_default();
+                if let Ok(value) = value.parse::<f32>() {
+                    max = max.max(value);
+                }
+            }
+        }
+        assert!(
+            (max - 1.0).abs() < 0.05,
+            "expected a 1.0 FO4-Havok-unit extent from 10 legacy units, got {max}"
+        );
+    }
+
+    #[test]
+    fn fnv_rigid_body_t_translation_is_baked_into_the_shape() {
+        let mut plain = fnv_packed_strips_nif("bhkRigidBody", [0.0, 0.0, 20.0, 0.0]);
+        let mut transformed = fnv_packed_strips_nif("bhkRigidBodyT", [0.0, 0.0, 20.0, 0.0]);
+        let mut report = ConvertFileReport::default();
+        regenerate_fo4_collision(&mut plain, "fnv", &mut report);
+        regenerate_fo4_collision(&mut transformed, "fnv", &mut report);
+
+        assert_ne!(
+            physics_blob(&plain),
+            physics_blob(&transformed),
+            "bhkRigidBodyT must bake its translation into the shape; bhkRigidBody must not"
+        );
+    }
+
+    #[test]
+    fn unsupported_legacy_shape_still_falls_back_to_the_visible_mesh_box() {
+        let mut nif = fnv_packed_strips_nif("bhkRigidBody", [0.0, 0.0, 0.0, 0.0]);
+        // Break the shape chain so the source decode fails.
+        nif.blocks[4].set_field("Data", NifValue::Ref(-1));
+        let mut geometry = NifBlock::new(6, "BSTriShape");
+        geometry.set_field("Name", NifValue::String("Rock01:0".to_string()));
+        geometry.set_field(
+            "Vertex Data",
+            NifValue::Array(vec![
+                NifValue::Vec3([0.0, 0.0, 0.0]),
+                NifValue::Vec3([70.0, 0.0, 0.0]),
+                NifValue::Vec3([0.0, 70.0, 0.0]),
+                NifValue::Vec3([0.0, 0.0, 70.0]),
+            ]),
+        );
+        nif.blocks.push(geometry);
+        nif.blocks[0].set_field("Children", NifValue::Array(vec![NifValue::Ref(6)]));
+
+        let mut report = ConvertFileReport::default();
+        regenerate_fo4_collision(&mut nif, "fnv", &mut report);
+
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("source shape unsupported")),
+            "a failed source decode must be reported, got {:?}",
+            report.warnings
+        );
+    }
+
+    fn fnv_extracted_dir() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../extracted/fnv")
+    }
+
+    fn skyrimse_extracted_dir() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../extracted/skyrimse")
+    }
+
+    fn conversion_translation_maps_dir() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../bacup/py_bacup_lib/native/conversion/src/embedded/translation_maps")
+    }
+
+    fn fo4_extracted_dir() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../extracted/fo4")
+    }
+
+    fn fo4_humanoid_skeleton() -> std::path::PathBuf {
+        fo4_extracted_dir().join("meshes/actors/character/characterassets/skeleton.nif")
+    }
+
+    /// Largest per-bone deviation of `world_skeleton(bone) @ bind` from the
+    /// field's own median. Zero means every bone agrees on one rigid offset,
+    /// which is the only thing that renders undeformed; per-bone disagreement
+    /// is exactly what explodes a mesh.
+    fn bind_offset_spread(mesh: &NifFile, skeleton: &NifFile) -> f64 {
+        let binds = crate::skeleton_repose::collect_bind_matrices_by_name(mesh);
+        let residuals = crate::skeleton_repose::skeleton_bind_offsets(skeleton, &binds);
+        // Guards against a vacuous pass: a spread measured over a subset of
+        // the bones says nothing, and a bone the skeleton lacks is itself the
+        // defect. Small garments bind few bones (iron boots bind 8), so the
+        // invariant is "all of them resolved", not a fixed count.
+        assert!(!residuals.is_empty(), "mesh bound no bones");
+        assert_eq!(
+            residuals.len(),
+            binds.len(),
+            "only {} of {} bound bones resolved against the skeleton",
+            residuals.len(),
+            binds.len()
+        );
+        let mut spread = 0.0_f64;
+        for axis in 0..3 {
+            let mut values: Vec<f64> = residuals.iter().map(|r| r[axis]).collect();
+            values.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let median = values[values.len() / 2];
+            for value in values {
+                spread = spread.max((value - median).abs());
+            }
+        }
+        spread
+    }
+
+    /// FNV clothing renamed onto FO4 bones must have its Gamebryo bind matrices
+    /// recomputed against the FO4 rest pose; otherwise every bone pulls its
+    /// vertices somewhere different and the mesh explodes (arms ~150 units out).
+    #[test]
+    fn real_fnv_vault_suit_binds_cohere_with_the_fo4_skeleton() {
+        let source = fnv_extracted_dir().join("meshes/armor/vaultsuit/m/outfit.nif");
+        let skeleton_path = fo4_humanoid_skeleton();
+        if !source.is_file() || !skeleton_path.is_file() {
+            return;
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let output = temp.path().join("outfit.nif");
+        let options = ConvertFileOptions {
+            translation_maps_dir: Some(conversion_translation_maps_dir()),
+            target_skeleton: Some(skeleton_path.clone()),
+            ..ConvertFileOptions::default()
+        };
+
+        let report = convert_nif_file(&source, &output, "fnv", "fo4", None, &options).unwrap();
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert!(report.shapes_skinned > 0, "{:?}", report.changes);
+
+        let converted = NifFile::load(&output).unwrap();
+        let skeleton = NifFile::load(&skeleton_path).unwrap();
+
+        // Vanilla FO4 clothing measures ~2.8 on this metric; the unrebound
+        // FNV conversion measured ~118.
+        let spread = bind_offset_spread(&converted, &skeleton);
+        assert!(
+            spread <= 3.0,
+            "converted binds disagree across bones by {spread:.2} units"
+        );
+
+        // Every remapped bone must exist in the skeleton it binds to.
+        assert!(
+            !report
+                .warnings
+                .iter()
+                .any(|warning| warning.starts_with("Skin rebind:")),
+            "{:?}",
+            report.warnings
+        );
+    }
+
+    /// The rebind is wired for every legacy pair, so Skyrim armor must land on
+    /// the same coherent rest pose FNV clothing does.
+    #[test]
+    fn real_skyrim_armor_binds_cohere_with_the_fo4_skeleton() {
+        let skeleton_path = fo4_humanoid_skeleton();
+        if !skeleton_path.is_file() {
+            return;
+        }
+        let skeleton = NifFile::load(&skeleton_path).unwrap();
+        for relative in [
+            "Meshes/Armor/Iron/Male/CuirassLight_1.nif",
+            "Meshes/Armor/Iron/Male/Boots_1.nif",
+        ] {
+            let source = skyrimse_extracted_dir().join(relative);
+            if !source.is_file() {
+                continue;
+            }
+            let temp = tempfile::tempdir().unwrap();
+            let output = temp.path().join("converted.nif");
+            let options = ConvertFileOptions {
+                translation_maps_dir: Some(conversion_translation_maps_dir()),
+                target_skeleton: Some(skeleton_path.clone()),
+                ..ConvertFileOptions::default()
+            };
+
+            let report =
+                convert_nif_file(&source, &output, "skyrimse", "fo4", None, &options).unwrap();
+            if report.shapes_skinned == 0 {
+                continue;
+            }
+            let converted = NifFile::load(&output).unwrap();
+            let spread = bind_offset_spread(&converted, &skeleton);
+            assert!(
+                spread <= 3.0,
+                "{relative} binds disagree across bones by {spread:.2} units"
+            );
+        }
+    }
+
+    #[test]
+    fn real_skyrim_tree_uses_static_switch_child() {
+        let source = skyrimse_extracted_dir().join("Meshes/Landscape/Trees/TreePineForest01.nif");
+        if !source.is_file() {
+            return;
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let output = temp.path().join("TreePineForest01.nif");
+        let report = convert_nif_file(
+            &source,
+            &output,
+            "skyrimse",
+            "fo4",
+            None,
+            &ConvertFileOptions::default(),
+        )
+        .unwrap();
+
+        assert!(report.supported, "conversion errors: {:?}", report.errors);
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert!(
+            report
+                .changes
+                .iter()
+                .any(|change| change.contains("static switch child")),
+            "conversion did not use the tree fallback: {:?}",
+            report.changes
+        );
+
+        let converted = NifFile::load(output).unwrap();
+        assert_eq!(converted.header.version, (20, 2, 0, 7));
+        assert_eq!(converted.header.user_version, 12);
+        assert_eq!(converted.header.bs_version, 130);
+        assert!(crate::skyrim::validate_unskinned_geometry(&converted).is_ok());
+        assert!(
+            converted
+                .blocks
+                .iter()
+                .any(|block| block.type_name == "BSLeafAnimNode")
+        );
+        assert!(converted.blocks.iter().any(|block| {
+            block.type_name == "BSTriShape"
+                && matches!(block.get_field("Vertex Data"), Some(NifValue::Array(data)) if !data.is_empty())
+        }));
+    }
+
+    #[test]
+    fn real_skyrim_armor_corpus_is_repacked_as_fo4_skinned_geometry() {
+        let source_root = skyrimse_extracted_dir();
+        for relative in [
+            "Meshes/Armor/Iron/Male/CuirassLight_1.nif",
+            "Meshes/Armor/Iron/F/CuirassLight_1.nif",
+            "Meshes/Armor/Iron/Male/Gauntlets_1.nif",
+            "Meshes/Armor/Iron/Male/Boots_1.nif",
+        ] {
+            let source = source_root.join(relative);
+            if !source.is_file() {
+                continue;
+            }
+            let temp = tempfile::tempdir().unwrap();
+            let output = temp.path().join("converted.nif");
+            let material_dir = temp.path().join("Materials");
+            let options = ConvertFileOptions {
+                translation_maps_dir: Some(conversion_translation_maps_dir()),
+                ..ConvertFileOptions::default()
+            };
+
+            let report = convert_nif_file(
+                &source,
+                &output,
+                "skyrimse",
+                "fo4",
+                Some(&material_dir),
+                &options,
+            )
+            .unwrap();
+
+            assert!(
+                report.supported,
+                "{relative} conversion errors: {:?}",
+                report.errors
+            );
+            assert!(report.errors.is_empty(), "{relative}: {:?}", report.errors);
+            assert!(
+                report.shapes_skinned > 0,
+                "{relative}: {:?}",
+                report.changes
+            );
+            assert_eq!(
+                report.bones_dropped_unmapped, 0,
+                "{relative}: {:?}",
+                report.warnings
+            );
+
+            let converted = NifFile::load(output).unwrap();
+            assert_eq!(converted.header.version, (20, 2, 0, 7), "{relative}");
+            assert_eq!(converted.header.user_version, 12, "{relative}");
+            assert_eq!(converted.header.bs_version, 130, "{relative}");
+            assert!(
+                converted
+                    .blocks
+                    .iter()
+                    .any(|block| block.type_name == "BSSkin::Instance"),
+                "{relative}"
+            );
+            assert!(
+                converted.blocks.iter().any(|block| {
+                    block.type_name == "BSSubIndexTriShape"
+                        && matches!(block.get_field("Skin"), Some(NifValue::Ref(reference)) if *reference >= 0)
+                }),
+                "{relative}"
+            );
+            assert!(
+                !converted.blocks.iter().any(|block| {
+                    matches!(
+                        block.type_name.as_str(),
+                        "NiSkinInstance"
+                            | "BSDismemberSkinInstance"
+                            | "NiSkinData"
+                            | "NiSkinPartition"
+                    )
+                }),
+                "{relative}"
+            );
+        }
+    }
+
+    #[test]
+    fn real_skyrim_argonian_facegeom_is_repacked_as_fo4_geometry() {
+        let source = skyrimse_extracted_dir()
+            .join("Meshes/Actors/Character/FaceGenData/FaceGeom/Skyrim.esm/00103512.nif");
+        if !source.is_file() {
+            return;
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let output = temp.path().join("argonian-facegeom.nif");
+        let materials = temp.path().join("Materials");
+        let options = ConvertFileOptions {
+            translation_maps_dir: Some(conversion_translation_maps_dir()),
+            ..ConvertFileOptions::default()
+        };
+
+        let report = convert_nif_file(
+            &source,
+            &output,
+            "skyrimse",
+            "fo4",
+            Some(&materials),
+            &options,
+        )
+        .unwrap();
+
+        assert!(report.supported, "conversion errors: {:?}", report.errors);
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert!(report.shapes_skinned >= 3, "{:?}", report.changes);
+        assert!(!report.emitted_bgsms.is_empty());
+
+        let converted = NifFile::load(output).unwrap();
+        assert!(
+            !converted
+                .blocks
+                .iter()
+                .any(|block| block.type_name == "BSDynamicTriShape")
+        );
+        let head = converted
+            .blocks
+            .iter()
+            .find(|block| {
+                block.type_name == "BSSubIndexTriShape"
+                    && matches!(block.get_field("Name"), Some(NifValue::String(name)) if name == "MaleHeadArgonian")
+            })
+            .expect("converted Argonian head");
+        let vertex_count = match head.get_field("Vertex Data") {
+            Some(NifValue::Array(vertices)) => vertices.len(),
+            _ => 0,
+        };
+        assert_eq!(
+            vertex_count,
+            1219,
+            "fields={:?}",
+            head.fields.keys().collect::<Vec<_>>()
+        );
+        assert!(matches!(head.get_field("Skin"), Some(NifValue::Ref(id)) if *id >= 0));
+    }
+
+    #[test]
+    fn real_fnv_republican_outfit_preserves_nonidentity_inverse_bind_rotations() {
+        let source = fnv_extracted_dir().join("Meshes/armor/republicans/republican_02.nif");
+        if !source.is_file() {
+            return;
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let output = temp.path().join("republican_02.nif");
+        let options = ConvertFileOptions {
+            translation_maps_dir: Some(conversion_translation_maps_dir()),
+            ..ConvertFileOptions::default()
+        };
+
+        let report = convert_nif_file(&source, &output, "fnv", "fo4", None, &options).unwrap();
+        assert!(report.supported, "conversion errors: {:?}", report.errors);
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert!(report.shapes_skinned > 0, "{:?}", report.changes);
+
+        let converted = NifFile::load(output).unwrap();
+        let binds = crate::skeleton_repose::collect_bind_matrices_by_name(&converted);
+        let consistency =
+            crate::skeleton_repose::skeleton_bind_consistency(&converted, &binds, 0.05);
+        assert!(!binds.is_empty());
+        assert!(
+            consistency.1 >= 20 && consistency.0 + 2 >= consistency.1,
+            "converted FNV bone nodes disagree with their inverse binds: {consistency:?}"
+        );
+        assert!(
+            binds.values().any(|matrix| {
+                matrix[0][1].abs() > 0.01
+                    || matrix[0][2].abs() > 0.01
+                    || matrix[1][0].abs() > 0.01
+                    || matrix[1][2].abs() > 0.01
+                    || matrix[2][0].abs() > 0.01
+                    || matrix[2][1].abs() > 0.01
+            }),
+            "FNV inverse-bind rotations were replaced by identity: {binds:?}"
+        );
+    }
+
+    #[test]
+    fn real_fnv_unskinned_hair_beard_and_hat_become_fo4_geometry() {
+        let source_root = fnv_extracted_dir();
+        for relative in [
+            "Meshes/characters/hair/beardfullold.nif",
+            "Meshes/characters/hair/hairbaseold.nif",
+            "Meshes/armor/headgear/cowboyhat/cowboyhat2.nif",
+        ] {
+            let source = source_root.join(relative);
+            if !source.is_file() {
+                continue;
+            }
+            let temp = tempfile::tempdir().unwrap();
+            let output = temp.path().join("converted.nif");
+            convert_nif_file(
+                &source,
+                &output,
+                "fnv",
+                "fo4",
+                None,
+                &ConvertFileOptions::default(),
+            )
+            .unwrap();
+            let converted = NifFile::load(&output).unwrap();
+
+            assert!(
+                converted.blocks.iter().any(|block| {
+                    block.type_name == "BSSubIndexTriShape"
+                        && matches!(block.get_field("Vertex Data"), Some(NifValue::Array(data)) if !data.is_empty())
+                }),
+                "{relative} must contain FO4 inline geometry"
+            );
+            assert!(
+                !converted.blocks.iter().any(|block| matches!(
+                    block.type_name.as_str(),
+                    "NiTriShape" | "NiTriStrips" | "NiTriShapeData" | "NiTriStripsData"
+                )),
+                "{relative} retained legacy geometry blocks"
+            );
+        }
+    }
+
+    #[test]
+    fn real_fnv_beard_full_old_prepares_as_facegen_hair_geometry() {
+        let source = fnv_extracted_dir().join("Meshes/characters/hair/beardfullold.nif");
+        if !source.is_file() {
+            return;
+        }
+        let mut nif = NifFile::load(&source).unwrap();
+
+        assert_eq!(prepare_legacy_face_part_for_fo4(&mut nif), 1);
+        assert!(nif.blocks.iter().any(|block| {
+            block.type_name == "BSSubIndexTriShape"
+                && string_field(block, "Name").as_deref() == Some("BeardFullOld:0")
+                && matches!(block.get_field("Vertex Data"), Some(NifValue::Array(data)) if data.len() == 562)
+        }));
+        assert!(nif.blocks.iter().any(|block| {
+            block.type_name == "BSShaderTextureSet"
+                && value_array(block.get_field("Textures")).iter().any(|texture| {
+                    matches!(texture, NifValue::String(path) if path.eq_ignore_ascii_case("textures\\characters\\hair\\BeardFull.dds"))
+                })
+        }));
+    }
+
+    #[test]
+    fn real_fnv_packed_mesh_collision_matches_the_source_hull() {
+        let path = fnv_extracted_dir().join("meshes/landscape/rocks/nv_qj_limepile03.nif");
+        if !path.is_file() {
+            return;
+        }
+        let mut nif = NifFile::load(&path).expect("load FNV packed strips fixture");
+        let mut report = ConvertFileReport::default();
+        regenerate_fo4_collision(&mut nif, "fnv", &mut report);
+
+        let decoded = havok_native::collision::parse_fo4_compressed_mesh(&physics_blob(&nif))
+            .expect("converted collision must be an FO4 compressed mesh");
+        assert_eq!(
+            decoded
+                .sections
+                .iter()
+                .map(|section| section.triangles.len())
+                .sum::<usize>(),
+            48,
+            "every source triangle must survive conversion"
+        );
+
+        // The source body translation puts the hull's base exactly on the
+        // visible mesh's lowest vertex; a unit or transform error breaks this.
+        let min_z = decoded
+            .sections
+            .iter()
+            .flat_map(|section| section.vertices.iter())
+            .map(|vertex| vertex[2] * HAVOK_SCALE)
+            .fold(f32::MAX, f32::min);
+        assert!(
+            (min_z - (-58.02)).abs() < 0.5,
+            "collision hull base should register against the visible mesh at -58.02, got {min_z}"
+        );
+    }
+
+    /// (consistent, shared) edge counts. A correctly wound mesh has every shared
+    /// edge traversed in opposite directions by its two triangles.
+    /// (consistent, shared) over a raw vertex/triangle pair.
+    fn shared_edge_orientation(vertices: &[[f32; 3]], triangles: &[[u32; 3]]) -> (usize, usize) {
+        use std::collections::HashMap;
+        let mut welded: HashMap<[i64; 3], u32> = HashMap::new();
+        let mut canonical = Vec::with_capacity(vertices.len());
+        for vertex in vertices {
+            let key = vertex.map(|value| (value * 2000.0).round() as i64);
+            let next = welded.len() as u32;
+            canonical.push(*welded.entry(key).or_insert(next));
+        }
+        let mut directed: HashMap<(u32, u32), usize> = HashMap::new();
+        for triangle in triangles {
+            let [a, b, c] = [
+                canonical[triangle[0] as usize],
+                canonical[triangle[1] as usize],
+                canonical[triangle[2] as usize],
+            ];
+            if a == b || b == c || a == c {
+                continue;
+            }
+            for edge in [(a, b), (b, c), (c, a)] {
+                *directed.entry(edge).or_default() += 1;
+            }
+        }
+        let mut shared = 0usize;
+        let mut consistent = 0usize;
+        for (&(u, v), &count) in &directed {
+            if u > v {
+                continue;
+            }
+            let reverse = directed.get(&(v, u)).copied().unwrap_or(0);
+            if count > 0 && reverse > 0 {
+                shared += 1;
+                consistent += 1;
+            } else if count > 1 {
+                shared += 1;
+            }
+        }
+        (consistent, shared)
+    }
+
+    fn edge_orientation(
+        mesh: &havok_native::collision::compressed_mesh::CompressedMeshData,
+    ) -> (usize, usize) {
+        use std::collections::HashMap;
+        let mut welded: HashMap<[i64; 3], u32> = HashMap::new();
+        let mut directed: HashMap<(u32, u32), usize> = HashMap::new();
+        for section in &mesh.sections {
+            let mut canonical = Vec::with_capacity(section.vertices.len());
+            for vertex in &section.vertices {
+                let key = vertex.map(|value| (value * 2000.0).round() as i64);
+                let next = welded.len() as u32;
+                canonical.push(*welded.entry(key).or_insert(next));
+            }
+            for triangle in &section.triangles {
+                let [a, b, c] = [
+                    canonical[triangle[0] as usize],
+                    canonical[triangle[1] as usize],
+                    canonical[triangle[2] as usize],
+                ];
+                if a == b || b == c || a == c {
+                    continue;
+                }
+                for edge in [(a, b), (b, c), (c, a)] {
+                    *directed.entry(edge).or_default() += 1;
+                }
+            }
+        }
+        let mut shared = 0usize;
+        let mut consistent = 0usize;
+        for (&(u, v), &count) in &directed {
+            if u > v {
+                continue;
+            }
+            let reverse = directed.get(&(v, u)).copied().unwrap_or(0);
+            if count > 0 && reverse > 0 {
+                shared += 1;
+                consistent += 1;
+            } else if count > 1 {
+                shared += 1;
+            }
+        }
+        (consistent, shared)
+    }
+
+    #[test]
+    fn fnv_mesh_collision_is_wound_consistently() {
+        let mut nif = fnv_packed_strips_nif("bhkRigidBody", [0.0, 0.0, 0.0, 0.0]);
+        let mut report = ConvertFileReport::default();
+        regenerate_fo4_collision(&mut nif, "fnv", &mut report);
+
+        let decoded = havok_native::collision::parse_fo4_compressed_mesh(&physics_blob(&nif))
+            .expect("compressed mesh");
+        let total: usize = decoded
+            .sections
+            .iter()
+            .map(|section| section.triangles.len())
+            .sum();
+        // Orientation must not duplicate geometry: duplicated opposing faces make
+        // the player sink and bounce on anything walkable.
+        assert_eq!(total, 4, "source triangles must not be duplicated");
+
+        // The fixture's source winding is deliberately inconsistent, as FNV's is.
+        let (consistent, shared) = edge_orientation(&decoded);
+        assert_eq!(
+            consistent, shared,
+            "every shared edge must be consistently oriented after conversion"
+        );
+    }
+
+    #[test]
+    fn real_fnv_collision_is_wound_consistently() {
+        let path =
+            fnv_extracted_dir().join("meshes/architecture/goodsprings/nv_prospectorsaloon.nif");
+        if !path.is_file() {
+            return;
+        }
+        let mut nif = NifFile::load(&path).expect("load saloon fixture");
+        let mut report = ConvertFileReport::default();
+        regenerate_fo4_collision(&mut nif, "fnv", &mut report);
+
+        let decoded = havok_native::collision::parse_fo4_compressed_mesh(&physics_blob(&nif))
+            .expect("compressed mesh");
+        let total: usize = decoded
+            .sections
+            .iter()
+            .map(|section| section.triangles.len())
+            .sum();
+        assert_eq!(total, 409, "no duplication; every source triangle once");
+
+        // Source scores 41% here; the converted output must be essentially perfect.
+        let (consistent, shared) = edge_orientation(&decoded);
+        assert!(
+            consistent * 100 / shared >= 99,
+            "saloon collision winding still inconsistent: {consistent}/{shared}"
+        );
+    }
+
+    #[test]
+    fn largest_fnv_collision_mesh_survives_orientation() {
+        // 7000 source triangles is the FNV corpus maximum — 59 components to
+        // flood-fill and sign independently.
+        let path = fnv_extracted_dir().join("meshes/architecture/primm/eldiablocurvenorth.nif");
+        if !path.is_file() {
+            return;
+        }
+        let mut nif = NifFile::load(&path).expect("load largest FNV collision fixture");
+        let mut report = ConvertFileReport::default();
+        regenerate_fo4_collision(&mut nif, "fnv", &mut report);
+        assert!(
+            report
+                .warnings
+                .iter()
+                .all(|warning| !warning.contains("rebuild failed")),
+            "{:?}",
+            report.warnings
+        );
+
+        let blob = physics_blob(&nif);
+        let decoded =
+            havok_native::collision::parse_fo4_compressed_mesh(&blob).expect("compressed mesh");
+        let total: usize = decoded
+            .sections
+            .iter()
+            .map(|section| section.triangles.len())
+            .sum();
+        assert_eq!(total, 7000, "7000 source triangles, none duplicated");
+        assert!(
+            decoded
+                .sections
+                .iter()
+                .all(|section| section.triangles.len() <= 128),
+            "sections must stay within the FO4 per-section triangle limit"
+        );
+        let summary = havok_native::api::havok_collision_summary(&blob).expect("summary");
+        assert!(summary.contains("\"geometry_status\":\"ok\""), "{summary}");
+    }
+
+    #[test]
+    fn degenerate_source_triangle_does_not_drop_the_whole_collision() {
+        // diner01 carries a zero-area sliver at triangle 317; rejecting the whole
+        // build for it left the asset with no collision at all.
+        let path = fnv_extracted_dir().join("meshes/architecture/diner/diner01.nif");
+        if !path.is_file() {
+            return;
+        }
+        let mut nif = NifFile::load(&path).expect("load diner fixture");
+        let mut report = ConvertFileReport::default();
+        regenerate_fo4_collision(&mut nif, "fnv", &mut report);
+
+        assert!(
+            nif.blocks
+                .iter()
+                .any(|block| block.type_name == "bhkNPCollisionObject"),
+            "diner must keep its collision; warnings: {:?}",
+            report.warnings
+        );
+        let decoded = havok_native::collision::parse_fo4_compressed_mesh(&physics_blob(&nif))
+            .expect("compressed mesh");
+        let total: usize = decoded
+            .sections
+            .iter()
+            .map(|section| section.triangles.len())
+            .sum();
+        assert!(
+            (1360..1374).contains(&total),
+            "expected ~1374 source triangles minus a few slivers, got {total}"
+        );
+    }
+
+    #[test]
+    fn real_fnv_collision_corpus_decodes_source_shapes() {
+        let root = fnv_extracted_dir().join("meshes");
+        if !root.is_dir() {
+            return;
+        }
+        let mut queue = vec![root.clone()];
+        let mut paths = Vec::new();
+        while let Some(dir) = queue.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    queue.push(path);
+                } else if path
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("nif"))
+                {
+                    paths.push(path);
+                }
+            }
+            if paths.len() >= 1500 {
+                break;
+            }
+        }
+        paths.sort();
+
+        let mut decoded = 0usize;
+        let mut fell_back = 0usize;
+        let mut meshes = 0usize;
+        let mut well_wound = 0usize;
+        let mut failures: std::collections::BTreeMap<String, usize> = Default::default();
+        for path in &paths {
+            let Ok(nif) = NifFile::load(path) else {
+                continue;
+            };
+            let visible = crate::skyrim_collision::VisibleFacets::new(collect_visible_facets(&nif));
+            for collision in nif
+                .blocks
+                .iter()
+                .filter(|block| block.type_name == "bhkCollisionObject")
+            {
+                let Some(body_id) = field_ref(collision, "Body").filter(|id| *id >= 0) else {
+                    continue;
+                };
+                match crate::skyrim_collision::decode_legacy_static_shape(
+                    &nif,
+                    body_id as usize,
+                    LEGACY_HAVOK_UNIT_SCALE,
+                    &visible,
+                ) {
+                    Ok(shape) => {
+                        decoded += 1;
+                        if let MultiBodyShape::CompressedMesh {
+                            vertices,
+                            triangles,
+                        } = &shape
+                        {
+                            if triangles.len() >= 8 {
+                                meshes += 1;
+                                let (consistent, shared) =
+                                    shared_edge_orientation(vertices, triangles);
+                                if shared > 0 && consistent * 100 / shared >= 99 {
+                                    well_wound += 1;
+                                }
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        fell_back += 1;
+                        let key = error
+                            .split(" at block ")
+                            .next()
+                            .unwrap_or(&error)
+                            .to_string();
+                        *failures.entry(key).or_default() += 1;
+                    }
+                }
+            }
+        }
+
+        let total = decoded + fell_back;
+        assert!(total > 0, "no FNV collision chains found under {root:?}");
+        println!("FNV collision decode: {decoded}/{total} source shapes; fallbacks: {failures:?}");
+        println!("FNV collision winding: {well_wound}/{meshes} meshes >=99% edge-consistent");
+        // Source scores ~40%; orientation must make essentially all of them clean,
+        // or FO4's back-face rejection leaves holes the player walks through.
+        assert!(
+            meshes > 0 && well_wound * 100 / meshes >= 99,
+            "expected >=99% of converted FNV meshes to be consistently wound, got \
+             {well_wound}/{meshes}"
+        );
+        // The sampled corpus decodes fully; the margin only absorbs assets a
+        // differently-sliced extraction might surface.
+        assert!(
+            decoded * 100 / total >= 99,
+            "expected >=99% of FNV collision chains to decode, got {decoded}/{total}; fallbacks: {failures:?}"
+        );
+    }
+
     #[test]
     fn fo76_marker_flags_are_cleared_from_non_marker_scene_nodes() {
         let mut nif = NifFile::default();
@@ -6952,6 +12400,79 @@ mod tests {
                 .changes
                 .iter()
                 .any(|change| change.contains("Normalized FO76 scene node flags for FO4"))
+        );
+    }
+
+    #[test]
+    fn legacy_fo4_av_flags_are_cleared_from_all_scene_objects() {
+        let mut nif = NifFile::default();
+        for type_name in [
+            "NiNode",
+            "NiBillboardNode",
+            "NiParticleSystem",
+            "BSTriShape",
+        ] {
+            let mut block = NifBlock::new(nif.blocks.len(), type_name);
+            block.set_field("Flags", NifValue::UInt(0x8000E));
+            nif.blocks.push(block);
+        }
+        let mut alpha = NifBlock::new(nif.blocks.len(), "NiAlphaProperty");
+        alpha.set_field("Flags", NifValue::UInt(237));
+        nif.blocks.push(alpha);
+        let mut report = ConvertFileReport::default();
+
+        normalize_legacy_fo4_av_flags(&mut nif, &mut report);
+
+        for block in &nif.blocks[..4] {
+            assert_eq!(value_u64(block.get_field("Flags")), Some(0xE));
+        }
+        assert_eq!(value_u64(nif.blocks[4].get_field("Flags")), Some(237));
+        assert!(
+            report
+                .changes
+                .iter()
+                .any(|change| change.contains("pre-FO4 0x80000 flag"))
+        );
+    }
+
+    #[test]
+    fn legacy_furniture_markers_use_fo4_position_layout() {
+        let mut nif = NifFile::default();
+        let mut marker = NifBlock::new(0, "BSFurnitureMarker");
+        marker.set_field("Name", NifValue::String("FRN".to_string()));
+        marker.set_field("Num Positions", NifValue::UInt(1));
+        marker.set_field(
+            "Positions",
+            NifValue::Array(vec![NifValue::Struct(IndexMap::from([
+                ("Offset".to_string(), NifValue::Vec3([1.0, 2.0, 3.0])),
+                ("Orientation".to_string(), NifValue::UInt(1570)),
+                ("Position Ref 1".to_string(), NifValue::UInt(11)),
+                ("Position Ref 2".to_string(), NifValue::UInt(11)),
+            ]))]),
+        );
+        nif.blocks.push(marker);
+        let mut report = ConvertFileReport::default();
+
+        normalize_legacy_furniture_markers(&mut nif, &mut report);
+
+        let marker = &nif.blocks[0];
+        assert_eq!(marker.type_name, "BSFurnitureMarkerNode");
+        let NifValue::Array(positions) = marker.get_field("Positions").unwrap() else {
+            panic!("expected furniture positions");
+        };
+        let NifValue::Struct(position) = &positions[0] else {
+            panic!("expected furniture position");
+        };
+        assert_eq!(vec3_value(position.get("Offset")), Some([1.0, 2.0, 3.0]));
+        assert_eq!(value_f64(position.get("Heading")), Some(1.57));
+        assert_eq!(value_u64(position.get("Animation Type")), Some(0));
+        assert_eq!(value_u64(position.get("Entry Properties")), Some(0));
+        assert!(!position.contains_key("Position Ref 1"));
+        assert!(
+            report
+                .changes
+                .iter()
+                .any(|change| change.contains("Legacy furniture markers"))
         );
     }
 
@@ -7628,19 +13149,14 @@ mod tests {
 
     #[test]
     fn unconstrained_multi_body_placement_comes_from_baked_geometry_not_body_transform() {
-        // Regression guard for the "drop the source body transform" hypothesis.
-        //
         // The shape vertices reaching `install_fo4_np_collision_system` are already
-        // world/NIF-baked — the FO76 decode never applies `bodyCinfo.position`, so
-        // each body's geometry carries its own world offset. For an unconstrained
-        // assembly we therefore keep `BodyMeta.position` at origin; copying the
-        // source body transform here would double-apply the offset.
+        // world/NIF-baked (the FO76 decode never applies `bodyCinfo.position`), so
+        // an unconstrained assembly keeps `BodyMeta.position` at origin; copying
+        // the source body transform would double-apply the offset.
         //
-        // This builds two bodies whose convex shapes sit at DISTINCT, pre-offset
-        // world positions (a "left" box at X≈0 and a "right" box at X≈+5 Havok
-        // units) and asserts the rebuilt FO4 collision blob preserves both bodies at
-        // their distinct geometry offsets — proving placement survives purely on the
-        // baked geometry while the body frame stays at origin.
+        // Two bodies at distinct pre-offset positions (a box at X≈0 and one at
+        // X≈+5 Havok units) must keep those offsets in the rebuilt FO4 blob while
+        // the body frame stays at origin.
         use havok_native::collision::extract_preview_meshes_from_blob;
 
         fn box_at(center_x: f32) -> Vec<[f32; 3]> {
@@ -7764,9 +13280,9 @@ mod tests {
         // A SCOL-style NIF: two source systems (a stairs piece with its layer-31
         // helper, and an unrelated member) must come out as TWO output physics
         // systems, with per-group Body IDs restarting at 0 — the vanilla stairs
-        // pairing FO4's stair-helper binding requires. One merged system left
-        // helpers at body index 3+ and the stairs unclimbable (Point Pleasant
-        // SCOLs 00491AE1 / 00491B05).
+        // pairing FO4's stair-helper binding requires. One merged system puts
+        // helpers at body index 3+ and leaves the stairs unclimbable (Point
+        // Pleasant SCOLs 00491AE1 / 00491B05).
         fn unit_box() -> Vec<[f32; 3]> {
             let mut v = Vec::with_capacity(8);
             for &x in &[-0.5_f32, 0.5] {
@@ -7861,6 +13377,98 @@ mod tests {
     }
 
     #[test]
+    fn grouped_install_rolls_back_partial_output_on_late_group_failure() {
+        fn entry(
+            source_system_id: usize,
+            parent_id: usize,
+            shape: MultiBodyShape,
+        ) -> CollisionPlanEntry {
+            CollisionPlanEntry {
+                source_collision_id: source_system_id,
+                source_system_id,
+                source_parent_id: parent_id,
+                source_parent_name: String::new(),
+                parent_id,
+                parent_name: String::new(),
+                planned: PlannedCollisionBody {
+                    source_body_id: 0,
+                    route: CollisionRoute::SourcePolytope,
+                    layer: 1,
+                    material_crc: None,
+                    shape,
+                },
+                source: None,
+                source_metadata: SourceBodyMetadata::default(),
+                nif_collision_intent: NifCollisionIntent::default(),
+                in_multi_body_assembly: true,
+                body_mass: None,
+                mass_distribution: None,
+            }
+        }
+
+        let cube = vec![
+            [-0.5, -0.5, -0.5],
+            [0.5, -0.5, -0.5],
+            [-0.5, 0.5, -0.5],
+            [0.5, 0.5, -0.5],
+            [-0.5, -0.5, 0.5],
+            [0.5, -0.5, 0.5],
+            [-0.5, 0.5, 0.5],
+            [0.5, 0.5, 0.5],
+        ];
+        let mut nif = NifFile::new("fo4");
+        let first_parent = nif.add_block("NiNode", None);
+        let second_parent = nif.add_block("NiNode", None);
+        let third_parent = nif.add_block("NiNode", None);
+        for parent_id in [first_parent, second_parent, third_parent] {
+            nif.blocks[parent_id].set_field("Collision Object", NifValue::Ref(-1));
+        }
+        let initial_block_count = nif.blocks.len();
+        let mut entries = vec![
+            entry(
+                10,
+                first_parent,
+                MultiBodyShape::Polytope {
+                    vertices: cube.clone(),
+                },
+            ),
+            entry(
+                20,
+                second_parent,
+                MultiBodyShape::Polytope {
+                    vertices: cube.clone(),
+                },
+            ),
+            entry(
+                20,
+                third_parent,
+                MultiBodyShape::CompressedMesh {
+                    vertices: cube,
+                    triangles: vec![[0, 1, 2]],
+                },
+            ),
+        ];
+
+        let error = install_fo4_np_collision_systems_grouped(&mut nif, &mut entries)
+            .expect_err("the second group has invalid polytope-before-mesh order");
+
+        assert!(error.contains("body order violation"), "{error}");
+        assert_eq!(nif.blocks.len(), initial_block_count);
+        assert!(nif.blocks.iter().all(|block| {
+            !matches!(
+                block.type_name.as_str(),
+                "bhkNPCollisionObject" | "bhkPhysicsSystem"
+            )
+        }));
+        for parent_id in [first_parent, second_parent, third_parent] {
+            assert_eq!(
+                field_ref(&nif.blocks[parent_id], "Collision Object"),
+                Some(-1)
+            );
+        }
+    }
+
+    #[test]
     fn constrained_collision_preserves_source_body_frame_only_for_articulated_systems() {
         let metadata = SourceBodyMetadata {
             position: Some([1.0, 2.0, 3.0, 4.0]),
@@ -7920,6 +13528,8 @@ mod tests {
                 bsx_flags: BSX_DYNAMIC_FLAG | BSX_COMPLEX_FLAG,
                 has_dynamic_bsx: true,
                 has_complex_bsx: true,
+                is_ground_object: false,
+                is_weapon_model: false,
             },
             in_multi_body_assembly: false,
             body_mass: Some(2.0),
@@ -8039,6 +13649,7 @@ mod tests {
     fn addon_node_index_parses_fo76_suffix_and_digits() {
         assert_eq!(addon_node_index("AddOnNode078@#0"), Some((78, "078")));
         assert_eq!(addon_node_index("AddOnNode78"), Some((78, "78")));
+        assert_eq!(addon_node_index("AddOnNode 1078"), Some((1078, "1078")));
         assert_eq!(
             addon_node_index("AddOnNode760001"),
             Some((760001, "760001"))
@@ -8049,12 +13660,12 @@ mod tests {
     }
 
     #[test]
-    fn patch_addon_strips_suffix_with_empty_map() {
+    fn patch_addon_preserves_suffix_with_empty_map() {
         let mut nif = NifFile::default();
         nif.blocks.push(bsvaluenode(0, "AddOnNode078@#0", 0));
         let mut report = ConvertFileReport::default();
         patch_addon_node_indices(&mut nif, &HashMap::new(), &mut report);
-        assert_eq!(block_name(&nif.blocks[0]), "AddOnNode078");
+        assert_eq!(block_name(&nif.blocks[0]), "AddOnNode078@#0");
         assert_eq!(
             block_value(&nif.blocks[0]),
             78,
@@ -8070,7 +13681,7 @@ mod tests {
         map.insert(78, 760_001);
         let mut report = ConvertFileReport::default();
         patch_addon_node_indices(&mut nif, &map, &mut report);
-        assert_eq!(block_name(&nif.blocks[0]), "AddOnNode760001");
+        assert_eq!(block_name(&nif.blocks[0]), "AddOnNode760001@#0");
         assert_eq!(block_value(&nif.blocks[0]), 760_001);
     }
 
@@ -8085,6 +13696,191 @@ mod tests {
             report.changes.is_empty(),
             "clean name must not be rewritten"
         );
+    }
+
+    #[test]
+    fn patch_addon_propagates_animation_name_references() {
+        let old_name = "AddOnNode078@#0";
+        let new_name = "AddOnNode760001@#0";
+        let mut nif = NifFile::default();
+        nif.blocks.push(bsvaluenode(0, old_name, 78));
+
+        let mut sequence = NifBlock::new(1, "NiControllerSequence");
+        sequence.set_field("Accum Root Name", NifValue::String(old_name.to_string()));
+        sequence.set_field(
+            "Controlled Blocks",
+            NifValue::Array(vec![
+                NifValue::Struct(IndexMap::from([(
+                    "Node Name".to_string(),
+                    NifValue::String(old_name.to_string()),
+                )])),
+                NifValue::Struct(IndexMap::from([(
+                    "Node Name".to_string(),
+                    NifValue::String("UnrelatedTarget".to_string()),
+                )])),
+            ]),
+        );
+        nif.blocks.push(sequence);
+
+        let mut palette = NifBlock::new(2, "NiDefaultAVObjectPalette");
+        palette.set_field(
+            "Objs",
+            NifValue::Array(vec![NifValue::Struct(IndexMap::from([
+                ("Name".to_string(), NifValue::String(old_name.to_string())),
+                ("AV Object".to_string(), NifValue::Ref(0)),
+            ]))]),
+        );
+        nif.blocks.push(palette);
+
+        let mut map = HashMap::new();
+        map.insert(78, 760_001);
+        let mut report = ConvertFileReport::default();
+        patch_addon_node_indices(&mut nif, &map, &mut report);
+
+        assert_eq!(block_name(&nif.blocks[0]), new_name);
+        assert_eq!(
+            string_field(&nif.blocks[1], "Accum Root Name").as_deref(),
+            Some(new_name)
+        );
+        let Some(NifValue::Array(controlled)) = nif.blocks[1].get_field("Controlled Blocks") else {
+            panic!("controlled blocks missing");
+        };
+        let controlled_names = controlled
+            .iter()
+            .map(|entry| match entry {
+                NifValue::Struct(fields) => fields
+                    .get("Node Name")
+                    .and_then(nif_value_string)
+                    .unwrap_or_default(),
+                _ => "",
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(controlled_names, vec![new_name, "UnrelatedTarget"]);
+        let Some(NifValue::Array(objects)) = nif.blocks[2].get_field("Objs") else {
+            panic!("palette objects missing");
+        };
+        assert!(matches!(
+            objects.first(),
+            Some(NifValue::Struct(fields))
+                if fields.get("Name").and_then(nif_value_string) == Some(new_name)
+        ));
+        assert!(report.changes.iter().any(|change| {
+            change.contains("propagated add-on node renames to 3 animation name reference")
+        }));
+    }
+
+    #[test]
+    fn patch_addon_keeps_suffixed_siblings_distinct_and_retargets_each_reference() {
+        let old_names = ["AddOnNode298", "AddOnNode298@#0", "AddOnNode298@#2"];
+        let expected_names = [
+            "AddOnNode760298",
+            "AddOnNode760298@#0",
+            "AddOnNode760298@#2",
+        ];
+        let mut nif = NifFile::default();
+        for (block_id, name) in old_names.iter().enumerate() {
+            nif.blocks.push(bsvaluenode(block_id, name, 298));
+        }
+        let mut sequence = NifBlock::new(3, "NiControllerSequence");
+        sequence.set_field(
+            "Controlled Blocks",
+            NifValue::Array(
+                old_names
+                    .iter()
+                    .map(|name| {
+                        NifValue::Struct(IndexMap::from([(
+                            "Node Name".to_string(),
+                            NifValue::String((*name).to_string()),
+                        )]))
+                    })
+                    .collect(),
+            ),
+        );
+        nif.blocks.push(sequence);
+
+        let mut map = HashMap::new();
+        map.insert(298, 760_298);
+        patch_addon_node_indices(&mut nif, &map, &mut ConvertFileReport::default());
+
+        let names = nif.blocks[..3].iter().map(block_name).collect::<Vec<_>>();
+        assert_eq!(names, expected_names);
+        assert_eq!(names.iter().collect::<HashSet<_>>().len(), 3);
+        let controlled_names = match nif.blocks[3].get_field("Controlled Blocks") {
+            Some(NifValue::Array(entries)) => entries
+                .iter()
+                .map(|entry| match entry {
+                    NifValue::Struct(fields) => fields
+                        .get("Node Name")
+                        .and_then(nif_value_string)
+                        .unwrap_or_default(),
+                    _ => "",
+                })
+                .collect::<Vec<_>>(),
+            _ => panic!("controlled blocks missing"),
+        };
+        assert_eq!(controlled_names, expected_names);
+    }
+
+    #[test]
+    fn same_game_keeps_byte_copy_behavior() {
+        let dir = tempfile::tempdir().unwrap();
+        let bytes = b"same-game copy does not parse";
+        for game in ["fo4", "fo76"] {
+            let src = dir.path().join(format!("{game}-source.bin"));
+            let dst = dir.path().join(format!("{game}-copy.bin"));
+            std::fs::write(&src, bytes).unwrap();
+
+            let report =
+                convert_nif_file(&src, &dst, game, game, None, &ConvertFileOptions::default())
+                    .unwrap();
+
+            assert!(report.supported);
+            assert_eq!(report.changes, vec!["Copied NIF without retargeting"]);
+            assert_eq!(std::fs::read(dst).unwrap(), bytes);
+        }
+    }
+
+    #[test]
+    fn dropping_float_controller_prunes_only_its_newly_unreachable_chain() {
+        let mut nif = NifFile::new("fo4");
+        let shape_id = nif.add_block("BSTriShape", None);
+        let shader_id = nif.add_block("BSLightingShaderProperty", None);
+        let controller_id = nif.add_block("BSLightingShaderPropertyFloatController", None);
+        let interpolator_id = nif.add_block("NiBlendFloatInterpolator", None);
+        nif.add_block("BSShaderTextureSet", None);
+
+        nif.blocks[0].set_field("Num Children", NifValue::UInt(1));
+        nif.blocks[0].set_field(
+            "Children",
+            NifValue::Array(vec![NifValue::Ref(shape_id as i32)]),
+        );
+        nif.blocks[shape_id].set_field("Shader Property", NifValue::Ref(shader_id as i32));
+        nif.blocks[shader_id].set_field("Controller", NifValue::Ref(controller_id as i32));
+        nif.blocks[controller_id].set_field("Next Controller", NifValue::Ref(-1));
+        nif.blocks[controller_id].set_field("Interpolator", NifValue::Ref(interpolator_id as i32));
+        nif.blocks[controller_id].set_field("Controlled Variable", NifValue::UInt(4));
+
+        let mut report = ConvertFileReport::default();
+        fix_fo76_float_controllers(&mut nif, &mut report);
+
+        assert!(nif.blocks.iter().all(|block| {
+            !matches!(
+                block.type_name.as_str(),
+                "BSLightingShaderPropertyFloatController" | "NiBlendFloatInterpolator"
+            )
+        }));
+        assert!(
+            nif.blocks
+                .iter()
+                .any(|block| block.type_name == "BSShaderTextureSet"),
+            "a source-owned detached block must not be globally pruned"
+        );
+        let shader = nif
+            .blocks
+            .iter()
+            .find(|block| block.type_name == "BSLightingShaderProperty")
+            .expect("shader");
+        assert_eq!(field_ref(shader, "Controller"), Some(-1));
     }
 
     #[test]
@@ -8389,6 +14185,23 @@ mod tests {
         std::fs::write(path, materials_native::bgsm::write(&bgsm)).unwrap();
     }
 
+    fn write_fo76_ultracite_bgsm(dir: &Path, relative: &str) {
+        let mut bgsm = materials_native::bgsm::BgsmData {
+            DiffuseTexture: "Landscape/Plants/Mineral_Ultracite01_d.dds".to_owned(),
+            NormalTexture: "Landscape/Plants/Mineral_Ultracite01_n.dds".to_owned(),
+            LightingTexture: Some("Landscape/Plants/Mineral_Ultracite01_l.dds".to_owned()),
+            EmitEnabled: true,
+            EmittanceColor: Some([0.8196079, 0.854902, 0.17254902]),
+            EmittanceMult: 3.0,
+            ..Default::default()
+        };
+        bgsm.header.signature = materials_native::bgsm::BGSM_SIGNATURE;
+        bgsm.header.version = 20;
+        let path = dir.join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, materials_native::bgsm::write(&bgsm)).unwrap();
+    }
+
     fn write_decal_bgsm(dir: &Path, relative: &str) {
         let mut bgsm = materials_native::bgsm::BgsmData::default();
         bgsm.header.signature = materials_native::bgsm::BGSM_SIGNATURE;
@@ -8399,6 +14212,94 @@ mod tests {
         let path = dir.join(relative);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, materials_native::bgsm::write(&bgsm)).unwrap();
+    }
+
+    fn write_emittance_bgsm(dir: &Path, relative: &str, emit_enabled: bool) {
+        let mut bgsm = materials_native::bgsm::BgsmData {
+            DiffuseTexture: "TestGlow/Board_d.dds".to_owned(),
+            LightingTexture: Some("TestGlow/Board_l.dds".to_owned()),
+            EmitEnabled: emit_enabled,
+            ..Default::default()
+        };
+        bgsm.header.signature = materials_native::bgsm::BGSM_SIGNATURE;
+        bgsm.header.version = 20;
+        let path = dir.join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, materials_native::bgsm::write(&bgsm)).unwrap();
+    }
+
+    fn external_bgsm_emissive_controller_nif(material_name: &str) -> NifFile {
+        let mut nif = external_bgsm_shader_nif(material_name);
+        nif.blocks[0].set_field("Controller", NifValue::Ref(2));
+        let mut controller = NifBlock::new(2, "BSLightingShaderPropertyColorController");
+        controller.set_field("Next Controller", NifValue::Ref(-1));
+        controller.set_field("Flags", NifValue::UInt(76));
+        controller.set_field("Target", NifValue::Ref(0));
+        controller.set_field("Interpolator", NifValue::Ref(3));
+        // LSCC_EMISSIVE_COLOR; Specular Color is 0.
+        controller.set_field("Controlled Color", NifValue::UInt(1));
+        nif.blocks.push(controller);
+        let mut interpolator = NifBlock::new(3, "NiPoint3Interpolator");
+        interpolator.set_field("Value", NifValue::Vec3([f32::MIN; 3]));
+        interpolator.set_field("Data", NifValue::Ref(4));
+        nif.blocks.push(interpolator);
+        nif.blocks.push(NifBlock::new(4, "NiPosData"));
+        nif
+    }
+
+    #[test]
+    fn dormant_emissive_controller_is_pinned_black_for_non_emitting_material() {
+        let dir = tempfile::tempdir().unwrap();
+        write_emittance_bgsm(dir.path(), "materials/testglow/darkboard.bgsm", false);
+        write_emittance_bgsm(dir.path(), "materials/testglow/litboard.bgsm", true);
+
+        // FO76 gates emittance on the BGSM, so a white colour controller on an
+        // EmitEnabled=false material is dead data there. FO4 has no such gate.
+        let mut nif = external_bgsm_emissive_controller_nif("Materials\\TestGlow\\DarkBoard.bgsm");
+        let mut report = ConvertFileReport::default();
+        ensure_fo4_lighting_shader_defaults(&mut nif, &mut report, false);
+        normalize_external_bgsm_shader_data_with_overrides(
+            &mut nif,
+            Some(dir.path()),
+            &HashMap::new(),
+            &mut report,
+        );
+        assert_eq!(
+            nif.blocks[3].get_field("Value"),
+            Some(&NifValue::Vec3([0.0; 3])),
+            "dormant emissive interpolator must be pinned to black"
+        );
+        assert_eq!(
+            field_ref(&nif.blocks[3], "Data"),
+            Some(-1),
+            "dormant emissive interpolator must stop reading its key data"
+        );
+        assert!(
+            value_u64(nif.blocks[0].get_field("Shader Flags 1"))
+                .is_some_and(|flags| flags & SLSF1_OWN_EMIT != 0),
+            "neutralizing the controller must not disturb the Own_Emit baseline"
+        );
+        assert_eq!(
+            nif.blocks.len(),
+            5,
+            "no blocks may be removed: renumbering desyncs NiControllerSequence arrays"
+        );
+
+        // EmitEnabled=true → the animated emissive colour is real, keep it.
+        let mut nif = external_bgsm_emissive_controller_nif("Materials\\TestGlow\\LitBoard.bgsm");
+        let mut report = ConvertFileReport::default();
+        ensure_fo4_lighting_shader_defaults(&mut nif, &mut report, false);
+        normalize_external_bgsm_shader_data_with_overrides(
+            &mut nif,
+            Some(dir.path()),
+            &HashMap::new(),
+            &mut report,
+        );
+        assert_eq!(
+            field_ref(&nif.blocks[3], "Data"),
+            Some(4),
+            "an emissive material must keep its animated colour"
+        );
     }
 
     fn external_bgsm_shader_nif(material_name: &str) -> NifFile {
@@ -8547,6 +14448,91 @@ mod tests {
             texture_at(&nif.blocks[1], 2).to_ascii_lowercase(),
             "textures\\setdressing\\autodispenser\\autodispenserammo_g.dds"
         );
+    }
+
+    #[test]
+    fn external_fo76_ultracite_material_uses_masked_glow_shader() {
+        let dir = tempfile::tempdir().unwrap();
+        write_fo76_ultracite_bgsm(
+            dir.path(),
+            "materials/landscape/plants/mineral_ultracite01.bgsm",
+        );
+
+        let mut nif =
+            external_bgsm_shader_nif("Materials\\Landscape\\Plants\\Mineral_Ultracite01.bgsm");
+        let mut report = ConvertFileReport::default();
+        ensure_fo4_lighting_shader_defaults(&mut nif, &mut report, false);
+        normalize_external_bgsm_shader_data_with_overrides(
+            &mut nif,
+            Some(dir.path()),
+            &HashMap::new(),
+            &mut report,
+        );
+
+        assert!(
+            value_u64(nif.blocks[0].get_field("Shader Flags 2"))
+                .is_some_and(|flags| flags & SLSF2_GLOW_MAP != 0)
+        );
+        assert_eq!(
+            value_u64(nif.blocks[0].get_field("Shader Type")),
+            Some(BSLSP_SHADER_TYPE_GLOW)
+        );
+        assert_eq!(
+            texture_at(&nif.blocks[1], 2).to_ascii_lowercase(),
+            "textures\\landscape\\plants\\mineral_ultracite01_g.dds"
+        );
+    }
+
+    #[test]
+    fn external_fo76_mothman_eye_materials_use_masked_glow_shader() {
+        let dir = tempfile::tempdir().unwrap();
+        for (name, emits) in [
+            ("Mothman", true),
+            ("Mothman01", true),
+            ("Mothman02", true),
+            ("MothmanWise", true),
+            ("MothmanUltracite", true),
+            ("MothmanGlow", true),
+            ("MothmanWingGlow", true),
+            ("MothmanNoEmit", false),
+            ("MothmanWing", false),
+        ] {
+            let path = format!("materials/actors/mothman/{name}.bgsm");
+            write_emittance_bgsm(dir.path(), &path, emits);
+            let mut nif = external_bgsm_shader_nif(&path);
+            let mut report = ConvertFileReport::default();
+            ensure_fo4_lighting_shader_defaults(&mut nif, &mut report, false);
+            normalize_external_bgsm_shader_data_with_overrides(
+                &mut nif,
+                Some(dir.path()),
+                &HashMap::new(),
+                &mut report,
+            );
+            assert_eq!(
+                value_u64(nif.blocks[0].get_field("Shader Flags 2"))
+                    .is_some_and(|flags| flags & SLSF2_GLOW_MAP != 0),
+                emits,
+                "{name}"
+            );
+            assert_eq!(
+                value_u64(nif.blocks[0].get_field("Shader Type")),
+                Some(if emits {
+                    BSLSP_SHADER_TYPE_GLOW
+                } else {
+                    BSLSP_SHADER_TYPE_DEFAULT
+                }),
+                "{name}"
+            );
+            assert_eq!(
+                texture_at(&nif.blocks[1], 2),
+                if emits {
+                    "textures\\TestGlow\\Board_g.dds"
+                } else {
+                    ""
+                },
+                "{name}"
+            );
+        }
     }
 
     #[test]
@@ -9210,7 +15196,86 @@ mod tests {
         nif.blocks.push(texset);
 
         let mut report = ConvertFileReport::default();
-        clear_fo76_invalid_environment_mapping(&mut nif, &mut report);
+        normalize_fo76_environment_mapping(&mut nif, &mut report);
+
+        let shader = &nif.blocks[0];
+        assert_eq!(
+            value_u64(shader.get_field("Shader Type")),
+            Some(BSLSP_SHADER_TYPE_DEFAULT)
+        );
+        assert_eq!(value_u64(shader.get_field("Shader Flags 1")), Some(0));
+    }
+
+    #[test]
+    fn environment_mapping_with_cubemap_promotes_shader_type() {
+        let mut nif = NifFile::default();
+        let mut shader = NifBlock::new(0, "BSLightingShaderProperty");
+        shader.set_field("Texture Set", NifValue::Ref(1));
+        shader.set_field("Shader Type", NifValue::UInt(BSLSP_SHADER_TYPE_DEFAULT));
+        shader.set_field("Shader Flags 1", NifValue::UInt(SLSF1_ENVIRONMENT_MAPPING));
+        let mut texset = NifBlock::new(1, "BSShaderTextureSet");
+        let mut textures = vec![NifValue::String(String::new()); 9];
+        textures[4] = NifValue::String("textures\\Shared\\Cubemaps\\Cube01_e.dds".to_string());
+        texset.set_field("Textures", NifValue::Array(textures));
+        nif.blocks.push(shader);
+        nif.blocks.push(texset);
+
+        let mut report = ConvertFileReport::default();
+        normalize_fo76_environment_mapping(&mut nif, &mut report);
+
+        let shader = &nif.blocks[0];
+        assert_eq!(
+            value_u64(shader.get_field("Shader Type")),
+            Some(BSLSP_SHADER_TYPE_ENVIRONMENT_MAP)
+        );
+        assert_eq!(
+            value_u64(shader.get_field("Shader Flags 1")),
+            Some(SLSF1_ENVIRONMENT_MAPPING)
+        );
+        // Type 1 turns on the cond-gated tail; missing defaults serialize short.
+        assert_eq!(
+            value_f64(shader.get_field("Environment Map Scale")),
+            Some(1.0)
+        );
+        assert!(shader.get_field("Use Screen Space Reflections").is_some());
+        assert!(shader.fields.contains_key("Wetness Control: Use SSR"));
+    }
+
+    #[test]
+    fn environment_mapping_on_specialized_shader_type_drops_the_flag() {
+        let mut nif = NifFile::default();
+        let mut shader = NifBlock::new(0, "BSLightingShaderProperty");
+        shader.set_field("Texture Set", NifValue::Ref(1));
+        shader.set_field("Shader Type", NifValue::UInt(BSLSP_SHADER_TYPE_GLOW));
+        shader.set_field("Shader Flags 1", NifValue::UInt(SLSF1_ENVIRONMENT_MAPPING));
+        let mut texset = NifBlock::new(1, "BSShaderTextureSet");
+        let mut textures = vec![NifValue::String(String::new()); 9];
+        textures[4] = NifValue::String("textures\\Shared\\Cubemaps\\Cube01_e.dds".to_string());
+        texset.set_field("Textures", NifValue::Array(textures));
+        nif.blocks.push(shader);
+        nif.blocks.push(texset);
+
+        let mut report = ConvertFileReport::default();
+        normalize_fo76_environment_mapping(&mut nif, &mut report);
+
+        let shader = &nif.blocks[0];
+        assert_eq!(
+            value_u64(shader.get_field("Shader Type")),
+            Some(BSLSP_SHADER_TYPE_GLOW)
+        );
+        assert_eq!(value_u64(shader.get_field("Shader Flags 1")), Some(0));
+    }
+
+    #[test]
+    fn environment_mapping_without_texture_set_clears_the_flag() {
+        let mut nif = NifFile::default();
+        let mut shader = NifBlock::new(0, "BSLightingShaderProperty");
+        shader.set_field("Shader Type", NifValue::UInt(BSLSP_SHADER_TYPE_DEFAULT));
+        shader.set_field("Shader Flags 1", NifValue::UInt(SLSF1_ENVIRONMENT_MAPPING));
+        nif.blocks.push(shader);
+
+        let mut report = ConvertFileReport::default();
+        normalize_fo76_environment_mapping(&mut nif, &mut report);
 
         let shader = &nif.blocks[0];
         assert_eq!(

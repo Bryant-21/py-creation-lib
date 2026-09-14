@@ -1,14 +1,13 @@
 """Analytic two-bone IK with pole vector.
 
-Pure functions, no state. Inputs are world-space positions and rotations.
-The solver returns the new ROOT rotation in world space and the new MID
-rotation in PARENT-LOCAL space (parent = the new root). See
-``solve_two_bone_ik`` for the full convention. The mid result is therefore
-already in PoseDelta's storage frame; the root result still needs
-``world_rot_delta_to_local`` before being stored as a delta.
+Pure functions. Inputs are world-space positions and rotations. The solver
+returns the new ROOT rotation in world space and the new MID rotation in
+PARENT-LOCAL space (parent = the new root), which is PoseDelta's storage
+frame; the root result still needs ``world_rot_delta_to_local`` before being
+stored as a delta. See ``solve_two_bone_ik``.
 
-Bone lengths are inputs, never outputs — the solver only emits rotations.
-This makes "skeleton can't deform past original lengths" true by construction.
+Bone lengths are inputs only; the solver emits rotations, so the skeleton
+can't stretch past its original lengths.
 """
 
 from __future__ import annotations
@@ -43,35 +42,23 @@ def solve_two_bone_ik(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Solve a 2-bone IK chain.
 
-    Returns (new_root_world_quat, new_mid_local_quat).
-
-    CONVENTION: the root quaternion is in WORLD space, but the mid
-    quaternion is in PARENT-LOCAL space, where the parent is the *new*
-    root rotation after this solve. This matches PoseDelta's storage
-    convention (parent-local) and avoids an extra world->local conversion
-    at the call site. Forward-kinematic reconstruction of the tip is:
+    Returns (new_root_world_quat, new_mid_local_quat). The root quaternion is
+    in WORLD space; the mid quaternion is PARENT-LOCAL to the *new* root,
+    matching PoseDelta's storage. Forward-kinematic reconstruction of the tip:
 
         new_root_mat = quat_to_matrix(new_root_world_quat)
         new_mid_world = root_pos + new_root_mat @ [l1, 0, 0]
         new_mid_world_mat = new_root_mat @ quat_to_matrix(new_mid_local_quat)
         new_tip_world = new_mid_world + new_mid_world_mat @ [l2, 0, 0]
 
-    Bone lengths are preserved exactly. If the target is unreachable, the
-    chain extends fully along the target direction.
+    Bone lengths are preserved exactly; an unreachable target extends the
+    chain fully toward it. Inputs are world space; quaternions are (x, y, z, w).
 
-    All input positions and rotations are world space. Quaternions are
-    (x, y, z, w).
-
-    ``root_local_child_dir`` and ``mid_local_child_dir`` are unit vectors
-    in the respective bone's local frame pointing toward the next joint
-    in the chain (root→mid and mid→tip). They default to +X for
-    backward compatibility with bone conventions that already align the
-    bone's +X axis with its child. Any chain where the bone's rest
-    rotation does NOT align +X with the child direction (e.g. FO4 Power
-    Armor UpperArm has a ~1.2° offset) MUST pass these explicitly, or
-    the solver becomes non-idempotent: each re-solve with the same
-    inputs drifts the tip, which appears as the chain slowly swinging
-    while the user is holding a pole or IK target stationary.
+    ``root_local_child_dir`` / ``mid_local_child_dir`` are unit vectors in each
+    bone's local frame pointing to the next joint. They default to +X. A bone
+    whose rest rotation doesn't align +X with its child (FO4 Power Armor
+    UpperArm is ~1.2° off) MUST pass them, or each re-solve drifts the tip and
+    the chain swings while the user holds the pole or target still.
     """
     l1 = float(root_to_mid_length)
     l2 = float(mid_to_tip_length)
@@ -136,9 +123,8 @@ def solve_two_bone_ik(
 
     # 5. New root rotation: rotate root so that its local child direction
     # (root_axis, in root-local frame) maps to the new world direction
-    # toward new_mid_world. For bones where root_axis == +X this reduces
-    # to the old behavior; for PA's UpperArm (root_axis slightly off +X)
-    # this is what keeps the solve idempotent.
+    # toward new_mid_world. Using root_axis rather than +X keeps the solve
+    # idempotent for PA's UpperArm, whose child axis is slightly off +X.
     old_root_axis_world = quat_to_matrix(root_world_rot) @ root_axis
     new_root_axis_world = (new_mid_world - root_world_pos) / l1
     swing_root = quat_from_to(old_root_axis_world, new_root_axis_world)

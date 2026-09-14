@@ -50,10 +50,7 @@ pub struct AnimationClip {
 
 /// Extract full animation keyframe data from Havok XML into an `AnimationClip`.
 ///
-/// Detects compression class (lossless, interleaved, spline), decodes
-/// keyframes, maps track indices to bone names via `skeleton` when provided
-/// (otherwise generates `track_{idx}` names), and populates events from the
-/// first annotation track.
+/// Track names come from `skeleton` when provided, otherwise `track_{idx}`.
 pub fn extract_clip(xml: &str, skeleton: Option<&SkeletonRecord>) -> HavokResult<AnimationClip> {
     let doc = roxmltree::Document::parse(xml)
         .map_err(|e| HavokError::InvalidInput(format!("invalid XML: {e}")))?;
@@ -92,8 +89,6 @@ pub fn extract_clip(xml: &str, skeleton: Option<&SkeletonRecord>) -> HavokResult
         "quantized"
     } else if class_name.contains("Mirrored") {
         // hkaMirroredAnimation: wraps a source animation with mirror semantics.
-        // We treat it as the source animation with a mirrored flag; this gives
-        // callers a non-empty clip without crashing.
         "mirrored"
     } else if class_name.contains("ReferencePose") {
         // hkaReferencePoseAnimation: single-keyframe clip from skeleton ref pose.
@@ -105,8 +100,6 @@ pub fn extract_clip(xml: &str, skeleton: Option<&SkeletonRecord>) -> HavokResult
     let duration = float_param(anim_node, "duration").unwrap_or(0.0);
     let bone_count = int_param(anim_node, "numberOfTransformTracks").unwrap_or(0) as usize;
 
-    // Parse events from annotation tracks (from the animation object itself or
-    // from separate top-level hkaAnnotationTrack objects).
     let events = parse_events_from_anim(anim_node);
 
     // Resolve bone names
@@ -145,12 +138,8 @@ pub fn extract_clip(xml: &str, skeleton: Option<&SkeletonRecord>) -> HavokResult
         "spline" => extract_spline(anim_node, bone_count, &bone_names, &mut warnings),
         "quantized" => extract_quantized(anim_node, bone_count, &bone_names, &mut warnings),
         "mirrored" => {
-            // hkaMirroredAnimation wraps a source animation with mirrored bone
-            // semantics. We decode the source animation data directly from this
-            // object so callers get a usable (non-empty) clip. The mirroring
-            // semantics (left↔right bone swap) are not applied; callers that
-            // need true mirrored output must apply hkaMirroredSkeleton mappings
-            // themselves.
+            // Decoded as the source data without the left/right bone swap;
+            // callers needing true mirrored output apply hkaMirroredSkeleton themselves.
             warnings.push(format!(
                 "hkaMirroredAnimation decoded as source data; mirror semantics not applied \
                  (class: {class_name})"
@@ -933,16 +922,8 @@ fn extract_quantized(
 // Event parsing
 // ---------------------------------------------------------------------------
 
-/// Parse animation events from annotation tracks.
-///
-/// Handles two layouts:
-/// 1. Inline: annotation tracks are `hkobject` children of the animation's
-///    `annotationTracks` param (typical in compact packfile XML).
-/// 2. Separate: top-level `hkobject class="hkaAnnotationTrack"` elements
-///    (typical in fully expanded TAG XML).
-///
-/// The function inspects the animation node first (inline), then falls back
-/// to searching the document for separate annotation track objects.
+/// Parse events from the inline `annotationTracks` param of the animation
+/// object. Top-level `hkaAnnotationTrack` objects are not searched.
 fn parse_events_from_anim(anim_node: roxmltree::Node<'_, '_>) -> Vec<AnimationEvent> {
     let mut events = Vec::new();
 

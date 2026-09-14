@@ -1,9 +1,5 @@
-/// hkRefCountedProperties property-bag entry key for hknpShapeMassProperties.
-///
-/// Written as a little-endian u16 in the `hkRefCountedPropertiesEntry::key` field.
-/// Value 0xF100 is the well-known key for the mass-properties property slot;
-/// the SDK uses this in `hknpShape::getMassPropertiesEntry()`.
-/// The LE byte layout in the binary stream is `0x00 0xF1`.
+/// hkRefCountedProperties entry key for hknpShapeMassProperties, as used by SDK
+/// `hknpShape::getMassPropertiesEntry()`. LE bytes `0x00 0xF1`.
 pub const REFCOUNTED_PROPS_KEY_MASS_PROPS: u16 = 0xF100;
 
 /// hkRefCountedProperties property-bag entry key for hknpBSMaterialProperties.

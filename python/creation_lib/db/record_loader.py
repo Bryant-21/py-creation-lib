@@ -63,14 +63,10 @@ class RecordLoader:
     def load_by_form_key(self, form_key: str) -> dict | None:
         """Load a single record by FormKey. Returns None if not found.
 
-        Hot path is backed by an in-memory ``_fk_index`` of lightweight
-        metadata (form_key, editor_id, record_type, name, source). Eliminates
-        the per-FK SQLite query that dominated ``_fix_invalid_target_formkeys``
-        on large plugins (54k unbatched lookups in FO76→FO4 iter 1).
-
-        If the caller needs the heavier ``yaml_path`` or ``content`` columns,
-        we fall through to a one-off SQLite query — that path is rare and
-        not worth bloating the in-memory index with multi-GB content fields.
+        Served from an in-memory ``_fk_index`` of lightweight columns
+        (form_key, editor_id, record_type, name, source, yaml_path), so large
+        plugins don't pay one SQLite query per lookup. The multi-GB
+        ``content`` column is left out; ``load_full_yaml`` queries it.
         """
         meta = self._fk_index().get(form_key)
         if meta is None:
@@ -97,8 +93,7 @@ class RecordLoader:
 
     def load_full_yaml(self, form_key: str) -> str | None:
         """Load the full YAML content for a record from its yaml_path on disk."""
-        # ``load_by_form_key`` now returns a lightweight metadata-only record;
-        # the heavier ``yaml_path``/``content`` fields are fetched on demand.
+        # ``content`` is not in the in-memory index, so query it directly.
         row = self._connect().query_one(
             "SELECT yaml_path, content FROM records WHERE form_key = ?",
             [form_key],

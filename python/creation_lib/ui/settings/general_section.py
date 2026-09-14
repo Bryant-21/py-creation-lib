@@ -155,16 +155,21 @@ def _export_to_env(settings) -> None:
 
 
 def _draw(ctx: SettingsContext) -> None:
+    from creation_lib.ui.widgets.modern import heading, status_indicator
+    from creation_lib.ui.widgets.forms import begin_form, end_form, form_row_label
+
+    title = heading
+    hint = status_indicator
     settings = ctx.settings
 
-    imgui.text("Default Game")
+    title("Default Game")
     imgui.separator()
     imgui.spacing()
 
     game_ids = list(GAME_PROFILES.keys())
     game_labels = [GAME_PROFILES[g].display_name for g in game_ids]
     current_idx = game_ids.index(_state.active_game) if _state.active_game in game_ids else 0
-    imgui.set_next_item_width(200)
+    imgui.set_next_item_width(200 * ctx.scale)
     changed, new_idx = imgui.combo("##default_game", current_idx, game_labels)
     if changed:
         _state.active_game = game_ids[new_idx]
@@ -174,10 +179,10 @@ def _draw(ctx: SettingsContext) -> None:
     imgui.separator()
     imgui.spacing()
 
-    imgui.text("AddonNode Index Range")
+    title("AddonNode Index Range")
     imgui.separator()
     imgui.spacing()
-    imgui.set_next_item_width(120)
+    imgui.set_next_item_width(120 * ctx.scale)
     changed, val = imgui.input_int("Start Index##addon_start", settings.addon_node_index_start)
     if changed:
         settings.addon_node_index_start = max(1, val)
@@ -188,7 +193,7 @@ def _draw(ctx: SettingsContext) -> None:
     )
 
     imgui.spacing()
-    imgui.set_next_item_width(120)
+    imgui.set_next_item_width(120 * ctx.scale)
     changed, val = imgui.input_int("Conversion Start Index##addon_conv_start", settings.conversion_addon_node_index_start)
     if changed:
         settings.conversion_addon_node_index_start = max(1, val)
@@ -201,61 +206,55 @@ def _draw(ctx: SettingsContext) -> None:
     imgui.separator()
     imgui.spacing()
 
-    imgui.text("Gitea Server")
+    title("Gitea Server")
     imgui.separator()
     imgui.spacing()
-    imgui.text_disabled("Auto-create a git repo on your Gitea server when setting up a new mod.")
+    hint("Auto-create a git repo on your Gitea server when setting up a new mod.")
     imgui.spacing()
 
-    _gitea_label_w = imgui.calc_text_size("Username").x + 12
-    _gitea_input_w = imgui.get_content_region_avail().x - _gitea_label_w
-
-    imgui.text("URL")
-    imgui.same_line(_gitea_label_w)
-    imgui.set_next_item_width(_gitea_input_w)
-    _, _state.gitea_url = imgui.input_text("##gitea_url", _state.gitea_url)
-    if imgui.is_item_hovered():
-        imgui.set_tooltip("Gitea server URL, e.g. https://192.168.1.252:3100")
-
-    imgui.text("Username")
-    imgui.same_line(_gitea_label_w)
-    imgui.set_next_item_width(_gitea_input_w)
-    _, _state.gitea_username = imgui.input_text("##gitea_username", _state.gitea_username)
-    if imgui.is_item_hovered():
-        imgui.set_tooltip("Your Gitea username — used for authentication and fallback repo owner")
+    if begin_form("##gitea_account"):
+        form_row_label("URL")
+        imgui.set_next_item_width(-1)
+        _, _state.gitea_url = imgui.input_text("##gitea_url", _state.gitea_url)
+        if imgui.is_item_hovered():
+            imgui.set_tooltip("Gitea server URL, e.g. https://192.168.1.252:3100")
+        form_row_label("Username")
+        imgui.set_next_item_width(-1)
+        _, _state.gitea_username = imgui.input_text("##gitea_username", _state.gitea_username)
+        if imgui.is_item_hovered():
+            imgui.set_tooltip("Your Gitea username — used for authentication and fallback repo owner")
+        end_form()
 
     imgui.spacing()
-    imgui.text_disabled("Orgs (optional) — repos are created under the org for that game, or your username if blank.")
+    hint("Orgs (optional) — repos are created under the org for that game, or your username if blank.")
+    if begin_form("##gitea_orgs"):
+        for game_id, profile in GAME_PROFILES.items():
+            form_row_label(profile.display_name)
+            imgui.set_next_item_width(-1)
+            current = _state.gitea_orgs.get(game_id, "")
+            changed, new_val = imgui.input_text(f"##gitea_org_{game_id}", current)
+            if changed:
+                _state.gitea_orgs[game_id] = new_val
+        end_form()
     imgui.spacing()
-    _org_label_w = imgui.calc_text_size("Starfield").x + 12
-    _org_input_w = imgui.get_content_region_avail().x - _org_label_w
-    for game_id, profile in GAME_PROFILES.items():
-        imgui.text(profile.display_name)
-        imgui.same_line(_org_label_w)
-        imgui.set_next_item_width(_org_input_w)
-        current = _state.gitea_orgs.get(game_id, "")
-        changed, new_val = imgui.input_text(f"##gitea_org_{game_id}", current)
-        if changed:
-            _state.gitea_orgs[game_id] = new_val
-    imgui.spacing()
-
-    imgui.text("Token")
-    imgui.same_line(_gitea_label_w)
-    imgui.set_next_item_width(_gitea_input_w)
-    _, _state.gitea_token = imgui.input_text(
-        "##gitea_token", _state.gitea_token, flags=imgui.InputTextFlags_.password.value
-    )
-    if imgui.is_item_hovered():
-        imgui.set_tooltip("Optional API token — fallback if push-to-create is not enabled")
+    if begin_form("##gitea_auth"):
+        form_row_label("Token")
+        imgui.set_next_item_width(-1)
+        _, _state.gitea_token = imgui.input_text(
+            "##gitea_token", _state.gitea_token, flags=imgui.InputTextFlags_.password.value
+        )
+        if imgui.is_item_hovered():
+            imgui.set_tooltip("Optional API token — fallback if push-to-create is not enabled")
+        end_form()
 
     imgui.spacing()
     imgui.separator()
     imgui.spacing()
 
-    imgui.text("Setup")
+    title("Setup")
     imgui.separator()
     imgui.spacing()
-    if imgui.button("Rerun Setup Wizard", imgui.ImVec2(200, 0)):
+    if imgui.button("Rerun Setup Wizard", imgui.ImVec2(200 * ctx.scale, 0)):
         if callable(_state.rerun_setup_cb):
             _state.rerun_setup_cb()
     if imgui.is_item_hovered():
@@ -264,23 +263,23 @@ def _draw(ctx: SettingsContext) -> None:
     imgui.separator()
     imgui.spacing()
 
-    imgui.text(".env Sync")
+    title(".env Sync")
     imgui.separator()
     imgui.spacing()
-    imgui.text_disabled("Sync settings with the .env file used by CLI scripts and MCP servers.")
+    hint("Sync settings with the .env file used by CLI scripts and MCP servers.")
     imgui.spacing()
-    if imgui.button("Import from .env", imgui.ImVec2(180, 0)):
+    if imgui.button("Import from .env", imgui.ImVec2(180 * ctx.scale, 0)):
         _import_from_env(settings)
     if imgui.is_item_hovered():
         imgui.set_tooltip("Load game paths, Gitea settings, and MOD_PREFIX from .env into the UI")
     imgui.same_line()
-    if imgui.button("Export to .env", imgui.ImVec2(160, 0)):
+    if imgui.button("Export to .env", imgui.ImVec2(160 * ctx.scale, 0)):
         _export_to_env(settings)
     if imgui.is_item_hovered():
         imgui.set_tooltip("Write current UI settings back to .env (also happens automatically on Save)")
     if _state.env_sync_status:
         imgui.same_line()
-        imgui.text_disabled(_state.env_sync_status)
+        hint(_state.env_sync_status)
 
 
 def _load(saved: dict) -> None:

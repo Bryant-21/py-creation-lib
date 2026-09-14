@@ -1,12 +1,10 @@
 """Deploy mod assets as loose files instead of packing them into BA2 archives.
 
-Keeps a manifest (`.loose_manifest.json` inside the mod folder) that lists every
-file the mod pushed into the game's Data directory. The manifest lets us:
-
-  * undeploy exactly what was deployed (even if the mod folder changed since)
-  * re-import changes made in the Creation Kit — including brand-new files the
-    CK dropped inside dirs the mod owns (e.g. new textures under
-    ``Textures/B21_MyMod/``).
+A manifest (`.loose_manifest.json` inside the mod folder) lists every file the
+mod pushed into the game's Data directory, so undeploy removes exactly what was
+deployed (even if the mod folder changed since) and Creation Kit edits can be
+re-imported, including new files the CK created in dirs the mod owns (e.g.
+``Textures/B21_MyMod/``).
 """
 from __future__ import annotations
 
@@ -21,10 +19,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from creation_lib.build.deployer import compile_papyrus
+from creation_lib.build.deployer import compile_papyrus, XSE_PLUGIN_DIR
 from creation_lib.esp.validate import validate_authoring
 from creation_lib.build.packer import _prepare_texture_root
-from creation_lib.esp.authoring import deserialize, get_plugin_ext
+from creation_lib.esp.authoring import deserialize
+from creation_lib.build.plugin_source import resolve_plugin_source
 
 _log = logging.getLogger(__name__)
 
@@ -36,6 +35,8 @@ _SOURCE_ROOTS: list[tuple[str, str]] = [
     ("data", ""),
     ("Meshes", "Meshes"),
     ("MCM", "MCM"),
+    ("Terrain", "Terrain"),
+    *((name, name) for name in XSE_PLUGIN_DIR.values()),
 ]
 
 
@@ -44,6 +45,7 @@ class LooseDeployResult:
     plugin: str = ""
     files_deployed: int = 0
     claimed_dirs: list[str] = field(default_factory=list)
+    preserved_xse_inis: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -122,6 +124,22 @@ def _copy_loose_jobs(jobs: list[_LooseCopyJob], workers: int) -> list[dict]:
     with ThreadPoolExecutor(max_workers=worker_count) as executor:
         futures = [executor.submit(_copy_loose_job, job) for job in jobs]
         return [future.result() for future in futures]
+
+
+def _validate_unique_copy_destinations(jobs: list[_LooseCopyJob]) -> None:
+    destinations: dict[str, _LooseCopyJob] = {}
+    for job in jobs:
+        key = job.rel.replace("\\", "/").casefold()
+        previous = destinations.get(key)
+        if previous is None:
+            destinations[key] = job
+            continue
+        previous_source = f"{previous.src_root}/{previous.src_rel}"
+        current_source = f"{job.src_root}/{job.src_rel}"
+        raise ValueError(
+            f"duplicate loose deployment path {job.rel}: "
+            f"{previous_source} and {current_source}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -243,6 +261,8 @@ def deploy_loose_assets(
     skip_build: bool = False,
     skip_validation: bool = False,
     skip_papyrus_compile: bool = False,
+    preserve_xse_inis: bool = False,
+    source: Path | str | None = None,
     pc_max_res: int = 0,
     pc_effects_max_res: int | None = None,
     workers: int = 0,
@@ -272,14 +292,13 @@ def deploy_loose_assets(
         if on_progress:
             on_progress(msg)
 
-    plugin_ext = get_plugin_ext(mod_dir)
-    esp = mod_dir / f"{mod_name}.{plugin_ext}"
+    authoring_source, esp = resolve_plugin_source(mod_dir, source)
 
     # ── Step 1: build .esp ──
-    if not skip_build and (mod_dir / "yaml").is_dir():
-        if not skip_validation:
+    if not skip_build and authoring_source is not None:
+        if not skip_validation and authoring_source.is_dir():
             _emit("[1/4] Validating authoring dir...")
-            errors, _ = validate_authoring(mod_dir / "yaml")
+            errors, _ = validate_authoring(authoring_source)
             if errors:
                 _emit(f"WARNING: Validation found {len(errors)} error(s)")
                 for err in errors:
@@ -289,7 +308,7 @@ def deploy_loose_assets(
                     )
         _emit("[1/4] Building .esp...")
         deserialize(
-            mod_dir / "yaml", esp,
+            authoring_source, esp,
             game=game, data_folder=game_data_dir,
             on_progress=on_progress,
         )
@@ -336,18 +355,6 @@ def deploy_loose_assets(
     target_data_dir.mkdir(parents=True, exist_ok=True)
     deployed: list[dict] = []
 
-    # Plugin
-    dest_esp = target_data_dir / f"{mod_name}.{plugin_ext}"
-    shutil.copy2(esp, dest_esp)
-    deployed.append({
-        "rel": dest_esp.name,
-        "src_root": "",
-        "src_rel": esp.name,
-        **_file_stat(dest_esp),
-    })
-    result.plugin = dest_esp.name
-    _emit(f"  Copied plugin: {dest_esp.name}")
-
     # Strings/ + data/ + Meshes/ trees, excluding data/Textures so we can resize those first.
     copy_jobs: list[_LooseCopyJob] = []
 
@@ -377,6 +384,31 @@ def deploy_loose_assets(
                 src_rel=src_rel.as_posix(),
             )
         )
+    _validate_unique_copy_destinations(copy_jobs)
+    if preserve_xse_inis:
+        retained = []
+        for job in copy_jobs:
+            parts = Path(job.rel).parts
+            is_xse = bool(parts) and parts[0].casefold() == XSE_PLUGIN_DIR.get(game, "").casefold()
+            if is_xse and job.source.suffix.casefold() == ".ini" and job.dest.is_file():
+                result.preserved_xse_inis.append(job.rel)
+                _emit(f"  Preserved existing INI: {job.rel}")
+            else:
+                retained.append(job)
+        copy_jobs = retained
+
+    # Plugin
+    dest_esp = target_data_dir / esp.name
+    shutil.copy2(esp, dest_esp)
+    deployed.append({
+        "rel": dest_esp.name,
+        "src_root": "",
+        "src_rel": esp.relative_to(mod_dir.resolve() if esp.is_absolute() else mod_dir).as_posix(),
+        **_file_stat(dest_esp),
+    })
+    result.plugin = dest_esp.name
+    _emit(f"  Copied plugin: {dest_esp.name}")
+
     if copy_jobs:
         worker_count = _resolve_copy_workers(workers, len(copy_jobs))
         _emit(f"  Copying {len(copy_jobs)} loose file(s) with {worker_count} worker(s)...")
@@ -449,7 +481,7 @@ def deploy_loose_file(
     project_root: Path | str | None = None,
     on_progress: Callable[[str], None] | None = None,
 ) -> Path:
-    """Copy one mod asset to the game Data directory and track it."""
+    """Copy one mod asset or asset directory to game Data and track its files."""
     if project_root is None:
         raise ValueError("project_root is required")
 
@@ -460,7 +492,7 @@ def deploy_loose_file(
 
     requested = Path(asset_path)
     source = requested.resolve() if requested.is_absolute() else (mod_dir / requested).resolve()
-    if not source.is_file():
+    if not source.is_file() and not source.is_dir():
         raise FileNotFoundError(f"Loose asset not found: {source}")
 
     source_root_name = ""
@@ -502,19 +534,33 @@ def deploy_loose_file(
             f"Existing loose manifest targets {manifest_target}, not {target_root}"
         )
 
-    entry = _copy_loose_job(_LooseCopyJob(
+    jobs = [_LooseCopyJob(
         source=source,
         dest=destination,
         rel=destination_rel.as_posix(),
         src_root=source_root_name,
         src_rel=source_rel.as_posix(),
-    ))
+    )]
+    if source.is_dir():
+        jobs = []
+        for path in sorted(source.rglob("*")):
+            if not path.is_file():
+                continue
+            path.resolve().relative_to(source)
+            relative = path.relative_to(source)
+            jobs.append(_LooseCopyJob(
+                source=path, dest=destination / relative,
+                rel=(destination_rel / relative).as_posix(),
+                src_root=source_root_name, src_rel=(source_rel / relative).as_posix(),
+            ))
+    entries = _copy_loose_jobs(jobs, workers=0)
+    replaced = {entry["rel"].casefold() for entry in entries}
 
     files = [
         item for item in manifest.get("files", [])
-        if str(item.get("rel", "")).casefold() != entry["rel"].casefold()
+        if str(item.get("rel", "")).casefold() not in replaced
     ]
-    files.append(entry)
+    files.extend(entries)
     claimed = _collect_claimed_dirs([item["rel"] for item in files], mod_name)
     manifest.update({
         "mod_name": mod_name,
@@ -526,7 +572,7 @@ def deploy_loose_file(
     })
     _write_manifest(mod_dir, manifest)
 
-    message = f"Deployed loose file: {entry['rel']} -> {destination}"
+    message = f"Deployed {len(entries)} loose file(s): {destination_rel.as_posix()} -> {destination}"
     _log.info(message)
     if on_progress:
         on_progress(message)
@@ -542,6 +588,7 @@ def undeploy_loose_assets(
     *,
     game_data_dir: Path | None = None,
     project_root: Path | str | None = None,
+    dry_run: bool = False,
     on_progress: Callable[[str], None] | None = None,
 ) -> list[str]:
     """Remove every file recorded in the mod's loose manifest from the game.
@@ -575,13 +622,16 @@ def undeploy_loose_assets(
         f = target / rel
         if f.is_file():
             try:
-                f.unlink()
+                if not dry_run:
+                    f.unlink()
                 removed.append(rel)
                 dirs_touched.add(f.parent)
                 _emit(f"  Removed: {rel}")
             except OSError as e:
                 _emit(f"  FAILED: {rel}: {e}")
 
+    if dry_run:
+        return removed
     # Prune now-empty dirs bottom-up, but stop at the game Data root.
     for d in sorted(dirs_touched, key=lambda p: len(p.parts), reverse=True):
         cur = d

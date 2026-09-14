@@ -1,16 +1,12 @@
 """Connection point visualization for the NIF editor viewport.
 
-Renders BSConnectPoint::Parents data as 3D markers (small axis crosses)
-at each connect point's world position, with lines linking back to the
-parent node's origin.  Also renders BSConnectPoint::Children as markers
-at the owner node's position (children have names but no local offsets).
+BSConnectPoint::Parents draw as small axis crosses at each point's world position,
+with lines back to the parent node's origin. BSConnectPoint::Children have names
+but no local offsets, so they draw at the owner node's position. Labels are imgui
+text projected to screen space.
 
-Shows text labels at each connect point via imgui overlay (projected from
-3D to screen space).
-
-Selection modes:
-  - Select a BSConnectPoint::Parents or Children block -> show ALL connect points
-  - Select an individual connect point (via tree) -> show only that one
+Selecting a Parents or Children block shows all connect points; selecting one
+point in the tree shows only that one.
 """
 from __future__ import annotations
 import logging
@@ -384,15 +380,10 @@ class ConnectPointDisplay:
         self._vao.render(moderngl.LINES)
 
     def draw_labels(self, vp_matrix, viewport_pos, viewport_size):
-        """Draw connect point name labels as imgui overlay text.
+        """Draw connect point names as imgui overlay text, after the FBO image.
 
-        Call this from the viewport drawing code after rendering the FBO image.
-        Projects 3D world positions to screen coordinates.
-
-        Args:
-            vp_matrix: glm.mat4 view*projection matrix
-            viewport_pos: imgui screen position of the viewport top-left
-            viewport_size: imgui size of the viewport
+        ``vp_matrix`` is the glm view*projection matrix; ``viewport_pos`` is the
+        viewport's top-left imgui screen position.
         """
         if not self._visible or not self._labels:
             return

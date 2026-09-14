@@ -103,7 +103,10 @@ def draw_generic_user_guide_window(visible: bool, guide: UserGuide) -> bool:
     if not visible:
         return False
     window_id = guide.window_id or "user_guide"
+    padding = imgui.get_font_size() * 0.5
+    imgui.push_style_var(imgui.StyleVar_.window_padding, imgui.ImVec2(padding, padding))
     is_visible, is_open = imgui.begin(f"{guide.title}##{window_id}", visible)
+    imgui.pop_style_var()
     try:
         if is_visible:
             _render_markdown(guide.body)
@@ -116,7 +119,10 @@ def draw_docked_user_guide_window(label: str, provider: object, on_close=None) -
     guide = get_user_guide(provider)
     if guide is None:
         return
+    padding = imgui.get_font_size() * 0.5
+    imgui.push_style_var(imgui.StyleVar_.window_padding, imgui.ImVec2(padding, padding))
     visible, _ = imgui.begin(label)
+    imgui.pop_style_var()
     try:
         if visible:
             if on_close is not None:

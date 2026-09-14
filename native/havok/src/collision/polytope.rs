@@ -1,10 +1,5 @@
-// FO4 Havok 2014.1.0 packfile builder — hknpConvexPolytopeShape.
-//
-// Mirrors py_creation_lib/python/creation_lib/havok/_fo4_polytope.py exactly.  The convex hull is computed by
-// hull::compute_hull_topology (a pure-Rust Quickhull implementation).
-//
-// Layout of generated packfile matches the Python builder; see
-// _fo4_polytope.py for the full byte-layout comment.
+// FO4 Havok 2014.1.0 packfile builder — hknpConvexPolytopeShape. The hull
+// comes from hull::compute_hull_topology (Quickhull).
 
 use super::compressed_mesh::{
     BuildOptions, FixupBuilder, PF_POLYTOPE_CLASS_ENTRIES, build_body_cinfo,
@@ -422,8 +417,6 @@ fn build_polytope_data_section(
 /// - hknpConvexPolytopeShape (convex hull computed via Quickhull)
 /// - hkRefCountedProperties (one entry)
 /// - hknpShapeMassProperties (zeroed, static body)
-///
-/// Mirrors `build_fo4_polytope_collision` in `py_creation_lib/python/creation_lib/havok/_fo4_polytope.py`.
 pub fn build_fo4_polytope_collision(
     vertices: &[[f32; 3]],
     opts: &BuildOptions,

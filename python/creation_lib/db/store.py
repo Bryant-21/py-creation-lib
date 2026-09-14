@@ -85,15 +85,9 @@ class GameDataStore:
     ) -> list[dict]:
         """Search a domain using FTS5 full-text search.
 
-        Args:
-            domain: One of "records", "scripts", "wiki", "behaviors",
-                    "nifs", "ext_records", "ext_scripts".
-            query: Search text.
-            limit: Maximum results.
-            **filters: Domain-specific filters (record_type, source, extends, etc.)
-
-        Returns:
-            List of result dicts.
+        ``domain`` is one of "records", "scripts", "wiki", "behaviors", "nifs",
+        "ext_records", "ext_scripts". ``filters`` are domain-specific
+        (record_type, source, extends, etc.).
         """
         db_file, table, fts_table, id_col = self._config(domain)
         db_path = str(self._db_dir / db_file)

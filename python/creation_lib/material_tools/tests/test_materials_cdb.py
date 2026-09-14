@@ -80,21 +80,10 @@ def test_bsresourceid_different_paths_differ():
 
 
 def test_bsresourceid_ext_packing_mat():
-    # cpp packs the extension as a little-endian u32 of the ASCII bytes
-    # after the dot, then lowercases via `ext | ((ext >> 1) & 0x20202020)`.
-    # For "mat" (3 chars), the read switch uses the 3-char case:
-    #   ext = readUInt16Fast(data + i + 1)
-    # which reads bytes at positions (dot+2, dot+3) = ('a', 't') as LE u16
-    # = 0x7461, then after lowercase fold = 0x7461 (already lowercase).
-    # File: b"gun.mat", positions: 0='g',1='u',2='n',3='.',4='m',5='a',6='t'
-    # baseNamePos == npos -> i starts at 0, extPos = 3, so fileName length
-    # - i = 7 - 4 = 3 after the baseName loop advances i past extPos.
-    # The switch input is length - i after setting i = extPos = 3 and
-    # not entering the baseName-increment branch (baseNamePos == npos), so
-    # length - i = 7 - 3 = 4 -> case 4 branch:
-    #   ext = readUInt32Fast(data + i) >> 8
-    #       = bytes [3,4,5,6] = '.mat' as LE u32 = 0x74616D2E, >> 8 = 0x0074616D
-    # Verify this against our BSResourceID.
+    # cpp packs the ASCII bytes after the dot as a little-endian u32 and
+    # lowercases via `ext | ((ext >> 1) & 0x20202020)`. For "gun.mat" the switch
+    # sees length - extPos = 7 - 3 = 4 and takes `readUInt32Fast(data + i) >> 8`:
+    # '.mat' as LE u32 = 0x74616D2E, >> 8 = 0x0074616D.
     rid = BSResourceID.from_path("gun.mat")
     # Expected ext value: 0x0074616D ("mat\0" little-endian)
     assert rid.ext == 0x0074616D

@@ -103,6 +103,64 @@ pub struct LocalizedStringsState {
     pub is_filtered: bool,
     pub requested_language: Option<String>,
     pub source_strings_dir: Option<String>,
+    /// Indexed-but-undecoded tables, for handles opened read-only.
+    ///
+    /// `by_language` stays authoritative: anything materialized or authored
+    /// there wins. This is consulted only for ids it does not hold, so a caller
+    /// that resolves single ids never pays to decode the whole corpus. Callers
+    /// that enumerate or rewrite the corpus must call
+    /// [`LocalizedStringsState::materialize_all`] first.
+    pub lazy_tables: Option<Arc<crate::plugin_runtime::strings::LazyStringTables>>,
+}
+
+impl LocalizedStringsState {
+    /// Every language code this state can answer for, decoded or not.
+    pub fn language_codes(&self) -> Vec<String> {
+        let mut codes: Vec<String> = self.by_language.keys().cloned().collect();
+        if let Some(lazy) = self.lazy_tables.as_ref() {
+            for language in lazy.languages() {
+                if !codes.contains(&language) {
+                    codes.push(language);
+                }
+            }
+        }
+        codes.sort();
+        codes
+    }
+
+    /// Text for `string_id` in `language`, falling through to the lazy tables.
+    pub fn resolve(&self, language: &str, string_id: u32) -> Option<String> {
+        if let Some(text) = self
+            .by_language
+            .get(language)
+            .and_then(|table| table.get(&string_id))
+        {
+            return Some(text.clone());
+        }
+        self.lazy_tables
+            .as_ref()
+            .and_then(|lazy| lazy.get(language, string_id))
+    }
+
+    /// Decode every lazy table into `by_language` and drop the lazy source.
+    ///
+    /// Required before enumerating `by_language` or writing tables back out;
+    /// a lazily indexed state looks empty to code that reads the map directly.
+    pub fn materialize_all(&mut self) {
+        let Some(lazy) = self.lazy_tables.take() else {
+            return;
+        };
+        let (by_language, table_types) = lazy.decode_all();
+        for (language, table) in by_language {
+            let target = self.by_language.entry(language).or_default();
+            for (string_id, text) in table {
+                target.entry(string_id).or_insert(text);
+            }
+        }
+        for (string_id, table_type) in table_types {
+            self.table_types.entry(string_id).or_insert(table_type);
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -115,6 +173,13 @@ pub struct NativeImportContext {
     pub strings: LocalizedStringsState,
     next_localized_string_id: u32,
     pub allocated_localized_string_ids: Vec<u32>,
+    /// Signature of the record currently being built, so a localized field can
+    /// be filed under the right string table. The streaming build writes records
+    /// straight to disk and hands `write_localized_strings_for_parsed` a record-less
+    /// plugin shell, so `infer_localized_table_types` has nothing to walk and every
+    /// id would otherwise default to `strings` -- putting COBJ/BOOK/PERK/RACE
+    /// descriptions in .STRINGS, where FO4 never looks for them.
+    pub current_record_signature: Option<String>,
 }
 
 impl NativeImportContext {
@@ -139,6 +204,7 @@ impl NativeImportContext {
             },
             next_localized_string_id: 1,
             allocated_localized_string_ids: Vec::new(),
+            current_record_signature: None,
         }
     }
 

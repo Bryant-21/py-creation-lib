@@ -9,10 +9,9 @@ not a rename.
 ## FO76 texture suffixes
 
 - **`_d.dds`** — Diffuse / albedo. Usually `BC1_UNORM_SRGB` or `BC3_UNORM_SRGB`.
-  FO4 textures are **not** flagged sRGB, which is the source of the gamma shift
-  seen when an FO76 `_d` is dropped onto an FO4 material unconverted. Also note:
-  in FO76 this texture is **black on pure-metal surfaces** (metalness lives in
-  `_r`).
+  FO4 textures are **not** flagged sRGB, which causes the gamma shift seen when
+  an FO76 `_d` is dropped onto an FO4 material unconverted. In FO76 this
+  texture is **black on pure-metal surfaces** (metalness lives in `_r`).
 - **`_n.dds`** — Normal map, `BC5_SNORM` (2 channels). Unlike FO4 the data type
   is **signed** 8-bit; FO4 expects unsigned, so the converter remaps
   `value * 0.5 + 0.5`.

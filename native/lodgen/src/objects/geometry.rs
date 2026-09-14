@@ -268,13 +268,11 @@ impl LodGeometry {
     // + Geometry.Simplify (Geometry.cs:1999) + Geometry.CreateTriangles
     // (Geometry.cs:1526). Drives the heavy-tail collapse for atlassed object LOD.
     //
-    // DEFERRED (noted): the UV-tile-boundary split sub-loop (Geometry.cs:1224-1402
-    // — SplitUV / PointInTriangle / CreateDuplicate / the `flag` recompute of
-    // FaceNormals+SmoothNormals+UpdateTangents) is NOT ported. It only fires when
-    // a triangle's UVs span more than one [0,1] tile (Ceiling-Floor > 1), which
-    // does not happen for atlassed LOD shapes whose UVs are remapped into a single
-    // atlas sub-rect inside [0,1]. Porting it would not change the tri-ratio
-    // convergence the heavy tail needs.
+    // Not ported: the UV-tile-boundary split sub-loop (Geometry.cs:1224-1402:
+    // SplitUV / PointInTriangle / CreateDuplicate / the `flag` recompute of
+    // FaceNormals+SmoothNormals+UpdateTangents). It only fires when a triangle's UVs
+    // span more than one [0,1] tile (Ceiling-Floor > 1), which atlassed LOD shapes
+    // never do: their UVs are remapped into one atlas sub-rect inside [0,1].
     // -----------------------------------------------------------------------
 
     /// Per-triangle UV break + loose re-weld + Simplify, applied in place.
@@ -408,38 +406,24 @@ impl LodGeometry {
         }
     }
 
-    /// BEYOND-SOURCE cross-UV-seam weld (NOT a port — absent from Geometry.cs).
+    /// Cross-UV-seam weld; not in Geometry.cs.
     ///
-    /// xLODGen's faithful `RemoveDuplicate` welds vertices only when BOTH position
-    /// (0.5) AND UV (0.005) coincide, so it preserves every UV seam: two verts at
-    /// the same position but on opposite sides of a UV seam stay split, and
-    /// `Simplify`'s coplanar-fan collapse cannot cross that seam. On UV-seamed
-    /// atlassed shapes (boats, etc.) this leaves the tri count well above golden.
+    /// xLODGen's `RemoveDuplicate` welds only when both position (0.5) and UV (0.005)
+    /// coincide, so every UV seam stays split and `Simplify`'s coplanar-fan collapse
+    /// cannot cross it; UV-seamed atlassed shapes (boats, etc.) stay well above the
+    /// golden tri count. This pass welds vertices sharing a position (within
+    /// `POS_EPS`, the same 0.5) even when their source UVs differ.
     ///
-    /// This pass welds vertices that share a POSITION (within `POS_EPS`, the same
-    /// 0.5 the faithful weld uses) even when their source UVs differ, so the
-    /// Simplify fans below can span the former seam.
+    /// Texturing safety: each atlassed shape maps to exactly one atlas rect
+    /// (`transform_shape` remaps all its UVs through one `rect`), so a weld within the
+    /// shape cannot pull texture across an atlas tile. To avoid smearing the source
+    /// texture, two verts are welded only if their UVs lie within `cross_seam_uv_band()`
+    /// (default 0.10 per axis) of the representative, which keeps its own UV. Far-apart
+    /// seams (u≈0.0 vs u≈1.0) stay split.
     ///
-    /// TEXTURING SAFETY — the binding constraint:
-    /// * Each atlassed shape maps to exactly ONE atlas rect (transform_shape looks
-    ///   up a single `rect` for the shape's `textures_key` and remaps ALL of this
-    ///   shape's UVs through it). So welding two verts of THIS shape can never pull
-    ///   texture across an atlas-TILE boundary — the whole shape lives in one tile.
-    /// * The only intra-shape risk is smearing the SOURCE texture by welding verts
-    ///   whose UVs sit in far-apart regions of the source image. We forbid that:
-    ///   two verts are welded only if their UVs lie within the band returned by
-    ///   `cross_seam_uv_band()` (default 0.10 in each axis ≈ 10% of the
-    ///   source/atlas-rect extent) of the chosen representative. A genuine far-apart
-    ///   seam (e.g. u≈0.0 vs u≈1.0) FAILS the band and is left split — exactly the
-    ///   texturing-safe choice. The representative KEEPS its own UV (we pick, never
-    ///   average across distant regions), bounding any single weld's UV displacement
-    ///   to ≤ the band. MEASURED: widening the band does not improve convergence (see
-    ///   `cross_seam_uv_band`), so the safest band is also the best — no tradeoff.
-    ///
-    /// Determinism: positions are bucketed into a sorted `BTreeMap` keyed by
-    /// quantized integer coordinates; within a bucket the lowest vertex index is the
-    /// representative and members are visited in ascending index order. No HashMap
-    /// iteration-order or RNG/clock dependence.
+    /// Determinism: positions are bucketed into a `BTreeMap` keyed by quantized integer
+    /// coordinates; within a bucket the lowest vertex index is the representative and
+    /// members are visited in ascending index order.
     fn cross_seam_weld_vertices(&mut self) {
         if self.triangles.is_empty() || self.vertices.is_empty() {
             return;
@@ -885,20 +869,15 @@ impl LodGeometry {
     }
 }
 
-/// Same-region UV bound for the cross-UV-seam weld (see `cross_seam_weld_vertices`
-/// SAFETY). Default 0.10.
+/// Same-region UV bound for the cross-UV-seam weld (see `cross_seam_weld_vertices`).
+/// Default 0.10, about 10% of the source/atlas-rect extent.
 ///
-/// MEASURED (FarHarbor boat LOD corpus, golden_object_weld_e2e band sweep): widening
-/// the band does NOT improve convergence — boat-quad tris at band 0.10/0.20/0.35/0.50
-/// were 404/411/421/422 (golden 178). Welding distant-UV verts feeds `Simplify` fans
-/// that are non-convex in UV, which `create_triangles` then REJECTS (so they don't
-/// collapse) — and the extra welded vertices re-triangulate into slightly MORE tris.
-/// So the smallest texturing-safe band is also the best-converging one; there is no
-/// convergence-vs-texturing tradeoff to take. 0.10 ≈ 10% of the source/atlas-rect
-/// extent: welds only near-coincident-UV seams, preserves all far-apart shell seams.
-/// Overridable via `LODGEN_WELD_UV_BAND` for the band-sweep diagnostic (test
-/// instrumentation only; this is the native crate, not the env-restricted Python
-/// service layer).
+/// Measured on the FarHarbor boat LOD corpus: boat-quad tris at band 0.10/0.20/0.35/0.50
+/// were 404/411/421/422 (golden 178). Welding distant-UV verts feeds `Simplify` fans that
+/// are non-convex in UV, which `create_triangles` rejects, and the extra welds
+/// re-triangulate into slightly more tris, so the smallest texturing-safe band also
+/// converges best. `LODGEN_WELD_UV_BAND` overrides it for band-sweep diagnostics only
+/// (native crate, so the Python env-read policy does not apply).
 fn cross_seam_uv_band() -> f32 {
     const DEFAULT: f32 = 0.10;
     match std::env::var("LODGEN_WELD_UV_BAND") {

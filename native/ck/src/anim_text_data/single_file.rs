@@ -3,9 +3,8 @@
 //! Grammar: two blocks back-to-back.
 //! Block A: count line, then N x (u32 name_id decimal line + ClipGeneratorData body).
 //! Block B: count line, then N x (u64 subgraph-id decimal line + AnimationOffsets body).
-//! Bodies begin with the ASCII line "V4" and are self-delimiting.
-//! The engine loads clip-generator data ONLY from this file (no per-file fallback), so
-//! the shipped file must carry vanilla's entries verbatim -- hence the raw-bytes model.
+//! Bodies begin with the ASCII line "V4" and are self-delimiting. A mod's copy shadows
+//! vanilla's, so it must carry vanilla's entries verbatim; hence the raw-bytes model.
 
 pub struct SingleFileEntry {
     pub key: u64,
@@ -275,7 +274,10 @@ mod tests {
             r"Actors\Test\Behaviors\TestBehavior.hkx",
             &[],
         );
-        let additions = vec![(colliding_key, body.clone()), (0xDEAD_BEEF_u32, body.clone())];
+        let additions = vec![
+            (colliding_key, body.clone()),
+            (0xDEAD_BEEF_u32, body.clone()),
+        ];
         let (merged, applied) = compose_merged_single_file(&raw, &additions).unwrap();
         assert_eq!(applied, 1);
         let reparsed = parse_single_file(&merged).unwrap();

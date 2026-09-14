@@ -687,6 +687,11 @@ impl<'bytes> Archive<'bytes> {
         })
     }
 
+    pub(crate) fn entry_count_from_header(bytes: &'bytes [u8]) -> Result<usize> {
+        let mut source = crate::io::BorrowedSource::from(bytes);
+        Ok(Self::read_header(&mut source)?.file_count as usize)
+    }
+
     fn read_header<In>(source: &mut In) -> Result<Header>
     where
         In: ?Sized + Source<'bytes>,

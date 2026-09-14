@@ -253,11 +253,6 @@ fn scan_authoring_dir(
         entries.reverse();
         for entry in entries {
             if entry.is_dir() {
-                if let Some(name) = entry.file_name().and_then(|value| value.to_str()) {
-                    if let Some(form_key) = parse_formkey_from_name(name) {
-                        internal.insert(form_key);
-                    }
-                }
                 dirs.push(entry);
                 continue;
             }
@@ -265,16 +260,24 @@ fn scan_authoring_dir(
             if !is_yaml_record_file(entry.as_path()) {
                 continue;
             }
-            if let Some(stem) = entry.file_stem().and_then(|value| value.to_str()) {
-                if let Some(form_key) = parse_formkey_from_name(stem) {
-                    internal.insert(form_key);
-                }
-            }
 
             let text = fs::read_to_string(entry.as_path())
                 .map_err(|err| io_error(format!("failed to read '{}': {err}", entry.display())))?;
             let parse_text = quote_authoring_id_scalars(text.as_str());
             let payload = parse_text_payload_value_native(parse_text.as_ref(), "yaml")?;
+            // Exported override paths carry the authored plugin suffix; the payload owner wins.
+            if let Some(form_id) = payload
+                .as_object()
+                .and_then(|mapping| mapping.get("form_id"))
+            {
+                if let Some(form_key) = normalize_local_form_id(Some(form_id), mod_key) {
+                    internal.insert(form_key);
+                }
+            } else if let Some(stem) = entry.file_stem().and_then(|value| value.to_str()) {
+                if let Some(form_key) = parse_formkey_from_name(stem) {
+                    internal.insert(form_key);
+                }
+            }
             collect_projected_form_id_definitions(&payload, mod_key, internal);
 
             let mut canonical = Vec::<String>::new();
@@ -597,6 +600,62 @@ fn is_legacy_word_byte(value: u8) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scan_authoring_dir_uses_record_form_id_owner() {
+        let temp = tempfile::tempdir().expect("temp authoring dir");
+        let yaml_root = temp.path();
+        let mod_key = "B21_Test.esl";
+
+        let flat_dir = yaml_root.join("records").join("LCTN");
+        std::fs::create_dir_all(&flat_dir).expect("create flat record dir");
+        std::fs::write(
+            flat_dir.join("Override - 024FAA_B21_Test.esl.yaml"),
+            "form_id: 024FAA:Fallout4.esm\nfields: []\n",
+        )
+        .expect("write flat override");
+        std::fs::write(
+            flat_dir.join("Local - 001234_B21_Test.esl.yaml"),
+            "form_id: 001234\nfields: []\n",
+        )
+        .expect("write flat local record");
+
+        let projected_dir = yaml_root
+            .join("records")
+            .join("WRLD")
+            .join("Commonwealth - 00003C_B21_Test.esl")
+            .join("-1, 0")
+            .join("-3, 2")
+            .join("Cell - 00DDE6_B21_Test.esl");
+        std::fs::create_dir_all(&projected_dir).expect("create projected record dir");
+        std::fs::write(
+            projected_dir.join("RecordData.yaml"),
+            concat!(
+                "form_id: 00DDE6:Fallout4.esm\n",
+                "fields: []\n",
+                "Temporary:\n",
+                "- signature: REFR\n",
+                "  form_id: 001235\n",
+                "  fields: []\n",
+            ),
+        )
+        .expect("write projected override");
+
+        let mut internal = BTreeSet::new();
+        let mut references = Vec::new();
+        scan_authoring_dir(yaml_root, mod_key, &mut internal, &mut references)
+            .expect("scan authoring dir");
+
+        assert_eq!(
+            internal,
+            [
+                "001234:B21_Test.esl".to_string(),
+                "001235:B21_Test.esl".to_string(),
+            ]
+            .into_iter()
+            .collect()
+        );
+    }
 
     #[test]
     fn parse_formkey_from_editor_id_record_name() {

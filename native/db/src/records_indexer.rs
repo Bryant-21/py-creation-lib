@@ -3,8 +3,7 @@
 //! Walks `<yaml_root>/<plugin>/records/<SIG>/*.yaml`, parses each file with
 //! `serde-saphyr`, extracts the searchable fields (display name, keywords,
 //! cross-references, ADDN node index), and bulk-inserts into the `records`
-//! and `record_refs` tables. Replaces the prior pure-Python pipeline in
-//! `py_creation_lib/python/creation_lib/preprocessor/records.py`.
+//! and `record_refs` tables.
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -531,14 +530,12 @@ fn push_null(cols: &mut HashMap<String, Vec<SqlValue>>, col: &str) {
         .push(SqlValue::Null);
 }
 
-/// Rebuild the `records_fts` inverted index after `records.content` switched
-/// to a zstd BLOB.
+/// Rebuild the `records_fts` inverted index from the zstd-compressed
+/// `records.content`.
 ///
-/// FTS5's built-in `INSERT INTO records_fts(records_fts) VALUES('rebuild')`
-/// would tokenize the raw zstd bytes as an empty string (FTS5 treats non-text
-/// values as ""), so content-only terms would silently vanish from search. We
-/// instead clear the inverted index and re-insert each row with the
-/// decompressed text.
+/// FTS5's built-in `'rebuild'` command tokenizes non-text values as "", so
+/// content-only terms would silently vanish from search. This clears the index
+/// and re-inserts each row with the decompressed text.
 pub fn rebuild_records_fts_decompressed(conn: &mut Connection) -> DbResult<()> {
     // FTS5's 'delete-all' command works on external-content tables and clears
     // the inverted index without trying to repopulate from the content table.

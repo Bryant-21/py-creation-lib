@@ -6,15 +6,12 @@
 ///   - a companion `_n.dds` flat-normal atlas
 ///   - this JSON manifest
 ///
-/// The Rust billboard-placement path (`trees::billboard_place`) loads the manifest
-/// and uses it to assign tree refs to species indices and UV rects.
+/// `trees::billboard_place` loads the manifest to assign tree refs to species indices
+/// and UV rects.
 ///
-/// The manifest schema is the cross-language contract — both sides MUST agree.
-/// The Python side writes exactly these field names; see `manifest_schema_keys`
-/// test which pins the contract.
-///
-/// Field set mirrors `TwbLodTES5TreeType` UV rect fields (wbLOD.pas:847-855) so the
-/// placement math in `billboard_place::generate_quad` is identical to the Pascal original.
+/// Python and Rust must agree on the manifest field names; the `manifest_schema_keys`
+/// test pins them. The fields mirror the `TwbLodTES5TreeType` UV rect (wbLOD.pas:847-855)
+/// so the placement math in `billboard_place::generate_quad` matches the Pascal original.
 use std::path::Path;
 
 // ---------------------------------------------------------------------------

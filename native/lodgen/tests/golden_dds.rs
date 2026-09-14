@@ -1,13 +1,10 @@
-// .dds visual-diff gate.
-// Validates golden DDS tiles from xLODGen corpus (dimensions + format + mips) and
-// our own composite tile sizes.
-// Tests SKIP (with a notice) if the corpus files are absent.
+// .dds visual-diff gate: golden xLODGen terrain tiles (dimensions, format, mips) and
+// our composite tile sizes. Tests SKIP (with a notice) if the corpus is absent.
 //
-// Ground truth (probed from tmp/xlodgen/Textures/Terrain/DLC03FarHarbor):
-//   - Every terrain tile is 256x256 BC1/DXT1 (dxgi 71); 128x128 BC1 for
-//     default/empty cells.
-//   - Mips ONLY on L4 diffuse (9 mips @256, 8 @128). L8/L16/L32 diffuse and
-//     ALL `_msn` normals are single-mip (mip_levels == 1).
+// Ground truth (tmp/xlodgen/Textures/Terrain/DLC03FarHarbor):
+//   - Terrain tiles are 256x256 BC1/DXT1 (dxgi 71); 128x128 BC1 for default/empty cells.
+//   - Only L4 diffuse has mips (9 @256, 8 @128). L8/L16/L32 diffuse and all `_msn`
+//     normals are single-mip (mip_levels == 1).
 
 use std::path::PathBuf;
 
@@ -302,13 +299,11 @@ fn golden_terrain_diffuse_is_continuous_no_black() {
     );
 }
 
-/// COVERAGE regression (the diffuse black-gap bug): a cell whose only layer has
-/// SPARSE, quadrant-limited alpha — and dark vertex colors — must STILL composite
-/// to a fully-covered tile, because the cell's first resolvable layer texture is
-/// painted as the opaque full-cell base. Under the old grey-fallback behavior the
-/// uncovered ~3/4 of each cell darkened to black (grey 128 × dark VCLR); a
-/// near-black fraction above a small threshold now FAILS. (The variance check
-/// alone passed even with black gaps.)
+/// A cell whose only layer has sparse, quadrant-limited alpha and dark vertex colors
+/// must still composite to a fully covered tile: the cell's first resolvable layer
+/// texture is painted as the opaque full-cell base. A grey-128 fallback times dark
+/// VCLR turns the uncovered ~3/4 of each cell near-black, which the near-black
+/// threshold catches (a variance check alone does not).
 #[test]
 fn composite_diffuse_is_fully_covered_no_black_gaps() {
     let root = std::env::temp_dir().join("lodgen_coverage_gap_test");
@@ -331,8 +326,8 @@ fn composite_diffuse_is_fully_covered_no_black_gaps() {
     directxtex_native::write_dds_rgba_image(&src, sw, sh, &src_rgba, "R8G8B8A8_UNORM", false)
         .expect("write bright source dds");
 
-    // Sparse per-quadrant alpha: only the quadrant interior is opaque, so the old
-    // code left the cell edges/other quadrants on the grey fallback.
+    // Sparse per-quadrant alpha: only the quadrant interior is opaque; the cell
+    // edges and other quadrants rely on the full-cell base.
     let mut alpha = vec![0.0f32; 17 * 17];
     for r in 4..13 {
         for c in 4..13 {

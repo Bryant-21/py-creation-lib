@@ -101,12 +101,10 @@ def read_mat_json(path: Path | str, _depth: int = 0) -> MaterialData:
         if layer_idx < len(layers):
             layers[layer_idx].normal_intensity = intensity
 
-    # Decal-ness is frequently provided only by the parent imported ShaderModel
-    # (e.g. `1LayerStandardDecal.mat`) which the import-chain merge here may
-    # not have access to (the parser walks Import paths but the file may not
-    # exist on disk in extracted/ form). Mirror tools/sf_render_test.py:parse_mat
-    # (line 379-397) and fall back to a filename + Import-list heuristic so
-    # tombstone-style decals get polygon offset + alpha blending.
+    # Decal-ness often comes only from the parent imported ShaderModel (e.g.
+    # `1LayerStandardDecal.mat`), which may be missing from extracted/. Like
+    # tools/sf_render_test.py:parse_mat, fall back to a filename + Import-list
+    # heuristic so tombstone-style decals get polygon offset + alpha blending.
     filename_l = (raw.get("Filename") or path.name).lower()
     parent_imports = [str(p).lower() for p in (raw.get("Import") or [])]
     parent_imports.append(str(summary.get("Layer1", {}).get("Parent", "")).lower())

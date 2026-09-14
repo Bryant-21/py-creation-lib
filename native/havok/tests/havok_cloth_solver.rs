@@ -196,9 +196,9 @@ fn bend_constraint_relaxes_to_rest_angle() {
     // (just 0.1 above the XY plane at the mirror position of c). rest_angle
     // is PI (flat). The constraint should drive d.z toward 0.
     //
-    // Note: the simple gradient form (matching Python) oscillates when d
-    // starts far from flat (e.g., z=0.5). This geometry starts close to
-    // the equilibrium so the constraint converges within 120 steps.
+    // The simple gradient form oscillates when d starts far from flat (e.g.
+    // z=0.5); this geometry starts near equilibrium so it converges within
+    // 120 steps.
     let positions: Vec<_> = vec![
         [0.0, 0.0, 0.0_f32], // a (shared edge)
         [1.0, 0.0, 0.0],     // b (shared edge)

@@ -1,12 +1,15 @@
+use havok_native::collision::compressed_mesh::MaterialEntry;
 use havok_native::collision::{
     CompoundChild, CompoundChildKind, MultiBodyShape, PreviewMesh, RawCompressedMeshData,
     compressed_triangle_is_safe, decode_source_body_transforms, decode_source_mass_distributions,
-    extract_direct_raw_compressed_mesh_from_blob, extract_direct_source_primitive_from_blob,
-    extract_preview_meshes_from_blob, extract_source_compound_children_from_blob,
-    extract_source_polytopes_from_blob, vertex_is_finite,
+    is_supported_fo4_collision_material,
+    remap_fo76_collision_material_for_fo4, vertex_is_finite,
 };
 use havok_native::collision::{SourceConvexShape, SourcePolytopeShape, SourcePrimitiveShape};
 use serde_json::Value;
+
+mod context;
+pub(crate) use context::SourceCollisionContext;
 
 pub(crate) const ROUTE_SOURCE_POLYTOPE: &str = "source-polytope";
 pub(crate) const ROUTE_SOURCE_SPHERE: &str = "source-sphere";
@@ -195,39 +198,7 @@ pub(crate) fn extract_source_collision_body(
     blob: &[u8],
     body_id: usize,
 ) -> Result<ExtractedCollisionBody, String> {
-    let metadata = source_body_metadata(blob, body_id);
-    let source_primitive = extract_direct_source_primitive_from_blob(blob, body_id)
-        .ok()
-        .flatten()
-        .map(|shape| (shape, decode_source_body_transforms(blob).len()));
-    let source_polytopes = extract_source_polytopes_from_blob(blob, body_id).unwrap_or_default();
-    let source_compound_children =
-        extract_source_compound_children_from_blob(blob, body_id).unwrap_or_default();
-    let source_compressed_mesh =
-        extract_direct_raw_compressed_mesh_from_blob(blob, body_id).unwrap_or_default();
-    let has_exact_source_shape = source_primitive.is_some()
-        || !source_polytopes.is_empty()
-        || !source_compound_children.is_empty()
-        || source_compressed_mesh.is_some();
-    let meshes = match extract_preview_meshes_from_blob(blob, HAVOK_SCALE, Some(body_id)) {
-        Ok(meshes) => meshes
-            .into_iter()
-            .filter(usable_source_preview_mesh)
-            .collect(),
-        Err(_) if has_exact_source_shape => Vec::new(),
-        Err(error) => return Err(error.to_string()),
-    };
-    Ok(ExtractedCollisionBody {
-        body_id,
-        meshes,
-        source_polytopes,
-        source_compound_children,
-        source_compressed_mesh,
-        source_primitive,
-        layer: metadata.layer,
-        material_crc: metadata.material_crc,
-        is_dynamic: metadata.is_dynamic,
-    })
+    SourceCollisionContext::new(blob).extract_body(body_id)
 }
 
 pub(crate) fn classify_source_body(
@@ -337,7 +308,7 @@ pub(crate) fn classify_source_body(
     // multi-body assembly force EVERY child static; only a standalone
     // (single-collision-object) NIF is a real loose item that may be dynamic.
     if !in_multi_body_assembly && body.is_dynamic {
-        if source_polytopes.len() == 1 {
+        if source_polytopes.len() == 1 && meshes.len() == 1 {
             return Ok(PlannedCollisionBody {
                 source_body_id: body.body_id,
                 route: CollisionRoute::SourcePolytope,
@@ -372,9 +343,9 @@ pub(crate) fn classify_source_body(
         // compound — FO76 ships toys, weapons, chems, multi-piece props, etc. as
         // several convex children. Preserve it as a dynamic compound of per-child
         // convex hulls (FO4's hknpDynamicCompoundShape). Merging the children into
-        // ONE hull (the previous behavior) fills the gaps between parts and, for
-        // flat panels, degenerates to a coplanar face set — broken collision that
-        // NaNs the solver and freezes the cell's physics + sound.
+        // ONE hull fills the gaps between parts and, for flat panels, degenerates
+        // to a coplanar face set — broken collision that NaNs the solver and
+        // freezes the cell's physics + sound.
         let shape = if meshes.len() == 1 {
             clutter_convex_shape(&meshes)
         } else {
@@ -416,7 +387,12 @@ pub(crate) fn classify_source_body(
         });
     }
 
-    if source_polytopes.len() == 1 && !in_multi_body_assembly {
+    if source_polytopes.len() == 1
+        && meshes.len() == 1
+        && (!in_multi_body_assembly
+            || coplanar_padding_normal(&source_polytopes[0].vertices, WALKABLE_SLAB_MIN_EXTENT)
+                .is_none())
+    {
         return Ok(PlannedCollisionBody {
             source_body_id: body.body_id,
             route: CollisionRoute::SourcePolytope,
@@ -439,7 +415,12 @@ pub(crate) fn classify_source_body(
     }
 
     if meshes.len() == 1 {
-        if let Some(data) = source_compressed_mesh {
+        if let Some(mut data) = source_compressed_mesh {
+            normalize_raw_compressed_mesh_materials_for_fo4(
+                &mut data.user_data,
+                &mut data.materials,
+                material_crc,
+            );
             return Ok(PlannedCollisionBody {
                 source_body_id: body.body_id,
                 route: CollisionRoute::SourceCompressedMesh,
@@ -516,11 +497,10 @@ pub(crate) fn classify_source_body(
     // Static multi-child bodies whose children are ALL exact source convex
     // polytopes keep the source hknpDynamicCompoundShape representation —
     // vanilla FO4's own convention for intact vehicles (per-child convex
-    // shapes, source transforms, verbatim child mass properties). In-game
-    // verified on the golf cart (073E3FD0) once the fallback-material bug was
-    // fixed: every earlier "compound doesn't block" verdict came from variants
-    // carrying MaterialMetalStairs (0xC0EB623D), which the character
-    // controller climbs — those tests condemned the material, not the shape.
+    // shapes, source transforms, verbatim child mass properties). Verified
+    // in-game on the golf cart (073E3FD0). A compound that seems not to block
+    // usually carries MaterialMetalStairs (0xC0EB623D), which the character
+    // controller climbs; the material is at fault, not the shape.
     if !in_multi_body_assembly
         && source_compound_children.len() == meshes.len()
         && !source_compound_children.is_empty()
@@ -863,29 +843,15 @@ fn motion_type_is_movable(motion_type: &str) -> bool {
 }
 
 pub(crate) fn source_body_metadata(blob: &[u8], body_id: usize) -> SourceBodyMetadata {
-    let source_transform = decode_source_body_transforms(blob)
-        .get(body_id)
-        .copied()
-        .flatten();
-    let Ok(summary) = havok_native::api::havok_collision_summary(blob) else {
-        return SourceBodyMetadata {
-            position: source_transform.map(|value| value.position),
-            orientation: source_transform.map(|value| value.orientation),
-            ..SourceBodyMetadata::default()
-        };
-    };
-    let has_mass_dist = decode_source_mass_distributions(blob)
-        .get(body_id)
-        .is_some_and(Option::is_some);
-    let Ok(value) = serde_json::from_str::<Value>(&summary) else {
-        return SourceBodyMetadata {
-            position: source_transform.map(|value| value.position),
-            orientation: source_transform.map(|value| value.orientation),
-            has_ref_mass_distribution: has_mass_dist,
-            is_dynamic: has_mass_dist,
-            ..SourceBodyMetadata::default()
-        };
-    };
+    SourceCollisionContext::new(blob).body_metadata(body_id)
+}
+
+fn source_body_metadata_from_parts(
+    source_transform: Option<havok_native::collision::SourceBodyTransform>,
+    has_mass_dist: bool,
+    value: &Value,
+    body_id: usize,
+) -> SourceBodyMetadata {
     let Some(body) = value
         .get("bodies")
         .and_then(Value::as_array)
@@ -990,7 +956,7 @@ fn material_crc_from_summary_body(body: &Value) -> Option<u32> {
             .flatten()
             .filter_map(|material| material.get("material_crc").and_then(as_material))
     };
-    let supported = bs_materials().find(|crc| FO4_COLLISION_MATERIALS.contains(crc));
+    let supported = bs_materials().find(|crc| is_supported_fo4_collision_material(*crc));
     let user_data = || {
         body.get("material_crc")
             .and_then(Value::as_u64)
@@ -1000,7 +966,7 @@ fn material_crc_from_summary_body(body: &Value) -> Option<u32> {
     supported
         .or_else(|| bs_materials().next())
         .or_else(user_data)
-        .map(remap_unsupported_fo4_material)
+        .map(remap_fo76_collision_material_for_fo4)
 }
 
 /// FO4's engine-resolvable collision-material vocabulary: the 85 distinct
@@ -1013,6 +979,7 @@ fn material_crc_from_summary_body(body: &Value) -> Option<u32> {
 /// (e.g. MaterialMetalAuto 0xB26A0490: MATT 05BAD6 exists, zero vanilla mesh
 /// hits). A source CRC outside this set has no FO4 equivalent; it goes
 /// through [`FO76_ONLY_MATERIAL_MAP`], then the hard-surface default.
+#[cfg(test)]
 const FO4_COLLISION_MATERIALS: [u32; 172] = [
     0x0198AC25, 0x04280084, 0x043E188C, 0x064003D4, 0x07D13747, 0x086D3D2D, 0x0A49D8C1, 0x0B237EAD,
     0x0E3D261F, 0x1183C024, 0x11F2215B, 0x1383E6FD, 0x1402606B, 0x14560422, 0x15881C70, 0x17C77AAF,
@@ -1039,13 +1006,13 @@ const FO4_COLLISION_MATERIALS: [u32; 172] = [
 ];
 
 /// Semantic FO76-only → FO4 material mappings, applied before the corpus
-/// check. Sources: the 2026-07-15 full scan of all 99,539 FO76 source meshes
-/// (`tmp/fo76_material_audit.json`) — these are every FO76 material CRC with
-/// no FO4 MATT record, mapped to the closest FO4 surface by name/usage.
-/// Unnamed CRCs (absent from nifskope's Fallout76HavokMaterial enum) are
-/// mapped by the objects that carry them. Targets MUST be corpus members and
+/// check: every FO76 material CRC with no FO4 MATT record (from a 2026-07-15
+/// scan of all 99,539 FO76 source meshes), mapped to the closest FO4 surface by
+/// name/usage. Unnamed CRCs (absent from nifskope's Fallout76HavokMaterial enum)
+/// are mapped by the objects that carry them. Targets MUST be corpus members and
 /// MUST NOT be stairs materials (the character controller climbs stairs
-/// collision instead of blocking — the golf cart bug).
+/// collision instead of blocking).
+#[cfg(test)]
 const FO76_ONLY_MATERIAL_MAP: [(u32, u32); 25] = [
     (0x05502709, 0xB9A18FF2), // MaterialSoccerBall -> MaterialRubberBall
     (0x2877AE1C, 0xB151ADDB), // MaterialOrganicCranberrySundewTendril2 -> Material_Organic
@@ -1077,22 +1044,33 @@ const FO76_ONLY_MATERIAL_MAP: [(u32, u32); 25] = [
 /// Hard-surface fallback for FO76-only materials: `Material_Metal`
 /// (0x064003D4), a corpus member and the material vanilla FO4 vehicles carry.
 ///
-/// Must NOT be a stairs material. The previous default 0xC0EB623D is
-/// `MaterialMetalStairs`, and FO4's character controller treats stair-material
-/// collision as climbable instead of blocking: the golf cart (FO76-only
-/// `MaterialMetalAuto` → stairs default) let the player walk up its side onto
-/// the roof, with shape geometry, layer, and body flags all verified correct.
+/// Must NOT be a stairs material such as `MaterialMetalStairs` (0xC0EB623D):
+/// FO4's character controller treats stair-material collision as climbable
+/// instead of blocking, so a golf cart mapped to it lets the player walk up its
+/// side onto the roof even with correct shape geometry, layer, and body flags.
+#[cfg(test)]
 const FO4_MATERIAL_DEFAULT: u32 = 0x064003D4;
 
 fn remap_unsupported_fo4_material(crc: u32) -> u32 {
-    if FO4_COLLISION_MATERIALS.contains(&crc) {
-        return crc;
+    remap_fo76_collision_material_for_fo4(crc)
+}
+
+fn normalize_raw_compressed_mesh_materials_for_fo4(
+    user_data: &mut u64,
+    materials: &mut [MaterialEntry],
+    selected_material_crc: Option<u32>,
+) {
+    for material in materials {
+        material.material_crc = remap_unsupported_fo4_material(material.material_crc);
     }
-    FO76_ONLY_MATERIAL_MAP
-        .iter()
-        .find(|(source, _)| *source == crc)
-        .map(|(_, target)| *target)
-        .unwrap_or(FO4_MATERIAL_DEFAULT)
+
+    if let Some(material_crc) = selected_material_crc {
+        *user_data = u64::from(material_crc);
+    } else if let Ok(material_crc) = u32::try_from(*user_data) {
+        if material_crc != 0 {
+            *user_data = u64::from(remap_unsupported_fo4_material(material_crc));
+        }
+    }
 }
 
 pub(crate) fn summary_has_degenerate_collision_shape(summary: &str) -> bool {
@@ -1111,7 +1089,7 @@ pub(crate) fn summary_has_degenerate_collision_shape(summary: &str) -> bool {
 /// static and a Safe01 keyframed door both report `flags:0`, only clutter
 /// reports `flags:128`). This is the ONLY reliable "movable, must have finite
 /// non-zero inertia" signal in the rebuilt blob: `motion_type` is never written
-/// (always null), so the prior `motion_type == dynamic` key was dormant.
+/// (always null).
 const BODY_FLAGS_DYNAMIC: i64 = 128;
 /// `HK_INVALID_OBJECT_INDEX` — "no motion linked". Normal on a STATIC body,
 /// fatal on a DYNAMIC one (a dynamic shape the solver
@@ -1127,8 +1105,8 @@ const MOTION_ID_INVALID: i64 = 0x7FFF_FFFF;
 /// Rejects when ANY of:
 /// - the existing degenerate-shape check fires, OR
 /// - a DYNAMIC body (flags dynamic-bit set) carries zero, NaN, or missing
-///   inverse inertia (it cannot rotate / the solver NaNs — the MISC-class
-///   physics-freeze regression), OR
+///   inverse inertia (it cannot rotate and the solver NaNs, freezing the
+///   cell's physics), OR
 /// - a DYNAMIC body has an INVALID `motion_id` (no resolvable motion frame).
 ///
 /// A STATIC body (flags 0, INVALID `motion_id`, no inertia) is the NORMAL case
@@ -1180,6 +1158,145 @@ fn dynamic_body_is_invalid(body: &Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "real FO76 collision parse and route profiling"]
+    fn profile_repeated_source_collision_decodes() {
+        use std::collections::BTreeMap;
+        use std::hint::black_box;
+        use std::path::Path;
+        use std::time::{Duration, Instant};
+
+        use crate::model::NifValue;
+
+        const SOURCES: &[(&str, &str)] = &[
+            (
+                "CM0040510F",
+                "extracted/fo76/Meshes/SCOL/SeventySix.esm/CM0040510F.NIF",
+            ),
+            (
+                "CM0084274B",
+                "extracted/fo76/Meshes/SCOL/SeventySix.esm/CM0084274B.NIF",
+            ),
+            (
+                "redrocketstatue_destroyed",
+                "extracted/fo76/Meshes/atx/workshop/atx_redrocketstatue/atx_redrocketstatuepart1_destroyed.nif",
+            ),
+        ];
+
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        for (label, relative_source) in SOURCES {
+            let nif = crate::model::NifFile::load(repo.join(relative_source))
+                .unwrap_or_else(|error| panic!("{label}: load failed: {error}"));
+            let mut bindings = BTreeMap::<usize, Vec<usize>>::new();
+            for block in &nif.blocks {
+                if block.type_name != "bhkNPCollisionObject" {
+                    continue;
+                }
+                let Some(NifValue::Ref(data_id)) = block.get_field("Data") else {
+                    continue;
+                };
+                if *data_id < 0 {
+                    continue;
+                }
+                let body_id = block
+                    .get_field("Body ID")
+                    .map(NifValue::as_usize)
+                    .unwrap_or_default();
+                bindings.entry(*data_id as usize).or_default().push(body_id);
+            }
+
+            let mut blob_bytes = 0usize;
+            let mut metadata_elapsed = Duration::ZERO;
+            let mut extract_body_elapsed = Duration::ZERO;
+            let mut transform_once_elapsed = Duration::ZERO;
+            let mut transform_repeated_elapsed = Duration::ZERO;
+            let mut mass_once_elapsed = Duration::ZERO;
+            let mut mass_repeated_elapsed = Duration::ZERO;
+            let mut summary_repeated_elapsed = Duration::ZERO;
+            let mut summary_json_parse_elapsed = Duration::ZERO;
+            let mut direct_attempt_elapsed = Duration::ZERO;
+            let mut direct_successes = 0usize;
+            let mut binding_count = 0usize;
+
+            for (system_id, body_ids) in &bindings {
+                let system = nif
+                    .get_block(*system_id)
+                    .unwrap_or_else(|| panic!("{label}: missing physics system {system_id}"));
+                let blob = crate::cloth::byte_array_to_bytes(
+                    system
+                        .get_field("Binary Data")
+                        .unwrap_or_else(|| panic!("{label}: system {system_id} has no Binary Data")),
+                )
+                .unwrap_or_else(|error| panic!("{label}: system {system_id}: {error}"));
+                blob_bytes += blob.len();
+                binding_count += body_ids.len();
+
+                let started = Instant::now();
+                black_box(decode_source_body_transforms(&blob));
+                transform_once_elapsed += started.elapsed();
+                let started = Instant::now();
+                black_box(decode_source_mass_distributions(&blob));
+                mass_once_elapsed += started.elapsed();
+
+                for body_id in body_ids {
+                    let started = Instant::now();
+                    black_box(source_body_metadata(&blob, *body_id));
+                    metadata_elapsed += started.elapsed();
+
+                    let started = Instant::now();
+                    let _ = black_box(extract_source_collision_body(&blob, *body_id));
+                    extract_body_elapsed += started.elapsed();
+
+                    let started = Instant::now();
+                    black_box(decode_source_body_transforms(&blob));
+                    transform_repeated_elapsed += started.elapsed();
+                    let started = Instant::now();
+                    black_box(decode_source_mass_distributions(&blob));
+                    mass_repeated_elapsed += started.elapsed();
+
+                    let started = Instant::now();
+                    let summary = havok_native::api::havok_collision_summary(&blob)
+                        .unwrap_or_else(|error| panic!("{label}: summary failed: {error}"));
+                    summary_repeated_elapsed += started.elapsed();
+                    let started = Instant::now();
+                    black_box(
+                        serde_json::from_str::<serde_json::Value>(&summary)
+                            .expect("parse collision summary JSON"),
+                    );
+                    summary_json_parse_elapsed += started.elapsed();
+                }
+
+                let started = Instant::now();
+                let direct = havok_native::collision::convert_fo76_embedded_static_collision_direct(
+                    &blob,
+                );
+                direct_attempt_elapsed += started.elapsed();
+                direct_successes += usize::from(direct.is_ok());
+                let _ = black_box(direct);
+            }
+
+            println!(
+                "{}",
+                serde_json::json!({
+                    "bindings": binding_count,
+                    "blob_bytes": blob_bytes,
+                    "direct_attempt_ms": direct_attempt_elapsed.as_secs_f64() * 1000.0,
+                    "direct_successes": direct_successes,
+                    "extract_body_ms": extract_body_elapsed.as_secs_f64() * 1000.0,
+                    "label": label,
+                    "mass_once_ms": mass_once_elapsed.as_secs_f64() * 1000.0,
+                    "mass_repeated_ms": mass_repeated_elapsed.as_secs_f64() * 1000.0,
+                    "metadata_ms": metadata_elapsed.as_secs_f64() * 1000.0,
+                    "physics_systems": bindings.len(),
+                    "summary_json_parse_ms": summary_json_parse_elapsed.as_secs_f64() * 1000.0,
+                    "summary_repeated_ms": summary_repeated_elapsed.as_secs_f64() * 1000.0,
+                    "transform_once_ms": transform_once_elapsed.as_secs_f64() * 1000.0,
+                    "transform_repeated_ms": transform_repeated_elapsed.as_secs_f64() * 1000.0,
+                })
+            );
+        }
+    }
 
     #[test]
     fn source_metadata_prefers_bs_physics_material_over_user_data() {
@@ -1270,6 +1387,36 @@ mod tests {
             ],
         });
         assert_eq!(material_crc_from_summary_body(&body), Some(0x1DD9C611));
+    }
+
+    #[test]
+    fn raw_compressed_mesh_remaps_materials_without_collapsing_slots() {
+        let mut user_data = u64::from(0xC30A4C50u32);
+        let mut materials = vec![
+            MaterialEntry {
+                filter_info: 0x101,
+                material_crc: 0xC30A4C50,
+            },
+            MaterialEntry {
+                filter_info: 0x201,
+                material_crc: 0x1DD9C611,
+            },
+        ];
+
+        normalize_raw_compressed_mesh_materials_for_fo4(
+            &mut user_data,
+            &mut materials,
+            Some(0x1DD9C611),
+        );
+
+        assert_eq!(user_data, u64::from(0x1DD9C611u32));
+        assert_eq!(
+            materials
+                .iter()
+                .map(|material| (material.filter_info, material.material_crc))
+                .collect::<Vec<_>>(),
+            vec![(0x101, 0xBDD69D70), (0x201, 0x1DD9C611)]
+        );
     }
 
     #[test]
@@ -1707,6 +1854,35 @@ mod tests {
     }
 
     #[test]
+    fn solid_source_polytope_in_static_assembly_stays_convex() {
+        let source_shape = thin_source_box_polytope(1.0);
+        let body = ExtractedCollisionBody {
+            body_id: 34,
+            source_polytopes: vec![source_shape.clone()],
+            source_compound_children: Vec::new(),
+            source_compressed_mesh: None,
+            source_primitive: None,
+            meshes: vec![PreviewMesh {
+                shape_type: "convex_hull".to_string(),
+                vertices: unit_cube_nif_vertices(),
+                triangles: unit_cube_triangles(),
+            }],
+            layer: Some(31),
+            material_crc: Some(FO4_MATERIAL_DEFAULT),
+            is_dynamic: false,
+        };
+
+        let planned = classify_source_body(body, true).expect("planned body");
+
+        assert_eq!(planned.route, CollisionRoute::SourcePolytope);
+        assert_eq!(planned.layer, 31);
+        match planned.shape {
+            MultiBodyShape::SourcePolytope { shape } => assert_eq!(shape, source_shape),
+            other => panic!("solid source polytope must stay convex, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn multi_mesh_clutter_body_becomes_per_child_convex_compound() {
         // FO76 ships multi-part loose items (toys, weapons, chems, props) as a
         // compound of convex children. A dynamic body must preserve them as a
@@ -2046,8 +2222,8 @@ mod tests {
                 is_dynamic: false,
             };
 
-            // in_multi_body_assembly = true is the condition that used to force the
-            // generic compressed-mesh route.
+            // in_multi_body_assembly = true must not force the generic
+            // compressed-mesh route.
             let planned = classify_source_body(body, true).expect("planned body");
 
             assert_eq!(
@@ -2126,6 +2302,57 @@ mod tests {
         assert_eq!(metadata.material_trigger_type, Some(2));
         assert_eq!(metadata.position, Some([1.0, 2.0, 3.0, 4.0]));
         assert_eq!(metadata.orientation, Some([0.1, 0.2, 0.3, 0.9]));
+    }
+
+    #[test]
+    fn shared_source_context_matches_wrappers_for_multiple_bodies() {
+        use havok_native::collision::{
+            BuildOptions, MultiBodyShape, build_fo4_multi_body_collision,
+        };
+
+        let blob = build_fo4_multi_body_collision(
+            &[
+                MultiBodyShape::Polytope {
+                    vertices: unit_cube_havok_vertices(),
+                },
+                MultiBodyShape::Polytope {
+                    vertices: unit_cube_havok_vertices()
+                        .into_iter()
+                        .map(|[x, y, z]| [x + 2.0, y, z])
+                        .collect(),
+                },
+            ],
+            &BuildOptions::default(),
+            None,
+            None,
+        )
+        .expect("multi-body test blob");
+        let context = SourceCollisionContext::new(&blob);
+
+        assert_eq!(context.body_count(), 2);
+        for body_id in 0..2 {
+            assert_eq!(
+                context.body_metadata(body_id),
+                source_body_metadata(&blob, body_id)
+            );
+            assert_eq!(
+                context.extract_body(body_id).expect("context body"),
+                extract_source_collision_body(&blob, body_id).expect("wrapper body")
+            );
+        }
+    }
+
+    #[test]
+    fn shared_source_context_preserves_malformed_blob_fallbacks() {
+        let blob = b"not a havok physics system";
+        let context = SourceCollisionContext::new(blob);
+
+        assert_eq!(context.body_count(), 0);
+        assert_eq!(context.body_metadata(3), source_body_metadata(blob, 3));
+        assert_eq!(
+            context.extract_body(3).map_err(|error| error.to_string()),
+            extract_source_collision_body(blob, 3).map_err(|error| error.to_string())
+        );
     }
 
     #[test]
@@ -2410,6 +2637,56 @@ mod tests {
     }
 
     #[test]
+    fn mixed_static_compound_does_not_collapse_to_its_only_polytope() {
+        let source_shape = thin_source_box_polytope(1.0);
+        let mut second_vertices = unit_cube_nif_vertices();
+        for vertex in &mut second_vertices {
+            vertex[0] += HAVOK_SCALE * 2.0;
+        }
+        let body = ExtractedCollisionBody {
+            body_id: 5,
+            source_polytopes: vec![source_shape.clone()],
+            source_compound_children: vec![CompoundChild {
+                transform: CompoundChild::identity_transform(),
+                kind: CompoundChildKind::SourcePolytope {
+                    shape: source_shape,
+                },
+            }],
+            source_compressed_mesh: None,
+            source_primitive: None,
+            meshes: vec![
+                PreviewMesh {
+                    shape_type: "convex_hull".to_string(),
+                    vertices: unit_cube_nif_vertices(),
+                    triangles: unit_cube_triangles(),
+                },
+                PreviewMesh {
+                    shape_type: "compressed_mesh".to_string(),
+                    vertices: second_vertices,
+                    triangles: unit_cube_triangles(),
+                },
+            ],
+            layer: Some(FO4_STATIC_LAYER),
+            material_crc: Some(FO4_MATERIAL_DEFAULT),
+            is_dynamic: false,
+        };
+
+        let planned = classify_source_body(body, false).expect("planned body");
+
+        assert_eq!(planned.route, CollisionRoute::SourceCompressedMesh);
+        match planned.shape {
+            MultiBodyShape::CompressedMesh {
+                ref vertices,
+                ref triangles,
+            } => {
+                assert_eq!(vertices.len(), 16);
+                assert_eq!(triangles.len(), 24);
+            }
+            other => panic!("expected all mixed children in one compressed mesh, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn classifies_exact_all_convex_static_compound_as_source_compound() {
         let first = thin_source_box_polytope(0.25);
         let mut second = thin_source_box_polytope(0.5);
@@ -2479,12 +2756,11 @@ mod tests {
     #[test]
     fn classifies_mixed_compound_with_flat_panel_as_merged_compressed_mesh() {
         // FO76 ATX_CoalTower-style body: a compressed-mesh child plus a FLAT
-        // (coplanar) convex panel. The old path force-fit every child to a
-        // convex hull; the flat panel has no 3D hull, so it degenerated to a
-        // padded face set ("[havok/collision] hull degenerated ... coplanar")
-        // with broken collision. Both children carry surface triangles, so the
-        // body must merge into a single compressed mesh that keeps the flat
-        // panel as real triangles rather than substituting a degenerate hull.
+        // (coplanar) convex panel. The flat panel has no 3D hull, so force-fitting
+        // it to a convex hull degenerates to a padded face set ("[havok/collision]
+        // hull degenerated ... coplanar") with broken collision. Both children
+        // carry surface triangles, so the body must merge into a single
+        // compressed mesh that keeps the flat panel as real triangles.
         let flat_panel = PreviewMesh {
             shape_type: "convex_hull".to_string(),
             // 4 coplanar corners (z = 0) — a quad floor panel; no 3D hull exists.

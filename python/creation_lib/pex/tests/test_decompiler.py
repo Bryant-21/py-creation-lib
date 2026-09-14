@@ -411,6 +411,60 @@ def test_decompile_preserves_script_level_conditional_flag():
     assert round_tripped.objects[0].user_flags & (1 << conditional_index)
 
 
+def test_decompile_recovers_conditional_from_auto_property_backing_variable():
+    # The compiler stores Conditional on the backing variable, never on the
+    # property, so a property-only read loses it and the recompiled variable
+    # stops being visible to GetVMQuestVariable conditions.
+    pex = PexFile(
+        magic=0xFA57C0DE,
+        major_version=3,
+        minor_version=9,
+        game_id=2,
+        compilation_time=0,
+        source_filename="ConditionalProps.psc",
+        username="",
+        machine_name="",
+        string_table=[],
+        debug_info=None,
+        user_flags=[PexUserFlag(name="conditional", index=1)],
+        objects=[
+            PexObject(
+                name="ConditionalProps",
+                parent="Quest",
+                user_flags=1 << 1,
+                variables=[
+                    PexVariable(
+                        name="::CurrentSong_var",
+                        type="Int",
+                        user_flags=1 << 1,
+                        data=PexValue.integer(0),
+                    )
+                ],
+                properties=[
+                    PexProperty(
+                        "CurrentSong", "Int", flags=7, auto_var="::CurrentSong_var"
+                    ),
+                ],
+                states=[PexState("", functions=[])],
+            )
+        ],
+    )
+
+    source = emit_script_native(decompile_pex_file(pex))
+
+    assert "Int Property CurrentSong = 0 Auto conditional" in source
+
+    compiled = compile_psc(source)
+    assert compiled.ok, compiled.diagnostics
+    round_tripped = parse_pex_bytes_native(compiled.pex_bytes)
+    conditional_index = next(
+        flag.index for flag in round_tripped.user_flags if flag.name.lower() == "conditional"
+    )
+    obj = round_tripped.objects[0]
+    backing = next(var for var in obj.variables if var.name == "::CurrentSong_var")
+    assert backing.user_flags & (1 << conditional_index)
+
+
 def test_decompile_struct_ops_emit_legal_source():
     pex = PexFile(
         magic=0xFA57C0DE, major_version=3, minor_version=9, game_id=2,
@@ -696,6 +750,56 @@ def test_decompile_fo4_compat_trims_weapon_fire_bool_arg():
     assert "myGun.Fire(Self, None, True)" not in source
 
 
+def test_decompile_fo4_compat_normalizes_fo76_event_signatures():
+    cases = (
+        (
+            "ActiveMagicEffect",
+            "OnEffectFinish",
+            (("akTarget", "Actor"), ("akCaster", "Actor"), ("x", "Float"), ("y", "Float"), ("z", "Float")),
+            "Event OnEffectFinish(Actor akTarget, Actor akCaster)",
+        ),
+        (
+            "ObjectReference",
+            "OnHit",
+            (
+                ("akTarget", "ObjectReference"), ("akAggressor", "ObjectReference"),
+                ("akSource", "Form"), ("akProjectile", "Projectile"),
+                ("abPowerAttack", "Bool"), ("abSneakAttack", "Bool"),
+                ("abBashAttack", "Bool"), ("abHitBlocked", "Bool"),
+                ("abCriticalHit", "Bool"), ("asMaterialName", "String"),
+            ),
+            "Bool abHitBlocked, String asMaterialName)",
+        ),
+        (
+            "ObjectReference",
+            "OnRadiationDamage",
+            (("akTarget", "ObjectReference"), ("afDamage", "Float"), ("abInWater", "Bool")),
+            "Event OnRadiationDamage(ObjectReference akTarget, Bool abInWater)",
+        ),
+    )
+
+    for parent, event_name, raw_params, expected in cases:
+        pex = PexFile(
+            magic=0xFA57C0DE, major_version=3, minor_version=9, game_id=2,
+            compilation_time=0, source_filename="test.psc",
+            username="u", machine_name="m", string_table=[], debug_info=None,
+            user_flags=[],
+            objects=[PexObject(
+                name=f"Test{event_name}", parent=parent,
+                states=[PexState("", functions=[PexFunction(
+                    name=event_name, return_type="None", docstring="",
+                    is_native=False, is_global=False,
+                    params=[PexParam(name, type_name) for name, type_name in raw_params],
+                    instructions=[PexInstruction(PexOpcode.RETURN, [PexValue.none()])],
+                )])],
+            )],
+        )
+        source = emit_script_native(decompile_pex_file(pex, fo4_api_compat=True))
+        assert expected in source
+        assert "abCriticalHit" not in source
+        assert "afDamage" not in source
+
+
 def test_decompile_fo4_compat_rewrites_game_get_local_player():
     pex = PexFile(
         magic=0xFA57C0DE, major_version=3, minor_version=9, game_id=2,
@@ -866,6 +970,64 @@ def test_decompile_fo4_compat_drops_damage_dealt_event_calls():
     assert "UnregisterForAllDamageDealtEvents" not in compat_source
 
 
+def test_decompile_fo4_compat_drops_fo76_hit_event_critical_filter():
+    hit_event_args = [
+        _make_id("Self"),
+        PexValue.none(),
+        PexValue.none(),
+        PexValue.none(),
+        _make_int(-1),
+        _make_int(-1),
+        _make_int(-1),
+        _make_int(-1),
+        _make_int(-1),
+        PexValue.boolean(True),
+    ]
+    functions = []
+    for method in ("RegisterForHitEvent", "UnregisterForHitEvent"):
+        functions.append(PexFunction(
+            name=method,
+            return_type="None",
+            docstring="",
+            is_native=False,
+            is_global=False,
+            instructions=[
+                PexInstruction(PexOpcode.CALLMETHOD, [
+                    _make_id(method),
+                    _make_id("Self"),
+                    PexValue.none(),
+                    _make_int(10),
+                    *hit_event_args,
+                ]),
+                PexInstruction(PexOpcode.RETURN, [PexValue.none()]),
+            ],
+        ))
+    pex = PexFile(
+        magic=0xFA57C0DE,
+        major_version=3,
+        minor_version=9,
+        game_id=2,
+        compilation_time=0,
+        source_filename="test.psc",
+        username="u",
+        machine_name="m",
+        string_table=[],
+        debug_info=None,
+        user_flags=[],
+        objects=[PexObject(
+            name="MyScript",
+            parent="ObjectReference",
+            states=[PexState("", functions=functions)],
+        )],
+    )
+
+    default_source = emit_script_native(decompile_pex_file(pex))
+    compat_source = emit_script_native(decompile_pex_file(pex, fo4_api_compat=True))
+
+    assert default_source.count("None, None, None, -1, -1, -1, -1, -1, True") == 2
+    assert compat_source.count("None, None, None, -1, -1, -1, -1, True") == 2
+
+
 def test_decompile_fo4_compat_trims_active_magic_effect_on_effect_start_params():
     pex = PexFile(
         magic=0xFA57C0DE, major_version=3, minor_version=9, game_id=2,
@@ -970,3 +1132,46 @@ def test_decompile_fo4_compat_rewrites_topic_info_event_params():
     assert "Quest akQuestInstance = Self.GetOwningQuest()" in compat_source
     assert "SeenTarget = akTargetRef" in compat_source
     assert "SeenQuest = akQuestInstance" in compat_source
+
+
+def test_decompile_fo4_compat_trims_get_refs_linked_to_me_bool_arg():
+    pex = PexFile(
+        magic=0xFA57C0DE, major_version=3, minor_version=9, game_id=2,
+        compilation_time=0, source_filename="test.psc",
+        username="u", machine_name="m",
+        string_table=[],
+        debug_info=None,
+        user_flags=[],
+        objects=[
+            PexObject(
+                name="MyScript",
+                parent="ObjectReference",
+                states=[
+                    PexState("", functions=[
+                        PexFunction(
+                            name="Collect", return_type="None", docstring="",
+                            is_native=False, is_global=False,
+                            locals=[PexLocal("refs", "objectreference[]")],
+                            instructions=[
+                                PexInstruction(PexOpcode.CALLMETHOD, [
+                                    _make_id("GetRefsLinkedToMe"),
+                                    _make_id("Self"),
+                                    _make_id("refs"),
+                                    _make_int(3),
+                                    _make_id("MyKeyword"),
+                                    PexValue.none(),
+                                    PexValue.boolean(True),
+                                ]),
+                                PexInstruction(PexOpcode.RETURN, [PexValue.none()]),
+                            ],
+                        ),
+                    ]),
+                ],
+            ),
+        ],
+    )
+
+    source = emit_script_native(decompile_pex_file(pex, fo4_api_compat=True))
+
+    assert "GetRefsLinkedToMe(MyKeyword, None)" in source
+    assert "GetRefsLinkedToMe(MyKeyword, None, True)" not in source

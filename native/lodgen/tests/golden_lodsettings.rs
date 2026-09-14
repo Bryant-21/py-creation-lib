@@ -1,6 +1,4 @@
-// .lod byte-exact gate.
-// Verifies our lodsettings::encode produces the exact 16-byte LE layout
-// documented in R3 §1 and the contract.
+// .lod byte-exact gate: lodsettings::encode must produce the exact 16-byte LE layout.
 
 use lodgen_native::output::lodsettings;
 

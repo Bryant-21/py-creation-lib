@@ -22,6 +22,10 @@ pub fn register_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(save_nif, m)?)?;
     m.add_function(wrap_pyfunction!(new_nif, m)?)?;
     m.add_function(wrap_pyfunction!(convert_nif_file, m)?)?;
+    m.add_function(wrap_pyfunction!(validate_nif_file, m)?)?;
+    m.add_function(wrap_pyfunction!(nif_features, m)?)?;
+    m.add_function(wrap_pyfunction!(nif_report, m)?)?;
+    m.add_function(wrap_pyfunction!(nif_process, m)?)?;
     m.add_function(wrap_pyfunction!(weapon_block_diff, m)?)?;
     m.add_function(wrap_pyfunction!(extract_attachment, m)?)?;
     m.add_function(wrap_pyfunction!(cloth_extract_blob, m)?)?;
@@ -106,6 +110,105 @@ fn convert_nif_file(
         })
         .map_err(|e| PyIOError::new_err(e.to_string()))?;
     convert_file_report_to_py(py, &report)
+}
+
+#[pyfunction(signature = (path, output_path=None, fix=false, include_optional=false))]
+fn validate_nif_file(
+    py: Python<'_>,
+    path: String,
+    output_path: Option<String>,
+    fix: bool,
+    include_optional: bool,
+) -> PyResult<Py<PyAny>> {
+    let path = PathBuf::from(path);
+    let output_path = output_path.map(PathBuf::from);
+    let report = py
+        .detach(move || {
+            crate::validation::validate_nif_file_with_options(
+                &path,
+                output_path.as_deref(),
+                fix,
+                include_optional,
+            )
+        })
+        .map_err(|error| PyIOError::new_err(error.to_string()))?;
+    validation_report_to_py(py, &report)
+}
+
+#[pyfunction]
+fn nif_features(py: Python<'_>) -> PyResult<Py<PyAny>> {
+    let result = PyDict::new(py);
+    let processors = PyList::empty(py);
+    for processor in crate::processor_catalog::NIF_PROCESSORS {
+        let item = PyDict::new(py);
+        item.set_item("id", processor.id)?;
+        item.set_item("class_name", processor.class_name)?;
+        item.set_item("title", processor.title)?;
+        item.set_item("category", processor.category)?;
+        item.set_item("games", processor.games)?;
+        item.set_item("extensions", processor.extensions)?;
+        item.set_item("parity", processor.parity)?;
+        item.set_item(
+            "command",
+            crate::processor_catalog::processor_command(processor.id),
+        )?;
+        processors.append(item)?;
+    }
+    let checks = PyList::empty(py);
+    for check in crate::processor_catalog::NIF_VALIDATION_CHECKS {
+        let item = PyDict::new(py);
+        item.set_item("id", check.id)?;
+        item.set_item("title", check.title)?;
+        item.set_item("group", check.group)?;
+        item.set_item("extensions", check.extensions)?;
+        item.set_item("optional", check.optional)?;
+        checks.append(item)?;
+    }
+    result.set_item("processors", processors)?;
+    result.set_item("checks", checks)?;
+    Ok(result.into_any().unbind())
+}
+
+#[pyfunction(signature = (path, processor, options_json="{}"))]
+fn nif_report(
+    py: Python<'_>,
+    path: String,
+    processor: String,
+    options_json: &str,
+) -> PyResult<String> {
+    let options_json = options_json.to_owned();
+    let report = py
+        .detach(move || {
+            crate::reports::report_nif_file(
+                PathBuf::from(path).as_path(),
+                &processor,
+                &options_json,
+            )
+        })
+        .map_err(PyValueError::new_err)?;
+    serde_json::to_string(&report).map_err(|error| PyValueError::new_err(error.to_string()))
+}
+
+#[pyfunction(signature = (path, output_path, processor, options_json="{}"))]
+fn nif_process(
+    py: Python<'_>,
+    path: String,
+    output_path: String,
+    processor: String,
+    options_json: &str,
+) -> PyResult<String> {
+    let options_json = options_json.to_owned();
+    let report = py
+        .detach(move || {
+            crate::processors::process_nif_file(
+                PathBuf::from(path).as_path(),
+                PathBuf::from(output_path).as_path(),
+                &processor,
+                &options_json,
+            )
+        })
+        .map_err(PyValueError::new_err)?;
+    serde_json::to_string(&report).map_err(|error| PyValueError::new_err(error.to_string()))
 }
 
 #[pyfunction]
@@ -235,6 +338,7 @@ fn convert_file_report_to_py(py: Python<'_>, report: &ConvertFileReport) -> PyRe
     d.set_item("warnings", &report.warnings)?;
     d.set_item("errors", &report.errors)?;
     d.set_item("emitted_bgsms", &report.emitted_bgsms)?;
+    d.set_item("emitted_textures", &report.emitted_textures)?;
     d.set_item("emitted_first_person", &report.emitted_first_person)?;
     d.set_item("shapes_skinned", report.shapes_skinned)?;
     d.set_item("vertices_repacked", report.vertices_repacked)?;
@@ -244,6 +348,34 @@ fn convert_file_report_to_py(py: Python<'_>, report: &ConvertFileReport) -> PyRe
     d.set_item("vertices_morph_weighted", report.vertices_morph_weighted)?;
     d.set_item("timings_ms", &report.timings_ms)?;
     Ok(d.into_any().unbind())
+}
+
+fn validation_report_to_py(
+    py: Python<'_>,
+    report: &crate::validation::ValidationReport,
+) -> PyResult<Py<PyAny>> {
+    let result = PyDict::new(py);
+    result.set_item("game", &report.game)?;
+    result.set_item("changed", report.changed)?;
+    result.set_item("changes", &report.changes)?;
+    result.set_item("warnings", &report.warnings)?;
+    let findings = PyList::empty(py);
+    for finding in &report.findings {
+        let item = PyDict::new(py);
+        item.set_item("severity", &finding.severity)?;
+        item.set_item("rule", &finding.rule)?;
+        item.set_item(
+            "check",
+            crate::processor_catalog::check_id_for_finding_rule(&finding.rule),
+        )?;
+        item.set_item("block_id", finding.block_id)?;
+        item.set_item("block_type", &finding.block_type)?;
+        item.set_item("field", &finding.field)?;
+        item.set_item("message", &finding.message)?;
+        findings.append(item)?;
+    }
+    result.set_item("findings", findings)?;
+    Ok(result.into_any().unbind())
 }
 
 fn convert_file_options_from_py(
@@ -257,11 +389,13 @@ fn convert_file_options_from_py(
     out.material_namespace = optional_string_item(options, "material_namespace")?;
     out.addon_index_map = optional_i64_map_item(options, "addon_index_map")?;
     out.translation_maps_dir = optional_path_item(options, "translation_maps_dir")?;
+    out.target_skeleton = optional_path_item(options, "target_skeleton")?;
     out.auto_skin_reference_body = optional_path_item(options, "auto_skin_reference_body")?;
     out.emit_first_person = optional_bool_item(options, "emit_first_person")?.unwrap_or(false);
     out.first_person_reference = optional_path_item(options, "first_person_reference")?;
     out.morph_weight_cap = optional_f32_item(options, "morph_weight_cap")?.unwrap_or(0.5);
     out.weapon_role = optional_string_item(options, "weapon_role")?;
+    out.strip_cloth = optional_bool_item(options, "strip_cloth")?.unwrap_or(false);
     Ok(out)
 }
 

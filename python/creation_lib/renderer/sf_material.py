@@ -301,8 +301,8 @@ class SFMaterialBackend:
     def bind_textures(self, program, mat: Material, default_textures: dict):
         """Bind Starfield material to the wholesale-ported unit-array shader.
 
-        Direct port of tools/sf_render_test.py SFScene._draw_mesh
-        (lines 1668-1798). Allocates 2D textures to consecutive units 0..31,
+        Port of tools/sf_render_test.py SFScene._draw_mesh. Allocates 2D
+        textures to consecutive units 0..31,
         publishes the per-layer indirection arrays (uLayerAlbedoUnit[] etc.)
         plus uTextures[] sampler array binding, and binds the BRDF LUT and
         env cubes to fixed high units.

@@ -45,22 +45,9 @@ _INTERP_NAME = {
 
 
 def read_kf(path: str | Path) -> AnimationClip:
-    """Read a .kf file and return an AnimationClip.
+    """Read a FO3/FNV .kf file into an AnimationClip.
 
-    Parameters
-    ----------
-    path : str or Path
-        Path to a .kf NIF file (FO3/FNV format).
-
-    Returns
-    -------
-    AnimationClip
-        Parsed animation with bone channels, float channels, and events.
-
-    Raises
-    ------
-    ValueError
-        If the file has no NiControllerSequence root block.
+    Raises ValueError if the file has no NiControllerSequence block.
     """
     nif = NifFile.load(str(path))
 

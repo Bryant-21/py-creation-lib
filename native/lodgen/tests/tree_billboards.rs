@@ -247,7 +247,7 @@ mod task3_btt {
         // (wbLOD.pas:125-131; SaveToFile :950 `Move`/`Write` of the raw struct):
         //   X(f32), Y(f32), Z(f32), Rotation(f32), Scale(f32),
         //   RefFormID(u32), Unknown1(i32)=0, Unknown2(i32)=0
-        // = 8 × 4 = 32 bytes per ref (NOT the 24-byte contract draft).
+        // = 8 × 4 = 32 bytes per ref (not 24).
         // Block: [i32 numTypes=1][i32 index=7][i32 count=1][TreeRef: 32 bytes]
         // Total = 4 + 4 + 4 + 32 = 44
         let types = vec![TreeType {
@@ -407,13 +407,9 @@ mod task4_tree3d {
         }
     }
 
-    /// flat_trunk_two_crossed_quads.
-    ///
     /// build_flat_trunk with a FlatDesc{width:50,height:512,depth:50,shift_z:8}
-    /// must yield exactly 2 ShapeDescs (two crossed quads), each with 4 vertices
-    /// and 2 triangles, the IS_BILLBOARD flag set, and Z values in [shift_z, shift_z+height].
-    ///
-    /// Port validation: LODApp.cs:1442-1457 — the for(i=0..2) loop builds two quads.
+    /// must yield exactly 2 ShapeDescs (two crossed quads, LODApp.cs:1442-1457), each
+    /// with 4 vertices, 2 triangles, IS_BILLBOARD set, and Z in [shift_z, shift_z+height].
     #[test]
     fn flat_trunk_two_crossed_quads() {
         let fd = make_flat_desc();
@@ -456,9 +452,7 @@ mod task4_tree3d {
             );
         }
 
-        // Quad 0: LODApp.cs:1454 — vertex 0 and 3 at z=shift_z=8; vertex 1 and 2 at z=8 too (WRONG)
-        // Actually: vert0 z=shiftZ, vert1 z=shiftZ, vert2 z=shiftZ+height, vert3 z=shiftZ+height
-        // from LODApp.cs:1454-1457:
+        // Quad 0 (LODApp.cs:1454-1457):
         //   v0 = (center_x - dim.x, y_offset, shiftZ)
         //   v1 = (center_x + dim.x, y_offset, shiftZ)
         //   v2 = (center_x + dim.x, y_offset, shiftZ + dim.y)
@@ -501,11 +495,9 @@ mod task4_tree3d {
     }
 
     /// FlatDesc SCALE= must propagate to node_scale (LODApp.cs:1451 SetScale(flatDesc.scale)).
-    ///
-    /// `transform_shape` (objects/object_lod.rs) multiplies every vertex by `node_scale`
-    /// (step 1, like C# matrix7), so a SCALE=2.0 FlatDesc must double the emitted quad's
-    /// x/z extents. The raw FlatTrunk verts carry the unit geometry; `node_scale` is the
-    /// scale factor the transform stage applies. Asserting node_scale==fd.scale pins it.
+    /// The raw FlatTrunk verts stay unit geometry; `transform_shape` (objects/object_lod.rs)
+    /// multiplies every vertex by `node_scale` first (like C# matrix7), so SCALE=2.0
+    /// doubles the emitted quad's x/z extents.
     #[test]
     fn flat_trunk_scale_propagates_to_node_scale() {
         let mut fd = make_flat_desc();
@@ -929,9 +921,8 @@ mod task8_billboard_place {
             "different ref_ids should produce different rotations"
         );
 
-        // Regression lock: pin exact value for "00001234".
-        // This value is derived from FNV-1a("00001234") → computed deterministically;
-        // if this fails the hash was changed (breaking determinism contract).
+        // Pin the exact FNV-1a("00001234") rotation; a failure means the hash changed
+        // and rotations are no longer deterministic.
         let expected = {
             // FNV-1a 32-bit of "00001234" (8 bytes, ASCII)
             const FNV_PRIME: u32 = 16777619;

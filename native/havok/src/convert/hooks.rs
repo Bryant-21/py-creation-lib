@@ -81,7 +81,6 @@ impl CustomHookRegistry {
 /// Each int32 in the old array is split into 4 bytes little-endian.
 /// Used by hclUpdateAllVertexFramesOperator_2_to_3,
 /// hclUpdateSomeVertexFramesOperator_2_to_3, and hclSimClothData_9_to_10.
-/// Python: py_creation_lib/python/creation_lib/havok_convert/patches/p2013_1/cloth.py:_update_triangle_flips
 fn update_triangle_flips_for_class(
     context: &mut ConversionContext<'_>,
     class_name: &str,
@@ -234,12 +233,10 @@ pub fn hknp_body_cinfo_3_to_4(context: &mut ConversionContext<'_>) -> HavokResul
     Ok(())
 }
 
-/// hknpConstraint v0->v1: pack bodyIdA_old/bodyIdB_old + serial=1 into bodyUidA/bodyUidB.
+/// hknpConstraint v0->v1: copy bodyIdA_old/bodyIdB_old into bodyUidA/bodyUidB.
 ///
-/// On little-endian (x86): uid64 = (serial << 32) | body_id_u32
-/// We store as I32 because our HkxValue doesn't have I64; the high word (serial) is lost
-/// but for FO4/FO76 files the uid is read back by hknpConstraint_1_to_2 which only cares
-/// about the low 24 bits anyway.
+/// The SDK packs uid64 = (serial << 32) | body_id with serial=1. Only the body id
+/// is stored (as I32); hknpConstraint_1_to_2 reads just the low 24 bits.
 pub fn hknp_constraint_0_to_1(context: &mut ConversionContext<'_>) -> HavokResult<()> {
     if let Some(index) = context.object_index {
         let id_a = context.hkx.objects()[index]
@@ -263,7 +260,6 @@ pub fn hknp_constraint_0_to_1(context: &mut ConversionContext<'_>) -> HavokResul
         let object = &mut context.hkx.objects_mut()[index];
         if let Some(id) = id_a {
             if let Some(uid) = object.members.iter_mut().find(|m| m.name == "bodyUidA") {
-                // serial=1 in high byte, id in low bits (simplified for PC little-endian)
                 uid.value = HkxValue::I32(id);
             }
         }

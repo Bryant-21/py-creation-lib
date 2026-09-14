@@ -17,6 +17,11 @@ pub struct Fo76BundleOutputs {
     pub glow: Option<Vec<f32>>,
 }
 
+pub struct StarfieldPbrOutputs {
+    pub diffuse: Vec<f32>,
+    pub specgloss: Vec<f32>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct TexturePathInput {
     pub role: String,
@@ -153,16 +158,57 @@ pub fn fo76_bundle_to_fo4_buffers(
     params: TextureConversionParams,
     emit_lighting_alpha_glow: bool,
 ) -> Result<Fo76BundleOutputs> {
+    let _timer = directxtex_native::profiling::Timer::new(directxtex_native::profiling::Stage::Material);
     check_params(params)?;
     let diffuse = read_rgba_f32_bytes(diffuse_bytes, width, height, "diffuse")?;
-    let reflectivity_raw = read_rgba_f32_bytes(
+    let reflectivity = read_rgba_f32_bytes(
         reflectivity_bytes,
         reflectivity_width,
         reflectivity_height,
         "reflectivity",
     )?;
-    let lighting_raw =
+    let lighting =
         read_rgba_f32_bytes(lighting_bytes, lighting_width, lighting_height, "lighting")?;
+    fo76_bundle_to_fo4_pixels(
+        &diffuse,
+        &reflectivity,
+        &lighting,
+        width,
+        height,
+        reflectivity_width,
+        reflectivity_height,
+        lighting_width,
+        lighting_height,
+        params,
+        emit_lighting_alpha_glow,
+    )
+}
+
+pub fn fo76_bundle_to_fo4_pixels(
+    diffuse_pixels: &[f32],
+    reflectivity_pixels: &[f32],
+    lighting_pixels: &[f32],
+    width: usize,
+    height: usize,
+    reflectivity_width: usize,
+    reflectivity_height: usize,
+    lighting_width: usize,
+    lighting_height: usize,
+    params: TextureConversionParams,
+    emit_lighting_alpha_glow: bool,
+) -> Result<Fo76BundleOutputs> {
+    let _timer =
+        directxtex_native::profiling::Timer::new(directxtex_native::profiling::Stage::Material);
+    check_params(params)?;
+    let diffuse = checked_rgba_pixels(diffuse_pixels, width, height, "diffuse")?;
+    let reflectivity_raw = checked_rgba_pixels(
+        reflectivity_pixels,
+        reflectivity_width,
+        reflectivity_height,
+        "reflectivity",
+    )?;
+    let lighting_raw =
+        checked_rgba_pixels(lighting_pixels, lighting_width, lighting_height, "lighting")?;
     let reflectivity = resize_rgba_bilinear(
         &reflectivity_raw,
         reflectivity_width,
@@ -178,7 +224,7 @@ pub fn fo76_bundle_to_fo4_buffers(
         height,
     )?;
 
-    let mut diffuse_out = diffuse.clone();
+    let mut diffuse_out = diffuse.to_vec();
     let mut specgloss = vec![0.0; diffuse.len()];
     let mut glow = emit_lighting_alpha_glow.then(|| vec![0.0; diffuse.len()]);
     let threshold = 1.0 - params.spec_offset;
@@ -196,9 +242,8 @@ pub fn fo76_bundle_to_fo4_buffers(
         let ao = lighting[i + 1].clamp(0.0, 1.0);
         let ao_term = (1.0 - params.ao_multiplier) + ao * params.ao_multiplier;
 
-        let metal0 = ((r0 - threshold).max(0.0) / denom).clamp(0.0, 1.0);
-        let metal1 = ((r1 - threshold).max(0.0) / denom).clamp(0.0, 1.0);
-        let metal2 = ((r2 - threshold).max(0.0) / denom).clamp(0.0, 1.0);
+        let [metal0, metal1, metal2] =
+            metal_contribution_preserving_hue(r0, r1, r2, threshold, denom);
 
         let base0 = d0 + metal0;
         let base1 = d1 + metal1;
@@ -246,12 +291,220 @@ pub fn fo76_bundle_to_fo4_buffers(
     })
 }
 
+/// FO76 packs the emissive mask in `_l` alpha while its RGB holds gloss/AO. A
+/// `_l` with no `_d`/`_r` siblings never reaches `fo76_bundle_to_fo4_buffers`,
+/// but the BGSM downgrade still promotes it into FO4's glow slot, so it needs
+/// the same alpha-derived mask the bundle builds.
+pub fn fo76_lighting_to_fo4_glow_buffer(
+    lighting_bytes: &[u8],
+    width: usize,
+    height: usize,
+    preserve_lighting_rgb: bool,
+) -> Result<Vec<f32>> {
+    let _timer = directxtex_native::profiling::Timer::new(directxtex_native::profiling::Stage::Material);
+    let lighting = read_rgba_f32_bytes(lighting_bytes, width, height, "lighting")?;
+    fo76_lighting_to_fo4_glow_pixels(&lighting, width, height, preserve_lighting_rgb)
+}
+
+pub fn fo76_lighting_to_fo4_glow_pixels(
+    lighting_pixels: &[f32],
+    width: usize,
+    height: usize,
+    preserve_lighting_rgb: bool,
+) -> Result<Vec<f32>> {
+    let _timer =
+        directxtex_native::profiling::Timer::new(directxtex_native::profiling::Stage::Material);
+    let lighting = checked_rgba_pixels(lighting_pixels, width, height, "lighting")?;
+    let mut glow = vec![0.0; lighting.len()];
+    for idx in 0..pixel_count(width, height)? {
+        let i = idx * 4;
+        let emissive_mask = lighting[i + 3].clamp(0.0, 1.0);
+        if preserve_lighting_rgb {
+            glow[i] = lighting[i].clamp(0.0, 1.0) * emissive_mask;
+            glow[i + 1] = lighting[i + 1].clamp(0.0, 1.0) * emissive_mask;
+            glow[i + 2] = lighting[i + 2].clamp(0.0, 1.0) * emissive_mask;
+        } else {
+            glow[i] = emissive_mask;
+            glow[i + 1] = emissive_mask;
+            glow[i + 2] = emissive_mask;
+        }
+        glow[i + 3] = 1.0;
+    }
+    Ok(glow)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn starfield_pbr_to_fo4_buffers(
+    albedo_bytes: &[u8],
+    metallic_bytes: &[u8],
+    roughness_bytes: &[u8],
+    ao_bytes: Option<&[u8]>,
+    width: usize,
+    height: usize,
+    metallic_width: usize,
+    metallic_height: usize,
+    roughness_width: usize,
+    roughness_height: usize,
+    ao_width: usize,
+    ao_height: usize,
+    params: TextureConversionParams,
+) -> Result<StarfieldPbrOutputs> {
+    let _timer = directxtex_native::profiling::Timer::new(directxtex_native::profiling::Stage::Material);
+    check_params(params)?;
+    let albedo = read_rgba_f32_bytes(albedo_bytes, width, height, "albedo")?;
+    let metallic =
+        read_rgba_f32_bytes(metallic_bytes, metallic_width, metallic_height, "metallic")?;
+    let roughness = read_rgba_f32_bytes(
+        roughness_bytes,
+        roughness_width,
+        roughness_height,
+        "roughness",
+    )?;
+    let ao = ao_bytes
+        .map(|bytes| read_rgba_f32_bytes(bytes, ao_width, ao_height, "ao"))
+        .transpose()?;
+    starfield_pbr_to_fo4_pixels(
+        &albedo,
+        &metallic,
+        &roughness,
+        ao.as_deref(),
+        width,
+        height,
+        metallic_width,
+        metallic_height,
+        roughness_width,
+        roughness_height,
+        ao_width,
+        ao_height,
+        params,
+    )
+}
+
+pub fn starfield_pbr_to_fo4_pixels(
+    albedo_pixels: &[f32],
+    metallic_pixels: &[f32],
+    roughness_pixels: &[f32],
+    ao_pixels: Option<&[f32]>,
+    width: usize,
+    height: usize,
+    metallic_width: usize,
+    metallic_height: usize,
+    roughness_width: usize,
+    roughness_height: usize,
+    ao_width: usize,
+    ao_height: usize,
+    params: TextureConversionParams,
+) -> Result<StarfieldPbrOutputs> {
+    let _timer =
+        directxtex_native::profiling::Timer::new(directxtex_native::profiling::Stage::Material);
+    check_params(params)?;
+    let albedo = checked_rgba_pixels(albedo_pixels, width, height, "albedo")?;
+    let metallic = resize_rgba_bilinear(
+        &checked_rgba_pixels(metallic_pixels, metallic_width, metallic_height, "metallic")?,
+        metallic_width,
+        metallic_height,
+        width,
+        height,
+    )?;
+    let roughness = resize_rgba_bilinear(
+        &checked_rgba_pixels(
+            roughness_pixels,
+            roughness_width,
+            roughness_height,
+            "roughness",
+        )?,
+        roughness_width,
+        roughness_height,
+        width,
+        height,
+    )?;
+    let ao = match ao_pixels {
+        Some(bytes) => Some(resize_rgba_bilinear(
+            &checked_rgba_pixels(bytes, ao_width, ao_height, "ao")?,
+            ao_width,
+            ao_height,
+            width,
+            height,
+        )?),
+        None => None,
+    };
+
+    let albedo_rgb: Vec<f32> = albedo
+        .chunks_exact(4)
+        .flat_map(|pixel| pixel[..3].iter().copied())
+        .collect();
+    let metallic_values: Vec<f32> = metallic.chunks_exact(4).map(|pixel| pixel[0]).collect();
+    let roughness_values: Vec<f32> = roughness.chunks_exact(4).map(|pixel| pixel[0]).collect();
+    let ao_values: Option<Vec<f32>> = ao
+        .as_ref()
+        .map(|values| values.chunks_exact(4).map(|pixel| pixel[0]).collect());
+    let pixel_count = pixel_count(width, height)?;
+    let converted = crate::pbr::convert_pixels(
+        &albedo_rgb,
+        &metallic_values,
+        &roughness_values,
+        ao_values.as_deref(),
+        pixel_count,
+        crate::pbr::PbrToSpecGlossParams {
+            ao_multiplier: params.ao_multiplier,
+            specular_multiplier: params.specular_multiplier,
+            gloss_multiplier: params.gloss_multiplier,
+            spec_offset: params.spec_offset,
+        },
+    )?;
+
+    let mut diffuse = Vec::with_capacity(pixel_count * 4);
+    let mut specgloss = Vec::with_capacity(pixel_count * 4);
+    for idx in 0..pixel_count {
+        diffuse.extend_from_slice(&converted.diffuse[idx * 3..idx * 3 + 3]);
+        diffuse.push(albedo[idx * 4 + 3].clamp(0.0, 1.0));
+        specgloss.extend_from_slice(&[converted.specular[idx * 3], converted.gloss[idx], 0.0, 1.0]);
+    }
+
+    Ok(StarfieldPbrOutputs { diffuse, specgloss })
+}
+
+fn metal_contribution_preserving_hue(
+    reflectivity_r: f32,
+    reflectivity_g: f32,
+    reflectivity_b: f32,
+    threshold: f32,
+    denominator: f32,
+) -> [f32; 3] {
+    let peak = reflectivity_r.max(reflectivity_g).max(reflectivity_b);
+    let remapped_peak = ((peak - threshold).max(0.0) / denominator).clamp(0.0, 1.0);
+    if peak <= 0.0 {
+        return [remapped_peak; 3];
+    }
+
+    // spec_offset filters reflectivity magnitude. Applying its threshold to
+    // each channel separately destroys colored-metal hue (gold/copper turn red).
+    let scale = remapped_peak / peak;
+    [
+        reflectivity_r * scale,
+        reflectivity_g * scale,
+        reflectivity_b * scale,
+    ]
+}
+
 pub fn fo76_normal_to_fo4_buffer(
     normal_bytes: &[u8],
     width: usize,
     height: usize,
 ) -> Result<Vec<f32>> {
+    let _timer = directxtex_native::profiling::Timer::new(directxtex_native::profiling::Stage::Material);
     let normal = read_rgba_f32_bytes(normal_bytes, width, height, "normal")?;
+    fo76_normal_to_fo4_pixels(&normal, width, height)
+}
+
+pub fn fo76_normal_to_fo4_pixels(
+    normal_pixels: &[f32],
+    width: usize,
+    height: usize,
+) -> Result<Vec<f32>> {
+    let _timer =
+        directxtex_native::profiling::Timer::new(directxtex_native::profiling::Stage::Material);
+    let normal = checked_rgba_pixels(normal_pixels, width, height, "normal")?;
     Ok(normal
         .into_iter()
         .map(|value| (value * 0.5 + 0.5).clamp(0.0, 1.0))
@@ -263,7 +516,20 @@ pub fn fo76_normalized_normal_to_fo4_buffer(
     width: usize,
     height: usize,
 ) -> Result<Vec<f32>> {
-    let mut normal = read_rgba_f32_bytes(normal_bytes, width, height, "normal")?;
+    let _timer =
+        directxtex_native::profiling::Timer::new(directxtex_native::profiling::Stage::Material);
+    let normal = read_rgba_f32_bytes(normal_bytes, width, height, "normal")?;
+    fo76_normalized_normal_to_fo4_pixels(&normal, width, height)
+}
+
+pub fn fo76_normalized_normal_to_fo4_pixels(
+    normal_pixels: &[f32],
+    width: usize,
+    height: usize,
+) -> Result<Vec<f32>> {
+    let _timer =
+        directxtex_native::profiling::Timer::new(directxtex_native::profiling::Stage::Material);
+    let mut normal = checked_rgba_pixels(normal_pixels, width, height, "normal")?.to_vec();
     for idx in 0..pixel_count(width, height)? {
         let i = idx * 4;
         normal[i] = normal[i].clamp(0.0, 1.0);
@@ -282,9 +548,33 @@ pub fn fo76_reflectivity_lighting_to_fo4_specgloss_buffers(
     lighting_width: usize,
     lighting_height: usize,
 ) -> Result<Vec<f32>> {
+    let _timer = directxtex_native::profiling::Timer::new(directxtex_native::profiling::Stage::Material);
     let reflectivity = read_rgba_f32_bytes(reflectivity_bytes, width, height, "reflectivity")?;
-    let lighting_raw =
+    let lighting =
         read_rgba_f32_bytes(lighting_bytes, lighting_width, lighting_height, "lighting")?;
+    fo76_reflectivity_lighting_to_fo4_specgloss_pixels(
+        &reflectivity,
+        &lighting,
+        width,
+        height,
+        lighting_width,
+        lighting_height,
+    )
+}
+
+pub fn fo76_reflectivity_lighting_to_fo4_specgloss_pixels(
+    reflectivity_pixels: &[f32],
+    lighting_pixels: &[f32],
+    width: usize,
+    height: usize,
+    lighting_width: usize,
+    lighting_height: usize,
+) -> Result<Vec<f32>> {
+    let _timer =
+        directxtex_native::profiling::Timer::new(directxtex_native::profiling::Stage::Material);
+    let reflectivity = checked_rgba_pixels(reflectivity_pixels, width, height, "reflectivity")?;
+    let lighting_raw =
+        checked_rgba_pixels(lighting_pixels, lighting_width, lighting_height, "lighting")?;
     let lighting = resize_rgba_bilinear(
         &lighting_raw,
         lighting_width,
@@ -348,12 +638,39 @@ pub fn gamebryo_normal_envmask_to_fo4_specgloss_buffers(
     envmask_height: usize,
     params: GamebryoSpecParams,
 ) -> Result<GamebryoSpecOutputs> {
+    let _timer = directxtex_native::profiling::Timer::new(directxtex_native::profiling::Stage::Material);
     let normal = read_rgba_f32_bytes(normal_bytes, width, height, "normal")?;
+    let envmask = envmask_bytes
+        .map(|bytes| read_rgba_f32_bytes(bytes, envmask_width, envmask_height, "envmask"))
+        .transpose()?;
+    gamebryo_normal_envmask_to_fo4_specgloss_pixels(
+        &normal,
+        envmask.as_deref(),
+        width,
+        height,
+        envmask_width,
+        envmask_height,
+        params,
+    )
+}
+
+pub fn gamebryo_normal_envmask_to_fo4_specgloss_pixels(
+    normal_pixels: &[f32],
+    envmask_pixels: Option<&[f32]>,
+    width: usize,
+    height: usize,
+    envmask_width: usize,
+    envmask_height: usize,
+    params: GamebryoSpecParams,
+) -> Result<GamebryoSpecOutputs> {
+    let _timer =
+        directxtex_native::profiling::Timer::new(directxtex_native::profiling::Stage::Material);
+    let normal = checked_rgba_pixels(normal_pixels, width, height, "normal")?;
     let count = pixel_count(width, height)?;
 
-    let envmask = match envmask_bytes {
+    let envmask = match envmask_pixels {
         Some(bytes) => {
-            let raw = read_rgba_f32_bytes(bytes, envmask_width, envmask_height, "envmask")?;
+            let raw = checked_rgba_pixels(bytes, envmask_width, envmask_height, "envmask")?;
             Some(resize_rgba_bilinear(
                 &raw,
                 envmask_width,
@@ -383,9 +700,9 @@ pub fn gamebryo_normal_envmask_to_fo4_specgloss_buffers(
         } else {
             params.dielectric_baseline
         };
-        let mask = envmask
-            .as_ref()
-            .map_or(0.0, |values| values[i].clamp(0.0, 1.0) * params.envmask_weight);
+        let mask = envmask.as_ref().map_or(0.0, |values| {
+            values[i].clamp(0.0, 1.0) * params.envmask_weight
+        });
 
         normal_out[i] = normal[i].clamp(0.0, 1.0);
         normal_out[i + 1] = normal[i + 1].clamp(0.0, 1.0);
@@ -411,7 +728,20 @@ pub fn gamebryo_normal_envmask_to_fo4_specgloss_buffers(
 }
 
 pub fn passthrough_rgba_buffer(rgba_bytes: &[u8], width: usize, height: usize) -> Result<Vec<f32>> {
-    read_rgba_f32_bytes(rgba_bytes, width, height, "rgba")
+    let _timer =
+        directxtex_native::profiling::Timer::new(directxtex_native::profiling::Stage::Material);
+    let rgba = read_rgba_f32_bytes(rgba_bytes, width, height, "rgba")?;
+    passthrough_rgba_pixels(&rgba, width, height)
+}
+
+pub fn passthrough_rgba_pixels(
+    rgba_pixels: &[f32],
+    width: usize,
+    height: usize,
+) -> Result<Vec<f32>> {
+    let _timer =
+        directxtex_native::profiling::Timer::new(directxtex_native::profiling::Stage::Material);
+    checked_rgba_pixels(rgba_pixels, width, height, "rgba").map(<[f32]>::to_vec)
 }
 
 fn input_path<'a>(request: &'a TextureSetPathRequest, role: &str) -> Option<&'a Path> {
@@ -557,7 +887,7 @@ fn write_float_output(
     parallel_compression: bool,
 ) -> Result<()> {
     if let Some(parent) = output.path.parent() {
-        std::fs::create_dir_all(parent)
+        directxtex_native::profiling::create_dir_all(parent)
             .map_err(|error| MaterialError::runtime(error.to_string()))?;
     }
     let effective_use_gpu = output_uses_gpu(format, width, height, use_gpu, gpu_min_pixels);
@@ -599,7 +929,7 @@ fn copy_same_game_paths(request: TextureSetPathRequest) -> Result<TextureSetPath
             .find(|candidate| candidate.role == input.role)
         {
             if let Some(parent) = output.path.parent() {
-                std::fs::create_dir_all(parent)
+                directxtex_native::profiling::create_dir_all(parent)
                     .map_err(|error| MaterialError::runtime(error.to_string()))?;
             }
             std::fs::copy(&input.path, &output.path)
@@ -639,10 +969,10 @@ fn convert_fo76_to_fo4_paths(request: TextureSetPathRequest) -> Result<TextureSe
             .map_err(MaterialError::runtime)?;
         let lighting = directxtex_native::read_dds_float_rgba_image(lighting_path)
             .map_err(MaterialError::runtime)?;
-        let outputs = fo76_bundle_to_fo4_buffers(
-            &f32_vec_to_bytes(&diffuse.rgba),
-            &f32_vec_to_bytes(&reflectivity.rgba),
-            &f32_vec_to_bytes(&lighting.rgba),
+        let outputs = fo76_bundle_to_fo4_pixels(
+            &diffuse.rgba,
+            &reflectivity.rgba,
+            &lighting.rgba,
             diffuse.width as usize,
             diffuse.height as usize,
             reflectivity.width as usize,
@@ -731,9 +1061,9 @@ fn convert_fo76_to_fo4_paths(request: TextureSetPathRequest) -> Result<TextureSe
             .map_err(MaterialError::runtime)?;
         let lighting = directxtex_native::read_dds_float_rgba_image(lighting_path)
             .map_err(MaterialError::runtime)?;
-        let specgloss = fo76_reflectivity_lighting_to_fo4_specgloss_buffers(
-            &f32_vec_to_bytes(&reflectivity.rgba),
-            &f32_vec_to_bytes(&lighting.rgba),
+        let specgloss = fo76_reflectivity_lighting_to_fo4_specgloss_pixels(
+            &reflectivity.rgba,
+            &lighting.rgba,
             reflectivity.width as usize,
             reflectivity.height as usize,
             lighting.width as usize,
@@ -757,6 +1087,38 @@ fn convert_fo76_to_fo4_paths(request: TextureSetPathRequest) -> Result<TextureSe
         )?;
         push_converted(&mut result, output);
         convert_fo76_individual_paths_into(&request, &mut result, &["reflectivity", "lighting"])?;
+        return Ok(result);
+    }
+
+    // A lone `_l` bound to the glow slot: derive the mask from alpha instead of
+    // letting the individual path pass the packed RGB through.
+    if let (Some(lighting_path), Some(output)) = (lighting_path, output_for(&request, "glow")) {
+        let lighting = directxtex_native::read_dds_float_rgba_image(lighting_path)
+            .map_err(MaterialError::runtime)?;
+        let glow = fo76_lighting_to_fo4_glow_pixels(
+            &lighting.rgba,
+            lighting.width as usize,
+            lighting.height as usize,
+            is_named_glow_lighting_path(lighting_path),
+        )?;
+        let format = output_format_for_path(
+            &output.role,
+            lighting.dxgi_format,
+            &output.format,
+            &output.path,
+        );
+        write_float_output(
+            output,
+            lighting.width,
+            lighting.height,
+            &glow,
+            &format,
+            request.use_gpu,
+            request.gpu_min_pixels,
+            request.parallel_compression,
+        )?;
+        push_converted(&mut result, output);
+        convert_fo76_individual_paths_into(&request, &mut result, &["lighting"])?;
         return Ok(result);
     }
 
@@ -798,44 +1160,59 @@ fn convert_fo76_individual_paths_into(
 
         let image = directxtex_native::read_dds_float_rgba_image(input.path.as_path())
             .map_err(MaterialError::runtime)?;
-        let mut rgba = if input.role == "normal" {
-            fo76_normalized_normal_to_fo4_buffer(
-                &f32_vec_to_bytes(&image.rgba),
-                image.width as usize,
-                image.height as usize,
-            )?
-        } else {
-            passthrough_rgba_buffer(
-                &f32_vec_to_bytes(&image.rgba),
-                image.width as usize,
-                image.height as usize,
-            )?
-        };
-        let mut format = output_format_for_path(
-            &output.role,
-            image.dxgi_format,
-            &output.format,
-            &output.path,
-        );
-        if is_light_gobo_path(output.path.as_path()) {
-            let linear = linear_format_variant(&format);
-            if linear != format {
-                linearize_rgb_in_place(&mut rgba);
-                format = linear.to_string();
-            }
-        }
-        write_float_output(
+        convert_fo76_individual_image(
+            &input.role,
             output,
-            image.width,
-            image.height,
-            &rgba,
-            &format,
+            image,
             request.use_gpu,
             request.gpu_min_pixels,
             request.parallel_compression,
         )?;
         push_converted(result, output);
     }
+    Ok(())
+}
+
+pub fn convert_fo76_individual_image(
+    input_role: &str,
+    output: &TexturePathOutput,
+    image: directxtex_native::DdsRgbaFloatImage,
+    use_gpu: bool,
+    gpu_min_pixels: u32,
+    parallel_compression: bool,
+) -> Result<()> {
+    let mut rgba = if input_role == "normal" {
+        fo76_normalized_normal_to_fo4_pixels(
+            &image.rgba,
+            image.width as usize,
+            image.height as usize,
+        )?
+    } else {
+        passthrough_rgba_pixels(&image.rgba, image.width as usize, image.height as usize)?
+    };
+    let mut format = output_format_for_path(
+        &output.role,
+        image.dxgi_format,
+        &output.format,
+        &output.path,
+    );
+    if is_light_gobo_path(output.path.as_path()) {
+        let linear = linear_format_variant(&format);
+        if linear != format {
+            linearize_rgb_in_place(&mut rgba);
+            format = linear.to_string();
+        }
+    }
+    write_float_output(
+        output,
+        image.width,
+        image.height,
+        &rgba,
+        &format,
+        use_gpu,
+        gpu_min_pixels,
+        parallel_compression,
+    )?;
     Ok(())
 }
 
@@ -850,6 +1227,7 @@ pub fn mapped_fo76_output_role(role: &str) -> Option<&'static str> {
 }
 
 pub fn f32_vec_to_bytes(values: &[f32]) -> Vec<u8> {
+    let _timer = directxtex_native::profiling::Timer::new(directxtex_native::profiling::Stage::Material);
     let mut bytes = Vec::with_capacity(values.len() * 4);
     for value in values {
         bytes.extend_from_slice(&value.to_le_bytes());
@@ -873,6 +1251,22 @@ fn expected_rgba_byte_len(width: usize, height: usize) -> Result<usize> {
         .checked_mul(4)
         .and_then(|value_count| value_count.checked_mul(4))
         .ok_or_else(|| MaterialError::invalid("rgba buffer byte length overflow"))
+}
+
+fn checked_rgba_pixels<'a>(
+    pixels: &'a [f32],
+    width: usize,
+    height: usize,
+    name: &str,
+) -> Result<&'a [f32]> {
+    let expected = expected_rgba_byte_len(width, height)? / 4;
+    if pixels.len() != expected {
+        return Err(MaterialError::invalid(format!(
+            "{name} buffer has {} pixel values; expected {expected}",
+            pixels.len()
+        )));
+    }
+    Ok(pixels)
 }
 
 fn read_rgba_f32_bytes(bytes: &[u8], width: usize, height: usize, name: &str) -> Result<Vec<f32>> {
@@ -1009,6 +1403,29 @@ mod tests {
     }
 
     #[test]
+    fn starfield_pbr_bundle_maps_metal_roughness_and_ao_to_fo4() {
+        let out = starfield_pbr_to_fo4_buffers(
+            &rgba_bytes([0.5, 0.25, 0.75, 0.4]),
+            &rgba_bytes([0.0, 0.0, 0.0, 1.0]),
+            &rgba_bytes([0.25, 0.25, 0.25, 1.0]),
+            Some(&rgba_bytes([1.0, 1.0, 1.0, 1.0])),
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            TextureConversionParams::default(),
+        )
+        .unwrap();
+
+        assert_rgba_close(decode_rgba(out.diffuse), [0.5, 0.25, 0.75, 0.4]);
+        assert_rgba_close(decode_rgba(out.specgloss), [0.22, 0.75, 0.0, 1.0]);
+    }
+
+    #[test]
     fn bundle_uses_lighting_r_for_gloss_and_lighting_g_for_ao() {
         let out = fo76_bundle_to_fo4_buffers(
             &rgba_bytes([0.5, 0.25, 0.75, 1.0]),
@@ -1027,6 +1444,46 @@ mod tests {
 
         assert_eq!(decode_rgba(out.diffuse), [1.0, 0.9375, 1.0, 1.0]);
         assert_eq!(decode_rgba(out.specgloss), [1.0, 0.25, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn bundle_preserves_colored_metal_reflectivity_hue() {
+        let out = fo76_bundle_to_fo4_buffers(
+            &rgba_bytes([0.0, 0.0, 0.0, 1.0]),
+            &rgba_bytes([0.4, 0.25, 0.1, 1.0]),
+            &rgba_bytes([0.5, 1.0, 0.0, 1.0]),
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            TextureConversionParams::default(),
+            false,
+        )
+        .unwrap();
+
+        assert_rgba_close(decode_rgba(out.diffuse), [0.25, 0.15625, 0.0625, 1.0]);
+    }
+
+    #[test]
+    fn bundle_keeps_achromatic_reflectivity_remap() {
+        let out = fo76_bundle_to_fo4_buffers(
+            &rgba_bytes([0.0, 0.0, 0.0, 1.0]),
+            &rgba_bytes([0.25, 0.25, 0.25, 1.0]),
+            &rgba_bytes([0.5, 1.0, 0.0, 1.0]),
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            TextureConversionParams::default(),
+            false,
+        )
+        .unwrap();
+
+        assert_rgba_close(decode_rgba(out.diffuse), [0.0625, 0.0625, 0.0625, 1.0]);
     }
 
     #[test]
@@ -1051,6 +1508,44 @@ mod tests {
         // White (grayscale) glow scaled by the emissive mask (alpha = 0.75),
         // not tinted green by the AO channel.
         assert_eq!(decode_rgba(out.glow.unwrap()), [0.75, 0.75, 0.75, 1.0]);
+    }
+
+    #[test]
+    fn orphan_lighting_glow_matches_the_bundle_mask() {
+        // RobCoDispenser02_l.dds has no _d/_r sibling, so it misses the bundle.
+        // It must still yield the alpha-derived mask, not the packed RGB.
+        let lighting = rgba_bytes([0.5, 1.0, 0.0, 0.75]);
+        let orphan = fo76_lighting_to_fo4_glow_buffer(&lighting, 1, 1, false).unwrap();
+        assert_eq!(decode_rgba(orphan), [0.75, 0.75, 0.75, 1.0]);
+
+        let bundled = fo76_bundle_to_fo4_buffers(
+            &rgba_bytes([0.1, 0.2, 0.3, 0.4]),
+            &rgba_bytes([0.0, 0.0, 0.0, 1.0]),
+            &lighting,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            TextureConversionParams::default(),
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            decode_rgba(fo76_lighting_to_fo4_glow_buffer(&lighting, 1, 1, false).unwrap()),
+            decode_rgba(bundled.glow.unwrap()),
+            "orphan _l must produce the same glow map the bundle path would"
+        );
+    }
+
+    #[test]
+    fn orphan_lighting_glow_keeps_named_glow_colour() {
+        // `*_glow_l.dds` is authored with real colour in RGB; the named-glow
+        // exception must survive the orphan path too.
+        let out = fo76_lighting_to_fo4_glow_buffer(&rgba_bytes([0.5, 1.0, 0.0, 0.75]), 1, 1, true)
+            .unwrap();
+        assert_rgba_close(decode_rgba(out), [0.375, 0.75, 0.0, 1.0]);
     }
 
     #[test]
@@ -1509,7 +2004,10 @@ mod tests {
         assert_eq!(out.normal[3], 1.0);
 
         assert!((out.normal[4] - 0.48).abs() < 1e-6);
-        assert!((out.normal[5] - 0.95).abs() < 1e-6, "terrain green survives");
+        assert!(
+            (out.normal[5] - 0.95).abs() < 1e-6,
+            "terrain green survives"
+        );
         assert_eq!(out.normal[6], 0.0, "object-space blue must be dropped too");
     }
 
@@ -1612,3 +2110,6 @@ mod tests {
         assert!((out.specgloss[5] - 0.1).abs() < 1e-6);
     }
 }
+
+#[cfg(test)]
+mod float_tests;

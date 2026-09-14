@@ -1,4 +1,4 @@
-"""Phase 5 PyO3 smoke test — confirms the new cloth pyfunctions are wired up."""
+"""PyO3 smoke test: the cloth pyfunctions are wired up."""
 from __future__ import annotations
 
 from pathlib import Path

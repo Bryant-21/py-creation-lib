@@ -269,8 +269,6 @@ impl Default for AtlasList {
 // ---------------------------------------------------------------------------
 
 /// Result of the once-per-worldspace atlas build pass.
-/// Contract fields: `map_path`, `diffuse`, `uv`.
-/// Additive fields: `normal`, `specular`, `atlas_size`, `list`.
 pub struct AtlasResult {
     /// Path to the written atlas-map `.txt` file.
     pub map_path: std::path::PathBuf,
@@ -592,18 +590,14 @@ fn collect_object_atlas_tiles_for_stat(
     tiles
 }
 
-/// Normalise an object-texture path to the canonical Data-relative form used for
-/// atlas key building and filesystem resolution.
+/// Normalise an object-texture path to the canonical Data-relative form used for atlas
+/// keys and filesystem resolution: strip a leading `Data\` (case-insensitive), prepend
+/// `Textures\` unless the path already starts with a known sub-dir (`Textures\`,
+/// `Materials\`, `Meshes\`, ...), and use backslashes.
 ///
-/// Strips a leading `Data\` / `Data/` prefix (case-insensitive) then, if the
-/// remaining path does not already start with `Textures\` / `textures/` (or any
-/// other known sub-dir such as `Materials\`, `Meshes\`), prepends `Textures\`.
-/// Slashes are normalised to backslash in the returned value.
-///
-/// This function is the single normalization point shared by the atlas tile
-/// resolver (`resolve_data_path_ci`) and the atlas-key lookup (`atlas_get_key`)
-/// so both sides agree on the canonical key form and a path stored as
-/// `Data\LOD\foo_d.dds` in a NIF resolves the same as `Textures\LOD\foo_d.dds`.
+/// Shared by the tile resolver (`resolve_data_path_ci`) and the key lookup
+/// (`atlas_get_key`), so `Data\LOD\foo_d.dds` in a NIF resolves the same as
+/// `Textures\LOD\foo_d.dds`.
 pub fn strip_normalize_texture_path(s: &str) -> String {
     // Normalise slashes to backslash first so all subsequent tests use one form.
     let mut p = s.replace('/', "\\");
@@ -866,9 +860,9 @@ fn build_atlas_from_assets_with_progress(
         let rgba_s = if let Some(sibling) = &s_asset {
             read_asset_dds(sibling, asset_sources)
                 .map(|i| maybe_resize_rgba(i, w, h))
-                .unwrap_or_else(|_| white_rgba(w, h))
+                .unwrap_or_else(|_| neutral_specular_rgba(w, h))
         } else {
-            white_rgba(w, h)
+            neutral_specular_rgba(w, h)
         };
 
         // Data-relative path for the atlas-map: take the part after "textures\" (case-insensitive).
@@ -1007,7 +1001,7 @@ fn build_atlas_from_assets_with_progress(
     let buf_size = (atlas_w * atlas_h * 4) as usize;
     let mut buf_d = vec![0u8; buf_size];
     let mut buf_n = vec![128u8; buf_size]; // flat normal default
-    let mut buf_s = vec![255u8; buf_size]; // white specular default
+    let mut buf_s = neutral_specular_rgba(atlas_w, atlas_h);
 
     let mut map_rows: Vec<AtlasMapRow> = Vec::new();
     let mut uv_map: std::collections::HashMap<String, AtlasRect> = std::collections::HashMap::new();
@@ -1030,12 +1024,10 @@ fn build_atlas_from_assets_with_progress(
         blit_rgba(&tile.rgba_n, tile.w, tile.h, &mut buf_n, atlas_w, b.x, b.y);
         blit_rgba(&tile.rgba_s, tile.w, tile.h, &mut buf_s, atlas_w, b.x, b.y);
 
-        // Atlas key + atlas-map source column = "diffuse,normal" (lowercased) when
-        // a normal sibling exists, else bare "diffuse" — port: AtlasList.GetKey /
-        // the atlas-map loader's column-0 split (Program.cs:1295-1322). Keying by
-        // "diffuse,normal" lets transform_shape's atlas_build_key -> atlas_get_key
-        // resolve via the diffuse,normal branch instead of the bare-diffuse fallback.
-        // (Glow is omitted: no glow atlas is built.)
+        // Atlas key and atlas-map source column: "diffuse,normal" (lowercased) when a
+        // normal sibling exists, else bare "diffuse" (port: AtlasList.GetKey / the
+        // loader's column-0 split, Program.cs:1295-1322), so atlas_get_key resolves via
+        // its diffuse,normal branch. No glow atlas is built, so glow is omitted.
         let source = if tile.normal_rel.is_empty() {
             tile.diffuse_rel.clone()
         } else {
@@ -1064,13 +1056,11 @@ fn build_atlas_from_assets_with_progress(
     // --- Write DDS files ---
     // port: wbLOD.pas:1557-1566
     //
-    // DDS encoding is best-effort: the atlas UV `list`/`uv`/`atlas_size` (which is
-    // what `transform_shape` consumes to remap object-LOD UVs) is already fully
-    // computed above. If the DDS encoder is unavailable (e.g. the real-esp test
-    // link resolves the external DirectXTex FFI copy, whose BC `Compress` returns
-    // E_NOTIMPL — the documented `/FORCE:MULTIPLE` collision), we log and keep the
-    // valid AtlasResult rather than failing the whole object-LOD pass. The umbrella
-    // `_native.pyd` links our directxtex_native and writes the atlas correctly.
+    // Best-effort: the UV `list`/`uv`/`atlas_size` that `transform_shape` consumes are
+    // already computed. The real-esp test link can resolve the external DirectXTex FFI
+    // copy, whose BC `Compress` returns E_NOTIMPL (the `/FORCE:MULTIPLE` collision in
+    // build.rs), so a failed encode is logged and the AtlasResult kept. The umbrella
+    // `_native.pyd` links directxtex_native and writes the atlas correctly.
     if let Some(parent) = atlas_diffuse_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -1183,13 +1173,9 @@ pub fn pack_and_compose_atlas(
 // Local helpers
 // ---------------------------------------------------------------------------
 
-/// Resize an RGBA8 tile to (dw, dh) using directxtex's high-quality resampler.
-///
-/// Port intent (#8): route tile resize through directxtex instead of a hand-rolled
-/// nearest-neighbor box filter. DEVIATION: the contract names "Lanczos", but
-/// DirectXTex exposes no LANCZOS filter — its highest-quality kernel is CUBIC
-/// (TEX_FILTER_CUBIC), which we use here. Falls back to nearest-neighbor only if
-/// directxtex fails (e.g. zero dimensions), so callers always get a buffer.
+/// Resize an RGBA8 tile to (dw, dh) with directxtex's cubic filter (`TEX_FILTER_CUBIC`,
+/// its highest-quality kernel; DirectXTex has no Lanczos). Falls back to nearest-neighbor
+/// only if directxtex fails (e.g. zero dimensions), so callers always get a buffer.
 pub(crate) fn resize_rgba(src: &[u8], sw: u32, sh: u32, dw: u32, dh: u32) -> Vec<u8> {
     if sw == dw && sh == dh {
         return src.to_vec();
@@ -1302,9 +1288,13 @@ pub(crate) fn flat_normal_rgba(w: u32, h: u32) -> Vec<u8> {
     v
 }
 
-/// White specular (255, 255, 255, 255) for missing _s siblings.
-pub(crate) fn white_rgba(w: u32, h: u32) -> Vec<u8> {
-    vec![255u8; (w * h * 4) as usize]
+/// Neutral specular (0, 0, 0, 255) for missing _s siblings and atlas padding.
+pub(crate) fn neutral_specular_rgba(w: u32, h: u32) -> Vec<u8> {
+    let mut rgba = vec![0u8; (w * h * 4) as usize];
+    for pixel in rgba.chunks_exact_mut(4) {
+        pixel[3] = 255;
+    }
+    rgba
 }
 
 /// Blit src (w×h RGBA) into dst at (ox, oy) in an atlas of width `atlas_w`.
@@ -1413,6 +1403,39 @@ pub(crate) fn write_atlas_dds(
             .map_err(|fallback_error| {
                 format!(
                     "native mip flooding failed: {mip_flood_error}; infinite dilation fallback failed: {fallback_error}"
+                )
+            })
+        }
+    }
+}
+
+pub(crate) fn write_linear_diffuse_atlas_dds(
+    path: &std::path::Path,
+    width: u32,
+    height: u32,
+    rgba: &[u8],
+    format: &str,
+    mip_flooding: bool,
+) -> Result<(), String> {
+    if !mip_flooding {
+        return directxtex_native::write_dds_rgba_image_srgb_payload_unorm_header(
+            path, width, height, rgba, format, true,
+        );
+    }
+
+    match directxtex_native::write_dds_rgba_image_mip_flooded_srgb_payload_unorm_header(
+        path, width, height, rgba, format,
+    ) {
+        Ok(()) => Ok(()),
+        Err(mip_flood_error) => {
+            let mut fallback = rgba.to_vec();
+            infinite_dilate_transparent_rgb(&mut fallback, width, height);
+            directxtex_native::write_dds_rgba_image_srgb_payload_unorm_header(
+                path, width, height, &fallback, format, true,
+            )
+            .map_err(|fallback_error| {
+                format!(
+                    "native diffuse mip flooding failed: {mip_flood_error}; infinite dilation fallback failed: {fallback_error}"
                 )
             })
         }
@@ -1566,19 +1589,22 @@ mod tests {
     }
 
     #[test]
-    fn atlas_dds_writer_uses_native_mip_flooding_for_diffuse() {
+    fn linear_diffuse_atlas_writer_encodes_srgb_payload_and_uses_mip_flooding() {
         let path = std::env::temp_dir().join(format!(
             "modbox21_lodgen_mip_flood_{}.dds",
             std::process::id()
         ));
         let mut rgba = vec![0u8; 4 * 4 * 4];
-        rgba[..4].copy_from_slice(&[180, 30, 90, 255]);
+        rgba[..4].copy_from_slice(&[55, 13, 4, 255]);
 
-        write_atlas_dds(&path, 4, 4, &rgba, "R8G8B8A8_UNORM", true).unwrap();
+        write_linear_diffuse_atlas_dds(&path, 4, 4, &rgba, "R8G8B8A8_UNORM", true).unwrap();
         let decoded = directxtex_native::read_dds_mips_rgba8(&path).unwrap();
 
+        assert_eq!(decoded.dxgi_format, 28);
         assert_eq!(decoded.mips.len(), 3);
-        assert_eq!(&decoded.mips[0].2[4..7], &[180, 30, 90]);
+        assert!((decoded.mips[0].2[4] as i32 - 128).abs() <= 1);
+        assert!((decoded.mips[0].2[5] as i32 - 64).abs() <= 1);
+        assert!((decoded.mips[0].2[6] as i32 - 34).abs() <= 1);
         assert_eq!(decoded.mips[0].2[7], 0);
         std::fs::remove_file(path).ok();
     }

@@ -42,16 +42,10 @@ SEMI_TRANSPARENT_ALPHA_THRESHOLD = 254
 
 def quantize_image(img: Image.Image, method: str = "libimagequant",
                    final_colors: int = 128) -> Image.Image:
-    """Quantize image using the specified method.
+    """Quantize image to a P-mode image with ``final_colors`` palette entries.
 
-    Args:
-        img: PIL Image to quantize.
-        method: One of "median_cut", "max_coverage", "fast_octree",
-                "libimagequant", "kmeans_adaptive", "uniform".
-        final_colors: Target palette size.
-
-    Returns:
-        Quantized P-mode PIL Image.
+    ``method`` is one of "median_cut", "max_coverage", "fast_octree",
+    "libimagequant", "kmeans_adaptive", "uniform".
     """
     method = (method or "median_cut").lower()
     final_colors = max(2, int(final_colors))
@@ -842,15 +836,9 @@ def apply_palette_to_greyscale(palette_img: Image.Image, grey_img: Image.Image,
                                filter_type: str = "linear") -> Image.Image:
     """Apply palette row to a greyscale image, preserving alpha if present.
 
-    Args:
-        palette_img: Palette image to sample from.
-        grey_img: Greyscale image to colorize.
-        palette_row: Pre-extracted palette row (W, 3). If None, extracted from palette_img.
-        filter_type: "linear", "nearest", "cubic", "anchored_linear", "gaussian",
-                     "cubic_gaussian".
-
-    Returns:
-        RGB or RGBA image.
+    ``palette_row`` is a pre-extracted (W, 3) row; if None it is read from
+    ``palette_img``. ``filter_type`` is "linear", "nearest", "cubic",
+    "anchored_linear", "gaussian", or "cubic_gaussian". Returns RGB or RGBA.
     """
     if palette_row is None or palette_row.size == 0:
         palette_row = get_palette_row(palette_img)
@@ -966,17 +954,11 @@ def postprocess_palette_row(palette_row: np.ndarray,
                             guard_band_width: int = 0,
                             smoothing: str = "none",
                             smoothing_strength: float = 0.0) -> np.ndarray:
-    """Apply guard-band fill and gradient smoothing to a palette row.
+    """Apply guard-band fill and gradient smoothing to a (W, 3) uint8 palette row.
 
-    Args:
-        palette_row: (W, 3) uint8.
-        islands: List of (name, gray_start, gray_end).
-        guard_band_width: Width in indices to blend at boundaries.
-        smoothing: "none", "gaussian", "median", "bilateral".
-        smoothing_strength: 0..1 float.
-
-    Returns:
-        Processed palette row (W, 3) uint8.
+    ``islands`` are (name, gray_start, gray_end). ``guard_band_width`` is the
+    blend width in indices at boundaries. ``smoothing`` is "none", "gaussian",
+    "median", or "bilateral"; ``smoothing_strength`` is 0..1.
     """
     if palette_row is None or palette_row.size == 0:
         return palette_row
@@ -1093,16 +1075,10 @@ def build_palette_row_from_recolor(grey_img: Image.Image,
                                    quant_method: str | None = None) -> np.ndarray:
     """Reconstruct a palette row from a recolored image using saved island mappings.
 
-    Args:
-        grey_img: Grayscale atlas (values 0-255).
-        recolor_img: Recolored version of the original source texture.
-        islands: List of (name, gray_start, gray_end).
-        mask_stack: Boolean mask stack (N, H, W).
-        palette_size: Target palette width.
-        quant_method: Optional quantization method to apply to recolor before extracting.
-
-    Returns:
-        palette_row: ndarray shape (palette_size, 3) uint8.
+    ``recolor_img`` is a recolored copy of the original source texture;
+    ``islands`` are (name, gray_start, gray_end); ``mask_stack`` is a boolean
+    (N, H, W) stack. ``quant_method`` optionally quantizes the recolor first.
+    Returns a (palette_size, 3) uint8 row.
     """
     if grey_img is None or recolor_img is None:
         raise ValueError("Grey image and recolor image are required")

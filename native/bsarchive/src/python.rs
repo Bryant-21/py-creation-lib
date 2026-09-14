@@ -11,7 +11,9 @@ use pyo3::{
 };
 use rayon::prelude::*;
 use std::{
+    collections::HashSet,
     fs,
+    io::Read,
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
@@ -33,6 +35,7 @@ pub fn register_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(extract_archive, m)?)?;
     m.add_function(wrap_pyfunction!(extract_one, m)?)?;
     m.add_function(wrap_pyfunction!(archive_info, m)?)?;
+    m.add_function(wrap_pyfunction!(archive_entry_count, m)?)?;
     m.add_function(wrap_pyfunction!(pack_archive, m)?)?;
     m.add_function(wrap_pyfunction!(pack_archive_entries, m)?)?;
     m.add_function(wrap_pyfunction!(pack_archive_plans, m)?)?;
@@ -231,12 +234,25 @@ fn open_archive(path: &Path) -> Result<OpenArchive, String> {
     }
 }
 
-fn write_extracted_file(output_dir: &Path, rel: &str, bytes: &[u8]) -> Result<(), String> {
+#[derive(Default)]
+struct ExtractionBuffers {
+    bytes: Vec<u8>,
+    directories: HashSet<PathBuf>,
+}
+
+fn write_extracted_file(
+    output_dir: &Path,
+    rel: &str,
+    buffers: &mut ExtractionBuffers,
+) -> Result<(), String> {
     let out_path = output_dir.join(rel.replace('/', "\\"));
     if let Some(parent) = out_path.parent() {
-        fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+        if !buffers.directories.contains(parent) {
+            fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+            buffers.directories.insert(parent.to_owned());
+        }
     }
-    fs::write(&out_path, bytes).map_err(|err| err.to_string())
+    fs::write(&out_path, &buffers.bytes).map_err(|err| err.to_string())
 }
 
 fn report_extract_progress(
@@ -289,13 +305,13 @@ fn extract_tes4_archive(
     progress: Option<&ProgressCallback>,
 ) -> Result<usize, String> {
     let write_options: tes4::FileCompressionOptions = (*options).into();
-    let entries: Vec<(String, tes4::File<'static>)> = archive
+    let entries: Vec<(String, &tes4::File<'static>)> = archive
         .iter()
         .flat_map(|(dir_key, directory)| {
             directory.iter().map(move |(file_key, file)| {
                 (
                     join_tes4_path(dir_key.name().to_string(), file_key.name().to_string()),
-                    file.clone(),
+                    file,
                 )
             })
         })
@@ -303,11 +319,17 @@ fn extract_tes4_archive(
     let total = entries.len();
     let completed = AtomicUsize::new(0);
 
-    let extract_entry = |(rel, file): &(String, tes4::File<'static>)| -> Result<(), String> {
-        let mut bytes = Vec::new();
-        file.write(&mut bytes, &write_options)
-            .map_err(|err| err.to_string())?;
-        write_extracted_file(output_dir, rel, &bytes)?;
+    let extract_entry = |buffers: &mut ExtractionBuffers,
+                         (rel, file): &(String, &tes4::File<'static>)|
+     -> Result<(), String> {
+        buffers.bytes.clear();
+        if file.is_compressed() {
+            file.decompress_into(&mut buffers.bytes, &write_options)
+                .map_err(|err| err.to_string())?;
+        } else {
+            buffers.bytes.extend_from_slice(file.as_bytes());
+        }
+        write_extracted_file(output_dir, rel, buffers)?;
         let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
         report_extract_progress(progress, archive_name, done, total, rel)
     };
@@ -317,10 +339,15 @@ fn extract_tes4_archive(
             .num_threads(workers)
             .build()
             .map_err(|err| format!("rayon pool error: {err}"))?;
-        pool.install(|| entries.par_iter().try_for_each(extract_entry))?;
+        pool.install(|| {
+            entries
+                .par_iter()
+                .try_for_each_init(ExtractionBuffers::default, extract_entry)
+        })?;
     } else {
+        let mut buffers = ExtractionBuffers::default();
         for entry in &entries {
-            extract_entry(entry)?;
+            extract_entry(&mut buffers, entry)?;
         }
     }
     Ok(total)
@@ -335,18 +362,20 @@ fn extract_fo4_archive(
     progress: Option<&ProgressCallback>,
 ) -> Result<usize, String> {
     let write_options: fo4::FileWriteOptions = (*options).into();
-    let entries: Vec<(String, fo4::File<'static>)> = archive
+    let entries: Vec<(String, &fo4::File<'static>)> = archive
         .iter()
-        .map(|(key, file)| (normalize_lookup(&key.name().to_string()), file.clone()))
+        .map(|(key, file)| (normalize_lookup(&key.name().to_string()), file))
         .collect();
     let total = entries.len();
     let completed = AtomicUsize::new(0);
 
-    let extract_entry = |(rel, file): &(String, fo4::File<'static>)| -> Result<(), String> {
-        let mut bytes = Vec::new();
-        file.write(&mut bytes, &write_options)
+    let extract_entry = |buffers: &mut ExtractionBuffers,
+                         (rel, file): &(String, &fo4::File<'static>)|
+     -> Result<(), String> {
+        buffers.bytes.clear();
+        file.write_to_vec(&mut buffers.bytes, &write_options)
             .map_err(|err| err.to_string())?;
-        write_extracted_file(output_dir, rel, &bytes)?;
+        write_extracted_file(output_dir, rel, buffers)?;
         let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
         report_extract_progress(progress, archive_name, done, total, rel)
     };
@@ -356,10 +385,15 @@ fn extract_fo4_archive(
             .num_threads(workers)
             .build()
             .map_err(|err| format!("rayon pool error: {err}"))?;
-        pool.install(|| entries.par_iter().try_for_each(extract_entry))?;
+        pool.install(|| {
+            entries
+                .par_iter()
+                .try_for_each_init(ExtractionBuffers::default, extract_entry)
+        })?;
     } else {
+        let mut buffers = ExtractionBuffers::default();
         for entry in &entries {
-            extract_entry(entry)?;
+            extract_entry(&mut buffers, entry)?;
         }
     }
     Ok(total)
@@ -451,6 +485,23 @@ fn archive_info_impl(path: &Path) -> Result<ArchiveInfo, String> {
         file_count: archive.file_count(),
         compressed: archive.compressed(),
     })
+}
+
+fn archive_entry_count_impl(path: &Path) -> Result<usize, String> {
+    let file = fs::File::open(path).map_err(|err| err.to_string())?;
+    let mut header = Vec::with_capacity(36);
+    file.take(36)
+        .read_to_end(&mut header)
+        .map_err(|err| err.to_string())?;
+    match guess_format(&mut header.as_slice()) {
+        Some(FileFormat::TES4) => {
+            tes4::Archive::entry_count_from_header(&header).map_err(|err| err.to_string())
+        }
+        Some(FileFormat::FO4) => {
+            fo4::Archive::entry_count_from_header(&header).map_err(|err| err.to_string())
+        }
+        None => Err("unsupported archive format".to_string()),
+    }
 }
 
 fn required_config_item<'py>(
@@ -653,6 +704,12 @@ pub(crate) fn archive_info(py: Python<'_>, path: &str) -> PyResult<Py<PyAny>> {
     info.set_item("file_count", archive.file_count)?;
     info.set_item("compressed", archive.compressed)?;
     Ok(info.into_any().unbind())
+}
+
+#[pyfunction]
+pub(crate) fn archive_entry_count(py: Python<'_>, path: &str) -> PyResult<usize> {
+    py.detach(|| archive_entry_count_impl(Path::new(path)))
+        .map_err(PyRuntimeError::new_err)
 }
 
 #[pyfunction(signature = (source_dir, output_path, archive_type, compress=true, compression_level=None, share_data=false, manifest_path=None, jobs=0, include_prefixes=None, exclude_prefixes=None))]

@@ -44,15 +44,9 @@ class BaseWorkspace:
     """Optional base class implementing the Workspace protocol boilerplate.
 
     Subclasses must define class-level ``name``, ``icon``, and ``id``.
-
-    Common patterns handled here:
-    - ``__init__`` with ``active``, ``_view_helper``, ``_initialized``,
-      ``_toolkit_settings``, ``_pending_settings``, ``_app``
-    - ``_bind_panels(panel_map)`` — wires draw fns into DockableWindows
-    - ``set_view_helper``
-    - ``on_activate`` / ``on_deactivate`` with fps_idle and app.active
-    - No-op defaults for ``draw``, ``draw_menu``, ``cleanup``,
-      ``get_required_addons``, settings methods
+    ``_bind_panels(panel_map)`` wires draw fns into DockableWindows;
+    ``on_activate`` / ``on_deactivate`` handle fps_idle and app.active. Other
+    protocol methods default to no-ops.
     """
 
     name: str = ""

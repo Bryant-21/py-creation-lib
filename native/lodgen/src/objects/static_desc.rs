@@ -92,7 +92,7 @@ pub struct ShapeDesc {
 }
 
 // ---------------------------------------------------------------------------
-// ShapeFlags — port: ShapeFlags.cs (identical numeric values)
+// ShapeFlags — port: ShapeFlags.cs plus conversion-only render state
 // ---------------------------------------------------------------------------
 
 bitflags::bitflags! {
@@ -117,6 +117,7 @@ bitflags::bitflags! {
         const IS_CROWN                = 0x08000;
         const IS_BILLBOARD            = 0x10000;
         const HAS_VERTEX_ALPHA        = 0x20000;
+        const CASTS_SHADOWS           = 0x40000;
     }
 }
 

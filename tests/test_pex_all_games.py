@@ -64,16 +64,13 @@ def run_game(game: str, dirs: list[Path]) -> dict:
         name = pex_path.stem
         entry = {"name": name, "pex": str(pex_path)}
         try:
-            # Step 1: parse
             pex_file = parse_pex(pex_path)
             entry["game_id"] = pex_file.game_id
             entry["source"] = pex_file.source_filename
 
-            # Step 2: decompile
             source = decompile_pex(pex_path)
             entry["lines"] = source.count("\n")
 
-            # Step 3: save .psc
             psc_path = out_dir / f"{name}.psc"
             psc_path.write_text(source, encoding="utf-8")
             entry["psc"] = str(psc_path)

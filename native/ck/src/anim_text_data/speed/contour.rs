@@ -260,13 +260,54 @@ pub fn decode_speed_info(bytes: &[u8]) -> Result<SpeedInfoFile, ContourCodecErro
     Ok(SpeedInfoFile { roots })
 }
 
+/// Trim every entry link chain to the depth the flat encoding allows.
+///
+/// A collection's trailer is written after its children, so it lands on that collection's last
+/// descendant leaf, and the parent's trailer follows only when the collection is itself a last
+/// child. A leaf therefore carries as many chained entries as there are consecutive "is the last
+/// child" steps above it; every other leaf carries none.
+///
+/// The emitters (e.g. `make_entry`) build the full ancestor chain on every leaf; this derives
+/// the real depth from the tree. A misplaced trailer desynchronises the rest of the file.
+pub fn normalize_entry_links(contour: &mut Contour) {
+    fn truncate(entry: &mut Entry, depth: usize) {
+        if depth == 0 {
+            entry.link = None;
+            return;
+        }
+        if let Some(link) = entry.link.as_mut() {
+            truncate(&mut link.next, depth - 1);
+        }
+    }
+    fn walk(contour: &mut Contour, depth: usize, is_root: bool) {
+        match contour {
+            Contour::Collection(collection) => {
+                // A nested collection's own trailer is a link following its last child; the ROOT
+                // collection's is written separately as root metadata, so the root adds nothing.
+                let own = usize::from(!is_root);
+                let last = collection.children.len().saturating_sub(1);
+                for (index, child) in collection.children.iter_mut().enumerate() {
+                    walk(child, if index == last { depth + own } else { 0 }, false);
+                }
+            }
+            Contour::Individual(individual) => truncate(&mut individual.entry, depth),
+            Contour::SpeedSampled(sampled) => truncate(&mut sampled.entry, depth),
+        }
+    }
+    walk(contour, 0, true);
+}
+
 pub fn encode_speed_info(file: &SpeedInfoFile) -> Result<Vec<u8>, ContourCodecError> {
     let mut out = Vec::new();
     out.extend_from_slice(&TYPE_TAG.to_le_bytes());
     push_count(&mut out, file.roots.len(), "roots")?;
     for (root_index, root) in file.roots.iter().enumerate() {
         push_string(&mut out, &root.state_machine_path)?;
-        encode_contour(&mut out, &root.contour)?;
+        // Normalise here rather than at the call sites so every encode path gets the placement
+        // right, including future ones.
+        let mut contour = root.contour.clone();
+        normalize_entry_links(&mut contour);
+        encode_contour(&mut out, &contour)?;
         match (&root.contour, &root.metadata) {
             (Contour::Collection(_), RootMetadata::Collection(metadata)) => {
                 validate_producer_entry(root_index, &metadata.producer)?;
@@ -689,5 +730,4 @@ mod tests {
             );
         }
     }
-
 }

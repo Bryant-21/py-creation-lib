@@ -462,6 +462,9 @@ def _count_yaml_plugins(yaml_dir) -> int:
 
 
 def _draw_extract_run_status() -> None:
+    from creation_lib.ui.widgets.modern import scaled, semantic_color
+
+    scale = scaled(1)
     snapshot = _extract_snapshot()
     status = snapshot["status"] or "Extracting archives..."
     imgui.text_wrapped(status)
@@ -481,27 +484,27 @@ def _draw_extract_run_status() -> None:
         imgui.text_disabled(f"Output: {snapshot['output_dir']}")
 
     if snapshot["error"]:
-        imgui.push_style_color(imgui.Col_.text, imgui.ImVec4(1.0, 0.35, 0.35, 1.0))
+        imgui.push_style_color(imgui.Col_.text, semantic_color("error"))
         imgui.text_wrapped(snapshot["error"])
         imgui.pop_style_color()
 
     if snapshot["log_lines"]:
         imgui.spacing()
         imgui.text("Extraction log")
-        imgui.begin_child("##archive_extract_log", imgui.ImVec2(-1, 120), True)
+        imgui.begin_child("##archive_extract_log", imgui.ImVec2(-1, 120 * scale), True)
         for line in snapshot["log_lines"]:
             imgui.text_wrapped(line)
         imgui.end_child()
 
 
-def _draw_game_selector(settings) -> str:
+def _draw_game_selector(settings, scale: float = 1) -> str:
     game_labels = [lbl for _, lbl in _INDEX_GAMES]
     game_ids = [gid for gid, _ in _INDEX_GAMES]
 
     imgui.text("Game:")
     imgui.same_line()
     current_idx = game_ids.index(_state.index_game) if _state.index_game in game_ids else 0
-    imgui.set_next_item_width(140)
+    imgui.set_next_item_width(140 * scale)
     changed, new_idx = imgui.combo("##index_game", current_idx, game_labels)
     if changed:
         _state.index_game = game_ids[new_idx]
@@ -511,6 +514,9 @@ def _draw_game_selector(settings) -> str:
 
 
 def _draw_archive_extraction(settings, game: str, *, show_heading: bool) -> None:
+    from creation_lib.ui.widgets.modern import scaled, semantic_color
+
+    scale = scaled(1)
     gp = settings.get_game_paths(game)
     extracted = gp.get("extracted_dir", "")
     game_root = gp.get("root_dir", "")
@@ -530,19 +536,19 @@ def _draw_archive_extraction(settings, game: str, *, show_heading: bool) -> None
 
     if not has_extracted:
         imgui.text_colored(
-            imgui.ImVec4(1.0, 0.8, 0.3, 1), "⚠ Loose files: not extracted"
+            semantic_color("warning"), "⚠ Loose files: not extracted"
         )
         imgui.text_disabled("  Extract the installed game archives to continue.")
         imgui.spacing()
     else:
         if _state.extract_up_to_date:
             imgui.text_colored(
-                imgui.ImVec4(0.3, 0.9, 0.3, 1),
+                semantic_color("success"),
                 f"✓ Loose files: {_state.extract_status}",
             )
         elif _state.extract_status == "Updates available":
             imgui.text_colored(
-                imgui.ImVec4(1.0, 0.8, 0.2, 1),
+                semantic_color("warning"),
                 f"⚠ Loose files: {_state.extract_status}",
             )
         else:
@@ -553,7 +559,7 @@ def _draw_archive_extraction(settings, game: str, *, show_heading: bool) -> None
         _draw_extract_run_status()
         return
 
-    imgui.set_next_item_width(120)
+    imgui.set_next_item_width(120 * scale)
     changed, workers = imgui.input_int(
         f"Extraction workers##archive_extract_workers_{game}",
         _state.extract_archive_workers,
@@ -565,12 +571,12 @@ def _draw_archive_extraction(settings, game: str, *, show_heading: bool) -> None
             "Total extraction worker budget, shared across archives and large archive internals."
         )
 
-    if imgui.button(f"Smart Extract##{game}", imgui.ImVec2(140, 0)):
+    if imgui.button(f"Smart Extract##{game}", imgui.ImVec2(140 * scale, 0)):
         _start_extraction(settings, game, game_root, smart=True)
     if imgui.is_item_hovered():
         imgui.set_tooltip("Re-extract only if archives have changed since last run.")
     imgui.same_line()
-    if imgui.button(f"Full Extract##{game}", imgui.ImVec2(120, 0)):
+    if imgui.button(f"Full Extract##{game}", imgui.ImVec2(120 * scale, 0)):
         _start_extraction(settings, game, game_root, smart=False)
     if imgui.is_item_hovered():
         imgui.set_tooltip("Always re-extract all archives.")
@@ -582,7 +588,7 @@ def _draw_archive_extraction(settings, game: str, *, show_heading: bool) -> None
 
 def _draw_extraction_only(ctx: SettingsContext) -> None:
     settings = ctx.settings
-    game = _draw_game_selector(settings)
+    game = _draw_game_selector(settings, ctx.scale)
     _draw_archive_extraction(settings, game, show_heading=True)
 
 

@@ -23,12 +23,15 @@ def test_deploy_loose_assets_uses_worker_pool_for_bulk_copy(tmp_path: Path, monk
     game_data_dir = tmp_path / "Game" / "Data"
     scripts_dir = mod_dir / "data" / "Scripts"
     mcm_dir = mod_dir / "MCM"
+    terrain_dir = mod_dir / "Terrain"
     scripts_dir.mkdir(parents=True)
     mcm_dir.mkdir(parents=True)
+    terrain_dir.mkdir(parents=True)
     game_data_dir.mkdir(parents=True)
     (mod_dir / f"{mod_name}.esp").write_bytes(b"esp")
     (scripts_dir / "B21_Test.pex").write_bytes(b"pex")
     (mcm_dir / "settings.ini").write_bytes(b"mcm")
+    (terrain_dir / "Appalachia.btd4").write_bytes(b"btd4")
 
     max_workers_seen: list[int] = []
 
@@ -64,11 +67,12 @@ def test_deploy_loose_assets_uses_worker_pool_for_bulk_copy(tmp_path: Path, monk
         project_root=tmp_path,
     )
 
-    assert max_workers_seen == [2]
-    assert result.files_deployed == 3
+    assert max_workers_seen == [3]
+    assert result.files_deployed == 4
     assert (game_data_dir / f"{mod_name}.esp").read_bytes() == b"esp"
     assert (game_data_dir / "Scripts" / "B21_Test.pex").read_bytes() == b"pex"
     assert (game_data_dir / "MCM" / "settings.ini").read_bytes() == b"mcm"
+    assert (game_data_dir / "Terrain" / "Appalachia.btd4").read_bytes() == b"btd4"
 
 
 def test_deploy_loose_file_copies_only_requested_asset_and_tracks_it(tmp_path: Path):
@@ -124,3 +128,29 @@ def test_deploy_loose_file_rejects_asset_outside_mod_roots(tmp_path: Path):
             game_data_dir=game_data,
             project_root=tmp_path,
         )
+
+
+def test_deploy_asset_directory_preserves_other_manifest_entries(tmp_path: Path):
+    mod_dir = tmp_path / "mods/B21_Test"
+    icons = mod_dir / "data/Meshes/Icons"
+    (icons / "nested").mkdir(parents=True)
+    (icons / "first.nif").write_bytes(b"first")
+    (icons / "nested/second.nif").write_bytes(b"second")
+    script = mod_dir / "data/Scripts/pending.pex"
+    script.parent.mkdir()
+    script.write_bytes(b"keep staged")
+    data = tmp_path / "Game/Data"
+    manifest = mod_dir / ".loose_manifest.json"
+    manifest.write_text(json.dumps({"game_data_dir": str(data),
+        "files": [{"rel": "Textures/existing.dds"}], "claimed_dirs": []}), encoding="utf-8")
+    for _ in range(2):
+        deployed = deploy_loose_file("B21_Test", "data/Meshes/Icons", game="fo4",
+                                    game_data_dir=data, project_root=tmp_path)
+    assert deployed == data / "Meshes/Icons"
+    assert (deployed / "first.nif").read_bytes() == b"first"
+    assert (deployed / "nested/second.nif").read_bytes() == b"second"
+    assert not (data / "Scripts/pending.pex").exists()
+    entries = json.loads(manifest.read_text(encoding="utf-8"))["files"]
+    assert {entry["rel"] for entry in entries} == {
+        "Textures/existing.dds", "Meshes/Icons/first.nif", "Meshes/Icons/nested/second.nif"}
+    assert len(entries) == 3

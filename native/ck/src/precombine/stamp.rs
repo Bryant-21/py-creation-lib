@@ -1,17 +1,14 @@
 //! Stamps PCMB/XCRI and record-header dates onto a baked precombine result.
-//! Pure ESP mutation — no NIF I/O happens here (see `precombine::bake` for
-//! the writer that produces the [`BakedCell`] this module consumes).
-//!
-//! Plan: `docs/superpowers/plans/2026-07-12-precombine-generation-v0.md` Task 4.
+//! Pure ESP mutation; the [`BakedCell`] comes from `precombine::bake`.
 
 use std::collections::HashMap;
 
 use esp_authoring_core::plugin_runtime::{
-    decode_compressed_subrecords_from_payload, plugin_handle_store_ref, ParsedItem, ParsedRecord,
-    ParsedSubrecord, COMPRESSED_RECORD_FLAG,
+    COMPRESSED_RECORD_FLAG, ParsedItem, ParsedRecord, ParsedSubrecord,
+    decode_compressed_subrecords_from_payload, plugin_handle_store_ref,
 };
-use esp_authoring_core::xcri::{encode_fo4, XcriReference, XcriTable};
-use esp_authoring_core::{upsert_ordered_subrecord, RECORD_FLAG_NO_PREVIS};
+use esp_authoring_core::xcri::{XcriReference, XcriTable, encode_fo4};
+use esp_authoring_core::{RECORD_FLAG_NO_PREVIS, upsert_ordered_subrecord};
 
 use super::bake::BakedCell;
 
@@ -45,14 +42,12 @@ pub fn stamp_cell(
     let own_index = masters_len as u8;
 
     // Preflight: the CELL and every baked ref must exist, be owned by this
-    // plugin (top byte == own_index), and — if compressed with a lazily
-    // unloaded body — decode cleanly, all before any mutation, so a failure
-    // here leaves the plugin untouched. A compressed record loaded without
-    // eager expansion has an empty `subrecords` and its real content only in
-    // `raw_payload`; editing `subrecords` directly (as the old code did)
-    // silently drops everything else the record carries, so lazily-loaded
-    // bodies are decoded here into a side table and installed in the mutate
-    // phase below rather than materialized in place during preflight.
+    // plugin (top byte == own_index), and, if compressed and lazily loaded,
+    // decode cleanly, all before any mutation, so a failure leaves the plugin
+    // untouched. A lazily loaded compressed record has empty `subrecords` and
+    // its content only in `raw_payload`; editing `subrecords` directly would
+    // drop everything else it carries, so bodies are decoded into a side
+    // table here and installed in the mutate phase below.
     let cell_inflate = {
         let cell = find_record_mut(&mut slot.parsed.root_items, "CELL", baked.cell_form_id)
             .ok_or_else(|| format!("unknown cell: {:08X}", baked.cell_form_id))?;
@@ -143,12 +138,10 @@ fn ordered_subrecord(signature: &str, data: Vec<u8>) -> ParsedSubrecord {
     }
 }
 
-/// If `record` is compressed and its subrecords haven't been materialized
-/// yet (a lazily-loaded compressed body — the common case, since eagerly
-/// decompressing every record in a multi-hundred-MB ESM just to touch one
-/// CELL would be wasteful), decode its `raw_payload` and return the decoded
-/// subrecords for the caller to install. Returns `None` when there's
-/// nothing to inflate (uncompressed, or already materialized).
+/// If `record` is compressed and lazily loaded (subrecords not materialized,
+/// the common case in a multi-hundred-MB ESM), decode its `raw_payload` and
+/// return the subrecords for the caller to install. `None` when uncompressed
+/// or already materialized.
 fn inflate_if_needed(record: &ParsedRecord) -> Result<Option<Vec<ParsedSubrecord>>, String> {
     if record.flags & COMPRESSED_RECORD_FLAG == 0 || !record.subrecords.is_empty() {
         return Ok(None);
@@ -272,7 +265,11 @@ mod tests {
         signature: &str,
         form_id: u32,
     ) -> &'a ParsedRecord {
-        fn walk<'a>(items: &'a [ParsedItem], signature: &str, form_id: u32) -> Option<&'a ParsedRecord> {
+        fn walk<'a>(
+            items: &'a [ParsedItem],
+            signature: &str,
+            form_id: u32,
+        ) -> Option<&'a ParsedRecord> {
             for item in items {
                 match item {
                     ParsedItem::Record(record)
@@ -368,7 +365,10 @@ mod tests {
             0,
             "no_previs=true keeps the flag set"
         );
-        assert_eq!(cell.version_control, 0xAAAA_1F24, "upper VC bits preserved on CELL");
+        assert_eq!(
+            cell.version_control, 0xAAAA_1F24,
+            "upper VC bits preserved on CELL"
+        );
         assert!(cell.raw_payload.is_none(), "raw_payload cleared on CELL");
 
         let refr1 = find_installed(&store, target, "REFR", 0x000600);
@@ -400,7 +400,11 @@ mod tests {
         ]
     }
 
-    fn compressed_cell(form_id: u32, version_control: u32, subrecords: &[ParsedSubrecord]) -> ParsedRecord {
+    fn compressed_cell(
+        form_id: u32,
+        version_control: u32,
+        subrecords: &[ParsedSubrecord],
+    ) -> ParsedRecord {
         let raw_payload = compress_subrecords_payload(subrecords).expect("compress fixture");
         ParsedRecord {
             signature: SmolStr::new("CELL"),
@@ -445,13 +449,20 @@ mod tests {
             cell.raw_payload.is_none(),
             "raw_payload cleared so the writer rebuilds a fresh compressed body"
         );
-        assert_eq!(cell.version_control, 0xAAAA_1F24, "upper VC bits preserved on CELL");
+        assert_eq!(
+            cell.version_control, 0xAAAA_1F24,
+            "upper VC bits preserved on CELL"
+        );
 
         // PCMB (rank 5) inserts before XCLL (rank 7, the first pre-existing
         // subrecord ranked above it); XCRI (rank 20) appends at the tail —
         // nothing pre-existing outranks it. LTMP has no rank and is inert to
         // both insertions, so it stays exactly where it was.
-        let sigs: Vec<&str> = cell.subrecords.iter().map(|s| s.signature.as_str()).collect();
+        let sigs: Vec<&str> = cell
+            .subrecords
+            .iter()
+            .map(|s| s.signature.as_str())
+            .collect();
         assert_eq!(
             sigs,
             vec![
@@ -494,9 +505,16 @@ mod tests {
                 mesh_id: 0x1000,
             }],
         };
-        assert_eq!(xcri.data.as_ref(), encode_fo4(&expected_table).unwrap().as_slice());
+        assert_eq!(
+            xcri.data.as_ref(),
+            encode_fo4(&expected_table).unwrap().as_slice()
+        );
 
-        assert_ne!(cell.flags & RECORD_FLAG_NO_PREVIS, 0, "no_previs=true keeps the flag set");
+        assert_ne!(
+            cell.flags & RECORD_FLAG_NO_PREVIS,
+            0,
+            "no_previs=true keeps the flag set"
+        );
 
         // "Body still zlib-valid": run the exact same compress/decompress
         // primitives the (private) writer uses on `raw_payload=None` +
@@ -507,7 +525,10 @@ mod tests {
             .expect("redecode");
         assert_eq!(redecoded.subrecords.len(), cell.subrecords.len());
         for (decoded_sub, original_sub) in redecoded.subrecords.iter().zip(cell.subrecords.iter()) {
-            assert_eq!(decoded_sub.signature.as_str(), original_sub.signature.as_str());
+            assert_eq!(
+                decoded_sub.signature.as_str(),
+                original_sub.signature.as_str()
+            );
             assert_eq!(decoded_sub.data.as_ref(), original_sub.data.as_ref());
         }
     }
@@ -547,7 +568,10 @@ mod tests {
 
         let store = plugin_handle_store_ref().lock().unwrap();
         let cell = find_installed(&store, target, "CELL", 0x001000);
-        assert!(cell.subrecords.is_empty(), "plugin must be untouched on decode failure");
+        assert!(
+            cell.subrecords.is_empty(),
+            "plugin must be untouched on decode failure"
+        );
         assert_eq!(cell.raw_payload.as_deref(), Some(garbage.as_ref()));
         assert_eq!(cell.version_control, 0x1234_5678);
     }
@@ -593,9 +617,24 @@ mod tests {
 
         let store = plugin_handle_store_ref().lock().unwrap();
         let decoy = find_installed(&store, target, "CELL", 0x002000);
-        assert!(decoy.subrecords.iter().any(|s| s.signature.as_str() == "VISI"));
-        assert!(decoy.subrecords.iter().any(|s| s.signature.as_str() == "XPRI"));
-        assert!(!decoy.subrecords.iter().any(|s| s.signature.as_str() == "XCRI"));
+        assert!(
+            decoy
+                .subrecords
+                .iter()
+                .any(|s| s.signature.as_str() == "VISI")
+        );
+        assert!(
+            decoy
+                .subrecords
+                .iter()
+                .any(|s| s.signature.as_str() == "XPRI")
+        );
+        assert!(
+            !decoy
+                .subrecords
+                .iter()
+                .any(|s| s.signature.as_str() == "XCRI")
+        );
         assert_eq!(decoy.version_control, 0x1234_5678);
     }
 
@@ -619,10 +658,17 @@ mod tests {
         let store = plugin_handle_store_ref().lock().unwrap();
         let cell = find_installed(&store, target, "CELL", 0x001000);
         assert!(
-            cell.subrecords.iter().any(|s| s.signature.as_str() == "VISI"),
+            cell.subrecords
+                .iter()
+                .any(|s| s.signature.as_str() == "VISI"),
             "preflight must fail before the CELL is touched"
         );
-        assert!(!cell.subrecords.iter().any(|s| s.signature.as_str() == "XCRI"));
+        assert!(
+            !cell
+                .subrecords
+                .iter()
+                .any(|s| s.signature.as_str() == "XCRI")
+        );
         assert_eq!(cell.version_control, 0x1234_5678);
     }
 
@@ -652,10 +698,17 @@ mod tests {
         let store = plugin_handle_store_ref().lock().unwrap();
         let cell = find_installed(&store, target, "CELL", 0x001000);
         assert!(
-            cell.subrecords.iter().any(|s| s.signature.as_str() == "VISI"),
+            cell.subrecords
+                .iter()
+                .any(|s| s.signature.as_str() == "VISI"),
             "preflight must fail before the CELL is touched"
         );
-        assert!(!cell.subrecords.iter().any(|s| s.signature.as_str() == "XCRI"));
+        assert!(
+            !cell
+                .subrecords
+                .iter()
+                .any(|s| s.signature.as_str() == "XCRI")
+        );
         assert_eq!(cell.version_control, 0x1234_5678);
 
         let untouched_refr = find_installed(&store, target, "REFR", 0x01_000600);

@@ -1,16 +1,8 @@
-"""Papyrus language library — parser, resolver, completions, definition.
+"""Papyrus language library: parser, resolver, completions, definition.
 
-Public API:
-    parse_script(path|text) -> ParseResult
-    validate_filename(path, script_name) -> ParseError | None
-    resolve(ast, db) -> list[Diagnostic]
-    get_completions(text, line, col, db) -> list[CompletionItem]
-    get_definition(text, line, col, db) -> DefinitionResult | None
-    ScriptDB(db_path, source_dirs=None) -> native-backed script DB
-
-The implementation lives in the Rust `papyrus_core` crate (exposed as
-`creation_lib._native.papyrus_core`); this module only provides the Python facade
-that round-trips dataclasses ↔ JSON.
+Python facade over the Rust `papyrus_core` crate (`creation_lib._native.papyrus_core`)
+that round-trips dataclasses ↔ JSON. Entry points: parse_script,
+validate_filename, resolve, get_completions, get_definition, ScriptDB.
 """
 from __future__ import annotations
 from dataclasses import dataclass, field

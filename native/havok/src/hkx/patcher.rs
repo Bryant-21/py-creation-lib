@@ -24,17 +24,14 @@ impl PatchRange {
 /// Produce a patched packfile by overlaying current model values onto
 /// the original source bytes.
 ///
-/// Mirrors `py_creation_lib/python/creation_lib/hkxpack/patcher.py::patch_hkx`. Walks every array tracked
-/// by the reader (`hkx.array_sources()`), re-serializes its current
-/// contents, and overlays them at the original byte range. Struct-element
-/// arrays are skipped (the byte layout would require re-running the writer);
-/// the per-element nested arrays inside them are patched separately because
-/// the reader emits a tracking entry for each.
+/// Walks every array tracked by the reader (`hkx.array_sources()`),
+/// re-serializes its current contents, and overlays them at the original byte
+/// range. Struct-element arrays are skipped (their layout needs the writer);
+/// the nested arrays inside them have their own tracking entries.
 ///
-/// Returns the patched bytes — guaranteed to differ from the source only
-/// where the model has actually changed. Returns `HavokError::InvalidInput`
-/// (mirroring Python's `CannotPatch`) when an array's serialized length no
-/// longer matches the source length, e.g. because the caller resized it.
+/// The result differs from the source only where the model changed. Returns
+/// `HavokError::InvalidInput` when an array's serialized length no longer
+/// matches the source length, e.g. because the caller resized it.
 pub fn patch_hkx(hkx: &HkxFile) -> HavokResult<Vec<u8>> {
     let source = hkx.source_bytes();
     if source.is_empty() {

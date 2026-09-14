@@ -378,17 +378,25 @@ class Plugin:
 
     @classmethod
     def _from_native_handle(cls, handle: object) -> "Plugin":
+        # Identity only. Going through plugin_handle_get would build the full
+        # metadata payload, whose record_count costs a pass over the whole file
+        # on an index-only handle.
+        identity = _native_runtime.plugin_handle_identity(handle)
+        if identity is None:
+            plugin_name = str(_native_runtime.plugin_handle_get(handle, "plugin_name", "Plugin.esp"))
+            raw_path = _native_runtime.plugin_handle_get(handle, "file_path", None)
+            game = _native_runtime.plugin_handle_get(handle, "game", None)
+            default_language = _native_runtime.plugin_handle_get(
+                handle, "localized_default_language", None
+            )
+        else:
+            plugin_name, raw_path, game, default_language = identity
         plugin = cls(
-            plugin_name=str(_native_runtime.plugin_handle_get(handle, "plugin_name", "Plugin.esp")),
-            file_path=(
-                Path(str(_native_runtime.plugin_handle_get(handle, "file_path")))
-                if _native_runtime.plugin_handle_get(handle, "file_path", None)
-                else None
-            ),
-            game=_native_runtime.plugin_handle_get(handle, "game", None),
+            plugin_name=str(plugin_name or "Plugin.esp"),
+            file_path=Path(str(raw_path)) if raw_path else None,
+            game=game,
         )
         plugin._rust_handle = handle
-        default_language = _native_runtime.plugin_handle_get(handle, "localized_default_language", None)
         if default_language:
             plugin.localized_default_language = language_code(str(default_language))
         return plugin
@@ -1271,7 +1279,9 @@ class Plugin:
             source_handle = getattr(source_plugin, "_rust_handle", None)
             if source_handle is None:
                 raise ValueError("source_plugin must be native-backed for handle copy")
-            self.ensure_source_chain(source_plugin, include_source_plugin=True)
+            for name in [*source_plugin.header.masters, source_plugin.plugin_name]:
+                if name.casefold() != self.plugin_name.casefold():
+                    self.add_master(name)
             copied = _native_runtime.plugin_handle_copy_record(
                 source_handle,
                 int(record.form_id) & 0xFFFFFFFF,
@@ -1294,7 +1304,9 @@ class Plugin:
             source_handle = getattr(source_plugin, "_rust_handle", None)
             if source_handle is None:
                 raise ValueError("source_plugin must be native-backed for handle copy")
-            self.ensure_source_chain(source_plugin, include_source_plugin=True)
+            for name in [*source_plugin.header.masters, source_plugin.plugin_name]:
+                if name.casefold() != self.plugin_name.casefold():
+                    self.add_master(name)
             copied = _native_runtime.plugin_handle_copy_record(
                 source_handle,
                 int(record.form_id) & 0xFFFFFFFF,

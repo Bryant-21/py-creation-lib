@@ -439,7 +439,12 @@ pub(crate) fn parse_record(
 /// burn ~192 MB on Vec doublings when a Starfield CELL/REFR group has
 /// millions of children. The scan only reads each item's 4-byte signature
 /// and 4-byte size — no allocations, no recursion into nested groups.
-fn count_children(data: &[u8], offset: usize, end: usize, header_size: usize) -> usize {
+pub(crate) fn count_children(
+    data: &[u8],
+    offset: usize,
+    end: usize,
+    header_size: usize,
+) -> usize {
     let mut count = 0usize;
     let mut cursor = offset;
     while cursor + header_size <= end {
@@ -466,59 +471,21 @@ fn count_children(data: &[u8], offset: usize, end: usize, header_size: usize) ->
     count
 }
 
-/// Header-only recursive walk recording `form_id -> byte offset` for every
-/// record at every nesting level, without building the `ParsedItem` tree or
-/// allocating per record. Used by the lazy ("index-only") plugin handle to
-/// materialize a single record on demand via [`parse_record`] while the full
-/// tree stays dropped. GRUP/record size conventions mirror [`count_children`]
-/// (GRUP size includes its 24-byte header; record size excludes it).
+/// Header-only walk recording `form_id -> byte offset` for every record at
+/// every nesting level, without building the `ParsedItem` tree. Thin wrapper
+/// over [`crate::record_cursor::RecordCursor`], which owns the walk.
 pub(crate) fn scan_record_offsets(
-    data: &[u8],
+    data: &Bytes,
     offset: usize,
     end: usize,
     header_size: usize,
     out: &mut rustc_hash::FxHashMap<u32, usize>,
 ) {
-    let mut cursor = offset;
-    while cursor + header_size <= end {
-        if cursor + 8 > data.len() {
-            break;
-        }
-        let size = u32::from_le_bytes([
-            data[cursor + 4],
-            data[cursor + 5],
-            data[cursor + 6],
-            data[cursor + 7],
-        ]) as usize;
-        if &data[cursor..cursor + 4] == b"GRUP" {
-            let grp_end = cursor + size;
-            // size == header_size is a legal EMPTY group (header only, no children) —
-            // shipped Bethesda ESMs contain them (e.g. Fallout4.esm's TREE group).
-            // Treating it as malformed aborted the walk and silently dropped every
-            // record after the empty group from the lazy-handle offsets index.
-            if grp_end < cursor + header_size || grp_end > end {
-                break;
-            }
-            scan_record_offsets(data, cursor + header_size, grp_end, header_size, out);
-            cursor = grp_end;
-        } else {
-            if cursor + 16 > data.len() {
-                break;
-            }
-            let form_id = u32::from_le_bytes([
-                data[cursor + 12],
-                data[cursor + 13],
-                data[cursor + 14],
-                data[cursor + 15],
-            ]);
-            out.insert(form_id, cursor);
-            let next = cursor + header_size + size;
-            if next <= cursor || next > end {
-                break;
-            }
-            cursor = next;
-        }
-    }
+    let cursor = crate::record_cursor::RecordCursor::new(data, header_size, offset);
+    cursor.scan_within(end, &mut |view| {
+        out.insert(view.form_id, view.offset);
+        std::ops::ControlFlow::Continue(())
+    });
 }
 
 pub(crate) fn parse_children(
@@ -1693,6 +1660,7 @@ mod tests {
         data.extend_from_slice(&scan_test_record_bytes(b"QUST", 0x0000_0004));
 
         let mut offsets = rustc_hash::FxHashMap::default();
+        let data = Bytes::from(data);
         scan_record_offsets(&data, 0, data.len(), MODERN_HEADER_SIZE, &mut offsets);
 
         assert_eq!(offsets.get(&0x0000_0001), Some(&0));
@@ -1879,7 +1847,7 @@ pub(crate) fn load_plugin_native_impl(
     Ok(handle_id.into_py_any(py)?)
 }
 
-fn localized_table_type_for_signature(
+pub(crate) fn localized_table_type_for_signature(
     record_signature: Option<&str>,
     signature: &str,
 ) -> Option<&'static str> {
@@ -2446,15 +2414,12 @@ fn tes4_record_from_parsed(plugin: &ParsedPlugin, header_payload: Vec<u8>) -> Pa
 }
 
 /// Streaming serializer: writes the TES4 header then each top-level item
-/// straight to `out`, **never accumulating the whole plugin in a `Vec`** (that
-/// full-serialized copy is the Build-ESP memory transient — ~+8 GB on the
-/// whole-FO76 output). Output is byte-identical to [`build_plugin_bytes`]: it
-/// reuses the exact same TES4/record/group framing functions and emits items in
-/// the same order; only the sink differs (incremental write vs. one big buffer).
+/// straight to `out`, never holding the whole serialized plugin in a `Vec`
+/// (~+8 GB on the whole-FO76 output). Byte-identical to [`build_plugin_bytes`]:
+/// same framing functions and item order, different sink.
 ///
-/// Each item is still framed into a per-item `Vec` (bounded by the largest
-/// single record/top-level-group, not the whole plugin) before being flushed —
-/// matching the legacy framing byte-for-byte — and then dropped.
+/// Each item is framed into its own `Vec` (bounded by the largest top-level
+/// record/group), written, then dropped.
 pub(crate) fn write_plugin_to<W: std::io::Write + ?Sized>(
     plugin: &mut ParsedPlugin,
     out: &mut W,
@@ -2523,12 +2488,8 @@ pub(crate) fn save_parsed_plugin_no_py(
 
 /// Serialize a plugin to `output_path` **atomically**: write the full body to a
 /// sibling temp file, fsync it, then rename it over the target. A failed or
-/// interrupted write therefore never destroys the previous good file (the old
-/// in-place `File::create` truncated the target to 0 *before* writing, so any
-/// error after the truncate left the plugin empty/header-only while higher
-/// layers could still report success). The rename is the single commit point;
-/// readers see either the old file or the complete new one, never a truncated
-/// in-between state.
+/// interrupted write never truncates the previous good file; readers see the
+/// old file or the complete new one.
 ///
 /// `serialize` streams the plugin body into the provided writer; its `Err` is
 /// surfaced (the target is left untouched). On Windows the final rename is

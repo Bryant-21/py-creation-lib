@@ -1,19 +1,8 @@
-// Reverse: runtime → setup (lossy).
+// Runtime → setup reverse: builds a ClothSetupObject from ClothData.
 //
-// Reads read-only ClothData borrowed wrappers and constructs a ClothSetupObject.
-//
-// Key simplifications (match Python reverse.py lines 8-12):
-//   - All VertexFloatInput reversed as CONSTANT (channel info lost during bake).
-//   - Mesh topology inferred from constraint link pairs (not stored separately in runtime).
-//   - Buffer/transform references stored by name (not pointer).
-//
-// Strict vs. lossy modes:
-//   - `reverse_cloth_data` (strict, default) — surfaces ReverseError::UnknownClass
-//     when the runtime contains an operator or constraint class we don't yet
-//     model. The bake-from-edit path uses this so destroyed-by-stub round-trips
-//     can't happen silently.
-//   - `reverse_cloth_data_lossy` — keeps the legacy stubbing behavior for
-//     inspector-style callers that want to keep going past unknown classes.
+// Every VertexFloatInput comes back as CONSTANT (channel info is lost in bake),
+// mesh topology is inferred from constraint link pairs, and buffer/transform
+// references are by name.
 
 use crate::hkx::types::HkxValue;
 
@@ -87,19 +76,16 @@ impl LossyMode {
 // Public entry point
 // ---------------------------------------------------------------------------
 
-/// Strict reverse: surfaces `ReverseError::UnknownClass` instead of silently
-/// stubbing unknown operator or constraint classes.
-///
-/// This is the right choice for any inspect → edit → bake workflow on a real
-/// game asset: the alternative is a destructive coercion (every unknown
-/// operator becomes Simulate, every unknown constraint becomes StandardLink)
-/// that turns a vanilla FO4 cape into a broken cape silently.
+/// Strict reverse: fails with `ReverseError::UnknownClass` on an unmodeled
+/// operator or constraint class. Use it for inspect → edit → bake; the lossy
+/// mode turns unknown operators into Simulate and unknown constraints into
+/// StandardLink, which silently breaks e.g. a vanilla FO4 cape.
 pub fn reverse_cloth_data(cloth_data: &ClothData<'_>) -> Result<ClothSetupObject, ReverseError> {
     reverse_with_mode(cloth_data, LossyMode::STRICT)
 }
 
-/// Lossy reverse: keeps the historical stubbing behaviour for callers that
-/// only want a best-effort overview (e.g. modkit cloth inspect).
+/// Lossy reverse: stubs unknown classes, for callers that only want a
+/// best-effort overview (e.g. modkit cloth inspect).
 pub fn reverse_cloth_data_lossy(cloth_data: &ClothData<'_>) -> ClothSetupObject {
     reverse_with_mode(cloth_data, LossyMode::LOSSY).expect("lossy mode never returns ReverseError")
 }

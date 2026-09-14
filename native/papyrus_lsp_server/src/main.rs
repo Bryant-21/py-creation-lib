@@ -1,8 +1,7 @@
 //! Standalone Papyrus LSP server.
 //!
 //! Speaks LSP over stdio. The IDE plugin (`.claude-plugin/plugin.json`)
-//! registers this binary as the language server for `.psc` files. Replaces
-//! `plugins/papyrus_lsp_plugin/plugins/papyrus_lsp/server.py` (pygls).
+//! registers this binary as the language server for `.psc` files.
 //!
 //! All parsing/resolving happens inside `papyrus_core`. This binary owns the
 //! LSP protocol state (open documents, capabilities) and the `db_id` for the

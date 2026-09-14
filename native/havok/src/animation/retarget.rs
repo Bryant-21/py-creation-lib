@@ -3,18 +3,11 @@ use crate::animation::pose::{
     Pose, PoseSkeleton, QsTransform, quat_mul, quat_normalize, quat_rotate, vec3_add, vec3_len,
     vec3_sub,
 };
-/// Skeleton retargeting (mapper).
+/// Skeleton retargeting between rigs that differ in bone count and naming
+/// (e.g. FO4 ↔ FO76 NPC rigs, Skyrim XPMSE → FO4).
 ///
-/// Maps animation clips between skeletons that differ in bone count and naming
-/// (e.g. FO4 ↔ FO76 NPC rigs, Skyrim XPMSE → FO4, third-party rig → target).
-///
-/// Algorithm: name-match (exact) + positional heuristic for unmatched bones.
-/// Chain detection (parent–child chains in source mapped to corresponding
-/// chains in target) is applied after simple mappings to reduce drift.
-///
-/// To use:
-/// 1. Build a `SkeletonMapper` from source + target `PoseSkeleton`.
-/// 2. Call `retarget_clip` to produce a new `AnimationClip` on the target rig.
+/// Bones are name-matched exactly, then parent-child chains between matched
+/// anchors are mapped to reduce drift. Unmatched bones keep the reference pose.
 use std::collections::HashMap;
 
 /// A simple (1:1) bone mapping: source bone index → target bone index.

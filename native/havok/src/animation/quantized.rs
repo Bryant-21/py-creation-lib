@@ -1,7 +1,6 @@
 //! Reader for `hkaQuantizedAnimation` raw data buffers.
 //!
-//! Implements `read_quantized_animation` and `sample_pose_at`, hand-rewritten
-//! from the SDK header semantics
+//! Follows the SDK headers
 //! (`refs/hk2018_1_0_r1/Source/Animation/Animation/Animation/Quantized/...`).
 //!
 //! ## Layout summary
@@ -284,13 +283,9 @@ pub fn read_quantized_animation(blob: &[u8]) -> HavokResult<QuantizedAnimation> 
 // ---------------------------------------------------------------------------
 // Element category helpers
 //
-// The pose layout convention follows the SDK:
-//  - translations + scales (3D) are addressed as a flat f32 stream where a
-//    per-bone QsTransform occupies 12 floats: TX TY TZ TW QX QY QZ QW SX SY SZ SW.
-//    Rotation is at offset 4 of each 12-slot block.
-//  - Unlike the SDK's stride-3 `element % 3 == 1` rotation addressing, we use a
-//    direct 12-stride layout: bone = element / 12, decoding rotations to
-//    `pose.rotations[bone]`.
+// Elements index a flat f32 stream with 12 floats per bone QsTransform:
+// TX TY TZ TW QX QY QZ QW SX SY SZ SW, so bone = element / 12 and rotation
+// starts at slot 4. (The SDK addresses rotations with stride 3, `element % 3 == 1`.)
 // ---------------------------------------------------------------------------
 
 const STRIDE_PER_BONE_FLOATS: usize = 12;
@@ -540,10 +535,9 @@ fn blend_pose(a: &QuantizedPose, b: &QuantizedPose, t: f32) -> QuantizedPose {
 }
 
 // ---------------------------------------------------------------------------
-// Synthetic-fixture builder used by tests. Hand-rolls a minimal valid blob
-// so we don't need a vanilla FO76 quantized animation file. Pack one bone with
-// a static identity rotation, a static (5, 0, 0) translation, a static
-// (1, 1, 1) scale, and zero floats, over 2 frames with no dynamic data.
+// Test fixture: a minimal static-only blob so tests need no FO76 file. Each
+// bone gets static tx = index + 1, sx = 2.0 and an identity rotation; no
+// floats, no dynamic data.
 // ---------------------------------------------------------------------------
 
 #[doc(hidden)]
@@ -565,11 +559,8 @@ pub fn build_synthetic_static_blob(num_bones: u16, num_frames: u16, duration: f3
     let n_trans_scale = (n + n) as usize; // num_static_translations + num_static_scales
     let n_rot = n;
     let static_elements_size = (n_trans_scale + n_rot) * 2;
-    // Static values: f32 for translations + scales (3 per bone × 2 categories = wrong;
-    // each translation/scale uses 3 elements but the SDK interleaves them as a
-    // single flat scalar list addressed by element index. So num_static_translations
-    // = n means we describe N elements (e.g. one per bone); we'll pick "x slot of
-    // each bone". Rotations: n × 3 × u16 = 6n bytes.
+    // Static values: one f32 per translation/scale element (the x slot of each
+    // bone), then 3 × u16 = 6 bytes per rotation.
     let static_values_off = (static_elements_off as usize + static_elements_size) as u16;
     let static_values_trans_scale_size = n_trans_scale * 4;
     let static_values_rot_size = n_rot * 6;

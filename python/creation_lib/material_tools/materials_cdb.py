@@ -357,17 +357,9 @@ def _payload_dict(value: object) -> dict:
 class MaterialsCDB:
     """Parsed in-memory view of a MaterialsDB.cdb file.
 
-    Construct via ``MaterialsCDB.from_file(path)`` or
-    ``MaterialsCDB.from_bytes(data)``. After construction:
-
-    * ``class_defs`` maps class name -> ``ClassDef``.
-    * ``objects_by_db_id`` maps dbID -> ``MaterialObject``.
-    * ``objects_by_persistent_id`` maps ``BSResourceID`` ->
-      ``MaterialObject``.
-    * ``lookup_by_path(path)`` resolves a .mat file path to the
-      corresponding ``MaterialObject``.
-    * ``list_materials()`` returns a sorted list of all known material
-      paths (best-effort: only objects with a recorded path surface).
+    Build with ``from_file(path)`` or ``from_bytes(data)``. ``lookup_by_path``
+    resolves a .mat path to its ``MaterialObject``; ``list_materials`` lists only
+    objects with a recorded path.
     """
 
     def __init__(self) -> None:

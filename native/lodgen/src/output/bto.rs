@@ -1,9 +1,10 @@
 // .bto object-LOD block-graph writer via nif_core.
 //
-// build_bto_nif assembles the FO4 object-LOD NIF block graph in memory
-// (one BSMultiBoundNode subtree per merged shape); write_bto saves it to disk.
+// build_bto_nif assembles the FO4 object-LOD NIF block graph in memory from the
+// `BtoShape` list made by `objects::build_bto` (one BSMultiBoundNode subtree per
+// merged shape); write_bto saves it to disk.
 //
-// Block graph (verified against tmp/xlodgen/.../DLC03FarHarbor.16.-9.5.bto):
+// Block graph (verified against the golden xLODGen DLC03FarHarbor.16.-9.5.bto):
 //   NiNode "obj"
 //     └─ BSMultiBoundNode ""   (one per shape)
 //          ├─ BSSubIndexTriShape "obj"|"obj-at"
@@ -13,8 +14,6 @@
 //          └─ BSMultiBound ""
 //                └─ BSMultiBoundAABB ""
 //
-// This is the writer half of `objects::build_bto` (which produces the
-// `BtoShape` list). build_bto_nif consumes that list and hands it to nif_core.
 // Port: LODApp.CreateLODNodesFO4 (LODApp.cs:2455-2651) + GenerateMultibound
 // (LODApp.cs:241-259), block-write side only.
 
@@ -69,20 +68,18 @@ fn lighting_shader_block(
     grayscale_scale: Option<f32>,
 ) -> usize {
     let mut fields = IndexMap::new();
-    // Shader Type 0 = "Default". Store the NUMERIC enum value, not the name string:
-    // nif_core's condition evaluator coerces a String-valued enum to a truthy bool,
-    // so a name string makes `cond="Shader Type == 1"` spuriously match and emits the
-    // 6-byte `Shader Type == 1` tail (Environment Map Scale + 2 SSR bools), inflating
-    // this BSLightingShaderProperty past the engine-expected size and desyncing FO4's
-    // .bto parser (same defect as btr.rs). UInt(0) evaluates `0 == 1` correctly and
-    // serializes byte-identically to the golden LODGen .bto.
+    // Shader Type 0 = "Default", stored as the numeric enum value. nif_core's condition
+    // evaluator coerces a String-valued enum to true, so a name string makes
+    // `cond="Shader Type == 1"` match and emits the 6-byte tail (Environment Map Scale
+    // + 2 SSR bools), oversizing this block and desyncing FO4's .bto parser (same
+    // defect as btr.rs). UInt(0) serializes byte-identically to the golden LODGen .bto.
     fields.insert("Shader Type".to_string(), NifValue::UInt(0));
     fields.insert("Name".to_string(), NifValue::String(String::new()));
     fields.insert("Num Extra Data List".to_string(), NifValue::UInt(0));
     fields.insert("Extra Data List".to_string(), NifValue::Array(Vec::new()));
     fields.insert("Controller".to_string(), NifValue::Ref(-1));
     // Version-suffixed bitflag fields (BS Version 130 == FO4). Inserting under
-    // the bare name is silently dropped on write (see btr.rs / Phase-1 lesson).
+    // the bare name is silently dropped on write (see btr.rs).
     fields.insert(
         "Shader Flags 1:FO4".to_string(),
         NifValue::UInt(flags1 as u64),
@@ -181,6 +178,32 @@ fn vertex_struct(
     bitangent: [f32; 3],
     color: Option<[f32; 4]>,
 ) -> NifValue {
+    let mut data = Vec::with_capacity(if color.is_some() { 8 } else { 7 });
+    data.push(NifValue::Vec3(pos));
+    data.push(NifValue::Float(bitangent[0] as f64));
+    data.push(NifValue::Array(vec![
+        NifValue::Float(uv[0] as f64),
+        NifValue::Float(uv[1] as f64),
+    ]));
+    data.push(NifValue::Vec3(normal));
+    data.push(NifValue::Float(bitangent[1] as f64));
+    data.push(NifValue::Vec3(tangent));
+    data.push(NifValue::Float(bitangent[2] as f64));
+    if let Some(color) = color {
+        data.push(NifValue::Color4(color));
+    }
+    NifValue::Array(data)
+}
+
+#[cfg(test)]
+fn named_vertex_struct(
+    pos: [f32; 3],
+    uv: [f32; 2],
+    normal: [f32; 3],
+    tangent: [f32; 3],
+    bitangent: [f32; 3],
+    color: Option<[f32; 4]>,
+) -> NifValue {
     let mut data = IndexMap::new();
     data.insert("Vertex".to_string(), NifValue::Vec3(pos));
     // Bitangent is split across three half/normbyte components in the layout.
@@ -206,6 +229,31 @@ fn vertex_struct(
         data.insert("Vertex Colors".to_string(), NifValue::Color4(c));
     }
     NifValue::Struct(data)
+}
+
+#[derive(Clone, Copy)]
+enum VertexEncoding {
+    Positional,
+    #[cfg(test)]
+    Named,
+}
+
+impl VertexEncoding {
+    fn build(
+        self,
+        pos: [f32; 3],
+        uv: [f32; 2],
+        normal: [f32; 3],
+        tangent: [f32; 3],
+        bitangent: [f32; 3],
+        color: Option<[f32; 4]>,
+    ) -> NifValue {
+        match self {
+            Self::Positional => vertex_struct(pos, uv, normal, tangent, bitangent, color),
+            #[cfg(test)]
+            Self::Named => named_vertex_struct(pos, uv, normal, tangent, bitangent, color),
+        }
+    }
 }
 
 /// Compute the BSVertexDesc u64 for an object-LOD shape.
@@ -267,13 +315,24 @@ pub fn build_bto_nif_with_layout(
     shapes: &[BtoShape],
     layout: Fo76BtoNodeLayout,
 ) -> anyhow::Result<NifFile> {
+    build_bto_nif_with_layout_and_vertex_encoding(shapes, layout, VertexEncoding::Positional)
+}
+
+fn build_bto_nif_with_layout_and_vertex_encoding(
+    shapes: &[BtoShape],
+    layout: Fo76BtoNodeLayout,
+    vertex_encoding: VertexEncoding,
+) -> anyhow::Result<NifFile> {
     match layout {
-        Fo76BtoNodeLayout::Fo4PerShape => build_bto_nif_fo4_per_shape(shapes),
-        Fo76BtoNodeLayout::Fo76Grouped => build_bto_nif_fo76_grouped(shapes),
+        Fo76BtoNodeLayout::Fo4PerShape => build_bto_nif_fo4_per_shape(shapes, vertex_encoding),
+        Fo76BtoNodeLayout::Fo76Grouped => build_bto_nif_fo76_grouped(shapes, vertex_encoding),
     }
 }
 
-fn build_bto_nif_fo4_per_shape(shapes: &[BtoShape]) -> anyhow::Result<NifFile> {
+fn build_bto_nif_fo4_per_shape(
+    shapes: &[BtoShape],
+    vertex_encoding: VertexEncoding,
+) -> anyhow::Result<NifFile> {
     let (mut nif, root_id) = new_bto_nif_with_root();
 
     // Texture-set dedup map keyed by the 10-slot texture array (insertion order
@@ -328,7 +387,14 @@ fn build_bto_nif_fo4_per_shape(shapes: &[BtoShape]) -> anyhow::Result<NifFile> {
         };
 
         // --- BSSubIndexTriShape ---
-        let shape_id = build_subindex_trishape(&mut nif, shape, shader_id, alpha_id, extra_data_id);
+        let shape_id = build_subindex_trishape(
+            &mut nif,
+            shape,
+            shader_id,
+            alpha_id,
+            extra_data_id,
+            vertex_encoding,
+        );
 
         // --- BSMultiBound → BSMultiBoundAABB ---
         let aabb_id = {
@@ -375,7 +441,10 @@ fn build_bto_nif_fo4_per_shape(shapes: &[BtoShape]) -> anyhow::Result<NifFile> {
     Ok(nif)
 }
 
-fn build_bto_nif_fo76_grouped(shapes: &[BtoShape]) -> anyhow::Result<NifFile> {
+fn build_bto_nif_fo76_grouped(
+    shapes: &[BtoShape],
+    vertex_encoding: VertexEncoding,
+) -> anyhow::Result<NifFile> {
     let (mut nif, root_id) = new_bto_nif_with_root();
     let mut texset_cache: IndexMap<[String; 10], usize> = IndexMap::new();
 
@@ -419,7 +488,14 @@ fn build_bto_nif_fo76_grouped(shapes: &[BtoShape]) -> anyhow::Result<NifFile> {
         } else {
             None
         };
-        let shape_id = build_subindex_trishape(&mut nif, shape, shader_id, alpha_id, extra_data_id);
+        let shape_id = build_subindex_trishape(
+            &mut nif,
+            shape,
+            shader_id,
+            alpha_id,
+            extra_data_id,
+            vertex_encoding,
+        );
         children.push(NifValue::Ref(shape_id as i32));
     }
 
@@ -546,6 +622,7 @@ fn build_subindex_trishape(
     shader_id: usize,
     alpha_id: Option<usize>,
     extra_data_id: Option<usize>,
+    vertex_encoding: VertexEncoding,
 ) -> usize {
     let g = &shape.geometry;
     let nv = g.vertices.len();
@@ -569,21 +646,11 @@ fn build_subindex_trishape(
             } else {
                 None
             };
-            vertex_struct(pos, uv, normal, tangent, bitangent, color)
+            vertex_encoding.build(pos, uv, normal, tangent, bitangent, color)
         })
         .collect();
 
-    let triangle_data: Vec<NifValue> = g
-        .triangles
-        .iter()
-        .map(|t| {
-            let mut d = IndexMap::new();
-            d.insert("v1".to_string(), NifValue::Int(t[0] as i64));
-            d.insert("v2".to_string(), NifValue::Int(t[1] as i64));
-            d.insert("v3".to_string(), NifValue::Int(t[2] as i64));
-            NifValue::Struct(d)
-        })
-        .collect();
+    let triangle_data = super::triangle_values(&g.triangles);
 
     // Expand the per-shape segments to the level grid and trim trailing zeros.
     // Port: BSSubIndexTriShape.SetSegments (BSSubIndexTriShape.cs:160-183).
@@ -678,8 +745,7 @@ fn build_subindex_trishape(
 
 /// Write a `.bto` object-LOD mesh to disk.
 pub fn write_bto(path: &std::path::Path, shapes: &[BtoShape]) -> anyhow::Result<()> {
-    let mut nif = build_bto_nif(shapes)?;
-    write_bto_nif(path, &mut nif)
+    write_bto_with_layout(path, shapes, Fo76BtoNodeLayout::Fo4PerShape)
 }
 
 pub fn write_bto_with_layout(
@@ -687,17 +753,95 @@ pub fn write_bto_with_layout(
     shapes: &[BtoShape],
     layout: Fo76BtoNodeLayout,
 ) -> anyhow::Result<()> {
-    let mut nif = build_bto_nif_with_layout(shapes, layout)?;
-    write_bto_nif(path, &mut nif)
+    write_bto_with_layout_timed(path, shapes, layout).map(|_| ())
 }
 
-fn write_bto_nif(path: &std::path::Path, nif: &mut NifFile) -> anyhow::Result<()> {
+#[derive(Default, Debug, Clone, Copy)]
+pub struct BtoWriteReport {
+    pub nif_build_secs: f64,
+    pub serialize_secs: f64,
+    pub file_write_secs: f64,
+    pub bytes: u64,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct BtoWriteTestReport {
+    pub write: BtoWriteReport,
+    pub drop_secs: f64,
+    pub total_secs: f64,
+}
+
+#[cfg(test)]
+pub(crate) fn write_bto_with_layout_and_named_vertices_for_test(
+    path: &std::path::Path,
+    shapes: &[BtoShape],
+    layout: Fo76BtoNodeLayout,
+    named_vertices: bool,
+) -> anyhow::Result<BtoWriteTestReport> {
+    let total_started = std::time::Instant::now();
+    let started = std::time::Instant::now();
+    let vertex_encoding = if named_vertices {
+        VertexEncoding::Named
+    } else {
+        VertexEncoding::Positional
+    };
+    let mut nif = build_bto_nif_with_layout_and_vertex_encoding(shapes, layout, vertex_encoding)?;
+    let nif_build_secs = started.elapsed().as_secs_f64();
+    let started = std::time::Instant::now();
+    let bytes = nif
+        .to_bytes()
+        .map_err(|e| anyhow::anyhow!("nif save failed: {e}"))?;
+    let serialize_secs = started.elapsed().as_secs_f64();
+    let started = std::time::Instant::now();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    nif.save(Some(path.to_path_buf()))
+    std::fs::write(path, &bytes)
+        .map_err(|e| anyhow::anyhow!("nif save failed: failed to write {}: {e}", path.display()))?;
+    let file_write_secs = started.elapsed().as_secs_f64();
+    let byte_count = bytes.len() as u64;
+    let started = std::time::Instant::now();
+    drop(bytes);
+    drop(nif);
+    let drop_secs = started.elapsed().as_secs_f64();
+    Ok(BtoWriteTestReport {
+        write: BtoWriteReport {
+            nif_build_secs,
+            serialize_secs,
+            file_write_secs,
+            bytes: byte_count,
+        },
+        drop_secs,
+        total_secs: total_started.elapsed().as_secs_f64(),
+    })
+}
+
+pub fn write_bto_with_layout_timed(
+    path: &std::path::Path,
+    shapes: &[BtoShape],
+    layout: Fo76BtoNodeLayout,
+) -> anyhow::Result<BtoWriteReport> {
+    let started = std::time::Instant::now();
+    let mut nif = build_bto_nif_with_layout(shapes, layout)?;
+    let nif_build_secs = started.elapsed().as_secs_f64();
+    let started = std::time::Instant::now();
+    let bytes = nif
+        .to_bytes()
         .map_err(|e| anyhow::anyhow!("nif save failed: {e}"))?;
-    Ok(())
+    let serialize_secs = started.elapsed().as_secs_f64();
+    let started = std::time::Instant::now();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, &bytes)
+        .map_err(|e| anyhow::anyhow!("nif save failed: failed to write {}: {e}", path.display()))?;
+    Ok(BtoWriteReport {
+        nif_build_secs,
+        serialize_secs,
+        file_write_secs: started.elapsed().as_secs_f64(),
+        bytes: bytes.len() as u64,
+    })
 }
 
 #[cfg(test)]
@@ -809,7 +953,8 @@ mod tests {
             enable_parent: 0,
         };
 
-        let mut nif = build_bto_nif(&[shape]).expect("build bto nif");
+        let mut shapes = [shape];
+        let mut nif = build_bto_nif(&shapes).expect("build bto nif");
         let bytes = nif.to_bytes().expect("serialize bto nif");
         let reloaded = NifFile::from_bytes(&bytes, None).expect("reload bto nif");
         let sits = reloaded
@@ -820,5 +965,45 @@ mod tests {
 
         assert_eq!(segment_start(sits, 0), 0);
         assert_eq!(segment_start(sits, 1), 6);
+        super::super::assert_triangle_bytes_match_legacy(&mut nif);
+
+        let temp = tempfile::tempdir().unwrap();
+        for colored in [false, true] {
+            if colored {
+                shapes[0].geometry.vertex_colors = vec![[0.25, 0.5, 0.75, 1.0]; 6];
+            }
+            for (layout_name, layout) in [
+                ("per-shape", Fo76BtoNodeLayout::Fo4PerShape),
+                ("grouped", Fo76BtoNodeLayout::Fo76Grouped),
+            ] {
+                let expected = temp
+                    .path()
+                    .join(format!("expected-{colored}-{layout_name}.bto"));
+                build_bto_nif_with_layout_and_vertex_encoding(
+                    &shapes,
+                    layout,
+                    VertexEncoding::Named,
+                )
+                .unwrap()
+                .save(Some(expected.clone()))
+                .unwrap();
+                let actual = temp
+                    .path()
+                    .join(format!("nested/actual-{colored}-{layout_name}.bto"));
+                std::fs::create_dir_all(actual.parent().unwrap()).unwrap();
+                std::fs::write(&actual, vec![0xCD; 32_768]).unwrap();
+                let started = std::time::Instant::now();
+                let report = write_bto_with_layout_timed(&actual, &shapes, layout).unwrap();
+                assert!(
+                    report.nif_build_secs + report.serialize_secs + report.file_write_secs
+                        <= started.elapsed().as_secs_f64()
+                );
+                let actual = std::fs::read(actual).unwrap();
+                assert_eq!(report.bytes, actual.len() as u64);
+                assert_eq!(std::fs::read(expected).unwrap(), actual);
+                let mut roundtrip = NifFile::from_bytes(&actual, None).unwrap();
+                assert_eq!(roundtrip.to_bytes().unwrap(), actual);
+            }
+        }
     }
 }

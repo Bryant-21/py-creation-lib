@@ -1,7 +1,7 @@
 """Auto-generated detector schema for fnv.
 
 # @schema_forge:generated
-# regen_at: 2026-07-10T04:43:43Z
+# regen_at: 2026-08-07T13:56:28Z
 # source_hash: 9bf6d3f10cdcc34f11e93906a2323fab681318498c27ac8e6e3c9372bd3c850a
 """
 from __future__ import annotations

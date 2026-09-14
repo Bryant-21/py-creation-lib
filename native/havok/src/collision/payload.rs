@@ -647,17 +647,9 @@ static CONVEX_TYPE_SECTION: &[u8] = include_bytes!(concat!(
 
 /// Build a Havok 2019 tagged binary blob for Starfield convex collision.
 ///
-/// Port of `_build_novel` in `py_creation_lib/python/creation_lib/havok/collision_payload.py`.
-///
-/// The function uses the embedded novablast reference blob to supply the
-/// structural fixed objects (items 1-7, 14-15) and replaces the variable
-/// geometry arrays (items 8-13: vertices, planes, faces, indices, edges,
-/// vertex_edges) with the hull computed from `verts`.
-///
-/// Hull algorithm: pure-Rust Quickhull in `py_creation_lib/native/havok/src/collision/hull.rs`.
-/// Output contract: byte-comparable to Python for the same inputs within
-/// f32 floating-point ordering differences (Qhull vs Quickhull facet
-/// ordering may differ).
+/// The embedded novablast reference blob supplies the structural fixed objects
+/// (items 1-7, 14-15); the geometry arrays (items 8-13: vertices, planes, faces,
+/// indices, edges, vertex_edges) are replaced with the hull of `verts`.
 pub fn build_convex_collision(verts: &[[f32; 3]]) -> HavokResult<Vec<u8>> {
     use super::hull::compute_hull_topology_robust;
 

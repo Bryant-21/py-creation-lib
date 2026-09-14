@@ -1,14 +1,10 @@
-//! End-to-end TERRAIN golden gate.
+//! End-to-end terrain golden gate: enumerates FarHarbor from the FO4 install, runs
+//! terrain LOD on it, and checks the `.btr` / `.dds` / `.lod` against the xLODGen
+//! corpus under `tmp/xlodgen/`. Requires `real-esp`; skips when the install or
+//! corpus is absent.
 //!
-//! Enumerates the real FarHarbor worldspace from the FO4 install, runs the
-//! terrain LOD generator off that enumeration, and validates the produced
-//! `.btr` / `.dds` / `.lod` against the xLODGen golden corpus under `tmp/xlodgen/`.
-//!
-//! Requires the `real-esp` feature (links the ESP reader). Skips cleanly when
-//! the FO4 install or the golden corpus is absent.
-//!
-//! The FarHarbor worldspace `DLC03FarHarbor` lives in `DLCCoast.esm` (the plugin
-//! file name differs from the worldspace editor id), mastered to `Fallout4.esm`.
+//! `DLC03FarHarbor` lives in `DLCCoast.esm` (plugin name differs from the worldspace
+//! editor id), mastered to `Fallout4.esm`.
 #![cfg(feature = "real-esp")]
 
 use std::path::{Path, PathBuf};
@@ -38,11 +34,9 @@ fn fo4_data_dir() -> Option<PathBuf> {
     }
 }
 
-/// Settings used to compare against the golden corpus. The golden `.btr` match
-/// `LodSettings::fo4_default()`'s quality profile {10,15,20,25} closely at L16
-/// (~0.94 triangle ratio), so the default profile is the correct comparison
-/// basis. (Error 0.0 over-refines to the full vertex budget — ~40x too many;
-/// the corpus was clearly generated with the quality profile, not error 0.)
+/// The golden `.btr`s match `LodSettings::fo4_default()`'s quality profile
+/// {10,15,20,25} at L16 (~0.94 triangle ratio). Error 0.0 over-refines to the full
+/// vertex budget (~40x too many tris), so the corpus used the quality profile.
 fn golden_settings() -> LodSettings {
     LodSettings::fo4_default()
 }
@@ -182,21 +176,18 @@ fn build_quad_btr(
     Some((reloaded, mesh.bbox))
 }
 
-/// Validate our generated terrain `.btr` against the xLODGen golden corpus for
-/// several real FarHarbor L16 quads.
+/// End-to-end enumeration gate: real LAND VHGT/VCLR/LTEX decode through the full
+/// terrain pipeline, checked against golden `.btr`s for several FarHarbor L16 quads.
 ///
-/// Quad origins are anchored to the worldspace's NAM0 SW corner (xLODGen's
-/// convention), so a quad at `16.<x>.<y>` builds the same 16×16 cell block
-/// xLODGen wrote to `DLC03FarHarbor.16.<x>.<y>.btr`. We compare:
+/// Quad origins anchor to the worldspace NAM0 SW corner (xLODGen's convention), so
+/// `16.<x>.<y>` builds the same 16×16 cell block as `DLC03FarHarbor.16.<x>.<y>.btr`.
+/// Checks:
 ///   - block-type graph is a superset of the golden land blocks,
 ///   - triangle count within tolerance (FP-non-associative Terra decimation),
 ///   - mesh XY bounds are non-degenerate.
 ///
-/// This is the END-TO-END enumeration gate: it exercises the real LAND VHGT/
-/// VCLR/LTEX decode through the full terrain pipeline against a faithful golden
-/// reference. L16 is used because these quads are ≥86% real-LAND cells, so they
-/// reproduce xLODGen faithfully; see `report_landless_cell_divergence` for the
-/// (separately tracked) landless-cell synthesis gap that affects L4/L8/L32.
+/// L16 quads are ≥86% real-LAND cells; the landless-cell gap at L4/L8/L32 is
+/// covered by `report_landless_cell_divergence`.
 #[test]
 fn terrain_btr_matches_golden_l16() {
     let Some(data) = fo4_data_dir() else { return };
@@ -275,32 +266,27 @@ fn terrain_btr_matches_golden_l16() {
     eprintln!("terrain .btr golden (L16): validated {validated} quads");
 }
 
-/// Diagnostic (non-gating): record the tri-count divergence at L4/L8/L32 vs the
-/// golden corpus, and document its (verified) root cause.
+/// Diagnostic (non-gating): prints the L4/L8/L32 tri-count divergence vs golden.
 ///
-/// FINDING — landless-cell synthesis, NOT an enumeration bug:
-/// `enumerate_worldspace` reads exactly the cells that carry a LAND record. This
-/// was verified against the authoritative esp API
-/// `plugin_handle_collect_worldspace_terrain_ids("DLC03FarHarbor")`, which
-/// returns precisely 2127 LAND cells (x∈[-29,20], y∈[-22,31]) — an EXACT match
-/// to our enumeration. Cells such as (-25,-11) have NO LAND record in
-/// DLCCoast.esm (confirmed: `land_form_id == 0`).
+/// The cause is landless-cell synthesis, not enumeration. `enumerate_worldspace`
+/// reads exactly the cells with a LAND record and matches
+/// `plugin_handle_collect_worldspace_terrain_ids("DLC03FarHarbor")` (2127 LAND
+/// cells, x∈[-29,20], y∈[-22,31]). Cells such as (-25,-11) have no LAND record in
+/// DLCCoast.esm (`land_form_id == 0`).
 ///
-/// xLODGen nonetheless writes a non-flat `.btr` for quads that overlap those
-/// landless cells (e.g. golden `DLC03FarHarbor.4.-25.-11.btr` has ~190 tris with
-/// distinct content per neighbor), because its xEdit-side `.dat` export
-/// synthesizes terrain for landless cells from the worldspace default/neighbor
-/// heights (`TerrainData.cs:374-383` fill path). We currently fill landless
-/// cells flat, so quads dominated by landless cells under-triangulate:
-///   L16  ratio ~0.81–1.03 (faithful — these quads are ≥86% real LAND)
+/// xLODGen still writes non-flat `.btr`s over those cells (golden
+/// `DLC03FarHarbor.4.-25.-11.btr` has ~190 tris with distinct content per neighbor):
+/// its xEdit-side `.dat` export synthesizes landless terrain from the worldspace
+/// default/neighbor heights (`TerrainData.cs:374-383` fill path). The generator
+/// fills landless cells flat, so landless-dominated quads under-triangulate:
+///   L16  ratio ~0.81–1.03 (these quads are ≥86% real LAND)
 ///   L8   ratio ~0.39–0.90 (mixed real/landless)
 ///   L4   ratio ~0.01      (the -25,-11 block is entirely landless in the ESP)
 ///   L32  ratio ~0.07–0.30 (large blocks straddle the landless border region)
 ///
-/// The fix (synthesize landless-cell heights like xLODGen) is a generator
-/// concern, not an `enumerate_worldspace` defect — the enumerated LAND data is
-/// byte-faithful where LAND exists (proven by the L16 gate). This test asserts
-/// only non-empty geometry and prints ratios for tracking.
+/// Closing this needs landless-height synthesis in the generator; enumerated LAND
+/// data is byte-faithful where LAND exists (L16 gate). Asserts only non-empty
+/// geometry.
 #[test]
 fn report_landless_cell_divergence() {
     let Some(data) = fo4_data_dir() else { return };
@@ -338,17 +324,15 @@ fn report_landless_cell_divergence() {
     }
 }
 
-/// GATING convergence test for the coarse-LOD fidelity batch (gaps 1-5):
-///   - emission counts per level must equal the golden corpus
-///     (gap 4: terrain_quads_for bounds emission to the land extent),
-///   - the measured-bad coarse quads' tri-ratios must IMPROVE toward ~1.0
-///     (gap 1 skirts + gap 2/3 border-protect/landless synthesis).
+/// GATING coarse-LOD fidelity test:
+///   - per-level emission counts equal the golden corpus (terrain_quads_for bounds
+///     emission to the land extent),
+///   - real-terrain L16 quads (16.-9.-11, 16.-25.5) reach ≥0.9 of golden's terrain
+///     block (skirts + border protection),
+///   - landless 16.-41.-27 emits a tessellated quad instead of ~2 tris.
 ///
-/// Targets the cases named in the batch spec: real-terrain L16 16.-9.-11 (was
-/// ~0.83, now ~1.0 on the terrain block) and landless 16.-41.-27 (was ~0.002,
-/// now emits a tessellated quad). Remaining shortfall on fully-landless coarse
-/// quads is the deferred WATER block + xEdit-side .dat landless-height synthesis
-/// (see report_landless_cell_divergence) — NOT a regression of these gaps.
+/// Fully landless coarse quads stay short of golden without xEdit-side `.dat`
+/// landless-height synthesis (see report_landless_cell_divergence).
 #[test]
 fn coarse_fidelity_converges_toward_golden() {
     let Some(data) = fo4_data_dir() else { return };
@@ -356,7 +340,7 @@ fn coarse_fidelity_converges_toward_golden() {
     let settings = golden_settings();
     let world = enumerate_worldspace(&handle, WORLD_EDID, &settings).expect("enumerate");
 
-    // --- emission counts per level must match golden exactly (gap 4) ---
+    // --- emission counts per level must match golden exactly ---
     let golden_dir = match corpus("tmp/xlodgen/meshes/terrain/DLC03FarHarbor") {
         Some(p) => p,
         None => {
@@ -393,9 +377,8 @@ fn coarse_fidelity_converges_toward_golden() {
     }
 
     // --- coarse tri-ratio convergence on the measured-bad cases ---
-    // We compare against golden's TERRAIN BSTriShape block (block 0) so the metric
-    // isolates terrain fidelity from the deferred water block. Each (level,x,y,floor)
-    // is the minimum terrain-block ratio we must now meet.
+    // Compare against golden's terrain BSTriShape (block 0) to isolate terrain
+    // fidelity from the water block. `floor` is the minimum terrain-block ratio.
     let terrain_block_tris = |path: &std::path::Path| -> usize {
         use nif_core_native::model::NifValue;
         let nif = nif_core_native::model::NifFile::load(path).expect("load golden");
@@ -434,8 +417,8 @@ fn coarse_fidelity_converges_toward_golden() {
         );
     }
 
-    // landless L16 16.-41.-27: was ~0.002 (≈2 tris). With border-protect + skirts
-    // it must now produce a real tessellated quad (well above the old collapse).
+    // Landless L16 16.-41.-27: border protection + skirts must yield a tessellated
+    // quad, not a ~2-tri collapse.
     if let Some(_gp) =
         corpus("tmp/xlodgen/meshes/terrain/DLC03FarHarbor/DLC03FarHarbor.16.-41.-27.btr")
     {
@@ -497,27 +480,22 @@ fn build_quad_btr_with_water(
     Some((reloaded, water.is_some()))
 }
 
-/// GATING: the landless/ocean WATER block now emits in coarse `.btr`s, producing
-/// the golden two-render-shape graph and pushing the total triangle count up toward
-/// the golden corpus.
-///
-/// For each known fat-water coarse quad, regenerating WITH water must produce:
+/// GATING: coarse `.btr`s emit the landless/ocean WATER block, giving the golden
+/// two-render-shape graph. For each fat-water coarse quad, building with water must
+/// produce:
 ///   (a) the golden block graph: terrain shape + water sheet shape,
 ///       a `BSEffectShaderProperty`, and a `BSMultiBoundNode "WATER"`,
 ///   (b) a strictly higher total tri-count than the terrain-only baseline.
 ///
-/// DEFERRED `.dat` RESIDUAL (documented, not a regression): xLODGen reads a
-/// per-cell `waterHeight` from its xEdit-side `.dat` export (TerrainData.cs:184),
-/// which synthesizes water for the LANDLESS ocean cells (FarHarbor's deep-ocean
-/// L32 quads flood ~987 cells at water z≈450). The ESP itself carries water only
-/// in WRLD.DNAM (0 for FarHarbor) and per-cell CELL.XCLW (0 for ~98% of cells),
-/// so our water block emits ONLY the cells whose water data is present in the ESP
-/// — the real-LAND cells that dip below their own water level plus the few XCLW
-/// cells. That converges well on land-dominated coarse quads (L16/L8) but leaves
-/// the deep-ocean L32 quads short until the deferred `.dat` landless-cell water +
-/// height synthesis lands (same data source as the deferred landless TERRAIN
-/// heights — see `report_landless_cell_divergence`). The test therefore gates on
-/// structure + directional improvement and REPORTS the numeric ratio for tracking.
+/// Known residual: xLODGen reads a per-cell `waterHeight` from its xEdit-side `.dat`
+/// export (TerrainData.cs:184), which synthesizes water for landless ocean cells
+/// (FarHarbor's deep-ocean L32 quads flood ~987 cells at water z≈450). The ESP carries
+/// water only in WRLD.DNAM (0 for FarHarbor) and CELL.XCLW (0 for ~98% of cells), so
+/// our water block covers only real-LAND cells below their own water level plus the
+/// few XCLW cells. Land-dominated L16/L8 quads converge; deep-ocean L32 quads stay
+/// short without `.dat`-style landless water + height synthesis (see
+/// `report_landless_cell_divergence`). The test gates on structure and direction and
+/// prints the numeric ratio.
 #[test]
 fn water_block_converges_toward_golden() {
     let Some(data) = fo4_data_dir() else { return };
@@ -553,7 +531,7 @@ fn water_block_converges_toward_golden() {
             "golden {level}.{x}.{y} must have 2 render shapes"
         );
 
-        // Terrain-only baseline (no water) — the OLD output (one BSTriShape).
+        // Terrain-only baseline (no water, one BSTriShape).
         let (before_nif, _) =
             build_quad_btr(&world, &settings, level, x, y).expect("terrain-only build");
         let before_shapes = before_nif
@@ -567,7 +545,7 @@ fn water_block_converges_toward_golden() {
             "terrain-only baseline must have 1 BSTriShape"
         );
 
-        // New output WITH the water block.
+        // Output with the water block.
         let (after_nif, had_water) =
             build_quad_btr_with_water(&world, &settings, level, x, y).expect("water build");
         let after_shapes = render_shape_count(&after_nif);

@@ -91,17 +91,10 @@ _MESH_TYPES = {"BSTriShape", "BSSubIndexTriShape", "BSMeshLODTriShape"}
 
 def identify_parts(nif, root_id: int, mappings: list[PartMapping],
                     group_by: str = "node") -> list[DetectedPart]:
-    """Walk hierarchy and match patterns to identify collision parts.
+    """Match ``mappings`` against the hierarchy under ``root_id`` to find collision parts.
 
-    Args:
-        nif: NifFile instance
-        root_id: Root node to start scanning from
-        mappings: List of PartMapping rules
-        group_by: "node" (match NiNode names, combine children) or
-                  "shape" (match BSTriShape names individually)
-
-    Returns:
-        List of DetectedPart with mesh IDs and vertex counts
+    ``group_by="node"`` matches NiNode names and combines their children;
+    ``"shape"`` matches BSTriShape names individually.
     """
     parts: list[DetectedPart] = []
 
@@ -284,22 +277,7 @@ def generate_per_part_collision(
     radius: float = DEFAULT_RADIUS,
     replace: bool = True,
 ) -> OperationResult:
-    """Generate collision for multiple parts, combining into a flat bhkListShape.
-
-    Args:
-        nif: NifFile instance
-        root_id: Root node to attach collision hierarchy to
-        parts: List of DetectedPart from identify_parts()
-        layer: Havok collision layer
-        mass: Object mass
-        friction: Surface friction
-        restitution: Bounciness
-        radius: Convex radius / shell thickness
-        replace: Remove existing collision first
-
-    Returns:
-        OperationResult with all created block IDs
-    """
+    """Generate collision for ``identify_parts`` results, combined into one flat bhkListShape."""
     if not parts:
         return OperationResult(False, "No parts provided for collision generation")
 

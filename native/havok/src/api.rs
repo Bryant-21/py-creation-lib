@@ -97,13 +97,19 @@ pub fn hkx_detect_format_full(data: &[u8]) -> HavokResult<DetectFormatResult> {
         });
     }
 
-    // Binary tagfile (Skyrim SE .hkt): magic 0xCAB00D1E 0xD011FACE.
-    if data.len() >= 16 {
+    // Binary stream tagfile (.hkt): magic 0xCAB00D1E 0xD011FACE. HCT 2014
+    // output starts TAG_FILE_INFO immediately at offset 8; the SDK version is
+    // carried there rather than in a fixed u32 at offset 12.
+    if data.len() >= 8 {
         let m0 = u32::from_le_bytes(data[0..4].try_into().unwrap());
         let m1 = u32::from_le_bytes(data[4..8].try_into().unwrap());
-        if m0 == BINARY_TAG_MAGIC_0
-            && (m1 == BINARY_TAG_MAGIC_1_FACE || m1 == BINARY_TAG_MAGIC_1_CODE)
-        {
+        if m0 == BINARY_TAG_MAGIC_0 && m1 == BINARY_TAG_MAGIC_1_FACE {
+            return Ok(DetectFormatResult {
+                kind: "binary_tagfile".to_string(),
+                version: hkx::tagfile2014::read_tagfile2014_version(data)?,
+            });
+        }
+        if m0 == BINARY_TAG_MAGIC_0 && m1 == BINARY_TAG_MAGIC_1_CODE && data.len() >= 16 {
             let ver = u32::from_le_bytes(data[12..16].try_into().unwrap());
             return Ok(DetectFormatResult {
                 kind: "binary_tagfile".to_string(),
@@ -113,9 +119,13 @@ pub fn hkx_detect_format_full(data: &[u8]) -> HavokResult<DetectFormatResult> {
         // Byte-swapped variant.
         let m0s = u32::from_be_bytes(data[0..4].try_into().unwrap());
         let m1s = u32::from_be_bytes(data[4..8].try_into().unwrap());
-        if m0s == BINARY_TAG_MAGIC_0
-            && (m1s == BINARY_TAG_MAGIC_1_FACE || m1s == BINARY_TAG_MAGIC_1_CODE)
-        {
+        if m0s == BINARY_TAG_MAGIC_0 && m1s == BINARY_TAG_MAGIC_1_FACE {
+            return Ok(DetectFormatResult {
+                kind: "binary_tagfile".to_string(),
+                version: hkx::tagfile2014::read_tagfile2014_version(data)?,
+            });
+        }
+        if m0s == BINARY_TAG_MAGIC_0 && m1s == BINARY_TAG_MAGIC_1_CODE && data.len() >= 16 {
             let ver = u32::from_be_bytes(data[12..16].try_into().unwrap());
             return Ok(DetectFormatResult {
                 kind: "binary_tagfile".to_string(),
@@ -179,9 +189,25 @@ pub fn havok_convert_bytes(data: &[u8], target_version: &str) -> HavokResult<Vec
     havok_convert_bytes_report(data, target_version).map(|report| report.bytes)
 }
 
+pub fn havok_reemit_skyrim_2010_animation_asset_to_fo4(data: &[u8]) -> HavokResult<Vec<u8>> {
+    convert::reemit_skyrim_2010_animation_asset_to_fo4(data)
+}
+
 pub fn havok_convert_bytes_report(
     data: &[u8],
     target_version: &str,
+) -> HavokResult<HavokConversionReport> {
+    havok_convert_bytes_report_with_fo76_options(
+        data,
+        target_version,
+        convert::fo76::Fo76MigrationOptions::default(),
+    )
+}
+
+fn havok_convert_bytes_report_with_fo76_options(
+    data: &[u8],
+    target_version: &str,
+    fo76_options: convert::fo76::Fo76MigrationOptions,
 ) -> HavokResult<HavokConversionReport> {
     let target = convert::parse_target_version(target_version)?;
     let format = hkx_detect_format(data)?;
@@ -190,10 +216,8 @@ pub fn havok_convert_bytes_report(
             let hkx = hkx::read_packfile(data)?;
             let source_version = convert::detect_version_id(hkx.contents_version())?;
             if source_version == 56 && target.id == 53 {
-                let conversion = convert::fo76::migrate_2015_packfile_to_2014_with_warnings(
-                    hkx,
-                    convert::fo76::Fo76MigrationOptions::default(),
-                )?;
+                let conversion =
+                    convert::fo76::migrate_2015_packfile_to_2014_with_warnings(hkx, fo76_options)?;
                 let mut warnings = conversion.warnings;
                 warnings.extend(collect_target_classxml_warnings(
                     &conversion.hkx,
@@ -210,10 +234,8 @@ pub fn havok_convert_bytes_report(
             let tagfile = hkx::parse_tagfile(data)?;
             let source_version = convert::detect_version_id(&tagfile.contents_version)?;
             if source_version == 56 && target.id == 53 {
-                let conversion = convert::fo76::migrate_2015_tag0_to_2014_with_warnings(
-                    &tagfile,
-                    convert::fo76::Fo76MigrationOptions::default(),
-                )?;
+                let conversion =
+                    convert::fo76::migrate_2015_tag0_to_2014_with_warnings(&tagfile, fo76_options)?;
                 let mut warnings = conversion.warnings;
                 warnings.extend(collect_target_classxml_warnings(
                     &conversion.hkx,
@@ -311,6 +333,20 @@ pub fn havok_convert_file_report(
     dst_path: impl AsRef<Path>,
     target_version: &str,
 ) -> HavokResult<Vec<String>> {
+    havok_convert_file_report_with_fo76_options(
+        src_path,
+        dst_path,
+        target_version,
+        convert::fo76::Fo76MigrationOptions::default(),
+    )
+}
+
+pub fn havok_convert_file_report_with_fo76_options(
+    src_path: impl AsRef<Path>,
+    dst_path: impl AsRef<Path>,
+    target_version: &str,
+    fo76_options: convert::fo76::Fo76MigrationOptions,
+) -> HavokResult<Vec<String>> {
     let src_path = src_path.as_ref();
     let dst_path = dst_path.as_ref();
     let data = std::fs::read(src_path).map_err(|source| HavokError::Io {
@@ -318,7 +354,7 @@ pub fn havok_convert_file_report(
         operation: "read",
         source,
     })?;
-    let report = havok_convert_bytes_report(&data, target_version)?;
+    let report = havok_convert_bytes_report_with_fo76_options(&data, target_version, fo76_options)?;
     if let Some(parent) = dst_path.parent() {
         std::fs::create_dir_all(parent).map_err(|source| HavokError::Io {
             path: parent.display().to_string(),
@@ -369,7 +405,7 @@ pub fn havok_convert_batch(
     let mut errors: Vec<_> = outcomes
         .drain(..)
         .filter_map(|outcome| match outcome {
-            BatchOutcome::Converted => None,
+            BatchOutcome::Converted | BatchOutcome::Skipped => None,
             BatchOutcome::Error(error) => Some(error),
         })
         .collect();
@@ -382,8 +418,129 @@ pub fn havok_convert_batch(
     })
 }
 
+pub fn havok_convert_ps4_bytes(data: &[u8]) -> HavokResult<Vec<u8>> {
+    let packfile = hkx::packfile::parse_packfile(data)?;
+    if packfile.header.version != 11
+        || packfile.header.version_name != "hk_2014.1.0-r1"
+        || packfile.header.pointer_size != 8
+        || packfile.header.little_endian != 1
+    {
+        return Err(HavokError::InvalidInput(
+            "PS4 conversion requires a 64-bit little-endian hk_2014.1.0-r1 packfile".to_string(),
+        ));
+    }
+    if packfile.header.reuse_padding_optimization != 0 {
+        return Ok(data.to_vec());
+    }
+
+    let hkx_file = hkx::read_packfile(data)?;
+    let mut registry =
+        hkx::descriptors::DescriptorRegistry::for_contents_version(hkx_file.contents_version());
+    Ok(hkx::write_hkx_with_layout(
+        &hkx_file,
+        &mut registry,
+        hkx::descriptors::StructureLayout::Generic,
+    ))
+}
+
+pub fn havok_convert_ps4_file(
+    src_path: impl AsRef<Path>,
+    dst_path: impl AsRef<Path>,
+) -> HavokResult<()> {
+    let src_path = src_path.as_ref();
+    let dst_path = dst_path.as_ref();
+    let data = std::fs::read(src_path).map_err(|source| HavokError::Io {
+        path: src_path.display().to_string(),
+        operation: "read",
+        source,
+    })?;
+    let converted = havok_convert_ps4_bytes(&data)?;
+    if let Some(parent) = dst_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|source| HavokError::Io {
+            path: parent.display().to_string(),
+            operation: "create_dir_all",
+            source,
+        })?;
+    }
+    std::fs::write(dst_path, converted).map_err(|source| HavokError::Io {
+        path: dst_path.display().to_string(),
+        operation: "write",
+        source,
+    })
+}
+
+pub fn havok_convert_ps4_batch(
+    src_dir: impl AsRef<Path>,
+    dst_dir: impl AsRef<Path>,
+    skip_existing: bool,
+) -> HavokResult<HavokBatchResult> {
+    let src_dir = src_dir.as_ref();
+    let dst_dir = dst_dir.as_ref();
+    let replacing_sources = same_directory(src_dir, dst_dir);
+    let mut hkx_files = Vec::new();
+    collect_hkx_files(src_dir, &mut hkx_files)?;
+    let excluded_dir = if replacing_sources {
+        src_dir.join("ps4")
+    } else {
+        dst_dir.to_path_buf()
+    };
+    hkx_files.retain(|path| !path.starts_with(&excluded_dir));
+    hkx_files.sort();
+
+    let mut outcomes: Vec<_> = hkx_files
+        .par_iter()
+        .map(|src_path| {
+            let dst_path = batch_destination(src_dir, dst_dir, src_path, true);
+            if !replacing_sources && skip_existing && dst_path.exists() {
+                return BatchOutcome::Skipped;
+            }
+            match havok_convert_ps4_file(src_path, &dst_path) {
+                Ok(()) => BatchOutcome::Converted,
+                Err(error) => BatchOutcome::Error(HavokBatchError {
+                    path: src_path.display().to_string(),
+                    error: error.to_string(),
+                }),
+            }
+        })
+        .collect();
+
+    let converted = outcomes
+        .iter()
+        .filter(|outcome| matches!(outcome, BatchOutcome::Converted))
+        .count();
+    let skipped = outcomes
+        .iter()
+        .filter(|outcome| matches!(outcome, BatchOutcome::Skipped))
+        .count();
+    let mut errors: Vec<_> = outcomes
+        .drain(..)
+        .filter_map(|outcome| match outcome {
+            BatchOutcome::Error(error) => Some(error),
+            BatchOutcome::Converted | BatchOutcome::Skipped => None,
+        })
+        .collect();
+    errors.sort_by(|left, right| left.path.cmp(&right.path));
+
+    Ok(HavokBatchResult {
+        converted,
+        skipped,
+        errors,
+    })
+}
+
+fn same_directory(left: &Path, right: &Path) -> bool {
+    if left == right {
+        return true;
+    }
+    match (std::fs::canonicalize(left), std::fs::canonicalize(right)) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
+}
+
 enum BatchOutcome {
     Converted,
+    Skipped,
     Error(HavokBatchError),
 }
 
@@ -453,10 +610,9 @@ fn batch_destination(
 /// Round-trip a packfile through `patch_hkx`: parse, then overlay any current
 /// model values onto the source bytes.
 ///
-/// Mirrors the patcher branch of `py_creation_lib/python/creation_lib/hkxpack/__init__.py::save_hkx`. With no
-/// intervening mutation this is byte-exact with the input. Returns
-/// `HavokError::InvalidInput` (mirroring Python's `CannotPatch`) when an
-/// array's serialized length no longer matches its source length.
+/// Byte-exact with the input when nothing was mutated. Returns
+/// `HavokError::InvalidInput` when an array's serialized length no longer
+/// matches its source length.
 pub fn hkx_patch_roundtrip(data: &[u8]) -> HavokResult<Vec<u8>> {
     let hkx = hkx::read_packfile(data)?;
     hkx::patcher::patch_hkx(&hkx)
@@ -1224,12 +1380,10 @@ fn read_collision_hkx(blob: &[u8]) -> HavokResult<hkx::HkxFile> {
     }
 }
 
-/// Build a Havok 2019 TAG0 tagged binary blob for Starfield convex collision.
+/// Build a Havok 2019 TAG0 blob for Starfield convex collision.
 ///
-/// Wraps `collision::payload::build_convex_collision`. The `friction`, `restitution`,
-/// `layer`, and `mass` parameters are accepted for API parity with the FO4 variant but
-/// are not yet applied to the blob (the reference-based builder uses the embedded
-/// novablast defaults; material patching is not yet implemented).
+/// `friction`, `restitution`, `layer` and `mass` exist for parity with the FO4
+/// variant and are ignored; the blob keeps the embedded novablast reference defaults.
 pub fn starfield_convex_collision_blob(
     verts: &[[f32; 3]],
     _friction: f32,
@@ -1250,9 +1404,6 @@ pub fn starfield_convex_collision_blob(
 ///     `n·x + offset = d_interior`; equivalently, the offset matches Python's
 ///     `-hull.equations[:, 3]` convention so callers can write
 ///     `Normal.w = offset * havok_scale` directly.
-///
-/// Replaces the old Python convex hull path in
-/// `py_creation_lib/python/creation_lib/nif/operations/collision.py::_create_convex_shape`.
 pub fn convex_hull_simple(verts: &[[f32; 3]]) -> HavokResult<(Vec<[f32; 3]>, Vec<[f32; 4]>)> {
     let topo = crate::collision::hull::compute_hull_topology(verts)?;
     let planes = topo
@@ -1325,22 +1476,8 @@ pub fn havok_parse_behavior(xml: &str) -> HavokResult<String> {
     serde_json::to_string(&record).map_err(|e| HavokError::InvalidInput(e.to_string()))
 }
 
-/// Parse a Havok behavior graph XML and return the full UI dict-node graph as JSON.
-///
-/// Returns a JSON object matching the shape produced by
-/// `py_creation_lib/python/creation_lib/behavior/xml_import.py::import_xml_file`:
-///
-/// ```json
-/// {
-///   "nodes": {"1": {...node dict...}, ...},
-///   "connections": [[port_idx, from_id, to_id], ...],
-///   "global_state": {
-///     "events": [...], "variables": [...], "transitions": [...],
-///     "payloads": [...], "properties": [...]
-///   },
-///   "unhandled": [...]
-/// }
-/// ```
+/// Parse a Havok behavior graph XML into the UI dict-node graph JSON (shape
+/// documented on `parse_behavior_graph_to_ui_json`).
 pub fn havok_behavior_graph_to_ui_json(xml: &str) -> HavokResult<String> {
     parse_behavior_graph_to_ui_json(xml)
 }
@@ -2219,13 +2356,8 @@ pub fn cloth_inspect_blob_json(blob: &[u8]) -> HavokResult<String> {
 // cloth_inspect_full_json — complete workspace-display JSON
 // ---------------------------------------------------------------------------
 
-/// Return the full cloth inspection JSON needed by the UI workspace.
-///
-/// Parses the HCL packfile blob and returns a complete, walkable JSON tree
-/// covering every field the cloth_maker UI panels and cloth_skin_bind read:
-/// particles (with positions from the default pose), fixed_particle_indices,
-/// simulation_info, constraint_sets (with per-link detail), collidables (with
-/// shape geometry), poses.
+/// Return the cloth inspection JSON read by the cloth_maker UI panels and
+/// cloth_skin_bind. Particle positions come from the default pose.
 ///
 /// JSON shape:
 /// ```json
@@ -3354,14 +3486,20 @@ mod tests {
 
     #[test]
     fn detect_format_full_recognizes_skyrim_se_binary_tagfile() {
-        // 0xCAB00D1E 0xD011FACE little-endian, version word at offset 12.
-        let mut data = vec![0u8; 16];
-        data[0..4].copy_from_slice(&0xCAB0_0D1Eu32.to_le_bytes());
-        data[4..8].copy_from_slice(&0xD011_FACEu32.to_le_bytes());
-        data[12..16].copy_from_slice(&13u32.to_le_bytes());
+        // Canonical HCT 2014 stream: the first VLE record begins directly
+        // after the two magic words and carries the SDK contents version.
+        let mut data = Vec::new();
+        data.extend_from_slice(&0xCAB0_0D1Eu32.to_le_bytes());
+        data.extend_from_slice(&0xD011_FACEu32.to_le_bytes());
+        data.push(1u8 << 1); // TAG_FILE_INFO
+        data.push(5u8 << 1); // file-info version
+        data.push(14u8 << 1); // SDK version string length
+        data.extend_from_slice(b"hk_2014.1.0-r1");
+        data.extend_from_slice(&0u16.to_le_bytes()); // max predicate
+        data.extend_from_slice(&0u16.to_le_bytes()); // verified predicate count
         let result = hkx_detect_format_full(&data).unwrap();
         assert_eq!(result.kind, "binary_tagfile");
-        assert_eq!(result.version, "v13");
+        assert_eq!(result.version, "hk_2014.1.0-r1");
     }
 
     #[test]

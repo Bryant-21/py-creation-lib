@@ -28,20 +28,18 @@ def shape_to_svg(
     """Convert a ShapeDef to an SVG string.
 
     SWF shapes are an unordered soup of edges, each tagged with the fill on its
-    left (fillStyle0) and right (fillStyle1) side; a hole is just a contour wound
+    left (fillStyle0) and right (fillStyle1) side; a hole is a contour wound
     against its enclosing one. Rendering each style-change run as its own solid
-    path (the naive approach) fills holes in and mis-fills fill0-only contours.
-    Instead we bucket every edge under its fill style (fill1 kept, fill0 reversed
-    so fill0 and fill1 edges of a style run oppositely), stitch each bucket's edges
-    into closed contours, and emit one nonzero-winding path per style. nonzero (not
-    even-odd) is the faithful SWF rule: concentric same-side contours accumulate
-    (a bordered emblem stays solid inside) while an oppositely-wound cutout cancels
-    to a hole — so the Vault-76 "76" shows through a filled body.
+    path fills holes in and mis-fills fill0-only contours. So every edge is
+    bucketed under its fill style (fill1 kept, fill0 reversed so fill0 and fill1
+    edges of a style run oppositely), each bucket is stitched into closed
+    contours, and one nonzero-winding path is emitted per style. nonzero (not
+    even-odd) is the SWF rule: concentric same-side contours accumulate (a
+    bordered emblem stays solid inside) while an oppositely-wound cutout cancels
+    to a hole, so the Vault-76 "76" shows through a filled body.
 
-    Args:
-        shape: The shape to convert.
-        scale: Coordinate scale (default: twips to pixels).
-        background: Background rect color for preview. None to omit.
+    ``scale`` defaults to twips to pixels; ``background`` is the preview rect
+    color, or None to omit it.
     """
     bx, by, bw, bh = shape.bounds
     vw = (bw - bx) * scale

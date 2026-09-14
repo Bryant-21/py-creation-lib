@@ -1,26 +1,21 @@
 //! Recursive behavior-graph resolution for weapon / character AnimTextData (CK-free).
 //!
-//! Creatures are self-contained: one core behavior in the mod, clips relative to a
-//! single Animations dir — handled by [`super::behavior_index`].
+//! Creatures are self-contained (one core behavior in the mod, clips relative to one
+//! Animations dir) and use [`super::behavior_index`]. Weapons inject into the base-game
+//! character behavior graph; a weapon subgraph's body (byte-set-exact vs CK) is:
 //!
-//! Weapons inject into the **base-game** character behavior graph. A weapon
-//! subgraph's body is reconstructed (verified byte-set-exact vs CK) as:
-//!
-//! > **body** = transitive behavior references (excluding the core) +
+//! > **body** = core behavior + other transitive behavior references +
 //! > `{ sapt_resolve(leaf) : leaf ∈ recursive-graph clip leaves }`
 //!
-//! where:
-//! * the **recursive graph** starts at the core behavior and follows every
-//!   `hkbBehaviorReferenceGenerator.behaviorName` (resolved relative to the
-//!   behavior's `Actors\<Race>` dir), collecting every `hkbClipGenerator.animationName`.
-//! * **`sapt_resolve(leaf)`** walks the subgraph's `SAPT` chain in order; for each
-//!   dir it looks for `<leaf>.hkx` on disk (primary/mod root first, then the
-//!   base-game root) — first hit wins. Unresolvable leaves are dropped (CK does
-//!   the same: only on-disk clips appear in the body).
+//! * The recursive graph starts at the core behavior and follows every
+//!   `hkbBehaviorReferenceGenerator.behaviorName` (relative to the behavior's
+//!   `Actors\<Race>` dir), collecting every `hkbClipGenerator.animationName`.
+//! * `sapt_resolve(leaf)` walks the subgraph's `SAPT` chain in order, looking for
+//!   `<leaf>.hkx` under the mod root, then the base-game root; first hit wins.
+//!   Unresolvable leaves are dropped, as in CK.
 //!
-//! The clip set is the *filter*; the SAPT chain is the *override search path*.
-//! Order is intentionally ours (behaviors first, then sorted anims) — the
-//! content-list order has no runtime effect. See `docs/re/animtextdata_generation.md`.
+//! Behaviors come first, then sorted anims; content-list order has no runtime effect.
+//! See `docs/re/animtextdata_generation.md`.
 
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -129,10 +124,11 @@ struct BehaviorParse {
     /// Behavior references: `hkbBehaviorReferenceGenerator.behaviorName` resolved to
     /// FO4-style relpaths (e.g. `Actors\Character\Behaviors\WeaponBehavior.hkx`).
     refs: Vec<String>,
-    /// `(clip_name, animationName_leaf)` for each named `hkbClipGenerator` — the weapon
-    /// AnimationOffsets section-1 registry universe (§6b). `leaves` carries the same anims
-    /// keyed only by file; this keeps the generator's own `name` for the clip→path map.
-    clips: Vec<(String, String)>,
+    /// `(clip_name, animationName_leaf, animationName_leaf_cased)` for each named
+    /// `hkbClipGenerator`. Unlike `leaves`, keeps the generator's own `name` for the
+    /// section-1 clip→path map and the original-cased anim basename that furniture keys on
+    /// (see `resolve_clip_generators`).
+    clips: Vec<(String, String, String)>,
 }
 
 /// Resolves a weapon/character subgraph body across mod + base-game meshes roots.
@@ -199,24 +195,37 @@ impl GraphResolver {
 
         let mut body = behaviors;
         body.extend(anims);
+        // CK lists the stance's own core graph as the FIRST behavior row (vanilla
+        // SuperMutant melee FileData starts with `MeleeBehavior.hkx`); the engine
+        // loads the stance from this manifest, so omitting the core leaves the
+        // subgraph without its own graph. Keep the empty-body skip semantics: a
+        // core that resolves nothing still yields an empty body.
+        if !body.is_empty() && self.parse_behavior(core_rel).is_some() {
+            body.insert(0, core_rel.to_string());
+        }
         body
     }
 
     /// Cross-file clip generators reachable from `core_rel` via `behaviorName` refs, each
-    /// SAPT-resolved across the mod+base roots: `(clip_name, anim_rel_no_ext, disk_path)`.
-    /// This is the weapon AnimationOffsets clip universe (§6b) — the SAME behavior closure
-    /// `resolve_body` walks for AnimationFileData, but keyed by the generator's `name` so the
-    /// section-1 clip→path registry can be built. Deduped by clip name (first wins); clips
-    /// whose animation doesn't resolve on disk along the SAPT chain are dropped (CK lists only
-    /// on-disk clips).
+    /// SAPT-resolved across the mod+base roots:
+    /// `(clip_name, anim_basename_cased, anim_rel_no_ext, disk_path)`.
+    ///
+    /// The weapon AnimationOffsets section-1 clip universe: the closure `resolve_body` walks,
+    /// keyed by generator. Two keys come back because CK keys section 1 per builder:
+    /// weapon/creature use the generator's `name`, furniture the animation basename. FO4's
+    /// shared furniture graph names a generator `Standing Enter` whose animation is
+    /// `EnterFromStand`, and CK writes the latter (`Standing Enter` appears in 0 of 3156
+    /// vanilla `AnimationOffsets` files). A generator-name key makes every clip lookup miss,
+    /// which deletes the `InteractionData` entry and makes the furniture unusable.
+    /// Deduped by clip name (first wins); clips not on disk along the SAPT chain are dropped.
     pub fn resolve_clip_generators(
         &mut self,
         core_rel: &str,
         sapt_chain: &[String],
-    ) -> Vec<(String, String, PathBuf)> {
+    ) -> Vec<(String, String, String, PathBuf)> {
         let mut visited: HashSet<String> = HashSet::new();
         let mut queue: VecDeque<String> = VecDeque::new();
-        let mut clips: Vec<(String, String)> = Vec::new();
+        let mut clips: Vec<(String, String, String)> = Vec::new();
         queue.push_back(core_rel.to_string());
         while let Some(rel) = queue.pop_front() {
             let key = norm_key(&rel);
@@ -239,15 +248,15 @@ impl GraphResolver {
         // and an earlier occurrence whose `animationName` doesn't resolve must not suppress a
         // later one that does.
         let mut seen_path: HashSet<String> = HashSet::new();
-        let mut out: Vec<(String, String, PathBuf)> = Vec::new();
-        for (name, leaf) in clips {
+        let mut out: Vec<(String, String, String, PathBuf)> = Vec::new();
+        for (name, leaf, leaf_cased) in clips {
             if let Some((rel, disk)) = self.sapt_resolve_on_disk(&leaf, sapt_chain) {
                 let no_ext = match rel.to_ascii_lowercase().ends_with(".hkx") {
                     true => rel[..rel.len() - 4].to_string(),
                     false => rel.clone(),
                 };
                 if seen_path.insert(no_ext.to_ascii_lowercase()) {
-                    out.push((name, no_ext, disk));
+                    out.push((name, leaf_cased, no_ext, disk));
                 }
             }
         }
@@ -433,8 +442,7 @@ impl GraphResolver {
 
     fn parse_behavior_uncached(&self, rel: &str) -> Option<BehaviorParse> {
         let path = self.find_on_disk(rel)?;
-        let data = std::fs::read(&path).ok()?;
-        let hkx = read_packfile(&data).ok()?;
+        let hkx = super::hkx_cache::behavior_packfile(&path)?;
         let parent = drop_last_two(rel);
         let mut leaves = Vec::new();
         let mut refs = Vec::new();
@@ -444,6 +452,7 @@ impl GraphResolver {
                 "hkbClipGenerator" => {
                     let mut name = None;
                     let mut leaf = None;
+                    let mut leaf_cased = None;
                     for m in &obj.members {
                         if let HkxValue::String { value, .. } = &m.value {
                             if value.is_empty() {
@@ -451,15 +460,18 @@ impl GraphResolver {
                             }
                             match m.name.as_str() {
                                 "name" => name = Some(value.clone()),
-                                "animationName" => leaf = Some(leaf_basename(value)),
+                                "animationName" => {
+                                    leaf = Some(leaf_basename(value));
+                                    leaf_cased = Some(leaf_basename_cased(value));
+                                }
                                 _ => {}
                             }
                         }
                     }
-                    if let Some(leaf) = leaf {
+                    if let (Some(leaf), Some(leaf_cased)) = (leaf, leaf_cased) {
                         leaves.push(leaf.clone());
                         if let Some(name) = name {
-                            clips.push((name, leaf));
+                            clips.push((name, leaf, leaf_cased));
                         }
                     }
                 }
@@ -772,7 +784,7 @@ fn first_person_pose_descriptors(
 }
 
 /// Lowercased, backslash-normalised key for case/sep-insensitive comparison.
-fn norm_key(rel: &str) -> String {
+pub(crate) fn norm_key(rel: &str) -> String {
     rel.replace('/', "\\").to_ascii_lowercase()
 }
 
@@ -803,15 +815,21 @@ fn join_rel(a: &str, b: &str) -> String {
     if a.is_empty() { b } else { format!("{a}\\{b}") }
 }
 
-/// Basename of an `animationName`, lowercased, no extension.
-fn leaf_basename(animation_name: &str) -> String {
+/// Basename of an `animationName`, original casing, no extension. CK writes this
+/// verbatim as the section-1 clip key, so the graph's casing must survive.
+fn leaf_basename_cased(animation_name: &str) -> String {
     let norm = animation_name.replace('/', "\\");
     let last = norm.rsplit('\\').next().unwrap_or(&norm);
-    let stem = match last.rfind('.') {
+    match last.rfind('.') {
         Some(d) => &last[..d],
         None => last,
-    };
-    stem.to_ascii_lowercase()
+    }
+    .to_string()
+}
+
+/// Basename of an `animationName`, lowercased, no extension.
+fn leaf_basename(animation_name: &str) -> String {
+    leaf_basename_cased(animation_name).to_ascii_lowercase()
 }
 
 /// A `SAPT` string used for disk lookup: trailing control bytes (the authored
@@ -882,6 +900,52 @@ mod tests {
             ),
             Err(PoseRoleResolveError::BehaviorMissing(_))
         ));
+    }
+
+    /// CK keys furniture section 1 on the animation basename, never the generator's `name`
+    /// (generator `Standing Enter` plays `EnterFromStand`; the former appears in 0 of 3156
+    /// vanilla `AnimationOffsets` files). A clip-info miss deletes the `InteractionData`
+    /// entry, and an empty array makes workbenches refuse activation with `sFailedActivation`.
+    #[test]
+    fn furniture_clip_generators_expose_animation_basename_not_generator_name() {
+        let meshes =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../extracted/fo4/Meshes");
+        let core = r"Actors\Character\Behaviors\WorkbenchFurnitureBehavior.hkx";
+        if !meshes
+            .join("Actors/Character/Behaviors/WorkbenchFurnitureBehavior.hkx")
+            .is_file()
+        {
+            eprintln!("extracted WorkbenchFurnitureBehavior fixture absent; skipping");
+            return;
+        }
+        let mut resolver = GraphResolver::new(vec![meshes]);
+        let clips = resolver.resolve_clip_generators(
+            core,
+            &[r"Actors\Character\Animations\Furniture\WorkbenchChemistryA".to_string()],
+        );
+        assert!(
+            !clips.is_empty(),
+            "chem furniture subgraph resolved no clips"
+        );
+
+        // The generator name must still be reported (weapon/creature key on it) ...
+        assert!(
+            clips.iter().any(|(name, ..)| name == "Standing Enter"),
+            "expected the `Standing Enter` generator in the FO4 furniture graph",
+        );
+        // ... but the furniture key for that same clip is the animation basename, cased as
+        // the graph spells it, which is what CK writes and what the engine looks up.
+        let entry = clips
+            .iter()
+            .find(|(name, ..)| name == "Standing Enter")
+            .expect("Standing Enter generator");
+        assert_eq!(entry.1, "EnterFromStand");
+        assert!(
+            !clips
+                .iter()
+                .any(|(_, basename, ..)| basename == "Standing Enter"),
+            "no furniture section-1 key may be a generator name",
+        );
     }
 
     #[test]

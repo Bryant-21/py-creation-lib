@@ -1,32 +1,27 @@
 //! AnimTextData `SubgraphIdentifier` generation (CK-free).
 //!
 //! FO4's `Data\Meshes\AnimTextData\` cache is normally produced by
-//! `CreationKit.exe -GenerateAnimInfo`. FO76 source has none, so toolkit users
-//! converting content would otherwise need CK. This module reproduces the
-//! filename ids the engine computes at runtime, so we can name generated bucket
-//! files such that the engine finds them.
+//! `CreationKit.exe -GenerateAnimInfo`; FO76 source has none. This module reproduces the
+//! filename ids the engine computes at runtime so generated bucket files are found.
 //!
-//! # Reverse-engineered recipe (FO4 1.10.155, see `docs/re/animtextdata_generation.md`)
+//! # Recipe (FO4 1.10.155, see `docs/re/animtextdata_generation.md`)
 //!
-//! Each bucket file is named `"<id>.txt"` where `id` is a `SubgraphIdentifier`
-//! (u64) the engine formats with `%llu` and opens directly (load-bearing — no
-//! directory enumeration). It is built by `BSSubBehaviorUtils::CreateID`:
+//! Each bucket file is `"<id>.txt"`, where `id` is a u64 `SubgraphIdentifier` the engine
+//! formats with `%llu` and opens directly (no directory enumeration). It is built by
+//! `BSSubBehaviorUtils::CreateID`:
 //!
 //! ```text
 //! id_u64 = crc32(name) | (crc32(JoinAnimationPaths(sapt_chain, '|')) << 32)
 //! ```
 //!
-//! - `name` = the **core behavior** `.hkx` path, **lowercased** → low 32 bits.
-//!   Name-only buckets (`AnimEventInfo`, `ClipGeneratorData`) use just this with
-//!   the high word = 0, so their filenames look "32-bit".
-//! - `sapt_chain` = the subgraph's animation-path chain `[self, parent, ...]`
-//!   (`SAPT` subrecords from the RACE record). A lone path (no inheritance) is
-//!   hashed **verbatim**; an inherited chain is **lowercased**, self-first,
+//! - `name` = the core behavior `.hkx` path, lowercased → low 32 bits. Name-only
+//!   buckets (`AnimEventInfo`, `ClipGeneratorData`) use just this with high word 0.
+//! - `sapt_chain` = the subgraph's `SAPT` chain from the RACE record, `[self, parent, ...]`.
+//!   A lone path is hashed verbatim; an inherited chain is lowercased, self-first, and
 //!   joined with `'|'` → high 32 bits.
 //!
-//! The CRC is `BSCRC32` = standard reflected CRC32 (poly `0xEDB88320`, init 0,
-//! no final XOR) — identical to `bsarchive`'s `crc32` (kept local here to avoid
-//! a cross-crate private-fn dependency).
+//! `BSCRC32` is standard reflected CRC32 (poly `0xEDB88320`, init 0, no final XOR), the
+//! same as `bsarchive`'s `crc32`; kept local to avoid a cross-crate private-fn dependency.
 
 /// Reflected CRC32 lookup table (poly 0xEDB88320).
 const CRC32_LUT: [u32; 256] = build_lut();

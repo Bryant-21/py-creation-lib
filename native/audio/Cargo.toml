@@ -8,7 +8,12 @@ name = "audio_native"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+hound = "3.5"
 ndarray = "0.16"
 numpy = "0.28"
 pyo3 = { workspace = true, features = ["extension-module", "abi3-py310"] }
+rustdct = "0.7"
 rustfft = "6"
+
+[dev-dependencies]
+bsarchive_native = { path = "../bsarchive" }

@@ -1,8 +1,8 @@
 //! AnimationSpeedInfo contour codec and CK producer topology.
 //!
-//! Creature contours remain directly generative from clip root motion. Weapon contours use the
-//! CK intermediate-record model and stop at a typed evaluation recipe; final bytes are withheld
-//! until an independent behavior evaluator supplies sampled surfaces and producer metadata.
+//! Creature contours are generated directly from clip root motion. Weapon contours use the CK
+//! intermediate-record model: a typed evaluation recipe whose sampled surfaces and producer
+//! metadata come from the behavior evaluator (`evaluate_recipe`) before encoding.
 //!
 //! The file is a recursive `Collection`/`Individual` contour tree rooted at the creature's
 //! **locomotion state machine**, mirroring the behavior graph's generator sub-tree:
@@ -14,9 +14,9 @@
 //! Each `Individual` carries `direction = normalize3(D)`, `value = |D|/duration` (D = the loop
 //! clip's total root displacement, read from the binary `hkaDefaultAnimatedReferenceFrame`),
 //! the bound `param` variable, the state's enter-event `clip` slot, the SM-selector `cond`,
-//! and a recursive selector-path `entry`. (Full field RE: `speedinfo_generate.md` §1-5.)
+//! and a recursive selector-path `entry`. (Field RE: `speedinfo_generate.md`.)
 //!
-//! ## Locomotion-SM selection (the `sm_path` seed — RE'd here)
+//! ## Locomotion-SM selection (the `sm_path` seed)
 //!
 //! The `sm_path` seed is derived by walking
 //! the **default-state (`startStateId`) chain** from the behavior graph's `rootGenerator`
@@ -27,8 +27,10 @@
 //! locomotion SM (`IdleLocomotion_SM`) — as the seed. The seed's contour collapses unary down to
 //! the first branching SM (`WalkRunJog_NonStrafing_SM`), the root `Collection`.
 
+use rayon::prelude::*;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use havok_native::behavior_eval::{
     AnimationPackfile, BehaviorEvaluator, LoadOptions, RootMotionProjection,
@@ -38,16 +40,20 @@ use havok_native::hkx::read_packfile;
 use havok_native::hkx::types::HkxValue;
 use havok_native::hkx::{HkxFile, HkxMember, HkxObject};
 
+use super::hkx_cache::{FileMemo, behavior_packfile, path_key};
 use super::offsets::extract_baked_reference_frame;
 
 mod contour;
 mod producer;
+mod tiered;
+#[cfg(test)]
+mod converted_tests;
 
 pub use contour::{
     CenterMode, CollectionContour, CollectionRootMetadata, Contour, ContourCodecError,
     ContourStats, DirectionCurve, Entry as ContourEntry, EntryLink as ContourEntryLink,
     IndividualContour, RootMetadata, SamplePair, SpeedInfoFile, SpeedInfoRoot, SpeedSampledContour,
-    decode_speed_info, encode_speed_info,
+    decode_speed_info, encode_speed_info, normalize_entry_links,
 };
 pub use producer::{
     BehaviorGraphOwner, BehaviorReplay, DirectionalSummaryEvaluation, EvaluationRequest,
@@ -60,6 +66,10 @@ pub use producer::{
 /// Producer metadata captured by the established single-file creature path. Weapon roots do not
 /// use this value; their metadata is an explicit evaluator request.
 const CREATURE_PRODUCER_METADATA_BITS: u32 = 0x3E08_888D;
+
+/// Vanilla SuperMutant `MTBehavior.hkb/MTDefault`; the sibling grenade/mine roots differ by only
+/// 7-16 ULP because CK samples their otherwise-identical transition at slightly different times.
+const SHARED_MT_PRODUCER_METADATA_BITS: u32 = 0x3DDD_DF37;
 
 // ---------------------------------------------------------------------------------------
 // Object-model navigation (mirrors the AnimEventInfo resolver's accessors).
@@ -526,24 +536,58 @@ struct Entry {
 
 // ---------------------------------------------------------------------------------------
 // Cross-file behavior set. A stance SM's locomotion contour descends through a
-// `hkbBehaviorReferenceGenerator` whose `behaviorName` names a SEPARATE behavior file
+// `hkbBehaviorReferenceGenerator` whose `behaviorName` names a separate behavior file
 // (`WeaponBehavior` → e.g. a directional-locomotion behavior). Each file has its own
-// variableBindingSet/event/`hkbBehaviorGraph.name` index space, so a merged object graph
-// would be wrong — instead every object reference travels as a `(file, idx)` pair and each
-// file keeps its own string data. This is the shared cross-file primitive (also needed by
-// §6b offsets). A single-file graph (one `Behavior`) reproduces the creature path exactly.
+// variableBindingSet/event/`hkbBehaviorGraph.name` index space, so instead of merging graphs,
+// every object reference is a `(file, idx)` pair and each file keeps its own string data.
+// A single-file graph (one `Behavior`) reproduces the creature path exactly.
 // ---------------------------------------------------------------------------------------
 
-/// One parsed behavior file plus its per-file string-index spaces.
-struct Behavior {
+/// One parsed behavior file plus its per-file string-index spaces. Shared: the same file
+/// is reached by every subgraph of a race (and every weapon subgraph re-walks the whole
+/// base-game behavior closure), so parsing and string-data collection are memoized by disk
+/// path in [`behavior_core`].
+struct BehaviorCore {
     objects: Vec<HkxObject>,
     var_names: Vec<String>,
     event_names: Vec<String>,
     graph_name: String,
     root_generator: Option<usize>,
+}
+
+/// One behavior file in a graph: the shared parse plus the relpath THIS graph reached it by.
+struct Behavior {
+    core: Arc<BehaviorCore>,
     /// Normalized (`\`-sep) relpath this file was reached by — `behaviorName`s are resolved
     /// relative to its parent dir. Empty for a single-file (creature) graph.
     rel: String,
+}
+
+static BEHAVIOR_CORES: FileMemo<Option<Arc<BehaviorCore>>> = FileMemo::new();
+
+/// Parse a behavior file into its reusable core, memoized by on-disk path.
+fn behavior_core(disk: &Path) -> Option<Arc<BehaviorCore>> {
+    BEHAVIOR_CORES.get_or_init(&path_key(disk), || {
+        let objects = behavior_packfile(disk)?.objects().to_vec();
+        let (var_names, event_names) = collect_string_data(&objects);
+        let graph = objects.iter().find(|o| o.class_name == "hkbBehaviorGraph");
+        let graph_name = graph
+            .and_then(|o| string_member(o, "name"))
+            .unwrap_or_default();
+        let root_generator = graph.and_then(|o| first_ptr(o, "rootGenerator"));
+        Some(Arc::new(BehaviorCore {
+            objects,
+            var_names,
+            event_names,
+            graph_name,
+            root_generator,
+        }))
+    })
+}
+
+pub(super) fn clear_behavior_memo() {
+    BEHAVIOR_CORES.clear();
+    CLIP_DIRECTORIES.clear();
 }
 
 struct BehaviorGraph<'a> {
@@ -554,13 +598,13 @@ struct BehaviorGraph<'a> {
 
 impl<'a> BehaviorGraph<'a> {
     fn objs(&self, f: usize) -> &[HkxObject] {
-        &self.files[f].objects
+        &self.files[f].core.objects
     }
     fn vars(&self, f: usize) -> &[String] {
-        &self.files[f].var_names
+        &self.files[f].core.var_names
     }
     fn evs(&self, f: usize) -> &[String] {
-        &self.files[f].event_names
+        &self.files[f].core.event_names
     }
 
     /// `behaviorName` (relative to `from`'s parent dir) → loaded file id, if reachable.
@@ -571,29 +615,13 @@ impl<'a> BehaviorGraph<'a> {
             .copied()
     }
 
-    fn make(objects: Vec<HkxObject>, rel: String) -> Behavior {
-        let (var_names, event_names) = collect_string_data(&objects);
-        let graph = objects.iter().find(|o| o.class_name == "hkbBehaviorGraph");
-        let graph_name = graph
-            .and_then(|o| string_member(o, "name"))
-            .unwrap_or_default();
-        let root_generator = graph.and_then(|o| first_ptr(o, "rootGenerator"));
-        Behavior {
-            objects,
-            var_names,
-            event_names,
-            graph_name,
-            root_generator,
-            rel,
-        }
-    }
-
     /// Single-file graph (creature path): just the core, no reference following.
     fn load_single(core_disk: &Path, roots: &'a [&'a Path]) -> Option<Self> {
-        let data = std::fs::read(core_disk).ok()?;
-        let objects = read_packfile(&data).ok()?.objects().to_vec();
         Some(BehaviorGraph {
-            files: vec![Self::make(objects, String::new())],
+            files: vec![Behavior {
+                core: behavior_core(core_disk)?,
+                rel: String::new(),
+            }],
             by_rel: HashMap::new(),
             roots,
         })
@@ -618,15 +646,11 @@ impl<'a> BehaviorGraph<'a> {
             let Some(disk) = find_behavior_on_disk(&rel, roots) else {
                 continue;
             };
-            let Ok(data) = std::fs::read(&disk) else {
+            let Some(core) = behavior_core(&disk) else {
                 continue;
             };
-            let Ok(hkx) = read_packfile(&data) else {
-                continue;
-            };
-            let objects = hkx.objects().to_vec();
             let parent = behavior_parent_dir(&rel);
-            for o in &objects {
+            for o in &core.objects {
                 if o.class_name == "hkbBehaviorReferenceGenerator" {
                     if let Some(name) = string_member(o, "behaviorName") {
                         queue.push_back(join_behavior_rel(&parent, &name));
@@ -635,7 +659,7 @@ impl<'a> BehaviorGraph<'a> {
             }
             let fid = g.files.len();
             g.by_rel.insert(key, fid);
-            g.files.push(Self::make(objects, rel));
+            g.files.push(Behavior { core, rel });
         }
         g
     }
@@ -658,13 +682,10 @@ impl<'a> BehaviorGraph<'a> {
             }
             let disk = find_behavior_on_disk(&rel, roots)
                 .ok_or_else(|| SpeedInfoProducerError::BehaviorNotFound(rel.clone()))?;
-            let data = std::fs::read(&disk)
-                .map_err(|_| SpeedInfoProducerError::BehaviorDecode(rel.clone()))?;
-            let hkx = read_packfile(&data)
-                .map_err(|_| SpeedInfoProducerError::BehaviorDecode(rel.clone()))?;
-            let objects = hkx.objects().to_vec();
+            let core = behavior_core(&disk)
+                .ok_or_else(|| SpeedInfoProducerError::BehaviorDecode(rel.clone()))?;
             let parent = behavior_parent_dir(&rel);
-            for object in &objects {
+            for object in &core.objects {
                 if object.class_name == "hkbBehaviorReferenceGenerator" {
                     let behavior_name = string_member(object, "behaviorName").ok_or(
                         SpeedInfoProducerError::MissingProducerData {
@@ -678,7 +699,7 @@ impl<'a> BehaviorGraph<'a> {
             }
             let file_id = graph.files.len();
             graph.by_rel.insert(key, file_id);
-            graph.files.push(Self::make(objects, rel));
+            graph.files.push(Behavior { core, rel });
         }
         Ok(graph)
     }
@@ -745,22 +766,21 @@ fn build(
         }
         "hkbBehaviorReferenceGenerator" => {
             // Cross-file descent: continue the contour in the referenced behavior's own index
-            // space, entering at its graph `rootGenerator`. (§6a.3 may refine the entry point /
-            // the inner directional-blend → leaf mapping.) Ancestors carry their own file ids,
+            // space, entering at its graph `rootGenerator`. Ancestors carry their own file ids,
             // so the upper (referring-file) links stay resolvable.
             if ref_depth >= 16 {
                 return None; // cyclic / pathologically deep behaviorName chain
             }
             let name = string_member(o, "behaviorName")?;
             let tf = g.resolve(f, &name)?;
-            let entry = g.files[tf].root_generator?;
+            let entry = g.files[tf].core.root_generator?;
             build(g, tf, entry, ancestors, ref_depth + 1, through_blender)
         }
         _ => {
             // Same generator-edge set as subtree_has_speed (the selection predicate): a stance
             // descends IN-FILE RifleRelaxed_SM → … → BSCyclicBlendTransitionGenerator
             // --pBlenderGenerator--> directional blend → loop clip. Without pBlenderGenerator/
-            // pDefaultGenerator/layers, build() stalls before the locomotion leaves (§6a.3).
+            // pDefaultGenerator/layers, build() stalls before the locomotion leaves.
             for field in [
                 "generators",
                 "children",
@@ -809,36 +829,52 @@ fn make_entry(g: &BehaviorGraph, leaf: &Leaf) -> Entry {
         .filter(|a| surviving_count(g, a.0, a.1) > 1)
         .collect();
 
-    fn rec(i: usize, anc: &[(usize, usize, usize, i64)], g: &BehaviorGraph) -> Entry {
-        let (f, sm_idx, state_idx, _enter_ev) = anc[i];
-        let sid = i64_member(&g.objs(f)[state_idx], "stateId").unwrap_or(0);
-        let start = i64_member(&g.objs(f)[sm_idx], "startStateId").unwrap_or(0);
-        let link = if i > 0 && sid != start {
-            let (pf, psm, _pstate, penter) = anc[i - 1];
-            let ev = if penter >= 0 {
-                g.evs(pf).get(penter as usize).cloned().unwrap_or_default()
-            } else {
-                String::new()
-            };
-            let var =
-                selector_var_of_sm(&g.objs(pf)[psm], g.objs(pf), g.vars(pf)).unwrap_or_default();
-            Some((ev, var, Box::new(rec(i - 1, anc, g))))
-        } else {
-            None
-        };
-        Entry {
-            state_id: sid,
-            link,
-        }
-    }
-
     if anc.is_empty() {
         return Entry {
             state_id: 0,
             link: None,
         };
     }
-    rec(anc.len() - 1, &anc, g)
+
+    // One trailer per enclosing collection, innermost first, each carrying its own level's enter
+    // event, selector and state id: the flat form of
+    //   E[dir] link(moveBackward/iSyncDirection) E[dir] link(walkStart/iLocomotionSpeedState) E[speed]
+    // that CK writes. Built in full here; `normalize_entry_links` trims it to the depth the tree
+    // allows.
+    let level = |index: usize| -> (String, String, i64) {
+        let (file, state_machine, state, enter_event) = anc[index];
+        let event = if enter_event >= 0 {
+            g.evs(file)
+                .get(enter_event as usize)
+                .cloned()
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
+        let selector = selector_var_of_sm(&g.objs(file)[state_machine], g.objs(file), g.vars(file))
+            .unwrap_or_default();
+        let state_id = i64_member(&g.objs(file)[state], "stateId").unwrap_or(0);
+        (event, selector, state_id)
+    };
+
+    // `anc[0]` is outermost, `anc[len - 1]` innermost.
+    let innermost = anc.len() - 1;
+    let mut entry = Entry {
+        state_id: level(0).2,
+        link: None,
+    };
+    for index in 1..anc.len() {
+        let outer = level(index - 1);
+        entry = Entry {
+            state_id: level(index).2,
+            link: Some((outer.0, outer.1, Box::new(entry))),
+        };
+    }
+    let own = level(innermost);
+    Entry {
+        state_id: own.2,
+        link: Some((own.0, own.1, Box::new(entry))),
+    }
 }
 
 // ---------------------------------------------------------------------------------------
@@ -918,62 +954,70 @@ fn declared_animation_path(animation_name: &str, sapt: &str) -> Option<PathBuf> 
     Some(relative)
 }
 
+static CLIP_DIRECTORIES: FileMemo<Arc<HashMap<String, PathBuf>>> = FileMemo::new();
+
 /// The `.hkx` whose stem equals `leaf`, directly inside `dir` under `root` (non-recursive,
 /// case-insensitive). This is the SAPT-override match: the clip resolved at the SAPT dir
 /// itself rather than re-anchored at the base `Animations` root.
 fn find_clip_stem_in_dir(root: &Path, dir: &str, leaf: &str) -> Option<PathBuf> {
-    let disk_dir = resolve_case_insensitive(root, Path::new(dir))?;
-    for e in std::fs::read_dir(disk_dir).ok()?.flatten() {
-        let p = e.path();
-        let is_hkx = p
-            .extension()
-            .and_then(|x| x.to_str())
-            .is_some_and(|x| x.eq_ignore_ascii_case("hkx"));
-        if p.is_file()
-            && is_hkx
-            && p.file_stem()
-                .and_then(|s| s.to_str())
-                .is_some_and(|s| s.eq_ignore_ascii_case(leaf))
+    let clips = CLIP_DIRECTORIES.get_or_init(&path_key(&root.join(dir)), || {
+        let mut clips = HashMap::new();
+        if let Some(disk_dir) = resolve_case_insensitive(root, Path::new(dir))
+            && let Ok(entries) = std::fs::read_dir(disk_dir)
         {
-            return Some(p);
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("hkx"))
+                    && path.is_file()
+                    && let Some(stem) = path.file_stem().and_then(|stem| stem.to_str())
+                {
+                    clips.entry(stem.to_ascii_lowercase()).or_insert(path);
+                }
+            }
         }
-    }
-    None
+        Arc::new(clips)
+    });
+    clips.get(&leaf.to_ascii_lowercase()).cloned()
 }
 
 /// Resolve a speed clip's `animationName` to the on-disk `.hkx` along the subgraph SAPT
 /// chain. `roots` is searched in order per SAPT dir (mod first, then base for weapons);
 /// the SAPT chain is the override-priority outer loop. Creature callers pass `&[mod]`.
 ///
-/// A **flat** clip name (one component under `Animations`, e.g. `Animations\RunForward.hkx`)
-/// is redirected by the SAPT override dir, so it must resolve directly inside each SAPT dir —
-/// the deepest/most-specific dir wins — BEFORE the declared-path rebuild. `declared_animation_path`
-/// re-anchors the name at the base `Animations` root, which shadows an injured/override clip
-/// (RE `grafton-animtext-three-emitter-defects`: the injured MegaSloth RunForward is a limp-run
-/// ~3x slower than base). Sub-dir clip names — which carry their own path under `Animations`,
-/// as weapon clips do — keep the declared-first order, so weapon resolution is unchanged.
+/// The clip's basename is looked up in every SAPT dir first (nearest wins), before the
+/// declared-path rebuild. `declared_animation_path` re-anchors the name at the base
+/// `Animations` root, which would shadow an injured/override clip (the injured MegaSloth
+/// RunForward is a limp-run ~3x slower than base).
 fn clip_loop_path(clip: &HkxObject, roots: &[&Path], sapt_chain: &[String]) -> Option<PathBuf> {
     let animation_name = string_member(clip, "animationName")?;
     let leaf = leaf_basename(&animation_name);
-    let comps: Vec<&str> = animation_name.split(['\\', '/']).collect();
-    let flat = comps
-        .iter()
-        .position(|c| c.eq_ignore_ascii_case("Animations"))
-        .is_some_and(|i| comps.len() - i - 1 == 1);
+    // Phase 1: walk the whole SAPT chain, nearest entry first. This is the search path, and
+    // it is the only part of the lookup that varies per weapon.
     for sapt in sapt_chain {
         let dir = sapt.trim_end_matches(['\r', '\n', ' ']).replace('\\', "/");
         for root in roots {
-            if flat && let Some(p) = find_clip_stem_in_dir(root, &dir, &leaf) {
+            if let Some(p) = find_clip_stem_in_dir(root, &dir, &leaf) {
                 return Some(p);
             }
+        }
+    }
+    // Phase 2, only once the chain is exhausted: the graph's own declared path, re-rooted onto
+    // the SAPT's prefix-up-to-`Animations`.
+    //
+    // Must not be interleaved into phase 1. `declared_animation_path` ignores everything in the
+    // SAPT after `Animations`, so on an `Actors\Character\Animations\...` chain every entry yields
+    // the same path; it would resolve on entry 1 before any grip folder is reached, giving rifle
+    // and pistol grips one shared contour. The loop stays because the prefix differs across
+    // chains rooted at another actor (`Actors\Supermutant\Animations\...`).
+    for sapt in sapt_chain {
+        for root in roots {
             if let Some(relative) = declared_animation_path(&animation_name, sapt)
                 && let Some(path) = resolve_case_insensitive(root, &relative)
                 && path.is_file()
             {
                 return Some(path);
-            }
-            if !flat && let Some(p) = find_clip_stem_in_dir(root, &dir, &leaf) {
-                return Some(p);
             }
         }
     }
@@ -1064,6 +1108,38 @@ fn resolve_weapon_node(
     }
 }
 
+fn resolve_mt_locomotion(
+    node: &Node,
+    g: &BehaviorGraph,
+    sapt_chain: &[String],
+) -> Option<ResolvedNode> {
+    fn collect<'node>(node: &'node Node, leaves: &mut Vec<&'node Leaf>) {
+        match node {
+            Node::Collection(children) => {
+                for child in children {
+                    collect(child, leaves);
+                }
+            }
+            Node::Individual(leaf) => leaves.push(leaf),
+        }
+    }
+
+    let mut leaves = Vec::new();
+    collect(node, &mut leaves);
+    let children: Vec<ResolvedNode> = ["WalkSpeedMult", "JogSpeedMult", "RunSpeedMult"]
+        .into_iter()
+        .filter_map(|parameter| {
+            leaves
+                .iter()
+                .filter(|leaf| leaf.param.eq_ignore_ascii_case(parameter))
+                .find_map(|leaf| {
+                    resolve_weapon_node(&Node::Individual((*leaf).clone()), g, sapt_chain)
+                })
+        })
+        .collect();
+    (children.len() > 1).then_some(ResolvedNode::Collection(children))
+}
+
 struct DirectionalParent {
     state_id: i64,
     enter_event: String,
@@ -1085,9 +1161,18 @@ fn directional_context(g: &BehaviorGraph, leaf: &Leaf) -> Option<DirectionalCont
     if !leaf.through_blender {
         return None;
     }
+    // `rposition` takes the INNERMOST match, so a direction state machine always wins over the
+    // speed-state one outside it. `iLocomotionSpeedState` is here as the fallback for collections
+    // whose directions come from a blender with no direction state machine of their own — the
+    // walk collection is the case that matters, and vanilla keys it exactly this way
+    // (`walkStart|iLocomotionSpeedState`). Without a resolved context a collection keeps source
+    // order and gets no chained entry, and since the engine bins every child against the FIRST
+    // collection's order, one unresolved collection misaligns all of them.
     let dir_pos = leaf.ancestors.iter().rposition(|(f, sm_idx, _, _)| {
-        selector_var_of_sm(&g.objs(*f)[*sm_idx], g.objs(*f), g.vars(*f)).as_deref()
-            == Some("iSyncDirection")
+        matches!(
+            selector_var_of_sm(&g.objs(*f)[*sm_idx], g.objs(*f), g.vars(*f)).as_deref(),
+            Some("iSyncDirection" | "iSyncRunDirection" | "iLocomotionSpeedState")
+        )
     })?;
     let (file, sm_idx, state_idx, enter_event_id) = leaf.ancestors[dir_pos];
     let state_id = i64_member(&g.objs(file)[state_idx], "stateId")?;
@@ -1226,19 +1311,17 @@ fn speed_info_body_for_seed(
 /// when a loop clip's root motion is missing (emit no file rather than a wrong one).
 ///
 /// The primary seed is the default-state-chain locomotion SM. When that chain dead-ends at a
-/// container SM whose contour is invalid (Grafton: `RootBehavior` → `InvalidEntryLink`, so the
-/// primary seed yields no body), fall through to the deep seed — the walk continued past the
-/// dead-end to the unique speed-bearing child SM (`IdleLocomotion_SM`). The primary is always
-/// tried first, so every creature whose default chain already reaches its locomotion SM is
-/// byte-for-byte unchanged; the fallback can only turn a previously-empty output into a valid
-/// one. A seed that exists but never yields an encodable contour is surfaced as a warning.
+/// container SM whose contour is invalid (Grafton: `RootBehavior` → `InvalidEntryLink`), the
+/// deep seed is tried: the walk continued past the dead-end to the unique speed-bearing child
+/// SM (`IdleLocomotion_SM`). A seed that never yields an encodable contour is reported as a
+/// warning.
 pub fn build_speed_info_body(
     core_behavior_disk: &Path,
     roots: &[&Path],
     sapt_chain: &[String],
 ) -> Option<Vec<u8>> {
     let g = BehaviorGraph::load_single(core_behavior_disk, roots)?;
-    let graph_name = g.files[0].graph_name.clone();
+    let graph_name = g.files[0].core.graph_name.clone();
     if graph_name.is_empty() {
         return None;
     }
@@ -1252,10 +1335,9 @@ pub fn build_speed_info_body(
             return Some(body);
         }
     }
-    // A locomotion SM existed but no seed produced an encodable contour: previously a silent
-    // `.ok()` dropped it without a trace. Surface it; the file stays absent so the engine
-    // falls back to the Offsets locomotion loops. (Silent for genuine non-locomotion creatures,
-    // which have no seed at all.)
+    // A locomotion SM existed but no seed produced an encodable contour. Warn; the file stays
+    // absent so the engine falls back to the Offsets locomotion loops. (Genuine non-locomotion
+    // creatures have no seed and stay silent.)
     if primary.is_some() || deep.is_some() {
         eprintln!(
             "AnimationSpeedInfo: no encodable locomotion contour for {} ({graph_name}); \
@@ -1267,13 +1349,12 @@ pub fn build_speed_info_body(
 }
 
 // ---------------------------------------------------------------------------------------
-// Weapon / character path: the locomotion contour lives in a base-game behavior REFERENCED
-// by the (also base-game) core wrapping behavior, not the core itself — and its clips live
-// in `extracted/fo4/Meshes`, not the mod. So the single-file, mod-only `build_speed_info_body`
-// can't reach it. Rather than merge object spaces (which would mix per-file
-// variableBindingSet/event index spaces and the wrong `hkbBehaviorGraph.name`), we run the
-// EXISTING single-file contour on each reachable behavior — its own string data + graph name
-// (`WeaponBehavior.hkb`) are then correct — and resolve loop clips across `[mod, base]`.
+// Weapon / character path: the locomotion contour lives in a base-game behavior referenced by
+// the (also base-game) core wrapping behavior, with clips in `extracted/fo4/Meshes`, so the
+// single-file, mod-only `build_speed_info_body` can't reach it. Merging object spaces would mix
+// per-file variableBindingSet/event index spaces and the wrong `hkbBehaviorGraph.name`, so the
+// single-file contour runs on each reachable behavior with its own string data and graph name
+// (`WeaponBehavior.hkb`), resolving loop clips across `[mod, base]`.
 // ---------------------------------------------------------------------------------------
 
 /// Drop `Behaviors\X.hkx` → the `Actors\<Race>` dir a `behaviorName` is relative to.
@@ -1453,7 +1534,7 @@ fn state_replay(g: &BehaviorGraph, states: &[SourceStateSelection]) -> Vec<Behav
         let owner = BehaviorGraphOwner {
             behavior_file: selection.file,
             relative_path: g.files[selection.file].rel.clone(),
-            graph_name: g.files[selection.file].graph_name.clone(),
+            graph_name: g.files[selection.file].core.graph_name.clone(),
         };
         if replay.last().is_none_or(|segment| segment.owner != owner) {
             replay.push(BehaviorReplay {
@@ -1635,6 +1716,21 @@ impl<'graph, 'roots> RecipeBuilder<'graph, 'roots> {
                     leaves.sort_by(|a, b| {
                         directional_angle(b, &context).total_cmp(&directional_angle(a, &context))
                     });
+                    // Vanilla almost never puts two children of one collection on the same angle
+                    // (0.76% of 344575 collections, all lean triplets). Converted ones can: the MT
+                    // alias table points both diagonals of a pair at one cardinal clip. A repeated
+                    // angle leaves the fan unbinnable and the engine falls back to the walk
+                    // contour mid-combat. Duplicates share a clip and speed, so keeping the first
+                    // loses nothing.
+                    let mut kept_angles: Vec<f32> = Vec::with_capacity(leaves.len());
+                    leaves.retain(|leaf| {
+                        let angle = directional_angle(leaf, &context);
+                        if kept_angles.iter().any(|kept| (kept - angle).abs() < 1e-3) {
+                            return false;
+                        }
+                        kept_angles.push(angle);
+                        true
+                    });
                     let last = leaves.len().saturating_sub(1);
                     for (index, leaf) in leaves.into_iter().enumerate() {
                         let entry = directional_entry(&context, index == last).ok_or(
@@ -1742,6 +1838,23 @@ fn transition_event_for_state(
         .cloned()
 }
 
+/// Slack allowed when deciding whether a direction fan sits on heading 0 or already wraps the
+/// whole circle.
+const CENTER_TOLERANCE: f32 = std::f32::consts::PI / 72.0;
+
+/// `hkbBlenderGenerator::FLAG_IS_PARAMETRIC_BLEND_CYCLIC`. FO4's blender flags are renumbered
+/// against stock Havok, where this bit means something else.
+const BLENDER_FLAG_PARAMETRIC_BLEND_CYCLIC: i64 = 0x20;
+
+fn wrap_signed(angle: f32) -> f32 {
+    let wrapped = angle.rem_euclid(std::f32::consts::TAU);
+    if wrapped > std::f32::consts::PI {
+        wrapped - std::f32::consts::TAU
+    } else {
+        wrapped
+    }
+}
+
 fn cyclic_distance(value: f32, center: f32) -> f32 {
     let delta = (value - center).rem_euclid(std::f32::consts::TAU);
     delta.min(std::f32::consts::TAU - delta)
@@ -1752,8 +1865,6 @@ fn sampled_direction_source(
     file: usize,
     direction_state_machine: usize,
     state: usize,
-    ordinal: usize,
-    state_count: usize,
 ) -> Option<SampledDirectionSource> {
     let transition_event = transition_event_for_state(g, file, direction_state_machine, state)?;
     let generator = first_ptr(&g.objs(file)[state], "generator")?;
@@ -1782,7 +1893,7 @@ fn sampled_direction_source(
         let mut speed_max = f32::NEG_INFINITY;
         let mut lower_animation_names = HashSet::new();
         let mut summary_clips = Vec::new();
-        let mut direction_angles = Vec::new();
+        let mut direction_weights = Vec::new();
         let mut valid = true;
         for direction_child in direction_children {
             let direction_child = g
@@ -1797,8 +1908,7 @@ fn sampled_direction_source(
                 valid = false;
                 break;
             };
-            direction_angles
-                .push(std::f32::consts::FRAC_PI_2 - std::f32::consts::TAU * direction_weight);
+            direction_weights.push(direction_weight);
             let speed_blender = first_ptr(direction_child, "generator");
             let Some(speed_blender) = speed_blender
                 .filter(|index| g.objs(file)[*index].class_name == "hkbBlenderGenerator")
@@ -1862,24 +1972,49 @@ fn sampled_direction_source(
         if !valid || !speed_min.is_finite() || !speed_max.is_finite() {
             continue;
         }
-        let center = ordinal as f32 * std::f32::consts::TAU / state_count as f32;
-        let center_mode = if cyclic_distance(center, 0.0) < 0.001 {
-            CenterMode::ZeroCentered
-        } else if cyclic_distance(center, std::f32::consts::PI) < 0.001 {
-            CenterMode::PiCentered
-        } else {
-            continue;
-        };
-        for angle in &mut direction_angles {
-            while *angle < center - std::f32::consts::PI {
-                *angle += std::f32::consts::TAU;
+        // The direction fan, verbatim from CK. A child's heading is `weight * TAU`; the fan is
+        // wrapped into [-PI, PI] only when some child already sits on heading 0, and a cyclic
+        // blender whose remaining gap is no wider than its own average step is treated as
+        // covering the whole circle. The centre then falls out of the wrapped range rather than
+        // out of the sector's index in its state machine. Not `PI/2 - TAU * weight`: that mirrors
+        // the fan, which only `CombatWalk*` (weights symmetric about 0.125) survives; vanilla
+        // `RelaxedWalkBackward` is pi-centred over [1.5645, 4.7061].
+        let child_count = direction_weights.len();
+        let has_zero_child = direction_weights
+            .iter()
+            .any(|weight| cyclic_distance(weight * std::f32::consts::TAU, 0.0) < CENTER_TOLERANCE);
+        let angles = direction_weights.iter().map(|weight| {
+            let angle = weight * std::f32::consts::TAU;
+            if has_zero_child {
+                wrap_signed(angle)
+            } else {
+                angle
             }
-            while *angle > center + std::f32::consts::PI {
-                *angle -= std::f32::consts::TAU;
+        });
+        let (mut direction_min, mut direction_max) = angles
+            .fold((f32::INFINITY, f32::NEG_INFINITY), |(low, high), angle| {
+                (low.min(angle), high.max(angle))
+            });
+        if !direction_min.is_finite() || !direction_max.is_finite() {
+            continue;
+        }
+        let cyclic_blender = i64_in(&g.objs(file)[direction_blender].members, "flags")
+            .is_some_and(|flags| flags & BLENDER_FLAG_PARAMETRIC_BLEND_CYCLIC != 0);
+        if cyclic_blender && child_count > 1 {
+            let span = (direction_max - direction_min).rem_euclid(std::f32::consts::TAU);
+            if std::f32::consts::TAU - span < 1.1 * span / (child_count - 1) as f32 {
+                direction_min = -std::f32::consts::PI;
+                direction_max = std::f32::consts::PI;
             }
         }
-        let direction_min = direction_angles.iter().copied().reduce(f32::min)?;
-        let direction_max = direction_angles.iter().copied().reduce(f32::max)?;
+        let center_mode = if direction_max - direction_min
+            > std::f32::consts::TAU - CENTER_TOLERANCE
+            || has_zero_child
+        {
+            CenterMode::ZeroCentered
+        } else {
+            CenterMode::PiCentered
+        };
         return Some(SampledDirectionSource {
             state,
             transition_event,
@@ -1904,79 +2039,99 @@ fn discover_sampled_source(
     root_state_machine: usize,
 ) -> Option<SampledSource> {
     let mut speed_state_machines = Vec::new();
-    collect_objects_of_class(
-        g.objs(file),
+    collect_state_machines_across_files(
+        g,
+        file,
         root_state_machine,
-        "hkbStateMachine",
+        0,
         &mut HashSet::new(),
         &mut speed_state_machines,
     );
-    for speed_state_machine in speed_state_machines {
-        if selector_var_of_sm(
+    for (file, speed_state_machine) in speed_state_machines {
+        let Some(selector) = selector_var_of_sm(
             &g.objs(file)[speed_state_machine],
             g.objs(file),
             g.vars(file),
         )
-        .as_deref()
-            != Some("iLocomotionSpeedState")
-        {
+        .filter(|selector| selector == "iLocomotionSpeedState") else {
             continue;
-        }
+        };
         for speed_state in sm_states(&g.objs(file)[speed_state_machine], g.objs(file)).values() {
-            let Some(generator) = first_ptr(&g.objs(file)[*speed_state], "generator") else {
-                continue;
-            };
-            let mut nested_state_machines = Vec::new();
-            collect_objects_of_class(
-                g.objs(file),
-                generator,
-                "hkbStateMachine",
-                &mut HashSet::new(),
-                &mut nested_state_machines,
-            );
-            for direction_state_machine in nested_state_machines {
-                let Some(direction_selector) = selector_var_of_sm(
-                    &g.objs(file)[direction_state_machine],
+            // Nested direction state machines FIRST. A weapon speed state nests a direction SM
+            // (`iSyncDirection`) whose states are the sectors — normally `moveForward` plus
+            // `moveBackward`, the pair CK emits wrapped in their own collection. The
+            // single-sector fallback below must not run before this: `sampled_direction_source`
+            // returns the FIRST `BSCyclicBlendTransitionGenerator` it reaches, which on a weapon
+            // graph is the nested SM's *forward* blender, so taking it early collapses the fan
+            // to one bare sector and drops 135°–315° — every strafe-right and rearward angle.
+            if let Some(generator) = first_ptr(&g.objs(file)[*speed_state], "generator") {
+                let mut nested_state_machines = Vec::new();
+                collect_objects_of_class(
                     g.objs(file),
-                    g.vars(file),
-                ) else {
-                    continue;
-                };
-                let states: Vec<usize> =
-                    sm_states(&g.objs(file)[direction_state_machine], g.objs(file))
-                        .into_values()
+                    generator,
+                    "hkbStateMachine",
+                    &mut HashSet::new(),
+                    &mut nested_state_machines,
+                );
+                for direction_state_machine in nested_state_machines {
+                    let Some(direction_selector) = selector_var_of_sm(
+                        &g.objs(file)[direction_state_machine],
+                        g.objs(file),
+                        g.vars(file),
+                    ) else {
+                        continue;
+                    };
+                    let states: Vec<usize> =
+                        sm_states(&g.objs(file)[direction_state_machine], g.objs(file))
+                            .into_values()
+                            .collect();
+                    if states.is_empty() {
+                        continue;
+                    }
+                    // An unresolved sector is dropped, not fatal: direction state machines
+                    // routinely carry transition states holding a plain clip rather than a
+                    // Direction-parametric blender, and CK emits no contour for those.
+                    let mut directions: Vec<_> = states
+                        .iter()
+                        .filter_map(|state| {
+                            sampled_direction_source(g, file, direction_state_machine, *state)
+                        })
                         .collect();
-                if states.is_empty() {
-                    continue;
+                    if directions.is_empty() {
+                        continue;
+                    }
+                    directions.sort_by_key(|source| match source.center_mode {
+                        CenterMode::PiCentered => 0,
+                        CenterMode::ZeroCentered => 1,
+                    });
+                    return Some(SampledSource {
+                        file,
+                        speed_state_machine,
+                        speed_state: *speed_state,
+                        direction_state_machine,
+                        direction_selector,
+                        directions,
+                    });
                 }
-                let directions: Option<Vec<_>> = states
-                    .iter()
-                    .enumerate()
-                    .map(|(ordinal, state)| {
-                        sampled_direction_source(
-                            g,
-                            file,
-                            direction_state_machine,
-                            *state,
-                            ordinal,
-                            states.len(),
-                        )
-                    })
-                    .collect();
-                let Some(mut directions) = directions else {
-                    continue;
-                };
-                directions.sort_by_key(|source| match source.center_mode {
-                    CenterMode::PiCentered => 0,
-                    CenterMode::ZeroCentered => 1,
-                });
+            }
+            // Fallback: a speed state can carry the directional blend directly, with no nested
+            // direction SM: `LocomotionRoot`'s `MeleeWalkRunState` hangs `MeleeWalkRunState_CBT`
+            // off itself, and that CBT's children are the `Speed`-bound blenders spanning
+            // walk→run. (Its siblings' nested `MeleeRun_SM` cyclics blend clip generators, not
+            // speed blenders, so the scan above rejects them.) One state, one sector: the blend
+            // covers the whole circle on `Direction`, as vanilla emits it (angle [-PI, PI],
+            // `cond` = this selector). Also reached with no `generator`, so it is not folded
+            // into the `if let` above.
+            if let Some(direction) =
+                sampled_direction_source(g, file, speed_state_machine, *speed_state)
+            {
                 return Some(SampledSource {
                     file,
                     speed_state_machine,
                     speed_state: *speed_state,
-                    direction_state_machine,
-                    direction_selector,
-                    directions,
+                    direction_state_machine: speed_state_machine,
+                    direction_selector: selector,
+                    directions: vec![direction],
                 });
             }
         }
@@ -1984,37 +2139,64 @@ fn discover_sampled_source(
     None
 }
 
-fn find_state_path(
-    objects: &[HkxObject],
+/// Path of state selections from a root generator to a target object, across behavior references.
+///
+/// The state path feeding a sampled contour's replay can leave the root's file: the melee
+/// locomotion source lives in `Locomotion_8wayBlend.hkx`, reached from `MeleeBehavior.hkx`
+/// through a `hkbBehaviorReferenceGenerator`. `state_replay` opens a fresh segment per owning
+/// file.
+///
+/// The `?` on a state's `generator` is deliberate: a state machine with a generator-less state
+/// abandons that whole branch there rather than skipping the state.
+fn find_state_path_across_files(
+    g: &BehaviorGraph,
+    file: usize,
     current: usize,
-    target: usize,
-    seen: &mut HashSet<usize>,
-) -> Option<Vec<(usize, usize)>> {
-    if current == target {
+    target: (usize, usize),
+    ref_depth: usize,
+    seen: &mut HashSet<(usize, usize)>,
+) -> Option<Vec<SourceStateSelection>> {
+    if (file, current) == target {
         return Some(Vec::new());
     }
-    if !seen.insert(current) {
+    if !seen.insert((file, current)) {
         return None;
     }
-    let object = objects.get(current)?;
+    let object = g.objs(file).get(current)?;
     if object.class_name == "hkbStateMachine" {
-        for state in sm_states(object, objects).into_values() {
-            let generator = first_ptr(&objects[state], "generator")?;
-            if let Some(mut path) = find_state_path(objects, generator, target, seen) {
-                path.insert(0, (current, state));
-                seen.remove(&current);
+        for state in sm_states(object, g.objs(file)).into_values() {
+            let generator = first_ptr(&g.objs(file)[state], "generator")?;
+            if let Some(mut path) =
+                find_state_path_across_files(g, file, generator, target, ref_depth, seen)
+            {
+                path.insert(0, source_state_selection(file, current, state));
+                seen.remove(&(file, current));
                 return Some(path);
             }
+        }
+    } else if object.class_name == "hkbBehaviorReferenceGenerator" {
+        if ref_depth < 16
+            && let Some(referenced) = string_member(object, "behaviorName")
+                .and_then(|name| g.resolve(file, &name))
+                .filter(|referenced| *referenced != file)
+            && let Some(entry) = g.files[referenced].core.root_generator
+            && let Some(path) =
+                find_state_path_across_files(g, referenced, entry, target, ref_depth + 1, seen)
+        {
+            seen.remove(&(file, current));
+            return Some(path);
         }
     } else {
         for child in generator_children(object) {
-            if let Some(path) = find_state_path(objects, child, target, seen) {
-                seen.remove(&current);
+            if let Some(path) =
+                find_state_path_across_files(g, file, child, target, ref_depth, seen)
+            {
+                seen.remove(&(file, current));
                 return Some(path);
             }
         }
     }
-    seen.remove(&current);
+    seen.remove(&(file, current));
     None
 }
 
@@ -2028,19 +2210,19 @@ fn source_state_selection(file: usize, state_machine: usize, state: usize) -> So
 
 fn sampled_replay(
     g: &BehaviorGraph,
+    root_file: usize,
     root_state_machine: usize,
     source: &SampledSource,
     direction: &SampledDirectionSource,
 ) -> Option<Vec<BehaviorReplay>> {
-    let mut selections: Vec<_> = find_state_path(
-        g.objs(source.file),
+    let mut selections = find_state_path_across_files(
+        g,
+        root_file,
         root_state_machine,
-        source.speed_state_machine,
+        (source.file, source.speed_state_machine),
+        0,
         &mut HashSet::new(),
-    )?
-    .into_iter()
-    .map(|(state_machine, state)| source_state_selection(source.file, state_machine, state))
-    .collect();
+    )?;
     selections.push(source_state_selection(
         source.file,
         source.speed_state_machine,
@@ -2102,6 +2284,7 @@ fn sampled_insertion_index(
 
 fn insert_sampled_recipe(
     builder: &mut RecipeBuilder,
+    root_file: usize,
     root_state_machine: usize,
     root: &mut RecipeContour,
     source: &SampledSource,
@@ -2118,20 +2301,27 @@ fn insert_sampled_recipe(
             object_index: source.speed_state_machine,
         });
     };
-    let sampled_collection = builder.record(
-        ProducerClass::Collection,
-        RecipeRecordParentage::Child {
-            parent: *root_record,
-        },
-        source.file,
-        source.direction_state_machine,
-    )?;
+    // A lone sampled contour is emitted directly under the root; the engine reads a
+    // `collection x1` as a distinct node and stops merging the root's remaining children there.
+    let sampled_collection = (source.directions.len() > 1)
+        .then(|| {
+            builder.record(
+                ProducerClass::Collection,
+                RecipeRecordParentage::Child {
+                    parent: *root_record,
+                },
+                source.file,
+                source.direction_state_machine,
+            )
+        })
+        .transpose()?;
+    let sampled_parent = sampled_collection.unwrap_or(*root_record);
     let mut sampled_children = Vec::with_capacity(source.directions.len());
     for direction in &source.directions {
         let record = builder.record(
             ProducerClass::SpeedSampled,
             RecipeRecordParentage::Child {
-                parent: sampled_collection,
+                parent: sampled_parent,
             },
             source.file,
             direction.direction_blender,
@@ -2144,13 +2334,18 @@ fn insert_sampled_recipe(
             direction.speed_min,
             direction.speed_max,
         );
-        let replay = sampled_replay(builder.graph, root_state_machine, source, direction).ok_or(
-            SpeedInfoProducerError::MissingProducerData {
-                behavior_file: source.file,
-                object_index: source.speed_state_machine,
-                field: "sampled source state path",
-            },
-        )?;
+        let replay = sampled_replay(
+            builder.graph,
+            root_file,
+            root_state_machine,
+            source,
+            direction,
+        )
+        .ok_or(SpeedInfoProducerError::MissingProducerData {
+            behavior_file: source.file,
+            object_index: source.speed_state_machine,
+            field: "sampled source state path",
+        })?;
         let directional_summary = direction
             .summary_clips
             .iter()
@@ -2177,6 +2372,7 @@ fn insert_sampled_recipe(
             builder.request(EvaluationRequest::SpeedSampled(SpeedSampledEvaluation {
                 record,
                 domain,
+                direction_input_scale: 1.0,
                 directional_summary,
                 replay,
             }))?;
@@ -2194,13 +2390,57 @@ fn insert_sampled_recipe(
             evaluation,
         });
     }
-    children.insert(
-        insertion.min(children.len()),
-        RecipeContour::Collection {
-            record: sampled_collection,
+    // The speed state's own trailer. Every contour node carries
+    // `center_mode, clip, condition, state_id, value`; for a sampled group the trailer names the
+    // speed state (`walkRunBlendStart` on `iLocomotionSpeedState`), not the direction sectors.
+    // It is the chained link off the last child, because the wrapping collection's `center_mode`
+    // byte of 1 is the link marker. A single-sector group has no wrapping collection, so the bare
+    // contour carries the same trailer (vanilla: 10,966 bare vs 41,679 paired).
+    if let Some(RecipeContour::SpeedSampled {
+        entry: RecipeEntry::Selector(entry),
+        ..
+    }) = sampled_children.last_mut()
+    {
+        let speed_objects = builder.graph.objs(source.file);
+        if let (Some(event), Some(variable)) = (
+            transition_event_for_state(
+                builder.graph,
+                source.file,
+                source.speed_state_machine,
+                source.speed_state,
+            ),
+            selector_var_of_sm(
+                &speed_objects[source.speed_state_machine],
+                speed_objects,
+                builder.graph.vars(source.file),
+            ),
+        ) {
+            entry.link = Some(ContourEntryLink {
+                event,
+                variable,
+                next: Box::new(ContourEntry {
+                    state_id: i64_member(&speed_objects[source.speed_state], "stateId")
+                        .unwrap_or_default() as i32,
+                    value: 0.0,
+                    link: None,
+                }),
+            });
+        }
+    }
+    let node = match sampled_collection {
+        Some(record) => RecipeContour::Collection {
+            record,
             children: sampled_children,
         },
-    );
+        None => sampled_children
+            .pop()
+            .ok_or(SpeedInfoProducerError::MissingProducerData {
+                behavior_file: source.file,
+                object_index: source.direction_state_machine,
+                field: "sampled direction",
+            })?,
+    };
+    children.insert(insertion.min(children.len()), node);
     Ok(())
 }
 
@@ -2243,6 +2483,50 @@ fn collect_objects_of_class(
     }
     for child in generator_children(object) {
         collect_objects_of_class(objects, child, class_name, seen, out);
+    }
+}
+
+/// `collect_objects_of_class`, but descending through `hkbBehaviorReferenceGenerator` into the
+/// referenced behavior's own index space — the same cross-file descent `build` performs.
+///
+/// The locomotion selector a sampled contour keys on (`iLocomotionSpeedState`) usually lives in
+/// a *referenced* behavior rather than the root's own file: of FO4's 44 Character behaviors, 17
+/// declare it, `Locomotion_8wayBlend.hkx` among them. Staying in-file finds it for a graph small
+/// enough to hold its own locomotion, and never for `MeleeBehavior`/`MTBehavior`.
+fn collect_state_machines_across_files(
+    g: &BehaviorGraph,
+    file: usize,
+    object_index: usize,
+    ref_depth: usize,
+    seen: &mut HashSet<(usize, usize)>,
+    out: &mut Vec<(usize, usize)>,
+) {
+    if !seen.insert((file, object_index)) {
+        return;
+    }
+    let Some(object) = g.objs(file).get(object_index) else {
+        return;
+    };
+    if object.class_name == "hkbStateMachine" {
+        out.push((file, object_index));
+    }
+    if object.class_name == "hkbBehaviorReferenceGenerator" {
+        if ref_depth >= 16 {
+            return; // cyclic / pathologically deep behaviorName chain
+        }
+        let Some(target) = string_member(object, "behaviorName")
+            .and_then(|name| g.resolve(file, &name))
+            .filter(|target| *target != file)
+        else {
+            return;
+        };
+        if let Some(entry) = g.files[target].core.root_generator {
+            collect_state_machines_across_files(g, target, entry, ref_depth + 1, seen, out);
+        }
+        return;
+    }
+    for child in generator_children(object) {
+        collect_state_machines_across_files(g, file, child, ref_depth, seen, out);
     }
 }
 
@@ -2414,7 +2698,7 @@ pub fn build_speed_info_recipe_weapon(
     let mut selector_candidates = Vec::new();
     for f in 0..g.files.len() {
         let objects = g.objs(f);
-        let graph_name = g.files[f].graph_name.clone();
+        let graph_name = g.files[f].core.graph_name.clone();
         if graph_name.is_empty() {
             continue;
         }
@@ -2487,14 +2771,16 @@ pub fn build_speed_info_recipe_weapon(
     let mut recipe_roots = Vec::new();
 
     for (file, state_machine, state_machine_path) in selector_candidates {
+        if let Some(source) = tiered::source(&g, file, state_machine, sapt_chain) {
+            recipe_roots.push(tiered::recipe_root(
+                &mut builder, file, state_machine, state_machine_path, source,
+            )?);
+            continue;
+        }
         if let Some(candidate) = locomotion_by_object.remove(&(file, state_machine)) {
-            let resolved = resolve_weapon_node(&candidate.tree, &g, sapt_chain).ok_or(
-                SpeedInfoProducerError::MissingProducerData {
-                    behavior_file: file,
-                    object_index: state_machine,
-                    field: "resolved locomotion records",
-                },
-            )?;
+            let Some(resolved) = resolve_weapon_node(&candidate.tree, &g, sapt_chain) else {
+                continue;
+            };
             let first_leaf = first_resolved_leaf(&resolved).ok_or(
                 SpeedInfoProducerError::MissingProducerData {
                     behavior_file: file,
@@ -2525,6 +2811,7 @@ pub fn build_speed_info_recipe_weapon(
                     })?;
                 insert_sampled_recipe(
                     &mut builder,
+                    file,
                     state_machine,
                     &mut contour,
                     &source,
@@ -2667,8 +2954,100 @@ pub fn build_speed_info_recipe_weapon(
     })
 }
 
+fn is_shared_mt_behavior(core_rel: &str) -> bool {
+    core_rel
+        .replace('/', "\\")
+        .eq_ignore_ascii_case(r"Actors\Character\Behaviors\MTBehavior.hkx")
+}
+
+/// Construct the role-0 locomotion contours mounted by humanoid creatures. The shared MT graph is
+/// not a weapon graph: its ordinary walk/jog/run leaves bind `WalkSpeedMult`/`JogSpeedMult`/
+/// `RunSpeedMult`, so the weapon-only `fLocomotion*PlaybackSpeed` filter removes every useful
+/// root and can leave only a camera contour. Select the sync-locomotion state machines directly
+/// and retain the Collection roots whose clips resolve through this race's SAPT chain.
+fn build_speed_info_body_mt(
+    core_rel: &str,
+    roots: &[&Path],
+    sapt_chain: &[String],
+) -> Option<Vec<u8>> {
+    fn contour(
+        node: &ResolvedNode,
+        graph: &BehaviorGraph,
+        sapt_chain: &[String],
+    ) -> Option<Contour> {
+        match node {
+            ResolvedNode::Collection(children) => Some(Contour::Collection(CollectionContour {
+                children: children
+                    .iter()
+                    .map(|child| contour(child, graph, sapt_chain))
+                    .collect::<Option<Vec<_>>>()?,
+            })),
+            ResolvedNode::Individual(leaf) => {
+                let (file, clip) = leaf.source.speed_clip;
+                let animation = clip_loop_path(&graph.objs(file)[clip], graph.roots, sapt_chain)?;
+                let (speed, direction) = value_dir(&animation)?;
+                Some(Contour::Individual(IndividualContour {
+                    direction,
+                    parameter: leaf.source.param.clone(),
+                    speed,
+                    clip: leaf.source.clip.clone(),
+                    condition: leaf.source.cond.clone(),
+                    entry: contour_entry(&make_entry(graph, &leaf.source)),
+                }))
+            }
+        }
+    }
+
+    let g = BehaviorGraph::load_reachable(core_rel, roots);
+    let file = 0;
+    let graph_name = g
+        .files
+        .first()
+        .map(|behavior| behavior.core.graph_name.clone())
+        .filter(|name| !name.is_empty())?;
+    let mut speed_roots = Vec::new();
+
+    for state_machine in 0..g.objs(file).len() {
+        let object = &g.objs(file)[state_machine];
+        if object.class_name != "hkbStateMachine"
+            || selector_var_of_sm(object, g.objs(file), g.vars(file)).as_deref()
+                != Some("iSyncIdleLocomotion")
+        {
+            continue;
+        }
+        let Some(tree) = build(&g, file, state_machine, Vec::new(), 0, false) else {
+            continue;
+        };
+        let Some(resolved) = resolve_mt_locomotion(&tree, &g, sapt_chain) else {
+            continue;
+        };
+        let resolved_contour = contour(&resolved, &g, sapt_chain)?;
+        if !matches!(resolved_contour, Contour::Collection(_)) {
+            continue;
+        }
+        let sm_name = string_member(object, "name")?;
+        speed_roots.push(SpeedInfoRoot {
+            state_machine_path: format!("{graph_name}/{sm_name}"),
+            contour: resolved_contour,
+            metadata: RootMetadata::Collection(CollectionRootMetadata {
+                center_mode: CenterMode::PiCentered,
+                producer: ContourEntry {
+                    state_id: -1,
+                    value: f32::from_bits(SHARED_MT_PRODUCER_METADATA_BITS),
+                    link: None,
+                },
+            }),
+        });
+    }
+
+    if speed_roots.is_empty() {
+        return None;
+    }
+    encode_speed_info(&SpeedInfoFile { roots: speed_roots }).ok()
+}
+
 struct EvaluationAssets {
-    behaviors: HashMap<usize, HkxFile>,
+    behaviors: HashMap<usize, Arc<HkxFile>>,
     animation_names: Vec<String>,
     animations: Vec<HkxFile>,
 }
@@ -2744,10 +3123,12 @@ fn evaluation_assets(
     for (file, relative_path) in owners {
         let disk = find_behavior_on_disk(&relative_path, roots)
             .ok_or_else(|| SpeedInfoProducerError::BehaviorNotFound(relative_path.clone()))?;
-        let bytes = std::fs::read(&disk)
-            .map_err(|error| SpeedInfoProducerError::Evaluation(error.to_string()))?;
-        let hkx = read_packfile(&bytes)
-            .map_err(|error| SpeedInfoProducerError::Evaluation(error.to_string()))?;
+        let hkx = behavior_packfile(&disk).ok_or_else(|| {
+            SpeedInfoProducerError::Evaluation(format!(
+                "could not read behavior {}",
+                disk.display()
+            ))
+        })?;
         behaviors.insert(file, hkx);
     }
     for behavior in behaviors.values() {
@@ -2797,27 +3178,43 @@ fn animation_sources(assets: &EvaluationAssets) -> Vec<AnimationPackfile<'_>> {
 fn replay_options(
     replay: &[BehaviorReplay],
 ) -> Result<(usize, LoadOptions), SpeedInfoProducerError> {
-    let Some(first) = replay.first() else {
+    let Some(innermost) = replay.last() else {
         return Err(SpeedInfoProducerError::Evaluation(
             "evaluation replay is empty".to_string(),
         ));
     };
-    if replay.iter().any(|segment| segment.owner != first.owner) {
-        return Err(SpeedInfoProducerError::Evaluation(
-            "cross-behavior evaluation replay is unsupported".to_string(),
-        ));
-    }
+    // Referenced behavior graphs cannot be loaded as one evaluator. The innermost replay segment
+    // already contains the local root and state selections needed to evaluate that graph directly.
+    let local_start = replay
+        .iter()
+        .rposition(|segment| segment.owner != innermost.owner)
+        .map_or(0, |index| index + 1);
+    let local = &replay[local_start..];
+    let first = &local[0];
     Ok((
         first.owner.behavior_file,
         LoadOptions {
             root: first.root.clone(),
-            actions: replay
+            actions: local
                 .iter()
                 .flat_map(|segment| segment.actions.iter().cloned())
                 .collect(),
             root_motion_projection: RootMotionProjection::MagnitudeOnly,
         },
     ))
+}
+
+/// Slack applied to the direction-fan step count so a span that lands within float noise of a
+/// whole number of steps takes the extra curve, the way CK does.
+const DIRECTION_COUNT_EPSILON: f32 = 1.0e-4;
+
+/// Plain truncation matches 96.15% of the CK-built goldens; the rest is one knife-edge fan,
+/// `[-1.5770791, 1.5645132]`, whose span is a hair under 12 steps yet gets 13 curves. With the
+/// slack all 6136 sampled nodes across `B21_PlasmaCaster` and the Gauss Pistol / Meltdown fan
+/// mods match. That fan is the forward arc; without its last bin, directions past ~74.6 degrees
+/// get no curve.
+fn direction_curve_count(min: f32, max: f32, step: f32) -> u32 {
+    ((max - min) / step + DIRECTION_COUNT_EPSILON).trunc() as u32 + 1
 }
 
 fn monotonic_speed_samples(samples: &[SamplePair]) -> Vec<SamplePair> {
@@ -2840,8 +3237,12 @@ fn monotonic_speed_samples(samples: &[SamplePair]) -> Vec<SamplePair> {
 }
 
 fn chord_reduce_speed_samples(samples: &[SamplePair], tolerance: f32) -> Vec<SamplePair> {
-    if samples.len() <= 2 {
-        return samples.to_vec();
+    if samples.len() <= 1 {
+        // A flat sweep survives `monotonic_speed_samples` as a single point, and CK still writes
+        // the closing sample, so the curve reads `[(80, 0), (80, 0)]` rather than one lone point.
+        // Vanilla never ships a curve with fewer than two samples in 16011 sampled nodes — a
+        // one-sample curve gives the engine nothing to interpolate for that heading.
+        return samples.iter().chain(samples.iter()).copied().collect();
     }
     let mut reduced = vec![samples[0]];
     let mut anchor = 0usize;
@@ -2869,6 +3270,25 @@ fn chord_reduce_speed_samples(samples: &[SamplePair], tolerance: f32) -> Vec<Sam
     reduced
 }
 
+#[cfg(test)]
+mod chord_reduce_tests {
+    use super::{SamplePair, chord_reduce_speed_samples};
+
+    /// Vanilla ships no curve with fewer than two samples, so a sweep that collapses to one point
+    /// still has to close on itself.
+    #[test]
+    fn a_flat_sweep_still_closes_on_its_own_sample() {
+        let flat = [SamplePair {
+            input: 80.0,
+            output: 0.0,
+        }];
+        let reduced = chord_reduce_speed_samples(&flat, 2.0);
+        assert_eq!(reduced.len(), 2);
+        assert_eq!(reduced[0], reduced[1]);
+        assert!(chord_reduce_speed_samples(&[], 2.0).is_empty());
+    }
+}
+
 fn evaluate_speed_sampled(
     request: &SpeedSampledEvaluation,
     assets: &EvaluationAssets,
@@ -2881,17 +3301,21 @@ fn evaluate_speed_sampled(
     let mut evaluator = BehaviorEvaluator::load(behavior, &sources, options)
         .map_err(|error| SpeedInfoProducerError::Evaluation(error.to_string()))?;
     let domain = &request.domain;
-    let direction_count =
-        ((domain.direction_max - domain.direction_min) / domain.direction_step).trunc() as u32 + 1;
+    let direction_count = direction_curve_count(
+        domain.direction_min,
+        domain.direction_max,
+        domain.direction_step,
+    );
     let speed_count =
         ((domain.speed_max - domain.speed_min) / domain.speed_step).trunc() as u32 + 1;
     let mut curves = Vec::with_capacity(direction_count as usize);
+    let mut previous_sweep: Vec<SamplePair> = Vec::new();
     let mut direction = domain.direction_min;
     for _ in 0..direction_count {
         evaluator
             .set_variable(
                 &domain.direction_variable,
-                EvaluatorVariableValue::Real(direction),
+                EvaluatorVariableValue::Real(direction * request.direction_input_scale),
             )
             .map_err(|error| SpeedInfoProducerError::Evaluation(error.to_string()))?;
         evaluator
@@ -2929,8 +3353,15 @@ fn evaluate_speed_sampled(
             evaluator.reset_root_translation();
             requested_speed += domain.speed_step;
         }
-        let samples = monotonic_speed_samples(&samples);
-        let samples = chord_reduce_speed_samples(&samples, domain.chord_error_tolerance);
+        let sweep = monotonic_speed_samples(&samples);
+        let reduced = chord_reduce_speed_samples(&sweep, domain.chord_error_tolerance);
+        // CK reuses one sample buffer across directions and never clears it, so every curve but
+        // the first is written as the *previous* direction's full sweep followed by its own
+        // reduced one. Vanilla, the CK-built B21 golden and the CK-built fan mods all show the
+        // resulting x-axis reset in curves 1..n and none in curve 0, so the engine is tuned
+        // against this shape and parity requires reproducing it.
+        let mut samples = std::mem::replace(&mut previous_sweep, sweep);
+        samples.extend_from_slice(&reduced);
         curves.push(DirectionCurve {
             angle: direction,
             samples,
@@ -2990,54 +3421,60 @@ fn evaluate_root_metadata(
     Ok(EvaluatedRequest::RootMetadata(metadata))
 }
 
+/// Evaluate every request, mapping per-request failures (typically a clip whose animation the
+/// creature does not ship) to `None` instead of failing the whole file. Roots whose contours
+/// reference a failed evaluation are dropped later in `evaluated_speed_info`.
 fn evaluate_recipe(
     recipe: &NeedsEvaluation,
     roots: &[&Path],
     sapt_chain: &[String],
-) -> Result<Vec<EvaluatedRequest>, SpeedInfoProducerError> {
+) -> Result<Vec<Option<EvaluatedRequest>>, SpeedInfoProducerError> {
+    let started = std::time::Instant::now();
     let assets = evaluation_assets(recipe, roots, sapt_chain)?;
-    recipe
+    let asset_seconds = started.elapsed().as_secs_f64();
+    let evaluation_started = std::time::Instant::now();
+    let results = recipe
         .requests
-        .iter()
-        .enumerate()
-        .map(|(request_id, request)| {
+        .par_iter()
+        .map(|request| {
             let result = match request {
-                EvaluationRequest::Individual(request) => {
-                    let (speed, direction) =
-                        value_dir(&request.animation_path).ok_or_else(|| {
-                            SpeedInfoProducerError::Evaluation(format!(
-                                "could not read root motion from {}",
-                                request.animation_path.display()
-                            ))
-                        })?;
-                    Ok(EvaluatedRequest::Individual { speed, direction })
-                }
+                EvaluationRequest::Individual(request) => value_dir(&request.animation_path)
+                    .map(|(speed, direction)| EvaluatedRequest::Individual { speed, direction }),
                 EvaluationRequest::SpeedSampled(request) => {
-                    evaluate_speed_sampled(request, &assets)
+                    evaluate_speed_sampled(request, &assets).ok()
                 }
                 EvaluationRequest::RootMetadata(request) => {
-                    evaluate_root_metadata(request, &assets)
+                    evaluate_root_metadata(request, &assets).ok()
                 }
             };
-            result.map_err(|error| {
-                SpeedInfoProducerError::Evaluation(format!("request {request_id}: {error}"))
-            })
+            result
         })
-        .collect()
+        .collect();
+    if started.elapsed().as_millis() >= 250 {
+        eprintln!(
+            "[animtext_speed] sapt={:?} requests={} workers={} assets={asset_seconds:.3}s evaluate={:.3}s",
+            sapt_chain,
+            recipe.requests.len(),
+            rayon::current_num_threads(),
+            evaluation_started.elapsed().as_secs_f64()
+        );
+    }
+    Ok(results)
 }
 
 fn evaluated_request<'a>(
-    evaluations: &'a [EvaluatedRequest],
+    evaluations: &'a [Option<EvaluatedRequest>],
     id: EvaluationRequestId,
 ) -> Result<&'a EvaluatedRequest, SpeedInfoProducerError> {
     evaluations
         .get(id.0 as usize)
+        .and_then(Option::as_ref)
         .ok_or(SpeedInfoProducerError::MissingEvaluation(id))
 }
 
 fn evaluated_entry(
     entry: &RecipeEntry,
-    evaluations: &[EvaluatedRequest],
+    evaluations: &[Option<EvaluatedRequest>],
 ) -> Result<ContourEntry, SpeedInfoProducerError> {
     match entry {
         RecipeEntry::Selector(entry) => Ok(entry.clone()),
@@ -3058,7 +3495,7 @@ fn evaluated_entry(
 fn evaluated_contour(
     contour: &RecipeContour,
     recipe: &NeedsEvaluation,
-    evaluations: &[EvaluatedRequest],
+    evaluations: &[Option<EvaluatedRequest>],
 ) -> Result<Contour, SpeedInfoProducerError> {
     match contour {
         RecipeContour::Collection { children, .. } => Ok(Contour::Collection(CollectionContour {
@@ -3140,12 +3577,11 @@ fn evaluated_contour(
 
 fn evaluated_speed_info(
     recipe: &NeedsEvaluation,
-    evaluations: &[EvaluatedRequest],
+    evaluations: &[Option<EvaluatedRequest>],
 ) -> Result<SpeedInfoFile, SpeedInfoProducerError> {
-    let roots = recipe
-        .roots
-        .iter()
-        .map(|root| {
+    let mut roots = Vec::new();
+    for root in &recipe.roots {
+        let assembled = (|| {
             let contour = evaluated_contour(&root.contour, recipe, evaluations)?;
             let metadata = match root.metadata {
                 RootMetadataRecipe::Collection {
@@ -3177,8 +3613,22 @@ fn evaluated_speed_info(
                 contour,
                 metadata,
             })
-        })
-        .collect::<Result<Vec<_>, SpeedInfoProducerError>>()?;
+        })();
+        match assembled {
+            Ok(root) => roots.push(root),
+            // A failed evaluation (clip the creature does not ship) drops only its root.
+            Err(SpeedInfoProducerError::MissingEvaluation(_)) => continue,
+            Err(other) => return Err(other),
+        }
+    }
+    if roots.is_empty() {
+        return Err(SpeedInfoProducerError::NoSpeedInfoTopology);
+    }
+    // Trim the entry chains to the depth the tree allows before anyone sees the file, so the
+    // in-memory recipe matches the bytes that get written.
+    for root in &mut roots {
+        normalize_entry_links(&mut root.contour);
+    }
     Ok(SpeedInfoFile { roots })
 }
 
@@ -3187,29 +3637,66 @@ pub fn build_speed_info_body_weapon(
     roots: &[&Path],
     sapt_chain: &[String],
 ) -> Option<Vec<u8>> {
+    if is_shared_mt_behavior(core_rel) {
+        return build_speed_info_body_mt(core_rel, roots, sapt_chain);
+    }
     let recipe = build_speed_info_recipe_weapon(core_rel, roots, sapt_chain).ok()?;
     let evaluations = evaluate_recipe(&recipe, roots, sapt_chain).ok()?;
     let speed_info = evaluated_speed_info(&recipe, &evaluations).ok()?;
     encode_speed_info(&speed_info).ok()
 }
 
+fn speed_info_leaf_basenames_mt(
+    core_rel: &str,
+    roots: &[&Path],
+    sapt_chain: &[String],
+) -> BTreeSet<String> {
+    let g = BehaviorGraph::load_reachable(core_rel, roots);
+    let mut out = BTreeSet::new();
+    if g.files.is_empty() {
+        return out;
+    }
+    let file = 0;
+    for state_machine in 0..g.objs(file).len() {
+        let object = &g.objs(file)[state_machine];
+        if object.class_name != "hkbStateMachine"
+            || selector_var_of_sm(object, g.objs(file), g.vars(file)).as_deref()
+                != Some("iSyncIdleLocomotion")
+        {
+            continue;
+        }
+        let Some(tree) = build(&g, file, state_machine, Vec::new(), 0, false) else {
+            continue;
+        };
+        let Some(resolved) = resolve_mt_locomotion(&tree, &g, sapt_chain) else {
+            continue;
+        };
+        if matches!(resolved, ResolvedNode::Collection(_)) {
+            collect_mt_leaf_clips(&tree, &g, sapt_chain, &mut out);
+        }
+    }
+    out
+}
+
 /// The loop-clip basenames (lowercased, no ext) owned by this weapon subgraph's
-/// `AnimationSpeedInfo` contour — the cyclic directional locomotion leaves. `AnimationOffsets`
-/// (§6b) must EXCLUDE these: the engine's locomotion system owns their root motion, so caching
-/// them in Offsets too makes the subgraph moonwalk. Returns EMPTY for a subgraph with no
-/// SpeedInfo contour (e.g. 1st-person `GunBehavior`) — then Offsets legitimately keeps its loops.
-/// Same cross-file root selection as [`build_speed_info_body_weapon`] (kept in lockstep).
+/// `AnimationSpeedInfo` contour: the cyclic directional locomotion leaves. `AnimationOffsets`
+/// must exclude these: the locomotion system owns their root motion, and caching them in
+/// Offsets too makes the subgraph moonwalk. Empty for a subgraph with no SpeedInfo contour
+/// (e.g. 1st-person `GunBehavior`), which then keeps its loops in Offsets. Uses the same
+/// cross-file root selection as [`build_speed_info_body_weapon`]; keep the two in lockstep.
 pub fn speed_info_leaf_basenames(
     core_rel: &str,
     roots: &[&Path],
     sapt_chain: &[String],
 ) -> BTreeSet<String> {
-    let _ = sapt_chain; // the loop SET is SAPT-independent (selection is graph-only)
+    if is_shared_mt_behavior(core_rel) {
+        return speed_info_leaf_basenames_mt(core_rel, roots, sapt_chain);
+    }
     let g = BehaviorGraph::load_reachable(core_rel, roots);
     let mut out: BTreeSet<String> = BTreeSet::new();
     for f in 0..g.files.len() {
         let objects = g.objs(f);
-        if g.files[f].graph_name.is_empty() {
+        if g.files[f].core.graph_name.is_empty() {
             continue;
         }
         let mut camera_subtree: HashSet<usize> = HashSet::new();
@@ -3231,25 +3718,64 @@ pub fn speed_info_leaf_basenames(
             if camera_subtree.contains(&idx) {
                 continue;
             }
+            if let Some(source) = tiered::source(&g, f, idx, sapt_chain) {
+                out.extend(source.clips.iter().filter_map(|clip| {
+                    string_member(&objects[*clip], "animationName").map(|name| leaf_basename(&name))
+                }));
+                continue;
+            }
             if let Some(tree) = build(&g, f, idx, Vec::new(), 0, false) {
-                collect_leaf_clips(&tree, &g, &mut out);
+                collect_leaf_clips(&tree, &g, sapt_chain, &mut out);
             }
         }
     }
     out
 }
 
-/// Walk a contour tree collecting each `Individual` leaf's loop-clip basename — but ONLY the
+/// Collect the loop-clip basename of each MT contour leaf bound to `walkSpeedMult`,
+/// `jogSpeedMult` or `runSpeedMult`; the MT counterpart of [`collect_leaf_clips`].
+fn collect_mt_leaf_clips(
+    node: &Node,
+    g: &BehaviorGraph,
+    sapt_chain: &[String],
+    out: &mut BTreeSet<String>,
+) {
+    match node {
+        Node::Collection(children) => {
+            for child in children {
+                collect_mt_leaf_clips(child, g, sapt_chain, out);
+            }
+        }
+        Node::Individual(leaf) => {
+            if !matches!(
+                leaf.param.to_ascii_lowercase().as_str(),
+                "walkspeedmult" | "jogspeedmult" | "runspeedmult"
+            ) {
+                return;
+            }
+            let (file, clip) = leaf.speed_clip;
+            if let Some(path) = clip_loop_path(&g.objs(file)[clip], g.roots, sapt_chain) {
+                out.insert(leaf_basename(&path.to_string_lossy()));
+            }
+        }
+    }
+}
+
+/// Walk a contour tree collecting each `Individual` leaf's loop-clip basename, but only for
 /// leaves bound to an `fLocomotion*PlaybackSpeed` variable (the cyclic directional walk/run/
 /// sneak loops). The selection SMs also carry fire/reload clips bound to `weaponSpeedMult`/
-/// `reloadSpeedMult`; those are NOT locomotion loops and must NOT be excluded from Offsets (CK
-/// keeps `wpnreload`/`wpnfireauto*` in the offsets cache). Filtering on the bound `param` is what
-/// makes this the precise moonwalk-guard set rather than "every speed-bound clip" (§6b.2).
-fn collect_leaf_clips(node: &Node, g: &BehaviorGraph, out: &mut BTreeSet<String>) {
+/// `reloadSpeedMult`; CK keeps those (`wpnreload`/`wpnfireauto*`) in the offsets cache, so
+/// they must not be excluded.
+fn collect_leaf_clips(
+    node: &Node,
+    g: &BehaviorGraph,
+    sapt_chain: &[String],
+    out: &mut BTreeSet<String>,
+) {
     match node {
         Node::Collection(ch) => {
             for c in ch {
-                collect_leaf_clips(c, g, out);
+                collect_leaf_clips(c, g, sapt_chain, out);
             }
         }
         Node::Individual(leaf) => {
@@ -3258,8 +3784,8 @@ fn collect_leaf_clips(node: &Node, g: &BehaviorGraph, out: &mut BTreeSet<String>
                 return;
             }
             let (cf, ci) = leaf.speed_clip;
-            if let Some(an) = string_member(&g.objs(cf)[ci], "animationName") {
-                out.insert(leaf_basename(&an));
+            if let Some(path) = clip_loop_path(&g.objs(cf)[ci], g.roots, sapt_chain) {
+                out.insert(leaf_basename(&path.to_string_lossy()));
             }
         }
     }
@@ -3275,6 +3801,74 @@ mod tests {
 
     fn base_meshes() -> PathBuf {
         repo_root().join("extracted/fo4/Meshes")
+    }
+
+    /// A `MODE_SINGLE_PLAY` clip named as a blender's sync master must not freeze the locomotion
+    /// blended underneath it. In `LocomotionBlendGunUpBoltChargeBlend`, child 0 is the one-shot
+    /// `WPNBoltChargeReady` (`indexOfSyncMasterChild` 0) and child 1 the locomotion tree; adopting
+    /// the clamped master's phase zeroes every `RifleBoltChargeState_SM` contour, and the
+    /// character sticks mid-stride. Vanilla ships 6554 of these contours, none all-zero.
+    #[test]
+    fn bolt_charge_locomotion_survives_its_single_play_sync_master() {
+        let base = base_meshes();
+        let core = r"Actors\Character\Behaviors\WeaponBehavior.hkx";
+        if !base.join(core.replace('\\', "/")).is_file() {
+            eprintln!("base character fixtures absent; skipping");
+            return;
+        }
+        let chain = [
+            r"Actors\Character\Animations\Weapon\44Pistol\Player",
+            r"Actors\Character\Animations\Weapon\44Pistol",
+            r"Actors\Character\Animations\Weapon\GripRifleStraight",
+            r"Actors\Character\Animations\Paired",
+            r"Actors\Character\Animations",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+        let roots = [base.as_path()];
+
+        let body =
+            build_speed_info_body_weapon(core, &roots, &chain).expect("44Pistol weapon SpeedInfo");
+        let generated = decode_speed_info(&body).expect("generated SpeedInfo decodes");
+
+        fn sampled<'a>(contour: &'a Contour, out: &mut Vec<&'a SpeedSampledContour>) {
+            match contour {
+                Contour::Collection(collection) => {
+                    for child in &collection.children {
+                        sampled(child, out);
+                    }
+                }
+                Contour::SpeedSampled(node) => out.push(node),
+                Contour::Individual(_) => {}
+            }
+        }
+
+        let mut contours = Vec::new();
+        for root in &generated.roots {
+            if root.state_machine_path.ends_with("RifleBoltChargeState_SM") {
+                sampled(&root.contour, &mut contours);
+            }
+        }
+        assert!(
+            !contours.is_empty(),
+            "no sampled contour produced for RifleBoltChargeState_SM"
+        );
+
+        let frozen = contours
+            .iter()
+            .filter(|node| {
+                node.curves
+                    .iter()
+                    .all(|curve| curve.samples.iter().all(|s| s.output.abs() < 1.0e-6))
+            })
+            .count();
+        assert_eq!(
+            frozen,
+            0,
+            "{frozen} of {} bolt-charge contours report zero speed in every direction — the              single-play sync master is freezing the locomotion blend again",
+            contours.len()
+        );
     }
 
     #[test]
@@ -3313,6 +3907,636 @@ mod tests {
         assert!(stats.individuals > 0);
         assert!(stats.speed_sampled > 0);
         assert!(!speed_info_leaf_basenames(core, &roots, &chain).is_empty());
+    }
+
+    /// Two weapons on the same core but different grip chains must not share a speed contour.
+    /// Vanilla never does: 66 FO4 weapon subgraphs share an identical 24-contour-root set and all
+    /// 66 differ in bytes, because the contour samples each grip's own loop clips.
+    ///
+    /// Chains are the live ones from `HumanRaceAdditivePluginPort`: AlienRifle (`GripRifleStraight`
+    /// tail) and GaussPistol (`Pistol` tail), on a pinned core. Leaf basenames are printed but not
+    /// asserted: every grip ships identically named clips (`wpnrunforwardready` etc.) in its own
+    /// folder, so only the emitted body discriminates.
+    #[test]
+    fn weapon_speed_contour_varies_with_grip_chain() {
+        let converted = repo_root().join("mods/SeventySix/data/Meshes");
+        let base = base_meshes();
+        let core = r"Actors\Character\Behaviors\WeaponBehavior.hkx";
+        if !base.join(core.replace('\\', "/")).is_file()
+            || !converted
+                .join("Actors/Character/Animations/FO76/Weapon/AlienRifle")
+                .is_dir()
+            || !converted
+                .join("Actors/Character/Animations/FO76/Weapon/GaussPistol")
+                .is_dir()
+        {
+            eprintln!("converted AlienRifle/GaussPistol/base character fixtures absent; skipping");
+            return;
+        }
+        let rifle_chain = [
+            r"Actors\Character\Animations\FO76\Weapon\AlienRifle",
+            r"Actors\Character\Animations\Weapon\AlienRifle",
+            r"Actors\Character\Animations\FO76\Weapon\CombatShotgun\Player",
+            r"Actors\Character\Animations\Weapon\CombatShotgun\Player",
+            r"Actors\Character\Animations\FO76\Weapon\CombatShotgun",
+            r"Actors\Character\Animations\Weapon\CombatShotgun",
+            r"Actors\Character\Animations\FO76\Weapon\GripRifleStraight\Player",
+            r"Actors\Character\Animations\Weapon\GripRifleStraight\Player",
+            r"Actors\Character\Animations\FO76\Weapon\GripRifleStraight",
+            r"Actors\Character\Animations\Weapon\GripRifleStraight",
+            r"Actors\Character\Animations\Common\Emotes",
+            r"Actors\Character\Animations\Common",
+            r"Actors\Character\Animations\Player",
+            r"Actors\Character\Animations",
+            r"Actors\Character\Animations\Paired",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+        let pistol_chain = [
+            r"Actors\Character\Animations\FO76\Weapon\GaussPistol",
+            r"Actors\Character\Animations\Weapon\GaussPistol",
+            r"Actors\Character\Animations\FO76\Weapon\Pistol\Injured\Right",
+            r"Actors\Character\Animations\Weapon\Pistol\Injured\Right",
+            r"Actors\Character\Animations\FO76\Weapon\Pistol\Player",
+            r"Actors\Character\Animations\Weapon\Pistol\Player",
+            r"Actors\Character\Animations\FO76\Weapon\Pistol",
+            r"Actors\Character\Animations\Weapon\Pistol",
+            r"Actors\Character\Animations\FO76\Weapon\Rifle\Neutral",
+            r"Actors\Character\Animations\Weapon\Rifle\Neutral",
+            r"Actors\Character\Animations\Paired",
+            r"Actors\Character\Animations\Common\Emotes",
+            r"Actors\Character\Animations\Common",
+            r"Actors\Character\Animations\Player",
+            r"Actors\Character\Animations",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+        let roots = [converted.as_path(), base.as_path()];
+
+        let rifle_leaves = speed_info_leaf_basenames(core, &roots, &rifle_chain);
+        let pistol_leaves = speed_info_leaf_basenames(core, &roots, &pistol_chain);
+        eprintln!(
+            "rifle leaves={} pistol leaves={} rifle-only={:?} pistol-only={:?}",
+            rifle_leaves.len(),
+            pistol_leaves.len(),
+            rifle_leaves.difference(&pistol_leaves).collect::<Vec<_>>(),
+            pistol_leaves.difference(&rifle_leaves).collect::<Vec<_>>(),
+        );
+
+        let rifle = build_speed_info_body_weapon(core, &roots, &rifle_chain)
+            .expect("straight-rifle grip SpeedInfo");
+        let pistol = build_speed_info_body_weapon(core, &roots, &pistol_chain)
+            .expect("pistol grip SpeedInfo");
+        eprintln!("rifle body={}B pistol body={}B", rifle.len(), pistol.len());
+        assert_ne!(
+            rifle, pistol,
+            "straight-rifle and pistol grips emitted a byte-identical speed contour; \
+             the SAPT chain is not reaching the sampled clips"
+        );
+    }
+
+    /// The forward fan every CK golden ships spans a hair under 12 steps of PI/12 yet still gets
+    /// 13 curves, while the neighbouring rear fan genuinely has 12.
+    #[test]
+    fn knife_edge_direction_fan_keeps_its_last_curve() {
+        let step = f32::from_bits(0x3e86_0a92);
+        assert_eq!(direction_curve_count(-1.5770791, 1.5645132, step), 13);
+        assert_eq!(direction_curve_count(2.3624778, 5.4915042, step), 12);
+        assert_eq!(direction_curve_count(-0.7916815, 2.3624778, step), 13);
+        assert_eq!(
+            direction_curve_count(-std::f32::consts::PI, std::f32::consts::PI, step),
+            25
+        );
+    }
+
+    /// A 3P weapon speed state nests a direction state machine whose sectors CK emits as a pair
+    /// inside their own collection (vanilla: 41277 paired roots, 0 degraded). Taking the nested
+    /// SM's forward blender alone drops the `moveBackward` sector (135°–315°, every strafe-right
+    /// and rearward angle), so the weapon cannot strafe.
+    #[test]
+    fn weapon_sampled_contours_are_emitted_as_a_direction_pair() {
+        let converted = repo_root().join("mods/SeventySix/data/Meshes");
+        let base = base_meshes();
+        let core = r"Actors\Character\Behaviors\WeaponBehavior.hkx";
+        if !base.join(core.replace('\\', "/")).is_file()
+            || !converted
+                .join("Actors/Character/Animations/Weapon/PlasmaCaster")
+                .is_dir()
+        {
+            eprintln!("converted PlasmaCaster / base character fixtures absent; skipping");
+            return;
+        }
+        // The real chain off `AnimsPlasmaCaster`'s 3P block, verbatim from the converted RACE.
+        let chain = [
+            r"Actors\Character\Animations\FO76\Weapon\PlasmaCaster",
+            r"Actors\Character\Animations\Weapon\PlasmaCaster",
+            r"Actors\Character\Animations\Weapon\GatlingPlasma",
+            r"Actors\Character\Animations\Weapon\GripHeavy",
+            r"Actors\Character\Animations\Common\Emotes",
+            r"Actors\Character\Animations\Common",
+            r"Actors\Character\Animations\Player",
+            r"Actors\Character\Animations\Paired",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+        let roots = [converted.as_path(), base.as_path()];
+        let recipe = build_speed_info_recipe_weapon(core, &roots, &chain)
+            .expect("PlasmaCaster 3P weapon locomotion recipe");
+
+        fn walk(
+            node: &RecipeContour,
+            paired: &mut usize,
+            bare: &mut usize,
+            conditions: &mut Vec<String>,
+        ) {
+            match node {
+                RecipeContour::Collection { children, .. } => {
+                    let sampled = children
+                        .iter()
+                        .filter(|child| matches!(child, RecipeContour::SpeedSampled { .. }))
+                        .count();
+                    if sampled > 1 {
+                        *paired += 1;
+                    } else if sampled == 1 {
+                        *bare += 1;
+                    }
+                    for child in children {
+                        walk(child, paired, bare, conditions);
+                    }
+                }
+                RecipeContour::SpeedSampled {
+                    condition,
+                    clip,
+                    center_mode,
+                    ..
+                } => conditions.push(format!("{condition}/{clip}/{center_mode:?}")),
+                RecipeContour::Individual { .. } => {}
+            }
+        }
+
+        let (mut paired, mut bare, mut conditions) = (0usize, 0usize, Vec::new());
+        for root in &recipe.roots {
+            walk(&root.contour, &mut paired, &mut bare, &mut conditions);
+        }
+
+        assert!(
+            recipe.stats().speed_sampled > 0,
+            "no SpeedSampled contour emitted at all"
+        );
+        assert!(
+            paired > 0,
+            "every sampled contour is unpaired ({bare} bare, 0 paired) — the single-sector \
+             fallback ran ahead of the nested direction scan again; conditions {conditions:?}"
+        );
+        assert!(
+            conditions
+                .iter()
+                .any(|condition| condition.contains("Direction")),
+            "no sampled contour is conditioned on a direction selector; got {conditions:?} — \
+             `iLocomotionSpeedState` here is the fallback branch's fingerprint"
+        );
+
+        // `RelaxedWalkBackward` is the discriminating sector. Its child weights are asymmetric,
+        // so the mirrored `PI/2 - TAU * weight` fan collapsed it to a zero-centred
+        // [-3.1353, 0.0063] instead of the pi-centred [1.5645, 4.7061] vanilla ships.
+        // `CombatWalk*` cannot catch that: its weights are symmetric about 0.125, so the mirror
+        // maps the fan onto itself and both formulas agree.
+        let ranges = recipe
+            .requests
+            .iter()
+            .filter_map(|request| match request {
+                EvaluationRequest::SpeedSampled(sampled) => {
+                    Some((sampled.domain.direction_min, sampled.domain.direction_max))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            ranges
+                .iter()
+                .any(|(low, high)| (low - 1.5645).abs() < 1e-3 && (high - 4.7061).abs() < 1e-3),
+            "no rearward sector spans vanilla's [1.5645, 4.7061]; got {ranges:?}"
+        );
+
+        // The speed state's trailer, which vanilla carries on every sampled group and we emitted
+        // on none: `walkRunBlendStart` conditioned on `iLocomotionSpeedState`. Its absence is
+        // exactly the "our root == vanilla's root minus one contour" shape, and the slow walk.
+        fn links(node: &RecipeContour, out: &mut Vec<String>) {
+            match node {
+                RecipeContour::Collection { children, .. } => {
+                    for child in children {
+                        links(child, out);
+                    }
+                }
+                RecipeContour::SpeedSampled {
+                    entry: RecipeEntry::Selector(entry),
+                    ..
+                } => {
+                    if let Some(link) = &entry.link {
+                        out.push(format!("{}/{}", link.event, link.variable));
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut trailers = Vec::new();
+        for root in &recipe.roots {
+            links(&root.contour, &mut trailers);
+        }
+        assert!(
+            trailers.iter().any(|t| t.starts_with("walkRunBlendStart/")),
+            "no sampled group carries the speed-state trailer; got {trailers:?}"
+        );
+    }
+
+    /// A humanoid creature that lacks one of the clips a weapon-behavior root replays
+    /// (MoleMiner ships no `WPNMineThrow`) must still produce SpeedInfo for every root whose
+    /// animations resolve — one missing clip drops only its own root, never the whole file.
+    /// This is the gun-stance locomotion contour: without it converted mole miners chase at
+    /// walk speed and never run.
+    #[test]
+    fn humanoid_creature_gun_locomotion_speed_info_survives_missing_clips() {
+        let converted = repo_root().join("mods/SeventySix/data/Meshes");
+        let base = base_meshes();
+        let core = r"Actors\Character\Behaviors\WeaponBehavior.hkx";
+        if !base.join(core.replace('\\', "/")).is_file()
+            || !converted
+                .join("Actors/MoleMiner/Animations/GripAssault")
+                .is_dir()
+        {
+            eprintln!("converted MoleMiner / base character fixtures absent; skipping");
+            return;
+        }
+        if converted
+            .join("Actors/MoleMiner/Animations/GripAssault/wpnminethrow.hkx")
+            .is_file()
+        {
+            // The alias-synthesis fixup ships a WPNMineThrow clip, so this test's
+            // missing-clip premise does not hold on the live tree.
+            eprintln!("live tree ships a synthesized WPNMineThrow alias; skipping");
+            return;
+        }
+        let roots = [converted.as_path(), base.as_path()];
+        let chain: Vec<String> = [
+            r"Actors\MoleMiner\Animations\GripAssault",
+            r"Actors\MoleMiner\Animations\Shared",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+
+        let body = build_speed_info_body_weapon(core, &roots, &chain)
+            .expect("MoleMiner GripAssault SpeedInfo despite missing WPNMineThrow");
+        let generated = decode_speed_info(&body).unwrap();
+        let stats = generated.stats();
+        assert!(stats.roots > 0);
+        assert!(stats.individuals > 0);
+        assert!(
+            generated
+                .roots
+                .iter()
+                .any(|root| root.state_machine_path.ends_with("RifleReady_SM")),
+            "ready-stance locomotion root must survive"
+        );
+        assert!(
+            generated
+                .roots
+                .iter()
+                .all(|root| !root.state_machine_path.ends_with("DefaultMineThrow_SM")),
+            "the root that replays the missing WPNMineThrow clip is dropped, not kept broken"
+        );
+
+        // The arm-injured wrappers must produce too: their SAPT chains lead with
+        // `<Weapon>\Injured\<Side>` dirs the creature does not ship, falling through to the
+        // weapon dir. These are 10 of MoleMiner's 19 starved subgraphs.
+        let injured_chain: Vec<String> = [
+            r"Actors\MoleMiner\Animations\RailwayRifle\Injured\Left",
+            r"Actors\MoleMiner\Animations\RailwayRifle",
+            r"Actors\MoleMiner\Animations\Shared",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+        let body = build_speed_info_body_weapon(
+            r"Actors\Character\Behaviors\LeftArmInjuredWeaponWrappingBehavior.hkx",
+            &roots,
+            &injured_chain,
+        )
+        .expect("MoleMiner injured-wrapper SpeedInfo");
+        let stats = decode_speed_info(&body).unwrap().stats();
+        assert!(stats.roots > 0);
+        assert!(stats.individuals > 0);
+    }
+
+    /// The vanilla FO4 SuperMutant MT subgraph is the role-0 oracle for humanoid creatures using
+    /// the same shared `MTBehavior.hkx`. Its three Collection roots own Walk/Jog/Run; the other
+    /// four roots are sampled sneak/swim contours. The weapon producer recovers only a camera
+    /// root from this graph and nothing from MoleMiner's SAPT chain, leaving every locomotion loop
+    /// in `AnimationOffsets` and the converted creature walk-only.
+    #[test]
+    fn humanoid_creature_mt_locomotion_speed_info_is_generated() {
+        let converted = repo_root().join("mods/SeventySix/data/Meshes");
+        let base = base_meshes();
+        let core = r"Actors\Character\Behaviors\MTBehavior.hkx";
+        let oracle_path = repo_root()
+            .join("extracted/fo4/meshes/AnimTextData/animationspeedinfo/8988378211353393101.txt");
+        if !base.join(core.replace('\\', "/")).is_file()
+            || !converted.join("Actors/MoleMiner/animations/MT").is_dir()
+            || !oracle_path.is_file()
+        {
+            eprintln!("converted MoleMiner / base character / oracle fixtures absent; skipping");
+            return;
+        }
+
+        // 1. Reproduce the vanilla oracle from its own base-game inputs.
+        let base_roots = [base.as_path()];
+        let supermutant_chain = [
+            r"Actors\Supermutant\Animations\MT\Neutral",
+            r"Actors\Supermutant\Animations\H2H",
+            r"Actors\Supermutant\Animations\Shared",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+        let oracle_bytes = std::fs::read(&oracle_path).unwrap();
+        let oracle = decode_speed_info(&oracle_bytes).expect("vanilla MT SpeedInfo decodes");
+        let generated = build_speed_info_body_weapon(core, &base_roots, &supermutant_chain)
+            .expect("SuperMutant MT SpeedInfo");
+        let generated = decode_speed_info(&generated).unwrap();
+        assert_eq!(
+            generated.stats(),
+            ContourStats {
+                roots: 3,
+                collections: 3,
+                individuals: 9,
+                speed_sampled: 0,
+            }
+        );
+        for root in &generated.roots {
+            let oracle_root = oracle
+                .roots
+                .iter()
+                .find(|candidate| candidate.state_machine_path == root.state_machine_path)
+                .expect("generated MT movement root exists in vanilla oracle");
+            let (Contour::Collection(generated), Contour::Collection(oracle)) =
+                (&root.contour, &oracle_root.contour)
+            else {
+                panic!("MT movement roots must be Collections");
+            };
+            let (
+                RootMetadata::Collection(generated_metadata),
+                RootMetadata::Collection(oracle_metadata),
+            ) = (&root.metadata, &oracle_root.metadata)
+            else {
+                panic!("MT movement roots must carry Collection metadata");
+            };
+            assert!(
+                (generated_metadata.producer.value - oracle_metadata.producer.value).abs()
+                    < 0.000001,
+                "{} metadata: generated {:?}, oracle {:?}",
+                root.state_machine_path,
+                generated_metadata.producer.value,
+                oracle_metadata.producer.value,
+            );
+            assert_eq!(generated.children.len(), oracle.children.len());
+            for (generated, oracle) in generated.children.iter().zip(&oracle.children) {
+                let (Contour::Individual(generated), Contour::Individual(oracle)) =
+                    (generated, oracle)
+                else {
+                    panic!("MT movement children must be Individuals");
+                };
+                assert_eq!(generated.parameter, oracle.parameter);
+                assert_eq!(generated.clip, oracle.clip);
+                assert_eq!(generated.condition, oracle.condition);
+                assert_eq!(generated.entry, oracle.entry);
+                assert!((generated.speed - oracle.speed).abs() < 0.001);
+                assert!(
+                    generated
+                        .direction
+                        .iter()
+                        .zip(oracle.direction)
+                        .all(|(left, right)| (left - right).abs() < 0.000001)
+                );
+            }
+        }
+
+        // 2. The converted humanoid creature must then produce its own contour.
+        let chain = [
+            r"Actors\MoleMiner\Animations\MT",
+            r"Actors\MoleMiner\Animations\H2H",
+            r"Actors\MoleMiner\Animations\Shared",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+        let roots = [converted.as_path(), base.as_path()];
+        let body = build_speed_info_body_weapon(core, &roots, &chain)
+            .expect("MoleMiner MT locomotion SpeedInfo");
+        assert!(decode_speed_info(&body).unwrap().stats().individuals > 0);
+        assert!(
+            speed_info_leaf_basenames(core, &roots, &chain)
+                .iter()
+                .any(|clip| clip == "runforward")
+        );
+
+        let scorched_chain = [
+            r"Actors\Scorched\Animations\H2H",
+            r"Actors\Character\Animations\MT\Neutral",
+            r"Actors\Character\Animations",
+            r"Actors\Character\Animations\Common",
+            r"Actors\Scorched\Animations\Mouth",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+        let body = build_speed_info_body_weapon(core, &roots, &scorched_chain)
+            .expect("Scorched MT locomotion SpeedInfo");
+        assert!(decode_speed_info(&body).unwrap().stats().individuals > 0);
+        assert!(
+            speed_info_leaf_basenames(core, &roots, &scorched_chain)
+                .iter()
+                .any(|clip| clip == "runforward")
+        );
+    }
+
+    #[test]
+    fn humanoid_creature_melee_locomotion_speed_info_is_generated() {
+        let converted = repo_root().join("mods/SeventySix/data/Meshes");
+        let base = base_meshes();
+        let core = r"Actors\Character\Behaviors\MeleeBehavior.hkx";
+        if !base.join(core.replace('\\', "/")).is_file()
+            || !converted.join("Actors/MoleMiner/animations/H2H").is_dir()
+        {
+            eprintln!("converted MoleMiner / base character fixtures absent; skipping");
+            return;
+        }
+        let chain = [
+            r"Actors\MoleMiner\Animations\H2H",
+            r"Actors\MoleMiner\Animations\Shared",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+        let roots = [converted.as_path(), base.as_path()];
+
+        let recipe = build_speed_info_recipe_weapon(core, &roots, &chain)
+            .expect("MoleMiner H2H locomotion recipe");
+        let evaluations =
+            evaluate_recipe(&recipe, &roots, &chain).expect("MoleMiner H2H locomotion evaluations");
+        let generated = evaluated_speed_info(&recipe, &evaluations)
+            .expect("MoleMiner H2H locomotion SpeedInfo");
+        assert!(generated.stats().individuals > 0);
+        assert!(
+            speed_info_leaf_basenames(core, &roots, &chain)
+                .iter()
+                .any(|clip| clip == "runforward")
+        );
+
+        let scorched_chain = [
+            r"Actors\Scorched\Animations\H2H",
+            r"Actors\Character\Animations\H2H",
+            r"Actors\Character\Animations\1HM",
+            r"Actors\Character\Animations\Common",
+            r"Actors\Character\Animations",
+            r"Actors\Scorched\Animations\Mouth",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+        let recipe = build_speed_info_recipe_weapon(core, &roots, &scorched_chain)
+            .expect("Scorched H2H locomotion recipe");
+        let evaluations = evaluate_recipe(&recipe, &roots, &scorched_chain)
+            .expect("Scorched H2H locomotion evaluations");
+        let generated =
+            evaluated_speed_info(&recipe, &evaluations).expect("Scorched H2H locomotion SpeedInfo");
+        assert!(generated.stats().individuals > 0);
+        assert!(
+            speed_info_leaf_basenames(core, &roots, &scorched_chain)
+                .iter()
+                .any(|clip| clip == "runforward")
+        );
+    }
+
+    /// A melee locomotion contour must carry a `SpeedSampled` contour, not just per-clip
+    /// individuals. `Actor::ModifyMovementTypeBasedOnAnimationState` clamps `Speeds[dir][JOG]`
+    /// and `Speeds[dir][RUN]` down to the active contour; the sampled array is what advertises
+    /// the graph's reachable speed range. Without it the run slot is pinned to the walk clip's
+    /// root-motion speed and the actor chases at walk pace on `NPC_Melee_MT`. Vanilla ships
+    /// 10966 sampled contours across its 242 `MeleeBehavior.hkb` files.
+    #[test]
+    fn scorched_melee_contour_carries_sampled_speed_range() {
+        let converted = repo_root().join("mods/SeventySix/data/Meshes");
+        let base = base_meshes();
+        let core = r"Actors\Character\Behaviors\MeleeBehavior.hkx";
+        if !base.join(core.replace('\\', "/")).is_file()
+            || !converted.join("Actors/Scorched/animations/1HM").is_dir()
+        {
+            eprintln!("converted Scorched / base character fixtures absent; skipping");
+            return;
+        }
+        // The 1HM melee block off `ScorchedRace`, which is what a pipe-wrench Scorched binds.
+        let chain = [
+            r"Actors\Scorched\Animations\1HM",
+            r"Actors\Scorched\Animations\1HM\Attack",
+            r"Actors\Character\Animations\1HM",
+            r"Actors\Character\Animations\1HM\Attack",
+            r"Actors\Character\Animations\Common",
+            r"Actors\Scorched\Animations\Mouth",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+        let roots = [converted.as_path(), base.as_path()];
+        let recipe = build_speed_info_recipe_weapon(core, &roots, &chain)
+            .expect("Scorched 1HM melee locomotion recipe");
+        let emitted = recipe
+            .roots
+            .iter()
+            .map(|root| root.state_machine_path.as_str())
+            .collect::<Vec<_>>();
+        assert!(
+            recipe.stats().speed_sampled > 0,
+            "no SpeedSampled contour; emitted {emitted:?}"
+        );
+        // Vanilla's melee sampled contour spans `Direction` x `Speed` and carries a directional
+        // summary; an empty summary is the shape the base-weapon producer already guards against.
+        assert!(recipe.requests.iter().any(|request| matches!(
+            request,
+            EvaluationRequest::SpeedSampled(sampled)
+                if sampled.domain.direction_variable == "Direction"
+                    && sampled.domain.speed_variable == "Speed"
+        )));
+        assert!(recipe.requests.iter().all(|request| !matches!(
+            request,
+            EvaluationRequest::SpeedSampled(sampled) if sampled.directional_summary.is_empty()
+        )));
+    }
+
+    #[test]
+    #[ignore = "diagnostic"]
+    fn survey_all_melee_sampled_ranges() {
+        for (label, rel) in [
+            (
+                "OURS",
+                "mods/SeventySix/data/Meshes/AnimTextData/AnimationSpeedInfo",
+            ),
+            (
+                "VANILLA",
+                "extracted/fo4/meshes/AnimTextData/animationspeedinfo",
+            ),
+        ] {
+            let dir = repo_root().join(rel);
+            let mut files = 0usize;
+            let mut without_sampled = 0usize;
+            let mut worst: Option<(f32, String)> = None;
+            let mut best: Option<f32> = None;
+            for entry in std::fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()) {
+                let bytes = std::fs::read(entry.path()).unwrap();
+                if !bytes.windows(17).any(|w| w == b"MeleeBehavior.hkb") {
+                    continue;
+                }
+                files += 1;
+                let Ok(info) = decode_speed_info(&bytes) else {
+                    continue;
+                };
+                let mut maxima = Vec::new();
+                for root in &info.roots {
+                    let mut stack = vec![&root.contour];
+                    while let Some(c) = stack.pop() {
+                        match c {
+                            Contour::Collection(col) => stack.extend(col.children.iter()),
+                            Contour::SpeedSampled(s) => {
+                                let reach = s
+                                    .curves
+                                    .iter()
+                                    .flat_map(|curve| curve.samples.iter())
+                                    .map(|pair| pair.output)
+                                    .fold(f32::NEG_INFINITY, f32::max);
+                                maxima.push(reach);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                if maxima.is_empty() {
+                    without_sampled += 1;
+                    continue;
+                }
+                let file_max = maxima.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+                if worst.as_ref().is_none_or(|(w, _)| file_max < *w) {
+                    worst = Some((file_max, entry.file_name().to_string_lossy().into_owned()));
+                }
+                best = Some(best.map_or(file_max, |b: f32| b.max(file_max)));
+            }
+            eprintln!(
+                "{label}: {files} melee files, {without_sampled} WITHOUT any sampled contour; \
+                 reachable-output max: worst-file={:?} best-file={:?}",
+                worst, best
+            );
+        }
     }
 
     #[test]

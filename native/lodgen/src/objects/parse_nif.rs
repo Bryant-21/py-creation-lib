@@ -1,17 +1,16 @@
 //! Load a placed ref's LOD NIF and extract one `ShapeDesc` per geom.
 //!
 //! Reads geometry + shader + textures via `nif_core` (the generic block-graph
-//! reader — NOT a port of LODGen's `NiFile`) and resolves BGSM/BGEM materials
-//! via the `materials` crate. Faithful port of the FO4 object path of:
+//! reader, not a port of LODGen's `NiFile`) and resolves BGSM/BGEM materials
+//! via the `materials` crate. Port of the FO4 object path of:
 //!   - `ParseNif`       LODApp.cs:1369-1388
 //!   - `IterateNodes`   LODApp.cs:295-393
 //!   - `ShapeDesc` ctor ShapeDesc.cs:235-1313
 //!
-//! Deviation from the C#: nif_core stores
-//! `Shader Flags 1/2` as arrays of named flag strings and `Texture Clamp Mode`
-//! as a named enum. The bit-arithmetic the C# performs on raw uints is ported by
-//! decoding those named representations back to raw bits (`shader_flags` /
-//! `clamp_mode`), mirroring nif_core/convert_file.rs `flag_name_bit`.
+//! nif_core stores `Shader Flags 1/2` as arrays of named flag strings and
+//! `Texture Clamp Mode` as a named enum, so the C# bit arithmetic on raw uints is
+//! ported by decoding those back to raw bits (`shader_flags` / `clamp_mode`),
+//! mirroring nif_core/convert_file.rs `flag_name_bit`.
 
 use crate::asset_source::{self, ResolvedAsset};
 use crate::descriptors::BBox;
@@ -27,19 +26,17 @@ use std::sync::{Arc, Mutex, OnceLock};
 // Decoded-NIF cache
 // ---------------------------------------------------------------------------
 //
-// parse_nif is called once PER PLACED REF (object pass) and per unique ref-key
-// (atlas scan). The same LOD mesh is shared by many refs, and a coarse object
-// quad (LOD16 = 16x16 cells, LOD32 = 32x32) re-loads each mesh again per quad —
-// so one source .nif was decoded thousands of times. Every decode inflates the
-// file into nif_core's generic block graph (an IndexMap per vertex); that torrent
-// of short-lived allocation is the bulk of the object-LOD memory blowup (mimalloc
-// retains the freed pages, so process RSS climbs to the peak CHURN, not the live
-// set).
+// parse_nif runs once per placed ref (object pass) and per unique ref-key (atlas
+// scan). Many refs share one LOD mesh, and coarse quads (LOD16 = 16x16 cells,
+// LOD32 = 32x32) re-load each mesh per quad, so without a cache one source .nif is
+// decoded thousands of times. Each decode inflates the file into nif_core's block
+// graph (an IndexMap per vertex); that short-lived allocation is most of the
+// object-LOD memory blowup (mimalloc retains freed pages, so RSS tracks peak churn,
+// not the live set).
 //
-// Cache the decoded `Arc<NifFile>` keyed by resolved path: each unique mesh is
-// decoded ONCE and shared across all refs/quads. `clear_nif_cache()` runs at each
-// object-LOD level boundary (driver.rs) so resident memory stays bounded to a
-// single level's unique meshes, never the whole worldspace.
+// The decoded `Arc<NifFile>` is cached by resolved path and shared across refs and
+// quads. `clear_nif_cache()` runs at each object-LOD level boundary (driver.rs), so
+// resident memory is bounded to one level's unique meshes.
 static NIF_CACHE: OnceLock<Mutex<HashMap<ResolvedAsset, Arc<NifFile>>>> = OnceLock::new();
 
 static MODEL_SHAPE_CACHE: OnceLock<Mutex<ModelShapeCache>> = OnceLock::new();
@@ -123,8 +120,9 @@ fn cached_load_nif(ctx: &QuadCtx, asset: &ResolvedAsset) -> anyhow::Result<Arc<N
         }
     }
     let bytes = asset_source::read(&ctx.paths.data_dirs, asset)?;
-    let nif =
-        Arc::new(NifFile::from_bytes(&bytes, None).map_err(|error| anyhow::anyhow!("{error:?}"))?);
+    let nif = Arc::new(
+        NifFile::from_bytes_lean(&bytes, None).map_err(|error| anyhow::anyhow!("{error:?}"))?,
+    );
     let mut cache = nif_cache().lock().unwrap_or_else(|e| e.into_inner());
     Ok(Arc::clone(cache.entry(asset.clone()).or_insert(nif)))
 }
@@ -436,14 +434,13 @@ fn iterate_nodes(
         .cloned()
         .unwrap_or_default();
 
-    // port: LODApp.cs:308-316 — accumulate transform unless BSFadeNode (and the
-    // model isn't a "lod" model); ignoreTransRot list omitted (M1 has none).
+    // port: LODApp.cs:308-316: accumulate transform unless BSFadeNode (and the
+    // model isn't a "lod" model); the ignoreTransRot list is not ported.
     //
     // C#: parentTransform2 = parentNode.GetTransform() * parentTransform (ROW-vector,
-    // child applied first). In our COLUMN-vector convention (v' = M·v, translation in
-    // col 3), the equivalent is parent · node_local (verified numerically against the
-    // C# Matrix44 algebra). The previous `node_local · parent` was the wrong order and
-    // silently corrupted multi-node fixtures with rotation+translation.
+    // child applied first). In the COLUMN-vector convention here (v' = M·v, translation
+    // in col 3) that is parent · node_local (verified numerically against the C#
+    // Matrix44 algebra).
     let mut transform = parent_transform;
     let skip_fade = node.type_name == "BSFadeNode" && !contains_ci(&model, "lod");
     if !skip_fade {
@@ -1644,11 +1641,10 @@ fn geom_transform_scaled(block: &NifBlock, scale: f32) -> Mat4 {
 
 /// Resolve a LOD model path against the run's data_dirs.
 ///
-/// FO4 base-record DistantLOD (MNAM) model paths are stored relative to the
-/// `Meshes\` root (e.g. `LOD\Architecture\...`, `DLC03\LOD\...`) — they do NOT
-/// include the `Meshes\` prefix, exactly like BGSM names omit `Materials\`. Try
-/// the path as-is first (so a caller that already supplied a `Meshes\`-rooted
-/// path — e.g. tests — still resolves), then with `Meshes\` prepended.
+/// FO4 base-record DistantLOD (MNAM) model paths are relative to `Meshes\`
+/// (e.g. `LOD\Architecture\...`, `DLC03\LOD\...`), the way BGSM names omit
+/// `Materials\`. The path is tried as-is first (for callers that already pass a
+/// `Meshes\`-rooted path, e.g. tests), then with `Meshes\` prepended.
 /// port: ParseNif's `niFile.Read(gameDir, staticModels[level])` (LODApp.cs:1376),
 /// where the game's mesh root is the implicit base for the stored model path.
 pub(crate) fn resolve_model_path(ctx: &QuadCtx, model: &str) -> Option<ResolvedAsset> {
@@ -1668,13 +1664,176 @@ fn resolve_data_path(ctx: &QuadCtx, rel: &str) -> Option<ResolvedAsset> {
 }
 
 #[cfg(test)]
+pub(crate) fn assert_shape_descs_eq(
+    left: &[crate::objects::static_desc::ShapeDesc],
+    right: &[crate::objects::static_desc::ShapeDesc],
+) {
+    assert_eq!(left.len(), right.len());
+    for (left, right) in left.iter().zip(right) {
+        assert_eq!(left.name, right.name);
+        assert_eq!(left.static_model, right.static_model);
+        assert_eq!(left.geometry.vertices, right.geometry.vertices);
+        assert_eq!(left.geometry.uvcoords, right.geometry.uvcoords);
+        assert_eq!(left.geometry.normals, right.geometry.normals);
+        assert_eq!(left.geometry.tangents, right.geometry.tangents);
+        assert_eq!(left.geometry.bitangents, right.geometry.bitangents);
+        assert_eq!(left.geometry.vertex_colors, right.geometry.vertex_colors);
+        assert_eq!(left.geometry.triangles, right.geometry.triangles);
+        assert_eq!(left.geometry.bbox.min, right.geometry.bbox.min);
+        assert_eq!(left.geometry.bbox.max, right.geometry.bbox.max);
+        assert_eq!(left.flags, right.flags);
+        assert_eq!(left.textures, right.textures);
+        assert_eq!(left.source_materials, right.source_materials);
+        assert_eq!(left.textures_key, right.textures_key);
+        assert_eq!(left.texture_clamp_mode, right.texture_clamp_mode);
+        assert_eq!(left.alpha_threshold, right.alpha_threshold);
+        assert_eq!(left.alpha_flags, right.alpha_flags);
+        assert_eq!(left.backlight_power, right.backlight_power);
+        assert_eq!(
+            left.grayscale_to_palette_scale,
+            right.grayscale_to_palette_scale
+        );
+        assert_eq!(left.enable_parent, right.enable_parent);
+        assert_eq!(left.shader_type, right.shader_type);
+        assert_eq!(left.x, right.x);
+        assert_eq!(left.y, right.y);
+        assert_eq!(left.bounding_box.min, right.bounding_box.min);
+        assert_eq!(left.bounding_box.max, right.bounding_box.max);
+        assert_eq!(left.segments.len(), right.segments.len());
+        for (left, right) in left.segments.iter().zip(&right.segments) {
+            assert_eq!(
+                (left.id, left.start_triangle, left.num_triangles),
+                (right.id, right.start_triangle, right.num_triangles)
+            );
+        }
+        assert_eq!(left.uv_scale, right.uv_scale);
+        assert_eq!(left.uv_offset, right.uv_offset);
+        assert_eq!(left.ref_flags, right.ref_flags);
+        assert_eq!(left.node_transform, right.node_transform);
+        assert_eq!(left.node_scale, right.node_scale);
+        assert_eq!(left.translation, right.translation);
+        assert_eq!(left.rotation, right.rotation);
+        assert_eq!(left.bto_translation, right.bto_translation);
+        assert_eq!(left.bto_scale, right.bto_scale);
+    }
+}
+
+#[cfg(test)]
 mod rooting_tests {
-    use super::{apply_bgsm, resolve_model_path};
+    use super::{apply_bgsm, iterate_nif, resolve_model_path};
     use crate::game::Game;
     use crate::input::WorldspaceInput;
     use crate::objects::static_desc::ShapeFlags;
     use crate::progress::{LodPaths, QuadCtx};
     use crate::settings::LodSettings;
+    use nif_core_native::model::NifFile;
+    use std::time::Instant;
+
+    fn assert_shape_descs_eq(
+        left: &[crate::objects::static_desc::ShapeDesc],
+        right: &[crate::objects::static_desc::ShapeDesc],
+    ) {
+        super::assert_shape_descs_eq(left, right);
+    }
+
+    #[test]
+    #[ignore = "requires LOD_LEAN_NIF and LOD_LEAN_DATA pointing to a real LOD NIF and Data root"]
+    fn lean_load_matches_lossless_shape_descs_and_timings() {
+        let path = std::path::PathBuf::from(std::env::var_os("LOD_LEAN_NIF").unwrap());
+        let data = std::path::PathBuf::from(std::env::var_os("LOD_LEAN_DATA").unwrap());
+        let bytes = std::fs::read(&path).unwrap();
+        let world = WorldspaceInput::from_cells("TestW", vec![]);
+        let settings = LodSettings::fo4_default();
+        let game = Game::fo4();
+        let paths = LodPaths {
+            data_dirs: vec![data],
+            output_dir: std::env::temp_dir(),
+            source_data_dir: None,
+        };
+        let ctx = QuadCtx {
+            world: &world,
+            settings: &settings,
+            game: &game,
+            paths: &paths,
+            level: 4,
+        };
+        let stat = crate::input::StaticDesc {
+            ref_id: "00000001".into(),
+            ref_flags: 0,
+            enable_parent: 0,
+            cell: (0, 0),
+            pos: [0.0; 3],
+            rot: [0.0; 3],
+            scale: 1.0,
+            color: 1.0,
+            alpha_threshold: 128,
+            is_billboard: false,
+            is_grass: false,
+            base_name: "LeanParity".into(),
+            base_flags: 0,
+            material_name: String::new(),
+            full_model: String::new(),
+            lod_models: [Some(path.to_string_lossy().into_owned()), None, None, None],
+            part_transform: crate::input::identity_part_transform(),
+            part_scale: 1.0,
+            material_swap: std::collections::BTreeMap::new(),
+        };
+        for sample in 0..4 {
+            let lean_first = sample % 2 == 1;
+            let parse = |lean| {
+                let started = Instant::now();
+                let nif = if lean {
+                    NifFile::from_bytes_lean(&bytes, Some(path.clone()))
+                } else {
+                    NifFile::from_bytes(&bytes, Some(path.clone()))
+                }
+                .unwrap();
+                let parse_elapsed = started.elapsed();
+                let extract_started = Instant::now();
+                let shapes = iterate_nif(&nif, &stat, 0, &ctx);
+                (parse_elapsed, extract_started.elapsed(), shapes)
+            };
+            if sample == 0 {
+                drop(parse(false));
+                drop(parse(true));
+            }
+            let (first_parse, first_extract, first) = parse(lean_first);
+            let (second_parse, second_extract, second) = parse(!lean_first);
+            let (lossless_parse, lossless_extract, lossless, lean_parse, lean_extract, lean) =
+                if lean_first {
+                    (
+                        second_parse,
+                        second_extract,
+                        second,
+                        first_parse,
+                        first_extract,
+                        first,
+                    )
+                } else {
+                    (
+                        first_parse,
+                        first_extract,
+                        first,
+                        second_parse,
+                        second_extract,
+                        second,
+                    )
+                };
+            eprintln!(
+                "lod_lean_shape sample={sample} lossless_parse_ms={:.3} lean_parse_ms={:.3} lossless_extract_ms={:.3} lean_extract_ms={:.3} shapes={}",
+                lossless_parse.as_secs_f64() * 1000.0,
+                lean_parse.as_secs_f64() * 1000.0,
+                lossless_extract.as_secs_f64() * 1000.0,
+                lean_extract.as_secs_f64() * 1000.0,
+                lossless.len()
+            );
+            assert!(!lossless.is_empty());
+            assert!(lossless.iter().all(
+                |shape| shape.geometry.num_vertices() > 0 && shape.geometry.num_triangles() > 0
+            ));
+            assert_shape_descs_eq(&lossless, &lean);
+        }
+    }
 
     /// A synthesized FO4 MNAM slot (`DLC03\LOD\Architecture\…_LOD.nif`, mixed
     /// case, `Meshes\`-relative without the prefix) must resolve to the on-disk

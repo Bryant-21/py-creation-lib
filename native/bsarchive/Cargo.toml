@@ -21,6 +21,7 @@ bstr = "1.12.1"
 directxtex = { workspace = true }
 flate2 = { version = "1.1.9", default-features = false, features = ["any_zlib"] }
 lz4_flex = { version = "0.13.0", default-features = false, features = ["std"] }
+libdeflater = "1.25.2"
 lzzzz = "2.0.0"
 memmap2 = "0.9.10"
 pyo3 = { workspace = true, features = ["extension-module", "abi3-py310"] }

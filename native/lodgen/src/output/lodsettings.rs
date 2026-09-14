@@ -1,17 +1,21 @@
 /// `.lod` LODSettings file writer.
 ///
 /// Ported from the FO4 (non-Fallout3) branch of `TwbLodSettings.LoadFromData`
-/// (`wbLOD.pas:432-459`, R3 §1). The format is a fixed 16-byte little-endian record:
+/// (`wbLOD.pas:432-459`). FO4 uses a fixed 16-byte little-endian record:
 ///   [i16 SWx][i16 SWy][i32 Stride][i32 Min][i32 Max]
+/// Starfield uses 20 bytes:
+///   [i32 SWx][i32 SWy][i32 Stride][i32 Reserved][i32 Reserved]
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SourceLodSettings {
     pub southwest: (i32, i32),
     pub northeast: Option<(i32, i32)>,
     pub stride: i32,
-    pub min: i32,
-    pub max: i32,
+    pub levels: Option<(i32, i32)>,
     pub object_level: Option<i32>,
+    /// Starfield counts its window in 100 m cells, which do not line up with the
+    /// 4096-unit cells every other supported game uses.
+    pub starfield_cell_grid: bool,
 }
 
 fn validate_source(settings: SourceLodSettings) -> anyhow::Result<SourceLodSettings> {
@@ -21,12 +25,10 @@ fn validate_source(settings: SourceLodSettings) -> anyhow::Result<SourceLodSetti
             settings.stride
         );
     }
-    if settings.min <= 0 || settings.max < settings.min {
-        anyhow::bail!(
-            "LOD settings level range is invalid: {}..{}",
-            settings.min,
-            settings.max
-        );
+    if let Some((min, max)) = settings.levels {
+        if min <= 0 || max < min {
+            anyhow::bail!("LOD settings level range is invalid: {min}..{max}");
+        }
     }
     if let Some(ne) = settings.northeast {
         if ne.0 < settings.southwest.0 || ne.1 < settings.southwest.1 {
@@ -41,6 +43,13 @@ fn validate_source(settings: SourceLodSettings) -> anyhow::Result<SourceLodSetti
 }
 
 pub fn decode_source(bytes: &[u8]) -> anyhow::Result<SourceLodSettings> {
+    let bytes = if bytes.len() == 22 {
+        bytes.strip_prefix(&[0xFF, 0xFE]).ok_or_else(|| {
+            anyhow::anyhow!("22-byte Starfield LOD settings are missing the UTF-16 BOM")
+        })?
+    } else {
+        bytes
+    };
     let i16_at = |offset: usize| -> anyhow::Result<i16> {
         let value = bytes
             .get(offset..offset + 2)
@@ -59,20 +68,28 @@ pub fn decode_source(bytes: &[u8]) -> anyhow::Result<SourceLodSettings> {
             southwest: (i16_at(0)? as i32, i16_at(2)? as i32),
             northeast: None,
             stride: i32_at(4)?,
-            min: i32_at(8)?,
-            max: i32_at(12)?,
+            levels: Some((i32_at(8)?, i32_at(12)?)),
             object_level: None,
+            starfield_cell_grid: false,
+        },
+        20 => SourceLodSettings {
+            southwest: (i32_at(0)?, i32_at(4)?),
+            northeast: None,
+            stride: i32_at(8)?,
+            levels: None,
+            object_level: None,
+            starfield_cell_grid: true,
         },
         24 => SourceLodSettings {
             southwest: (i16_at(12)? as i32, i16_at(14)? as i32),
             northeast: Some((i16_at(16)? as i32, i16_at(18)? as i32)),
             stride: i32_at(8)?,
-            min: i32_at(0)?,
-            max: i32_at(4)?,
+            levels: Some((i32_at(0)?, i32_at(4)?)),
             object_level: Some(i32_at(20)?),
+            starfield_cell_grid: false,
         },
         length => anyhow::bail!(
-            "unsupported LOD settings length {length}; expected 16-byte .lod or 24-byte .dlodsettings"
+            "unsupported LOD settings length {length}; expected 16-byte FO4/Skyrim .lod, 20-byte Starfield .lod, or 24-byte .dlodsettings"
         ),
     };
     validate_source(settings)
@@ -104,21 +121,26 @@ pub fn read_source(
     };
     let lod_path = child_case_insensitive(&settings_dir, &format!("{world}.lod"));
     let dlod_path = child_case_insensitive(&settings_dir, &format!("{world}.dlodsettings"));
-    let (path, expected_len) = match (lod_path, dlod_path) {
+    let (path, allowed_lengths): (_, &[usize]) = match (lod_path, dlod_path) {
         (Some(lod), Some(dlod)) => anyhow::bail!(
             "ambiguous source LOD settings for {world}: {} and {}",
             lod.display(),
             dlod.display()
         ),
-        (Some(path), None) => (path, 16),
-        (None, Some(path)) => (path, 24),
+        (Some(path), None) => (path, &[16, 20, 22]),
+        (None, Some(path)) => (path, &[24]),
         (None, None) => return Ok(None),
     };
     let bytes = std::fs::read(&path)?;
-    if bytes.len() != expected_len {
+    if !allowed_lengths.contains(&bytes.len()) {
         anyhow::bail!(
-            "{}: expected {expected_len} bytes, got {}",
+            "{}: expected {} bytes, got {}",
             path.display(),
+            allowed_lengths
+                .iter()
+                .map(usize::to_string)
+                .collect::<Vec<_>>()
+                .join(" or "),
             bytes.len()
         );
     }
@@ -138,7 +160,7 @@ pub fn encode(sw: (i32, i32), stride: i32, min: i32, max: i32) -> [u8; 16] {
     buf
 }
 
-/// Compute the stride for a worldspace: next power of two of max(ne - sw) span (R3 §1).
+/// Compute the stride for a worldspace: next power of two of max(ne - sw) span.
 pub fn next_stride(sw: (i32, i32), ne: (i32, i32)) -> i32 {
     let span_x = (ne.0 - sw.0).unsigned_abs();
     let span_y = (ne.1 - sw.1).unsigned_abs();
@@ -182,7 +204,7 @@ mod tests {
 
     #[test]
     fn stride_is_next_pow2_of_span() {
-        // span = max(ne-sw) ; next pow2 (R3 §1 GetSize uses Ceil(Stride/sqrt2))
+        // span = max(ne-sw), next pow2 (GetSize uses Ceil(Stride/sqrt2))
         assert_eq!(next_stride((0, 0), (40, 30)), 64); // span 40 -> 64
         assert_eq!(next_stride((-16, -16), (16, 16)), 32); // span 32 -> 32
     }
@@ -206,9 +228,9 @@ mod tests {
                 southwest: (-96, -96),
                 northeast: None,
                 stride: 256,
-                min: 4,
-                max: 32,
+                levels: Some((4, 32)),
                 object_level: None,
+                starfield_cell_grid: false,
             }
         );
     }
@@ -225,11 +247,40 @@ mod tests {
                 southwest: (-64, -64),
                 northeast: Some((63, 63)),
                 stride: 128,
-                min: 4,
-                max: 32,
+                levels: Some((4, 32)),
                 object_level: Some(4),
+                starfield_cell_grid: false,
             }
         );
+    }
+
+    #[test]
+    fn decode_starfield_lod_settings() {
+        let bytes = [
+            0xD9, 0xFF, 0xFF, 0xFF, 0xB0, 0xFF, 0xFF, 0xFF, 0xA0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ];
+        assert_eq!(
+            decode_source(&bytes).unwrap(),
+            SourceLodSettings {
+                southwest: (-39, -80),
+                northeast: None,
+                stride: 160,
+                levels: None,
+                object_level: None,
+                starfield_cell_grid: true,
+            }
+        );
+    }
+
+    #[test]
+    fn decode_bom_prefixed_starfield_lod_settings() {
+        let bytes = [
+            0xFF, 0xFE, 0xFD, 0xFF, 0xFF, 0xFF, 0xF3, 0xFF, 0xFF, 0xFF, 0x20, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0,
+        ];
+        let settings = decode_source(&bytes).unwrap();
+        assert_eq!(settings.southwest, (-3, -13));
+        assert_eq!(settings.stride, 32);
     }
 
     #[test]

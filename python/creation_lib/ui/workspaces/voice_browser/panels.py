@@ -15,14 +15,22 @@ def draw_groups_panel(ws) -> None:
     if not imgui.begin(f"Voices{_NS}"):
         imgui.end()
         return
+    try:
+        draw_groups_content(ws)
+    finally:
+        ws._end_panel_with_loading_mask()
 
+
+def draw_groups_content(ws) -> None:
     controls_disabled = ws._busy
     if controls_disabled:
         imgui.begin_disabled()
-    game_labels = [GAME_PROFILES[game].display_name for game in ws._games]
-    imgui.text_disabled("Game")
-    imgui.set_next_item_width(-1)
-    changed, ws._game_idx = imgui.combo(f"##game{_NS}", ws._game_idx, game_labels)
+    changed = False
+    if getattr(ws, "game_selector", True):
+        game_labels = [GAME_PROFILES[game].display_name for game in ws._games]
+        imgui.text_disabled("Game")
+        imgui.set_next_item_width(-1)
+        changed, ws._game_idx = imgui.combo(f"##game{_NS}", ws._game_idx, game_labels)
     if changed:
         ws._index = None
         ws._selected_group = ""
@@ -71,7 +79,6 @@ def draw_groups_panel(ws) -> None:
     imgui.separator()
     if ws._index is None:
         imgui.text_wrapped("No cached voice reference is loaded.")
-        ws._end_panel_with_loading_mask()
         return
 
     ws._ensure_filtered()
@@ -98,15 +105,19 @@ def draw_groups_panel(ws) -> None:
             ws._dirty_filter = True
         ws._draw_group_context_menu(group, count, group_id)
 
-    ws._end_panel_with_loading_mask()
-
 
 def draw_lines_panel(ws) -> None:
     flags = imgui.WindowFlags_.no_scrollbar | imgui.WindowFlags_.no_scroll_with_mouse
     if not imgui.begin(f"Voice Lines{_NS}", flags=flags):
         imgui.end()
         return
+    try:
+        draw_lines_content(ws)
+    finally:
+        ws._end_panel_with_loading_mask()
 
+
+def draw_lines_content(ws) -> None:
     changed, ws._query = imgui.input_text_with_hint(f"Search{_NS}", "Search voice lines", ws._query)
     if changed:
         ws._dirty_filter = True
@@ -161,18 +172,21 @@ def draw_lines_panel(ws) -> None:
     imgui.separator()
     ws._draw_status_summary()
 
-    ws._end_panel_with_loading_mask()
-
 
 def draw_preview_panel(ws) -> None:
     if not imgui.begin(f"Preview{_NS}"):
         imgui.end()
         return
+    try:
+        draw_preview_content(ws)
+    finally:
+        ws._end_panel_with_loading_mask()
 
+
+def draw_preview_content(ws) -> None:
     line = ws._selected_line
     if line is None:
         imgui.text_wrapped("Select a voice line.")
-        ws._end_panel_with_loading_mask()
         return
 
     imgui.text_wrapped(line.response_text or "(blank response)")
@@ -187,7 +201,6 @@ def draw_preview_panel(ws) -> None:
     if not line.available:
         imgui.spacing()
         imgui.text_wrapped("No matching archive member was found for this response.")
-        ws._end_panel_with_loading_mask()
         return
 
     imgui.spacing()
@@ -220,5 +233,3 @@ def draw_preview_panel(ws) -> None:
             action.handler(ws._current_line, ws._current_wav_path)
         if action.tooltip and imgui.is_item_hovered():
             imgui.set_tooltip(action.tooltip)
-
-    ws._end_panel_with_loading_mask()

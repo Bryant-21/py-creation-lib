@@ -1,9 +1,5 @@
-/// Compute per-vertex bone weights using inverse-distance weighting.
-///
-/// For each vertex, finds the nearest bones and assigns weights
-/// proportional to 1/distance^falloff_power, normalized to sum to 1.
-///
-/// Returns a Vec<Vec<(bone_index, weight)>> mirroring the Python output.
+/// Per-vertex `(bone_index, weight)` lists by inverse-distance weighting: the
+/// nearest bones get 1/distance^falloff_power, normalized to sum to 1.
 pub fn auto_skin_to_cloth_bones(
     vertex_positions: &[[f32; 4]],
     bone_positions: &[[f32; 4]],

@@ -119,16 +119,11 @@ def create_mod(
     """Create a new mod with full directory structure + YAML scaffold.
 
     Args:
-        mod_name: Mod name (e.g. "B21_MyMod").
-        game: Game ID.
         mod_prefix: Required prefix for mod names.
         plugin_ext: "esl", "esp", or "esm".
-        init_git: Whether to initialize a git repo.
         gitea_url/gitea_user/gitea_org/gitea_token: Gitea config for auto-repo.
-        on_progress: Progress callback.
 
-    Returns:
-        Path to the created mod directory.
+    Returns the created mod directory.
     """
     if project_root is None:
         raise ValueError("project_root is required")
@@ -205,18 +200,9 @@ def migrate_mod(
 ) -> Path:
     """Import an external mod into the project's mods/ folder.
 
-    Handles flat and Data/ subdirectory layouts.
-
-    Args:
-        source_dir: Path to the external mod folder.
-        mod_name: Override mod name (defaults to source folder basename).
-        game: Game ID.
-        mod_prefix: Required prefix.
-        init_git: Initialize git repo.
-        on_progress: Progress callback.
-
-    Returns:
-        Path to the created mod directory.
+    Handles flat and Data/ subdirectory layouts. ``mod_name`` defaults to the
+    source folder name and must start with ``mod_prefix`` + "_" when a prefix
+    is given. Returns the created mod directory.
     """
     if project_root is None:
         raise ValueError("project_root is required")

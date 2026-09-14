@@ -29,12 +29,8 @@ pub struct DenseBoneChannel {
     pub scales: Vec<[f32; 3]>,
 }
 
-/// Expand a (possibly sparse / spline-compressed) `AnimationClip` to a
-/// dense uniform sample sequence at `rate_hz`.
-///
-/// This function re-samples each bone channel from whatever keyframe density
-/// the source clip provides (which may already be dense for interleaved clips,
-/// or sparse for spline clips) to a uniform grid.
+/// Resample a (possibly sparse / spline-compressed) `AnimationClip` onto a
+/// uniform grid at `rate_hz`.
 pub fn expand(clip: &AnimationClip, rate_hz: f32) -> DenseClip {
     assert!(rate_hz > 0.0, "rate_hz must be positive");
     let duration = clip.duration;

@@ -1,17 +1,15 @@
 """Apply a PoseDelta to one HKX animation, operating on an in-memory HKXFile.
 
-Three format-specific writers (lossless, interleaved, spline). The
-top-level dispatcher in apply_pose_to_animation handles format detection
-and missing-track creation.
+Three format-specific writers (lossless, interleaved, spline);
+apply_pose_to_animation detects the format and creates missing tracks.
 
-Deltas are already in parent-local space (PoseDelta invariant), so the
-core compose operation per bone, per frame, is:
+Deltas are parent-local (PoseDelta invariant), so per bone, per frame:
 
     new_local_rot = pose.rotations[bone] * existing_local_rot
     new_local_pos = existing_local_pos + pose.translations[bone]
 
-No FK chain walk. No world->local conversion. No per-frame parent computation.
-No XML round-trip: all mutation happens directly on HKXObject members.
+No FK walk or world->local conversion is needed, and mutation happens
+directly on HKXObject members with no XML round-trip.
 """
 
 from __future__ import annotations
@@ -137,24 +135,20 @@ def build_track_name_map(
 ) -> dict[str, int]:
     """Return {bone_name: track_index} for the animation in `hkx_file`.
 
-    Resolves each track's recorded bone index against the editor's skeleton
-    bone name list. This assumes the editor skeleton's leading bones match the
-    animation's authoring skeleton (true for FO4 1st/3rd person vanilla, plus
-    any editor skeleton that was NIF-augmented only by *appending* extra bones).
+    Resolves each track's recorded bone index against the editor skeleton's
+    bone names, assuming its leading bones match the animation's authoring
+    skeleton (true for FO4 1st/3rd person vanilla and for skeletons that were
+    NIF-augmented only by *appending* bones).
 
     Two Havok conventions are supported:
-      1. Explicit binding — `transformTrackToBoneIndices` populated: track_idx
-         maps to the recorded bone index; bone name comes from skeleton.bone_names
-         at that index.
-      2. Implicit identity binding — `transformTrackToBoneIndices` EMPTY and
-         `numberOfTransformTracks > 0`: FO4 runtime treats this as the identity
-         mapping, i.e. track `i` drives bone index `i` directly. Common for
-         animations exported by 3DS Max / Maya Havok plugins that assume the
-         animation was authored against the exact target skeleton.
+      1. Explicit binding: `transformTrackToBoneIndices` maps track_idx to a
+         bone index, named via skeleton.bone_names.
+      2. Implicit identity binding: `transformTrackToBoneIndices` EMPTY and
+         `numberOfTransformTracks > 0`; the FO4 runtime maps track `i` to bone
+         `i`. Common in 3DS Max / Maya Havok exports authored against the exact
+         target skeleton.
 
-    If an index from the binding falls outside the skeleton, that track is
-    dropped from the map — name-based lookup simply won't find a match for it,
-    which is the correct behavior.
+    Tracks whose bone index falls outside the skeleton are dropped.
     """
     binding = _find_object(hkx_file, "hkaAnimationBinding")
     if binding is None:

@@ -7,24 +7,18 @@ pub(crate) use authoring_record::*;
 // ---------------------------------------------------------------------------
 // Canonical top-level group order per game.
 //
-// Top-level GRUPs in a Bethesda plugin must appear in a specific record-type
-// order so the engine can resolve cross-references during a single forward
-// pass. KYWD must precede every record type that references keywords (ACTI,
-// CONT, COBJ, ARMO, ...); when groups are written alphabetically the engine
-// hits a COBJ before any KYWD has been registered and reports
-// `[FORMS] Unable to find keyword (XXXXXXXX)`. CK, after first save, rewrites
-// the plugin in canonical order and the error disappears.
+// The engine resolves cross-references in one forward pass, so top-level GRUPs
+// must follow the vanilla record-type order. KYWD must precede every type that
+// references keywords (ACTI, CONT, COBJ, ARMO, ...); with alphabetical groups
+// the engine hits a COBJ before any KYWD and reports
+// `[FORMS] Unable to find keyword (XXXXXXXX)`. CK rewrites canonical order on save.
 //
-// The bundled per-game lists in `generated/group_order.rs` are produced by
-// `tools/schema_forge/extract_group_order.py` from each game's vanilla master
-// ESM and ship with the package so end-users get correct order without
-// having every game's master locally. Live extraction at build time
-// (`cached_master_group_order`) wins over the bundled baseline whenever the
-// user's installed master is reachable, so mid-version Bethesda content
-// updates apply automatically — the bundled list is the floor, not the
-// ceiling. Groups not present in either source are emitted alphabetically
-// *after* the canonical-order tail so authoring-dirs that introduce
-// novel/mod-specific signatures still build.
+// `generated/group_order.rs` holds per-game lists produced by
+// `tools/schema_forge/extract_group_order.py` from each vanilla master, so
+// builds work without the game installed. Live extraction from the user's
+// master (`cached_master_group_order`) wins when reachable, which picks up
+// Bethesda content updates. Signatures in neither list are emitted
+// alphabetically after the canonical tail.
 // ---------------------------------------------------------------------------
 
 #[path = "../generated/group_order.rs"]
@@ -45,13 +39,9 @@ fn top_level_group_order_for_game(game: Option<&str>) -> Option<&'static [&'stat
 /// Walks GRUP headers in a master ESM and returns the deduped first-occurrence
 /// list of top-level (group_type=0) signatures.
 ///
-/// Group sizes encode the full GRUP-plus-children byte length, so we can skip
-/// past every group's contents in one jump and never read the children. This
-/// runs in low-milliseconds even on Fallout4.esm (~330 MB) because we only
-/// touch the top-level GRUP header bytes.
-///
-/// Returns None on any I/O or parse error rather than failing the build —
-/// the caller falls back to the bundled hardcoded list.
+/// A GRUP's size covers its children, so the walk jumps over group contents and
+/// reads only top-level headers (low milliseconds on the ~330 MB Fallout4.esm).
+/// Returns None on any I/O or parse error; the caller falls back to the bundled list.
 fn extract_top_level_group_order_from_esm(esm_path: &Path) -> Option<Vec<String>> {
     let buf = fs::read(esm_path).ok()?;
     if buf.len() < 24 || &buf[..4] != b"TES4" {
@@ -1536,12 +1526,8 @@ fn count_records_no_py(items: &[ParsedItem]) -> usize {
     n
 }
 
-/// GIL-free authoring-dir export for use from Rust-native phases.
-///
-/// Equivalent to `export_authoring_dir_from_parsed` with `jobs=1` but does
-/// not require a `Python<'_>` handle.  Suitable for calling from within a
-/// `py.detach()` / `allow_threads` scope where acquiring the GIL would
-/// deadlock.
+/// GIL-free authoring-dir export, equivalent to `export_authoring_dir_from_parsed`
+/// with `jobs=1`. Safe inside `py.detach()`, where acquiring the GIL would deadlock.
 pub fn export_authoring_dir_no_py(
     plugin: &ParsedPlugin,
     strings: &LocalizedStringsState,
@@ -1761,6 +1747,7 @@ fn renumber_localized_string_ids_in_strings(
     if id_map.is_empty() {
         return;
     }
+    strings.materialize_all();
     for table in strings.by_language.values_mut() {
         let mut rewritten = HashMap::with_capacity(table.len());
         for (string_id, text) in table.drain() {
@@ -2369,8 +2356,7 @@ fn previous_info_object_id(record: &ParsedRecord) -> Option<u32> {
 /// decoded directly into the parent context and those delta fields stay empty.
 ///
 /// `has_persistent` / `has_visible_when_distant` track key *presence* (not vec
-/// emptiness): a present-but-empty section must still emit an empty GRUP to stay
-/// byte-identical to the former interleaved parse-and-write.
+/// emptiness): a present-but-empty section must still emit an empty GRUP.
 struct DecodedProjectedCell {
     cell_record: ParsedRecord,
     landscape: Option<ParsedRecord>,
@@ -2407,11 +2393,10 @@ fn decode_refr_section(
     Ok(out)
 }
 
-/// Decode a projected CELL payload into records using `context`. Records are
-/// parsed in the SAME order the former interleaved writer parsed them
-/// (CELL → Persistent → LAND → NAVM → Temporary → VisibleWhenDistant), so the
-/// localized-string-ID allocation sequence — and therefore the output bytes —
-/// is unchanged. Decoding into a fresh sub-context yields a `DecodedProjectedCell`
+/// Decode a projected CELL payload into records using `context`. The parse order
+/// (CELL → Persistent → LAND → NAVM → Temporary → VisibleWhenDistant) fixes the
+/// localized-string-ID allocation sequence, and therefore the output bytes.
+/// Decoding into a fresh sub-context yields a `DecodedProjectedCell`
 /// whose deltas the writer reconciles; decoding into the parent leaves the delta
 /// fields empty and the writer skips reconciliation.
 fn decode_projected_cell_payload(
@@ -2514,7 +2499,7 @@ fn decode_projected_cell_payload(
 /// directly into `parent`, so their FormIDs/string-IDs are already in the
 /// parent namespace and `next_string_id` is untouched. `reconcile = true`
 /// applies the same string-ID renumber + FormID remap + string-merge the
-/// per-record consumer does (`parallel_streaming_decode_payloads`), across all
+/// per-record consumer does (`parallel_streaming_decode_records`), across all
 /// of the cell's records at once.
 fn write_decoded_projected_cell<W: Write>(
     builder: &mut StreamingEspBuilder<W>,
@@ -2648,10 +2633,9 @@ fn write_decoded_projected_cell<W: Write>(
             .begin_group(form_id.to_le_bytes(), group_type, header_size)
             .map_err(|e| io_error(format!("begin {section_name} group: {e}")))?;
 
-        // Landscape + navmeshes lead the Temporary group, before its REFRs.
-        // Emitting them as direct children of the Cell Children group (type 6),
-        // as this code did previously, makes the engine show flat default
-        // ground because it never streams that misplaced terrain.
+        // Landscape + navmeshes lead the Temporary group, before its REFRs. As
+        // direct children of the Cell Children group (type 6) the engine never
+        // streams the terrain and shows flat default ground.
         if group_type == TEMPORARY_GROUP {
             if let Some(land) = &landscape {
                 builder.write_record(land, header_size)?;
@@ -2892,15 +2876,14 @@ struct ProjectedCellTask {
     cell_dir: PathBuf,
 }
 
-/// Walk a projected worldspace dir into a flat, ordered list of cell tasks,
-/// preserving the exact `sorted_directory_entries` order and every
-/// `mixed_layout_error` / unsupported-entry guard of the former nested loops.
-/// The WRLD record and its TopCell are handled by the caller; this collects only
-/// the block/subblock/cell tree plus loose cells directly under the world.
+/// Walk a projected worldspace dir into a flat list of cell tasks in exact
+/// `sorted_directory_entries` order, applying every `mixed_layout_error` /
+/// unsupported-entry guard. The WRLD record and its TopCell are handled by the
+/// caller; this collects only the block/subblock/cell tree plus loose cells
+/// directly under the world.
 ///
-/// Note: a grid block/subblock dir containing zero cell dirs yields no task, so
-/// no empty GRUP is emitted for it. Export only writes populated grid dirs, so
-/// this matches every authoring dir the pipeline produces.
+/// A grid block/subblock dir with zero cell dirs yields no task, so no empty
+/// GRUP is emitted for it. Export only writes populated grid dirs.
 fn collect_projected_wrld_cell_tasks(
     world_dir: &Path,
     world_record_path: &Path,
@@ -3126,13 +3109,11 @@ fn emit_projected_cell_tasks_serial<W: Write>(
 }
 
 /// Parallel projected-cell decode with a serial ordered write. Worker threads
-/// load + decode each cell into a per-cell sub-context (the expensive
-/// YAML→JSON→ParsedRecord work that the serial path never parallelized when
-/// cells are small); a single consumer reorders results by index, opens/closes
-/// block & subblock GRUPs on coordinate changes, and reconciles each cell's
-/// sub-context deltas into the parent before writing — yielding byte-identical
-/// output to the serial path. Modeled on the former per-record
-/// `parallel_streaming_decode_payloads`.
+/// load + decode each cell (the expensive YAML→JSON→ParsedRecord work) into a
+/// per-cell sub-context; a single consumer reorders results by index,
+/// opens/closes block & subblock GRUPs on coordinate changes, and reconciles
+/// each cell's sub-context deltas into the parent before writing. Output is
+/// byte-identical to the serial path.
 ///
 /// String-ID determinism: the consumer renumbers each cell's allocated IDs to a
 /// fresh contiguous parent range in index order, so the global assignment order
@@ -3420,18 +3401,10 @@ pub(crate) fn build_authoring_dir_streaming_native(
             return Ok(());
         }
         // Sort top-level record-type subdirs by the engine's canonical GRUP
-        // order (KYWD before COBJ etc.). Without this, CK reports
-        // `[FORMS] Unable to find keyword (XXXXXXXX)` because record-type
-        // groups were emitted alphabetically and the forward-pass loader hits
-        // a referencing record before its KYWD has been registered.
-        //
-        // Order source priority:
-        //   1. Live extraction from the first available master ESM (so the
-        //      build matches whatever the user's installed game ships today —
-        //      survives Bethesda content updates without code changes).
-        //   2. Hardcoded baseline per game (covers builds without game data
-        //      installed, e.g. CI). Hardcoded list is also used when no game
-        //      is specified.
+        // order (KYWD before COBJ etc.; see the top of this file). Live
+        // extraction from the first available master ESM wins; the bundled
+        // per-game list covers builds without game data (e.g. CI). With
+        // neither (no masters and no game), entries stay alphabetical.
         let mut root_entries: Vec<PathBuf> = sorted_directory_entries(records_dir.as_path())?
             .into_iter()
             .filter(|p| !p.is_file())

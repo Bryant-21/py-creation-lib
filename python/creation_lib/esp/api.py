@@ -169,29 +169,15 @@ def build_authoring_dir(
 ) -> None:
     """Stream-build a .esp directly from a YAML/JSON authoring dir.
 
-    Records are read, encoded, and written one at a time -- the full plugin
-    tree is never materialized in RAM. Peak memory scales with `jobs` × the
-    largest record's parsed JsonValue, not with plugin size.
+    Records are read, encoded, and written one at a time, so peak memory scales
+    with `jobs` × the largest parsed record, not with plugin size. `jobs=None`
+    uses the global rayon pool (fastest; Starfield peaks ~8-10 GB RSS); `1` is
+    serial (~1 GB peak, ~30 min for a 1.4 GB plugin); `4` is ~3 GB / ~12 min.
 
-    Args:
-        source_dir: Authoring dir containing plugin.{yaml,json} + records/
-        output_path: Target .esp path
-        game: Override the game ID stored in the manifest
-        jobs: Parallel decode thread count.
-            * None (default): global rayon pool (= num_cpus). Fastest;
-              Starfield-scale plugins peak around 8-10 GB RSS.
-            * 1: serial decode. Lowest memory (~1 GB peak on Starfield)
-              but ~30 min wall-clock for 1.4 GB plugin.
-            * 4: middle ground (~3 GB peak, ~12 min on Starfield).
-        master_esm_paths: Full filesystem paths to the plugin's masters.
-            The first readable master is scanned to derive the engine's
-            canonical top-level GRUP order — required to keep KYWD before
-            COBJ etc. so CK doesn't report `[FORMS] Unable to find keyword`.
-            When None or unreadable, falls back to a hardcoded baseline.
-            CLI commands resolve env-based game data paths and pass them
-            here; lib code stays env-free.
-
-    `game` defaults to whatever's recorded in the authoring dir's manifest.
+    The first readable path in `master_esm_paths` supplies the canonical top-level
+    GRUP order. KYWD must precede COBJ or CK reports `[FORMS] Unable to find
+    keyword`. Without a readable master a hardcoded baseline order is used.
+    `game` defaults to the authoring dir manifest's game.
     """
     _, manifest_game = _load_authoring_dir_metadata(source_dir)
     resolved_game = game or manifest_game

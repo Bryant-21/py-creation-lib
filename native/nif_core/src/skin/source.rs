@@ -121,6 +121,7 @@ pub struct LegacySkin {
     pub skin_transform: SkinTransform,
     pub data_influences: Vec<VertexInfluences>,
     pub bone_transforms: Vec<SkinTransform>,
+    pub bone_bounds: Vec<Option<NifValue>>,
     pub partitions: Vec<LegacyPartition>,
 }
 
@@ -161,7 +162,7 @@ pub fn parse_skin_chain(
         .and_then(|id| nif.get_block(id))
         .map(parse_partitions)
         .unwrap_or_default();
-    let (data_influences, bone_transforms) = parse_skin_data_bind(skin_data);
+    let (data_influences, bone_transforms, bone_bounds) = parse_skin_data_bind(skin_data);
 
     Ok(Some(LegacySkin {
         kind,
@@ -173,6 +174,7 @@ pub fn parse_skin_chain(
         skin_transform: transform_or_identity(skin_data.get_field("Skin Transform")),
         data_influences,
         bone_transforms,
+        bone_bounds,
         partitions,
     }))
 }
@@ -327,19 +329,28 @@ fn parse_partitions(block: &NifBlock) -> Vec<LegacyPartition> {
         .collect()
 }
 
-fn parse_skin_data_bind(skin_data: &NifBlock) -> (Vec<VertexInfluences>, Vec<SkinTransform>) {
+fn parse_skin_data_bind(
+    skin_data: &NifBlock,
+) -> (
+    Vec<VertexInfluences>,
+    Vec<SkinTransform>,
+    Vec<Option<NifValue>>,
+) {
     let Some(NifValue::Array(bone_list)) = skin_data.get_field("Bone List") else {
-        return (Vec::new(), Vec::new());
+        return (Vec::new(), Vec::new(), Vec::new());
     };
 
     let mut influences = Vec::<VertexInfluences>::new();
     let mut bone_transforms = Vec::with_capacity(bone_list.len());
+    let mut bone_bounds = Vec::with_capacity(bone_list.len());
     for (bone_index, bone_value) in bone_list.iter().enumerate() {
         let NifValue::Struct(fields) = bone_value else {
             bone_transforms.push(SkinTransform::identity());
+            bone_bounds.push(None);
             continue;
         };
         bone_transforms.push(transform_or_identity(fields.get("Skin Transform")));
+        bone_bounds.push(fields.get("Bounding Sphere").cloned());
 
         let Some(NifValue::Array(vertex_weights)) = fields.get("Vertex Weights") else {
             continue;
@@ -374,7 +385,7 @@ fn parse_skin_data_bind(skin_data: &NifBlock) -> (Vec<VertexInfluences>, Vec<Ski
         clamp_top_four_and_normalize(&mut influence.slots);
     }
 
-    (influences, bone_transforms)
+    (influences, bone_transforms, bone_bounds)
 }
 
 fn parse_partition_influences(fields: &IndexMap<String, NifValue>) -> Vec<Vec<(u32, f32)>> {
@@ -406,7 +417,7 @@ fn parse_partition_influences(fields: &IndexMap<String, NifValue>) -> Vec<Vec<(u
                         _ => return None,
                     };
                     let weight = match weight_value {
-                        NifValue::Float(value) if *value > 0.0 => *value as f32,
+                        NifValue::Float(value) if *value >= 0.0 => *value as f32,
                         _ => return None,
                     };
                     Some((bone_index, weight))
@@ -531,9 +542,26 @@ fn vec3_value(value: &NifValue) -> Option<[f32; 3]> {
     }
 }
 
-fn matrix33_value(value: &NifValue) -> Option<[[f32; 3]; 3]> {
+pub(super) fn matrix33_value(value: &NifValue) -> Option<[[f32; 3]; 3]> {
     match value {
         NifValue::Matrix33(matrix) => Some(*matrix),
+        NifValue::Struct(fields) => Some([
+            [
+                value_f64(fields.get("m11"))? as f32,
+                value_f64(fields.get("m21"))? as f32,
+                value_f64(fields.get("m31"))? as f32,
+            ],
+            [
+                value_f64(fields.get("m12"))? as f32,
+                value_f64(fields.get("m22"))? as f32,
+                value_f64(fields.get("m32"))? as f32,
+            ],
+            [
+                value_f64(fields.get("m13"))? as f32,
+                value_f64(fields.get("m23"))? as f32,
+                value_f64(fields.get("m33"))? as f32,
+            ],
+        ]),
         _ => None,
     }
 }

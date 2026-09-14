@@ -12,23 +12,9 @@ def normalize_weights(
 ) -> tuple[np.ndarray, np.ndarray, int]:
     """Normalize weights: enforce max bones per vertex, sum to 1.0.
 
-    Steps:
-        1. For each vertex, sort bone influences by weight descending.
-        2. Keep top *max_bones* influences (respecting locked bones).
-        3. Normalize remaining weights to sum to 1.0.
-        4. Clamp all weights to [0, 1].
-
-    Args:
-        weights: (N, K) float32 weight values.
-        bone_indices: (N, K) int32 bone indices.
-        max_bones: Maximum number of bone influences per vertex.
-        locked_bones: Set of bone indices whose weights should not be removed
-            during the top-K pruning step.
-
-    Returns:
-        weights: normalized (N, max_bones) float32.
-        bone_indices: reordered (N, max_bones) int32.
-        modified_count: number of vertices that were modified.
+    Per vertex, keeps the top ``max_bones`` influences by weight (``locked_bones``
+    are never pruned), normalizes them to sum to 1.0, and clamps to [0, 1].
+    Returns ``(weights, bone_indices, modified_count)`` with (N, max_bones) arrays.
     """
     weights = np.array(weights, dtype=np.float32, copy=True)
     bone_indices = np.array(bone_indices, dtype=np.int32, copy=True)
@@ -102,8 +88,7 @@ def normalize_weights(
                 orig_set.add((bi, w))
         new_set = set(kept)
 
-        # For no locked bones, retain the old behavior: normalize all kept
-        # influences to sum to one.
+        # Without locked bones, normalize all kept influences to sum to one.
         if not locked:
             total = sum(w for _, w in kept)
             if total > 0:

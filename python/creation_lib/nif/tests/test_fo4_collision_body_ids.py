@@ -257,7 +257,7 @@ def test_fo4_animstatic_body_emits_motion_cinfo_and_valid_motion_id():
     assert generate_collision(
         nif, node_a.block_id, shape_type="convex_fit", profile=profile
     ).success
-    # Door: ANIMSTATIC — this is the path that crashes without the fix.
+    # Door: ANIMSTATIC. The keyframed second body sets up the crash pattern.
     assert generate_collision(
         nif,
         node_b.block_id,

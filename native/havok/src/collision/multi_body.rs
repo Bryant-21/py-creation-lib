@@ -337,35 +337,24 @@ pub fn build_fo4_multi_body_collision_with_constraints(
     }
 
     // ----- Per-body metadata patch -----
-    // Walk each merged bodyCinfo and rewrite the fields that single-body
-    // builders cannot know about: materialId (own slot), motionId (own
-    // motionCinfo entry), the world transform, and the collision filter.
-    // Synthesize matching motionCinfos entries on the side.
+    // Rewrite what single-body builders cannot know: materialId (own slot),
+    // motionId (own motionCinfo), world transform, collision filter. Matching
+    // motionCinfos are synthesized alongside. Rules (vanilla Safe01 / bank.nif):
     //
-    // Motion-cinfo emission rules (validated against vanilla Safe01 + the
-    // crashing bank.nif repro in crash-2026-05-11-16-21-53.log):
-    //
-    // - Standalone CompressedMesh bodies can keep the vanilla static pattern:
-    //   motionId=HK_INVALID and no motionCinfo.
-    //
-    // - Shared/multi-body CompressedMesh systems need valid motionIds for every
-    //   body. FO76 Vault76 railing pieces otherwise produce body 0 with
-    //   HK_INVALID while later CM bodies have motionCinfos; FO4 can load the
-    //   mesh, but player collision ignores the primary shape and movement can
-    //   crash when hknpCompressedMeshShape interacts with terrain.
-    //
-    // - Static Polytope/Compound bodies follow vanilla set-dressing parity in
-    //   every body-count shape: motionId=HK_INVALID and NO motionCinfo. A
-    //   synthesized zero-mass cinfo makes the body half-movable: when the placed
-    //   REFR has a non-unit scale FO4 wraps the convex in a runtime
-    //   hknpScaledConvexShape and derives scaled mass from inverseMass=0 →
-    //   convexRadius=-nan → NaN static → solver-island invalidPos cascade. The
-    //   same zero-mass cinfo on a static hknpDynamicCompoundShape reproduces the
-    //   NukaColaMachine01_BaseOnly crash at Fallout4.exe+13E2278.
-    //
-    // Mixed static+keyframed systems (Safe01/bank.nif container pattern): the
-    // Static bodies are emitted as vanilla emits the safe's base — motionId=
-    // HK_INVALID, no motionCinfo — handled by the `has_keyframed` guard below.
+    // - Standalone CompressedMesh bodies keep the vanilla static pattern:
+    //   motionId=HK_INVALID, no motionCinfo.
+    // - Multi-body CompressedMesh systems need a valid motionId on every body.
+    //   With body 0 at HK_INVALID and later CM bodies holding motionCinfos (FO76
+    //   Vault76 railings), player collision ignores the primary shape and
+    //   movement can crash when hknpCompressedMeshShape meets terrain.
+    // - Static Polytope/Compound bodies never get a motionCinfo (vanilla
+    //   set-dressing). A zero-mass cinfo makes them half-movable: a non-unit
+    //   REFR scale wraps the convex in a runtime hknpScaledConvexShape,
+    //   inverseMass=0 gives convexRadius=-nan and a solver-island invalidPos
+    //   cascade. On a static hknpDynamicCompoundShape it crashes at
+    //   Fallout4.exe+13E2278 (NukaColaMachine01_BaseOnly).
+    // - Mixed static+keyframed systems (Safe01 container pattern): static bodies
+    //   get motionId=HK_INVALID and no motionCinfo (`has_keyframed` guard).
     let has_keyframed =
         (0..bodies.len()).any(|i| meta_at(i).motion_type == BodyMotionType::Keyframed);
     let all_bodies_compressed = cm_count == bodies.len();
@@ -865,12 +854,10 @@ fn options_for_body(
     body_opts.mass_distribution = body_metas
         .and_then(|metas| metas.get(body_index))
         .and_then(|meta| meta.mass_distribution);
-    // CLUTTER bodies are loose, gravity-driven items the game makes dynamic. A
-    // dynamic body needs a non-zero, finite mass — mass 0 → inverse_mass 0 →
-    // divide-by-zero NaN on attach, which freezes the cell's physics + sound
-    // (the residual half of the loose-MISC bug: the convex shape alone wasn't
-    // enough). Give clutter the FO4 vanilla density-1.0 mass so the mass-
-    // properties builder fills real mass + inertia + center of mass.
+    // CLUTTER bodies are loose items the game makes dynamic, so they need a
+    // non-zero finite mass: mass 0 → inverse_mass 0 → divide-by-zero NaN on
+    // attach, which freezes the cell's physics and sound. Use the FO4 vanilla
+    // density-1.0 mass so real mass, inertia and center of mass get filled.
     if body_layer == FO4_CLUTTER_LAYER {
         let source_body_mass = body_metas
             .and_then(|metas| metas.get(body_index))
@@ -1029,15 +1016,6 @@ mod tests {
         values.clone()
     }
 
-    /// Vanilla Safe01 parity: a static compressed-mesh base + a keyframed
-    /// (ANIMSTATIC) polytope door — the safe/container pattern. The keyframed
-    /// body gets a populated motionCinfos entry and its own material; the static
-    /// base gets `motionId=HK_INVALID` and NO motionCinfo, exactly like vanilla
-    /// `Safe01.nif` (base motionId=0x7FFFFFFF, one motionCinfo for the door).
-    ///
-    /// A static base must not advertise a motion frame the broadphase then
-    /// resolves during a placement cast (workshop-sweep null-deref at
-    /// Fallout4.exe+13E82D0).
     #[test]
     fn clutter_polytope_body_gets_nonzero_density_mass() {
         // A CLUTTER (layer 4) convex body is a loose item the game makes dynamic;
@@ -1770,13 +1748,10 @@ mod tests {
         assert!((com[2] - 0.6).abs() < 1e-5);
     }
 
-    /// Safe01 parity, pinned independently of geometry/material details: in a
-    /// static-base + keyframed-door system the motionCinfos count must equal the
-    /// number of keyframed bodies (1), and every Static body must carry
-    /// motionId=HK_INVALID. This is the invariant whose violation re-armed the
-    /// workshop-sweep CTD at Fallout4.exe+13E82D0 across multiple rounds; guard
-    /// it by itself so a future refactor that re-adds a static-body motionCinfo
-    /// fails here with an unambiguous name.
+    /// Safe01 parity: in a static-base + keyframed-door system the motionCinfos
+    /// count equals the keyframed body count (1) and every Static body has
+    /// motionId=HK_INVALID (vanilla base motionId=0x7FFFFFFF). A static-body
+    /// motionCinfo causes the workshop-sweep CTD at Fallout4.exe+13E82D0.
     #[test]
     fn safe01_parity_static_base_emits_no_motion_cinfo() {
         let verts = unit_cube_vertices();
@@ -2228,12 +2203,11 @@ mod tests {
         );
     }
 
-    /// Reproduce: bank.nif crash @ FO4+13E82D0. The merged multi-body PSD must
-    /// not drop the hkHalf material fields (dynamicFriction, weldingTolerance,
-    /// massChangerHeavyObjectFactor, disablingCollisionsBetweenCvxCvxDynamicObjectsDistance, ...).
-    /// Vanilla Safe01.nif keeps them at 1.75 / 1.32 / 1.875 / 2.3125; our
-    /// merged blob drops them all to 0.0 → Havok broadphase null-derefs on
-    /// workshop sweep / collision filter init.
+    /// The merged multi-body PSD must keep the hkHalf material fields
+    /// (dynamicFriction, weldingTolerance, massChangerHeavyObjectFactor,
+    /// disablingCollisionsBetweenCvxCvxDynamicObjectsDistance, ...). Vanilla
+    /// Safe01.nif has 1.75 / 1.32 / 1.875 / 2.3125; zeroed fields make the Havok
+    /// broadphase null-deref on workshop sweep / filter init (bank.nif, FO4+13E82D0).
     #[test]
     fn multi_body_preserves_material_half_fields() {
         let verts = unit_cube_vertices();
@@ -2293,7 +2267,7 @@ mod tests {
         }
     }
 
-    /// Regression: `hknpBSMaterialProperties.MaterialA[i].uiFilterInfo` must
+    /// `hknpBSMaterialProperties.MaterialA[i].uiFilterInfo` must
     /// equal the body's `collisionFilterInfo`, which comes from
     /// `body_metas[i].layer` — NOT the shared `opts.layer`. Mismatch leaves
     /// the body's material unresolvable (Havok scans `MaterialA` for
@@ -2393,12 +2367,11 @@ mod tests {
         let _ = psd;
     }
 
-    /// Regression: hknpMaterial carries two `hkUFloat8` inline structs
+    /// hknpMaterial carries two `hkUFloat8` inline structs
     /// (`triggerManifoldTolerance` at offset 17, `softContactSeperationVelocity`
-    /// at offset 44). The descriptor must declare a single 1-byte UINT8 member
-    /// — if it ever regresses (missing XML, wrong type), `calc_inline_struct_size`
-    /// returns 0 and every half field after offset 17 shifts, reproducing the
-    /// same crash class as the original half-writer bug.
+    /// at offset 44), each a single 1-byte UINT8 member. With a missing or
+    /// mistyped descriptor, `calc_inline_struct_size` returns 0 and every half
+    /// field after offset 17 shifts, zeroing the hkHalf material fields.
     #[test]
     fn writer_preserves_hk_ufloat8_inline_struct() {
         use crate::collision::polytope::build_fo4_polytope_collision;
@@ -2501,12 +2474,9 @@ mod tests {
         assert!((pos[0] - 1.0).abs() < 1e-5 && (pos[2] - 3.0).abs() < 1e-5);
     }
 
-    /// `BuildOptions::body_props_raw` overrides the reconstructed material
-    /// bytes at offsets 0x10-0x1F of the body_props payload. Mirrors pynifly's
-    /// `body_props_raw` round-trip preservation (refs/io_scene_nifly/nif/
-    /// collision.py:1318). The override must reach the writer's output —
-    /// without it, callers re-exporting a vanilla mesh would lose damping,
-    /// max-velocity, and Bethesda-specific flag bits.
+    /// `BuildOptions::body_props_raw` overrides body_props bytes 0x10-0x1F (as
+    /// pynifly does, refs/io_scene_nifly/nif/collision.py:1318), so a re-exported
+    /// vanilla mesh keeps its damping, max-velocity and Bethesda flag bits.
     #[test]
     fn body_props_raw_overrides_reconstructed_material_bytes() {
         use crate::collision::polytope::build_fo4_polytope_collision;
@@ -2520,12 +2490,8 @@ mod tests {
             ..BuildOptions::default()
         };
         let blob = build_fo4_polytope_collision(&unit_cube_vertices(), &opts).unwrap();
-        // Locate body_props in the materials array of the parsed PSD; the raw
-        // override is supposed to land at offsets 0x10..0x20 of that 0x50 blob.
-        // We re-read the raw bytes from the input blob (single-body builder
-        // emits via from_tagxml so the writer has run; the bytes we want are
-        // visible directly in the resulting packfile).
-        // Walk the blob looking for the raw sentinel marker.
+        // The single-body builder runs the writer (from_tagxml), so the raw
+        // bytes must appear verbatim in the packfile.
         let mut found = false;
         for window in blob.windows(16) {
             if window == raw {

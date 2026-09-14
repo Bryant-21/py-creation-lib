@@ -9,6 +9,8 @@ mod gpu;
 mod hresult;
 mod image;
 mod macros;
+pub mod output_directories;
+pub mod profiling;
 mod rect;
 mod scratch_image;
 mod texture_metadata;
@@ -47,6 +49,8 @@ use std::slice;
 mod ispc_bc;
 mod python;
 
+#[cfg(test)]
+mod decode_bench;
 #[cfg(test)]
 mod encode_bench;
 
@@ -97,6 +101,10 @@ fn parse_dxgi_format(name: &str) -> Option<DXGI_FORMAT> {
         "R16G16B16A16_FLOAT" => Some(DXGI_FORMAT::DXGI_FORMAT_R16G16B16A16_FLOAT),
         _ => None,
     }
+}
+
+pub fn is_srgb_dxgi_format(dxgi_format: u32) -> bool {
+    matches!(dxgi_format, 29 | 72 | 75 | 78 | 91 | 93 | 99)
 }
 
 fn legacy_dxt_target(name: &str) -> Option<(DXGI_FORMAT, &'static [u8; 4], usize)> {
@@ -278,10 +286,150 @@ pub(crate) struct TexdiagInfo {
     pub alpha_mode: String,
     pub is_cubemap: bool,
     pub is_compressed: bool,
+    pub has_alpha: bool,
+    pub is_dx10: bool,
+    pub is_xbox: bool,
+    pub is_power_of_two: bool,
     pub bits_per_pixel: usize,
     pub bits_per_color: usize,
     pub image_count: usize,
     pub file_size: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DdsValidationFinding {
+    pub severity: &'static str,
+    pub rule: &'static str,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DdsValidationReport {
+    pub width: u32,
+    pub height: u32,
+    pub findings: Vec<DdsValidationFinding>,
+}
+
+pub fn validate_dds_bytes(
+    bytes: &[u8],
+    include_optional: bool,
+) -> core::result::Result<DdsValidationReport, String> {
+    if bytes.len() < 128 || bytes.get(0..4) != Some(b"DDS ") {
+        return Err("Not a valid DDS file".to_string());
+    }
+    if read_u32_le(bytes, 4)? != 124 || read_u32_le(bytes, 76)? != 32 {
+        return Err("Not a valid DDS file".to_string());
+    }
+
+    let height = read_u32_le(bytes, 12)?;
+    let width = read_u32_le(bytes, 16)?;
+    let pixel_flags = read_u32_le(bytes, 80)?;
+    let fourcc = bytes
+        .get(84..88)
+        .ok_or_else(|| "DDS header is truncated".to_string())?;
+    let rgb_bits = read_u32_le(bytes, 88)?;
+    let red_mask = read_u32_le(bytes, 92)?;
+    let green_mask = read_u32_le(bytes, 96)?;
+    let blue_mask = read_u32_le(bytes, 100)?;
+    let alpha_mask = read_u32_le(bytes, 104)?;
+    let mut findings = Vec::new();
+
+    if !width.is_power_of_two() || !height.is_power_of_two() {
+        findings.push(DdsValidationFinding {
+            severity: "error",
+            rule: "invalid-texture-size-format",
+            message: format!("Texture size {width}x{height} is not power of 2"),
+        });
+    }
+
+    if legacy_format_without_dxgi(
+        pixel_flags,
+        fourcc,
+        rgb_bits,
+        red_mask,
+        green_mask,
+        blue_mask,
+        alpha_mask,
+        bytes,
+    ) == Some("R8G8B8")
+    {
+        findings.push(DdsValidationFinding {
+            severity: "error",
+            rule: "invalid-texture-size-format",
+            message: "R8G8B8 format is unsupported by DirectX 10+ (Skyrim SE, Fallout 4, etc.)"
+                .to_string(),
+        });
+    }
+
+    if include_optional
+        && pixel_flags & 0x40 != 0
+        && (red_mask != 0x00FF_0000 || green_mask != 0x0000_FF00 || blue_mask != 0x0000_00FF)
+    {
+        findings.push(DdsValidationFinding {
+            severity: "error",
+            rule: "sse-unsupported-texture-format",
+            message: "Texture format is not supported by Skyrim SE on Windows 7".to_string(),
+        });
+    }
+
+    Ok(DdsValidationReport {
+        width,
+        height,
+        findings,
+    })
+}
+
+pub fn validate_dds_file(
+    path: &Path,
+    include_optional: bool,
+) -> core::result::Result<DdsValidationReport, String> {
+    let bytes = crate::profiling::read(path).map_err(|error| error.to_string())?;
+    validate_dds_bytes(&bytes, include_optional)
+}
+
+fn legacy_format_without_dxgi(
+    pixel_flags: u32,
+    fourcc: &[u8],
+    rgb_bits: u32,
+    red_mask: u32,
+    green_mask: u32,
+    blue_mask: u32,
+    alpha_mask: u32,
+    bytes: &[u8],
+) -> Option<&'static str> {
+    let known_fourcc = matches!(
+        fourcc,
+        b"DXT1" | b"DXT3" | b"DXT5" | b"ATI1" | b"ATI2" | b"BC4S" | b"BC4U" | b"BC5S" | b"BC5U"
+    );
+    if known_fourcc {
+        return None;
+    }
+    if matches!(fourcc, b"DX10" | b"XBOX") {
+        return if bytes.len() >= 148
+            && read_u32_le(bytes, 128)
+                .ok()
+                .is_some_and(|format| format != 0)
+        {
+            None
+        } else {
+            Some("UNKNOWN")
+        };
+    }
+    if pixel_flags & (0x40 | 0x20_000) == 0 {
+        return None;
+    }
+
+    match rgb_bits {
+        32 | 16 | 8 => None,
+        24 if red_mask == 0x00FF_0000
+            && green_mask == 0x0000_FF00
+            && blue_mask == 0x0000_00FF
+            && alpha_mask == 0 =>
+        {
+            Some("R8G8B8")
+        }
+        _ => Some("UNKNOWN"),
+    }
 }
 
 fn dxgi_format_name(format: DXGI_FORMAT) -> String {
@@ -357,6 +505,11 @@ fn try_legacy_rgba8_info(
         alpha_mode: "unknown".to_string(),
         is_cubemap: false,
         is_compressed: false,
+        has_alpha: read_u32_le(bytes, 104)? != 0,
+        is_dx10: false,
+        is_xbox: false,
+        is_power_of_two: read_u32_le(bytes, 16)?.is_power_of_two()
+            && read_u32_le(bytes, 12)?.is_power_of_two(),
         bits_per_pixel: format.bits_per_pixel(),
         bits_per_color: format.bits_per_color(),
         image_count: usize::try_from(mip_levels)
@@ -366,7 +519,7 @@ fn try_legacy_rgba8_info(
 }
 
 pub(crate) fn texdiag_info_bytes(path: &Path) -> core::result::Result<TexdiagInfo, String> {
-    let bytes = fs::read(path).map_err(|err| err.to_string())?;
+    let bytes = crate::profiling::read(path).map_err(|err| err.to_string())?;
     let file_size = u64::try_from(bytes.len()).map_err(|_| "file size overflow".to_string())?;
     if let Some(info) = try_legacy_rgba8_info(&bytes, file_size)? {
         return Ok(info);
@@ -407,6 +560,10 @@ pub(crate) fn texdiag_info_bytes(path: &Path) -> core::result::Result<TexdiagInf
         alpha_mode: alpha_mode_name(metadata.get_alpha_mode()).to_string(),
         is_cubemap: metadata.is_cubemap(),
         is_compressed: metadata.format.is_compressed(),
+        has_alpha: metadata.format.has_alpha(),
+        is_dx10: bytes.get(84..88) == Some(b"DX10"),
+        is_xbox: bytes.get(84..88) == Some(b"XBOX"),
+        is_power_of_two: width.is_power_of_two() && height.is_power_of_two(),
         bits_per_pixel: metadata.format.bits_per_pixel(),
         bits_per_color: metadata.format.bits_per_color(),
         image_count: scratch.images().len(),
@@ -681,6 +838,7 @@ fn rgba_mip_chain(
     rgba: &[u8],
     generate_mips: bool,
 ) -> core::result::Result<Vec<(usize, usize, Vec<u8>)>, String> {
+    let _timer = crate::profiling::Timer::new(crate::profiling::Stage::Mips);
     let mut chain = vec![(width, height, rgba.to_vec())];
     if !generate_mips {
         return Ok(chain);
@@ -706,6 +864,7 @@ pub fn rgba8_mip_flood_chain(
     height: u32,
     rgba: &[u8],
 ) -> core::result::Result<Vec<(u32, u32, Vec<u8>)>, String> {
+    let _timer = crate::profiling::Timer::new(crate::profiling::Stage::Mips);
     let width = usize::try_from(width).map_err(|_| "width does not fit usize".to_string())?;
     let height = usize::try_from(height).map_err(|_| "height does not fit usize".to_string())?;
     if width == 0 || height == 0 {
@@ -1045,6 +1204,49 @@ fn convert_unorm_texels_to_srgb(
     packed_pixels_from_image(image, false, false)
 }
 
+pub fn convert_srgb_texels_to_linear_unorm(
+    width: u32,
+    height: u32,
+    rgba: &[u8],
+) -> core::result::Result<Vec<u8>, String> {
+    let width = usize::try_from(width).map_err(|_| "width does not fit usize".to_string())?;
+    let height = usize::try_from(height).map_err(|_| "height does not fit usize".to_string())?;
+    let expected_len = width
+        .checked_mul(height)
+        .and_then(|pixels| pixels.checked_mul(4))
+        .ok_or_else(|| "rgba buffer size overflow".to_string())?;
+    if rgba.len() != expected_len {
+        return Err(format!(
+            "rgba buffer length mismatch: expected {expected_len} bytes, got {}",
+            rgba.len()
+        ));
+    }
+
+    let mut scratch = ScratchImage::default();
+    scratch
+        .initialize_2d(
+            DXGI_FORMAT::DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
+            width,
+            height,
+            1,
+            1,
+            CP_FLAGS::CP_FLAGS_NONE,
+        )
+        .map_err(|err| err.to_string())?;
+    scratch.pixels_mut().copy_from_slice(rgba);
+    let converted = scratch
+        .convert(
+            DXGI_FORMAT::DXGI_FORMAT_R8G8B8A8_UNORM,
+            TEX_FILTER_FLAGS::TEX_FILTER_DEFAULT,
+            TEX_THRESHOLD_DEFAULT,
+        )
+        .map_err(|err| err.to_string())?;
+    let image = converted
+        .image(0, 0, 0)
+        .ok_or_else(|| "converted image missing".to_string())?;
+    packed_pixels_from_image(image, false, false)
+}
+
 fn dxtex_compressed_payload(
     width: usize,
     height: usize,
@@ -1184,11 +1386,12 @@ fn encode_legacy_dxt_dds_from_chain(
 }
 
 pub(crate) fn dds_base_rgba(path: &Path) -> core::result::Result<(u32, u32, Vec<u8>, u32), String> {
-    let bytes = fs::read(path).map_err(|err| err.to_string())?;
+    let bytes = crate::profiling::read(path).map_err(|err| err.to_string())?;
     dds_base_rgba_bytes(&bytes)
 }
 
 fn dds_base_rgba_bytes(bytes: &[u8]) -> core::result::Result<(u32, u32, Vec<u8>, u32), String> {
+    let _timer = crate::profiling::Timer::new(crate::profiling::Stage::Decode);
     if let Some(decoded) = try_load_legacy_rgba8_dds(bytes)? {
         return Ok(decoded);
     }
@@ -1240,27 +1443,49 @@ fn dds_base_rgba_bytes(bytes: &[u8]) -> core::result::Result<(u32, u32, Vec<u8>,
         return Ok((width, height, rgba, dxgi_format));
     }
 
-    // Run format conversion on the full ScratchImage rather than a single Image.
-    // Cubemaps/envmaps need their metadata preserved here; operating on the face
-    // image can fail with E_NOINTERFACE for FO4 envmap DDS files.
+    // Plain 2D callers only consume mip 0, so avoid converting/decompressing the
+    // discarded mip chain. Complex resources retain the metadata-preserving path.
+    let base_image = if metadata.dimension == TEX_DIMENSION::TEX_DIMENSION_TEXTURE2D
+        && !metadata.is_cubemap()
+        && metadata.array_size == 1
+        && metadata.depth <= 1
+    {
+        Some(
+            scratch
+                .image(0, 0, 0)
+                .ok_or_else(|| "dds image does not contain a readable base mip".to_string())?,
+        )
+    } else {
+        None
+    };
     let rgba_scratch = if metadata.format == DXGI_FORMAT::DXGI_FORMAT_R8G8B8A8_UNORM {
         None
     } else if metadata.format.is_compressed() {
-        Some(
-            scratch
+        Some(match base_image {
+            Some(image) => image
                 .decompress(DXGI_FORMAT::DXGI_FORMAT_R8G8B8A8_UNORM)
                 .map_err(|err| err.to_string())?,
-        )
+            None => scratch
+                .decompress(DXGI_FORMAT::DXGI_FORMAT_R8G8B8A8_UNORM)
+                .map_err(|err| err.to_string())?,
+        })
     } else {
-        Some(
-            scratch
+        Some(match base_image {
+            Some(image) => image
                 .convert(
                     DXGI_FORMAT::DXGI_FORMAT_R8G8B8A8_UNORM,
                     TEX_FILTER_FLAGS::TEX_FILTER_DEFAULT,
                     TEX_THRESHOLD_DEFAULT,
                 )
                 .map_err(|err| err.to_string())?,
-        )
+            None => scratch
+                .convert(
+                    DXGI_FORMAT::DXGI_FORMAT_R8G8B8A8_UNORM,
+                    TEX_FILTER_FLAGS::TEX_FILTER_DEFAULT,
+                    TEX_THRESHOLD_DEFAULT,
+                )
+                .map_err(|err| err.to_string())?,
+        })
     };
 
     let image_owner = rgba_scratch.as_ref().unwrap_or(&scratch);
@@ -1301,6 +1526,7 @@ fn write_dds_bytes_with_compression(
     parallel_compression: bool,
     use_gpu: bool,
 ) -> core::result::Result<(), String> {
+    let _timer = crate::profiling::Timer::new(crate::profiling::Stage::Encode);
     let width_usize = usize::try_from(width).map_err(|_| "width does not fit usize".to_string())?;
     let height_usize =
         usize::try_from(height).map_err(|_| "height does not fit usize".to_string())?;
@@ -1335,9 +1561,9 @@ fn write_dds_bytes_with_compression(
             parallel_compression,
         )?;
         if let Some(parent) = output_path.parent() {
-            fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+            crate::profiling::create_dir_all(parent).map_err(|err| err.to_string())?;
         }
-        return fs::write(output_path, encoded).map_err(|err| err.to_string());
+        return crate::profiling::write(output_path, encoded).map_err(|err| err.to_string());
     }
 
     let target_format =
@@ -1349,9 +1575,9 @@ fn write_dds_bytes_with_compression(
     ) {
         let encoded = encode_rgba8_dds(width, height, rgba, target_format, generate_mips)?;
         if let Some(parent) = output_path.parent() {
-            fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+            crate::profiling::create_dir_all(parent).map_err(|err| err.to_string())?;
         }
-        return fs::write(output_path, encoded).map_err(|err| err.to_string());
+        return crate::profiling::write(output_path, encoded).map_err(|err| err.to_string());
     }
 
     let native_bc = match target_format {
@@ -1362,9 +1588,9 @@ fn write_dds_bytes_with_compression(
     if let Some(channels) = native_bc {
         let encoded = encode_bc_unorm_dds(width, height, rgba, channels, generate_mips)?;
         if let Some(parent) = output_path.parent() {
-            fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+            crate::profiling::create_dir_all(parent).map_err(|err| err.to_string())?;
         }
-        return fs::write(output_path, encoded).map_err(|err| err.to_string());
+        return crate::profiling::write(output_path, encoded).map_err(|err| err.to_string());
     }
 
     let is_ispc_target = matches!(
@@ -1387,9 +1613,9 @@ fn write_dds_bytes_with_compression(
             use_gpu,
         )?;
         if let Some(parent) = output_path.parent() {
-            fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+            crate::profiling::create_dir_all(parent).map_err(|err| err.to_string())?;
         }
-        return fs::write(output_path, encoded).map_err(|err| err.to_string());
+        return crate::profiling::write(output_path, encoded).map_err(|err| err.to_string());
     }
 
     let mut scratch = ScratchImage::default();
@@ -1436,12 +1662,13 @@ fn write_dds_bytes_with_compression(
     .map_err(|err| err.to_string())?;
 
     if let Some(parent) = output_path.parent() {
-        fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+        crate::profiling::create_dir_all(parent).map_err(|err| err.to_string())?;
     }
-    fs::write(output_path, encoded.buffer()).map_err(|err| err.to_string())
+    crate::profiling::write(output_path, encoded.buffer()).map_err(|err| err.to_string())
 }
 
 pub fn read_dds_rgba_image(path: &Path) -> core::result::Result<DdsRgbaImage, String> {
+    let _timer = crate::profiling::Timer::new(crate::profiling::Stage::Decode);
     let (width, height, rgba, dxgi_format) = dds_base_rgba(path)?;
     Ok(DdsRgbaImage {
         width,
@@ -1452,6 +1679,7 @@ pub fn read_dds_rgba_image(path: &Path) -> core::result::Result<DdsRgbaImage, St
 }
 
 pub fn read_dds_rgba_image_bytes(bytes: &[u8]) -> core::result::Result<DdsRgbaImage, String> {
+    let _timer = crate::profiling::Timer::new(crate::profiling::Stage::Decode);
     let (width, height, rgba, dxgi_format) = dds_base_rgba_bytes(bytes)?;
     Ok(DdsRgbaImage {
         width,
@@ -1472,6 +1700,94 @@ pub fn write_dds_rgba_image(
     write_dds_bytes(output_path, width, height, rgba, format, generate_mips)
 }
 
+fn encode_srgb_payload_with_unorm_header(
+    chain: &[(u32, u32, Vec<u8>)],
+    format: &str,
+) -> core::result::Result<Vec<u8>, String> {
+    let unorm_format =
+        parse_dxgi_format(format).ok_or_else(|| format!("unsupported DDS format: {format}"))?;
+    if unorm_format.is_srgb() {
+        return Err(format!(
+            "sRGB payload writer requires a UNORM output format, got {format}"
+        ));
+    }
+    let srgb_format = unorm_format.make_srgb();
+    if !srgb_format.is_srgb() {
+        return Err(format!(
+            "DDS format has no sRGB payload equivalent: {format}"
+        ));
+    }
+
+    if unorm_format == DXGI_FORMAT::DXGI_FORMAT_R8G8B8A8_UNORM {
+        let converted_chain = chain
+            .iter()
+            .map(|(width, height, rgba)| {
+                Ok((
+                    *width,
+                    *height,
+                    convert_unorm_texels_to_srgb(*width as usize, *height as usize, rgba)?,
+                ))
+            })
+            .collect::<core::result::Result<Vec<_>, String>>()?;
+        return encode_dds_from_rgba8_chain(&converted_chain, format, true, None);
+    }
+
+    let srgb_format_name = dxgi_format_name(srgb_format);
+    let mut encoded = encode_dds_from_rgba8_chain(chain, &srgb_format_name, true, None)?;
+    if encoded.get(84..88) != Some(b"DX10") {
+        return Err("sRGB payload DDS is missing a DX10 header".to_string());
+    }
+    let header_format = encoded
+        .get_mut(128..132)
+        .ok_or_else(|| "sRGB payload DDS has a truncated DX10 header".to_string())?;
+    header_format.copy_from_slice(&unorm_format.bits().to_le_bytes());
+    Ok(encoded)
+}
+
+fn validate_rgba8_buffer(width: u32, height: u32, rgba: &[u8]) -> core::result::Result<(), String> {
+    let expected_len = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|pixels| pixels.checked_mul(4))
+        .ok_or_else(|| "rgba buffer size overflow".to_string())?;
+    if rgba.len() != expected_len {
+        return Err(format!(
+            "rgba buffer length mismatch: expected {expected_len} bytes, got {}",
+            rgba.len()
+        ));
+    }
+    Ok(())
+}
+
+fn write_srgb_payload_with_unorm_header(
+    output_path: &Path,
+    chain: &[(u32, u32, Vec<u8>)],
+    format: &str,
+) -> core::result::Result<(), String> {
+    let _timer = crate::profiling::Timer::new(crate::profiling::Stage::Encode);
+    let encoded = encode_srgb_payload_with_unorm_header(chain, format)?;
+    if let Some(parent) = output_path.parent() {
+        crate::profiling::create_dir_all(parent).map_err(|err| err.to_string())?;
+    }
+    crate::profiling::write(output_path, encoded).map_err(|err| err.to_string())
+}
+
+pub fn write_dds_rgba_image_srgb_payload_unorm_header(
+    output_path: &Path,
+    width: u32,
+    height: u32,
+    rgba: &[u8],
+    format: &str,
+    generate_mips: bool,
+) -> core::result::Result<(), String> {
+    validate_rgba8_buffer(width, height, rgba)?;
+    let chain = if generate_mips {
+        rgba8_box_mip_chain(width, height, rgba)?
+    } else {
+        vec![(width, height, rgba.to_vec())]
+    };
+    write_srgb_payload_with_unorm_header(output_path, &chain, format)
+}
+
 pub fn write_dds_rgba_image_mip_flooded(
     output_path: &Path,
     width: u32,
@@ -1479,13 +1795,27 @@ pub fn write_dds_rgba_image_mip_flooded(
     rgba: &[u8],
     format: &str,
 ) -> core::result::Result<(), String> {
+    let _timer = crate::profiling::Timer::new(crate::profiling::Stage::Encode);
     let chain = rgba8_mip_flood_chain(width, height, rgba)?;
     let output_format = mip_flood_output_format(format, rgba);
     let encoded = encode_dds_from_rgba8_chain(&chain, output_format, true, None)?;
     if let Some(parent) = output_path.parent() {
-        fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+        crate::profiling::create_dir_all(parent).map_err(|err| err.to_string())?;
     }
-    fs::write(output_path, encoded).map_err(|err| err.to_string())
+    crate::profiling::write(output_path, encoded).map_err(|err| err.to_string())
+}
+
+pub fn write_dds_rgba_image_mip_flooded_srgb_payload_unorm_header(
+    output_path: &Path,
+    width: u32,
+    height: u32,
+    rgba: &[u8],
+    format: &str,
+) -> core::result::Result<(), String> {
+    validate_rgba8_buffer(width, height, rgba)?;
+    let chain = rgba8_mip_flood_chain(width, height, rgba)?;
+    let output_format = mip_flood_output_format(format, rgba);
+    write_srgb_payload_with_unorm_header(output_path, &chain, output_format)
 }
 
 pub fn write_dds_rgba_image_gpu(
@@ -1516,6 +1846,7 @@ fn load_dds_float_rgba(path: &Path) -> core::result::Result<(u32, u32, Vec<f32>,
 }
 
 pub fn read_dds_float_rgba_image(path: &Path) -> core::result::Result<DdsRgbaFloatImage, String> {
+    let _timer = crate::profiling::Timer::new(crate::profiling::Stage::Decode);
     let (width, height, rgba, dxgi_format) = load_dds_float_rgba(path)?;
     Ok(DdsRgbaFloatImage {
         width,
@@ -1629,8 +1960,25 @@ pub struct DdsMipsRgba8 {
     pub mips: Vec<(u32, u32, Vec<u8>)>,
 }
 
+impl DdsMipsRgba8 {
+    pub fn into_base_float_image(self) -> core::result::Result<DdsRgbaFloatImage, String> {
+        let (_, _, pixels) = self
+            .mips
+            .into_iter()
+            .next()
+            .ok_or_else(|| "empty mip chain".to_string())?;
+        Ok(DdsRgbaFloatImage {
+            width: self.width,
+            height: self.height,
+            dxgi_format: self.dxgi_format,
+            rgba: pixels.into_iter().map(|v| f32::from(v) / 255.0).collect(),
+        })
+    }
+}
+
 pub fn read_dds_mips_rgba8(path: &Path) -> core::result::Result<DdsMipsRgba8, String> {
-    let bytes = fs::read(path).map_err(|err| err.to_string())?;
+    let _timer = crate::profiling::Timer::new(crate::profiling::Stage::Decode);
+    let bytes = crate::profiling::read(path).map_err(|err| err.to_string())?;
     let scratch = ScratchImage::load_dds(&bytes, DDS_FLAGS::DDS_FLAGS_NONE, None, None)
         .map_err(|err| err.to_string())?;
     let metadata = *scratch.metadata();
@@ -1706,6 +2054,7 @@ pub fn rgba8_box_mip_chain(
     height: u32,
     rgba: &[u8],
 ) -> core::result::Result<Vec<(u32, u32, Vec<u8>)>, String> {
+    let _timer = crate::profiling::Timer::new(crate::profiling::Stage::Mips);
     let chain = rgba_mip_chain(width as usize, height as usize, rgba, true)?;
     Ok(chain
         .into_iter()
@@ -1714,12 +2063,10 @@ pub fn rgba8_box_mip_chain(
 }
 
 /// Encode a caller-supplied RGBA8 mip chain into a complete DDS byte stream.
-/// Byte-identical to the legacy `write_dds_rgba_image(..., generate_mips=true)`
-/// output given the same chain (pinned by
-/// `encode_dds_from_rgba8_chain_matches_legacy_writer_bytes`). BC7 levels go
-/// through `bc7_encoder` when provided (the engine's GpuService); on encoder
-/// error or `None`, the per-level CPU path is used — identical to legacy CPU
-/// bytes.
+/// Byte-identical to `write_dds_rgba_image(..., generate_mips=true)` on the same
+/// chain (pinned by `encode_dds_from_rgba8_chain_matches_legacy_writer_bytes`).
+/// BC7 levels go through `bc7_encoder` (the engine's GpuService) when provided;
+/// on encoder error or `None`, the per-level CPU path is used.
 pub fn encode_dds_from_rgba8_chain(
     chain: &[(u32, u32, Vec<u8>)],
     format: &str,
@@ -1728,6 +2075,55 @@ pub fn encode_dds_from_rgba8_chain(
         &(dyn Fn(&[(u32, u32, &[u8])], bool) -> core::result::Result<Vec<Vec<u8>>, String> + Sync),
     >,
 ) -> core::result::Result<Vec<u8>, String> {
+    let adapter = |chain: &[(u32, u32, Vec<u8>)], srgb| {
+        let refs: Vec<_> = chain
+            .iter()
+            .map(|(w, h, pixels)| (*w, *h, pixels.as_slice()))
+            .collect();
+        bc7_encoder.expect("adapter only used with encoder")(&refs, srgb)
+    };
+    encode_dds_chain(
+        chain,
+        format,
+        parallel_compression,
+        bc7_encoder.map(|_| &adapter as _),
+    )
+}
+
+pub type Rgba8MipChain = Vec<(u32, u32, Vec<u8>)>;
+pub type SharedBc7Encoder<'a> = dyn Fn(std::sync::Arc<Rgba8MipChain>, bool) -> core::result::Result<Vec<Vec<u8>>, String>
+    + Sync
+    + 'a;
+
+pub fn encode_dds_from_owned_rgba8_chain(
+    chain: Rgba8MipChain,
+    format: &str,
+    parallel_compression: bool,
+    bc7_encoder: Option<&SharedBc7Encoder<'_>>,
+) -> core::result::Result<Vec<u8>, String> {
+    // Retain the pixels for the existing CPU fallback while the GPU owns a
+    // shared reference. Only the Arc is cloned, never the mip buffers.
+    let chain = std::sync::Arc::new(chain);
+    let adapter = |_: &[(u32, u32, Vec<u8>)], srgb| {
+        bc7_encoder.expect("adapter only used with encoder")(chain.clone(), srgb)
+    };
+    encode_dds_chain(
+        &chain,
+        format,
+        parallel_compression,
+        bc7_encoder.map(|_| &adapter as _),
+    )
+}
+
+fn encode_dds_chain(
+    chain: &[(u32, u32, Vec<u8>)],
+    format: &str,
+    parallel_compression: bool,
+    bc7_encoder: Option<
+        &dyn Fn(&[(u32, u32, Vec<u8>)], bool) -> core::result::Result<Vec<Vec<u8>>, String>,
+    >,
+) -> core::result::Result<Vec<u8>, String> {
+    let _timer = crate::profiling::Timer::new(crate::profiling::Stage::Encode);
     let (width, height) = match chain.first() {
         Some((w, h, _)) => (*w, *h),
         None => return Err("empty mip chain".to_string()),
@@ -1817,11 +2213,7 @@ pub fn encode_dds_from_rgba8_chain(
     if is_bc7 {
         if let Some(encoder) = bc7_encoder {
             let srgb = target_format == DXGI_FORMAT::DXGI_FORMAT_BC7_UNORM_SRGB;
-            let refs: Vec<(u32, u32, &[u8])> = chain
-                .iter()
-                .map(|(w, h, px)| (*w, *h, px.as_slice()))
-                .collect();
-            if let Ok(payloads) = encoder(&refs, srgb) {
+            if let Ok(payloads) = encoder(chain, srgb) {
                 if payloads.len() == chain.len() {
                     for payload in payloads {
                         out.extend_from_slice(&payload);
@@ -1897,6 +2289,7 @@ fn write_dds_float_rgba_image_with_compression(
     parallel_compression: bool,
     use_gpu: bool,
 ) -> core::result::Result<(), String> {
+    let _timer = crate::profiling::Timer::new(crate::profiling::Stage::Encode);
     let bytes: Vec<u8> = rgba
         .iter()
         .map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8)
@@ -2187,9 +2580,8 @@ pub fn remix_fo76_bundle_bytes_with_compression(
         let ao = lighting[i + 1].clamp(0.0, 1.0);
         let gloss = (lighting[i].clamp(0.0, 1.0) * gloss_multiplier).clamp(0.0, 1.0);
 
-        let metal0 = ((r0 - threshold).max(0.0) / denom).clamp(0.0, 1.0);
-        let metal1 = ((r1 - threshold).max(0.0) / denom).clamp(0.0, 1.0);
-        let metal2 = ((r2 - threshold).max(0.0) / denom).clamp(0.0, 1.0);
+        let [metal0, metal1, metal2] =
+            metal_contribution_preserving_hue(r0, r1, r2, threshold, denom);
 
         let base0 = (d0 + metal0).clamp(0.0, 1.0);
         let base1 = (d1 + metal1).clamp(0.0, 1.0);
@@ -2246,9 +2638,101 @@ pub fn remix_fo76_bundle_bytes_with_compression(
     )
 }
 
+fn metal_contribution_preserving_hue(
+    reflectivity_r: f32,
+    reflectivity_g: f32,
+    reflectivity_b: f32,
+    threshold: f32,
+    denominator: f32,
+) -> [f32; 3] {
+    let peak = reflectivity_r.max(reflectivity_g).max(reflectivity_b);
+    let remapped_peak = ((peak - threshold).max(0.0) / denominator).clamp(0.0, 1.0);
+    if peak <= 0.0 {
+        return [remapped_peak; 3];
+    }
+
+    // spec_offset filters reflectivity magnitude. Applying its threshold to
+    // each channel separately destroys colored-metal hue (gold/copper turn red).
+    let scale = remapped_peak / peak;
+    [
+        reflectivity_r * scale,
+        reflectivity_g * scale,
+        reflectivity_b * scale,
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn legacy_rgb_dds(width: u32, height: u32, bits: u32, masks: [u32; 4]) -> Vec<u8> {
+        let mut bytes = vec![0u8; 128];
+        bytes[0..4].copy_from_slice(b"DDS ");
+        bytes[4..8].copy_from_slice(&124u32.to_le_bytes());
+        bytes[12..16].copy_from_slice(&height.to_le_bytes());
+        bytes[16..20].copy_from_slice(&width.to_le_bytes());
+        bytes[76..80].copy_from_slice(&32u32.to_le_bytes());
+        bytes[80..84].copy_from_slice(&0x40u32.to_le_bytes());
+        bytes[88..92].copy_from_slice(&bits.to_le_bytes());
+        for (offset, mask) in [92usize, 96, 100, 104].into_iter().zip(masks) {
+            bytes[offset..offset + 4].copy_from_slice(&mask.to_le_bytes());
+        }
+        bytes
+    }
+
+    #[test]
+    fn sniff_dds_checks_size_legacy_format_and_optional_sse_masks() {
+        let bytes = legacy_rgb_dds(300, 256, 24, [0x00FF_0000, 0x0000_FF00, 0x0000_00FF, 0]);
+        let report = validate_dds_bytes(&bytes, false).unwrap();
+        assert_eq!(report.width, 300);
+        assert_eq!(report.height, 256);
+        assert_eq!(report.findings.len(), 2);
+        assert!(
+            report
+                .findings
+                .iter()
+                .all(|finding| finding.rule == "invalid-texture-size-format")
+        );
+
+        let reduced = legacy_rgb_dds(256, 256, 16, [0xF800, 0x07E0, 0x001F, 0]);
+        assert!(
+            validate_dds_bytes(&reduced, false)
+                .unwrap()
+                .findings
+                .is_empty()
+        );
+        assert_eq!(
+            validate_dds_bytes(&reduced, true).unwrap().findings[0].rule,
+            "sse-unsupported-texture-format"
+        );
+    }
+
+    #[test]
+    fn sniff_dds_rejects_invalid_header() {
+        assert_eq!(
+            validate_dds_bytes(b"not a dds", false).unwrap_err(),
+            "Not a valid DDS file"
+        );
+    }
+
+    #[test]
+    fn metal_contribution_preserves_reflectivity_hue() {
+        let actual = metal_contribution_preserving_hue(0.4, 0.25, 0.1, 0.2, 0.8);
+        let expected = [0.25, 0.15625, 0.0625];
+
+        for channel in 0..3 {
+            assert!(
+                (actual[channel] - expected[channel]).abs() < 1e-6,
+                "channel {channel}: expected {}, got {}",
+                expected[channel],
+                actual[channel]
+            );
+        }
+
+        for actual in metal_contribution_preserving_hue(0.25, 0.25, 0.25, 0.2, 0.8) {
+            assert!((actual - 0.0625).abs() < 1e-6);
+        }
+    }
 
     #[test]
     fn bc7_uses_quick_parallel_compression_flags() {
@@ -2540,6 +3024,40 @@ mod tests {
         assert_eq!(decoded.mips[0].2[3], 255);
         assert_eq!(decoded.mips[0].2[7], 0);
         assert_eq!(&decoded.mips[0].2[4..7], &[12, 80, 200]);
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn srgb_texels_convert_to_linear_unorm() {
+        let converted = convert_srgb_texels_to_linear_unorm(1, 1, &[128, 64, 32, 200]).unwrap();
+
+        assert!((converted[0] as i32 - 55).abs() <= 1);
+        assert!((converted[1] as i32 - 13).abs() <= 1);
+        assert!((converted[2] as i32 - 4).abs() <= 1);
+        assert_eq!(converted[3], 200);
+    }
+
+    #[test]
+    fn srgb_payload_writer_keeps_unorm_header_and_builds_mips_in_linear_space() {
+        let path = std::env::temp_dir().join(format!(
+            "modbox21_srgb_payload_unorm_header_{}.dds",
+            std::process::id()
+        ));
+        let rgba = vec![255, 255, 255, 255, 0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0, 255];
+
+        write_dds_rgba_image_srgb_payload_unorm_header(&path, 2, 2, &rgba, "BC3_UNORM", true)
+            .unwrap();
+
+        let decoded = read_dds_mips_rgba8(&path).unwrap();
+        assert_eq!(decoded.dxgi_format, 77);
+        assert_eq!(decoded.mips.len(), 2);
+        let last = &decoded.mips[1].2;
+        for channel in &last[..3] {
+            assert!(
+                (120..=150).contains(channel),
+                "linear 25% gray should encode near sRGB 137, got {channel}"
+            );
+        }
         std::fs::remove_file(path).ok();
     }
 
@@ -2865,3 +3383,9 @@ mod tests {
         let _ = crate::compress_bc7_gpu_batch(&[], false);
     }
 }
+
+#[cfg(test)]
+mod owned_chain_tests;
+
+#[cfg(test)]
+mod write_bench;

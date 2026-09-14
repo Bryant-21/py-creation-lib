@@ -235,9 +235,8 @@ fn interleaved_clip_with_skeleton_maps_bone_names() {
 // ---------------------------------------------------------------------------
 // Test 3: Spline XML → static-rotation round-trip
 //
-// We construct a hand-crafted spline buffer for a 1-track, 1-frame animation
-// with a static UNCOMPRESSED rotation and static translation/scale.
-// Then embed it in an hkaSplineCompressedAnimation XML and call extract_clip.
+// A hand-built 1-track, 1-frame spline buffer (static UNCOMPRESSED rotation,
+// static translation/scale) embedded in hkaSplineCompressedAnimation XML.
 // ---------------------------------------------------------------------------
 
 fn build_static_spline_buf() -> Vec<u8> {

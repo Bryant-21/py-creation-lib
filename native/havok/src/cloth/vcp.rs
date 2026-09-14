@@ -1,13 +1,10 @@
-// Virtual Collision Point (VCP) builder.
-//
-// Mirrors the SDK `hclVirtualCollisionPointsBuilder` field shape
+// Virtual Collision Point (VCP) builder with the SDK field shape
 // (Cloth/SimCloth/VirtualCollisionPointsData/hclVirtualCollisionPointsData.h):
-// triangle fans + edge fans around selected real particles, with per-fan
-// barycentric points stored as indices into a deduplicated dictionary.
+// triangle and edge fans around selected particles, with per-fan barycentric
+// points indexing a deduplicated dictionary.
 //
-// Produces an in-memory `VirtualCollisionPointsData` from a `SetupMesh` +
-// selected-particle list + density. Not wired into bake.rs::emit_sim_cloth_data;
-// vanilla cape VCP blobs currently survive via the passthrough_members round-trip.
+// Not wired into bake.rs::emit_sim_cloth_data; vanilla cape VCP blobs survive
+// via the passthrough_members round-trip.
 
 use std::collections::BTreeMap;
 

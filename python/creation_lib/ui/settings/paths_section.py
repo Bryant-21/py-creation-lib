@@ -46,11 +46,13 @@ def _pick_file(title: str = "Select File", filetypes: list | None = None) -> str
         return None
 
 
-def _draw_game_paths(game_id: str) -> None:
+def _draw_game_paths(game_id: str, scale: float | None = None) -> None:
+    scale = scale or 1
     gp = _state.game_paths.setdefault(
         game_id,
         {
             "root": "",
+            "pts_root": "",
             "extracted": "",
             "additional": [],
             "content_resources_zip": "",
@@ -61,7 +63,7 @@ def _draw_game_paths(game_id: str) -> None:
 
     imgui.spacing()
     imgui.text("Game Root")
-    imgui.set_next_item_width(-85)
+    imgui.set_next_item_width(-100 * scale)
     changed, val = imgui.input_text(f"##root_{game_id}", gp["root"])
     if changed:
         gp["root"] = val
@@ -71,9 +73,29 @@ def _draw_game_paths(game_id: str) -> None:
         if path:
             gp["root"] = path
 
+    if game_id == "fo76":
+        imgui.spacing()
+        imgui.text("Public Test Server Root (optional)")
+        if imgui.is_item_hovered():
+            imgui.set_tooltip(
+                "Optional Fallout 76 Playtest install. The retail install above "
+                "remains required for ownership verification."
+            )
+        imgui.set_next_item_width(-100 * scale)
+        changed, val = imgui.input_text(
+            "##pts_root_fo76", gp.get("pts_root", "")
+        )
+        if changed:
+            gp["pts_root"] = val
+        imgui.same_line()
+        if imgui.button("Browse##pts_root_fo76"):
+            path = _pick_folder("Select Fallout 76 Playtest Directory")
+            if path:
+                gp["pts_root"] = path
+
     imgui.spacing()
     imgui.text("Extracted Dir")
-    imgui.set_next_item_width(-85)
+    imgui.set_next_item_width(-100 * scale)
     changed, val = imgui.input_text(f"##ext_{game_id}", gp["extracted"])
     if changed:
         gp["extracted"] = val
@@ -86,7 +108,7 @@ def _draw_game_paths(game_id: str) -> None:
     if game_id == "starfield":
         imgui.spacing()
         imgui.text("ContentResources.zip")
-        imgui.set_next_item_width(-85)
+        imgui.set_next_item_width(-100 * scale)
         changed, val = imgui.input_text(f"##cr_zip_{game_id}", gp.get("content_resources_zip", ""))
         if changed:
             gp["content_resources_zip"] = val
@@ -98,7 +120,7 @@ def _draw_game_paths(game_id: str) -> None:
 
     imgui.spacing()
     imgui.text("Additional Paths")
-    imgui.begin_child(f"##addl_{game_id}", imgui.ImVec2(0, 120), True)
+    imgui.begin_child(f"##addl_{game_id}", imgui.ImVec2(0, 120 * scale), True)
     paths_list: list[str] = gp.setdefault("additional", [])
     to_remove = None
     for i, p in enumerate(paths_list):
@@ -129,7 +151,7 @@ def _draw_game_paths(game_id: str) -> None:
             "Papyrus user script source directory (e.g. Data/Scripts/Source/User).\n"
             "Used by the Papyrus LSP for script resolution."
         )
-    imgui.set_next_item_width(-85)
+    imgui.set_next_item_width(-100 * scale)
     changed, val = imgui.input_text(f"##scripts_user_{game_id}", gp.get("scripts_user_dir", ""))
     if changed:
         gp["scripts_user_dir"] = val
@@ -146,7 +168,7 @@ def _draw_game_paths(game_id: str) -> None:
             "Papyrus base/vanilla script source directory (e.g. Data/Scripts/Source/Base).\n"
             "Used by the Papyrus LSP for script resolution."
         )
-    imgui.set_next_item_width(-85)
+    imgui.set_next_item_width(-100 * scale)
     changed, val = imgui.input_text(f"##scripts_base_{game_id}", gp.get("scripts_base_dir", ""))
     if changed:
         gp["scripts_base_dir"] = val
@@ -157,13 +179,14 @@ def _draw_game_paths(game_id: str) -> None:
             gp["scripts_base_dir"] = os.path.normpath(path)
 
 
-def _draw_fo4_installs(settings) -> None:
+def _draw_fo4_installs(settings, scale: float | None = None) -> None:
     """Editor for extra FO4 installs (deploy targets), persisted to the canonical store.
 
     Writes through ``set_fo4_extra_installs`` rather than the section's save() dict,
     because the section_data path the rest of this tab uses does not reach
     ``get_game_paths`` (the store the Mod Builder reads).
     """
+    scale = scale or 1
     if not hasattr(settings, "get_fo4_extra_installs"):
         return
     if _state.fo4_installs is None:
@@ -181,14 +204,14 @@ def _draw_fo4_installs(settings) -> None:
         )
     imgui.spacing()
 
-    imgui.begin_child("##fo4_installs", imgui.ImVec2(0, 120), True)
+    imgui.begin_child("##fo4_installs", imgui.ImVec2(0, 120 * scale), True)
     to_remove = None
     for i, inst in enumerate(installs):
         imgui.push_id(f"fo4_install_{i}")
         if imgui.small_button("x"):
             to_remove = i
         imgui.same_line()
-        imgui.set_next_item_width(220)
+        imgui.set_next_item_width(220 * scale)
         changed, new_label = imgui.input_text("##label", inst.get("label", ""))
         if changed:
             inst["label"] = new_label
@@ -221,7 +244,8 @@ def _draw_fo4_installs(settings) -> None:
                 settings.set_fo4_extra_installs(installs)
 
 
-def _draw_script_sources() -> None:
+def _draw_script_sources(scale: float | None = None) -> None:
+    scale = scale or 1
     imgui.spacing()
     imgui.text_disabled(
         "Additional Papyrus .psc source directories (optional).\n"
@@ -229,7 +253,7 @@ def _draw_script_sources() -> None:
     )
     imgui.spacing()
     imgui.text("Script Source Paths")
-    imgui.begin_child("##script_sources", imgui.ImVec2(0, 120), True)
+    imgui.begin_child("##script_sources", imgui.ImVec2(0, 120 * scale), True)
     to_remove = None
     for i, p in enumerate(_state.script_sources):
         imgui.push_id(f"ss_{i}")
@@ -254,6 +278,7 @@ def _draw_script_sources() -> None:
 
 
 def _draw(ctx: SettingsContext) -> None:
+    scale = ctx.scale
     imgui.spacing()
     imgui.separator()
     imgui.spacing()
@@ -262,13 +287,13 @@ def _draw(ctx: SettingsContext) -> None:
         for game_id, label in _GAME_TABS:
             selected, _ = imgui.begin_tab_item(label)
             if selected:
-                _draw_game_paths(game_id)
+                _draw_game_paths(game_id, scale)
                 if game_id == "fo4":
-                    _draw_fo4_installs(ctx.settings)
+                    _draw_fo4_installs(ctx.settings, scale)
                 imgui.end_tab_item()
         selected, _ = imgui.begin_tab_item("Script Sources")
         if selected:
-            _draw_script_sources()
+            _draw_script_sources(scale)
             imgui.end_tab_item()
         imgui.end_tab_bar()
 
@@ -279,6 +304,7 @@ def _load(saved: dict) -> None:
         gp = saved.get(game_id, {})
         _state.game_paths[game_id] = {
             "root": gp.get("root_dir", ""),
+            "pts_root": gp.get("pts_root_dir", ""),
             "extracted": gp.get("extracted_dir", ""),
             "additional": list(gp.get("additional_paths", [])),
             "content_resources_zip": gp.get("content_resources_zip", ""),
@@ -295,6 +321,7 @@ def _save() -> dict:
         gp = _state.game_paths.get(game_id, {})
         result[game_id] = {
             "root_dir": gp.get("root", ""),
+            "pts_root_dir": gp.get("pts_root", ""),
             "extracted_dir": gp.get("extracted", ""),
             "additional_paths": list(gp.get("additional", [])),
             "content_resources_zip": gp.get("content_resources_zip", ""),

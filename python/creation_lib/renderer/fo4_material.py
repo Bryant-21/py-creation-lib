@@ -15,7 +15,7 @@ from creation_lib.renderer.material_readers.base import RenderFlags
 from creation_lib.renderer.material_pipeline import (
     _resolve_texture_path, _cached_load, _cached_load_cubemap,
     _extract_alpha_flags, _extract_shader_params, _get_shape_property_block,
-    _get_decoded,
+    _get_decoded, _get_shader_field,
 )
 
 _log = logging.getLogger("nif_editor.fo4_material")
@@ -24,7 +24,15 @@ _log = logging.getLogger("nif_editor.fo4_material")
 class FO4MaterialBackend:
     """Material backend for FO4, Skyrim SE, and FO76."""
 
-    def build_material(self, ctx, nif, shape_block, texture_dirs, ba2_mgr=None):
+    def build_material(
+        self,
+        ctx,
+        nif,
+        shape_block,
+        texture_dirs,
+        ba2_mgr=None,
+        texture_paths_override=None,
+    ):
         """Build a Material from a BSTriShape's shader properties.
 
         """
@@ -49,8 +57,13 @@ class FO4MaterialBackend:
             self._build_lighting_material(mat, shader_prop)
 
         # Texture loading
-        tex_paths = self._get_texture_paths(nif, shader_prop, block_type,
-                                            texture_dirs, ba2_mgr)
+        tex_paths = (
+            dict(texture_paths_override)
+            if texture_paths_override is not None
+            else self._get_texture_paths(
+                nif, shader_prop, block_type, texture_dirs, ba2_mgr
+            )
+        )
         self._apply_material_overrides(mat, tex_paths, is_effect, shader_prop)
         self._load_textures(ctx, mat, tex_paths, texture_dirs, ba2_mgr, is_effect)
 
@@ -147,9 +160,9 @@ class FO4MaterialBackend:
         mat.glow_color = params["glow_color"]
         mat.glow_mult = params["glow_mult"]
 
-        sf2 = shader_prop.get_field("Shader Flags 2") or []
+        sf2 = _get_shader_field(shader_prop, "Shader Flags 2") or []
         if isinstance(sf2, list):
-            mat.double_sided = "Double_Sided" in sf2
+            mat.double_sided = "Double_Sided" in sf2 or 348504749 in sf2
 
     def _get_texture_paths(self, nif, shader_prop, block_type, texture_dirs, ba2_mgr):
         """Get texture paths — delegates to material_pipeline._get_texture_paths for FO4."""

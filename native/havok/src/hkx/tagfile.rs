@@ -191,6 +191,14 @@ impl Tagfile {
         self.source_bytes.clone()
     }
 
+    /// Leading year of the `SDKV` string (`20190200` → 2019), 0 when absent.
+    fn sdk_year(&self) -> u32 {
+        self.sdk_version
+            .get(..4)
+            .and_then(|year| year.parse().ok())
+            .unwrap_or(0)
+    }
+
     fn tag_type(&self, type_id: usize) -> HavokResult<&TagType> {
         self.type_registry.types.get(type_id).ok_or_else(|| {
             HavokError::InvalidInput(format!("TAG0 type id {type_id} is not in registry"))
@@ -275,8 +283,7 @@ impl Tagfile {
         materialize_scalar_or_string_value(data, offset, tag_type, &self.type_registry)
     }
 
-    /// Resolve a kind=3 (KIND_STRING) field. Mirrors Python's flow at
-    /// py_creation_lib/python/creation_lib/hkxpack/tagfile_reader.py:983-986: when the field offset is in the
+    /// Resolve a kind=3 (KIND_STRING) field. When the field offset is in the
     /// PTCH set, the u32 there is an item index for a VARN char payload; the
     /// VARN bytes decode as a tolerant ASCII string. When the offset is *not*
     /// in PTCH, hkStringPtr is being reused as a scratch int field — fall
@@ -409,12 +416,10 @@ impl Tagfile {
         let mut members = Vec::new();
         for field in self.collect_fields(tag_type)? {
             let field_type = self.tag_type(field.type_id)?;
-            // Mirror Python tagfile_reader.py: a nested field whose type has
-            // no materialized size (e.g. FO76 typedef'd primitives like
-            // hknpConstraintId that didn't get parent-resolved) is silently
-            // skipped — Python's _read_field returns None and the field is
-            // simply omitted from the parent struct. Erroring here is too
-            // strict and breaks FO76 ragdoll conversion (snallygaster
+            // A nested field whose type has no materialized size (e.g. FO76
+            // typedef'd primitives like hknpConstraintId that were not
+            // parent-resolved) is omitted from the parent struct. Erroring here
+            // breaks FO76 ragdoll conversion (snallygaster
             // hknpRagdollData.constraintCinfos.desiredConstraintId).
             let Some(field_size) = nested_field_size(field_type, &self.type_registry) else {
                 continue;
@@ -511,23 +516,16 @@ impl Tagfile {
         // TAG0 encodes hkArray as a 16-byte synthetic header — m_data (item
         // index, u32 at offset 0) + pad(4) + m_size(4) + m_capacityAndFlags(4)
         // — while hkRelArray uses a bare 4-byte header that is just the item
-        // index. In both cases the leading u32 is the VARN item index and the
-        // real element count + payload offset live on that referenced item
-        // (hkArray's trailing 12 bytes are unused: m_size is zero in TAG0). So
-        // the two array kinds resolve identically from the item table; only
-        // the header width differs. See Python tagfile_reader._read_array_pointer
-        // (py_creation_lib/python/creation_lib/hkxpack/tagfile_reader.py:1227),
-        // which reads count from `items[item_idx].count`.
-        //
-        // Reading only the leading u32 (not the full 16 bytes) lets the same
-        // code service hkRelArray. The previous code special-cased
-        // `size != 16` to return an empty array, which silently dropped
-        // hknpConvexPolytopeShape hull geometry — vertices/planes/faces/indices
-        // are all hkRelArray — collapsing those shapes to an AABB-box fallback.
+        // index. Either way the leading u32 is the VARN item index and the real
+        // element count + payload offset live on that item (hkArray's trailing
+        // 12 bytes are unused: m_size is zero in TAG0), so only the leading u32
+        // is read. hknpConvexPolytopeShape's vertices/planes/faces/indices are
+        // all hkRelArray; reading them as empty collapses those shapes to an
+        // AABB-box fallback.
         //
         // Only scalar/string subtypes are materialized here; inline-struct
         // subtypes (e.g. hkRootLevelContainer::NamedVariant) are handled by the
-        // existing object-pointer pass and read as empty arrays here.
+        // object-pointer pass and read as empty arrays here.
         let item_index = data
             .get(offset..offset + 4)
             .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize)
@@ -547,19 +545,11 @@ impl Tagfile {
             // Pointer element: the per-element stride is the in-memory pointer
             // width, which TAG0 records in the pointer type's `size` — 4 on
             // 32-bit packers, 8 on 64-bit packers (FO76 TAG0 2014/2015 is
-            // authored 64-bit). The element body is the serialized pointer; its
-            // low 4 bytes hold the VARN item index (the high half is zero), so
-            // materialize_array_pointer_element reads the leading u32 at each
-            // strided offset. This mirrors materialize_pointer_value, which for
-            // a single pointer field reads `size` bytes and takes the low 4 as
-            // the item index.
-            //
-            // A hardcoded stride of 4 truncated every 64-bit pointer array:
-            // reading `count` 4-byte slots covered only the first count/2 real
-            // pointers and interleaved their zero high-halves, so HALF of each
-            // FO76 behavior-graph pointer array (hkbLayerGenerator.layers,
-            // children, generators, modifiers) and the skeleton
-            // hkaAnimationContainer.skeletons read as null.
+            // authored 64-bit). The low 4 bytes hold the VARN item index (the
+            // high half is zero), as in materialize_pointer_value. A fixed
+            // stride of 4 reads half of every 64-bit pointer array as null
+            // (hkbLayerGenerator.layers, children, generators, modifiers,
+            // hkaAnimationContainer.skeletons).
             if element_type.size == 8 { 8 } else { 4 }
         } else if element_type.kind == 7 {
             // Inline-struct element: each element is the struct's full size.
@@ -659,6 +649,14 @@ impl Tagfile {
         let subtype = self.tag_type(tag_type.subtype_id)?;
         let element_stride = if subtype.kind == 7 {
             subtype.size
+        } else if subtype.kind == 6 && self.sdk_year() >= 2018 {
+            // Pointer element, same 4/8-byte stride rule as the hkArray path.
+            // Starfield's hknpLodShape.variants is hkRefPtr<hknpShape>[8]; a
+            // bare `materializable_element_size` lookup returns None for
+            // pointers and would drop every LOD variant. Kept version-scoped:
+            // on 2015-era files these slots decoded as an empty array, and
+            // the FO76 converters are calibrated against that.
+            if subtype.size == 8 { 8 } else { 4 }
         } else {
             let Some(element_stride) = materializable_element_size(subtype, &self.type_registry)
             else {
@@ -706,6 +704,14 @@ impl Tagfile {
                     item_to_object_index,
                     visited,
                     path,
+                )?
+            } else if subtype.kind == 6 && self.sdk_year() >= 2018 {
+                materialize_array_pointer_element(
+                    data,
+                    element_offset,
+                    subtype,
+                    &self.items,
+                    item_to_object_index,
                 )?
             } else {
                 materialize_scalar_or_string_value(
@@ -1071,8 +1077,18 @@ pub fn parse_tagfile(data: &[u8]) -> HavokResult<Tagfile> {
         .unwrap_or_else(|| "20150100".to_string());
     let contents_version = sdk_contents_version(&sdk_version);
 
-    let type_strings = parse_string_table(section_bytes(data, &sections, "TSTR").unwrap_or(&[]))?;
-    let field_strings = parse_string_table(section_bytes(data, &sections, "FSTR").unwrap_or(&[]))?;
+    // TST1/FST1 are the 2018+ SDK spellings of TSTR/FSTR (Starfield ships
+    // 20190200); the payload encoding is unchanged.
+    let type_strings = parse_string_table(
+        section_bytes(data, &sections, "TSTR")
+            .or_else(|| section_bytes(data, &sections, "TST1"))
+            .unwrap_or(&[]),
+    )?;
+    let field_strings = parse_string_table(
+        section_bytes(data, &sections, "FSTR")
+            .or_else(|| section_bytes(data, &sections, "FST1"))
+            .unwrap_or(&[]),
+    )?;
     let type_registry = build_type_registry(data, &sections, &type_strings, &field_strings)?;
     let items = parse_items(section_bytes(data, &sections, "ITEM").unwrap_or(&[]))?;
     let pointer_offsets = parse_ptch(section_bytes(data, &sections, "PTCH").unwrap_or(&[]))?;
@@ -1356,6 +1372,12 @@ fn parse_type_bodies(
                 pos = next_pos;
                 let (flags, next_pos) = read_vle(data, pos)?;
                 pos = next_pos;
+                if flags & 0x80 != 0 {
+                    // 2018+ SDK: a serialization descriptor precedes the byte
+                    // offset. FO76's 2015.1.0 writer never sets this bit.
+                    let (_, next_pos) = read_vle(data, pos)?;
+                    pos = next_pos;
+                }
                 let (offset, next_pos) = read_vle(data, pos)?;
                 pos = next_pos;
                 let (field_type_id, next_pos) = read_vle(data, pos)?;
@@ -1443,7 +1465,13 @@ fn parse_ptch(data: &[u8]) -> HavokResult<Vec<usize>> {
 }
 
 fn parse_string_table(raw: &[u8]) -> HavokResult<Vec<String>> {
-    raw.split(|byte| *byte == 0)
+    // 2018+ SDK writers pad the section tail to alignment with 0xFF.
+    let end = raw
+        .iter()
+        .rposition(|byte| *byte != 0xFF)
+        .map_or(0, |index| index + 1);
+    raw[..end]
+        .split(|byte| *byte == 0)
         .filter(|part| !part.is_empty())
         .map(|part| decode_ascii(part, "string table"))
         .collect()

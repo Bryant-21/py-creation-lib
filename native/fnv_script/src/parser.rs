@@ -16,6 +16,8 @@ pub fn parse_script(src: &str) -> Result<Script, FnvScriptError> {
             break;
         }
 
+        let start = parser.pos;
+
         if parser.peek_keyword_one_of(&["int", "long", "short", "float", "ref", "string_var"]) {
             variables.push(parser.parse_var_decl()?);
         } else if parser.peek_keyword("Begin") {
@@ -27,6 +29,7 @@ pub fn parse_script(src: &str) -> Result<Script, FnvScriptError> {
                 statements: parser.parse_stmt_list_until(&["End"])?,
             });
         }
+        parser.ensure_progress(start, "top-level declaration or block")?;
     }
 
     Ok(Script {
@@ -43,6 +46,18 @@ struct Parser {
 }
 
 impl Parser {
+    fn ensure_progress(&self, start: usize, context: &str) -> Result<(), FnvScriptError> {
+        if self.pos > start {
+            return Ok(());
+        }
+        let token = self.peek();
+        Err(FnvScriptError::Parse {
+            line: token.map_or(1, |token| token.line),
+            col: token.map_or(1, |token| token.col),
+            msg: format!("parser made no forward progress while parsing {context}"),
+        })
+    }
+
     fn is_eof(&self) -> bool {
         self.pos >= self.toks.len()
     }
@@ -158,7 +173,25 @@ impl Parser {
                 });
             }
         };
-        Ok(VarDecl { name, ty })
+        let initial = if self.peek_keyword("to") {
+            self.bump();
+            Some(self.parse_expr()?)
+        } else {
+            None
+        };
+        if let Some(token) = self.peek()
+            && !matches!(token.kind, TokenKind::Newline)
+        {
+            return Err(FnvScriptError::Parse {
+                line: token.line,
+                col: token.col,
+                msg: format!(
+                    "unexpected token after variable declaration: {:?}",
+                    token.kind
+                ),
+            });
+        }
+        Ok(VarDecl { name, ty, initial })
     }
 
     fn parse_block(&mut self) -> Result<Block, FnvScriptError> {
@@ -182,7 +215,9 @@ impl Parser {
             if matches!(token.kind, TokenKind::Newline) {
                 break;
             }
+            let start = self.pos;
             args.push(self.parse_expr()?);
+            self.ensure_progress(start, "event argument")?;
         }
         self.skip_newlines();
         let statements = self.parse_stmt_list_until(&["End"])?;
@@ -205,22 +240,27 @@ impl Parser {
             if terminators.iter().any(|term| self.peek_keyword(term)) {
                 break;
             }
+            let start = self.pos;
             if self.peek_keyword("Set") {
                 statements.push(self.parse_set()?);
+                self.ensure_progress(start, "set statement")?;
                 continue;
             }
             if self.peek_keyword("if") {
                 statements.push(self.parse_if()?);
+                self.ensure_progress(start, "if statement")?;
                 continue;
             }
             if self.peek_keyword("Return") {
                 self.bump();
                 statements.push(Stmt::Return);
+                self.ensure_progress(start, "return statement")?;
                 continue;
             }
 
             let call = self.parse_call_stmt()?;
             statements.push(Stmt::Call(call));
+            self.ensure_progress(start, "call statement")?;
         }
         Ok(statements)
     }
@@ -234,6 +274,8 @@ impl Parser {
     }
 
     fn parse_if(&mut self) -> Result<Stmt, FnvScriptError> {
+        let if_line = self.peek().map_or(1, |token| token.line);
+        let if_col = self.peek().map_or(1, |token| token.col);
         self.expect_keyword("if")?;
         let cond = self.parse_expr()?;
         self.skip_newlines();
@@ -248,21 +290,82 @@ impl Parser {
             elif_branches.push((elif_cond, body));
         }
 
-        let else_branch = if self.peek_keyword("else") {
+        let mut else_branch = if self.peek_keyword("else") {
             self.bump();
-            self.skip_newlines();
-            self.parse_stmt_list_until(&["endif"])?
+            if matches!(
+                self.peek().map(|token| &token.kind),
+                Some(TokenKind::Punct('('))
+            ) {
+                let elif_cond = self.parse_expr()?;
+                self.expect_line_end("after else(condition)")?;
+                let body = self.parse_stmt_list_until(&["endif"])?;
+                elif_branches.push((elif_cond, body));
+                Vec::new()
+            } else {
+                self.skip_newlines();
+                self.parse_stmt_list_until(&["endif"])?
+            }
         } else {
             Vec::new()
         };
 
-        self.expect_keyword("endif")?;
+        let endif_col = self.peek().map_or(1, |token| token.col);
+        self.expect_keyword("endif").map_err(|error| match error {
+            FnvScriptError::Parse { line, col, msg } => FnvScriptError::Parse {
+                line,
+                col,
+                msg: format!("{msg} for if starting on line {if_line}"),
+            },
+            other => other,
+        })?;
+
+        if elif_branches.is_empty() && else_branch.is_empty() {
+            // Some GECK sources close an If immediately before a same-level ElseIf.
+            let checkpoint = self.pos;
+            self.skip_newlines();
+            if self.peek_keyword_at_either_col("elseif", if_col, endif_col) {
+                while self.peek_keyword_at_either_col("elseif", if_col, endif_col) {
+                    self.bump();
+                    let elif_cond = self.parse_expr()?;
+                    self.skip_newlines();
+                    let body = self.parse_stmt_list_until(&["elseif", "else", "endif"])?;
+                    elif_branches.push((elif_cond, body));
+                }
+                if self.peek_keyword_at_either_col("else", if_col, endif_col) {
+                    self.bump();
+                    self.skip_newlines();
+                    else_branch = self.parse_stmt_list_until(&["endif"])?;
+                }
+                self.expect_keyword("endif")?;
+            } else {
+                self.pos = checkpoint;
+            }
+        }
+
         Ok(Stmt::If {
             cond,
             then_branch,
             elif_branches,
             else_branch,
         })
+    }
+
+    fn expect_line_end(&mut self, context: &str) -> Result<(), FnvScriptError> {
+        match self.peek() {
+            Some(Token {
+                kind: TokenKind::Newline,
+                ..
+            }) => {
+                self.skip_newlines();
+                Ok(())
+            }
+            Some(token) => Err(FnvScriptError::Parse {
+                line: token.line,
+                col: token.col,
+                msg: format!("expected newline {context}, got {:?}", token.kind),
+            }),
+            None => Err(self.eof_err(format!("expected newline {context}"))),
+        }
     }
 
     fn parse_lvalue(&mut self) -> Result<LValue, FnvScriptError> {
@@ -344,7 +447,9 @@ impl Parser {
             if matches!(token.kind, TokenKind::Newline) {
                 break;
             }
+            let start = self.pos;
             args.push(self.parse_expr()?);
+            self.ensure_progress(start, "call argument")?;
         }
 
         Ok(FunctionCall {
@@ -519,7 +624,9 @@ impl Parser {
                     let mut args = Vec::new();
                     if !matches!(self.peek().map(|t| &t.kind), Some(TokenKind::Punct(')'))) {
                         loop {
+                            let start = self.pos;
                             args.push(self.parse_expr()?);
+                            self.ensure_progress(start, "parenthesized call argument")?;
                             if matches!(self.peek().map(|t| &t.kind), Some(TokenKind::Punct(','))) {
                                 self.bump();
                                 continue;
@@ -536,6 +643,17 @@ impl Parser {
                             col: closing.col,
                             msg: "expected ')'".into(),
                         });
+                    }
+                    return Ok(Expr::Call(FunctionCall {
+                        name: current_name,
+                        receiver,
+                        args,
+                    }));
+                }
+                if looks_like_prefix_function(&current_name) && self.prefix_arg_starts_here() {
+                    let mut args = Vec::new();
+                    while self.prefix_arg_starts_here() {
+                        args.push(self.parse_unary()?);
                     }
                     return Ok(Expr::Call(FunctionCall {
                         name: current_name,
@@ -572,4 +690,32 @@ impl Parser {
             }),
         }
     }
+
+    fn prefix_arg_starts_here(&self) -> bool {
+        match self.peek().map(|token| &token.kind) {
+            Some(TokenKind::Ident(_))
+            | Some(TokenKind::IntLit(_))
+            | Some(TokenKind::FloatLit(_))
+            | Some(TokenKind::StringLit(_))
+            | Some(TokenKind::Punct('(')) => true,
+            Some(TokenKind::Keyword(keyword)) => !matches!(
+                keyword.to_ascii_lowercase().as_str(),
+                "elseif" | "else" | "endif" | "end" | "to" | "begin" | "set" | "return"
+            ),
+            _ => false,
+        }
+    }
+
+    fn peek_keyword_at_col(&self, keyword: &str, col: usize) -> bool {
+        self.peek_keyword(keyword) && self.peek().is_some_and(|token| token.col == col)
+    }
+
+    fn peek_keyword_at_either_col(&self, keyword: &str, first: usize, second: usize) -> bool {
+        self.peek_keyword_at_col(keyword, first) || self.peek_keyword_at_col(keyword, second)
+    }
+}
+
+fn looks_like_prefix_function(name: &str) -> bool {
+    let normalized = name.to_ascii_lowercase();
+    normalized.starts_with("get") || normalized.starts_with("is") || normalized.starts_with("has")
 }

@@ -18,6 +18,7 @@ pub enum ScriptKind {
 pub struct VarDecl {
     pub name: String,
     pub ty: VarType,
+    pub initial: Option<Expr>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

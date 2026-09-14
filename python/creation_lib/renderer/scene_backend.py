@@ -1,16 +1,10 @@
 """SceneBackend protocol for per-game rendering paths.
 
-This module defines the interface that the editor's SceneRenderer delegates
-to for game-specific draw logic. The goal is to keep ``SceneRenderer`` as a
-thin coordinator that owns FBOs, post-processing (SSAO, composite), shadow
-infrastructure, the camera, the grid, and the viewport — while every
-per-game one-off (FO4, FO76, Skyrim, Starfield, future TES6) lives behind
-this interface as a concrete backend.
-
-``NodeHandle`` is intentionally an opaque ``object``. It might be a
-``SceneNode`` (FO4), an int into ``SFScene.meshes`` (Starfield), a string
-ID, or a backend-specific dataclass. ``SceneRenderer`` must never inspect
-its contents — it only passes handles back to the owning backend.
+``SceneRenderer`` owns FBOs, post-processing (SSAO, composite), shadow
+infrastructure, the camera, the grid, and the viewport; per-game draw logic lives
+behind this protocol. ``NodeHandle`` is opaque (a ``SceneNode`` for FO4, an index
+or ``RenderMesh`` for Starfield, ...). ``SceneRenderer`` never inspects it and only
+passes it back to the owning backend.
 """
 
 from __future__ import annotations
@@ -26,15 +20,11 @@ NodeHandle = object
 
 @dataclass
 class RenderState:
-    """Per-frame, game-agnostic render state pulled from the App.
+    """Per-frame, game-agnostic render state built from the App's ``_toggle_*`` /
+    ``_dbg_*`` attributes, so backends never read ``self._app``.
 
-    Wraps the ``_toggle_*`` / ``_dbg_*`` flags and lighting/post-process
-    state currently scattered across ``App`` attributes. Backends read from
-    this struct instead of poking ``self._app`` directly, which keeps the
-    coupling explicit and makes the protocol testable in isolation.
-
-    Fields default to the same fall-backs the existing renderer uses so an
-    empty RenderState renders the same as no RenderState at all.
+    Defaults match the renderer's fallbacks, so an empty RenderState renders the
+    same as none.
     """
 
     # Material / lighting feature toggles (Scene menu checkboxes)
@@ -57,20 +47,13 @@ class RenderState:
     ssao_enabled: bool = False
     shadows_enabled: bool = False
 
-    # Free-form bag for backend-specific state. Avoid using this for
-    # anything that could plausibly be shared — promote to a real field
-    # instead. Present mostly so backends can stash diagnostic flags
-    # without forcing a protocol bump.
+    # Backend-specific state, mostly diagnostic flags. Promote anything
+    # shareable to a real field.
     extra: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_app(cls, app: Any) -> "RenderState":
-        """Build a RenderState from an App instance.
-
-        Mirrors the attribute names the existing FO4 / SF code paths read
-        via ``getattr(self._app, "_toggle_xxx", default)``. Safe to call
-        with ``app=None`` — returns an all-default state.
-        """
+        """Build a RenderState from an App instance; ``app=None`` gives all defaults."""
         if app is None:
             return cls()
         return cls(
@@ -95,15 +78,10 @@ class RenderState:
 class SceneBackend(Protocol):
     """Per-game scene + draw protocol.
 
-    Concrete backends live in ``py_creation_lib/python/creation_lib/renderer/backends/``. Each backend owns
-    its own scene representation (``SceneNode`` tree, ``SFScene.meshes``,
-    etc.), its own shader programs, and its own draw loop. The host
-    ``SceneRenderer`` owns FBOs, the camera, post-processing, shadow FBO
-    setup, and the grid.
-
-    Implementations should be constructed with a back-reference to the
-    host renderer so they can read shared FBO / GL state during the
-    transitional phases.
+    Backends in ``creation_lib/renderer/backends/`` implement the per-game draw
+    loop; the host ``SceneRenderer`` owns FBOs, the camera, post-processing,
+    shadow FBO setup, and the grid. Backends hold a back-reference to the host
+    renderer to read shared FBO / GL state.
     """
 
     # ----- Lifecycle -----------------------------------------------------

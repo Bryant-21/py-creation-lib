@@ -21,9 +21,17 @@ _CAPABILITIES = (
     "tag_histogram",
     "roundtrip_ok",
     "abc_string_pools",
+    "abc_class_names",
+    "unbacked_symbol_classes",
+    "build_movieclip_class_doabc",
     "inject_symbols_into",
     "inject_symbols_renamed_into",
 )
+# `compile_as3_do_abc` / `compile_as3_class_names` are deliberately absent from
+# the probe above. It decides whether a `.pyd` is usable at all, so listing a
+# newly-added function there makes every extension built before it fail to load
+# — taking out inspection and injection, which do not need the compiler. Callers
+# that need the compiler get an AttributeError naming it instead.
 
 
 def _looks_like_native_module(module: Any | None) -> bool:
@@ -83,6 +91,48 @@ def abc_string_pools(data: bytes) -> list[tuple[int, int, int, int, int, int, li
     lives): ``(tag_code, minor, major, int_count, uint_count, double_count, strings)``.
     Read-only — parses up through the string pool and stops."""
     return load_native_module().abc_string_pools(bytes(data))
+
+
+def abc_class_names(data: bytes) -> list[str]:
+    """Fully-qualified names (``package.Class``, or bare ``Class`` in the unnamed
+    package) of every AS3 class *defined* by a DoABC tag in this SWF."""
+    return load_native_module().abc_class_names(bytes(data))
+
+
+def unbacked_symbol_classes(data: bytes) -> list[str]:
+    """SymbolClass export names no DoABC in the same SWF defines.
+
+    Non-empty means the file ships a dangling binding — a character id pointing
+    at a class that does not exist, which leaves the engine unable to construct
+    that symbol."""
+    return load_native_module().unbacked_symbol_classes(bytes(data))
+
+
+def build_movieclip_class_doabc(names: list[str]) -> bytes:
+    """DoABCDefine (tag 82) *body* defining one ``flash.display.MovieClip``
+    subclass with an empty constructor per name. The caller writes the tag header
+    and must place the tag ahead of the SymbolClass that binds these names."""
+    return bytes(load_native_module().build_movieclip_class_doabc([str(n) for n in names]))
+
+
+def compile_as3_do_abc(sources: list[str]) -> bytes:
+    """Compile ActionScript 3 sources to a DoABCDefine (tag 82) *body*.
+
+    Each element is the full text of one ``.as`` file. AS3 allows one package
+    per file, so a widget's document class and the interface it implements are
+    separate entries; order does not matter, because types are sorted so a base
+    class or interface is defined before whatever depends on it. The caller
+    writes the tag header and must place the tag ahead of the SymbolClass that
+    binds these classes."""
+    return bytes(load_native_module().compile_as3_do_abc([str(s) for s in sources]))
+
+
+def compile_as3_class_names(sources: list[str]) -> list[str]:
+    """Fully-qualified names of every class the given ActionScript defines.
+
+    Use this to check that each SymbolClass export a packer is about to write is
+    actually backed by a compiled class, before the SWF ships."""
+    return list(load_native_module().compile_as3_class_names([str(s) for s in sources]))
 
 
 def inject_symbols(src: bytes, dst: bytes, names: list[str]) -> bytes:

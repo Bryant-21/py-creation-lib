@@ -29,6 +29,22 @@ _ARCHIVE_EXTS = {".ba2", ".bsa"}
 _PLUGIN_EXTS = {".esm"}
 _CACHE_VERSION = 2
 
+_VOICE_LANGUAGE_CODES = {
+    "English": "en",
+    "German": "de",
+    "Spanish": "es",
+    "French": "fr",
+    "Italian": "it",
+    "Japanese": "ja",
+    "Korean": "ko",
+    "Polish": "pl",
+    "Russian": "ru",
+    "Chinese": "zh",
+}
+# Matches "... - Voices_de" and "... - Voices_en0"; untagged names like
+# "Fallout4 - Voices" or "Starfield - Voices01" deliberately do not match.
+_VOICE_LANGUAGE_RE = re.compile(r"voices?_([a-z]{2})\d*$", re.IGNORECASE)
+
 
 @dataclass(slots=True)
 class VoiceLine:
@@ -155,14 +171,25 @@ def discover_official_plugins(data_dir: str | Path, game: str) -> list[Path]:
     return plugins
 
 
-def discover_archives(data_dir: str | Path) -> list[Path]:
+def discover_archives(data_dir: str | Path, *, language: str = "English") -> list[Path]:
+    """Archives in a game Data directory, excluding other languages' voices.
+
+    Per-language voice archives share member paths, so indexing more than one
+    language would make the audio behind a voice line non-deterministic.
+    """
     root = Path(data_dir)
     if not root.is_dir():
         return []
-    return sorted(
-        [path for path in root.iterdir() if path.is_file() and path.suffix.lower() in _ARCHIVE_EXTS],
-        key=lambda path: path.name.lower(),
-    )
+    wanted = _VOICE_LANGUAGE_CODES.get(language, "en")
+    archives = []
+    for path in root.iterdir():
+        if not path.is_file() or path.suffix.lower() not in _ARCHIVE_EXTS:
+            continue
+        match = _VOICE_LANGUAGE_RE.search(path.stem)
+        if match and match.group(1).lower() != wanted:
+            continue
+        archives.append(path)
+    return sorted(archives, key=lambda path: path.name.lower())
 
 
 def build_voice_reference(
@@ -199,7 +226,7 @@ def build_voice_reference(
         force,
     )
     plugins = [Path(path).expanduser().resolve(strict=False) for path in (plugin_paths or discover_official_plugins(root, game))]
-    archives = [Path(path).expanduser().resolve(strict=False) for path in (archive_paths or discover_archives(root))]
+    archives = [Path(path).expanduser().resolve(strict=False) for path in (archive_paths or discover_archives(root, language=language))]
     plugins = [path for path in plugins if path.is_file()]
     archives = [path for path in archives if path.is_file()]
     _log.info("Voice reference inputs: %d plugin(s), %d archive(s)", len(plugins), len(archives))
@@ -295,7 +322,7 @@ def voice_reference_sqlite_cache_path(
         else root / "Strings"
     )
     plugins = [Path(path).expanduser().resolve(strict=False) for path in (plugin_paths or discover_official_plugins(root, game))]
-    archives = [Path(path).expanduser().resolve(strict=False) for path in (archive_paths or discover_archives(root))]
+    archives = [Path(path).expanduser().resolve(strict=False) for path in (archive_paths or discover_archives(root, language=language))]
     plugins = [path for path in plugins if path.is_file()]
     archives = [path for path in archives if path.is_file()]
     cache_key = _build_cache_key(
@@ -331,7 +358,7 @@ def load_cached_voice_reference(
         else root / "Strings"
     )
     plugins = [Path(path).expanduser().resolve(strict=False) for path in (plugin_paths or discover_official_plugins(root, game))]
-    archives = [Path(path).expanduser().resolve(strict=False) for path in (archive_paths or discover_archives(root))]
+    archives = [Path(path).expanduser().resolve(strict=False) for path in (archive_paths or discover_archives(root, language=language))]
     plugins = [path for path in plugins if path.is_file()]
     archives = [path for path in archives if path.is_file()]
     cache_key = _build_cache_key(
@@ -347,6 +374,7 @@ def load_cached_voice_reference(
     if sqlite_path is not None and sqlite_path.is_file():
         rows = esp_native_runtime.voice_reference_read_index(str(sqlite_path))
         lines = [VoiceLine.from_native_row(row) for row in rows]
+        _rebase_archive_paths(lines, root, archives)
         _log.info("Loaded cached SQLite voice reference: %s (%d line(s))", sqlite_path, len(lines))
         return VoiceReferenceIndex(
             game=game,
@@ -363,6 +391,7 @@ def load_cached_voice_reference(
     if legacy_sqlite_path is not None:
         rows = esp_native_runtime.voice_reference_read_index(str(legacy_sqlite_path))
         lines = [VoiceLine.from_native_row(row) for row in rows]
+        _rebase_archive_paths(lines, root, archives)
         _log.info("Loaded legacy SQLite voice reference: %s (%d line(s))", legacy_sqlite_path, len(lines))
         return VoiceReferenceIndex(
             game=game,
@@ -379,9 +408,24 @@ def load_cached_voice_reference(
     if json_path is not None and json_path.is_file():
         cached = VoiceReferenceIndex.from_dict(json.loads(json_path.read_text(encoding="utf-8")))
         if cached.cache_key == cache_key:
+            _rebase_archive_paths(cached.lines, root, archives)
             _log.info("Loaded cached JSON voice reference: %s (%d line(s))", json_path, len(cached.lines))
             return cached
     return None
+
+
+def read_voice_lines(db_path: str | Path) -> list[VoiceLine]:
+    """Read every line from a prebuilt voice-reference database.
+
+    Unlike load_cached_voice_reference this needs no game install: it is for
+    shipped or copied index files whose archives may not be mounted locally.
+    """
+    path = Path(db_path)
+    if not path.is_file():
+        raise FileNotFoundError(f"Voice reference database not found: {path}")
+    rows = esp_native_runtime.voice_reference_read_index(str(path))
+    _log.info("Read voice reference database: %s (%d line(s))", path, len(rows))
+    return [VoiceLine.from_native_row(row) for row in rows]
 
 
 def search_voice_lines(
@@ -424,11 +468,43 @@ def extract_voice_line(line: VoiceLine, output_dir: str | Path, *, preserve_tree
     out_dir.mkdir(parents=True, exist_ok=True)
     target = out_dir.joinpath(*line.member_path.split("/")) if preserve_tree else out_dir / Path(line.member_path).name
     target.parent.mkdir(parents=True, exist_ok=True)
+    if not Path(line.archive_path).is_file():
+        raise FileNotFoundError(f"Archive not found: {line.archive_path}")
     data = native_runtime.extract_one(line.archive_path, line.member_path)
     if data is None:
         raise FileNotFoundError(f"Archive member not found: {line.member_path}")
     target.write_bytes(bytes(data))
     return target
+
+
+def _rebase_archive_paths(
+    lines: Iterable[VoiceLine],
+    data_dir: Path,
+    archives: Sequence[Path],
+) -> None:
+    """Re-point cached archive paths at this machine's archives, in place.
+
+    An index records the absolute path of every archive it read, so a shipped
+    index — or one built before the game moved — names archives that do not
+    exist here. Archive filenames are stable, so each stored path is matched by
+    name against the archives the caller resolved for this run, which is the
+    authoritative set (discovered from the data directory, or passed in
+    explicitly). A name the caller does not have is reported under the local
+    data directory, so failures name a path on this machine rather than the
+    build machine's.
+    """
+    by_name = {path.name.lower(): str(path) for path in archives}
+    resolved: dict[str, str] = {}
+    for line in lines:
+        stored = line.archive_path
+        if not stored:
+            continue
+        replacement = resolved.get(stored)
+        if replacement is None:
+            name = stored.replace("\\", "/").rsplit("/", 1)[-1]
+            replacement = by_name.get(name.lower()) or str(data_dir / name)
+            resolved[stored] = replacement
+        line.archive_path = replacement
 
 
 def _line_search_text(line: VoiceLine) -> str:

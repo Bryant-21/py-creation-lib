@@ -123,8 +123,8 @@ const HKB_CHARACTER_DATA_DRIVER_FIELDS: [(&str, &str); 4] = [
 
 pub(crate) fn register_native_patches(manager: &mut PatchManager) {
     corpus_generated::register_generated_patches(manager);
-    // hkReferencedObject 0->1 also applies at version step 47 (inter-patch-package boundary).
-    // The Python corpus registers it only at 46; this explicit registration covers 47.
+    // hkReferencedObject 0->1 also applies at version step 47 (inter-patch-package
+    // boundary); the generated corpus registers it only at 46.
     manager.register(
         47,
         Patch::new(
@@ -405,10 +405,9 @@ pub(crate) fn register_native_hooks(registry: &mut CustomHookRegistry) {
         Ok(())
     });
 
-    // --- Real hook implementations ported from py_creation_lib/python/creation_lib/havok_convert/patches/ ---
+    // --- Hook implementations ---
 
     // _hkbCharacter_3_to_4: set capabilities/effectiveCapabilities to -1.
-    // Python: py_creation_lib/python/creation_lib/havok_convert/patches/p2013_2/behavior.py:11
     registry.register("_hkbCharacter_3_to_4", |context| {
         for index in object_indices_for(context) {
             let object = &mut context.hkx.objects_mut()[index];
@@ -425,7 +424,6 @@ pub(crate) fn register_native_hooks(registry: &mut CustomHookRegistry) {
     });
 
     // _hkbStateMachine_4_to_5: copy startStateChooser pointer to startStateIdSelector.
-    // Python: py_creation_lib/python/creation_lib/havok_convert/patches/p2013_2/behavior.py:20
     registry.register("_hkbStateMachine_4_to_5", |context| {
         for index in object_indices_for(context) {
             let object = &mut context.hkx.objects_mut()[index];
@@ -451,7 +449,6 @@ pub(crate) fn register_native_hooks(registry: &mut CustomHookRegistry) {
     });
 
     // _hkAabbHalf_0_to_1: merge data_old (6) + extras (2) into data (8).
-    // Python: py_creation_lib/python/creation_lib/havok_convert/patches/p2013_2/common.py:10
     registry.register("_hkAabbHalf_0_to_1", |context| {
         for index in object_indices_for(context) {
             let object = &mut context.hkx.objects_mut()[index];
@@ -483,7 +480,6 @@ pub(crate) fn register_native_hooks(registry: &mut CustomHookRegistry) {
     });
 
     // _hkpAngConstraintAtom_0_to_1: constrainedAxes[i] = (firstConstrainedAxis + i) % 3
-    // Python: py_creation_lib/python/creation_lib/havok_convert/patches/p2014_1/physics.py:17
     registry.register("_hkpAngConstraintAtom_0_to_1", |context| {
         for index in object_indices_for(context) {
             let object = &mut context.hkx.objects_mut()[index];
@@ -515,7 +511,6 @@ pub(crate) fn register_native_hooks(registry: &mut CustomHookRegistry) {
     });
 
     // _hkpAngLimitConstraintAtom_0_to_1: cosineAxis = (limitAxis + 1) % 3
-    // Python: py_creation_lib/python/creation_lib/havok_convert/patches/p2014_1/physics.py:29
     registry.register("_hkpAngLimitConstraintAtom_0_to_1", |context| {
         for index in object_indices_for(context) {
             let object = &mut context.hkx.objects_mut()[index];
@@ -543,7 +538,6 @@ pub(crate) fn register_native_hooks(registry: &mut CustomHookRegistry) {
 
     // _hkbCharacterControllerModifier_1_to_2:
     // gravityFactor = (applyGravity > 0) ? 1.0 : 0.0
-    // Python: py_creation_lib/python/creation_lib/havok_convert/patches/p2014_1/behavior.py:16
     registry.register("_hkbCharacterControllerModifier_1_to_2", |context| {
         for index in object_indices_for(context) {
             let object = &mut context.hkx.objects_mut()[index];
@@ -575,7 +569,6 @@ pub(crate) fn register_native_hooks(registry: &mut CustomHookRegistry) {
     });
 
     // _hkxNode_4_to_5: assign random 16-byte UUID to uuid member.
-    // Python: py_creation_lib/python/creation_lib/havok_convert/patches/p2014_1/common.py:17
     registry.register("_hkxNode_4_to_5", |context| {
         for index in object_indices_for(context) {
             let object = &mut context.hkx.objects_mut()[index];
@@ -583,8 +576,7 @@ pub(crate) fn register_native_hooks(registry: &mut CustomHookRegistry) {
                 continue;
             }
             if let Some(target) = object.members.iter_mut().find(|m| m.name == "uuid") {
-                // Generate 16 random bytes and store as 4 u32 values matching
-                // Python's int.from_bytes(os.urandom(16), 'little').
+                // 16 random bytes stored as 4 little-endian u32 bit patterns.
                 let bytes = pseudo_random_bytes_16();
                 target.value = HkxValue::F32List(vec![
                     f32::from_bits(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])),
@@ -602,7 +594,6 @@ pub(crate) fn register_native_hooks(registry: &mut CustomHookRegistry) {
     });
 
     // _hkpEntity_3_to_4: copy motion_old → motion (type change hkpMotion → hkpMaxSizeMotion).
-    // Python: py_creation_lib/python/creation_lib/havok_convert/patches/p2014_2_5/physics.py:18
     registry.register("_hkpEntity_3_to_4", |context| {
         for index in object_indices_for(context) {
             let object = &mut context.hkx.objects_mut()[index];
@@ -624,7 +615,6 @@ pub(crate) fn register_native_hooks(registry: &mut CustomHookRegistry) {
     });
 
     // _hkpBreakableConstraintData_0_to_1: copy constraintDataOld → constraintData.
-    // Python: py_creation_lib/python/creation_lib/havok_convert/patches/p2013_2/physics.py:13
     registry.register("_hkpBreakableConstraintData_0_to_1", |context| {
         copy_member_value(
             context,
@@ -636,7 +626,6 @@ pub(crate) fn register_native_hooks(registry: &mut CustomHookRegistry) {
     });
 
     // _hkpMalleableConstraintData_0_to_1: copy constraintDataOld → constraintData.
-    // Python: py_creation_lib/python/creation_lib/havok_convert/patches/p2013_2/physics.py:27
     registry.register("_hkpMalleableConstraintData_0_to_1", |context| {
         copy_member_value(
             context,
@@ -648,14 +637,12 @@ pub(crate) fn register_native_hooks(registry: &mut CustomHookRegistry) {
     });
 
     // _hkSkinnedMeshShapePart_0_to_1: copy boneIndex → boneSetId.
-    // Python: py_creation_lib/python/creation_lib/havok_convert/patches/p2012_2/common.py:55
     registry.register("_hkSkinnedMeshShapePart_0_to_1", |context| {
         copy_member_value(context, "hkSkinnedMeshShapePart", "boneIndex", "boneSetId");
         Ok(())
     });
 
     // _hkSkinnedMeshShapeBoneSection_0_to_1: copy startBoneIndex → startBoneSetId, numBones → numBoneSets.
-    // Python: py_creation_lib/python/creation_lib/havok_convert/patches/p2012_2/common.py:68
     registry.register("_hkSkinnedMeshShapeBoneSection_0_to_1", |context| {
         copy_member_value(
             context,
@@ -673,7 +660,6 @@ pub(crate) fn register_native_hooks(registry: &mut CustomHookRegistry) {
     });
 
     // _hkReferencedObject_1_to_2: append propertyBag pointer to dynamicProperties array.
-    // Python: py_creation_lib/python/creation_lib/havok_convert/patches/p2015_1/common.py:13
     registry.register("_hkReferencedObject_1_to_2", |context| {
         for index in object_indices_for(context) {
             let object = &mut context.hkx.objects_mut()[index];
@@ -702,14 +688,11 @@ pub(crate) fn register_native_hooks(registry: &mut CustomHookRegistry) {
         Ok(())
     });
 
-    // _hkbFootIkControlData_0_to_1: Python implementation has no semantic effect
-    // (the loop body is `break` after the first match without mutation).
-    // Mirror as no-op here. Default value from MemberAdd ("vec4") already provides
-    // a vec4 of zeros — the C++ SDK would set them to 1.0 but Python does not.
+    // _hkbFootIkControlData_0_to_1: no-op; the new member keeps the MemberAdd
+    // "vec4" default of zeros (the C++ SDK would set 1.0).
     registry.register("_hkbFootIkControlData_0_to_1", |_context| Ok(()));
 
     // _hkxVertexBufferVertexData_1_to_2: reinterpret floats as uint32 bit patterns.
-    // Python: py_creation_lib/python/creation_lib/havok_convert/patches/p2013_3/common.py:11
     registry.register("_hkxVertexBufferVertexData_1_to_2", |context| {
         for index in object_indices_for(context) {
             let object = &mut context.hkx.objects_mut()[index];
@@ -749,9 +732,7 @@ pub(crate) fn register_native_hooks(registry: &mut CustomHookRegistry) {
         Ok(())
     });
 
-    // Real implementations for the triangle-flip cloth hooks.
-    // Python: py_creation_lib/python/creation_lib/havok_convert/patches/p2013_1/cloth.py — calls _update_triangle_flips,
-    // which expands each old int32 into 4 little-endian bytes.
+    // Triangle-flip cloth hooks: each old int32 expands into 4 little-endian bytes.
     registry.register(
         "hclUpdateAllVertexFramesOperator_2_to_3",
         hooks::hcl_update_all_vertex_frames_operator_2_to_3,
@@ -796,35 +777,7 @@ pub(crate) fn register_native_hooks(registry: &mut CustomHookRegistry) {
         hooks::hknp_constraint_cinfo_4_to_5,
     );
 
-    // No-op stubs — Python source is pass-equivalent for each:
-    //
-    // - _hclClothData_2_to_3: pass (p2014_2_5/cloth.py:34)
-    // - _hclMeshMeshDeformSetupObject_1_to_2: pass (p2012_2/cloth.py:15)
-    // - _hclSimClothData_12_to_13: pass (p2014_2_5/cloth.py:29)
-    // - _hclSimClothSetupObject_5_to_6: pass (p2014_2_5/cloth.py:39)
-    // - _hclSimulateOperator_3_to_4: pass (p2014_2_5/cloth.py:19)
-    // - _hclSimulateSetupObject_3_to_4: pass (p2014_2_5/cloth.py:24)
-    // - _hkMotionState_2_to_3: pass (p2012_2/common.py:20)
-    // - _hkSkinnedRefMeshShape_0_to_1: pass (p2012_2/common.py:25)
-    // - _hkStorageSkinnedMeshShape_0_to_1: pass (p2012_2/common.py:63)
-    // - _hkbCharacterData_9_to_10: pass (p2012_2/behavior.py:16)
-    // - _hkbCharacterStringData_9_to_10: pass (p2014_2_5/behavior.py:44)
-    // - _hkbLayer_1_to_2: pass (p2014_2_5/behavior.py:186)
-    // - _hkbRigidBodyRagdollControlData_1_to_2: pass (p2012_2/behavior.py:26)
-    // - _hkbRigidBodySetup_0_to_1: pass (p2014_2_5/behavior.py:195)
-    // - _hkpConvexVerticesShape_4_to_5: pass (p2012_2/physics.py:28)
-    // - _hkpConvexVerticesShape_5_to_6: pass (p2012_2/physics.py:33)
-    // - _hkpDeformableAngConstraintAtom_0_to_1: pass (p2012_2/physics.py:23)
-    // - _hkpDeformableLinConstraintAtom_0_to_1: pass (p2012_2/physics.py:16)
-    // - _hkxAnimatedMatrix_1_to_2: pass (p2012_2/common.py:50)
-    // - _hkxAnimatedQuaternion_1_to_2: pass (p2012_2/common.py:45)
-    // - _hkxAnimatedVector_1_to_2: pass (p2012_2/common.py:40)
-    // - _hkxVertexBufferVertexData_0_to_1: pass (p2012_2/common.py:30)
-    // - _hkxVertexVectorDataChannel_1_to_2: pass (p2012_2/common.py:35)
-    // - _noop_type_change: pass (p2014_2_5/common.py:21 + animation.py + behavior.py + cloth.py)
-    // - hclSimClothData_11_to_12: debug-log only, no data mutation (p2014_2/cloth.py:28)
-    // - hkBitField_0_hkBitField_new_1: debug-log only, no data mutation (p2013_1/common.py:28)
-    // - _hkbFootIkControlData_0_to_1: loop breaks on first match without mutating (p2013_3/behavior.py:10)
+    // Hooks with no data mutation (the patch is a pass-through or only logs).
     for name in [
         "_hclClothData_2_to_3",
         "_hclMeshMeshDeformSetupObject_1_to_2",
@@ -888,13 +841,9 @@ fn copy_member_value(
     }
 }
 
-/// Pseudo-random 16 bytes derived from a per-call seed — used by
-/// `_hkxNode_4_to_5` to mirror Python's `os.urandom(16)`.
-///
-/// Real OS randomness isn't available without pulling in `getrandom`. Use a
-/// simple xorshift PRNG seeded from a process-wide atomic counter mixed with
-/// the system time. The output is unique-per-call within the process, which
-/// matches the C++ SDK's intent (assign a fresh UUID).
+/// Pseudo-random 16 bytes for `_hkxNode_4_to_5`'s fresh UUID. An xorshift PRNG
+/// seeded from a process-wide counter and the system time keeps the output
+/// unique per call without pulling in `getrandom`.
 fn pseudo_random_bytes_16() -> [u8; 16] {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};

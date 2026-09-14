@@ -21,12 +21,11 @@ use crate::progress::{QuadCtx, QuadOutputs};
 /// geometry via `parse_nif`, transforms into quad space via `transform_shape`,
 /// then merges and writes a single `.bto` via `output::write_bto`.
 ///
-/// Per-ref errors are logged to stderr and skipped (partial-failure isolation —
-/// plan spec §6). If no shapes survive, no `.bto` is written.
+/// Per-ref errors are logged to stderr and skipped. If no shapes survive, no
+/// `.bto` is written.
 ///
-/// Shapes are processed in ref-index order for determinism (mirrors C# lock-ordered
-/// insertion into the shared shape list; noted deviation: C# `Parallel.For` has
-/// nondeterministic insertion order but we pick stable ref-index order — see report).
+/// Shapes are processed in ref-index order for determinism; the C# `Parallel.For`
+/// inserts into the shared shape list in nondeterministic order.
 pub fn generate_quad(
     quad: &QuadDesc,
     ctx: &QuadCtx<'_>,
@@ -151,7 +150,8 @@ fn write_quad_shapes_impl(
         build_atlassed_source_bto_with_telemetry, build_bto_with_telemetry,
         build_source_bto_with_telemetry,
     };
-    use crate::output::bto::{write_bto, write_bto_with_layout};
+    use crate::output::bto::write_bto_with_layout_timed;
+    use crate::settings::Fo76BtoNodeLayout;
 
     // port: DoLOD:3088 — if no shapes survived, write nothing
     if all_shapes.is_empty() {
@@ -159,6 +159,7 @@ fn write_quad_shapes_impl(
     }
 
     // port: CreateLODNodesFO4:2455 — build the BtoShape list
+    let shape_started = std::time::Instant::now();
     let mut mut_quad = quad.clone();
     let (bto_shapes, mut telemetry) = match source_mode {
         SourceBtoWriteMode::Generated => {
@@ -173,6 +174,7 @@ fn write_quad_shapes_impl(
             &ctx.settings.objects,
         ),
     };
+    telemetry.shape_build_secs = shape_started.elapsed().as_secs_f64();
 
     if bto_shapes.is_empty() {
         return Ok(QuadOutputs::default());
@@ -185,21 +187,14 @@ fn write_quad_shapes_impl(
     // Compute the output path via naming::bto — port: DoLOD writes to the Objects subfolder.
     let bto_rel = crate::naming::bto(&ctx.world.editor_id, ctx.level, quad.x, quad.y, season);
     let bto_path = ctx.paths.output_dir.join(bto_rel.replace('\\', "/"));
-    if let Some(parent) = bto_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-
-    if source_mode != SourceBtoWriteMode::Generated {
-        write_bto_with_layout(
-            &bto_path,
-            &bto_shapes,
-            ctx.settings.objects.fo76_bto_node_layout,
-        )?;
+    let layout = if source_mode != SourceBtoWriteMode::Generated {
+        ctx.settings.objects.fo76_bto_node_layout
     } else {
-        write_bto(&bto_path, &bto_shapes)?;
-    }
+        Fo76BtoNodeLayout::Fo4PerShape
+    };
+    telemetry.write_report = write_bto_with_layout_timed(&bto_path, &bto_shapes, layout)?;
     telemetry.bto_path = Some(bto_path.clone());
-    telemetry.bto_bytes = std::fs::metadata(&bto_path).map(|m| m.len()).unwrap_or(0);
+    telemetry.bto_bytes = telemetry.write_report.bytes;
 
     Ok(QuadOutputs {
         meshes: vec![bto_path],

@@ -1,22 +1,22 @@
-//! AnimationStanceData (count=1 creature) — the camera-framing stance pose (CK-free).
+//! AnimationStanceData (count=1 creature): the camera-framing stance pose (CK-free).
 //!
-//! Every self-contained FO76→FO4 creature emits the **count=1** form: one stored pose
-//! holding the **Head** and a **torso/spine camera-pivot** bone in model space at frame 0
-//! of the subgraph's idle/standing clip, plus an IDENTITY third slot (RE: `stance_deep.md`
-//! "REFINED + CONCLUSIVE container spec"; count>1 is base-game-`Character`-only). The
-//! per-bone source is a DIRECT model-space frame-0 pose extraction — no IK / retarget /
-//! solve. This mirrors the byte-exact-proven `stance_work/reemit.py` (MirelurkKing 124 B
-//! container byte-identical; bone floats to the `hkaPose` accumulation residual):
+//! Every self-contained FO76→FO4 creature emits the count=1 form: one stored pose holding the
+//! Head and a torso/spine camera-pivot bone in model space at frame 0 of the subgraph's
+//! idle/standing clip, plus an identity third slot (RE: `stance_deep.md`; count>1 is
+//! base-game-`Character`-only). Each bone is a direct model-space frame-0 extraction, with no
+//! IK/retarget/solve. The container is byte-identical to the CK oracle (MirelurkKing, 124 B);
+//! bone floats match to the `hkaPose` accumulation residual:
 //!
 //! 1. load the creature skeleton (`characterassets/skeleton.hkx`) → reference local pose;
-//! 2. extract the idle clip; overlay each animated track's **frame-0** local transform
+//! 2. extract the idle clip; overlay each animated track's frame-0 local transform
 //!    (track→bone via `transformTrackToBoneIndices`, else identity);
-//! 3. accumulate local→model with the canonical `havok_native::animation::pose::Pose`
-//!    (the `hkaPose` order — float-exactness needs this, do NOT hand-roll compose);
-//! 4. write slot0 = Head, slot1 = torso pivot (quat W-FIRST), slot2 = IDENTITY.
+//! 3. accumulate local→model with `havok_native::animation::pose::Pose` (the `hkaPose`
+//!    order; float-exactness depends on it, so do not hand-roll compose);
+//! 4. write slot0 = Head, slot1 = torso pivot (quat W-first), slot2 = identity.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use havok_native::animation::pose::{Pose, PoseSkeleton, QsTransform, quat_normalize};
 use havok_native::animation::{SkeletonRecord, extract_clip, parse_skeleton_xml};
@@ -28,6 +28,7 @@ use super::bucket_files::{
     animation_stance_data_multipose_body, decode_animation_stance_data_body, stance_sec2_tag,
 };
 use super::graph::{GraphResolver, PoseRoleProvenance, PoseRoleSourceKey, StancePerspective};
+use super::hkx_cache::{FileMemo, path_key};
 
 /// One stored stance slot: quaternion W-FIRST (w,x,y,z) + translation (x,y,z).
 type Slot = ([f32; 4], [f32; 3]);
@@ -202,10 +203,9 @@ fn stripped_starts_with(name: &str, prefix: &str) -> bool {
     s.len() >= prefix.len() && s[..prefix.len()].eq_ignore_ascii_case(prefix)
 }
 
-/// Head-local look-at offset for the section-2 head-track reference (RE:
-/// `stance_converted_174b.md` §6.2 — derived from the Snallygaster level-head oracle
-/// files; reproduces the look-at target to a few units). The engine recomputes the
-/// real head-track at runtime, so this approximation degrades gracefully.
+/// Head-local look-at offset for the section-2 head-track reference, derived from the
+/// Snallygaster level-head oracle files (RE: `stance_converted_174b.md`); reproduces the
+/// look-at target to a few units. The engine recomputes head-track at runtime.
 const HEADTRACK_LOCAL_T: [f32; 3] = [53.0, -7.0, 1.5];
 const HEADTRACK_LOCAL_Q_XYZW: [f32; 4] = [-0.07, 0.0, -0.25, 0.965];
 
@@ -225,10 +225,9 @@ fn headtrack_lookat(head_model: &QsTransform) -> Slot {
 }
 
 /// Whether the core behavior declares head-tracking (`bGraphWantsHeadTracking` /
-/// `isActiveModifier_HeadTracking`). This is the gate that distinguishes the 174 B
-/// converted-creature StanceData (`sec2_count=1`) from the 124 B vanilla form (RE:
-/// `stance_converted_174b.md` §6). The signals are inline strings in the behavior
-/// packfile, so a raw byte scan is sufficient and avoids a full graph parse.
+/// `isActiveModifier_HeadTracking`), which selects the 174 B converted-creature StanceData
+/// (`sec2_count=1`) over the 124 B vanilla form (RE: `stance_converted_174b.md`). The signals
+/// are inline strings in the behavior packfile, so a raw byte scan avoids a full graph parse.
 pub fn behavior_wants_head_tracking(core_behavior_file: &Path) -> bool {
     let Ok(data) = std::fs::read(core_behavior_file) else {
         return false;
@@ -238,10 +237,26 @@ pub fn behavior_wants_head_tracking(core_behavior_file: &Path) -> bool {
         .any(|sig| data.windows(sig.len()).any(|w| w == *sig))
 }
 
-/// Parse a creature skeleton `.hkx` into `(record, pose-skeleton)`. The pose skeleton's
-/// reference-local transforms seed the per-frame overlay. Returns `None` if the file is
-/// unreadable or carries no reference pose.
+/// Parsed creature skeletons `(record, pose-skeleton)` by path; `None` if the file is
+/// unreadable or has no reference pose. The reference-local transforms seed the frame overlay.
+static SKELETONS: FileMemo<Option<Arc<(SkeletonRecord, PoseSkeleton)>>> = FileMemo::new();
+static STANCE_BODIES: FileMemo<Option<Arc<Vec<u8>>>> = FileMemo::new();
+
+pub(super) fn clear_stance_memo() {
+    SKELETONS.clear();
+    STANCE_BODIES.clear();
+}
+
+/// Parse a creature skeleton, memoized by path. A race's subgraphs share one skeleton, and
+/// the parse goes through an hkx→XML conversion, the stance emitter's most expensive step.
 fn load_skeleton(skeleton_file: &Path) -> Option<(SkeletonRecord, PoseSkeleton)> {
+    let cached = SKELETONS.get_or_init(&path_key(skeleton_file), || {
+        load_skeleton_uncached(skeleton_file).map(Arc::new)
+    })?;
+    Some((*cached).clone())
+}
+
+fn load_skeleton_uncached(skeleton_file: &Path) -> Option<(SkeletonRecord, PoseSkeleton)> {
     let data = std::fs::read(skeleton_file).ok()?;
     let xml = havok_hkx_to_xml(&data).ok()?;
     let skd = parse_skeleton_xml(&xml).ok()?;
@@ -327,18 +342,15 @@ fn find_bone(names: &[String], target: &str) -> Option<usize> {
     names.iter().position(|n| n.eq_ignore_ascii_case(target))
 }
 
-/// Select the (head, spine-pivot) bone pair for a creature skeleton. slot0 = the **Head**
-/// (or `HeadTwist`) bone, matched prefix-tolerantly (`C_Head`). slot1 = the **parent of
-/// the first neck bone** — topologically the first ancestor of the head that is neither a
-/// neck nor a head bone (e.g. `C_Spine4`, parent of `C_Neck1`). This unifies the vanilla
-/// cases (MirelurkKing `Spine1`, MoleRat `Spine2`, LibertyPrime/SentryBot `Chest` are all
-/// "parent of the first neck"), and the prefix-tolerant matching is what lets it pick the
-/// right bone on a converted `C_`-prefixed skeleton (RE: `stance_converted_174b.md` §3).
+/// Select the (head, spine-pivot) bone pair for a creature skeleton. slot0 is the Head (or
+/// `HeadTwist`) bone, matched prefix-tolerantly (`C_Head`). slot1 is the parent of the first
+/// neck bone: the first ancestor of the head that is neither neck nor head (e.g. `C_Spine4`,
+/// parent of `C_Neck1`). That covers the vanilla cases (MirelurkKing `Spine1`, MoleRat
+/// `Spine2`, LibertyPrime/SentryBot `Chest`) and converted `C_`-prefixed skeletons.
 fn select_head_torso(skel: &PoseSkeleton) -> Option<(usize, usize)> {
-    // Tier 1 — exact `Head`/`C_Head` selection. Every vanilla and simply-`C_`-prefixed
-    // skeleton (MirelurkKing, MoleRat, LibertyPrime, MegaSloth, Snallygaster, ...) has an
-    // exact head bone and is resolved here byte-for-byte as before. Tier 2 runs only when
-    // this finds nothing, so those cases are provably unchanged.
+    // Tier 1: exact `Head`/`C_Head`, which every vanilla and simply `C_`-prefixed skeleton
+    // has (MirelurkKing, MoleRat, LibertyPrime, MegaSloth, Snallygaster, ...). Tier 2 runs
+    // only when it finds nothing.
     select_head_torso_exact(skel).or_else(|| select_head_torso_core(skel))
 }
 
@@ -407,16 +419,15 @@ fn core_starts_with(name: &str, prefix: &str) -> bool {
     s.len() >= prefix.len() && s[..prefix.len()].eq_ignore_ascii_case(prefix)
 }
 
-/// Tier-2 head/torso selection for converted skeletons with no exact `Head` bone: match
-/// the head prefix/digit-tolerantly via `bone_core`, then pick the first ancestor that is
-/// neither a (likewise custom-prefixed) neck nor head bone as the spine pivot. Headless
-/// rigs (Grafton — top bone `Grafton_BN_C_Spine4`, no head) still return `None`: the 76c
-/// oracle's headless pose does not correspond to any bone's frame-0 model transform under
-/// the validated sampling method (nearest bone > 40 units), so emitting one would be a
-/// guess — stance stays absent and degrades gracefully.
+/// Tier-2 head/torso selection for converted skeletons with no exact `Head` bone: match the
+/// head via `bone_core`, then take the first ancestor that is neither neck nor head as the
+/// pivot. Headless rigs (Grafton: top bone `Grafton_BN_C_Spine4`) return `None`: the oracle's
+/// headless pose matches no bone's frame-0 model transform (nearest bone > 40 units), so
+/// stance stays absent.
 fn select_head_torso_core(skel: &PoseSkeleton) -> Option<(usize, usize)> {
-    let head = (0..skel.bone_names.len())
-        .find(|&i| core_eq(&skel.bone_names[i], "Head") || core_eq(&skel.bone_names[i], "HeadTwist"))?;
+    let head = (0..skel.bone_names.len()).find(|&i| {
+        core_eq(&skel.bone_names[i], "Head") || core_eq(&skel.bone_names[i], "HeadTwist")
+    })?;
     let mut ancestors: Vec<usize> = Vec::new();
     let mut cur = skel.parent_indices[head];
     while cur >= 0 {
@@ -454,13 +465,32 @@ pub fn emit_stance_count1(
     ))
 }
 
-/// Build the stance body for a creature, auto-selecting the head + spine pivot (the
-/// dispatcher entry). When `head_tracking` (the core behavior declares head-tracking),
-/// emits the 174 B converted-creature form with a section-2 look-at reference; otherwise
-/// the 124 B vanilla form. Returns `None` if the skeleton has no `Head` bone or the idle
-/// clip cannot be sampled (caller then writes no file — stance degrades gracefully when
-/// absent, so never ship a wrong/empty one).
+/// Build the stance body for a creature, auto-selecting head + spine pivot. With
+/// `head_tracking`, emits the 174 B converted-creature form with a section-2 look-at
+/// reference; otherwise the 124 B vanilla form. `None` if the skeleton has no head bone or
+/// the idle clip cannot be sampled; the caller then writes no file, since a missing stance
+/// degrades gracefully and a wrong one does not.
 pub fn emit_stance_for_creature(
+    skeleton_file: &Path,
+    idle_clip_file: &Path,
+    head_tracking: bool,
+) -> Option<Vec<u8>> {
+    // Pure in its three inputs, and subgraphs of a race resolve to the same
+    // (skeleton, idle clip) pair far more often than not — a race emits one stance file
+    // per subgraph but has only a handful of distinct poses.
+    let key = format!(
+        "{}|{}|{head_tracking}",
+        path_key(skeleton_file),
+        path_key(idle_clip_file)
+    );
+    let body = STANCE_BODIES.get_or_init(&key, || {
+        emit_stance_for_creature_uncached(skeleton_file, idle_clip_file, head_tracking)
+            .map(Arc::new)
+    })?;
+    Some((*body).clone())
+}
+
+fn emit_stance_for_creature_uncached(
     skeleton_file: &Path,
     idle_clip_file: &Path,
     head_tracking: bool,
@@ -582,6 +612,22 @@ fn owns_power_armor_animation_branch(metadata: &WeaponSubgraphMetadata) -> bool 
             .to_ascii_lowercase()
             .starts_with("actors\\powerarmor\\")
     })
+}
+
+fn metadata_may_supply_donor(
+    target: &WeaponSubgraphMetadata,
+    donor: &WeaponSubgraphMetadata,
+) -> bool {
+    if target.perspective == StancePerspective::FirstPerson && target.sraf.perspective != 0 {
+        return false;
+    }
+    // Role traversal can normalize first-person metadata to third person. Defer
+    // that comparison until both graphs have resolved their actual perspective.
+    let mut donor = donor.clone();
+    donor.perspective = target.perspective;
+    metadata_can_supply_donor(target, &donor)
+        || metadata_owns_donor_context(target, &donor)
+        || metadata_owns_relaxed_role_context(target, &donor)
 }
 
 fn channels_for_pose(pose_idx: u8, perspective: StancePerspective) -> &'static [u8] {
@@ -857,6 +903,19 @@ fn build_weapon_first_section(
         .iter()
         .map(|role| ((role.pose_idx, role.variant), role))
         .collect();
+    // The stored centre is bind-relative, `center_q = bind_model_q[bone]^-1 · stance_model_q[bone]`,
+    // not the absolute model-space rotation `sample_weapon_role` returns. An absolute rotation
+    // leaves every 3P weapon stance rotated by the whole bind rotation (~90 deg); the 35-cell aim
+    // grid is applied on top of this pose, so converted NPCs aim straight up.
+    //
+    // Check against vanilla: the `variant == 0` branch below passes `clip = None`, so the sample
+    // is the reference pose and its bind-relative rotation is identity, matching vanilla's
+    // variant-0 slot2 (0.0 deg). Donor keying downstream also matches `centers` against
+    // bind-relative base centres.
+    //
+    // Translation stays absolute: vanilla's variant-0 slots carry a non-zero translation.
+    let bind = sample_weapon_role(skel, pose_skel, None, bones)?;
+
     let mut poses = Vec::with_capacity(pose_count * 2);
     let mut centers = HashMap::with_capacity(pose_count * 2);
     for pose_idx in 0..pose_count as u8 {
@@ -871,6 +930,9 @@ fn build_weapon_first_section(
                     .and_then(|role| role.effective_clip.as_deref())
             };
             let mut channel_centers = sample_weapon_role(skel, pose_skel, clip, bones)?;
+            for (centre, bind_slot) in channel_centers.iter_mut().zip(bind.iter()) {
+                centre.0 = wxyz_mul(wxyz_conj(bind_slot.0), centre.0);
+            }
             if derived_crouch {
                 for transform in &mut channel_centers {
                     subtract_stance_height(transform);
@@ -893,6 +955,10 @@ fn build_weapon_first_section(
         }
     }
     Ok((poses, centers))
+}
+
+fn wxyz_conj(q: [f32; 4]) -> [f32; 4] {
+    [q[0], -q[1], -q[2], -q[3]]
 }
 
 fn wxyz_mul(left: [f32; 4], right: [f32; 4]) -> [f32; 4] {
@@ -1039,6 +1105,34 @@ fn load_donor_catalog(
 }
 
 impl WeaponStanceBuilder {
+    pub(super) fn for_targets(
+        base_family_subgraphs: &[WeaponSubgraphMetadata],
+        targets: &[&WeaponSubgraphMetadata],
+        mod_meshes_root: &Path,
+        base_meshes_root: &Path,
+        base_stance_data_root: &Path,
+    ) -> Result<Self, WeaponStanceBuildError> {
+        let candidates: Vec<_> = base_family_subgraphs
+            .iter()
+            .filter(|donor| {
+                targets
+                    .iter()
+                    .any(|target| metadata_may_supply_donor(target, donor))
+            })
+            .cloned()
+            .collect();
+        Self::new(
+            &candidates,
+            mod_meshes_root,
+            base_meshes_root,
+            base_stance_data_root,
+        )
+    }
+
+    pub(super) fn donor_count(&self) -> usize {
+        self.donors.len()
+    }
+
     pub fn new(
         base_family_subgraphs: &[WeaponSubgraphMetadata],
         mod_meshes_root: &Path,
@@ -1173,8 +1267,9 @@ pub fn build_weapon_stance_data(
     base_meshes_root: &Path,
     base_stance_data_root: &Path,
 ) -> Result<WeaponStanceBuild, WeaponStanceBuildError> {
-    let mut builder = WeaponStanceBuilder::new(
+    let mut builder = WeaponStanceBuilder::for_targets(
         request.base_family_subgraphs,
+        &[request.target],
         mod_meshes_root,
         base_meshes_root,
         base_stance_data_root,
@@ -1223,11 +1318,6 @@ pub fn find_creature_skeleton(race_disk: &Path) -> Option<PathBuf> {
     })
 }
 
-/// Find the creature's representative idle/standing clip under `Animations\`. Prefers an
-/// `Idle`-named clip, then `stand`/`ambush`. BEST-EFFORT: the precise idle clip per
-/// subgraph is the recipe's in-game-gated refinement (`stance_deep.md`: "which clip per
-/// subgraph is unconfirmed for multi-clip graphs"); the standing pose is essentially
-/// constant across a creature's subgraphs and degrades gracefully when approximate.
 /// Idle-clip preference score for a clip stem: `idle`==100, then idle+mt/stand, idle,
 /// stand, ambush; 0 = not an idle candidate.
 fn idle_score(stem: &str) -> i32 {
@@ -1260,6 +1350,10 @@ fn best_idle_among(anims: Vec<PathBuf>) -> Option<PathBuf> {
         .map(|(_, p)| p)
 }
 
+/// Find the creature's representative idle/standing clip under `Animations\`, preferring an
+/// `Idle`-named clip, then `stand`/`ambush`. Best-effort: the exact idle clip per subgraph is
+/// unconfirmed for multi-clip graphs, but the standing pose is nearly constant across a
+/// creature's subgraphs.
 pub fn find_idle_clip(race_disk: &Path) -> Option<PathBuf> {
     let mut anims = Vec::new();
     collect_hkx(&race_disk.join("Animations"), 0, &mut anims);
@@ -1301,24 +1395,20 @@ pub fn resolve_subgraph_idle(meshes_root: &Path, sapt_chain: &[String]) -> Optio
     None
 }
 
-/// Emit the creature stance body for a race directory (`Actors\<Race>` under meshes),
-/// using the creature skeleton + its representative idle clip. The same camera-framing
-/// pose is shared by every subgraph of the creature; `head_tracking` selects the 174 B
-/// converted-creature form vs the 124 B vanilla form (the caller resolves it from the
-/// core behavior). Returns `None` if the skeleton or an idle clip cannot be located
-/// (caller writes no file — graceful when absent).
+/// Emit the creature stance body for a race directory (`Actors\<Race>` under meshes) from its
+/// skeleton and representative idle clip; every subgraph shares the pose. `head_tracking`
+/// (resolved by the caller from the core behavior) selects the 174 B converted form over the
+/// 124 B vanilla form. `None` if the skeleton or an idle clip cannot be found.
 pub fn emit_stance_for_race(race_disk: &Path, head_tracking: bool) -> Option<Vec<u8>> {
     let skel = find_creature_skeleton(race_disk)?;
     let clip = find_idle_clip(race_disk)?;
     emit_stance_for_creature(&skel, &clip, head_tracking)
 }
 
-/// Emit the stance body for ONE subgraph, sourcing the frame-0 pose from that subgraph's
-/// OWN idle clip (its SAPT self-leaf dir) instead of the shared base idle. Injured-leg
-/// subgraphs stand in a distinct limp/crouch, so per-subgraph sourcing moves files 2/3/4
-/// from a wrong (base-idle) pose to their correct pose. Falls back to the race-level idle
-/// if the chain yields none. `head_tracking` + bone selection are unchanged (skeleton-/
-/// core-level, not clip-level). (RE: stance_pose_perSubgraph.md.)
+/// Emit the stance body for one subgraph from its own idle clip (SAPT self-leaf dir), since
+/// injured-leg subgraphs stand in a distinct limp/crouch; falls back to the race-level idle.
+/// `head_tracking` and bone selection are skeleton/core-level, not clip-level.
+/// (RE: stance_pose_perSubgraph.md.)
 pub fn emit_stance_for_subgraph(
     race_disk: &Path,
     meshes_root: &Path,
@@ -1337,6 +1427,60 @@ mod tests {
     use crate::anim_text_data::bucket_files::StanceSec2Payload;
     use std::path::PathBuf;
 
+    #[test]
+    fn donor_prefilter_preserves_relaxed_contexts_and_perspective_normalization() {
+        let key = StanceFormKey {
+            plugin: "Fallout4.esm".into(),
+            local: 1,
+        };
+        let target = WeaponSubgraphMetadata {
+            race_family: WeaponRaceFamily {
+                owner_race: key.clone(),
+                sadd: None,
+            },
+            perspective: StancePerspective::ThirdPerson,
+            sakd: vec![key.clone(), key.clone()],
+            stkd: vec![key.clone()],
+            core_behavior: "Actors/Character/Weapon.hkx".into(),
+            sapt: vec!["Weapons/Target".into()],
+            sraf: WeaponSraf {
+                role: 0,
+                perspective: 0,
+            },
+            id: 1,
+        };
+        let mut donor = target.clone();
+        donor.id = 2;
+        donor.perspective = StancePerspective::FirstPerson;
+        assert!(metadata_may_supply_donor(&target, &donor));
+        donor.stkd[0].local = 2;
+        assert!(
+            metadata_may_supply_donor(&target, &donor),
+            "relaxed role context"
+        );
+        donor.stkd = target.stkd.clone();
+        donor.sakd[1].local = 2;
+        assert!(
+            metadata_may_supply_donor(&target, &donor),
+            "ordered context fallback"
+        );
+        donor.core_behavior = "unrelated.hkx".into();
+        assert!(!metadata_may_supply_donor(&target, &donor));
+        donor = target.clone();
+        donor.id = 2;
+        donor.race_family.owner_race.local = 2;
+        assert!(!metadata_may_supply_donor(&target, &donor));
+        let mut first_person = target.clone();
+        first_person.perspective = StancePerspective::FirstPerson;
+        first_person.sraf.perspective = 1;
+        donor = first_person.clone();
+        donor.id = 2;
+        assert!(
+            !metadata_may_supply_donor(&first_person, &donor),
+            "first-person trivial grid"
+        );
+    }
+
     fn extracted_meshes() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../extracted/fo4/Meshes")
     }
@@ -1349,13 +1493,13 @@ mod tests {
 
     /// The head-bone selector must recognize converted FO76 skeletons whose head bone
     /// carries a custom namespace/side prefix or embedded digits (`Mothman_BN_C_Head`,
-    /// `HB_C_Head`, `Toad_BN_C_Head`, `C_00Head1`, `C_head00`, `jnt_C_head`). Before the
-    /// fix `strip_side_prefix` only knew `C_`/`L_`/`R_`, so `select_head_torso` returned
-    /// `None` for ~15 head-bearing races and stance was silently absent. The torso pivot
-    /// must also skip the (likewise custom-prefixed) neck bones.
+    /// `HB_C_Head`, `Toad_BN_C_Head`, `C_00Head1`, `C_head00`, `jnt_C_head`); stripping only
+    /// `C_`/`L_`/`R_` misses ~15 head-bearing races. The torso pivot must also skip the
+    /// likewise custom-prefixed neck bones.
     #[test]
     fn selector_covers_custom_prefixed_head_bones() {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../extracted/fo76/meshes/actors");
+        let root =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../extracted/fo76/meshes/actors");
         if !root.is_dir() {
             eprintln!("extracted/fo76 actors absent; skipping");
             return;
@@ -1365,10 +1509,7 @@ mod tests {
             ("honeybeast/characterassets/skeleton.hkx", "HB_C_Head"),
             ("radtoad/characterassets/skeleton.hkx", "Toad_BN_C_Head"),
             ("jerseydevil/characterassets/skeleton.hkx", "C_head00"),
-            (
-                "wendigocolossus/characterassets/skeleton.hkx",
-                "jnt_C_head",
-            ),
+            ("wendigocolossus/characterassets/skeleton.hkx", "jnt_C_head"),
             (
                 "atx/redrocketrobot/characterassets/skeleton.hkx",
                 "C_00Head1",
@@ -1713,5 +1854,4 @@ mod tests {
         assert_eq!(body.len(), 124);
         assert_eq!(&body[1..23], b"AnimationBoneTransform");
     }
-
 }

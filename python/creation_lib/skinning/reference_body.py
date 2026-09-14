@@ -452,17 +452,8 @@ SKELETON_PROFILES: dict[str, dict[str, dict]] = {
 
 
 def detect_skeleton(bone_names: list[str], game: str = "fo4") -> str | None:
-    """Detect which skeleton profile matches the given bone names.
-
-    Checks each profile's bone_signatures against the provided bone names.
-    Returns the profile key (e.g. "Human") or None if no match.
-
-    Args:
-        bone_names: List of bone names from a skinned mesh.
-        game: Game identifier ("fo4", "skyrimse", etc.).
-
-    Returns:
-        Skeleton profile name or None.
+    """Return the ``game`` skeleton profile key (e.g. "Human") whose
+    bone_signatures best match ``bone_names``, or None.
     """
     profiles = SKELETON_PROFILES.get(game, {})
     bone_set = set(bone_names)
@@ -552,31 +543,15 @@ def _build_shape_world_transforms(nif) -> dict[int, np.ndarray]:
 
 
 def extract_skin_data_from_nif(nif_or_path) -> SkinData:
-    """Extract SkinData from a skinned NIF using py_creation_lib/python/creation_lib/nif.
+    """Extract SkinData from a skinned NIF path or an already loaded ``NifFile``.
 
-    Accepts either a filesystem path (``str`` / ``Path``) or an already
-    loaded ``NifFile`` instance. Callers that have a pre-promoted NIF in
-    memory (e.g. the weight painter import flow) can pass it directly and
-    avoid a round-trip through disk.
-
-    Reads BSTriShape blocks with BSSkin::Instance, extracts vertex positions,
-    normals, UVs, bone weights, bone indices, and triangle data.
-
-    Shapes that have no skin (``Skin == -1``) get their parent NiNode ->
-    BSTriShape transform chain baked into the vertex/normal data so that
-    bare (unskinned) meshes land in world space for tools like the Cloth
-    Maker brush. Skinned shapes are left in bind-pose space so the caller's
-    bind-pose pipeline can transform them correctly.
-
-    Args:
-        nif_or_path: Path to the NIF file, or a loaded ``NifFile``.
-
-    Returns:
-        SkinData with populated geometry and weight data.
-
-    Raises:
-        FileNotFoundError: If passed a path that does not exist.
-        ValueError: If no shapes are found.
+    Reads BSTriShape blocks with BSSkin::Instance: vertex positions, normals,
+    UVs, bone weights, bone indices, and triangles. Unskinned shapes
+    (``Skin == -1``) get their parent NiNode -> BSTriShape transform chain baked
+    into vertices and normals so they land in world space (e.g. for the Cloth
+    Maker brush); skinned shapes stay in bind-pose space for the caller's
+    bind-pose pipeline. Raises FileNotFoundError for a missing path and
+    ValueError when no shapes are found.
     """
     from creation_lib.nif import NifFile
 
@@ -1119,17 +1094,8 @@ def _get_skin_inv_binds(nif, shape_block) -> list[np.ndarray]:
 
 
 def _extract_bone_parents(nif, bone_names: list[str]) -> list[int]:
-    """Extract parent-child bone hierarchy from the NIF node tree.
-
-    Walks the NIF block tree to find NiNode blocks matching bone names,
-    then determines each bone's parent by checking Children refs.
-
-    Args:
-        nif: The loaded NifFile.
-        bone_names: Ordered list of bone names (matching SkinData.bone_names).
-
-    Returns:
-        List of parent indices (one per bone). -1 means root (no parent in list).
+    """Return each bone's nearest ancestor index within ``bone_names`` from the
+    NIF node tree, or -1 when it has none.
     """
     if not bone_names:
         return []
@@ -1186,23 +1152,10 @@ def load_reference_body(
 ) -> SkinData:
     """Load and composite reference body meshes into a single SkinData.
 
-    Loads each body part NIF via extract_skin_data_from_nif(), then merges
-    them into a single composite SkinData by concatenating vertices and
-    remapping triangle indices.
-
-    Args:
-        extracted_dir: Root directory of extracted game assets.
-        game: Game identifier ("fo4", "skyrimse").
-        skeleton_type: Skeleton profile name (e.g. "Human").
-        gender: "male" or "female" — used to filter body part keys.
-        parts: Specific part keys to load (e.g. ["female_body", "female_hands"]).
-            If None, loads all parts matching the gender prefix.
-
-    Returns:
-        Merged SkinData.
-
-    Raises:
-        ValueError: If the game/skeleton/gender combination is not found.
+    Each part loads via extract_skin_data_from_nif(); vertices are concatenated
+    and triangle indices remapped. ``parts`` (e.g. ["female_body",
+    "female_hands"]) defaults to every part matching the ``gender`` prefix.
+    Raises ValueError for an unknown game/skeleton/gender combination.
     """
     extracted_dir = Path(extracted_dir)
 

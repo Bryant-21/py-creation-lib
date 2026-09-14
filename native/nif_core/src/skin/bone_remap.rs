@@ -108,6 +108,37 @@ pub fn fo3_body_part_to_fo4_segment(fo3_flag: u16) -> Option<BodyPartRemap> {
     })
 }
 
+pub fn body_part_to_fo4_segment(source_game: &str, source_flag: u16) -> Option<BodyPartRemap> {
+    if source_game != "skyrimse" {
+        return fo3_body_part_to_fo4_segment(source_flag);
+    }
+
+    let segment_user_index = match source_flag {
+        30 => 30,
+        31 | 41 => 31,
+        32 => 33,
+        33 => 34,
+        34 => 37,
+        35 | 45 => 50,
+        36 => 51,
+        37 | 38 => 39,
+        39 => 59,
+        40 | 48 | 60 | 61 => 61,
+        42 | 43 => 46,
+        44 | 55 => 49,
+        46 | 56 => 41,
+        47 => 54,
+        49 | 52 | 53 | 54 => 44,
+        50 | 51 => 53,
+        57 | 58 | 59 => 42,
+        _ => return None,
+    };
+    Some(BodyPartRemap {
+        fo4_partition: segment_user_index as u16,
+        segment_user_index,
+    })
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct RedistributeReport {
     pub dropped_unmapped: Vec<String>,
@@ -181,5 +212,33 @@ fn merge_slot(slots: &mut Vec<(usize, f32)>, bone_index: usize, weight: f32) {
         *existing_weight += weight;
     } else {
         slots.push((bone_index, weight));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn skyrim_body_partitions_map_to_fo4_segments() {
+        assert_eq!(
+            body_part_to_fo4_segment("skyrimse", 32),
+            Some(BodyPartRemap {
+                fo4_partition: 33,
+                segment_user_index: 33,
+            })
+        );
+        assert_eq!(
+            body_part_to_fo4_segment("skyrimse", 34)
+                .unwrap()
+                .segment_user_index,
+            37
+        );
+        assert_eq!(
+            body_part_to_fo4_segment("skyrimse", 38)
+                .unwrap()
+                .segment_user_index,
+            39
+        );
     }
 }

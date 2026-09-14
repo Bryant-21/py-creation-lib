@@ -36,6 +36,7 @@ class IssueCategory(Enum):
     CIRCULAR_LIST = "circular_list"
     CK_COMPATIBILITY = "ck_compatibility"
     FIELD_ERROR = "field_error"
+    DUPLICATE_FORM_ID = "duplicate_form_id"
 
 
 @dataclass

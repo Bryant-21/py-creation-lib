@@ -1,3 +1,4 @@
+use crate::context::PropertyKind;
 use crate::lower::{Event, IrStmt, Module};
 
 pub fn emit_psc(module: &Module) -> String {
@@ -14,6 +15,21 @@ pub fn emit_psc(module: &Module) -> String {
         out.push('\n');
     }
     if !module.vars.is_empty() {
+        out.push('\n');
+    }
+    for property in &module.properties {
+        let flags = match property.kind {
+            PropertyKind::MutableState => "Auto",
+            PropertyKind::ExternalBinding => "Auto Const",
+            PropertyKind::Intrinsic => continue,
+        };
+        out.push_str(&format!("{} Property {}", property.ty, property.name));
+        if let Some(initial) = &property.initial {
+            out.push_str(&format!(" = {initial}"));
+        }
+        out.push_str(&format!(" {flags}\n"));
+    }
+    if !module.properties.is_empty() {
         out.push('\n');
     }
     for event in &module.events {

@@ -1,14 +1,8 @@
 """Shared PBR metallic-roughness -> spec-gloss math.
 
-Used by both BACUP texture-remix workflows and
-lib.material_tools.cdb_to_bgsm so that .mat -> BGSM translation and DDS
-texture remix produce consistent results.
-
-Ported from refs/fo76texconv/Texture Converter 0.8 - Source/src/
-texture_processor.cpp (role_multipliers and spec/gloss reconstruction).
-The C++ implementation operates per-pixel via nvtt::Surface; this module
-keeps the existing numpy-shaped Python API while delegating the math to
-``materials_native``.
+Shared by BACUP texture remix and ``cdb_to_bgsm`` so .mat -> BGSM translation and
+DDS remix agree. Follows fo76texconv ``texture_processor.cpp`` (role_multipliers
+and spec/gloss reconstruction); the math runs in ``materials_native``.
 """
 
 from __future__ import annotations

@@ -1,7 +1,7 @@
 """Auto-generated detector schema for skyrimse.
 
 # @schema_forge:generated
-# regen_at: 2026-07-10T04:43:24Z
+# regen_at: 2026-08-07T13:56:10Z
 # esm_corpus: Skyrim.esm @ sha256:2bbc77fdec35a70e...
 # source_hash: c5bf10b2b45207eb31553fc05885a20caa7a5bca8aa56ecb2d3be5842d556e5d
 """
@@ -1372,6 +1372,12 @@ def build_schema() -> GameSchema:
         name='SCEN.FNAM.flags',
         values=((1, 'begin_on_quest_start'), (2, 'stop_quest_on_end'), (4, 'show_all_text'), (8, 'repeat_conditions_while_true'), (16, 'interruptible')),
         labels=((1, 'Begin on Quest Start'), (2, 'Stop Quest on End'), (4, 'Show All Text'), (8, 'Repeat Conditions While True'), (16, 'Interruptible')),
+        storage_kind='flags',
+    )
+    enums['SCEN.FNAM.flags@actions'] = EnumDef(
+        name='SCEN.FNAM.flags@actions',
+        values=((1, 'unknown_0'), (2, 'unknown_1'), (4, 'unknown_2'), (8, 'unknown_3'), (16, 'unknown_4'), (32, 'unknown_5'), (64, 'unknown_6'), (128, 'unknown_7'), (256, 'unknown_8'), (512, 'unknown_9'), (1024, 'unknown_10'), (2048, 'unknown_11'), (4096, 'unknown_12'), (8192, 'unknown_13'), (16384, 'unknown_14'), (32768, 'face_target'), (65536, 'looping'), (131072, 'headtrack_player')),
+        labels=((1, 'Unknown 0'), (2, 'Unknown 1'), (4, 'Unknown 2'), (8, 'Unknown 3'), (16, 'Unknown 4'), (32, 'Unknown 5'), (64, 'Unknown 6'), (128, 'Unknown 7'), (256, 'Unknown 8'), (512, 'Unknown 9'), (1024, 'Unknown 10'), (2048, 'Unknown 11'), (4096, 'Unknown 12'), (8192, 'Unknown 13'), (16384, 'Unknown 14'), (32768, 'Face Target'), (65536, 'Looping'), (131072, 'Headtrack Player')),
         storage_kind='flags',
     )
     enums['SCEN.LNAM.flags'] = EnumDef(
@@ -55906,13 +55912,13 @@ def build_schema() -> GameSchema:
                     FieldSpec(
                         name='flags',
                         kind='uint32',
-                        enum_ref='SCEN.FNAM.flags',
+                        enum_ref='SCEN.FNAM.flags@actions',
                         authoring_label='Flags',
                     ),
                 ),
                 repeatable=True,
                 required=True,
-                enum_ref='SCEN.FNAM.flags',
+                enum_ref='SCEN.FNAM.flags@actions',
                 scope_id='actions',
             ),
             SubrecordSpec(

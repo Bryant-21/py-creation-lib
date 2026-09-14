@@ -1,25 +1,13 @@
 """Translate a CE2Material (FO76/Starfield) into a flat BGSMData.
 
-This module takes the layered,
-PBR-metal-rough ``CE2Material`` view produced by ``materials_cdb`` and
-emits an equivalent flat ``BGSMData`` instance **at the source game's
-native BGSM version** (typically FO76 v22). It does NOT perform the
-FO76 -> FO4 downgrade; that's ``creation_lib.material_tools.convert.downgrade_bgsm``'s
-job, and the orchestrator chains the two calls.
+Flattens the layered PBR metal-rough ``CE2Material`` from ``materials_cdb`` into a
+``BGSMData`` at the source game's native BGSM version (typically FO76 v22). The
+FO76 -> FO4 downgrade is ``convert.downgrade_bgsm``; the orchestrator chains both.
+PBR -> spec-gloss scalars go through ``pbr_convert.pbr_to_specgloss`` to match
+BACUP's per-texel texture-remix path.
 
-Per-texel math for the PBR -> spec-gloss conversion routes through
-``creation_lib.material_tools.pbr_convert.pbr_to_specgloss`` so the scalar
-conversion here stays consistent with the channel-remix path in
-BACUP texture-remix workflows.
-
-Layer collapsing is lossy by design:
-
-* Multi-layer materials keep only the top (highest-index) layer.
-* Blenders are dropped entirely.
-* LOD materials are dropped entirely.
-
-All drops are logged at INFO level. Downstream the caller can inspect
-the log to decide whether a given material warrants manual attention.
+Layer collapsing is lossy: only the top (highest-index) layer is kept, and
+blenders and LOD materials are dropped. Each drop is logged at INFO.
 """
 from __future__ import annotations
 
@@ -191,15 +179,9 @@ def cdb_to_bgsm(
 ) -> BGSMData:
     """Flatten a ``CE2Material`` into a ``BGSMData`` at ``target_version``.
 
-    Produces an FO76-shaped BGSM (even at v22) that the caller should
-    then pass through ``creation_lib.material_tools.convert.downgrade_bgsm`` if
-    emitting for FO4. This separation is deliberate: the downgrade path
-    has battle-tested texture-slot remapping, Translucency -> RimLighting
-    conversion, and RootMaterialPath synthesis that would be lossy to
-    duplicate here.
-
-    Layer collapsing (multi-layer -> top-only, blenders/LODs dropped) is
-    logged at INFO level on ``creation_lib.material_tools.cdb_to_bgsm``.
+    The result is FO76-shaped even at v22. FO4 output must then go through
+    ``convert.downgrade_bgsm``, which owns texture-slot remapping, Translucency ->
+    RimLighting conversion, and RootMaterialPath synthesis.
     """
     if len(material.layers) > 1:
         log.info(
@@ -220,13 +202,10 @@ def cdb_to_bgsm(
 
     layer = _pick_top_layer(material)
 
-    # PBR -> spec-gloss scalar conversion. We run a 1x1 unit-albedo pass
-    # through the shared ``pbr_to_specgloss`` helper so scalar conversion
-    # here matches the per-texel pass texture_remix does on real DDS data.
-    # The albedo color is taken from the texture (which we don't have
-    # here at the scalar level), so we use unit albedo as a stand-in --
-    # the downstream orchestrator overwrites DiffuseTexture with the
-    # real remixed _d.dds anyway.
+    # Scalar PBR -> spec-gloss as a 1x1 pass through ``pbr_to_specgloss``, so it
+    # matches texture_remix's per-texel pass. Unit albedo stands in for the
+    # texture color; the orchestrator replaces DiffuseTexture with the remixed
+    # _d.dds.
     params = PBRToSpecGlossParams(
         ao_multiplier=remix_profile.ao_multiplier,
         specular_multiplier=remix_profile.specular_multiplier,
@@ -250,14 +229,10 @@ def cdb_to_bgsm(
     header = _make_default_header(target_version)
     bgsm = _make_default_bgsm(header)
 
-    # Texture slots. For FO76 BGSMs (v>2) we populate the color/normal
-    # slots directly; the PBR roughness/metal maps live on the Specular /
-    # Lighting texture slots when present. ``cdb_to_bgsm`` works from a
-    # CE2TextureSet that doesn't distinguish roughness vs specular at the
-    # slot level, so we pass through the top-layer's diffuse/normal and
-    # leave the FO76 PBR slots empty -- texture_remix supplies
-    # the remixed DDS data alongside this material, and the downstream
-    # downgrade copes with missing slots gracefully.
+    # CE2TextureSet doesn't separate roughness from specular per slot, so only
+    # diffuse/normal pass through and the FO76 PBR slots (Specular/Lighting)
+    # stay empty. texture_remix supplies the remixed DDS alongside, and the
+    # downgrade tolerates the missing slots.
     bgsm.DiffuseTexture = layer.texture_set.diffuse or ""
     bgsm.NormalTexture = layer.texture_set.normal or ""
 

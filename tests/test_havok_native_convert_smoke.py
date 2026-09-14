@@ -37,9 +37,8 @@ def test_native_convert_batch_reports_mixed_results(tmp_path):
 
     result = json.loads(havok.havok_convert_batch(str(src_root), str(dst_root), "fo4", True))
 
-    # Phase 6: FO76 → FO4 conversion is now wired through native; all three
-    # files succeed (skeleton.hkx is FO4 noop, character.hkx is FO4 noop,
-    # fo76_snallygastercharacter.hkx is converted via the FO76 migration path).
+    # All three files succeed: skeleton.hkx and character.hkx are FO4 no-ops,
+    # fo76_snallygastercharacter.hkx goes through the FO76 migration path.
     assert result["converted"] == 3
     assert result["skipped"] == 0
     assert result["errors"] == []

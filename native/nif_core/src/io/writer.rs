@@ -1,4 +1,5 @@
-use std::collections::HashMap;
+use std::borrow::Cow;
+use std::collections::{HashMap, HashSet};
 use std::io::{Cursor, Write};
 
 use indexmap::IndexMap;
@@ -60,7 +61,7 @@ impl FieldLookup for IndexMap<String, NifValue> {
 
 struct OverlayFields<'a> {
     source: &'a IndexMap<String, NifValue>,
-    written: &'a IndexMap<String, NifValue>,
+    written: &'a IndexMap<String, Cow<'a, NifValue>>,
     current: Option<(&'a str, &'a NifValue)>,
 }
 
@@ -71,7 +72,10 @@ impl FieldLookup for OverlayFields<'_> {
         {
             return Some(value);
         }
-        self.written.get(path).or_else(|| self.source.get(path))
+        self.written
+            .get(path)
+            .map(Cow::as_ref)
+            .or_else(|| self.source.get(path))
     }
 }
 
@@ -601,9 +605,10 @@ fn write_triangle_array_fast<W: Write>(
     Ok(())
 }
 
-fn struct_field<'a>(value: &'a NifValue, name: &str) -> Option<&'a NifValue> {
+fn bs_vertex_field<'a>(value: &'a NifValue, name: &str, position: usize) -> Option<&'a NifValue> {
     match value {
         NifValue::Struct(fields) => fields.get(name),
+        NifValue::Array(fields) => fields.get(position),
         _ => None,
     }
 }
@@ -715,6 +720,10 @@ fn write_half_tex_coord<W: Write>(
             write_hfloat_component(fields.get("u"), writer)?;
             write_hfloat_component(fields.get("v"), writer)?;
         }
+        Some(NifValue::Array(fields)) => {
+            write_hfloat_component(fields.first(), writer)?;
+            write_hfloat_component(fields.get(1), writer)?;
+        }
         _ => {
             writer.write_hfloat(&NifValue::Float(0.0))?;
             writer.write_hfloat(&NifValue::Float(0.0))?;
@@ -777,62 +786,68 @@ fn write_bs_vertex_data<W: Write>(
 ) -> Result<(), WriteError> {
     if type_name == "BSVertexDataSSE" {
         if attributes & 0x1 != 0 {
-            write_float_vec3(struct_field(value, "Vertex"), writer)?;
+            write_float_vec3(bs_vertex_field(value, "Vertex", 0), writer)?;
         }
         if attributes & 0x11 == 0x11 {
-            write_float_component(struct_field(value, "Bitangent X"), writer)?;
+            write_float_component(bs_vertex_field(value, "Bitangent X", 1), writer)?;
         }
         if attributes & 0x11 == 0x1 {
             writer.write_uint(nif_val_to_u32(
-                struct_field(value, "Unused W").unwrap_or(&NifValue::Int(0)),
+                bs_vertex_field(value, "Unused W", 1).unwrap_or(&NifValue::Int(0)),
             ))?;
         }
     } else if attributes & 0x401 == 0x401 {
-        write_float_vec3(struct_field(value, "Vertex"), writer)?;
+        write_float_vec3(bs_vertex_field(value, "Vertex", 0), writer)?;
         if attributes & 0x411 == 0x411 {
-            write_float_component(struct_field(value, "Bitangent X"), writer)?;
+            write_float_component(bs_vertex_field(value, "Bitangent X", 1), writer)?;
         }
         if attributes & 0x411 == 0x401 {
             writer.write_uint(nif_val_to_u32(
-                struct_field(value, "Unused W").unwrap_or(&NifValue::Int(0)),
+                bs_vertex_field(value, "Unused W", 1).unwrap_or(&NifValue::Int(0)),
             ))?;
         }
     } else if attributes & 0x401 == 0x1 {
-        write_hfloat_vec3(struct_field(value, "Vertex"), writer)?;
+        write_hfloat_vec3(bs_vertex_field(value, "Vertex", 0), writer)?;
         if attributes & 0x411 == 0x11 {
-            write_hfloat_component(struct_field(value, "Bitangent X"), writer)?;
+            write_hfloat_component(bs_vertex_field(value, "Bitangent X", 1), writer)?;
         }
         if attributes & 0x411 == 0x1 {
             writer.write_ushort(nif_val_to_u16(
-                struct_field(value, "Unused W").unwrap_or(&NifValue::Int(0)),
+                bs_vertex_field(value, "Unused W", 1).unwrap_or(&NifValue::Int(0)),
             ))?;
         }
     }
 
     if attributes & 0x2 != 0 {
-        write_half_tex_coord(struct_field(value, "UV"), writer)?;
+        write_half_tex_coord(bs_vertex_field(value, "UV", 2), writer)?;
     }
     if attributes & 0x8 != 0 {
-        write_normbyte_vec3(struct_field(value, "Normal"), writer)?;
-        writer.write_normbyte(normbyte_value(struct_field(value, "Bitangent Y")))?;
+        write_normbyte_vec3(bs_vertex_field(value, "Normal", 3), writer)?;
+        writer.write_normbyte(normbyte_value(bs_vertex_field(value, "Bitangent Y", 4)))?;
     }
     if attributes & 0x18 == 0x18 {
-        write_normbyte_vec3(struct_field(value, "Tangent"), writer)?;
-        writer.write_normbyte(normbyte_value(struct_field(value, "Bitangent Z")))?;
+        write_normbyte_vec3(bs_vertex_field(value, "Tangent", 5), writer)?;
+        writer.write_normbyte(normbyte_value(bs_vertex_field(value, "Bitangent Z", 6)))?;
     }
     if attributes & 0x20 != 0 {
-        write_byte_color4(struct_field(value, "Vertex Colors"), writer)?;
+        write_byte_color4(bs_vertex_field(value, "Vertex Colors", 7), writer)?;
     }
     if attributes & 0x40 != 0 {
-        write_fixed_array(struct_field(value, "Bone Weights"), 4, writer, |v, w| {
-            w.write_hfloat(v)
-        })?;
-        write_fixed_array(struct_field(value, "Bone Indices"), 4, writer, |v, w| {
-            w.write_byte(nif_val_to_u8(v))
-        })?;
+        write_fixed_array(
+            bs_vertex_field(value, "Bone Weights", 8),
+            4,
+            writer,
+            |v, w| w.write_hfloat(v),
+        )?;
+        write_fixed_array(
+            bs_vertex_field(value, "Bone Indices", 9),
+            4,
+            writer,
+            |v, w| w.write_byte(nif_val_to_u8(v)),
+        )?;
     }
     if attributes & 0x100 != 0 {
-        write_float_component(struct_field(value, "Eye Data"), writer)?;
+        write_float_component(bs_vertex_field(value, "Eye Data", 10), writer)?;
     }
 
     Ok(())
@@ -997,10 +1012,10 @@ fn write_struct<W: Write>(
 
     validate_bytearray_size(type_name, field_vals)?;
 
-    let mut written: IndexMap<String, NifValue> = IndexMap::new();
+    let mut written: IndexMap<String, Cow<'_, NifValue>> = IndexMap::new();
     if let Some(arg_val) = arg {
         if !matches!(arg_val, Value::Null) {
-            written.insert("ARG".to_string(), eval_to_nif(arg_val));
+            written.insert("ARG".to_string(), Cow::Owned(eval_to_nif(arg_val)));
         }
     }
 
@@ -1038,8 +1053,8 @@ fn write_struct<W: Write>(
         let mut val_ref = field_vals
             .get(&key)
             .or_else(|| field_vals.get(fdef.name))
-            .cloned()
-            .unwrap_or(NifValue::Null);
+            .map(Cow::Borrowed)
+            .unwrap_or(Cow::Borrowed(&NifValue::Null));
         if let Some(calc_val) = calc_field_value(
             fdef,
             &eval_fields,
@@ -1048,7 +1063,7 @@ fn write_struct<W: Write>(
             user_version,
             bs_version,
         ) {
-            val_ref = calc_val;
+            val_ref = Cow::Owned(calc_val);
         }
 
         let field_context = OverlayFields {
@@ -1282,12 +1297,76 @@ fn field_key(fdef: &FieldDef) -> String {
 
 const STRING_TYPES: &[&str] = &["string", "NiFixedString"];
 
+type StringReachabilityKey = (String, Option<String>);
+
+fn resolve_schema_field_type<'a>(
+    type_name: &'a str,
+    template: Option<&'a str>,
+    struct_template: Option<&'a str>,
+) -> (&'a str, Option<&'a str>) {
+    let mut resolved_type = type_name;
+    let mut resolved_template = template;
+    if let Some(tmpl) = struct_template {
+        if resolved_type == "#T#" {
+            resolved_type = tmpl;
+        }
+        if resolved_template == Some("#T#") {
+            resolved_template = Some(tmpl);
+        }
+    }
+    (resolved_type, resolved_template)
+}
+
+fn schema_type_contains_string(
+    type_name: &str,
+    template: Option<&str>,
+    schema: &NifSchema,
+    cache: &mut HashMap<StringReachabilityKey, bool>,
+    visiting: &mut HashSet<StringReachabilityKey>,
+) -> bool {
+    let resolved_type = if type_name == "#T#" {
+        template.unwrap_or(type_name)
+    } else {
+        type_name
+    };
+    if resolved_type == "#T#" || template == Some("#T#") {
+        return true;
+    }
+    if STRING_TYPES.contains(&resolved_type) {
+        return true;
+    }
+    let Some(struct_def) = schema.get_struct(resolved_type) else {
+        return false;
+    };
+
+    let key = (resolved_type.to_string(), template.map(ToOwned::to_owned));
+    if let Some(result) = cache.get(&key) {
+        return *result;
+    }
+    if !visiting.insert(key.clone()) {
+        // Recursive schema cycles stay on the generic traversal path unless
+        // their entire subtree can be proven string-free.
+        return true;
+    }
+
+    let result = struct_def.fields.iter().any(|fdef| {
+        let (field_type, field_template) =
+            resolve_schema_field_type(fdef.type_name, fdef.template, template);
+        schema_type_contains_string(field_type, field_template, schema, cache, visiting)
+    });
+    visiting.remove(&key);
+    cache.insert(key, result);
+    result
+}
+
 fn collect_from_field(
     ftype: &str,
     val: &NifValue,
     template: Option<&str>,
     schema: &NifSchema,
     seen: &mut IndexMap<String, ()>,
+    reachability_cache: &mut HashMap<StringReachabilityKey, bool>,
+    visiting: &mut HashSet<StringReachabilityKey>,
 ) {
     if STRING_TYPES.contains(&ftype) {
         match val {
@@ -1305,13 +1384,32 @@ fn collect_from_field(
         }
         return;
     }
+    if !schema_type_contains_string(ftype, template, schema, reachability_cache, visiting) {
+        return;
+    }
     if schema.get_struct(ftype).is_some() {
         match val {
-            NifValue::Struct(m) => collect_from_struct(ftype, m, template, schema, seen),
+            NifValue::Struct(m) => collect_from_struct(
+                ftype,
+                m,
+                template,
+                schema,
+                seen,
+                reachability_cache,
+                visiting,
+            ),
             NifValue::Array(arr) => {
                 for item in arr {
                     if let NifValue::Struct(m) = item {
-                        collect_from_struct(ftype, m, template, schema, seen);
+                        collect_from_struct(
+                            ftype,
+                            m,
+                            template,
+                            schema,
+                            seen,
+                            reachability_cache,
+                            visiting,
+                        );
                     }
                 }
             }
@@ -1326,6 +1424,8 @@ fn collect_from_struct(
     template: Option<&str>,
     schema: &NifSchema,
     seen: &mut IndexMap<String, ()>,
+    reachability_cache: &mut HashMap<StringReachabilityKey, bool>,
+    visiting: &mut HashSet<StringReachabilityKey>,
 ) {
     let s = match schema.get_struct(struct_type) {
         Some(s) => s,
@@ -1338,12 +1438,20 @@ fn collect_from_struct(
             Some(v) => v,
             None => continue,
         };
-        let ftype: &str = if fdef.type_name == "#T#" {
+        let field_type = if fdef.type_name == "#T#" {
             template.unwrap_or(fdef.type_name)
         } else {
             fdef.type_name
         };
-        collect_from_field(ftype, val, fdef.template, schema, seen);
+        collect_from_field(
+            field_type,
+            val,
+            fdef.template,
+            schema,
+            seen,
+            reachability_cache,
+            visiting,
+        );
     }
 }
 
@@ -1352,6 +1460,8 @@ fn rebuild_string_table(nif: &mut NifFile, schema: &NifSchema) {
         return;
     }
     let mut seen: IndexMap<String, ()> = IndexMap::new();
+    let mut reachability_cache: HashMap<StringReachabilityKey, bool> = HashMap::new();
+    let mut visiting: HashSet<StringReachabilityKey> = HashSet::new();
     for block in nif.blocks.iter() {
         let all_fields = schema.get_all_field_plan(&block.type_name);
         for entry in all_fields.iter() {
@@ -1365,7 +1475,15 @@ fn rebuild_string_table(nif: &mut NifFile, schema: &NifSchema) {
                 Some(v) => v,
                 None => continue,
             };
-            collect_from_field(fdef.type_name, val, fdef.template, schema, &mut seen);
+            collect_from_field(
+                fdef.type_name,
+                val,
+                fdef.template,
+                schema,
+                &mut seen,
+                &mut reachability_cache,
+                &mut visiting,
+            );
         }
     }
     // Garbage-collect: drop strings that no block field references. Without
@@ -1527,7 +1645,7 @@ fn serialize_block(
         w.big_endian = big_endian;
 
         let all_fields = schema.get_all_field_plan(&block.type_name);
-        let mut written: IndexMap<String, NifValue> = IndexMap::new();
+        let mut written: IndexMap<String, Cow<'_, NifValue>> = IndexMap::new();
         let stored_keys: std::collections::HashSet<&str> =
             block.fields.keys().map(|s| s.as_str()).collect();
 
@@ -1559,8 +1677,8 @@ fn serialize_block(
                 .fields
                 .get(key)
                 .or_else(|| block.fields.get(fdef.name))
-                .cloned()
-                .unwrap_or(NifValue::Null);
+                .map(Cow::Borrowed)
+                .unwrap_or(Cow::Borrowed(&NifValue::Null));
             if let Some(calc_val) = calc_field_value(
                 fdef,
                 &eval_fields,
@@ -1569,7 +1687,7 @@ fn serialize_block(
                 user_version,
                 bs_version,
             ) {
-                val = calc_val;
+                val = Cow::Owned(calc_val);
             }
 
             let field_type: &str = fdef.type_name;
@@ -1686,6 +1804,130 @@ mod tests {
     use crate::io::NifReader;
     use crate::schema::NifSchema;
 
+    fn collect_from_field_reference(
+        field_type: &str,
+        value: &NifValue,
+        template: Option<&str>,
+        schema: &NifSchema,
+        seen: &mut IndexMap<String, ()>,
+    ) {
+        if STRING_TYPES.contains(&field_type) {
+            match value {
+                NifValue::String(string) => {
+                    seen.entry(string.clone()).or_insert(());
+                }
+                NifValue::Array(values) => {
+                    for value in values {
+                        if let NifValue::String(string) = value {
+                            seen.entry(string.clone()).or_insert(());
+                        }
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
+        if schema.get_struct(field_type).is_some() {
+            match value {
+                NifValue::Struct(fields) => {
+                    collect_from_struct_reference(field_type, fields, template, schema, seen)
+                }
+                NifValue::Array(values) => {
+                    for value in values {
+                        if let NifValue::Struct(fields) = value {
+                            collect_from_struct_reference(
+                                field_type, fields, template, schema, seen,
+                            );
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn collect_from_struct_reference(
+        struct_type: &str,
+        data: &IndexMap<String, NifValue>,
+        template: Option<&str>,
+        schema: &NifSchema,
+        seen: &mut IndexMap<String, ()>,
+    ) {
+        let Some(struct_def) = schema.get_struct(struct_type) else {
+            return;
+        };
+        for field_def in struct_def.fields {
+            let key = field_key(field_def);
+            let Some(value) = data.get(&key).or_else(|| data.get(field_def.name)) else {
+                continue;
+            };
+            let field_type = if field_def.type_name == "#T#" {
+                template.unwrap_or(field_def.type_name)
+            } else {
+                field_def.type_name
+            };
+            collect_from_field_reference(field_type, value, field_def.template, schema, seen);
+        }
+    }
+
+    #[test]
+    #[ignore = "Set MODKIT_NIF_WRITER_CORPUS and MODKIT_NIF_WRITER_BASELINE; set MODKIT_NIF_WRITER_RECORD=1 to record the baseline"]
+    fn serializer_corpus_equivalence() {
+        let manifest = std::env::var("MODKIT_NIF_WRITER_CORPUS").unwrap();
+        let baseline =
+            std::path::PathBuf::from(std::env::var("MODKIT_NIF_WRITER_BASELINE").unwrap());
+        let record = std::env::var("MODKIT_NIF_WRITER_RECORD").as_deref() == Ok("1");
+        let paths: Vec<std::path::PathBuf> =
+            serde_json::from_slice(&std::fs::read(manifest).unwrap()).unwrap();
+        assert!(!paths.is_empty());
+        if record {
+            std::fs::create_dir_all(&baseline).unwrap();
+        }
+        let mut elapsed = std::time::Duration::ZERO;
+        let mut collision_blocks = 0;
+        let mut geometry_blocks = 0;
+        let mut output_bytes = 0;
+        for (index, path) in paths.iter().enumerate() {
+            let mut nif = NifFile::load(path).unwrap();
+            collision_blocks += nif
+                .blocks
+                .iter()
+                .filter(|block| {
+                    block.type_name.starts_with("bhk") || block.type_name.starts_with("BSPhysics")
+                })
+                .count();
+            geometry_blocks += nif
+                .blocks
+                .iter()
+                .filter(|block| {
+                    block.type_name.contains("TriShape") || block.type_name.contains("TriStrips")
+                })
+                .count();
+            nif.raw_block_context = None;
+            let started = std::time::Instant::now();
+            let bytes = nif.to_bytes().unwrap();
+            elapsed += started.elapsed();
+            output_bytes += bytes.len();
+            NifFile::from_bytes(&bytes, None).unwrap();
+            let expected = baseline.join(format!("{index:04}.nif"));
+            if record {
+                std::fs::write(expected, &bytes).unwrap();
+            } else {
+                assert!(
+                    std::fs::read(expected).unwrap() == bytes,
+                    "{}",
+                    path.display()
+                );
+            }
+        }
+        assert!(collision_blocks > 0);
+        assert!(geometry_blocks > 0);
+        eprintln!(
+            "NIF serializer files={} collision_blocks={collision_blocks} geometry_blocks={geometry_blocks} output_bytes={output_bytes} serialize={elapsed:?} record={record}",
+            paths.len()
+        );
+    }
+
     #[test]
     fn raw_block_bytes_are_reused_only_while_content_is_unchanged() {
         let mut block = NifBlock::new(0, "NiNode");
@@ -1757,10 +1999,249 @@ mod tests {
     }
 
     #[test]
+    fn positional_bs_vertex_data_matches_named_fields_for_all_layout_bits() {
+        fn encoded(type_name: &str, value: &NifValue, attributes: u64) -> Vec<u8> {
+            let mut bytes = Vec::new();
+            write_bs_vertex_data(
+                type_name,
+                value,
+                attributes,
+                &mut BasicWriter::new(Cursor::new(&mut bytes)),
+            )
+            .unwrap();
+            bytes
+        }
+
+        let uv = IndexMap::from([
+            ("u".to_string(), NifValue::Float(0.25)),
+            ("v".to_string(), NifValue::Float(0.75)),
+        ]);
+        let named = NifValue::Struct(IndexMap::from([
+            ("Vertex".to_string(), NifValue::Vec3([1.0, 2.0, 3.0])),
+            ("Bitangent X".to_string(), NifValue::Float(-0.25)),
+            ("UV".to_string(), NifValue::Struct(uv)),
+            ("Normal".to_string(), NifValue::Vec3([0.0, 0.5, 1.0])),
+            ("Bitangent Y".to_string(), NifValue::Float(0.25)),
+            ("Tangent".to_string(), NifValue::Vec3([1.0, 0.0, -0.5])),
+            ("Bitangent Z".to_string(), NifValue::Float(0.75)),
+            (
+                "Vertex Colors".to_string(),
+                NifValue::Color4([0.25, 0.5, 0.75, 1.0]),
+            ),
+            (
+                "Bone Weights".to_string(),
+                NifValue::Array(vec![
+                    NifValue::Float(0.5),
+                    NifValue::Float(0.25),
+                    NifValue::Float(0.125),
+                    NifValue::Float(0.125),
+                ]),
+            ),
+            (
+                "Bone Indices".to_string(),
+                NifValue::Array(vec![
+                    NifValue::UInt(1),
+                    NifValue::UInt(2),
+                    NifValue::UInt(3),
+                    NifValue::UInt(4),
+                ]),
+            ),
+            ("Eye Data".to_string(), NifValue::Float(0.375)),
+        ]));
+        let positional = NifValue::Array(vec![
+            NifValue::Vec3([1.0, 2.0, 3.0]),
+            NifValue::Float(-0.25),
+            NifValue::Array(vec![NifValue::Float(0.25), NifValue::Float(0.75)]),
+            NifValue::Vec3([0.0, 0.5, 1.0]),
+            NifValue::Float(0.25),
+            NifValue::Vec3([1.0, 0.0, -0.5]),
+            NifValue::Float(0.75),
+            NifValue::Color4([0.25, 0.5, 0.75, 1.0]),
+            NifValue::Array(vec![
+                NifValue::Float(0.5),
+                NifValue::Float(0.25),
+                NifValue::Float(0.125),
+                NifValue::Float(0.125),
+            ]),
+            NifValue::Array(vec![
+                NifValue::UInt(1),
+                NifValue::UInt(2),
+                NifValue::UInt(3),
+                NifValue::UInt(4),
+            ]),
+            NifValue::Float(0.375),
+        ]);
+
+        for (type_name, attributes) in [
+            ("BSVertexData", 0),
+            ("BSVertexData", 0x17b),
+            ("BSVertexData", 0x57b),
+            ("BSVertexDataSSE", 0x17b),
+        ] {
+            assert_eq!(
+                encoded(type_name, &named, attributes),
+                encoded(type_name, &positional, attributes),
+                "{type_name} attributes={attributes:#x}"
+            );
+        }
+
+        let named_unused = NifValue::Struct(IndexMap::from([
+            ("Vertex".to_string(), NifValue::Vec3([1.0, 2.0, 3.0])),
+            ("Unused W".to_string(), NifValue::UInt(0x1234)),
+        ]));
+        let positional_unused = NifValue::Array(vec![
+            NifValue::Vec3([1.0, 2.0, 3.0]),
+            NifValue::UInt(0x1234),
+        ]);
+        for (type_name, attributes) in [
+            ("BSVertexData", 0x1),
+            ("BSVertexData", 0x401),
+            ("BSVertexDataSSE", 0x1),
+        ] {
+            assert_eq!(
+                encoded(type_name, &named_unused, attributes),
+                encoded(type_name, &positional_unused, attributes),
+                "{type_name} attributes={attributes:#x}"
+            );
+        }
+
+        assert_eq!(
+            encoded("BSVertexData", &NifValue::Struct(IndexMap::new()), 0x17b),
+            encoded("BSVertexData", &NifValue::Array(Vec::new()), 0x17b),
+        );
+    }
+
+    #[test]
     fn string_fields_are_truthy_for_conditions() {
         assert!(nif_to_eval(&NifValue::String("Name".to_string())).as_bool());
         assert!(!nif_to_eval(&NifValue::String("".to_string())).as_bool());
         assert!(!nif_to_eval(&NifValue::String("\0\0".to_string())).as_bool());
+    }
+
+    #[test]
+    fn string_reachability_distinguishes_geometry_and_template_structs() {
+        let schema = NifSchema::from_generated();
+        let mut cache = HashMap::new();
+        let mut visiting = HashSet::new();
+
+        assert!(!schema_type_contains_string(
+            "BSVertexData",
+            None,
+            &schema,
+            &mut cache,
+            &mut visiting,
+        ));
+        assert!(!schema_type_contains_string(
+            "BSVertexDataSSE",
+            None,
+            &schema,
+            &mut cache,
+            &mut visiting,
+        ));
+        assert!(!schema_type_contains_string(
+            "Triangle",
+            None,
+            &schema,
+            &mut cache,
+            &mut visiting,
+        ));
+        assert!(schema_type_contains_string(
+            "KeyGroup",
+            Some("string"),
+            &schema,
+            &mut cache,
+            &mut visiting,
+        ));
+        assert!(schema_type_contains_string(
+            "NiTFixedStringMap",
+            Some("uint"),
+            &schema,
+            &mut cache,
+            &mut visiting,
+        ));
+        assert!(!schema_type_contains_string(
+            "KeyGroup",
+            Some("float"),
+            &schema,
+            &mut cache,
+            &mut visiting,
+        ));
+    }
+
+    #[test]
+    fn schema_pruning_matches_reference_collection() {
+        let schema = NifSchema::from_generated();
+        let mut key = IndexMap::new();
+        key.insert(
+            "Value".to_string(),
+            NifValue::String("Nested template string".to_string()),
+        );
+        let mut key_group = IndexMap::new();
+        key_group.insert(
+            "Keys".to_string(),
+            NifValue::Array(vec![NifValue::Struct(key.clone())]),
+        );
+        let cases = [
+            ("Key", NifValue::Struct(key), Some("string")),
+            ("KeyGroup", NifValue::Struct(key_group), Some("string")),
+            ("Triangle", NifValue::Array(vec![NifValue::UInt(3)]), None),
+            (
+                "NiFixedString",
+                NifValue::Array(vec![
+                    NifValue::String("First".to_string()),
+                    NifValue::UInt(4),
+                    NifValue::String("Second".to_string()),
+                ]),
+                None,
+            ),
+            (
+                "Key",
+                NifValue::String("Malformed struct".to_string()),
+                Some("string"),
+            ),
+        ];
+
+        for (field_type, value, template) in cases {
+            let mut expected = IndexMap::new();
+            collect_from_field_reference(field_type, &value, template, &schema, &mut expected);
+            let mut actual = IndexMap::new();
+            let mut cache = HashMap::new();
+            let mut visiting = HashSet::new();
+            collect_from_field(
+                field_type,
+                &value,
+                template,
+                &schema,
+                &mut actual,
+                &mut cache,
+                &mut visiting,
+            );
+            assert_eq!(actual, expected, "{field_type}<{template:?}>");
+        }
+    }
+
+    #[test]
+    fn string_table_keeps_original_order_drops_stale_and_appends_new() {
+        let schema = NifSchema::from_generated();
+        let mut nif = NifFile::default();
+        nif.header.version_packed = 0x14020007;
+        nif.header.strings = vec![
+            "Stale".to_string(),
+            "Second".to_string(),
+            "First".to_string(),
+        ];
+        for name in ["First", "Second", "New"] {
+            let mut block = NifBlock::new(nif.blocks.len(), "NiNode");
+            block
+                .fields
+                .insert("Name".to_string(), NifValue::String(name.to_string()));
+            nif.blocks.push(block);
+        }
+
+        rebuild_string_table(&mut nif, &schema);
+
+        assert_eq!(nif.header.strings, ["Second", "First", "New"]);
+        assert_eq!(nif.header.max_string_length, 6);
     }
 
     #[test]

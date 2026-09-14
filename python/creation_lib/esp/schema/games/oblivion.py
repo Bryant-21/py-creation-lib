@@ -1,7 +1,7 @@
 """Auto-generated detector schema for oblivion.
 
 # @schema_forge:generated
-# regen_at: 2026-07-10T04:43:48Z
+# regen_at: 2026-08-07T13:56:34Z
 # source_hash: d2387a2ab3ebda5457d290d9db846b26d5883deaddbcf1eed1bd0947a14ce6a2
 """
 from __future__ import annotations

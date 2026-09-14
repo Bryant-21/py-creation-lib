@@ -1,13 +1,9 @@
 """Write edited SkinData back to a NIF file.
 
-Given the original NIF (used as template) and modified SkinData, this module
-updates vertex weights, bone indices, and partition/segment data in-place on
-the NIF blocks, then saves to disk.
-
-The import path (reference_body.py) merges all BSTriShape blocks into a single
-flat SkinData, applying a vertex_offset per shape. Export reverses that:
-it walks BSTriShape blocks in the same order and slices the SkinData arrays
-back into per-shape portions.
+Updates vertex weights, bone indices, and partition/segment data in place on the
+original NIF's blocks, then saves. reference_body.py imports every BSTriShape into
+one flat SkinData with a per-shape vertex_offset; export walks the BSTriShapes in
+the same order and slices the arrays back per shape.
 """
 from __future__ import annotations
 
@@ -27,15 +23,9 @@ def write_skin_data_to_nif(
     skin_data: SkinData,
     output_path: str,
 ) -> None:
-    """Write modified SkinData back to a NIF and save.
+    """Write ``skin_data`` into ``nif`` (modified in place) and save to ``output_path``.
 
-    Args:
-        nif: The original NifFile instance (will be modified in-place).
-        skin_data: The edited SkinData with updated weights/bone_indices/partitions.
-        output_path: Path to write the output NIF.
-
-    Raises:
-        ValueError: If NIF structure doesn't match expectations.
+    Raises ValueError if the NIF structure doesn't match the SkinData.
     """
     # Find all BSTriShape blocks in order (same order as import)
     shapes = [

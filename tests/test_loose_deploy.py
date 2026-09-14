@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from creation_lib.build.loose_deploy import deploy_loose_assets
 
 
@@ -108,6 +110,33 @@ def test_deploy_loose_assets_can_copy_to_separate_virtual_data_dir(tmp_path: Pat
     assert not (game_data_dir / f"{mod_name}.esp").exists()
     manifest = json.loads((mod_dir / ".loose_manifest.json").read_text(encoding="utf-8"))
     assert manifest["game_data_dir"] == str(deploy_data_dir)
+
+
+def test_deploy_loose_assets_rejects_duplicate_destination_before_copy(tmp_path: Path):
+    mod_name = "B21_TestLoose"
+    mod_dir = _build_loose_mod_tree(tmp_path, mod_name)
+    game_data_dir = tmp_path / "Game" / "Data"
+    game_data_dir.mkdir(parents=True)
+    root_strings = mod_dir / "Strings"
+    legacy_strings = mod_dir / "data" / "Strings"
+    root_strings.mkdir()
+    legacy_strings.mkdir()
+    filename = f"{mod_name}_en.STRINGS"
+    (root_strings / filename).write_text("generated", encoding="utf-8")
+    (legacy_strings / filename).write_text("legacy", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="duplicate loose deployment path"):
+        deploy_loose_assets(
+            mod_name,
+            game="fo4",
+            game_data_dir=game_data_dir,
+            skip_build=True,
+            skip_papyrus_compile=True,
+            project_root=tmp_path,
+        )
+
+    assert not (game_data_dir / f"{mod_name}.esp").exists()
+    assert not (game_data_dir / "Strings" / filename).exists()
 
 
 def test_deploy_loose_assets_skips_validation_when_requested(tmp_path: Path):

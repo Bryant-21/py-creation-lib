@@ -2,8 +2,6 @@
 //!
 //! Assembles a complete tagged binary blob from pre-built components.
 //! Domain-agnostic — knows about container structure, not physics.
-//!
-//! Direct port of `py_creation_lib/python/creation_lib/havok/tagged_writer.py`.
 
 /// One ITEM entry in the tagged format index.
 #[derive(Debug, Clone, PartialEq)]

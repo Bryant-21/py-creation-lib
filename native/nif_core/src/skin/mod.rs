@@ -15,19 +15,175 @@ use indexmap::IndexMap;
 
 use crate::model::{NifBlock, NifFile, NifValue};
 use crate::skin::bone_remap::{
-    SkeletonMap, VertexInfluences, fo3_body_part_to_fo4_segment, redistribute_unmapped,
+    SkeletonMap, VertexInfluences, body_part_to_fo4_segment, redistribute_unmapped,
 };
 use crate::skin::pack::{
     pack_skinned_vertex_data, pack_static_vertex_data, recompute_tangents_lengyel,
     vertex_desc_skinned, vertex_desc_static,
 };
 use crate::skin::segment::{SegmentSpec, build_segment_data};
-use crate::skin::source::{
-    LegacySkin, LegacySkinKind, SkinParseError, SkinTransform, fold_partitions_to_global,
-};
+use crate::skin::source::{LegacySkin, SkinParseError, SkinTransform, fold_partitions_to_global};
 use crate::skin::weight_transfer::{MorphTransferConfig, transfer_morph_weights};
 
 type ReferenceSkin = (Vec<[f32; 3]>, Vec<VertexInfluences>, Vec<String>);
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum LegacySkinPolicy {
+    #[default]
+    TranslateSkeleton,
+    PreserveSourceRig,
+}
+
+pub fn rig_facegen_shape_from_reference(
+    nif: &mut NifFile,
+    shape_id: usize,
+    reference: &NifFile,
+) -> Result<(), String> {
+    let shape = nif
+        .get_block(shape_id)
+        .cloned()
+        .ok_or_else(|| format!("missing FaceGen shape {shape_id}"))?;
+    let geometry = ShapeGeometry::from_shape(nif, &shape);
+    if geometry.positions.is_empty() {
+        return Err(format!("FaceGen shape {shape_id} has no vertices"));
+    }
+
+    let (reference_positions, reference_influences, reference_bones) =
+        extract_reference_skin(reference);
+    if reference_positions.is_empty()
+        || reference_influences.len() != reference_positions.len()
+        || reference_bones.is_empty()
+    {
+        return Err("FaceGen skin reference has no usable skinned vertices".to_string());
+    }
+
+    let mut target_bone_names = Vec::new();
+    let mut target_bone_refs = Vec::new();
+    let mut reference_to_target = vec![None; reference_bones.len()];
+    for (reference_index, bone_name) in reference_bones.iter().enumerate() {
+        let Some(target_ref) = find_node_by_name_case_insensitive(nif, bone_name) else {
+            continue;
+        };
+        reference_to_target[reference_index] = Some(target_bone_names.len());
+        target_bone_names.push(bone_name.clone());
+        target_bone_refs.push(target_ref);
+    }
+    if target_bone_names.is_empty() {
+        return Err(
+            "FaceGen skin reference has no bones present in the target template".to_string(),
+        );
+    }
+
+    let fallback_bone = target_bone_names
+        .iter()
+        .position(|name| name.eq_ignore_ascii_case("HEAD"))
+        .unwrap_or(0);
+    let mut influences = Vec::with_capacity(geometry.positions.len());
+    for position in &geometry.positions {
+        let nearest = reference_positions
+            .iter()
+            .enumerate()
+            .min_by(|(_, left), (_, right)| {
+                distance_squared(**left, *position).total_cmp(&distance_squared(**right, *position))
+            })
+            .map(|(index, _)| index)
+            .ok_or_else(|| "FaceGen skin reference has no vertices".to_string())?;
+        let mut slots = reference_influences[nearest]
+            .slots
+            .iter()
+            .filter_map(|(reference_bone, weight)| {
+                let target_bone = reference_to_target
+                    .get(*reference_bone)
+                    .copied()
+                    .flatten()?;
+                (*weight > 0.0).then_some((target_bone, *weight))
+            })
+            .collect::<Vec<_>>();
+        normalize_top_four(&mut slots);
+        if slots.is_empty() {
+            slots.push((fallback_bone, 1.0));
+        }
+        influences.push(VertexInfluences { slots });
+    }
+
+    let (tangents, bitangents) = if geometry.tangents_missing() {
+        recompute_tangents_lengyel(
+            &geometry.positions,
+            &geometry.normals,
+            &geometry.uvs,
+            &geometry.triangles,
+        )
+    } else {
+        (geometry.tangents.clone(), geometry.bitangents.clone())
+    };
+    let vertex_data = pack_skinned_vertex_data(
+        &geometry.positions,
+        &geometry.normals,
+        &tangents,
+        &bitangents,
+        &geometry.uvs,
+        geometry.vertex_colors.as_deref(),
+        &influences,
+    );
+    let transforms = reference_bone_transforms(reference, &target_bone_names);
+    let bone_data_id = create_bone_data(
+        nif,
+        target_bone_names.len(),
+        &transforms,
+        None,
+        &geometry.positions,
+        &influences,
+    );
+    let skeleton_root = nif
+        .blocks
+        .iter()
+        .find(|block| {
+            is_node_type(&block.type_name)
+                && matches!(block.get_field("Name"), Some(NifValue::String(name)) if name.trim_end_matches('\0').eq_ignore_ascii_case("BSFaceGenNiNodeSkinned"))
+        })
+        .map(|block| block.block_id)
+        .ok_or_else(|| "target template has no BSFaceGenNiNodeSkinned root".to_string())?;
+
+    let mut skin_fields = IndexMap::new();
+    skin_fields.insert("Data".into(), NifValue::Ref(bone_data_id as i32));
+    skin_fields.insert("Skin Partition".into(), NifValue::Ref(-1));
+    skin_fields.insert("Skeleton Root".into(), NifValue::Ref(skeleton_root as i32));
+    skin_fields.insert(
+        "Num Bones".into(),
+        NifValue::UInt(target_bone_refs.len() as u64),
+    );
+    skin_fields.insert(
+        "Bones".into(),
+        NifValue::Array(
+            target_bone_refs
+                .iter()
+                .map(|id| NifValue::Ref(*id as i32))
+                .collect(),
+        ),
+    );
+    skin_fields.insert("Num Scales".into(), NifValue::UInt(0));
+    skin_fields.insert("Scales".into(), NifValue::Array(Vec::new()));
+    let skin_instance_id = nif.add_block("BSSkin::Instance", Some(skin_fields));
+
+    let target_shape = nif
+        .blocks
+        .get_mut(shape_id)
+        .ok_or_else(|| format!("missing copied FaceGen shape {shape_id}"))?;
+    let flags = value_u64(target_shape.get_field("Flags")).unwrap_or(14) & !0x80000;
+    target_shape.set_field("Flags", NifValue::UInt(flags));
+    target_shape.set_field("Skin", NifValue::Ref(skin_instance_id as i32));
+    target_shape.set_field("Skin Instance", NifValue::Ref(-1));
+    target_shape.set_field(
+        "Vertex Desc",
+        NifValue::Int(vertex_desc_skinned(geometry.vertex_colors.is_some())),
+    );
+    target_shape.set_field("Num Vertices", NifValue::UInt(vertex_data.len() as u64));
+    target_shape.set_field("Vertex Data", NifValue::Array(vertex_data));
+    target_shape.set_field("Data Size", NifValue::UInt(data_size(target_shape) as u64));
+    mark_shader_skinned(nif, shape_id);
+    nif.rebuild_header();
+    Ok(())
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct ConvertLegacySkinResult {
@@ -46,6 +202,10 @@ pub enum ConvertLegacySkinError {
     SkeletonMap(#[from] bone_remap::SkeletonMapError),
     #[error("skin parse: {0}")]
     SkinParse(#[from] SkinParseError),
+    #[error("skeleton translation requires translation_maps_dir")]
+    MissingTranslationMaps,
+    #[error("preserve-source-rig skin: {0}")]
+    PreserveSourceRig(String),
 }
 
 pub fn convert_legacy_skin(
@@ -72,6 +232,26 @@ pub fn convert_legacy_skin_for_games(
     reference_body: Option<&Path>,
     morph_weight_cap: f32,
 ) -> Result<ConvertLegacySkinResult, ConvertLegacySkinError> {
+    convert_legacy_skin_for_games_with_policy(
+        nif,
+        Some(translation_maps_dir),
+        source_game,
+        target_game,
+        reference_body,
+        morph_weight_cap,
+        LegacySkinPolicy::TranslateSkeleton,
+    )
+}
+
+pub fn convert_legacy_skin_for_games_with_policy(
+    nif: &mut NifFile,
+    translation_maps_dir: Option<&Path>,
+    source_game: &str,
+    target_game: &str,
+    reference_body: Option<&Path>,
+    morph_weight_cap: f32,
+    policy: LegacySkinPolicy,
+) -> Result<ConvertLegacySkinResult, ConvertLegacySkinError> {
     let mut working = nif.clone();
     let result = convert_legacy_skin_for_games_in_place(
         &mut working,
@@ -80,21 +260,72 @@ pub fn convert_legacy_skin_for_games(
         target_game,
         reference_body,
         morph_weight_cap,
+        policy,
     )?;
     *nif = working;
     Ok(result)
 }
 
+pub fn convert_unskinned_legacy_shapes(nif: &mut NifFile) -> usize {
+    let shape_ids = nif
+        .blocks
+        .iter()
+        .filter(|block| matches!(block.type_name.as_str(), "NiTriShape" | "NiTriStrips"))
+        .map(|block| block.block_id)
+        .collect::<Vec<_>>();
+    let mut converted = 0;
+    let mut remove_blocks = HashSet::new();
+
+    for shape_id in shape_ids {
+        let Some(shape) = nif.get_block(shape_id).cloned() else {
+            continue;
+        };
+        if value_ref(shape.get_field("Skin Instance")).is_some_and(|skin| skin >= 0)
+            || value_ref(shape.get_field("Skin")).is_some_and(|skin| skin >= 0)
+        {
+            continue;
+        }
+        let Some(data_id) = legacy_geometry_data_ref(nif, shape_id) else {
+            continue;
+        };
+        let geometry = ShapeGeometry::from_shape(nif, &shape);
+        let (shader_ref, alpha_ref) = geometry_property_refs(nif, &shape);
+        if convert_static_shape(nif, shape_id, geometry, shader_ref, alpha_ref).is_some() {
+            converted += 1;
+            remove_blocks.insert(data_id);
+        }
+    }
+
+    if !remove_blocks.is_empty() {
+        let mut ids = remove_blocks.into_iter().collect::<Vec<_>>();
+        ids.sort_unstable();
+        nif.remove_blocks(&ids);
+        nif.rebuild_header();
+    }
+
+    converted
+}
+
 fn convert_legacy_skin_for_games_in_place(
     nif: &mut NifFile,
-    translation_maps_dir: &Path,
+    translation_maps_dir: Option<&Path>,
     source_game: &str,
     target_game: &str,
     reference_body: Option<&Path>,
     morph_weight_cap: f32,
+    policy: LegacySkinPolicy,
 ) -> Result<ConvertLegacySkinResult, ConvertLegacySkinError> {
-    let map = SkeletonMap::load(translation_maps_dir, source_game, target_game)?;
-    let reference_skin = reference_body
+    let map = match policy {
+        LegacySkinPolicy::TranslateSkeleton => Some(SkeletonMap::load(
+            translation_maps_dir.ok_or(ConvertLegacySkinError::MissingTranslationMaps)?,
+            source_game,
+            target_game,
+        )?),
+        LegacySkinPolicy::PreserveSourceRig => None,
+    };
+    let reference_skin = matches!(policy, LegacySkinPolicy::TranslateSkeleton)
+        .then_some(reference_body)
+        .flatten()
         .and_then(|path| NifFile::load(path.to_path_buf()).ok())
         .map(|reference| extract_reference_skin(&reference));
     let shape_ids: Vec<usize> = nif
@@ -103,7 +334,11 @@ fn convert_legacy_skin_for_games_in_place(
         .filter(|block| {
             matches!(
                 block.type_name.as_str(),
-                "BSTriShape" | "BSSubIndexTriShape" | "NiTriShape" | "NiTriStrips"
+                "BSTriShape"
+                    | "BSSubIndexTriShape"
+                    | "BSDynamicTriShape"
+                    | "NiTriShape"
+                    | "NiTriStrips"
             )
         })
         .map(|block| block.block_id)
@@ -114,6 +349,9 @@ fn convert_legacy_skin_for_games_in_place(
         let Some(parsed) = source::parse_skin_chain(nif, shape_id)? else {
             continue;
         };
+        if matches!(policy, LegacySkinPolicy::PreserveSourceRig) {
+            validate_preserved_source_rig_input(nif, shape_id, &parsed)?;
+        }
         parsed_shapes.push((shape_id, parsed));
     }
 
@@ -125,9 +363,11 @@ fn convert_legacy_skin_for_games_in_place(
             nif,
             shape_id,
             &parsed,
-            &map,
+            map.as_ref(),
+            source_game,
             reference_skin.as_ref(),
             morph_weight_cap,
+            policy,
         );
         match converted {
             Some(converted) => {
@@ -160,7 +400,12 @@ fn convert_legacy_skin_for_games_in_place(
         nif.remove_blocks(&ids);
     }
     if result.shapes_skinned > 0 {
-        restructure_bone_tree(nif);
+        if matches!(policy, LegacySkinPolicy::TranslateSkeleton) {
+            restructure_bone_tree(nif);
+        }
+        if matches!(policy, LegacySkinPolicy::PreserveSourceRig) {
+            validate_preserved_source_rig_output(nif)?;
+        }
         nif.rebuild_header();
     }
 
@@ -181,31 +426,55 @@ fn convert_one_shape(
     nif: &mut NifFile,
     shape_id: usize,
     parsed: &LegacySkin,
-    map: &SkeletonMap,
+    map: Option<&SkeletonMap>,
+    source_game: &str,
     reference_skin: Option<&ReferenceSkin>,
     morph_weight_cap: f32,
+    policy: LegacySkinPolicy,
 ) -> Option<ShapeConversion> {
     let shape = nif.get_block(shape_id)?.clone();
     let mut geometry = ShapeGeometry::from_shape(nif, &shape);
+    geometry.complete_partition_geometry(nif, &shape, parsed);
     geometry.apply_transform(&parsed.skin_transform);
     let (shader_ref, alpha_ref) = geometry_property_refs(nif, &shape);
     let source_bone_refs = source_bone_refs(nif, parsed.instance_block_id);
     let (source_to_local, mut target_bone_names, mut target_bone_refs, bones_remapped) =
-        build_target_bones(nif, parsed, &source_bone_refs, map);
+        match policy {
+            LegacySkinPolicy::TranslateSkeleton => {
+                build_target_bones(nif, parsed, &source_bone_refs, map?)
+            }
+            LegacySkinPolicy::PreserveSourceRig => {
+                preserve_source_bones(nif, parsed, &source_bone_refs)?
+            }
+        };
     if target_bone_refs.is_empty() {
         return convert_static_shape(nif, shape_id, geometry, shader_ref, alpha_ref);
     }
 
-    let mut influences = seed_influences(parsed, geometry.positions.len());
-    let redistribute_report = redistribute_unmapped(&mut influences, &parsed.bones, map);
-    remap_influences_to_local(&mut influences, &source_to_local);
+    let (mut influences, bones_dropped_unmapped, weights_redistributed) = match policy {
+        LegacySkinPolicy::TranslateSkeleton => {
+            let mut influences = seed_influences(parsed, geometry.positions.len());
+            let redistribute_report = redistribute_unmapped(&mut influences, &parsed.bones, map?);
+            remap_influences_to_local(&mut influences, &source_to_local);
+            (
+                influences,
+                redistribute_report.dropped_unmapped.len(),
+                redistribute_report.weights_redistributed,
+            )
+        }
+        LegacySkinPolicy::PreserveSourceRig => (
+            source_rig_influences(parsed, geometry.positions.len())?,
+            0,
+            0,
+        ),
+    };
 
     let mut conversion = ShapeConversion {
         skinned: true,
         vertices_repacked: geometry.positions.len(),
         bones_remapped,
-        bones_dropped_unmapped: redistribute_report.dropped_unmapped.len(),
-        weights_redistributed: redistribute_report.weights_redistributed,
+        bones_dropped_unmapped,
+        weights_redistributed,
         vertices_morph_weighted: 0,
     };
 
@@ -261,12 +530,16 @@ fn convert_one_shape(
             &source_to_local,
             target_bone_names.len(),
         ),
+        matches!(policy, LegacySkinPolicy::PreserveSourceRig)
+            .then_some(parsed.bone_bounds.as_slice()),
         &geometry.positions,
         &influences,
     );
 
     if let Some(target_shape) = nif.blocks.get_mut(shape_id) {
         target_shape.type_name = "BSSubIndexTriShape".to_string();
+        target_shape.fields.shift_remove("Dynamic Data Size");
+        target_shape.fields.shift_remove("Vertices");
         target_shape.set_field("Skin", NifValue::Ref(skin_instance_id as i32));
         target_shape.set_field("Skin Instance", NifValue::Ref(-1));
         if let Some(bound) = geometry.bounding_sphere.clone() {
@@ -296,7 +569,13 @@ fn convert_one_shape(
             ),
         );
         target_shape.set_field("Data Size", NifValue::UInt(data_size(target_shape) as u64));
-        write_segments(target_shape, parsed, &geometry.triangles);
+        write_segments(
+            target_shape,
+            parsed,
+            &geometry.triangles,
+            source_game,
+            policy,
+        );
     }
     mark_shader_skinned(nif, shape_id);
 
@@ -469,6 +748,253 @@ fn build_target_bones(
     )
 }
 
+fn preserve_source_bones(
+    nif: &NifFile,
+    parsed: &LegacySkin,
+    source_bone_refs: &[i32],
+) -> Option<(Vec<Option<usize>>, Vec<String>, Vec<usize>, usize)> {
+    if source_bone_refs.len() != parsed.bones.len() {
+        return None;
+    }
+    let mut names = Vec::with_capacity(source_bone_refs.len());
+    let mut refs = Vec::with_capacity(source_bone_refs.len());
+    for (source_ref, bone) in source_bone_refs.iter().zip(&parsed.bones) {
+        let source_ref = usize::try_from(*source_ref).ok()?;
+        let node = nif.get_block(source_ref)?;
+        if !is_node_type(&node.type_name) || bone.name.is_empty() {
+            return None;
+        }
+        names.push(bone.name.clone());
+        refs.push(source_ref);
+    }
+    Some(((0..refs.len()).map(Some).collect(), names, refs, 0))
+}
+
+fn source_rig_influences(
+    parsed: &LegacySkin,
+    vertex_count: usize,
+) -> Option<Vec<VertexInfluences>> {
+    let mut influences = vec![VertexInfluences::default(); vertex_count];
+    for partition in &parsed.partitions {
+        if partition.vertex_map.len() != partition.influences.len() {
+            return None;
+        }
+        for (local_vertex, row) in partition.influences.iter().enumerate() {
+            let global_vertex = *partition.vertex_map.get(local_vertex)? as usize;
+            let destination = influences.get_mut(global_vertex)?;
+            if row.len() != 4 {
+                return None;
+            }
+            let mut slots = Vec::with_capacity(row.len());
+            for (local_bone, weight) in row {
+                let global_bone = *partition.bones.get(*local_bone as usize)? as usize;
+                if global_bone >= parsed.bones.len() || !weight.is_finite() || *weight < 0.0 {
+                    return None;
+                }
+                slots.push((global_bone, *weight));
+            }
+            normalize_lanes(&mut slots)?;
+            if !destination.slots.is_empty() {
+                if !source_rig_lanes_equivalent(&destination.slots, &slots) {
+                    return None;
+                }
+                continue;
+            }
+            destination.slots = slots;
+        }
+    }
+    influences
+        .iter()
+        .all(|influence| !influence.slots.is_empty())
+        .then_some(influences)
+}
+
+fn source_rig_lanes_equivalent(left: &[(usize, f32)], right: &[(usize, f32)]) -> bool {
+    left.len() == right.len()
+        && left
+            .iter()
+            .zip(right)
+            .all(|((left_bone, left_weight), (right_bone, right_weight))| {
+                (left_weight - right_weight).abs() <= 1e-4
+                    && (*left_weight <= 1e-4 && *right_weight <= 1e-4 || left_bone == right_bone)
+            })
+}
+
+fn normalize_lanes(slots: &mut [(usize, f32)]) -> Option<()> {
+    let total = slots.iter().map(|(_, weight)| *weight).sum::<f32>();
+    if !total.is_finite() || total <= 0.0 {
+        return None;
+    }
+    for (_, weight) in slots {
+        *weight /= total;
+    }
+    Some(())
+}
+
+fn validate_preserved_source_rig_input(
+    nif: &NifFile,
+    shape_id: usize,
+    parsed: &LegacySkin,
+) -> Result<(), ConvertLegacySkinError> {
+    let shape = nif.get_block(shape_id).ok_or_else(|| {
+        ConvertLegacySkinError::PreserveSourceRig(format!("shape {shape_id} is missing"))
+    })?;
+    let source_refs = source_bone_refs(nif, parsed.instance_block_id);
+    let declared_bones = nif
+        .get_block(parsed.instance_block_id)
+        .and_then(|instance| value_u64(instance.get_field("Num Bones")))
+        .unwrap_or(source_refs.len() as u64) as usize;
+    if source_refs.len() != declared_bones || parsed.bones.len() != declared_bones {
+        return Err(ConvertLegacySkinError::PreserveSourceRig(format!(
+            "shape {shape_id} palette declares {declared_bones} bones but resolves {} refs and {} names",
+            source_refs.len(),
+            parsed.bones.len()
+        )));
+    }
+    if parsed.bone_transforms.len() != declared_bones || parsed.bone_bounds.len() != declared_bones
+    {
+        return Err(ConvertLegacySkinError::PreserveSourceRig(format!(
+            "shape {shape_id} has incomplete bind data"
+        )));
+    }
+    for (palette_index, (source_ref, bone)) in source_refs.iter().zip(&parsed.bones).enumerate() {
+        let source_ref = usize::try_from(*source_ref).map_err(|_| {
+            ConvertLegacySkinError::PreserveSourceRig(format!(
+                "shape {shape_id} palette bone {palette_index} has negative ref"
+            ))
+        })?;
+        let node = nif.get_block(source_ref).ok_or_else(|| {
+            ConvertLegacySkinError::PreserveSourceRig(format!(
+                "shape {shape_id} palette bone {palette_index} ref {source_ref} is missing"
+            ))
+        })?;
+        let node_name = match node.get_field("Name") {
+            Some(NifValue::String(name)) => name.trim_end_matches('\0'),
+            _ => "",
+        };
+        if !is_node_type(&node.type_name) || node_name != bone.name {
+            return Err(ConvertLegacySkinError::PreserveSourceRig(format!(
+                "shape {shape_id} palette bone {palette_index} does not resolve to {:?}",
+                bone.name
+            )));
+        }
+        if parsed.bone_bounds[palette_index]
+            .as_ref()
+            .and_then(sphere_value)
+            .is_none()
+        {
+            return Err(ConvertLegacySkinError::PreserveSourceRig(format!(
+                "shape {shape_id} palette bone {palette_index} has no finite bound"
+            )));
+        }
+    }
+
+    let mut geometry = ShapeGeometry::from_shape(nif, shape);
+    geometry.complete_partition_geometry(nif, shape, parsed);
+    if geometry.positions.is_empty() {
+        return Err(ConvertLegacySkinError::PreserveSourceRig(format!(
+            "shape {shape_id} has no partition vertex stream"
+        )));
+    }
+    let partition_triangles_are_global = partition_triangles_use_global_vertices(nif, parsed);
+    for partition in &parsed.partitions {
+        for triangle in &partition.triangles {
+            let limit = if partition_triangles_are_global {
+                geometry.positions.len()
+            } else {
+                partition.vertex_map.len()
+            };
+            if triangle.iter().any(|index| *index as usize >= limit) {
+                return Err(ConvertLegacySkinError::PreserveSourceRig(format!(
+                    "shape {shape_id} has an out-of-range partition triangle"
+                )));
+            }
+        }
+    }
+    source_rig_influences(parsed, geometry.positions.len()).ok_or_else(|| {
+        ConvertLegacySkinError::PreserveSourceRig(format!(
+            "shape {shape_id} has invalid palette indices, vertex map, or weight lanes"
+        ))
+    })?;
+    Ok(())
+}
+
+fn validate_preserved_source_rig_output(nif: &NifFile) -> Result<(), ConvertLegacySkinError> {
+    if let Some(block) = nif.blocks.iter().find(|block| {
+        matches!(
+            block.type_name.as_str(),
+            "NiSkinInstance" | "BSDismemberSkinInstance" | "NiSkinData" | "NiSkinPartition"
+        )
+    }) {
+        return Err(ConvertLegacySkinError::PreserveSourceRig(format!(
+            "legacy skin block {} ({}) remains",
+            block.block_id, block.type_name
+        )));
+    }
+
+    for shape in nif
+        .blocks
+        .iter()
+        .filter(|block| block.type_name == "BSSubIndexTriShape")
+    {
+        let Some(skin_id) = value_ref(shape.get_field("Skin")).filter(|id| *id >= 0) else {
+            continue;
+        };
+        let skin = nif.get_block(skin_id as usize).ok_or_else(|| {
+            ConvertLegacySkinError::PreserveSourceRig(format!(
+                "shape {} has missing BSSkin ref {skin_id}",
+                shape.block_id
+            ))
+        })?;
+        if skin.type_name != "BSSkin::Instance" {
+            return Err(ConvertLegacySkinError::PreserveSourceRig(format!(
+                "shape {} skin ref is {}",
+                shape.block_id, skin.type_name
+            )));
+        }
+        let bones = ref_array(skin.get_field("Bones"));
+        if bones.is_empty()
+            || bones.iter().any(|bone| {
+                *bone < 0
+                    || nif
+                        .get_block(*bone as usize)
+                        .is_none_or(|block| !is_node_type(&block.type_name))
+            })
+        {
+            return Err(ConvertLegacySkinError::PreserveSourceRig(format!(
+                "shape {} has an unresolved palette bone",
+                shape.block_id
+            )));
+        }
+        for (vertex_index, vertex) in value_array(shape.get_field("Vertex Data"))
+            .iter()
+            .enumerate()
+        {
+            let NifValue::Struct(fields) = vertex else {
+                return Err(ConvertLegacySkinError::PreserveSourceRig(format!(
+                    "shape {} vertex {vertex_index} is not structured",
+                    shape.block_id
+                )));
+            };
+            let indices = numeric_array(fields.get("Bone Indices"));
+            let weights = float_array(fields.get("Bone Weights"));
+            if indices.len() != 4
+                || weights.len() != 4
+                || indices.iter().zip(&weights).any(|(bone, weight)| {
+                    !weight.is_finite() || *weight < 0.0 || *bone as usize >= bones.len()
+                })
+                || (weights.iter().sum::<f32>() - 1.0).abs() > 1e-4
+            {
+                return Err(ConvertLegacySkinError::PreserveSourceRig(format!(
+                    "shape {} vertex {vertex_index} has invalid weight lanes",
+                    shape.block_id
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn ensure_named_bone(
     nif: &mut NifFile,
     target_name: &str,
@@ -504,6 +1030,7 @@ fn create_skin_instance(
     bone_refs: &[usize],
     bone_names: &[String],
     bone_transforms: &[SkinTransform],
+    source_bone_bounds: Option<&[Option<NifValue>]>,
     positions: &[[f32; 3]],
     influences: &[VertexInfluences],
 ) -> usize {
@@ -511,6 +1038,7 @@ fn create_skin_instance(
         nif,
         bone_names.len(),
         bone_transforms,
+        source_bone_bounds,
         positions,
         influences,
     );
@@ -532,22 +1060,13 @@ fn create_skin_instance(
     );
     fields.insert("Bones".into(), NifValue::Array(bone_ref_values));
 
-    match parsed.kind {
-        LegacySkinKind::NonArmor => {
-            fields.insert("Num Scales".into(), NifValue::UInt(0));
-            fields.insert("Scales".into(), NifValue::Array(Vec::new()));
-            nif.add_block("BSSkin::Instance", Some(fields))
-        }
-        LegacySkinKind::Armor => {
-            let partitions = dismember_partitions(parsed);
-            fields.insert(
-                "Num Partitions".into(),
-                NifValue::UInt(partitions.len() as u64),
-            );
-            fields.insert("Partitions".into(), NifValue::Array(partitions));
-            nif.add_block("BSDismemberSkinInstance", Some(fields))
-        }
-    }
+    // Both kinds emit BSSkin::Instance: FO4 has no BSDismemberSkinInstance RTTI
+    // entry, and dismemberment already rides on the shape's segments (see
+    // `write_segments` / `segment_specs_from_partitions`, fed by the same
+    // `parsed.partitions`).
+    fields.insert("Num Scales".into(), NifValue::UInt(0));
+    fields.insert("Scales".into(), NifValue::Array(Vec::new()));
+    nif.add_block("BSSkin::Instance", Some(fields))
 }
 
 fn skin_skeleton_root_ref(nif: &NifFile, parsed: &LegacySkin) -> i32 {
@@ -569,13 +1088,18 @@ fn create_bone_data(
     nif: &mut NifFile,
     bone_count: usize,
     bone_transforms: &[SkinTransform],
+    source_bone_bounds: Option<&[Option<NifValue>]>,
     positions: &[[f32; 3]],
     influences: &[VertexInfluences],
 ) -> usize {
     let bone_list = (0..bone_count)
         .map(|bone_index| {
             bone_data_entry(
-                bone_bounds(bone_index, positions, influences),
+                source_bone_bounds
+                    .and_then(|bounds| bounds.get(bone_index))
+                    .and_then(Option::as_ref)
+                    .and_then(sphere_value)
+                    .unwrap_or_else(|| bone_bounds(bone_index, positions, influences)),
                 bone_transforms.get(bone_index).copied().unwrap_or_default(),
             )
         })
@@ -664,9 +1188,39 @@ fn remap_influences_to_local(
     }
 }
 
-fn write_segments(shape: &mut NifBlock, parsed: &LegacySkin, triangles: &[[u32; 3]]) {
-    let specs = segment_specs_from_partitions(parsed, triangles);
+fn write_segments(
+    shape: &mut NifBlock,
+    parsed: &LegacySkin,
+    triangles: &[[u32; 3]],
+    source_game: &str,
+    policy: LegacySkinPolicy,
+) {
+    if matches!(source_game, "skyrimse" | "fnv" | "fo3")
+        && matches!(policy, LegacySkinPolicy::PreserveSourceRig)
+    {
+        write_root_only_creature_segments(shape, triangles.len());
+        return;
+    }
+    let specs = segment_specs_from_partitions(parsed, triangles, source_game);
     write_segment_specs(shape, triangles.len(), &specs);
+}
+
+const ROOT_ONLY_CREATURE_SEGMENT_INDEX: usize = 32;
+
+fn write_root_only_creature_segments(shape: &mut NifBlock, triangle_count: usize) {
+    // BPTD indexes the serialized top-level segment array, so segment 32 requires 33 entries.
+    let specs = (0..=ROOT_ONLY_CREATURE_SEGMENT_INDEX)
+        .map(|segment_index| SegmentSpec {
+            triangle_start: 0,
+            triangle_count: if segment_index == ROOT_ONLY_CREATURE_SEGMENT_INDEX {
+                triangle_count as u32
+            } else {
+                0
+            },
+            user_index: segment_index as u32,
+        })
+        .collect::<Vec<_>>();
+    write_segment_specs(shape, triangle_count, &specs);
 }
 
 fn write_segments_with_user_index(shape: &mut NifBlock, triangle_count: usize, user_index: u32) {
@@ -691,21 +1245,23 @@ fn write_segment_specs(shape: &mut NifBlock, triangle_count: usize, specs: &[Seg
         specs
     };
     let (num_segments, segments, total_segments) = build_segment_data(specs);
-    let shared_total_segments = total_segments + specs.len() as u32;
     shape.set_field("Num Primitives", NifValue::UInt(triangle_count as u64));
     shape.set_field("Num Segments", NifValue::UInt(num_segments as u64));
-    shape.set_field(
-        "Total Segments",
-        NifValue::UInt(shared_total_segments as u64),
-    );
+    // FO4 requires Total Segments == Num Segments + sum(Num Sub Segments); we
+    // emit no sub segments, so the shared Segment Data block must be absent too
+    // (its presence is keyed off Num Segments < Total Segments). Inflating the
+    // total desyncs the engine mid-block and corrupts the next block's string
+    // index — an access violation in NiStringExtraData::LoadBinary.
+    shape.set_field("Total Segments", NifValue::UInt(total_segments as u64));
     shape.set_field("Segment", segments);
-    shape.set_field(
-        "Segment Data",
-        segment_shared_data(specs, shared_total_segments),
-    );
+    shape.fields.shift_remove("Segment Data");
 }
 
-fn segment_specs_from_partitions(parsed: &LegacySkin, triangles: &[[u32; 3]]) -> Vec<SegmentSpec> {
+fn segment_specs_from_partitions(
+    parsed: &LegacySkin,
+    triangles: &[[u32; 3]],
+    source_game: &str,
+) -> Vec<SegmentSpec> {
     if triangles.is_empty() {
         return Vec::new();
     }
@@ -720,7 +1276,7 @@ fn segment_specs_from_partitions(parsed: &LegacySkin, triangles: &[[u32; 3]]) ->
 
     let mut user_indices = vec![None::<u32>; triangles.len()];
     for partition in &parsed.partitions {
-        let Some(remap) = fo3_body_part_to_fo4_segment(partition.body_part) else {
+        let Some(remap) = body_part_to_fo4_segment(source_game, partition.body_part) else {
             continue;
         };
         if partition.triangles.is_empty() {
@@ -793,77 +1349,6 @@ fn coalesce_segment_specs(user_indices: &[Option<u32>]) -> Vec<SegmentSpec> {
     specs
 }
 
-fn dismember_partitions(parsed: &LegacySkin) -> Vec<NifValue> {
-    let mut seen = HashSet::new();
-    let mut out = Vec::new();
-    for partition in &parsed.partitions {
-        let Some(remap) = fo3_body_part_to_fo4_segment(partition.body_part) else {
-            continue;
-        };
-        if !seen.insert(remap.fo4_partition) {
-            continue;
-        }
-        let mut fields = IndexMap::new();
-        fields.insert("Part Flag".into(), NifValue::UInt(257));
-        fields.insert(
-            "Body Part".into(),
-            NifValue::UInt(remap.fo4_partition as u64),
-        );
-        out.push(NifValue::Struct(fields));
-    }
-    if out.is_empty() {
-        let mut fields = IndexMap::new();
-        fields.insert("Part Flag".into(), NifValue::UInt(257));
-        fields.insert("Body Part".into(), NifValue::UInt(32));
-        out.push(NifValue::Struct(fields));
-    }
-    out
-}
-
-fn segment_shared_data(specs: &[SegmentSpec], total_segments: u32) -> NifValue {
-    let mut fields = IndexMap::new();
-    fields.insert("Num Segments".into(), NifValue::UInt(specs.len() as u64));
-    fields.insert(
-        "Total Segments".into(),
-        NifValue::UInt(total_segments as u64),
-    );
-    fields.insert(
-        "Segment Starts".into(),
-        NifValue::Array(
-            specs
-                .iter()
-                .enumerate()
-                .map(|(index, _)| NifValue::UInt(index as u64))
-                .collect(),
-        ),
-    );
-    let mut per_segment_entries = specs
-        .iter()
-        .map(|spec| per_segment_data(spec.user_index))
-        .collect::<Vec<_>>();
-    let mut repeat_index = 0usize;
-    while per_segment_entries.len() < total_segments as usize && !specs.is_empty() {
-        let spec = &specs[repeat_index % specs.len()];
-        per_segment_entries.push(per_segment_data(spec.user_index));
-        repeat_index += 1;
-    }
-    fields.insert(
-        "Per Segment Data".into(),
-        NifValue::Array(per_segment_entries),
-    );
-    fields.insert("SSF File".into(), NifValue::String(String::new()));
-    NifValue::Struct(fields)
-}
-
-fn per_segment_data(user_index: u32) -> NifValue {
-    let mut data = IndexMap::new();
-    data.insert("User Index".into(), NifValue::UInt(user_index as u64));
-    data.insert("Bone ID".into(), NifValue::UInt(u32::MAX as u64));
-    data.insert("Num Cut Offsets".into(), NifValue::UInt(0));
-    data.insert("Cut Offsets".into(), NifValue::Array(Vec::new()));
-    NifValue::Struct(data)
-}
-
 #[derive(Debug, Clone, Default)]
 struct ShapeGeometry {
     positions: Vec<[f32; 3]>,
@@ -884,64 +1369,16 @@ impl ShapeGeometry {
             }
         }
 
-        let vertex_entries = value_array(shape.get_field("Vertex Data"));
-        let mut positions = Vec::with_capacity(vertex_entries.len());
-        let mut normals = Vec::with_capacity(vertex_entries.len());
-        let mut tangents = Vec::with_capacity(vertex_entries.len());
-        let mut bitangents = Vec::with_capacity(vertex_entries.len());
-        let mut uvs = Vec::with_capacity(vertex_entries.len());
-        let mut colors = Vec::new();
-        let mut has_colors = false;
-
-        for entry in vertex_entries {
-            let NifValue::Struct(fields) = entry else {
-                continue;
-            };
-            positions.push(
-                fields
-                    .get("Vertex")
-                    .and_then(vec3_value)
-                    .unwrap_or([0.0, 0.0, 0.0]),
-            );
-            normals.push(
-                fields
-                    .get("Normal")
-                    .and_then(vec3_value)
-                    .unwrap_or([0.0, 0.0, 1.0]),
-            );
-            tangents.push(
-                fields
-                    .get("Tangent")
-                    .and_then(vec3_value)
-                    .unwrap_or([0.0, 0.0, 0.0]),
-            );
-            bitangents.push([
-                value_f64(fields.get("Bitangent X")).unwrap_or(0.0) as f32,
-                value_f64(fields.get("Bitangent Y")).unwrap_or(0.0) as f32,
-                value_f64(fields.get("Bitangent Z")).unwrap_or(0.0) as f32,
-            ]);
-            uvs.push(fields.get("UV").and_then(uv_value).unwrap_or([0.0, 0.0]));
-            if let Some(color) = fields.get("Vertex Colors").and_then(color4_value) {
-                has_colors = true;
-                colors.push(color);
-            } else {
-                colors.push([1.0, 1.0, 1.0, 1.0]);
-            }
-        }
-
-        Self {
-            positions,
-            normals,
-            tangents,
-            bitangents,
-            uvs,
-            vertex_colors: has_colors.then_some(colors),
+        let mut geometry = Self {
             triangles: value_array(shape.get_field("Triangles"))
                 .iter()
                 .filter_map(triangle_from_value)
                 .collect(),
             bounding_sphere: shape.get_field("Bounding Sphere").cloned(),
-        }
+            ..Self::default()
+        };
+        geometry.set_vertex_entries(&value_array(shape.get_field("Vertex Data")));
+        geometry
     }
 
     fn from_legacy_data(data: &NifBlock) -> Self {
@@ -991,6 +1428,100 @@ impl ShapeGeometry {
         }
     }
 
+    fn complete_partition_geometry(
+        &mut self,
+        nif: &NifFile,
+        shape: &NifBlock,
+        parsed: &LegacySkin,
+    ) {
+        let mut partition_triangles_are_global = false;
+        if let Some(partition) = parsed
+            .skin_partition_block_id
+            .and_then(|id| nif.get_block(id))
+        {
+            let entries = value_array(partition.get_field("Vertex Data"));
+            partition_triangles_are_global = !entries.is_empty();
+            if self.positions.is_empty() && !entries.is_empty() {
+                self.set_vertex_entries(&entries);
+            } else if shape.type_name == "BSDynamicTriShape" {
+                let positions = value_array(shape.get_field("Vertices"))
+                    .iter()
+                    .filter_map(vec3_value)
+                    .collect::<Vec<_>>();
+                if !positions.is_empty() {
+                    self.positions = positions;
+                }
+            }
+        }
+
+        if self.triangles.is_empty() {
+            self.triangles = parsed
+                .partitions
+                .iter()
+                .flat_map(|partition| {
+                    partition.triangles.iter().filter_map(|triangle| {
+                        if partition_triangles_are_global {
+                            Some(*triangle)
+                        } else {
+                            partition_triangle_to_global(*triangle, &partition.vertex_map)
+                        }
+                    })
+                })
+                .collect();
+        }
+        if self.normals.len() != self.positions.len() {
+            self.normals = recompute_normals(&self.positions, &self.triangles);
+        }
+    }
+
+    fn set_vertex_entries(&mut self, vertex_entries: &[NifValue]) {
+        self.positions.clear();
+        self.normals.clear();
+        self.tangents.clear();
+        self.bitangents.clear();
+        self.uvs.clear();
+        let mut colors = Vec::with_capacity(vertex_entries.len());
+        let mut has_colors = false;
+
+        for entry in vertex_entries {
+            let NifValue::Struct(fields) = entry else {
+                continue;
+            };
+            self.positions.push(
+                fields
+                    .get("Vertex")
+                    .and_then(vec3_value)
+                    .unwrap_or([0.0, 0.0, 0.0]),
+            );
+            self.normals.push(
+                fields
+                    .get("Normal")
+                    .and_then(vec3_value)
+                    .unwrap_or([0.0, 0.0, 1.0]),
+            );
+            self.tangents.push(
+                fields
+                    .get("Tangent")
+                    .and_then(vec3_value)
+                    .unwrap_or([0.0, 0.0, 0.0]),
+            );
+            self.bitangents.push([
+                value_f64(fields.get("Bitangent X")).unwrap_or(0.0) as f32,
+                value_f64(fields.get("Bitangent Y")).unwrap_or(0.0) as f32,
+                value_f64(fields.get("Bitangent Z")).unwrap_or(0.0) as f32,
+            ]);
+            self.uvs
+                .push(fields.get("UV").and_then(uv_value).unwrap_or([0.0, 0.0]));
+            if let Some(color) = fields.get("Vertex Colors").and_then(color4_value) {
+                has_colors = true;
+                colors.push(color);
+            } else {
+                colors.push([1.0, 1.0, 1.0, 1.0]);
+            }
+        }
+        self.vertex_colors = has_colors.then_some(colors);
+    }
+
     fn tangents_missing(&self) -> bool {
         self.tangents
             .iter()
@@ -1029,6 +1560,55 @@ impl ShapeGeometry {
             }
         }
     }
+}
+
+fn partition_triangles_use_global_vertices(nif: &NifFile, parsed: &LegacySkin) -> bool {
+    parsed
+        .skin_partition_block_id
+        .and_then(|id| nif.get_block(id))
+        .is_some_and(|partition| {
+            matches!(partition.get_field("Vertex Data"), Some(NifValue::Array(entries)) if !entries.is_empty())
+        })
+}
+
+fn recompute_normals(positions: &[[f32; 3]], triangles: &[[u32; 3]]) -> Vec<[f32; 3]> {
+    let mut normals = vec![[0.0_f32; 3]; positions.len()];
+    for triangle in triangles {
+        let [a, b, c] = triangle.map(|index| index as usize);
+        let (Some(a), Some(b), Some(c)) = (positions.get(a), positions.get(b), positions.get(c))
+        else {
+            continue;
+        };
+        let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+        let ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+        let face = [
+            ab[1] * ac[2] - ab[2] * ac[1],
+            ab[2] * ac[0] - ab[0] * ac[2],
+            ab[0] * ac[1] - ab[1] * ac[0],
+        ];
+        for index in [
+            triangle[0] as usize,
+            triangle[1] as usize,
+            triangle[2] as usize,
+        ] {
+            if let Some(normal) = normals.get_mut(index) {
+                normal[0] += face[0];
+                normal[1] += face[1];
+                normal[2] += face[2];
+            }
+        }
+    }
+    for normal in &mut normals {
+        let length = (normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]).sqrt();
+        if length > 1e-8 {
+            normal[0] /= length;
+            normal[1] /= length;
+            normal[2] /= length;
+        } else {
+            *normal = [0.0, 0.0, 1.0];
+        }
+    }
+    normals
 }
 
 fn legacy_geometry_data<'a>(nif: &'a NifFile, shape: &NifBlock) -> Option<&'a NifBlock> {
@@ -1129,6 +1709,60 @@ fn extract_reference_skin(nif: &NifFile) -> ReferenceSkin {
     (positions, influences, bones)
 }
 
+fn reference_bone_transforms(nif: &NifFile, bone_names: &[String]) -> Vec<SkinTransform> {
+    let mut transforms = HashMap::<String, SkinTransform>::new();
+    for shape in nif.blocks.iter().filter(|block| {
+        matches!(
+            block.type_name.as_str(),
+            "BSTriShape" | "BSSubIndexTriShape"
+        )
+    }) {
+        let local_bones = shape_bone_names(nif, shape);
+        let Some(skin_id) = value_ref(shape.get_field("Skin")).filter(|id| *id >= 0) else {
+            continue;
+        };
+        let Some(data_id) = nif
+            .get_block(skin_id as usize)
+            .and_then(|skin| value_ref(skin.get_field("Data")))
+            .filter(|id| *id >= 0)
+        else {
+            continue;
+        };
+        let bone_list = nif
+            .get_block(data_id as usize)
+            .map(|data| value_array(data.get_field("Bone List")))
+            .unwrap_or_default();
+        for (bone_name, bone_value) in local_bones.iter().zip(bone_list.iter()) {
+            let NifValue::Struct(fields) = bone_value else {
+                continue;
+            };
+            let rotation = fields
+                .get("Rotation")
+                .and_then(source::matrix33_value)
+                .unwrap_or_else(|| SkinTransform::identity().rotation);
+            transforms
+                .entry(bone_name.to_ascii_lowercase())
+                .or_insert(SkinTransform {
+                    translation: fields
+                        .get("Translation")
+                        .and_then(vec3_value)
+                        .unwrap_or([0.0; 3]),
+                    rotation,
+                    scale: value_f64(fields.get("Scale")).unwrap_or(1.0) as f32,
+                });
+        }
+    }
+    bone_names
+        .iter()
+        .map(|name| {
+            transforms
+                .get(&name.to_ascii_lowercase())
+                .copied()
+                .unwrap_or_default()
+        })
+        .collect()
+}
+
 fn shape_bone_names(nif: &NifFile, shape: &NifBlock) -> Vec<String> {
     let skin_ref = match shape
         .get_field("Skin")
@@ -1170,6 +1804,23 @@ fn find_node_by_name(nif: &NifFile, name: &str) -> Option<usize> {
                 && matches!(block.get_field("Name"), Some(NifValue::String(value)) if value.trim_end_matches('\0') == name)
         })
         .map(|block| block.block_id)
+}
+
+fn find_node_by_name_case_insensitive(nif: &NifFile, name: &str) -> Option<usize> {
+    nif.blocks
+        .iter()
+        .find(|block| {
+            is_node_type(&block.type_name)
+                && matches!(block.get_field("Name"), Some(NifValue::String(value)) if value.trim_end_matches('\0').eq_ignore_ascii_case(name))
+        })
+        .map(|block| block.block_id)
+}
+
+fn distance_squared(left: [f32; 3], right: [f32; 3]) -> f32 {
+    let dx = left[0] - right[0];
+    let dy = left[1] - right[1];
+    let dz = left[2] - right[2];
+    dx * dx + dy * dy + dz * dz
 }
 
 fn is_node_type(type_name: &str) -> bool {
@@ -1232,6 +1883,16 @@ fn bone_data_entry((center, radius): ([f32; 3], f32), transform: SkinTransform) 
     NifValue::Struct(fields)
 }
 
+fn sphere_value(value: &NifValue) -> Option<([f32; 3], f32)> {
+    let NifValue::Struct(fields) = value else {
+        return None;
+    };
+    let center = fields.get("Center").and_then(vec3_value)?;
+    let radius = value_f64(fields.get("Radius"))? as f32;
+    (center.iter().all(|value| value.is_finite()) && radius.is_finite() && radius >= 0.0)
+        .then_some((center, radius))
+}
+
 fn mark_shader_skinned(nif: &mut NifFile, shape_id: usize) {
     let shader_ref = nif
         .get_block(shape_id)
@@ -1250,7 +1911,13 @@ fn mark_shader_skinned(nif: &mut NifFile, shape_id: usize) {
         return;
     }
     let flags = value_u64(shader.get_field("Shader Flags 1")).unwrap_or(0);
-    shader.set_field("Shader Flags 1", NifValue::UInt(flags | 0x02));
+    let flags = flags | 0x02;
+    shader.set_field("Shader Flags 1", NifValue::UInt(flags));
+    if shader.fields.contains_key("Shader Flags 1:FO4") {
+        shader
+            .fields
+            .insert("Shader Flags 1:FO4".to_string(), NifValue::UInt(flags));
+    }
 }
 
 fn data_size(shape: &NifBlock) -> i64 {
@@ -1407,10 +2074,10 @@ fn color4_value(value: &NifValue) -> Option<[f32; 4]> {
     match value {
         NifValue::Color4(value) => Some(*value),
         NifValue::Struct(fields) => Some([
-            value_f64(fields.get("r")).unwrap_or(1.0) as f32,
-            value_f64(fields.get("g")).unwrap_or(1.0) as f32,
-            value_f64(fields.get("b")).unwrap_or(1.0) as f32,
-            value_f64(fields.get("a")).unwrap_or(1.0) as f32,
+            (value_f64(fields.get("r")).unwrap_or(255.0) / 255.0) as f32,
+            (value_f64(fields.get("g")).unwrap_or(255.0) / 255.0) as f32,
+            (value_f64(fields.get("b")).unwrap_or(255.0) / 255.0) as f32,
+            (value_f64(fields.get("a")).unwrap_or(255.0) / 255.0) as f32,
         ]),
         _ => None,
     }
@@ -1421,4 +2088,250 @@ fn distance(left: [f32; 3], right: [f32; 3]) -> f32 {
     let dy = left[1] - right[1];
     let dz = left[2] - right[2];
     (dx * dx + dy * dy + dz * dz).sqrt()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn streamed_partition_geometry_keeps_global_triangle_indices() {
+        let mut nif = NifFile::new("skyrimse");
+        let mut partition_fields = IndexMap::new();
+        partition_fields.insert(
+            "Vertex Data".to_string(),
+            NifValue::Array(
+                [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]
+                    .into_iter()
+                    .map(|uv| {
+                        let mut tex_coord = IndexMap::new();
+                        tex_coord.insert("u".to_string(), NifValue::Float(uv[0]));
+                        tex_coord.insert("v".to_string(), NifValue::Float(uv[1]));
+                        let mut vertex = IndexMap::new();
+                        vertex.insert("UV".to_string(), NifValue::Struct(tex_coord));
+                        NifValue::Struct(vertex)
+                    })
+                    .collect(),
+            ),
+        );
+        let partition_id = nif.add_block("NiSkinPartition", Some(partition_fields));
+        let mut shape = NifBlock::new(1, "BSDynamicTriShape");
+        shape.set_field(
+            "Vertices",
+            NifValue::Array(
+                [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
+                    .into_iter()
+                    .map(NifValue::Vec3)
+                    .collect(),
+            ),
+        );
+        let parsed = LegacySkin {
+            kind: source::LegacySkinKind::NonArmor,
+            instance_block_id: 0,
+            skin_data_block_id: 0,
+            skin_partition_block_id: Some(partition_id),
+            skeleton_root: None,
+            bones: Vec::new(),
+            skin_transform: SkinTransform::identity(),
+            data_influences: Vec::new(),
+            bone_transforms: Vec::new(),
+            bone_bounds: Vec::new(),
+            partitions: vec![source::LegacyPartition {
+                body_part: 0,
+                vertex_map: vec![2, 0, 1],
+                influences: Vec::new(),
+                bones: Vec::new(),
+                triangles: vec![[0, 1, 2]],
+            }],
+        };
+
+        let mut geometry = ShapeGeometry::from_shape(&nif, &shape);
+        geometry.complete_partition_geometry(&nif, &shape, &parsed);
+
+        assert_eq!(geometry.positions.len(), 3);
+        assert_eq!(geometry.uvs, vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]);
+        assert_eq!(geometry.triangles, vec![[0, 1, 2]]);
+        assert_eq!(geometry.normals, vec![[0.0, 0.0, 1.0]; 3]);
+    }
+
+    #[test]
+    fn source_rig_influences_preserve_palette_lane_order_and_vertex_map() {
+        let parsed = LegacySkin {
+            kind: source::LegacySkinKind::NonArmor,
+            instance_block_id: 0,
+            skin_data_block_id: 0,
+            skin_partition_block_id: None,
+            skeleton_root: None,
+            bones: (0..4)
+                .map(|index| bone_remap::BoneEntry {
+                    name: format!("Bone{index}"),
+                    parent: index as i32 - 1,
+                })
+                .collect(),
+            skin_transform: SkinTransform::identity(),
+            data_influences: Vec::new(),
+            bone_transforms: vec![SkinTransform::identity(); 4],
+            bone_bounds: Vec::new(),
+            partitions: vec![source::LegacyPartition {
+                body_part: 0,
+                vertex_map: vec![1, 0],
+                influences: vec![
+                    vec![(0, 0.25), (1, 0.75), (1, 0.0), (0, 0.0)],
+                    vec![(1, 0.2), (0, 0.8), (0, 0.0), (1, 0.0)],
+                ],
+                bones: vec![3, 1],
+                triangles: Vec::new(),
+            }],
+        };
+
+        let influences = source_rig_influences(&parsed, 2).expect("valid source lanes");
+
+        assert_eq!(
+            influences[0].slots,
+            vec![(1, 0.2), (3, 0.8), (3, 0.0), (1, 0.0)]
+        );
+        assert_eq!(
+            influences[1].slots,
+            vec![(3, 0.25), (1, 0.75), (1, 0.0), (3, 0.0)]
+        );
+    }
+
+    #[test]
+    fn source_rig_influences_accept_duplicate_partition_vertices_only_for_equivalent_lanes() {
+        let mut parsed = LegacySkin {
+            kind: source::LegacySkinKind::Armor,
+            instance_block_id: 0,
+            skin_data_block_id: 0,
+            skin_partition_block_id: None,
+            skeleton_root: None,
+            bones: (0..4)
+                .map(|index| bone_remap::BoneEntry {
+                    name: format!("Bone{index}"),
+                    parent: index as i32 - 1,
+                })
+                .collect(),
+            skin_transform: SkinTransform::identity(),
+            data_influences: Vec::new(),
+            bone_transforms: vec![SkinTransform::identity(); 4],
+            bone_bounds: Vec::new(),
+            partitions: vec![
+                source::LegacyPartition {
+                    body_part: 0,
+                    vertex_map: vec![0],
+                    influences: vec![vec![(0, 0.7), (1, 0.3), (2, 0.0), (3, 0.0)]],
+                    bones: vec![0, 1, 2, 3],
+                    triangles: Vec::new(),
+                },
+                source::LegacyPartition {
+                    body_part: 1,
+                    vertex_map: vec![0],
+                    influences: vec![vec![(0, 0.7), (1, 0.3), (1, 0.0), (1, 0.0)]],
+                    bones: vec![0, 1],
+                    triangles: Vec::new(),
+                },
+            ],
+        };
+
+        let influences = source_rig_influences(&parsed, 1).expect("equivalent duplicate lanes");
+        assert_eq!(
+            influences[0].slots,
+            vec![(0, 0.7), (1, 0.3), (2, 0.0), (3, 0.0)]
+        );
+
+        parsed.partitions[1].influences[0][1].1 = 0.2;
+        assert!(source_rig_influences(&parsed, 1).is_none());
+    }
+
+    #[test]
+    fn source_rig_segments_collapse_to_root_without_changing_humanoid_translation() {
+        let parsed = LegacySkin {
+            kind: source::LegacySkinKind::Armor,
+            instance_block_id: 0,
+            skin_data_block_id: 0,
+            skin_partition_block_id: None,
+            skeleton_root: None,
+            bones: Vec::new(),
+            skin_transform: SkinTransform::identity(),
+            data_influences: Vec::new(),
+            bone_transforms: Vec::new(),
+            bone_bounds: Vec::new(),
+            partitions: vec![source::LegacyPartition {
+                body_part: 2,
+                vertex_map: vec![0, 1, 2],
+                influences: Vec::new(),
+                bones: Vec::new(),
+                triangles: vec![[0, 1, 2]],
+            }],
+        };
+        let triangles = [[0, 1, 2]];
+        let nonempty_segment_indices = |shape: &NifBlock| match shape.get_field("Segment") {
+            Some(NifValue::Array(segments)) => segments
+                .iter()
+                .enumerate()
+                .filter_map(|(index, segment)| match segment {
+                    NifValue::Struct(fields)
+                        if fields
+                            .get("Num Primitives")
+                            .is_some_and(|count| count.as_i64() > 0) =>
+                    {
+                        Some(index)
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            _ => Vec::new(),
+        };
+        let user_indices = |shape: &NifBlock| match shape.get_field("Segment") {
+            Some(NifValue::Array(segments)) => segments
+                .iter()
+                .filter_map(|segment| match segment {
+                    NifValue::Struct(fields) => fields.get("User Index").map(NifValue::as_i64),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            _ => Vec::new(),
+        };
+
+        for source_game in ["skyrimse", "fnv", "fo3"] {
+            let mut shape = NifBlock::new(0, "BSSubIndexTriShape");
+            write_segments(
+                &mut shape,
+                &parsed,
+                &triangles,
+                source_game,
+                LegacySkinPolicy::PreserveSourceRig,
+            );
+            assert_eq!(
+                shape.get_field("Num Segments").map(NifValue::as_i64),
+                Some(33)
+            );
+            assert_eq!(
+                shape.get_field("Total Segments").map(NifValue::as_i64),
+                Some(33)
+            );
+            assert_eq!(nonempty_segment_indices(&shape), vec![32]);
+        }
+
+        let mut translated = NifBlock::new(0, "BSSubIndexTriShape");
+        write_segments(
+            &mut translated,
+            &parsed,
+            &triangles,
+            "fnv",
+            LegacySkinPolicy::TranslateSkeleton,
+        );
+        assert_eq!(user_indices(&translated), vec![34]);
+
+        let mut skyrim_parsed = parsed.clone();
+        skyrim_parsed.partitions[0].body_part = 32;
+        let mut skyrim_translated = NifBlock::new(0, "BSSubIndexTriShape");
+        write_segments(
+            &mut skyrim_translated,
+            &skyrim_parsed,
+            &triangles,
+            "skyrimse",
+            LegacySkinPolicy::TranslateSkeleton,
+        );
+        assert_eq!(user_indices(&skyrim_translated), vec![33]);
+    }
 }

@@ -184,14 +184,8 @@ def sample_variant_colors(
 ) -> list[np.ndarray]:
     """Sample average colors per zone from a variant texture using the remap as mask.
 
-    Args:
-        variant_image: PIL Image (the recolored texture).
-        remap: uint8 H×W greyscale remap texture (zone mask).
-        zones: PaletteZone list with remap_value and pixel_mask set.
-
-    Returns:
-        List of float32 RGB arrays (one per zone, same order as *zones*).
-        If the variant image dimensions differ from the remap, it is resized to match.
+    ``remap`` is the uint8 H×W zone mask; the variant is resized to match it.
+    Returns one float32 RGB array per zone, in *zones* order.
     """
     from PIL import Image
 
@@ -221,15 +215,11 @@ def build_variant_gradient(
 ) -> np.ndarray:
     """Build a multi-band gradient texture with one band per color variant.
 
-    Args:
-        variants: List of color lists — each entry is a list of float32 RGB
-            arrays (one per zone), matching the order of *zone_columns*.
-        zone_columns: Gradient column index (1..width-1) per zone.
-        band_height: Pixel height of each band (default 4, FO4 minimum).
-        width: Gradient width (32, 64, or 128).
-
-    Returns:
-        uint8 (H x width x 4) RGBA array where H = len(variants) * band_height, max 128.
+    Each *variants* entry is a list of float32 RGB arrays, one per zone, in
+    *zone_columns* order; *zone_columns* are gradient columns (1..width-1).
+    ``band_height`` defaults to 4, the FO4 minimum; ``width`` is 32, 64, or 128.
+    Returns a uint8 (H x width x 4) RGBA array, H = len(variants) * band_height,
+    max 128.
     """
     max_col = width - 1
     n_variants = min(len(variants), 128 // band_height)
@@ -264,13 +254,9 @@ def build_variant_gradient(
 def auto_convert(source: "Image.Image", n_zones: int = 6, width: int = 32) -> PaletteResult:
     """Convert a color image to remap + gradient textures using K-means zone assignment.
 
-    Args:
-        source: PIL Image (any mode; converted to RGBA internally).
-        n_zones: Number of material zones to detect (4-12 recommended).
-        width: Gradient width (32, 64, or 128).
-
-    Returns:
-        PaletteResult with remap texture, gradient strip (width x 4), and zone list.
+    ``n_zones`` is the number of material zones (4-12 recommended); ``width``
+    is the gradient width (32, 64, or 128). The result holds the remap, a
+    width x 4 gradient strip, and the zones.
     """
     from creation_lib.palette.native_runtime import cluster_rgb
     from PIL import Image

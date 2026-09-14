@@ -8,5 +8,6 @@ name = "swf_native"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+as3_native = { path = "../as3" }
 flate2 = "1.1.9"
 pyo3 = { workspace = true, features = ["extension-module", "abi3-py310"] }

@@ -1,17 +1,8 @@
-// Port of `py_creation_lib/python/creation_lib/havok_cloth/bake.py` — 10-phase bake pipeline.
+// Bakes a `ClothSetupObject` into an `HkxFile` holding every object of a
+// BSClothExtraData packfile, in ten phases (`phase0_*` .. `phase9_*`).
 //
-// Converts a `ClothSetupObject` into an `HkxFile` containing all HKX objects
-// needed for a complete BSClothExtraData packfile.
-//
-// Pointer encoding
-// ----------------
-// During bake, all intra-file pointers are stored as pending String values
-// with the target's "#NNNN" name. The final-pass resolution walks every
-// value and rewrites "#NNNN" strings to `HkxValue::Pointer(Some(index))`.
-//
-// The '#NNNN' approach matches Python's `_counter`-based naming, keeps the
-// bake logic simple, and the Rust HKX builder already uses index-based
-// pointers — the resolve step is a one-shot post-pass.
+// Intra-file pointers are emitted as pending "#NNNN" object names;
+// `resolve_pointers` rewrites them to `HkxValue::Pointer(Some(index))` at the end.
 
 use std::collections::HashMap;
 
@@ -621,15 +612,11 @@ fn build_constraint_entries(scd: &SimClothBakeData) -> HavokResult<Vec<Constrain
 
             ConstraintSetupObject::BendStiffness(s) => {
                 let stiffness_val = s.bend_stiffness.constant_value;
-                // Build SDK-shape bend links (4 particles + 4 weights +
-                // restCurvature + bendStiffness). `links` is also populated
-                // with (a, b, rest, stiffness) so the existing greedy graph
-                // colorer can batch on the (particleA, particleB) pair.
-                //
-                // Weight defaults: SDK ctor leaves weightA..D at 0 (no-op
-                // bend); without topology-aware weight computation we emit
-                // 1.0 across the board so the link is at least non-trivial.
-                // restCurvature defaults to 0.0 (flat rest pose).
+                // SDK-shape bend links (4 particles, 4 weights, restCurvature,
+                // bendStiffness). `links` also gets (a, b, rest, stiffness) so the
+                // greedy colorer can batch on (particleA, particleB). The SDK ctor
+                // leaves weightA..D at 0 (a no-op bend), so every weight is 1.0
+                // until topology-aware weights exist. restCurvature is 0.0 (flat).
                 let mut links: Vec<(u16, u16, f32, f32)> = Vec::new();
                 let mut bend_links: Vec<BendLink> = Vec::new();
                 for (&(ea, eb), tris) in &edge_to_tris {
@@ -849,11 +836,8 @@ fn emit_constraint_batch(ctx: &mut BakeContext, ci: usize, ei: usize) -> HavokRe
             }
             "hclVolumeConstraint" => {
                 // SDK fields: m_frameDatas (FrameData[]) and m_applyDatas
-                // (ApplyData[]). No stiffness field on the constraint itself
-                // — per-particle stiffness lives on each ApplyData. The
-                // setup-side `stiffness` scalar (`volume_stiffness`) is not
-                // currently propagated; topology-aware FrameData / ApplyData
-                // emission is deferred.
+                // (ApplyData[]); per-particle stiffness lives on each ApplyData.
+                // `volume_stiffness` is not propagated and both arrays are empty.
                 let _ = volume_stiffness;
                 add_struct_array(cset_obj, "frameDatas", vec![]);
                 add_struct_array(cset_obj, "applyDatas", vec![]);
@@ -1417,7 +1401,7 @@ fn phase5_buffers(ctx: &mut BakeContext) {
 }
 
 // ---------------------------------------------------------------------------
-// Skin weight binning — port of py_creation_lib/python/creation_lib/havok_cloth/bake.py `_bin_skin_weights`
+// Skin weight binning
 // ---------------------------------------------------------------------------
 
 /// Bin vertex skin weights into fiveBoneEntries / sixBoneEntries / sevenBoneEntries /
@@ -2152,13 +2136,10 @@ fn emit_sim_cloth_data(ctx: &mut BakeContext, ci: usize) {
         pose_name = scd.pose_object_name.clone();
     }
 
-    // Build the simulationInfo sub-struct inline.
-    //
-    // SDK `hclSimClothData::OverridableSimulationInfo` has only two fields:
-    // m_gravity and m_globalDampingPerSecond. The misplaced
-    // collisionTolerance / pinchDetectionEnabled / transferMotionEnabled
-    // bools are top-level on `hclSimClothData` (collisionTolerance lives on
-    // m_landscapeCollisionData, not currently emitted).
+    // SDK `hclSimClothData::OverridableSimulationInfo` has only m_gravity and
+    // m_globalDampingPerSecond. pinchDetectionEnabled / transferMotionEnabled
+    // are top-level `hclSimClothData` fields; collisionTolerance belongs to
+    // m_landscapeCollisionData, which is not emitted.
     let _ = collision_tolerance;
     let sim_info = HkxValue::Object(vec![
         HkxMember {
@@ -2290,12 +2271,8 @@ fn emit_sim_cloth_data(ctx: &mut BakeContext, ci: usize) {
 // Pointer resolution — final pass
 // ---------------------------------------------------------------------------
 
-/// Walk every HkxValue in every object and resolve pending_ptr (stored as
-/// `HkxValue::String { value: "#NNNN", is_null: false }`) to
-/// `HkxValue::Pointer(Some(index))` using the name→index map.
-///
-/// Real strings from `add_string` are stored with the same variant, so we
-/// distinguish them: names used as pointer targets all start with '#'.
+/// Resolve every `HkxValue::PendingPtr` to `HkxValue::Pointer` via the
+/// name→index map; unknown names become null pointers.
 fn resolve_pointers(
     mut objects: Vec<HkxObject>,
     name_to_index: &HashMap<String, usize>,

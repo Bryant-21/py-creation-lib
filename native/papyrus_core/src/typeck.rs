@@ -115,10 +115,6 @@ pub fn typeck(ast: &ScriptNode, resolver: &SourceResolver, profile: GameProfile)
 // Assignability rules
 // ---------------------------------------------------------------------------
 
-/// Returns `true` when a value of type `from` may be implicitly used where
-/// `to` is expected.  `is_subtype(child, parent)` answers whether `child`
-/// extends `parent` transitively, via the import-path hierarchy walk at the
-/// call site.
 /// Papyrus type names are case-insensitive, so `ObjectReference[]` and
 /// `objectReference[]` are the same type.
 fn type_eq_ci(a: &PapyrusType, b: &PapyrusType) -> bool {
@@ -144,6 +140,10 @@ fn struct_qual_eq(a: &str, b: &str) -> bool {
         }
 }
 
+/// Returns `true` when a value of type `from` may be implicitly used where
+/// `to` is expected.  `is_subtype(child, parent)` answers whether `child`
+/// extends `parent` transitively, via the import-path hierarchy walk at the
+/// call site.
 pub fn is_implicitly_assignable(
     from: &PapyrusType,
     to: &PapyrusType,

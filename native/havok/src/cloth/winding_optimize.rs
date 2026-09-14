@@ -1,19 +1,7 @@
-// Cloth pre-bake validation utilities.
-//
-// Two utilities meant to surface authoring bugs that otherwise manifest as
-// runtime cloth weirdness:
-//
-// 1. `check_winding` — walk triangles, detect winding inconsistencies via
-//    shared edges. Two triangles sharing an edge (a,b) should orient it in
-//    opposite directions (one a→b, the other b→a). Same direction = one
-//    triangle is flipped relative to its neighbor.
-//
-// 2. `find_redundant_links` — detect overlapping link constraints (same
-//    unordered particle pair). Returned as a per-pair group so the caller
-//    can decide to merge or warn.
-//
-// The Lint-style return shape is compatible with the existing
-// `cloth/validate.rs` `ValidationResult`; callers can fold these issues in.
+// Pre-bake cloth lint. `check_winding` flags neighbors that run a shared edge
+// in the same direction (one triangle is flipped); `find_redundant_links`
+// groups link constraints on the same unordered particle pair. Issues use the
+// `cloth/validate.rs` `LintIssue` shape.
 
 use std::collections::{BTreeMap, HashMap};
 

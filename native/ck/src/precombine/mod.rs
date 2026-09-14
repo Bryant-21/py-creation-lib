@@ -1,6 +1,4 @@
-//! CK-free precombine generation (v0 spike).
-//!
-//! Plan: `docs/superpowers/plans/2026-07-12-precombine-generation-v0.md`.
+//! CK-free precombine generation (v0).
 
 pub mod bake;
 pub mod plan;

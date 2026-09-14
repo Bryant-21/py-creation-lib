@@ -3,7 +3,13 @@ use crate::hkx::descriptors::DescriptorRegistry;
 use crate::hkx::types::{HkxType, HkxValue};
 use crate::hkx::{HkxFile, HkxMember, HkxObject, Tagfile};
 
+#[path = "fo76_bone_weights.rs"]
+mod bone_weights;
+
 pub const FO76_TO_FO4_ROUTE: &str = "tag0-fo76-to-fo4";
+
+const HK_INTERLEAVED_ANIMATION_TYPE: i32 = 1;
+const HK_SPLINE_COMPRESSED_ANIMATION_TYPE: i32 = 3;
 
 const ALWAYS_ON_TRANSFORMS: &[&str] = &[
     "_strip_heap_allocator",
@@ -146,6 +152,8 @@ fn apply_implemented_transforms(
     strip_heap_allocator(hkx);
     strip_resource_data(hkx);
     rename_variant(hkx);
+    synthesize_fo4_weapon_character_property_aliases(hkx);
+    remap_human_character_property_bone_indices(hkx);
     fix_version_metadata(hkx);
     stamp_fo76_schema_versions(hkx);
     synthesize_memory_resource_container(hkx);
@@ -157,7 +165,7 @@ fn apply_implemented_transforms(
     // _auto_fix_human_bone_tracks (transform 6) is a no-op for files without
     // animation classes; the physics block continues below.
 
-    // Physics transforms 7..=22 (FO76→FO4). Each call below is tagged with its
+    // Physics transforms 7..=21 (FO76→FO4). Each call below is tagged with its
     // ALWAYS_ON_TRANSFORMS slice index. No-ops on FO4: 14
     // wrap_capsules_in_compound_shape and 16 convert_limited_hinge_to_ragdoll
     // (FO4 supports limited hinges). 17 fix_physics_referenced_objects is partial.
@@ -182,7 +190,7 @@ fn apply_implemented_transforms(
     normalize_dynamic_compound_shapes(hkx);
     populate_dynamic_compound_instances(hkx);
     simplify_compound_ragdoll_body_shapes(hkx);
-    strip_trailing_ragdoll_controller_bodies(hkx);
+    strip_unmapped_trailing_ragdoll_controller_bodies(hkx);
     convert_limited_hinge_to_ragdoll(hkx); // 16 — Phase 7C
     fix_physics_referenced_objects(hkx); // 17
     normalize_bumper_body_cinfos(hkx); // 18
@@ -191,15 +199,18 @@ fn apply_implemented_transforms(
     inject_ragdoll_motors(hkx); // 20
     synthesize_motion_cinfos(hkx, &shape_mass_cache); // 21
     normalize_ragdoll_body_position_w(hkx);
-    fix_blend_hint_enum(hkx); // 22
-    #[allow(unused_assignments)]
-    {
-        last_applied = 22;
-    } // overwritten below
 
+    // hkaAnimationBinding.blendHint is carried through untouched. FO76 and FO4
+    // share the enum (NORMAL=0, ADDITIVE_DEPRECATED=1, ADDITIVE=2), so 1 and 2
+    // are two different additive conventions, not one value renumbered across
+    // games: 1 expresses the delta in the animated bone's parent space, 2 in
+    // bone-local space. Promoting 1→2 without also rebasing the track data
+    // rotates every delta by the bone's rest transform — on the 1st-person rig
+    // that is COM's -90° about Y, which turns weapon yaw into roll.
     inject_capsule_defaults(hkx);
     fix_sphere_dispatch_type(hkx);
     fix_polytope_dispatch_type(hkx);
+    fix_compressed_mesh_shape_headers(hkx);
     reclassify_fo76_hkb_layer(hkx);
     flatten_nested_class_names(hkx);
     migrate_unsupported_behavior_nodes(hkx, warnings);
@@ -214,6 +225,7 @@ fn apply_implemented_transforms(
     fix_dangling_pointers(hkx);
     fix_variable_value_set(hkx);
     fix_clip_generator_defaults(hkx);
+    normalize_behavior_reference_names(hkx);
     apply_classxml_defaults(hkx);
     rewire_character_driver_pointers(hkx);
     populate_event_property_arrays(hkx);
@@ -222,6 +234,40 @@ fn apply_implemented_transforms(
     last_applied = 41;
 
     last_applied
+}
+
+/// FO4 resolves `hkbBehaviorReferenceGenerator::behaviorName` as a file path and
+/// needs the `.hkx` extension; FO76 authors it bare, and the shared
+/// `_hkbBehaviorReferenceGenerator_0_to_1` class patch truncates any extension it
+/// does find. A bare name resolves to a null subgraph and FO4 faults in
+/// `hkbBehaviorReferenceGenerator::updateSync`.
+fn normalize_behavior_reference_names(hkx: &mut HkxFile) {
+    for object in hkx.objects_mut() {
+        if object.class_name != "hkbBehaviorReferenceGenerator" {
+            continue;
+        }
+        let Some(member) = object
+            .members
+            .iter_mut()
+            .find(|member| member.name == "behaviorName")
+        else {
+            continue;
+        };
+        let HkxValue::String { value, .. } = &mut member.value else {
+            continue;
+        };
+        if value.is_empty() {
+            continue;
+        }
+        let lowered = value.to_ascii_lowercase();
+        if lowered.ends_with(".hkx") {
+            continue;
+        }
+        if lowered.ends_with(".hkt") || lowered.ends_with(".hkb") {
+            value.truncate(value.len() - 4);
+        }
+        value.push_str(".hkx");
+    }
 }
 
 fn downgrade_fo76_cloth_to_fo4(hkx: &mut HkxFile, warnings: &mut Vec<String>) {
@@ -537,20 +583,22 @@ fn inject_capsule_defaults(hkx: &mut HkxFile) {
 }
 
 fn reclassify_fo76_hkb_layer(hkx: &mut HkxFile) {
+    let mut layer_bindings = std::collections::BTreeSet::new();
     for object in hkx.objects_mut() {
-        if object.class_name != "hkbBoneWeightArray" {
-            continue;
-        }
-        if !object
-            .members
-            .iter()
-            .any(|member| member.name == "generator")
-        {
+        let is_misclassified_layer = object.class_name == "hkbBoneWeightArray"
+            && object
+                .members
+                .iter()
+                .any(|member| member.name == "generator");
+        if object.class_name != "hkbLayer" && !is_misclassified_layer {
             continue;
         }
 
         object.class_name = "hkbLayer".to_string();
         object.signature = 1; // hkbLayer_1.xml
+        if let Some(binding) = pointer_member_value(&object.members, "variableBindingSet") {
+            layer_bindings.insert(binding);
+        }
 
         let Some(bcd_index) = object
             .members
@@ -580,6 +628,34 @@ fn reclassify_fo76_hkb_layer(hkx: &mut HkxFile) {
                 }
             } else {
                 object.members.push(sub_member);
+            }
+        }
+    }
+    for index in layer_bindings {
+        let Some(binding_set) = hkx.objects_mut().get_mut(index) else {
+            continue;
+        };
+        let Some(HkxValue::Array(bindings)) = binding_set
+            .members
+            .iter_mut()
+            .find(|member| member.name == "bindings")
+            .map(|member| &mut member.value)
+        else {
+            continue;
+        };
+        for binding in bindings {
+            let HkxValue::Object(members) = binding else {
+                continue;
+            };
+            for member in members
+                .iter_mut()
+                .filter(|member| member.name == "memberPath")
+            {
+                if let HkxValue::String { value, .. } = &mut member.value {
+                    if let Some(flattened) = value.strip_prefix("blendingControlData/") {
+                        *value = flattened.to_string();
+                    }
+                }
             }
         }
     }
@@ -715,7 +791,7 @@ fn strip_object_runtime_members(
         Err(_) => return members,
     };
     if all_members.is_empty() {
-        // Unknown class — leave as-is (matches Python's "unknown class" path).
+        // Unknown class — leave as-is.
         // Exception: hkRootLevelContainer / hkRootLevelContainerNamedVariant are
         // known-but-empty, so we still pass through without mutating.
         return members;
@@ -1728,9 +1804,8 @@ fn is_zero_equivalent(value: &HkxValue) -> bool {
 }
 
 fn apply_classxml_defaults(hkx: &mut HkxFile) {
-    // Python recurses into inline structs using class_name; Rust inline objects
-    // have no class_name (lost at TAG0 materialization), so inline-struct
-    // defaults are not applied.
+    // Inline objects have no class_name (lost at TAG0 materialization), so
+    // inline-struct defaults are not applied.
     let object_count = hkx.objects().len();
     for i in 0..object_count {
         let class_name = hkx.objects()[i].class_name.clone();
@@ -1794,7 +1869,7 @@ fn apply_classxml_defaults(hkx: &mut HkxFile) {
 }
 
 // ---------------------------------------------------------------------------
-// EPA population — port of py_creation_lib/python/creation_lib/hkxpack/migration.py:_populate_event_property_arrays
+// EPA population
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1930,7 +2005,7 @@ const EPA_RULES: &[EpaRule] = &[
             (EpaDir::Enter, "disablebumper", None),
         ],
     },
-    // Paired animation (duplicate, mirrors Python)
+    // Paired animation (duplicate entry)
     EpaRule {
         keyword: "paired",
         actions: &[
@@ -1950,7 +2025,7 @@ const EPA_RULES: &[EpaRule] = &[
 const GETUP_EXIT_EVENT: &str = "GetUpEnd";
 
 /// Match a state's signal set against the EPA rule table. Returns the first
-/// matching rule's actions, mimicking Python's "first keyword match wins".
+/// matching rule's actions (first keyword match wins).
 fn match_epa_rule(
     signals: &[String],
 ) -> Option<&'static [(EpaDir, &'static str, Option<&'static str>)]> {
@@ -2081,8 +2156,16 @@ fn populate_event_property_arrays(hkx: &mut HkxFile) {
             }
         }
 
-        // Rule 3: StateMachine generator with no signals → EXIT GetUpEnd.
-        if !matched && gen_class.as_deref() == Some("hkbStateMachine") && signals.is_empty() {
+        // A null source EPA can belong to a death wrapper; inventing GetUpEnd
+        // there queues Havok removal just as the corpse enters Fully Ragdoll.
+        if !matched
+            && gen_class.as_deref() == Some("hkbStateMachine")
+            && signals.is_empty()
+            && matches!(
+                state_epa_ptr(hkx.objects(), state_idx, "exitNotifyEvents"),
+                Some(EpaPtr::Linked(_))
+            )
+        {
             let key = GETUP_EXIT_EVENT.to_ascii_lowercase();
             if let Some(actual) = event_name_ci.get(key.as_str()) {
                 exit_events.push((actual.clone(), None));
@@ -2131,8 +2214,7 @@ fn populate_event_property_arrays(hkx: &mut HkxFile) {
             }
 
             // Existing EPA pointer? If it points at a real object, inject into
-            // it. If it's null/empty, create a fresh EPA. Python looks at
-            // `m.target` truthiness: None / "" → create.
+            // it. If it's null/empty, create a fresh EPA.
             let existing_ptr = state_epa_ptr(hkx.objects(), entry.state_idx, field_name);
 
             match existing_ptr {
@@ -2680,7 +2762,6 @@ fn populate_existing_epa(
 
 // ---------------------------------------------------------------------------
 // Rule 2 — event-holding state (hkbReferencePoseGenerator with both EPAs)
-// Port of py_creation_lib/python/creation_lib/hkxpack/migration.py:_populate_event_holding_state
 // ---------------------------------------------------------------------------
 
 /// Events that were already assigned to other EPA rules — exclude from clip-annotation scan.
@@ -2724,8 +2805,7 @@ const ENTER_PREFIXES: &[&str] = &["foot", "flinch", "camera", "death", "getup"];
 
 /// Collect the set of event IDs that are referenced by transitions or any
 /// direct member whose name contains "event" (excluding the member named
-/// "events"). Mirrors the used_event_ids build in Python's
-/// `_populate_event_holding_state`.
+/// "events").
 fn collect_used_event_ids(objects: &[HkxObject]) -> std::collections::HashSet<i32> {
     let mut used: std::collections::HashSet<i32> = std::collections::HashSet::new();
     for obj in objects {
@@ -2783,8 +2863,7 @@ fn populate_event_holding_state(
 ) {
     let used_event_ids = collect_used_event_ids(hkx.objects());
 
-    // Collect enter/exit event names, sorted by event ID (matches Python's
-    // `sorted(event_name_to_id.items(), key=lambda x: x[1])`).
+    // Collect enter/exit event names, sorted by event ID.
     let mut sorted_events: Vec<(&String, i32)> = event_name_to_id
         .iter()
         .map(|(name, &id)| (name, id))
@@ -2871,10 +2950,8 @@ fn reorder_behavior_metadata_to_end(hkx: &mut HkxFile) {
 }
 
 fn fix_behavior_variable_infos(hkx: &mut HkxFile) {
-    // Python converts variableInfos enum members from int → enum-string for
-    // the Python writer's enum-name-based serialization. Rust stores enums
-    // as HkxValue::I32 throughout; the FO4 packfile writer must emit the
-    // raw i32, so no conversion is needed here.
+    // Enums stay HkxValue::I32 and the FO4 packfile writer emits the raw i32,
+    // so variableInfos needs no conversion.
     let _ = hkx;
 }
 
@@ -2925,12 +3002,22 @@ fn fix_polytope_dispatch_type(hkx: &mut HkxFile) {
     }
 }
 
+fn fix_compressed_mesh_shape_headers(hkx: &mut HkxFile) {
+    for object in hkx.objects_mut() {
+        if object.class_name != "hknpCompressedMeshShape" {
+            continue;
+        }
+
+        // FO76's COMPOSITE enum value is FO4's DISTANCE_FIELD value.
+        set_member_value(&mut object.members, "flags", HkxValue::U16(0x0204));
+        set_member_value(&mut object.members, "dispatchType", HkxValue::U8(2));
+    }
+}
+
 // ---------------------------------------------------------------------------
-// FO76 → FO4 physics transforms (port from py_creation_lib/python/creation_lib/hkxpack/migration.py)
+// FO76 → FO4 physics transforms
 // ---------------------------------------------------------------------------
 
-/// Transform 1 — `_migrate_skeleton_physics`.
-///
 /// Renames FO76 physics classes to their FO4 equivalents
 /// (hkpBallAndSocketConstraintData → hkpRagdollConstraintData,
 /// hknpCompressedMeshShapeTree → hknpCompressedMeshShapeData,
@@ -2959,13 +3046,35 @@ fn migrate_skeleton_physics(hkx: &mut HkxFile) {
             .collect()
     };
 
+    // A ball-and-socket's single `pivots` atom has no name-match in the FO4
+    // ragdoll atom layout, so renaming the class alone drops the pivot and
+    // serializes an all-zero, TYPE_INVALID constraint frame. Model the new
+    // atoms on a sibling ragdoll constraint from the same file instead.
+    let ragdoll_atoms_template = hkx
+        .objects()
+        .iter()
+        .find(|o| o.class_name == "hkpRagdollConstraintData")
+        .and_then(|o| o.members.iter().find(|m| m.name == "atoms"))
+        .map(|m| m.value.clone());
+
     for object in hkx.objects_mut() {
         match object.class_name.as_str() {
             "hkpBallAndSocketConstraintData" => {
-                object.class_name = "hkpRagdollConstraintData".to_string();
-                object.signature = 0; // hkpRagdollConstraintData_0.xml
                 let members = std::mem::take(&mut object.members);
-                object.members = drop_meta(members);
+                let mut members = drop_meta(members);
+                if let Some(atoms) = ragdoll_atoms_template
+                    .as_ref()
+                    .and_then(|template| ragdoll_atoms_from_ball_socket(template, &members))
+                {
+                    object.class_name = "hkpRagdollConstraintData".to_string();
+                    object.signature = 0; // hkpRagdollConstraintData_0.xml
+                    set_member_value(&mut members, "atoms", atoms);
+                }
+                // Without a sibling to model the atom layout on, keep the class:
+                // FO4 registers hkpBallAndSocketConstraintData (vanilla
+                // meshes\traps\grenadebouquet*.nif use it), which beats emitting
+                // a half-built ragdoll constraint.
+                object.members = members;
             }
             "hknpCompressedMeshShapeTree" => {
                 object.class_name = "hknpCompressedMeshShapeData".to_string();
@@ -3054,6 +3163,105 @@ fn migrate_skeleton_physics(hkx: &mut HkxFile) {
             }
         }
     }
+}
+
+/// Rebuild a FO76 `hkpBallAndSocketConstraintDataAtoms` as FO4
+/// `hkpRagdollConstraintDataAtoms`.
+///
+/// `template` is the `atoms` value of a sibling `hkpRagdollConstraintData` from
+/// the same file, so every atom the ball-and-socket has no counterpart for keeps
+/// a decoded value of the right variant (and a wired motor pointer — FO4
+/// dereferences those during ragdoll activation). The pivot becomes the
+/// `transforms` translation column, and every angular limit plus friction is
+/// disabled, which is what a ball-and-socket joint means.
+fn ragdoll_atoms_from_ball_socket(
+    template: &HkxValue,
+    ball_socket_members: &[HkxMember],
+) -> Option<HkxValue> {
+    const TYPE_SET_LOCAL_TRANSFORMS: i32 = 2;
+
+    let source_atoms = ball_socket_members
+        .iter()
+        .find(|m| m.name == "atoms")?
+        .value
+        .as_object_members()?
+        .to_vec();
+    let pivots = source_atoms
+        .iter()
+        .find(|m| m.name == "pivots")?
+        .value
+        .as_object_members()?;
+    let pivot = |name: &str| -> [f32; 3] {
+        pivots
+            .iter()
+            .find(|m| m.name == name)
+            .and_then(|m| match &m.value {
+                HkxValue::F32List(values) if values.len() >= 3 => {
+                    Some([values[0], values[1], values[2]])
+                }
+                _ => None,
+            })
+            .unwrap_or([0.0; 3])
+    };
+    let (translation_a, translation_b) = (pivot("translationA"), pivot("translationB"));
+
+    let mut atoms = template.clone();
+    for member in atoms.as_object_members_mut()?.iter_mut() {
+        match member.name.as_str() {
+            "transforms" => {
+                let Some(transforms) = member.value.as_object_members_mut() else {
+                    continue;
+                };
+                for m in transforms.iter_mut() {
+                    match m.name.as_str() {
+                        "type" => set_int_member(&mut m.value, TYPE_SET_LOCAL_TRANSFORMS),
+                        "transformA" => m.value = local_transform(translation_a),
+                        "transformB" => m.value = local_transform(translation_b),
+                        _ => {}
+                    }
+                }
+            }
+            "angFriction" | "twistLimit" | "coneLimit" | "planesLimit" => {
+                let Some(atom) = member.value.as_object_members_mut() else {
+                    continue;
+                };
+                for m in atom.iter_mut() {
+                    if m.name == "isEnabled" {
+                        set_int_member(&mut m.value, 0);
+                    }
+                }
+            }
+            "setupStabilization" | "ballSocket" => {
+                if let Some(source) = source_atoms.iter().find(|m| m.name == member.name) {
+                    member.value = source.value.clone();
+                }
+            }
+            _ => {}
+        }
+    }
+    Some(atoms)
+}
+
+/// `hkTransform` as an identity basis with `translation` in the fourth column.
+fn local_transform(translation: [f32; 3]) -> HkxValue {
+    HkxValue::F32List(vec![
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        translation[0],
+        translation[1],
+        translation[2],
+        0.0,
+    ])
 }
 
 fn is_compact_sphere_shape(object: &HkxObject) -> bool {
@@ -3457,8 +3665,6 @@ fn normalize3(v: [f32; 3]) -> Option<[f32; 3]> {
     }
 }
 
-/// Transform 2 — `_reclassify_fo76_physics_system_data`.
-///
 /// FO76 stores PSD under generic `hkReferencedObject`. Detect via `bodyCinfos`
 /// member presence and rename. Insert empty `motionCinfos` if absent.
 fn reclassify_fo76_physics_system_data(hkx: &mut HkxFile) {
@@ -3491,8 +3697,6 @@ fn reclassify_fo76_physics_system_data(hkx: &mut HkxFile) {
     }
 }
 
-/// Transform 5 — `_reclassify_mass_distributions`.
-///
 /// FO76 hknpRefMassDistribution objects land on `hkUint16` due to TAG0 reader
 /// fallback. Detect via mass-field presence and rename so the connectivity
 /// strip pass leaves them alone.
@@ -3584,6 +3788,8 @@ fn has_non_empty_array_member(members: &[HkxMember], name: &str) -> bool {
 
 fn migrate_unsupported_behavior_nodes(hkx: &mut HkxFile, warnings: &mut Vec<String>) {
     convert_locomotion_blend_generators(hkx, warnings);
+    let delegated = collapse_zero_weight_action_layers(hkx, warnings);
+    bone_weights::lower(hkx, &delegated);
     bypass_assign_bone_weights_modifiers(hkx, warnings);
 }
 
@@ -3597,10 +3803,14 @@ struct LocomotionBlendRewrite {
     run_generator: usize,
     direction_variable_index: Option<i32>,
     movement_variable_index: Option<i32>,
+    walk_event_id: Option<i32>,
+    jog_event_id: Option<i32>,
+    run_event_id: Option<i32>,
     transition_duration: f32,
 }
 
 fn convert_locomotion_blend_generators(hkx: &mut HkxFile, warnings: &mut Vec<String>) {
+    let (event_name_to_id, _, _) = build_event_name_table(hkx);
     let rewrites: Vec<_> = hkx
         .objects()
         .iter()
@@ -3638,7 +3848,15 @@ fn convert_locomotion_blend_generators(hkx: &mut HkxFile, warnings: &mut Vec<Str
                     binding_variable_index(hkx, binding_set, "fDirectionParameter")
                 })
                 .or_else(|| behavior_variable_index(hkx, "Direction"));
-            let movement_variable_index = behavior_variable_index(hkx, "iMovementSpeed");
+            // `iLocomotionSpeed` is the name FO76 creature/wrapping graphs actually
+            // use for the int walk/jog/run tier — of the 33 source graphs carrying a
+            // BSLocomotionBlendGenerator, 17 have neither sync name and 9 of those
+            // expose `iLocomotionSpeed`. Without it `startStateId` stays unbound and
+            // the selector freezes in its default state, so the actor never reaches
+            // jog/run (converted Liberator: tracks but never charges).
+            let movement_variable_index = behavior_variable_index(hkx, "iSyncLocomotionSpeed")
+                .or_else(|| behavior_variable_index(hkx, "iMovementSpeed"))
+                .or_else(|| behavior_variable_index(hkx, "iLocomotionSpeed"));
             let display_name = string_member_value(&object.members, "name")
                 .unwrap_or("LocomotionBlend")
                 .to_string();
@@ -3652,6 +3870,9 @@ fn convert_locomotion_blend_generators(hkx: &mut HkxFile, warnings: &mut Vec<Str
                 run_generator,
                 direction_variable_index,
                 movement_variable_index,
+                walk_event_id: event_name_to_id.get("Walk").copied(),
+                jog_event_id: event_name_to_id.get("Jog").copied(),
+                run_event_id: event_name_to_id.get("Run").copied(),
                 transition_duration: f32_member(&object.members, "fTransitionDuration")
                     .unwrap_or(0.2),
             })
@@ -3681,23 +3902,44 @@ fn convert_locomotion_blend_generators(hkx: &mut HkxFile, warnings: &mut Vec<Str
             rewrite.transition_duration,
         );
 
+        let transition_effect = create_locomotion_transition_effect(
+            hkx,
+            &rewrite.display_name,
+            rewrite.transition_duration,
+        );
+        let walk_transitions = create_locomotion_transition_array(
+            hkx,
+            [(rewrite.jog_event_id, 1), (rewrite.run_event_id, 2)],
+            transition_effect,
+        );
+        let jog_transitions = create_locomotion_transition_array(
+            hkx,
+            [(rewrite.walk_event_id, 0), (rewrite.run_event_id, 2)],
+            transition_effect,
+        );
+        let run_transitions = create_locomotion_transition_array(
+            hkx,
+            [(rewrite.walk_event_id, 0), (rewrite.jog_event_id, 1)],
+            transition_effect,
+        );
+
         let walk_state = push_named_object(
             hkx,
             "hkbStateMachineStateInfo",
             4,
-            state_info_members("Walk", 0, walk_generator),
+            state_info_members("Walk", 0, walk_generator, walk_transitions),
         );
         let jog_state = push_named_object(
             hkx,
             "hkbStateMachineStateInfo",
             4,
-            state_info_members("Jog", 1, jog_generator),
+            state_info_members("Jog", 1, jog_generator, jog_transitions),
         );
         let run_state = push_named_object(
             hkx,
             "hkbStateMachineStateInfo",
             4,
-            state_info_members("Run", 2, run_generator),
+            state_info_members("Run", 2, run_generator, run_transitions),
         );
 
         let start_state_binding = rewrite
@@ -3714,9 +3956,9 @@ fn convert_locomotion_blend_generators(hkx: &mut HkxFile, warnings: &mut Vec<Str
         object.members = members;
 
         let binding_note = if rewrite.movement_variable_index.is_some() {
-            "bound startStateId to iMovementSpeed"
+            "bound startStateId to the locomotion-speed sync variable"
         } else {
-            "left startStateId unbound because iMovementSpeed was not found"
+            "left startStateId unbound because no locomotion-speed sync variable was found"
         };
         warnings.push(format!(
             "converted unsupported BSLocomotionBlendGenerator {} to hkbStateMachine selector; {binding_note}",
@@ -3732,6 +3974,340 @@ struct BoneWeightBypass {
     generator_index: usize,
     wrapper_name: String,
     modifier_name: String,
+}
+
+#[derive(Debug)]
+struct ZeroWeightActionLayerCollapse {
+    layer_generator_index: usize,
+    base_layer_index: usize,
+    base_generator_index: usize,
+    action_layer_index: usize,
+    clear_action_motion_binding: bool,
+    idle_wrapper_indices: Vec<usize>,
+    layer_generator_name: String,
+    base_generator_name: String,
+    action_generator_name: String,
+}
+
+fn collapse_zero_weight_action_layers(hkx: &mut HkxFile, warnings: &mut Vec<String>) -> std::collections::HashSet<usize> {
+    let mut delegated = std::collections::HashSet::new();
+    let collapses: Vec<_> = hkx
+        .objects()
+        .iter()
+        .enumerate()
+        .filter_map(|(layer_generator_index, object)| {
+            if object.class_name != "hkbLayerGenerator" {
+                return None;
+            }
+            let layers = pointer_array_member_values(&object.members, "layers")?;
+            let base_layer_index = *layers.first()?;
+            let base_layer = hkx.objects().get(base_layer_index)?;
+            if base_layer.class_name != "hkbLayer" {
+                return None;
+            }
+            let base_generator_index = pointer_member_value(&base_layer.members, "generator")?;
+            let base_generator = hkx.objects().get(base_generator_index)?;
+
+            layers.iter().skip(1).find_map(|action_layer_index| {
+                let action_layer = hkx.objects().get(*action_layer_index)?;
+                if action_layer.class_name != "hkbLayer"
+                    || action_layer
+                        .members
+                        .iter()
+                        .find(|member| member.name == "onByDefault")
+                        .and_then(|member| extract_int(&member.value))
+                        != Some(1)
+                {
+                    return None;
+                }
+                let action_generator_index =
+                    pointer_member_value(&action_layer.members, "generator")?;
+                let action_generator = hkx.objects().get(action_generator_index)?;
+                if action_generator.class_name != "hkbStateMachine" {
+                    return None;
+                }
+
+                let idle_wrapper_indices: Vec<_> =
+                    pointer_array_member_values(&action_generator.members, "states")?
+                        .into_iter()
+                        .filter_map(|state_index| {
+                            let state = hkx.objects().get(state_index)?;
+                            if state.class_name != "hkbStateMachineStateInfo" {
+                                return None;
+                            }
+                            let wrapper_index = pointer_member_value(&state.members, "generator")?;
+                            let wrapper = hkx.objects().get(wrapper_index)?;
+                            if wrapper.class_name != "hkbModifierGenerator" {
+                                return None;
+                            }
+                            let child_index = pointer_member_value(&wrapper.members, "generator")?;
+                            if hkx.objects().get(child_index)?.class_name
+                                != "hkbReferencePoseGenerator"
+                            {
+                                return None;
+                            }
+                            let modifier_index =
+                                pointer_member_value(&wrapper.members, "modifier")?;
+                            modifier_tree_contains_zero_weight_assignment(hkx, modifier_index)
+                                .then_some(wrapper_index)
+                        })
+                        .collect();
+                if idle_wrapper_indices.is_empty() {
+                    return None;
+                }
+
+                Some(ZeroWeightActionLayerCollapse {
+                    layer_generator_index,
+                    base_layer_index,
+                    base_generator_index,
+                    action_layer_index: *action_layer_index,
+                    clear_action_motion_binding: pointer_member_value(
+                        &action_layer.members,
+                        "variableBindingSet",
+                    )
+                    .is_some_and(|binding_set_index| {
+                        binding_set_only_binds_member(hkx, binding_set_index, "useMotion")
+                    }),
+                    idle_wrapper_indices,
+                    layer_generator_name: string_member_value(&object.members, "name")
+                        .or(object.name.as_deref())
+                        .unwrap_or("<unnamed>")
+                        .to_string(),
+                    base_generator_name: string_member_value(&base_generator.members, "name")
+                        .or(base_generator.name.as_deref())
+                        .unwrap_or("<unnamed>")
+                        .to_string(),
+                    action_generator_name: string_member_value(&action_generator.members, "name")
+                        .or(action_generator.name.as_deref())
+                        .unwrap_or("<unnamed>")
+                        .to_string(),
+                })
+            })
+        })
+        .collect();
+
+    for collapse in collapses {
+        let removed_base_layer = hkx.objects_mut()[collapse.layer_generator_index]
+            .members
+            .iter_mut()
+            .find(|member| member.name == "layers")
+            .and_then(|member| match &mut member.value {
+                HkxValue::Array(layers)
+                    if layers.first()
+                        == Some(&HkxValue::Pointer(Some(collapse.base_layer_index))) =>
+                {
+                    layers.remove(0);
+                    Some(())
+                }
+                _ => None,
+            })
+            .is_some();
+        if !removed_base_layer {
+            continue;
+        }
+
+        for wrapper_index in collapse.idle_wrapper_indices {
+            delegated.insert(wrapper_index);
+            if let Some(member) = hkx.objects_mut()[wrapper_index]
+                .members
+                .iter_mut()
+                .find(|member| member.name == "generator")
+            {
+                member.value = HkxValue::Pointer(Some(collapse.base_generator_index));
+            }
+        }
+
+        let action_layer = &mut hkx.objects_mut()[collapse.action_layer_index];
+        if collapse.clear_action_motion_binding {
+            if let Some(member) = action_layer
+                .members
+                .iter_mut()
+                .find(|member| member.name == "variableBindingSet")
+            {
+                member.value = HkxValue::Pointer(None);
+            }
+        }
+        if let Some(member) = action_layer
+            .members
+            .iter_mut()
+            .find(|member| member.name == "useMotion")
+        {
+            set_int_member(&mut member.value, 1);
+        }
+
+        if let Some(member) = hkx.objects_mut()[collapse.layer_generator_index]
+            .members
+            .iter_mut()
+            .find(|member| member.name == "indexOfSyncMasterChild")
+        {
+            if let Some(index) = extract_int(&member.value).filter(|index| *index > 0) {
+                set_int_member(&mut member.value, index - 1);
+            }
+        }
+
+        warnings.push(format!(
+            "collapsed zero-weight action state machine {} over base generator {} in {}; idle reference pose now delegates to base locomotion and the collapsed layer remains motion-enabled",
+            collapse.action_generator_name,
+            collapse.base_generator_name,
+            collapse.layer_generator_name
+        ));
+    }
+    delegated
+}
+
+fn pointer_array_member_values(members: &[HkxMember], name: &str) -> Option<Vec<usize>> {
+    let member = members.iter().find(|member| member.name == name)?;
+    let HkxValue::Array(values) = &member.value else {
+        return None;
+    };
+    Some(
+        values
+            .iter()
+            .filter_map(|value| match value {
+                HkxValue::Pointer(Some(index)) => Some(*index),
+                _ => None,
+            })
+            .collect(),
+    )
+}
+
+fn modifier_tree_contains_zero_weight_assignment(hkx: &HkxFile, index: usize) -> bool {
+    let Some(modifier) = hkx.objects().get(index) else {
+        return false;
+    };
+    match modifier.class_name.as_str() {
+        "BSAssignBoneWeightsModifier" => is_zero_weight_assignment(hkx, modifier),
+        "hkbModifierList" => pointer_array_member_values(&modifier.members, "modifiers")
+            .is_some_and(|modifiers| {
+                modifiers
+                    .into_iter()
+                    .any(|index| modifier_tree_contains_zero_weight_assignment(hkx, index))
+            }),
+        _ => false,
+    }
+}
+
+fn is_zero_weight_assignment(hkx: &HkxFile, modifier: &HkxObject) -> bool {
+    let normalized_name: String = string_member_value(&modifier.members, "name")
+        .or(modifier.name.as_deref())
+        .unwrap_or_default()
+        .chars()
+        .filter(|character| character.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect();
+    if normalized_name.contains("zeroweights") {
+        return true;
+    }
+
+    // Naming is not a reliable gate: the floater calls its zero assignment
+    // `AssignBoneWeights_Zero`, which normalizes to `assignboneweightszero` and
+    // misses the substring above, and binds no variable. Read the mask instead.
+    if pointer_member_value(&modifier.members, "boneWeights1")
+        .is_some_and(|index| is_all_zero_bone_weight_array(hkx, index))
+    {
+        return true;
+    }
+
+    let Some(binding_set_index) = pointer_member_value(&modifier.members, "variableBindingSet")
+    else {
+        return false;
+    };
+    let Some(character_property_index) =
+        binding_character_property_index(hkx, binding_set_index, "boneWeights1")
+    else {
+        return false;
+    };
+    behavior_character_property_name(hkx, character_property_index)
+        .is_some_and(|name| name.eq_ignore_ascii_case("ZeroBoneWeights"))
+}
+
+/// An empty `boneWeights` array means "no mask", i.e. full weight — the opposite
+/// of a zero assignment — so emptiness must not read as all-zero here.
+fn is_all_zero_bone_weight_array(hkx: &HkxFile, index: usize) -> bool {
+    let Some(array) = hkx.objects().get(index) else {
+        return false;
+    };
+    if array.class_name != "hkbBoneWeightArray" {
+        return false;
+    }
+    let Some(member) = array
+        .members
+        .iter()
+        .find(|member| member.name == "boneWeights")
+    else {
+        return false;
+    };
+    let weights = match &member.value {
+        HkxValue::F32List(weights) => weights.clone(),
+        HkxValue::Array(values) => {
+            let Some(weights) = values
+                .iter()
+                .map(extract_float)
+                .collect::<Option<Vec<f32>>>()
+            else {
+                return false;
+            };
+            weights
+        }
+        _ => return false,
+    };
+    !weights.is_empty() && !weights.iter().any(|weight| weight.abs() > f32::EPSILON)
+}
+
+fn extract_float(value: &HkxValue) -> Option<f32> {
+    match value {
+        HkxValue::F32(value) | HkxValue::Half(value) => Some(*value),
+        other => extract_int(other).map(|value| value as f32),
+    }
+}
+
+fn binding_character_property_index(
+    hkx: &HkxFile,
+    binding_set_index: usize,
+    member_path: &str,
+) -> Option<usize> {
+    let binding_set = hkx.objects().get(binding_set_index)?;
+    binding_set.members.iter().find_map(|member| {
+        if member.name != "bindings" {
+            return None;
+        }
+        let HkxValue::Array(bindings) = &member.value else {
+            return None;
+        };
+        bindings.iter().find_map(|binding| {
+            let members = binding.as_object_members()?;
+            let path = members
+                .iter()
+                .find(|member| member.name == "memberPath")
+                .and_then(|member| string_value(&member.value))?;
+            let binding_type = members
+                .iter()
+                .find(|member| member.name == "bindingType")
+                .and_then(|member| extract_int(&member.value))?;
+            if path != member_path || binding_type != 1 {
+                return None;
+            }
+            members
+                .iter()
+                .find(|member| member.name == "variableIndex")
+                .and_then(|member| extract_int(&member.value))
+                .and_then(|index| usize::try_from(index).ok())
+        })
+    })
+}
+
+fn behavior_character_property_name(hkx: &HkxFile, index: usize) -> Option<&str> {
+    hkx.objects().iter().find_map(|object| {
+        object.members.iter().find_map(|member| {
+            if member.name != "characterPropertyNames" {
+                return None;
+            }
+            let HkxValue::Array(names) = &member.value else {
+                return None;
+            };
+            names.get(index).and_then(string_value)
+        })
+    })
 }
 
 fn bypass_assign_bone_weights_modifiers(hkx: &mut HkxFile, warnings: &mut Vec<String>) {
@@ -3836,13 +4412,91 @@ fn create_cyclic_blend_wrapper(
     )
 }
 
-fn state_info_members(name: &str, state_id: i32, generator: usize) -> Vec<HkxMember> {
+fn create_locomotion_transition_effect(hkx: &mut HkxFile, name: &str, duration: f32) -> usize {
+    push_named_object(
+        hkx,
+        "hkbBlendingTransitionEffect",
+        1,
+        vec![
+            member_value("variableBindingSet", HkxValue::Pointer(None)),
+            member_value("userData", HkxValue::U64(0)),
+            member_value("name", string_hkx_value(&format!("{name}_SpeedTransition"))),
+            member_value("selfTransitionMode", HkxValue::I8(1)),
+            member_value("eventMode", HkxValue::I8(0)),
+            member_value("duration", HkxValue::F32(duration)),
+            member_value("toGeneratorStartTimeFraction", HkxValue::F32(0.0)),
+            member_value("flags", HkxValue::I32(0)),
+            member_value("endMode", HkxValue::I8(0)),
+            member_value("blendCurve", HkxValue::I8(0)),
+            member_value("alignmentBone", HkxValue::I16(-1)),
+        ],
+    )
+}
+
+fn create_locomotion_transition_array(
+    hkx: &mut HkxFile,
+    transitions: [(Option<i32>, i32); 2],
+    transition_effect: usize,
+) -> Option<usize> {
+    let transitions: Vec<_> = transitions
+        .into_iter()
+        .filter_map(|(event_id, to_state_id)| {
+            event_id.map(|event_id| {
+                HkxValue::Object(vec![
+                    member_value(
+                        "triggerInterval",
+                        HkxValue::Object(vec![
+                            member_value("enterEventId", HkxValue::I32(-1)),
+                            member_value("exitEventId", HkxValue::I32(-1)),
+                            member_value("enterTime", HkxValue::F32(0.0)),
+                            member_value("exitTime", HkxValue::F32(0.0)),
+                        ]),
+                    ),
+                    member_value(
+                        "initiateInterval",
+                        HkxValue::Object(vec![
+                            member_value("enterEventId", HkxValue::I32(-1)),
+                            member_value("exitEventId", HkxValue::I32(-1)),
+                            member_value("enterTime", HkxValue::F32(0.0)),
+                            member_value("exitTime", HkxValue::F32(0.0)),
+                        ]),
+                    ),
+                    member_value("transition", HkxValue::Pointer(Some(transition_effect))),
+                    member_value("condition", HkxValue::Pointer(None)),
+                    member_value("eventId", HkxValue::I32(event_id)),
+                    member_value("toStateId", HkxValue::I32(to_state_id)),
+                    member_value("fromNestedStateId", HkxValue::I32(0)),
+                    member_value("toNestedStateId", HkxValue::I32(0)),
+                    member_value("priority", HkxValue::I32(0)),
+                    member_value("flags", HkxValue::I32(0)),
+                ])
+            })
+        })
+        .collect();
+    if transitions.is_empty() {
+        return None;
+    }
+
+    Some(push_named_object(
+        hkx,
+        "hkbStateMachineTransitionInfoArray",
+        1,
+        vec![member_value("transitions", HkxValue::Array(transitions))],
+    ))
+}
+
+fn state_info_members(
+    name: &str,
+    state_id: i32,
+    generator: usize,
+    transitions: Option<usize>,
+) -> Vec<HkxMember> {
     vec![
         member_value("variableBindingSet", HkxValue::Pointer(None)),
         member_value("listeners", HkxValue::Array(vec![])),
         member_value("enterNotifyEvents", HkxValue::Pointer(None)),
         member_value("exitNotifyEvents", HkxValue::Pointer(None)),
-        member_value("transitions", HkxValue::Pointer(None)),
+        member_value("transitions", HkxValue::Pointer(transitions)),
         member_value("generator", HkxValue::Pointer(Some(generator))),
         member_value("name", string_hkx_value(name)),
         member_value("stateId", HkxValue::I32(state_id)),
@@ -3954,6 +4608,31 @@ fn binding_variable_index(
     })
 }
 
+fn binding_set_only_binds_member(
+    hkx: &HkxFile,
+    binding_set_index: usize,
+    member_path: &str,
+) -> bool {
+    let Some(binding_set) = hkx.objects().get(binding_set_index) else {
+        return false;
+    };
+    let Some(HkxValue::Array(bindings)) = binding_set
+        .members
+        .iter()
+        .find(|member| member.name == "bindings")
+        .map(|member| &member.value)
+    else {
+        return false;
+    };
+    !bindings.is_empty()
+        && bindings.iter().all(|binding| {
+            binding
+                .as_object_members()
+                .and_then(|members| string_member_value(members, "memberPath"))
+                == Some(member_path)
+        })
+}
+
 fn replace_object_references(hkx: &mut HkxFile, from_index: usize, to_index: usize) {
     let map = std::collections::HashMap::from([(from_index, to_index)]);
     for object in hkx.objects_mut() {
@@ -4007,8 +4686,6 @@ fn string_member_value<'a>(members: &'a [HkxMember], name: &str) -> Option<&'a s
         .and_then(|member| string_value(&member.value))
 }
 
-/// Transform 6 — `_strip_shape_connectivity`.
-///
 /// Null connectivity pointers on capsule/polytope shapes and drop the
 /// connectivity wrapper objects (hkUint16 / hknpConvexPolytopeShape::Connectivity).
 fn strip_shape_connectivity(hkx: &mut HkxFile) {
@@ -4038,8 +4715,6 @@ fn strip_shape_connectivity(hkx: &mut HkxFile) {
     });
 }
 
-/// Transform 7 — `_convert_polytope_to_capsule` + `_polytope_to_capsule`.
-///
 /// Replace each `hknpConvexPolytopeShape` with a structurally-equivalent
 /// `hknpCapsuleShape` whose endpoints span the polytope's longest AABB axis.
 /// Only fires on NIF-embedded blobs (no hkRootLevelContainer) that contain
@@ -4214,8 +4889,6 @@ const FO76_ONLY_STRIP_CLASSES: &[&str] = &[
     "hclStateDependencyGraph",
 ];
 
-/// Transform 9 — `_strip_fo76_skeleton_classes`.
-///
 /// Drop FO76-only classes that have no FO4 classxml entry. Pointers
 /// referencing them get nulled. Strip the `properties` member from
 /// shape classes (FO4 has no `properties` slot on shapes).
@@ -4913,7 +5586,24 @@ fn simplify_compound_ragdoll_body_shapes(hkx: &mut HkxFile) {
     }
 }
 
-fn strip_trailing_ragdoll_controller_bodies(hkx: &mut HkxFile) {
+fn is_character_controller_body(members: &[HkxMember]) -> bool {
+    members
+        .iter()
+        .find(|member| member.name == "name")
+        .and_then(|member| match &member.value {
+            HkxValue::String { value, .. } => Some(value.as_str()),
+            _ => None,
+        })
+        .map(|name| {
+            name.eq_ignore_ascii_case("CharacterBumper")
+                || name.eq_ignore_ascii_case("CharacterController")
+        })
+        .unwrap_or(false)
+}
+
+/// FO4 loads controller physics from `skeleton.nif`; duplicate trailing bodies in
+/// the external ragdoll can make actor initialization register them twice.
+fn strip_unmapped_trailing_ragdoll_controller_bodies(hkx: &mut HkxFile) {
     use std::collections::HashSet;
 
     for object in hkx.objects_mut() {
@@ -4931,11 +5621,9 @@ fn strip_trailing_ragdoll_controller_bodies(hkx: &mut HkxFile) {
             })
             .into_iter()
             .flatten()
-            .filter_map(|value| extract_int(value))
-            .filter(|&body_index| body_index >= 0)
-            .map(|body_index| body_index as usize)
+            .filter_map(extract_int)
+            .filter_map(|body_index| usize::try_from(body_index).ok())
             .collect();
-
         let constrained_bodies: HashSet<usize> = object
             .members
             .iter()
@@ -4949,18 +5637,15 @@ fn strip_trailing_ragdoll_controller_bodies(hkx: &mut HkxFile) {
             .flat_map(|constraint| constraint.as_object_members().into_iter().flatten())
             .filter(|member| member.name == "bodyA" || member.name == "bodyB")
             .filter_map(|member| extract_int(&member.value))
-            .filter(|&body_index| body_index >= 0)
-            .map(|body_index| body_index as usize)
+            .filter_map(|body_index| usize::try_from(body_index).ok())
             .collect();
 
-        let Some(body_member) = object
+        let Some(HkxValue::Array(bodies)) = object
             .members
             .iter()
             .find(|member| member.name == "bodyCinfos")
+            .map(|member| &member.value)
         else {
-            continue;
-        };
-        let HkxValue::Array(bodies) = &body_member.value else {
             continue;
         };
 
@@ -4971,23 +5656,12 @@ fn strip_trailing_ragdoll_controller_bodies(hkx: &mut HkxFile) {
             if mapped_bodies.contains(&body_index) || constrained_bodies.contains(&body_index) {
                 break;
             }
-
-            let is_controller_body = bodies[body_index]
-                .as_object_members()
-                .and_then(|members| members.iter().find(|member| member.name == "name"))
-                .and_then(|member| match &member.value {
-                    HkxValue::String { value, .. } => Some(value.as_str()),
-                    _ => None,
-                })
-                .map(|name| {
-                    name.eq_ignore_ascii_case("CharacterBumper")
-                        || name.eq_ignore_ascii_case("CharacterController")
-                })
-                .unwrap_or(false);
-            if !is_controller_body {
+            let Some(body_members) = bodies[body_index].as_object_members() else {
+                break;
+            };
+            if !is_character_controller_body(body_members) {
                 break;
             }
-
             kept_body_count -= 1;
         }
 
@@ -5038,8 +5712,6 @@ fn collect_pointers_from_cinfo_array(
     out
 }
 
-/// Transform 15 — `_fix_physics_referenced_objects`.
-///
 /// Rebuild the `referencedObjects` array on `hknpPhysicsSystemData` by unioning
 /// all pointer targets reachable from `bodyCinfos[*].shape`,
 /// `motionCinfos[*].massDistribution` (or other pointer fields),
@@ -5182,8 +5854,6 @@ fn motion_index_has_dynamic_motion(object: &HkxObject, motion_id: u32) -> bool {
     inv_mass.is_finite() && inv_mass > 0.0
 }
 
-/// Transform 17 — `_normalize_bumper_body_cinfos`.
-///
 /// Fix three FO76→FO4 schema gaps in `hknpPhysicsSystemData.bodyCinfos`:
 /// 1. `motionId`: 0 → 0x7FFFFFFF (Havok INVALID_ID, "skip motion lookup")
 /// 2. `reservedBodyId`: nested struct or 0 → 0x7FFFFFFF
@@ -5257,11 +5927,10 @@ fn normalize_bumper_body_cinfos(hkx: &mut HkxFile) {
     }
 }
 
-/// Transform 19 — `_normalize_ragdoll_body_cinfos`.
-///
 /// Fix FO76→FO4 schema gaps in `hknpRagdollData.bodyCinfos`:
-/// 1. `motionId`: set to sequential body index (0..N-1) so `_synthesize_motion_cinfos`
-///    pairs `motionCinfos[i]` with `body[i]` 1:1.
+/// 1. `motionId`: assign sequential IDs to dynamic ragdoll bodies. Retained
+///    controller/bumper bodies stay in `bodyCinfos` as static bodies with
+///    `motionId = INVALID_ID`, matching native FO4 creature ragdolls.
 /// 2. `reservedBodyId`: set to 0x7FFFFFFF (INVALID_ID).
 /// 3. `orientation`: preserve a valid authored body transform. Only recover a
 ///    missing or malformed value from `hkaSkeleton.referencePose[bone]`, falling
@@ -5362,19 +6031,38 @@ fn normalize_ragdoll_body_cinfos(hkx: &mut HkxFile) {
             continue;
         };
 
+        let mut next_motion_id = 0_u32;
         for (body_idx, body) in bodies.iter_mut().enumerate() {
             let HkxValue::Object(body_members) = body else {
                 continue;
             };
 
-            // motionId: set to sequential body index.
+            let is_controller = is_character_controller_body(body_members);
+            let motion_id = if is_controller {
+                INVALID_ID
+            } else {
+                let motion_id = next_motion_id;
+                next_motion_id += 1;
+                motion_id
+            };
             if let Some(m) = body_members.iter_mut().find(|m| m.name == "motionId") {
-                m.value = HkxValue::U32(body_idx as u32);
+                m.value = HkxValue::U32(motion_id);
             } else {
                 body_members.push(HkxMember {
                     name: "motionId".to_string(),
-                    value: HkxValue::U32(body_idx as u32),
+                    value: HkxValue::U32(motion_id),
                 });
+            }
+
+            if is_controller {
+                if let Some(m) = body_members.iter_mut().find(|m| m.name == "flags") {
+                    m.value = HkxValue::U32(1);
+                } else {
+                    body_members.push(HkxMember {
+                        name: "flags".to_string(),
+                        value: HkxValue::U32(1),
+                    });
+                }
             }
 
             // reservedBodyId: always INVALID_ID.
@@ -5503,21 +6191,14 @@ fn normalize_ragdoll_constraint_offsets(hkx: &mut HkxFile) {
     }
 }
 
-/// Transform 20 — `_inject_ragdoll_motors`.
+/// FO76 `hkpRagdollConstraintData` constraints have null motor pointers, which
+/// FO4 dereferences on ragdoll activation. Wire a shared
+/// `hkpPositionConstraintMotor` into each constraint's `ragdollMotors` atom.
 ///
-/// FO76 `hkpRagdollConstraintData` constraints have null motor pointers.
-/// FO4 dereferences them during ragdoll activation, causing a null-pointer crash.
-/// This transform creates a shared `hkpPositionConstraintMotor` object and wires
-/// it to the `motors` pointer inside each constraint's `ragdollMotors` atom.
-///
-/// Motor values (`maxForce=100`, `tau=0.8`, `damping=1.0`, etc.) were sampled
-/// from the Snallygaster creature (FO4 base-game ragdoll). They are reused for
-/// ALL FO76 ragdolls as a crash-prevention fallback. If an existing
-/// `hkpPositionConstraintMotor` is already present in the file (lines below:
-/// `already_populated` / `motor_idx` search), those values are preserved verbatim
-/// — synthesis is skipped. For differently-sized creatures (e.g. Deathclaw mass
-/// class) these defaults may produce imprecise ragdoll dynamics; correct tuning
-/// would require mass-scaled `tau`/`damping` per creature.
+/// Motor values (`maxForce=100`, `tau=0.8`, `damping=1.0`, ...) come from the FO4
+/// Snallygaster ragdoll and are used for every FO76 ragdoll; an existing
+/// `hkpPositionConstraintMotor` in the file is reused verbatim. Large creatures
+/// (e.g. Deathclaw mass class) would need mass-scaled `tau`/`damping`.
 fn inject_ragdoll_motors(hkx: &mut HkxFile) {
     let has_constraints = hkx
         .objects()
@@ -5527,11 +6208,9 @@ fn inject_ragdoll_motors(hkx: &mut HkxFile) {
         return;
     }
 
-    // Check if any constraint already has populated motors to avoid double-wiring.
-    let already_populated = hkx.objects().iter().any(|obj| {
-        if obj.class_name != "hkpRagdollConstraintData" {
-            return false;
-        }
+    // Tested per constraint, not per file: a file where only some constraints
+    // carry motors still leaves the rest null for FO4 to dereference.
+    let has_motors = |obj: &HkxObject| -> bool {
         obj.members.iter().any(|m| {
             if m.name != "atoms" {
                 return false;
@@ -5558,8 +6237,13 @@ fn inject_ragdoll_motors(hkx: &mut HkxFile) {
                 })
             })
         })
-    });
-    if already_populated {
+    };
+    let all_populated = hkx
+        .objects()
+        .iter()
+        .filter(|o| o.class_name == "hkpRagdollConstraintData")
+        .all(has_motors);
+    if all_populated {
         return;
     }
 
@@ -5608,7 +6292,7 @@ fn inject_ragdoll_motors(hkx: &mut HkxFile) {
         });
 
     for obj in hkx.objects_mut() {
-        if obj.class_name != "hkpRagdollConstraintData" {
+        if obj.class_name != "hkpRagdollConstraintData" || has_motors(obj) {
             continue;
         }
         for m in &mut obj.members {
@@ -5640,8 +6324,6 @@ fn inject_ragdoll_motors(hkx: &mut HkxFile) {
     }
 }
 
-/// Transform 21 — `_synthesize_motion_cinfos`.
-///
 /// Populate empty `motionCinfos` arrays from `bodyCinfos` for both
 /// `hknpRagdollData` and `hknpPhysicsSystemData`. FO76 omits `motionCinfos`;
 /// FO4 crashes on indexed access into an empty array during ragdoll init.
@@ -5669,17 +6351,15 @@ fn synthesize_motion_cinfos(
         .filter_map(|(i, o)| o.name.as_ref().map(|n| (n.clone(), i)))
         .collect();
 
-    // For each body, extract mass distribution COM + inertia tensor + majorAxisSpace.
-    // We need this as a read-only pass before mutating the objects.
+    // Read-only pass: per-body mass distribution COM, inertia and majorAxisSpace.
     //
     // Source layout (hknpRefMassDistribution.massDistribution per the 2018 SDK):
     //   centerOfMassAndVolume: vec4 (xyz = COM in body space, w = volume)
     //   inertiaTensor:         vec4 (diagonalized; w unused)
     //   majorAxisSpace:        vec4 (quaternion xyzw, body←major-axis rotation)
     //
-    // Inertia is already diagonalized in the source. We pass it through
-    // `diagonalize_inertia` defensively in case a future content path supplies
-    // a full 3×3 — for diagonal input the helper returns (diag, identity).
+    // The source inertia is already diagonal; `diagonalize_inertia` returns
+    // (diag, identity) for it and also handles a full 3×3.
     fn resolve_mass_dist(
         objects: &[HkxObject],
         obj_by_name: &std::collections::HashMap<String, usize>,
@@ -5736,12 +6416,8 @@ fn synthesize_motion_cinfos(
         (com, inertia, major_axis)
     }
 
-    // Process each physics container.  We need two passes per object:
-    // 1. Read bodyCinfos and build motionCinfos entries.
-    // 2. Insert the motionCinfos array member.
-    // Because we need immutable access to hkx.objects() for mass-dist lookup
-    // while also needing to mutate a specific object, collect the new entries
-    // first, then apply.
+    // Collect each container's new motionCinfos first (mass-dist lookup needs
+    // immutable access to hkx.objects()), then insert them.
     let n_objects = hkx.objects().len();
     let mut insertions: Vec<(usize, usize, Vec<HkxMember>)> = Vec::new(); // (obj_idx, insert_pos, new_motion_infos)
     let default_inverse_inertia_w = if hkx
@@ -5823,12 +6499,21 @@ fn synthesize_motion_cinfos(
             .map(|i| i + 1)
             .unwrap_or(obj.members.len());
 
-        // Synthesize one hknpMotionCinfo per body.
+        // Synthesize one hknpMotionCinfo per dynamic body. Native FO4 keeps
+        // static character controller bodies in bodyCinfos with INVALID_ID.
         let mut motion_infos: Vec<HkxMember> = Vec::new();
         for body in bodies {
             let Some(body_members) = body.as_object_members() else {
                 continue;
             };
+            let has_invalid_motion_id = body_members
+                .iter()
+                .find(|member| member.name == "motionId")
+                .and_then(|member| extract_int(&member.value))
+                == Some(0x7FFF_FFFF);
+            if is_ragdoll && has_invalid_motion_id {
+                continue;
+            }
 
             let motion_properties_id = body_members
                 .iter()
@@ -5907,9 +6592,9 @@ fn synthesize_motion_cinfos(
             //  1. body.massDistribution (hknpRefMassDistribution) — standard FO76 path.
             //  2. shape_mass_cache keyed by body.shape object name — fallback when
             //     body.mass is the FO76 sentinel (-1.0) and massDistribution is absent.
-            //     The cache was built from hknpShapeMassProperties before Transform 15
-            //     stripped the `properties` pointer from shape objects.
-            //  3. Placeholder 1×1×1 identity inertia (existing last-resort fallback).
+            //     The cache was built from hknpShapeMassProperties before
+            //     `strip_fo76_skeleton_classes` stripped the shapes' `properties` pointer.
+            //  3. Placeholder 1×1×1 identity inertia (last resort).
 
             let inv_mass_from_body = if mass_val > 1e-6 { 1.0 / mass_val } else { 1.0 };
 
@@ -5933,7 +6618,12 @@ fn synthesize_motion_cinfos(
                     let im = cache.inverse_mass;
 
                     let rotated_com = quat_rotate_vector_xyzw(
-                        [orientation[0], orientation[1], orientation[2], orientation[3]],
+                        [
+                            orientation[0],
+                            orientation[1],
+                            orientation[2],
+                            orientation[3],
+                        ],
                         cache.center_of_mass,
                     );
                     let cw = vec![
@@ -5966,7 +6656,12 @@ fn synthesize_motion_cinfos(
 
                     let maq = cache.major_axis_space;
                     let orient = quat_mul_xyzw(
-                        [orientation[0], orientation[1], orientation[2], orientation[3]],
+                        [
+                            orientation[0],
+                            orientation[1],
+                            orientation[2],
+                            orientation[3],
+                        ],
                         maq,
                     );
 
@@ -5979,7 +6674,12 @@ fn synthesize_motion_cinfos(
                         resolve_mass_dist(hkx.objects(), &obj_by_name, &mass_dist_target);
                     let cw = if let Some(ref c) = com4 {
                         let rotated_com = quat_rotate_vector_xyzw(
-                            [orientation[0], orientation[1], orientation[2], orientation[3]],
+                            [
+                                orientation[0],
+                                orientation[1],
+                                orientation[2],
+                                orientation[3],
+                            ],
                             [c[0], c[1], c[2]],
                         );
                         vec![
@@ -6053,7 +6753,12 @@ fn synthesize_motion_cinfos(
                         derived_major_axis
                     };
                     let orient = quat_mul_xyzw(
-                        [orientation[0], orientation[1], orientation[2], orientation[3]],
+                        [
+                            orientation[0],
+                            orientation[1],
+                            orientation[2],
+                            orientation[3],
+                        ],
                         major_axis_q,
                     );
 
@@ -6186,43 +6891,6 @@ fn synthesize_motion_cinfos(
     }
 }
 
-/// Transform 22 — `_fix_blend_hint_enum`.
-///
-/// Remap `hkaAnimationBinding.blendHint` from FO76's raw additive value (1) to
-/// FO4's raw additive value (2).
-fn fix_blend_hint_enum(hkx: &mut HkxFile) {
-    let binding_indices: Vec<usize> = hkx
-        .objects()
-        .iter()
-        .enumerate()
-        .filter(|(_, object)| object.class_name == "hkaAnimationBinding")
-        .filter(|(_, object)| {
-            object
-                .members
-                .iter()
-                .find(|member| member.name == "blendHint")
-                .and_then(|member| extract_int(&member.value))
-                == Some(1)
-        })
-        .map(|(index, _)| index)
-        .collect();
-
-    if binding_indices.is_empty() {
-        return;
-    }
-
-    let objects = hkx.objects_mut();
-    for index in binding_indices {
-        if let Some(member) = objects[index]
-            .members
-            .iter_mut()
-            .find(|member| member.name == "blendHint")
-        {
-            set_int_member(&mut member.value, 2);
-        }
-    }
-}
-
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 fn set_int_member(value: &mut HkxValue, target: i32) {
@@ -6292,6 +6960,278 @@ fn extract_int(value: &HkxValue) -> Option<i32> {
     }
 }
 
+fn synthesize_fo4_weapon_character_property_aliases(hkx: &mut HkxFile) {
+    if !hkx.contents_version().contains("2015") {
+        return;
+    }
+
+    const PROPERTY_ALIASES: [(&str, &str); 2] = [
+        ("DirectAtWeaponBoneIndex", "WeaponGripBoneIndex"),
+        ("DirectAtWeaponLeftBoneIndex", "WeaponGripMirroredBoneIndex"),
+    ];
+
+    let mut patches = Vec::new();
+    for (character_data_index, character_data) in hkx
+        .objects()
+        .iter()
+        .enumerate()
+        .filter(|(_, object)| object.class_name == "hkbCharacterData")
+    {
+        let Some(string_data_index) = pointer_member_value(&character_data.members, "stringData")
+        else {
+            continue;
+        };
+        let Some(property_values_index) =
+            pointer_member_value(&character_data.members, "characterPropertyValues")
+        else {
+            continue;
+        };
+        let Some(HkxValue::Array(property_infos)) = character_data
+            .members
+            .iter()
+            .find(|member| member.name == "characterPropertyInfos")
+            .map(|member| &member.value)
+        else {
+            continue;
+        };
+        let Some(HkxValue::Array(property_names)) = hkx
+            .objects()
+            .get(string_data_index)
+            .and_then(|object| {
+                object
+                    .members
+                    .iter()
+                    .find(|member| member.name == "characterPropertyNames")
+            })
+            .map(|member| &member.value)
+        else {
+            continue;
+        };
+        let Some(HkxValue::Array(property_values)) = hkx
+            .objects()
+            .get(property_values_index)
+            .and_then(|object| {
+                object
+                    .members
+                    .iter()
+                    .find(|member| member.name == "wordVariableValues")
+            })
+            .map(|member| &member.value)
+        else {
+            continue;
+        };
+        if property_infos.len() != property_names.len()
+            || property_values.len() != property_names.len()
+        {
+            continue;
+        }
+
+        for (target_name, source_name) in PROPERTY_ALIASES {
+            if property_names
+                .iter()
+                .filter_map(string_value)
+                .any(|name| name.eq_ignore_ascii_case(target_name))
+            {
+                continue;
+            }
+            let Some(source_index) = property_names
+                .iter()
+                .position(|name| string_value(name).is_some_and(|name| name == source_name))
+            else {
+                continue;
+            };
+            patches.push((
+                character_data_index,
+                string_data_index,
+                property_values_index,
+                target_name,
+                property_infos[source_index].clone(),
+                property_values[source_index].clone(),
+            ));
+        }
+    }
+
+    for (
+        character_data_index,
+        string_data_index,
+        property_values_index,
+        target_name,
+        property_info,
+        property_value,
+    ) in patches
+    {
+        let Some(HkxValue::Array(property_infos)) = hkx
+            .objects_mut()
+            .get_mut(character_data_index)
+            .and_then(|object| {
+                object
+                    .members
+                    .iter_mut()
+                    .find(|member| member.name == "characterPropertyInfos")
+            })
+            .map(|member| &mut member.value)
+        else {
+            continue;
+        };
+        property_infos.push(property_info);
+
+        let Some(HkxValue::Array(property_names)) = hkx
+            .objects_mut()
+            .get_mut(string_data_index)
+            .and_then(|object| {
+                object
+                    .members
+                    .iter_mut()
+                    .find(|member| member.name == "characterPropertyNames")
+            })
+            .map(|member| &mut member.value)
+        else {
+            continue;
+        };
+        property_names.push(HkxValue::String {
+            value: target_name.to_string(),
+            is_null: false,
+        });
+
+        let Some(HkxValue::Array(property_values)) = hkx
+            .objects_mut()
+            .get_mut(property_values_index)
+            .and_then(|object| {
+                object
+                    .members
+                    .iter_mut()
+                    .find(|member| member.name == "wordVariableValues")
+            })
+            .map(|member| &mut member.value)
+        else {
+            continue;
+        };
+        property_values.push(property_value);
+    }
+}
+
+fn remap_human_character_property_bone_indices(hkx: &mut HkxFile) {
+    use std::collections::HashMap;
+
+    if !hkx.contents_version().contains("2015") {
+        return;
+    }
+
+    let fo4_indices: HashMap<&str, i32> = FO4_BONES
+        .iter()
+        .enumerate()
+        .map(|(index, &name)| (name, index as i32))
+        .collect();
+    let mut replacements = Vec::new();
+
+    for character_data in hkx
+        .objects()
+        .iter()
+        .filter(|object| object.class_name == "hkbCharacterData")
+    {
+        let Some(string_data_index) = pointer_member_value(&character_data.members, "stringData")
+        else {
+            continue;
+        };
+        let Some(property_values_index) =
+            pointer_member_value(&character_data.members, "characterPropertyValues")
+        else {
+            continue;
+        };
+        let Some(string_data) = hkx.objects().get(string_data_index) else {
+            continue;
+        };
+        let Some(rig_name) = string_member_value(&string_data.members, "rigName") else {
+            continue;
+        };
+        let normalized_rig_name = rig_name.replace('/', "\\").to_ascii_lowercase();
+        if !normalized_rig_name.ends_with(r"\character\characterassets\skeleton.hkt")
+            && !normalized_rig_name.ends_with(r"\character\characterassets\skeleton.hkx")
+        {
+            continue;
+        }
+        let Some(HkxValue::Array(property_names)) = string_data
+            .members
+            .iter()
+            .find(|member| member.name == "characterPropertyNames")
+            .map(|member| &member.value)
+        else {
+            continue;
+        };
+        let Some(HkxValue::Array(property_values)) = hkx
+            .objects()
+            .get(property_values_index)
+            .and_then(|object| {
+                object
+                    .members
+                    .iter()
+                    .find(|member| member.name == "wordVariableValues")
+            })
+            .map(|member| &member.value)
+        else {
+            continue;
+        };
+
+        for (property_index, property_name) in property_names.iter().enumerate() {
+            let Some(property_name) = string_value(property_name) else {
+                continue;
+            };
+            let normalized_property_name = property_name.to_ascii_lowercase();
+            let is_bone_index = (normalized_property_name.starts_with("directat")
+                && normalized_property_name.ends_with("index"))
+                || (normalized_property_name.contains("grip")
+                    && normalized_property_name.ends_with("boneindex"));
+            if !is_bone_index {
+                continue;
+            }
+            let Some(source_index) = property_values
+                .get(property_index)
+                .and_then(HkxValue::as_object_members)
+                .and_then(|members| members.iter().find(|member| member.name == "value"))
+                .and_then(|member| extract_int(&member.value))
+            else {
+                continue;
+            };
+            let Some(&bone_name) = usize::try_from(source_index)
+                .ok()
+                .and_then(|index| FO76_BONES.get(index))
+            else {
+                continue;
+            };
+            let Some(&target_index) = fo4_indices.get(bone_name) else {
+                continue;
+            };
+            if source_index != target_index {
+                replacements.push((property_values_index, property_index, target_index));
+            }
+        }
+    }
+
+    for (object_index, property_index, target_index) in replacements {
+        let Some(HkxValue::Array(property_values)) = hkx
+            .objects_mut()
+            .get_mut(object_index)
+            .and_then(|object| {
+                object
+                    .members
+                    .iter_mut()
+                    .find(|member| member.name == "wordVariableValues")
+            })
+            .map(|member| &mut member.value)
+        else {
+            continue;
+        };
+        let Some(value_member) = property_values
+            .get_mut(property_index)
+            .and_then(HkxValue::as_object_members_mut)
+            .and_then(|members| members.iter_mut().find(|member| member.name == "value"))
+        else {
+            continue;
+        };
+        value_member.value = HkxValue::I32(target_index);
+    }
+}
+
 #[cfg(test)]
 fn auto_fix_human_bone_tracks_is_noop(hkx: &HkxFile) -> bool {
     !hkx.objects().iter().any(|object| {
@@ -6303,7 +7243,7 @@ fn auto_fix_human_bone_tracks_is_noop(hkx: &HkxFile) -> bool {
     })
 }
 
-/// Port of `py_creation_lib/python/creation_lib/hkxpack/migration.py::_auto_fix_human_bone_tracks`.
+/// Convert FO76 human-skeleton animation tracks to FO4 bone order.
 ///
 /// For 96-track spline: decompress → strip AimSource (track 12) → reorder to FO4
 /// bone order → recompress, then set identity bone indices on the binding.
@@ -6907,10 +7847,7 @@ fn decompress_then_mutate_recompress(
         let mut new_members: Vec<HkxMember> = Vec::new();
         new_members.push(HkxMember {
             name: "type".to_string(),
-            value: HkxValue::String {
-                value: "HK_SPLINE_COMPRESSED_ANIMATION".to_string(),
-                is_null: false,
-            },
+            value: HkxValue::I32(HK_SPLINE_COMPRESSED_ANIMATION_TYPE),
         });
         new_members.push(HkxMember {
             name: "duration".to_string(),
@@ -7237,14 +8174,11 @@ fn string_value(value: &HkxValue) -> Option<&str> {
 }
 
 // ── FO76 → FO4 weapon collision: helpers and transforms ──────────────────
-// Ports from `py_creation_lib/python/creation_lib/hkxpack/migration.py`. These transforms emit *new* inline
-// structs whose class differs from the parent member's `ctype` template,
-// which is why `HkxValue::TypedObject` was added to `hkx::types`.
+// These transforms emit new inline structs whose class differs from the parent
+// member's `ctype` template, hence `HkxValue::TypedObject`.
 
 /// Walk an `HkxValue` recursively and remap any `Pointer(Some(idx))` whose
-/// `idx` is a key in `map` to the mapped value. Mirrors the Python
-/// name-map rewrite in `_migrate_compound_shape_to_physics_system` once
-/// pointer targets have been translated to indices.
+/// `idx` is a key in `map` to the mapped value.
 pub(crate) fn remap_pointers(value: &mut HkxValue, map: &std::collections::HashMap<usize, usize>) {
     match value {
         HkxValue::Pointer(Some(idx)) => {
@@ -7266,7 +8200,6 @@ pub(crate) fn remap_pointers(value: &mut HkxValue, map: &std::collections::HashM
     }
 }
 
-// Transform A — `_compute_capsule_endpoints`.
 // Pure geometry helper: given 6 polytope planes (each `[nx, ny, nz, d]`),
 // return `(a, b)` capsule endpoints as 4-element vectors `[x, y, z, 0]`,
 // or `None` if the planes don't form 3 opposing pairs.
@@ -7339,29 +8272,20 @@ pub(crate) fn compute_capsule_endpoints(planes: &[[f32; 4]]) -> Option<([f32; 4]
     Some((a, b))
 }
 
-// Transform E — `_convert_limited_hinge_to_ragdoll`.
-//
 // No-op: FO4 supports `hkpLimitedHingeConstraintData` directly (vanilla Deathclaw
 // keeps two limited-hinge constraints in its ragdoll), so reclassifying them to
 // ragdoll constraints would produce a loadable but non-vanilla class graph. The
-// slot stays a no-op to keep the always-on pipeline order stable and preserve
-// authored hinges.
+// slot keeps the always-on pipeline order stable.
 fn convert_limited_hinge_to_ragdoll(_hkx: &mut HkxFile) {}
 
-// Transform B — `_wrap_capsules_in_compound_shape`.
-// Wraps bare `hknpCapsuleShape` body-cinfo references in a synthesized
-// `hknpDynamicCompoundShape` + `hknpDynamicCompoundShapeData`. The Python
-// reference is currently DISABLED (writer-side bug for newly-synthesized
-// compound shape data). The Rust port mirrors the disabled state — the
-// helper builders are exercised by unit tests but the wrapper is a no-op
-// at the pipeline level until the writer-side bug is fixed.
+// Would wrap bare `hknpCapsuleShape` body-cinfo references in a synthesized
+// `hknpDynamicCompoundShape` + `hknpDynamicCompoundShapeData`. The helper
+// builders are unit-tested, but this pipeline step is a no-op.
 fn wrap_capsules_in_compound_shape(_hkx: &mut HkxFile) {
-    // DISABLED: matches Python reference. Re-enable once the writer-side
-    // hknpDynamicCompoundShapeData layout bug is fixed (see Python comment
-    // at py_creation_lib/python/creation_lib/hkxpack/migration.py:1782-1789).
+    // DISABLED until the writer lays out newly synthesized
+    // hknpDynamicCompoundShapeData correctly.
 }
 
-// Transform D — `_flatten_compound_shapes_in_psd`.
 // Strip `hknpDynamicCompoundShape` wrappers from PSD blobs by replacing
 // the single bodyCinfo+compound-shape pointer with one bodyCinfo per leaf
 // shape and dropping the compound shape objects.
@@ -7502,7 +8426,6 @@ fn flatten_compound_shapes_in_psd(hkx: &mut HkxFile) {
     hkx.retain_objects_remap_pointers(|_, o| !strip_set.contains(o.class_name.as_str()));
 }
 
-// Transform C — `_migrate_compound_shape_to_physics_system`.
 // Wraps a FO76 bare-compound-shape weapon collision blob in a FO4-format
 // `hknpPhysicsSystemData` root by deep-cloning the embedded vanilla FO4
 // weapon PSD template, re-targeting its body-cinfo shape pointers, and
@@ -7534,9 +8457,8 @@ fn migrate_compound_shape_to_physics_system(hkx: &mut HkxFile) {
 
     // Collect kept companion objects (referenced by shapes). Each shape
     // can carry an `hkRefCountedProperties` companion via its `properties`
-    // member. The Python reference also nulls out `hkUint16` connectivity
-    // pointers — already handled by `strip_shape_connectivity` which runs
-    // earlier in the pipeline, so we don't repeat that here.
+    // member. `hkUint16` connectivity pointers were already nulled by
+    // `strip_shape_connectivity`, which runs earlier.
     let mut kept_indices: Vec<usize> = Vec::new();
     let mut kept_seen: std::collections::HashSet<usize> = Default::default();
     let keep = |idx: usize,
@@ -7604,10 +8526,9 @@ fn migrate_compound_shape_to_physics_system(hkx: &mut HkxFile) {
         resize_array_member(&mut new_psd, arr, n_shapes);
     }
 
-    // Wire per-body indices. For now, body shape pointers point to a
-    // SENTINEL value (usize::MAX - shape_ordinal) which we'll remap to
-    // final indices in the second pass after assembling new_objects.
-    // Using sentinels avoids the invalid-index window during clone.
+    // Wire per-body indices. Body shape pointers get a SENTINEL value
+    // (usize::MAX - shape_ordinal), remapped to final indices in the second pass
+    // after assembling new_objects; this avoids an invalid-index window during clone.
     const SHAPE_SENTINEL_BASE: usize = usize::MAX - 1024;
     fn set_body_index_member(body: &mut HkxValue, name: &str, value: HkxValue) {
         let Some(members) = body.as_object_members_mut() else {
@@ -7757,8 +8678,6 @@ fn remap_pointers_optional(value: &mut HkxValue, old_to_new: &[Option<usize>]) {
 
 /// Decompress all `hkaSplineCompressedAnimation` objects in `hkx` to
 /// `hkaInterleavedUncompressedAnimation`, replacing them in-place.
-///
-/// Port of `py_creation_lib/python/creation_lib/hkxpack/spline_decompress.py::decompress_spline_animations`.
 fn decompress_spline_animations(hkx: &mut HkxFile) -> HavokResult<()> {
     use crate::animation::spline::decompress_spline_full;
 
@@ -7961,10 +8880,7 @@ fn decompress_spline_animations(hkx: &mut HkxFile) -> HavokResult<()> {
         // type enum
         new_members.push(HkxMember {
             name: "type".to_string(),
-            value: HkxValue::String {
-                value: "HK_INTERLEAVED_ANIMATION".to_string(),
-                is_null: false,
-            },
+            value: HkxValue::I32(HK_INTERLEAVED_ANIMATION_TYPE),
         });
 
         // Copy: duration, numberOfTransformTracks, numberOfFloatTracks
@@ -8215,8 +9131,6 @@ const FO4_BONES: &[&str] = &[
 /// Strip FO76-specific AimSource bone track (index 12) from
 /// `hkaInterleavedUncompressedAnimation` objects with 96 transform tracks,
 /// and remap `transformTrackToBoneIndices` on the associated binding to FO4 ordering.
-///
-/// Port of `py_creation_lib/python/creation_lib/hkxpack/migration.py::_strip_extra_bone_tracks`.
 fn strip_extra_bone_tracks(hkx: &mut HkxFile) {
     const FO76_TRACK_COUNT: i32 = 96;
     const STRIP_INDEX: usize = 12; // AimSource
@@ -8346,8 +9260,6 @@ fn strip_extra_bone_tracks(hkx: &mut HkxFile) {
 
 /// Recompress `hkaInterleavedUncompressedAnimation` objects back to
 /// `hkaSplineCompressedAnimation`.
-///
-/// Port of `py_creation_lib/python/creation_lib/hkxpack/migration.py::_recompress_animations`.
 fn recompress_animations(hkx: &mut HkxFile) -> HavokResult<()> {
     use crate::animation::spline::{
         SplineCompressionParams, SplineFrame, SplineTransform, compress_spline_with_params,
@@ -8496,10 +9408,7 @@ fn recompress_animations(hkx: &mut HkxFile) -> HavokResult<()> {
         // type enum
         new_members.push(HkxMember {
             name: "type".to_string(),
-            value: HkxValue::String {
-                value: "HK_SPLINE_COMPRESSED_ANIMATION".to_string(),
-                is_null: false,
-            },
+            value: HkxValue::I32(HK_SPLINE_COMPRESSED_ANIMATION_TYPE),
         });
 
         // Copy common hkaAnimation members
@@ -8630,6 +9539,98 @@ mod tests {
             value: value.to_string(),
             is_null: false,
         }
+    }
+
+    fn character_property_file(
+        contents_version: &str,
+        rig_name: &str,
+        properties: &[(&str, i32)],
+    ) -> HkxFile {
+        HkxFile::from_tagxml(
+            12,
+            contents_version,
+            vec![
+                object(
+                    "hkbCharacterData",
+                    vec![
+                        member("stringData", HkxValue::Pointer(Some(1))),
+                        member("characterPropertyValues", HkxValue::Pointer(Some(2))),
+                        member(
+                            "characterPropertyInfos",
+                            HkxValue::Array(
+                                properties
+                                    .iter()
+                                    .map(|_| {
+                                        HkxValue::Object(vec![
+                                            member(
+                                                "role",
+                                                HkxValue::Object(vec![
+                                                    member("role", HkxValue::I32(0)),
+                                                    member("flags", HkxValue::I32(0)),
+                                                ]),
+                                            ),
+                                            member("type", HkxValue::I32(2)),
+                                        ])
+                                    })
+                                    .collect(),
+                            ),
+                        ),
+                    ],
+                ),
+                object(
+                    "hkbCharacterStringData",
+                    vec![
+                        member("rigName", string(rig_name)),
+                        member(
+                            "characterPropertyNames",
+                            HkxValue::Array(
+                                properties.iter().map(|(name, _)| string(name)).collect(),
+                            ),
+                        ),
+                    ],
+                ),
+                object(
+                    "hkbVariableValueSet",
+                    vec![member(
+                        "wordVariableValues",
+                        HkxValue::Array(
+                            properties
+                                .iter()
+                                .map(|(_, value)| {
+                                    HkxValue::Object(vec![member("value", HkxValue::I32(*value))])
+                                })
+                                .collect(),
+                        ),
+                    )],
+                ),
+            ],
+        )
+    }
+
+    fn character_property_values(hkx: &HkxFile) -> Vec<i32> {
+        let HkxValue::Array(values) = &hkx.objects()[2].members[0].value else {
+            panic!("wordVariableValues should be an array");
+        };
+        values
+            .iter()
+            .map(|value| {
+                value
+                    .as_object_members()
+                    .and_then(|members| members.iter().find(|member| member.name == "value"))
+                    .and_then(|member| extract_int(&member.value))
+                    .expect("character property value")
+            })
+            .collect()
+    }
+
+    fn character_property_names(hkx: &HkxFile) -> Vec<&str> {
+        let HkxValue::Array(names) = &hkx.objects()[1].members[1].value else {
+            panic!("characterPropertyNames should be an array");
+        };
+        names
+            .iter()
+            .map(|name| string_value(name).expect("character property name"))
+            .collect()
     }
 
     #[test]
@@ -8878,6 +9879,93 @@ mod tests {
     }
 
     #[test]
+    fn remap_human_character_property_bone_indices_uses_fo4_skeleton_order() {
+        let properties = [
+            ("DirectAtWeaponBoneIndex", 29),
+            ("WeaponGripBoneIndex", 30),
+            ("DirectAtSpine1BoneIndex", 9),
+            ("DirectAtChestBoneIndex", 11),
+            ("DirectAtRightUpperArmIndex", 22),
+            ("DirectAtHeadBoneIndex", 14),
+            ("DirectAtWeaponLeftBoneIndex", 28),
+            ("WeaponGripMirroredBoneIndex", 32),
+            ("WeaponAssemblyFullBlend", 123),
+        ];
+        let mut hkx = character_property_file(
+            "hk_2015.1.0-r1",
+            r"..\Character\CharacterAssets\skeleton.HKT",
+            &properties,
+        );
+
+        remap_human_character_property_bone_indices(&mut hkx);
+
+        assert_eq!(
+            character_property_values(&hkx),
+            [28, 82, 9, 11, 21, 13, 27, 84, 123]
+        );
+    }
+
+    #[test]
+    fn synthesize_fo4_weapon_character_property_aliases_copies_weapon_bone_indices() {
+        let properties = [
+            ("WeaponGripBoneIndex", 26),
+            ("WeaponGripMirroredBoneIndex", -1),
+        ];
+        let mut hkx = character_property_file(
+            "hk_2015.1.0-r1",
+            r"Actors\MoleMiner\CharacterAssets\skeleton.hkx",
+            &properties,
+        );
+
+        synthesize_fo4_weapon_character_property_aliases(&mut hkx);
+
+        assert_eq!(
+            character_property_names(&hkx),
+            [
+                "WeaponGripBoneIndex",
+                "WeaponGripMirroredBoneIndex",
+                "DirectAtWeaponBoneIndex",
+                "DirectAtWeaponLeftBoneIndex",
+            ]
+        );
+        assert_eq!(character_property_values(&hkx), [26, -1, 26, -1]);
+        let HkxValue::Array(property_infos) = &hkx.objects()[0].members[2].value else {
+            panic!("characterPropertyInfos should be an array");
+        };
+        assert_eq!(property_infos.len(), 4);
+        assert_eq!(property_infos[2], property_infos[0]);
+        assert_eq!(property_infos[3], property_infos[1]);
+    }
+
+    #[test]
+    fn remap_human_character_property_bone_indices_skips_custom_rigs() {
+        let properties = [("DirectAtWeaponBoneIndex", 29), ("WeaponGripBoneIndex", 30)];
+        let mut hkx = character_property_file(
+            "hk_2015.1.0-r1",
+            r"CharacterAssets\skeleton.hkt",
+            &properties,
+        );
+
+        remap_human_character_property_bone_indices(&mut hkx);
+
+        assert_eq!(character_property_values(&hkx), [29, 30]);
+    }
+
+    #[test]
+    fn remap_human_character_property_bone_indices_skips_fo4_files() {
+        let properties = [("DirectAtWeaponBoneIndex", 28), ("WeaponGripBoneIndex", 82)];
+        let mut hkx = character_property_file(
+            "hk_2014.1.0-r1",
+            r"..\Character\CharacterAssets\skeleton.HKT",
+            &properties,
+        );
+
+        remap_human_character_property_bone_indices(&mut hkx);
+
+        assert_eq!(character_property_values(&hkx), [28, 82]);
+    }
+
+    #[test]
     fn stamp_fo76_schema_versions_covers_all_fo4_class_versions() {
         for &(class_name, expected_sig) in FO4_CLASS_VERSIONS {
             let mut hkx =
@@ -8985,6 +10073,33 @@ mod tests {
         fix_polytope_dispatch_type(&mut hkx);
 
         assert_eq!(hkx.objects()[0].members[0].value, HkxValue::I32(1));
+    }
+
+    #[test]
+    fn fix_compressed_mesh_shape_headers_rewrites_fo76_values() {
+        let mut hkx = HkxFile::from_tagxml(
+            11,
+            "hk_2014.1.0-r1",
+            vec![object(
+                "hknpCompressedMeshShape",
+                vec![
+                    member("flags", HkxValue::U16(4)),
+                    member("numShapeKeyBits", HkxValue::U8(7)),
+                    member("dispatchType", HkxValue::U8(3)),
+                ],
+            )],
+        );
+
+        fix_compressed_mesh_shape_headers(&mut hkx);
+
+        assert_eq!(
+            hkx.objects()[0].members,
+            vec![
+                member("flags", HkxValue::U16(0x0204)),
+                member("numShapeKeyBits", HkxValue::U8(7)),
+                member("dispatchType", HkxValue::U8(2)),
+            ]
+        );
     }
 
     #[test]
@@ -9622,6 +10737,152 @@ mod tests {
         );
     }
 
+    #[test]
+    fn reclassify_fo76_hkb_layer_updates_only_its_binding_paths() {
+        fn bindings() -> HkxObject {
+            object(
+                "hkbVariableBindingSet",
+                vec![member(
+                    "bindings",
+                    HkxValue::Array(
+                        [
+                            "blendingControlData/weight",
+                            "blendingControlData/onByDefault",
+                            "boneWeights",
+                        ]
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, path)| {
+                            HkxValue::Object(vec![
+                                member(
+                                    "memberPath",
+                                    HkxValue::String {
+                                        value: path.to_string(),
+                                        is_null: false,
+                                    },
+                                ),
+                                member("variableIndex", HkxValue::I32(index as i32)),
+                            ])
+                        })
+                        .collect(),
+                    ),
+                )],
+            )
+        }
+        let mut hkx = HkxFile::from_tagxml(
+            11,
+            "hk_2015.1.0-r1",
+            vec![
+                object(
+                    "hkbLayer",
+                    vec![
+                        member("generator", HkxValue::Pointer(None)),
+                        member("variableBindingSet", HkxValue::Pointer(Some(1))),
+                        member(
+                            "blendingControlData",
+                            HkxValue::Object(vec![member("weight", HkxValue::F32(1.0))]),
+                        ),
+                    ],
+                ),
+                bindings(),
+                object(
+                    "hkbModifier",
+                    vec![member("variableBindingSet", HkxValue::Pointer(Some(3)))],
+                ),
+                bindings(),
+            ],
+        );
+        let unrelated = hkx.objects()[3].members.clone();
+        reclassify_fo76_hkb_layer(&mut hkx);
+        let HkxValue::Array(entries) = &hkx.objects()[1].members[0].value else {
+            panic!()
+        };
+        for (index, expected) in ["weight", "onByDefault", "boneWeights"]
+            .into_iter()
+            .enumerate()
+        {
+            let HkxValue::Object(members) = &entries[index] else {
+                panic!()
+            };
+            assert_eq!(string_member_value(members, "memberPath"), Some(expected));
+            assert_eq!(members[1].value, HkxValue::I32(index as i32));
+        }
+        assert_eq!(hkx.objects()[3].members, unrelated);
+        reclassify_fo76_hkb_layer(&mut hkx);
+        let HkxValue::Array(entries) = &hkx.objects()[1].members[0].value else {
+            panic!()
+        };
+        let HkxValue::Object(members) = &entries[0] else {
+            panic!()
+        };
+        assert_eq!(string_member_value(members, "memberPath"), Some("weight"));
+    }
+
+    #[test]
+    fn reclassify_fo76_hkb_layer_preserves_each_real_layer_enabled_state() {
+        fn layer(generator: usize, on_by_default: bool) -> HkxObject {
+            object(
+                "hkbLayer",
+                vec![
+                    member("generator", HkxValue::Pointer(Some(generator))),
+                    member(
+                        "blendingControlData",
+                        HkxValue::Object(vec![member(
+                            "onByDefault",
+                            HkxValue::Bool(on_by_default),
+                        )]),
+                    ),
+                ],
+            )
+        }
+
+        let mut hkx = HkxFile::from_tagxml(
+            11,
+            "hk_2015.1.0-r1",
+            vec![
+                object(
+                    "hkbLayerGenerator",
+                    vec![member(
+                        "layers",
+                        HkxValue::Array(vec![
+                            HkxValue::Pointer(Some(1)),
+                            HkxValue::Pointer(Some(2)),
+                            HkxValue::Pointer(Some(3)),
+                        ]),
+                    )],
+                ),
+                layer(4, true),
+                layer(5, true),
+                layer(6, false),
+                object("hkbStateMachine", vec![]),
+                object("hkbStateMachine", vec![]),
+                object("hkbStateMachine", vec![]),
+            ],
+        );
+
+        reclassify_fo76_hkb_layer(&mut hkx);
+        apply_classxml_defaults(&mut hkx);
+
+        for (layer_index, expected) in [(1, true), (2, true), (3, false)] {
+            let layer = &hkx.objects()[layer_index];
+            assert_eq!(layer.signature, 1);
+            assert!(
+                layer
+                    .members
+                    .iter()
+                    .all(|member| member.name != "blendingControlData")
+            );
+            assert_eq!(
+                layer
+                    .members
+                    .iter()
+                    .find(|member| member.name == "onByDefault")
+                    .map(|member| &member.value),
+                Some(&HkxValue::Bool(expected))
+            );
+        }
+    }
+
     // ── strip_runtime_members tests ──────────────────────────────────────────
 
     #[test]
@@ -9912,12 +11173,10 @@ mod tests {
 
     #[test]
     fn compact_null_blender_children_compacts_every_generator_not_just_first() {
-        // Regression: a stray `break` stopped the transform after the FIRST
-        // blender/pose-matching generator, leaving later generators' null
-        // children intact. FO4 then walks the packed `children` array by count
-        // and unconditionally derefs each slot -> null child -> CK/runtime CTD
-        // (the converted Scorched `ScorchedRootBehavior.hkx` has 4 such
-        // generators; only the first was being compacted).
+        // Every blender/pose-matching generator must be compacted, not just the
+        // first. FO4 walks the packed `children` array by count and derefs each
+        // slot, so a null child CTDs the CK/runtime (the converted Scorched
+        // `ScorchedRootBehavior.hkx` has 4 such generators).
         let mut hkx = HkxFile::from_tagxml(
             11,
             "hk_2014.1.0-r1",
@@ -10220,8 +11479,7 @@ mod tests {
     #[test]
     fn compact_null_state_machine_states_strips_nulls_for_nif_embedded_files() {
         // NIF-embedded behavior blob (no hkRootLevelContainer) with orphan
-        // StateInfos must NOT recover them — strip nulls only, matching the
-        // Python migration's nif-embedded branch.
+        // StateInfos must NOT recover them — strip nulls only.
         let mut hkx = HkxFile::from_tagxml(
             11,
             "hk_2014.1.0-r1",
@@ -10826,7 +12084,26 @@ mod tests {
             11,
             "hk_2015.1.0-r1",
             vec![
-                behavior_string_data_with_variables(&["Speed", "Direction", "iMovementSpeed"]),
+                object(
+                    "hkbBehaviorGraphStringData",
+                    vec![
+                        member(
+                            "variableNames",
+                            HkxValue::Array(
+                                ["Speed", "Direction", "iSyncLocomotionSpeed"]
+                                    .into_iter()
+                                    .map(string)
+                                    .collect(),
+                            ),
+                        ),
+                        member(
+                            "eventNames",
+                            HkxValue::Array(
+                                ["Jog", "Run", "Walk"].into_iter().map(string).collect(),
+                            ),
+                        ),
+                    ],
+                ),
                 object(
                     "hkbBlenderGenerator",
                     vec![member("name", string("WalkBlend"))],
@@ -10884,11 +12161,524 @@ mod tests {
             panic!("states should be an array");
         };
         assert_eq!(states.len(), 3);
-        assert!(
-            warnings
+        let expected_transitions = [
+            vec![(0, 1), (1, 2)],
+            vec![(2, 0), (1, 2)],
+            vec![(2, 0), (0, 1)],
+        ];
+        for (state, expected) in states.iter().zip(expected_transitions) {
+            let HkxValue::Pointer(Some(state_index)) = state else {
+                panic!("state should be a pointer");
+            };
+            let transitions_index =
+                pointer_member_value(&hkx.objects()[*state_index].members, "transitions")
+                    .expect("state transition array");
+            let transitions = hkx.objects()[transitions_index]
+                .members
                 .iter()
-                .any(|warning| warning.contains("converted unsupported BSLocomotionBlendGenerator"))
+                .find(|member| member.name == "transitions")
+                .expect("transitions member");
+            let HkxValue::Array(transitions) = &transitions.value else {
+                panic!("transitions should be an array");
+            };
+            let actual: Vec<_> = transitions
+                .iter()
+                .map(|transition| {
+                    let members = transition
+                        .as_object_members()
+                        .expect("transition should be an object");
+                    let event_id = members
+                        .iter()
+                        .find(|member| member.name == "eventId")
+                        .and_then(|member| extract_int(&member.value))
+                        .expect("transition event id");
+                    let to_state_id = members
+                        .iter()
+                        .find(|member| member.name == "toStateId")
+                        .and_then(|member| extract_int(&member.value))
+                        .expect("transition destination");
+                    (event_id, to_state_id)
+                })
+                .collect();
+            assert_eq!(actual, expected);
+        }
+        assert!(warnings
+            .iter()
+            .any(|warning| warning.contains("converted unsupported BSLocomotionBlendGenerator")));
+    }
+
+    /// Most FO76 graphs name the int walk/jog/run tier `iLocomotionSpeed`, not
+    /// `iSyncLocomotionSpeed`. Without it `startStateId` stays unbound and the
+    /// selector freezes in its default state (no jog or run). Ground truth:
+    /// `pioneercorebehavior.hkx` (Liberator) exposes only `iLocomotionSpeed`
+    /// (int, index 14) and ships with `variableBindingSet = null`.
+    #[test]
+    fn locomotion_blend_binds_start_state_to_ilocomotionspeed_variable() {
+        let mut hkx = HkxFile::from_tagxml(
+            11,
+            "hk_2015.1.0-r1",
+            vec![
+                object(
+                    "hkbBehaviorGraphStringData",
+                    vec![
+                        member(
+                            "variableNames",
+                            HkxValue::Array(
+                                ["Speed", "Direction", "iLocomotionSpeed"]
+                                    .into_iter()
+                                    .map(string)
+                                    .collect(),
+                            ),
+                        ),
+                        member(
+                            "eventNames",
+                            HkxValue::Array(
+                                ["Jog", "Run", "Walk"].into_iter().map(string).collect(),
+                            ),
+                        ),
+                    ],
+                ),
+                object(
+                    "hkbBlenderGenerator",
+                    vec![member("name", string("WalkBlend"))],
+                ),
+                object(
+                    "hkbBlenderGenerator",
+                    vec![member("name", string("JogBlend"))],
+                ),
+                object(
+                    "hkbBlenderGenerator",
+                    vec![member("name", string("RunBlend"))],
+                ),
+                test_binding_set("fDirectionParameter", 1),
+                object(
+                    "BSLocomotionBlendGenerator",
+                    vec![
+                        member("variableBindingSet", HkxValue::Pointer(Some(4))),
+                        member("name", string("BSLocomotionBlendGenerator")),
+                        member("pRunBlendGenerator", HkxValue::Pointer(Some(3))),
+                        member("pJogBlendGenerator", HkxValue::Pointer(Some(2))),
+                        member("pWalkBlendGenerator", HkxValue::Pointer(Some(1))),
+                        member("fTransitionDuration", HkxValue::F32(0.2)),
+                    ],
+                ),
+            ],
         );
+        let mut warnings = Vec::new();
+
+        migrate_unsupported_behavior_nodes(&mut hkx, &mut warnings);
+
+        let state_machine = &hkx.objects()[5];
+        assert_eq!(state_machine.class_name, "hkbStateMachine");
+        let state_binding = pointer_member_value(&state_machine.members, "variableBindingSet")
+            .expect("startStateId must be bound, not left null");
+        assert_eq!(
+            binding_variable_index(&hkx, state_binding, "startStateId"),
+            Some(2),
+            "startStateId must bind to iLocomotionSpeed"
+        );
+        assert!(
+            !warnings
+                .iter()
+                .any(|warning| warning.contains("left startStateId unbound"))
+        );
+    }
+
+    #[test]
+    fn behavior_reference_names_gain_the_hkx_extension_fo4_requires() {
+        let mut hkx = HkxFile::from_tagxml(
+            11,
+            "hk_2015.1.0-r1",
+            vec![
+                object(
+                    "hkbBehaviorReferenceGenerator",
+                    vec![member(
+                        "behaviorName",
+                        string("Behaviors\\DialogueBehavior"),
+                    )],
+                ),
+                object(
+                    "hkbBehaviorReferenceGenerator",
+                    vec![member("behaviorName", string("Behaviors\\Already.hkx"))],
+                ),
+                object(
+                    "hkbBehaviorReferenceGenerator",
+                    vec![member("behaviorName", string("Behaviors\\Tool.hkt"))],
+                ),
+                object(
+                    "hkbBehaviorReferenceGenerator",
+                    vec![member("behaviorName", string(""))],
+                ),
+            ],
+        );
+
+        normalize_behavior_reference_names(&mut hkx);
+
+        let names: Vec<String> = hkx
+            .objects()
+            .iter()
+            .map(|object| {
+                let member = object
+                    .members
+                    .iter()
+                    .find(|member| member.name == "behaviorName")
+                    .expect("behaviorName member");
+                match &member.value {
+                    HkxValue::String { value, .. } => value.clone(),
+                    other => panic!("behaviorName should be a string, got {other:?}"),
+                }
+            })
+            .collect();
+
+        assert_eq!(names[0], "Behaviors\\DialogueBehavior.hkx");
+        assert_eq!(names[1], "Behaviors\\Already.hkx");
+        assert_eq!(names[2], "Behaviors\\Tool.hkx");
+        assert_eq!(names[3], "");
+    }
+
+    #[test]
+    fn zero_weight_action_idle_delegates_to_base_locomotion() {
+        let mut hkx = HkxFile::from_tagxml(
+            11,
+            "hk_2015.1.0-r1",
+            vec![
+                object(
+                    "hkbBehaviorGraphStringData",
+                    vec![member(
+                        "characterPropertyNames",
+                        HkxValue::Array(vec![string("ZeroBoneWeights")]),
+                    )],
+                ),
+                object(
+                    "hkbLayerGenerator",
+                    vec![
+                        member("name", string("Sheepsquatch_LayerGenerator")),
+                        member(
+                            "layers",
+                            HkxValue::Array(vec![
+                                HkxValue::Pointer(Some(2)),
+                                HkxValue::Pointer(Some(3)),
+                            ]),
+                        ),
+                        member("indexOfSyncMasterChild", HkxValue::U16(1)),
+                    ],
+                ),
+                object(
+                    "hkbLayer",
+                    vec![
+                        member("generator", HkxValue::Pointer(Some(4))),
+                        member("onByDefault", HkxValue::Bool(true)),
+                    ],
+                ),
+                object(
+                    "hkbLayer",
+                    vec![
+                        member("variableBindingSet", HkxValue::Pointer(Some(13))),
+                        member("generator", HkxValue::Pointer(Some(5))),
+                        member("onByDefault", HkxValue::Bool(true)),
+                        member("useMotion", HkxValue::Bool(true)),
+                    ],
+                ),
+                object(
+                    "hkbStateMachine",
+                    vec![member("name", string("BaseLayer_SM"))],
+                ),
+                object(
+                    "hkbStateMachine",
+                    vec![
+                        member("name", string("ActionLayer_SM")),
+                        member("states", HkxValue::Array(vec![HkxValue::Pointer(Some(6))])),
+                    ],
+                ),
+                object(
+                    "hkbStateMachineStateInfo",
+                    vec![
+                        member("name", string("IdleAction")),
+                        member("generator", HkxValue::Pointer(Some(7))),
+                    ],
+                ),
+                object(
+                    "hkbModifierGenerator",
+                    vec![
+                        member("name", string("IdleAction_MG")),
+                        member("modifier", HkxValue::Pointer(Some(8))),
+                        member("generator", HkxValue::Pointer(Some(10))),
+                    ],
+                ),
+                object(
+                    "hkbModifierList",
+                    vec![
+                        member("name", string("IdleAction_ML")),
+                        member(
+                            "modifiers",
+                            HkxValue::Array(vec![
+                                HkxValue::Pointer(Some(9)),
+                                HkxValue::Pointer(Some(11)),
+                            ]),
+                        ),
+                    ],
+                ),
+                object(
+                    "BSAssignBoneWeightsModifier",
+                    vec![
+                        member("name", string("WeightAssignment")),
+                        member("variableBindingSet", HkxValue::Pointer(Some(12))),
+                    ],
+                ),
+                object(
+                    "hkbReferencePoseGenerator",
+                    vec![member("name", string("IdleReferencePose"))],
+                ),
+                object(
+                    "BSIsActiveModifier",
+                    vec![member("name", string("IdleAction_IsActive"))],
+                ),
+                object(
+                    "hkbVariableBindingSet",
+                    vec![member(
+                        "bindings",
+                        HkxValue::Array(vec![HkxValue::Object(vec![
+                            member("memberPath", string("boneWeights1")),
+                            member("variableIndex", HkxValue::I32(0)),
+                            member("bitIndex", HkxValue::I8(-1)),
+                            member("bindingType", HkxValue::I8(1)),
+                        ])]),
+                    )],
+                ),
+                object(
+                    "hkbVariableBindingSet",
+                    vec![member(
+                        "bindings",
+                        HkxValue::Array(vec![HkxValue::Object(vec![
+                            member("memberPath", string("useMotion")),
+                            member("variableIndex", HkxValue::I32(35)),
+                            member("bitIndex", HkxValue::I8(-1)),
+                            member("bindingType", HkxValue::I8(0)),
+                        ])]),
+                    )],
+                ),
+            ],
+        );
+        let mut warnings = Vec::new();
+
+        migrate_unsupported_behavior_nodes(&mut hkx, &mut warnings);
+
+        assert!(
+            hkx.objects()
+                .iter()
+                .all(|object| object.class_name != "BSAssignBoneWeightsModifier")
+        );
+        let layer_generator = hkx
+            .objects()
+            .iter()
+            .find(|object| {
+                string_member_value(&object.members, "name") == Some("Sheepsquatch_LayerGenerator")
+            })
+            .expect("layer generator survives");
+        let layers = pointer_array_member_values(&layer_generator.members, "layers")
+            .expect("layer array survives");
+        assert_eq!(layers.len(), 1);
+        let action_layer = &hkx.objects()[layers[0]];
+        assert_eq!(
+            action_layer
+                .members
+                .iter()
+                .find(|member| member.name == "variableBindingSet")
+                .map(|member| &member.value),
+            Some(&HkxValue::Pointer(None))
+        );
+        assert_eq!(
+            action_layer
+                .members
+                .iter()
+                .find(|member| member.name == "useMotion")
+                .and_then(|member| extract_int(&member.value)),
+            Some(1)
+        );
+        let action_generator = &hkx.objects()
+            [pointer_member_value(&action_layer.members, "generator").expect("action generator")];
+        assert_eq!(
+            string_member_value(&action_generator.members, "name"),
+            Some("ActionLayer_SM")
+        );
+        assert_eq!(
+            layer_generator
+                .members
+                .iter()
+                .find(|member| member.name == "indexOfSyncMasterChild")
+                .and_then(|member| extract_int(&member.value)),
+            Some(0)
+        );
+
+        let idle_wrapper = hkx
+            .objects()
+            .iter()
+            .find(|object| string_member_value(&object.members, "name") == Some("IdleAction_MG"))
+            .expect("idle wrapper survives with its supported modifier");
+        let idle_child = &hkx.objects()
+            [pointer_member_value(&idle_wrapper.members, "generator").expect("idle child")];
+        assert_eq!(
+            string_member_value(&idle_child.members, "name"),
+            Some("BaseLayer_SM")
+        );
+        assert!(warnings.iter().any(|warning| warning.contains(
+            "collapsed zero-weight action state machine ActionLayer_SM over base generator BaseLayer_SM"
+        )));
+    }
+
+    #[test]
+    fn all_zero_bone_weight_mask_collapses_without_a_zeroweights_name() {
+        let mut hkx = HkxFile::from_tagxml(
+            11,
+            "hk_2015.1.0-r1",
+            vec![
+                object(
+                    "hkbLayerGenerator",
+                    vec![
+                        member("name", string("Floater_LayerGenerator")),
+                        member(
+                            "layers",
+                            HkxValue::Array(vec![
+                                HkxValue::Pointer(Some(1)),
+                                HkxValue::Pointer(Some(2)),
+                            ]),
+                        ),
+                        member("indexOfSyncMasterChild", HkxValue::U16(1)),
+                    ],
+                ),
+                object(
+                    "hkbLayer",
+                    vec![
+                        member("generator", HkxValue::Pointer(Some(3))),
+                        member("onByDefault", HkxValue::Bool(true)),
+                    ],
+                ),
+                object(
+                    "hkbLayer",
+                    vec![
+                        member("generator", HkxValue::Pointer(Some(4))),
+                        member("onByDefault", HkxValue::Bool(true)),
+                        member("useMotion", HkxValue::Bool(true)),
+                    ],
+                ),
+                object(
+                    "hkbStateMachine",
+                    vec![member("name", string("StandingLocomotion_SM"))],
+                ),
+                object(
+                    "hkbStateMachine",
+                    vec![
+                        member("name", string("Action_SM")),
+                        member("states", HkxValue::Array(vec![HkxValue::Pointer(Some(5))])),
+                    ],
+                ),
+                object(
+                    "hkbStateMachineStateInfo",
+                    vec![
+                        member("name", string("DefaultState")),
+                        member("generator", HkxValue::Pointer(Some(6))),
+                    ],
+                ),
+                object(
+                    "hkbModifierGenerator",
+                    vec![
+                        member("name", string("DefaultState_MG")),
+                        member("modifier", HkxValue::Pointer(Some(7))),
+                        member("generator", HkxValue::Pointer(Some(9))),
+                    ],
+                ),
+                object(
+                    "hkbModifierList",
+                    vec![
+                        member("name", string("DefaultState_ML")),
+                        member(
+                            "modifiers",
+                            HkxValue::Array(vec![HkxValue::Pointer(Some(8))]),
+                        ),
+                    ],
+                ),
+                object(
+                    "BSAssignBoneWeightsModifier",
+                    vec![
+                        member("name", string("AssignBoneWeights_Zero")),
+                        member("boneWeights1", HkxValue::Pointer(Some(10))),
+                    ],
+                ),
+                object(
+                    "hkbReferencePoseGenerator",
+                    vec![member("name", string("ReferencePoseGenerator"))],
+                ),
+                object(
+                    "hkbBoneWeightArray",
+                    vec![member(
+                        "boneWeights",
+                        HkxValue::Array(vec![
+                            HkxValue::F32(0.0),
+                            HkxValue::F32(0.0),
+                            HkxValue::F32(0.0),
+                        ]),
+                    )],
+                ),
+            ],
+        );
+        let mut warnings = Vec::new();
+
+        migrate_unsupported_behavior_nodes(&mut hkx, &mut warnings);
+
+        let layer_generator = hkx
+            .objects()
+            .iter()
+            .find(|object| {
+                string_member_value(&object.members, "name") == Some("Floater_LayerGenerator")
+            })
+            .expect("layer generator survives");
+        assert_eq!(
+            pointer_array_member_values(&layer_generator.members, "layers")
+                .expect("layer array survives")
+                .len(),
+            1
+        );
+
+        // Without the collapse the idle state points straight at the reference
+        // pose, which then plays unmasked at full weight — the T-pose.
+        let idle_wrapper = hkx
+            .objects()
+            .iter()
+            .find(|object| string_member_value(&object.members, "name") == Some("DefaultState_MG"))
+            .expect("idle wrapper survives");
+        let idle_child = &hkx.objects()
+            [pointer_member_value(&idle_wrapper.members, "generator").expect("idle child")];
+        assert_eq!(
+            string_member_value(&idle_child.members, "name"),
+            Some("StandingLocomotion_SM")
+        );
+        assert!(warnings.iter().any(|warning| warning.contains(
+            "collapsed zero-weight action state machine Action_SM over base generator StandingLocomotion_SM"
+        )));
+    }
+
+    #[test]
+    fn empty_bone_weight_mask_is_not_treated_as_a_zero_assignment() {
+        let mut hkx = HkxFile::from_tagxml(
+            11,
+            "hk_2015.1.0-r1",
+            vec![
+                object(
+                    "BSAssignBoneWeightsModifier",
+                    vec![
+                        member("name", string("AssignBoneWeights_FullBody")),
+                        member("boneWeights1", HkxValue::Pointer(Some(1))),
+                    ],
+                ),
+                object(
+                    "hkbBoneWeightArray",
+                    vec![member("boneWeights", HkxValue::Array(Vec::new()))],
+                ),
+            ],
+        );
+        let modifier = &hkx.objects()[0];
+
+        assert!(!is_zero_weight_assignment(&hkx, modifier));
     }
 
     #[test]
@@ -10999,11 +12789,9 @@ mod tests {
             .find(|object| object.class_name == "hkbStateMachineStateInfo")
             .expect("state survives");
         assert_eq!(pointer_member_value(&state.members, "generator"), Some(0));
-        assert!(
-            warnings
-                .iter()
-                .any(|warning| warning.contains("bypassed unsupported BSAssignBoneWeightsModifier"))
-        );
+        assert!(warnings
+            .iter()
+            .any(|warning| warning.contains("bypassed unsupported BSAssignBoneWeightsModifier")));
     }
 
     #[test]
@@ -11066,24 +12854,241 @@ mod tests {
 
     // ── FO76 → FO4 physics transform unit tests ──────────────────────────────
 
+    /// Sibling `hkpRagdollConstraintData` whose `atoms` the ball-and-socket
+    /// migration is modelled on, shaped like the real decoded FO76 atom.
+    fn ragdoll_constraint_template() -> HkxObject {
+        let limit = |name: &str| {
+            member(
+                name,
+                HkxValue::Object(vec![
+                    member("type", HkxValue::U16(15)),
+                    member("isEnabled", HkxValue::U8(1)),
+                    member("minAngle", HkxValue::F32(-3.141_592_7)),
+                    member("maxAngle", HkxValue::F32(3.141_592_7)),
+                ]),
+            )
+        };
+        object(
+            "hkpRagdollConstraintData",
+            vec![member(
+                "atoms",
+                HkxValue::Object(vec![
+                    member(
+                        "transforms",
+                        HkxValue::Object(vec![
+                            member("type", HkxValue::U16(2)),
+                            member("transformA", local_transform([9.0, 9.0, 9.0])),
+                            member("transformB", local_transform([9.0, 9.0, 9.0])),
+                        ]),
+                    ),
+                    member(
+                        "setupStabilization",
+                        HkxValue::Object(vec![member("type", HkxValue::U16(23))]),
+                    ),
+                    member(
+                        "ragdollMotors",
+                        HkxValue::Object(vec![
+                            member("type", HkxValue::U16(19)),
+                            member("isEnabled", HkxValue::Bool(false)),
+                            member(
+                                "motors",
+                                HkxValue::Array(vec![
+                                    HkxValue::Pointer(Some(7)),
+                                    HkxValue::Pointer(Some(7)),
+                                    HkxValue::Pointer(Some(7)),
+                                ]),
+                            ),
+                        ]),
+                    ),
+                    member(
+                        "angFriction",
+                        HkxValue::Object(vec![
+                            member("type", HkxValue::U16(17)),
+                            member("isEnabled", HkxValue::U8(1)),
+                        ]),
+                    ),
+                    limit("twistLimit"),
+                    limit("coneLimit"),
+                    limit("planesLimit"),
+                    member(
+                        "ballSocket",
+                        HkxValue::Object(vec![member("type", HkxValue::U16(5))]),
+                    ),
+                ]),
+            )],
+        )
+    }
+
+    fn ball_and_socket_constraint() -> HkxObject {
+        object(
+            "hkpBallAndSocketConstraintData",
+            vec![
+                member("memSizeAndFlags", HkxValue::U32(0xDEAD_BEEF)),
+                member("refCount", HkxValue::U16(2)),
+                member(
+                    "atoms",
+                    HkxValue::Object(vec![
+                        member(
+                            "pivots",
+                            HkxValue::Object(vec![
+                                member("type", HkxValue::U16(3)),
+                                member("translationA", HkxValue::F32List(vec![0.0, 0.0, 0.0, 1.0])),
+                                member(
+                                    "translationB",
+                                    HkxValue::F32List(vec![0.5, -0.25, 1.75, 0.0]),
+                                ),
+                            ]),
+                        ),
+                        member(
+                            "setupStabilization",
+                            HkxValue::Object(vec![
+                                member("type", HkxValue::U16(23)),
+                                member("enabled", HkxValue::U8(1)),
+                            ]),
+                        ),
+                        member(
+                            "ballSocket",
+                            HkxValue::Object(vec![
+                                member("type", HkxValue::U16(5)),
+                                member("bodiesToNotify", HkxValue::U16(0)),
+                            ]),
+                        ),
+                    ]),
+                ),
+            ],
+        )
+    }
+
+    fn atom<'a>(hkx: &'a HkxFile, object_index: usize, name: &str) -> &'a [HkxMember] {
+        hkx.objects()[object_index]
+            .members
+            .iter()
+            .find(|m| m.name == "atoms")
+            .and_then(|m| m.value.as_object_members())
+            .and_then(|atoms| atoms.iter().find(|m| m.name == name))
+            .and_then(|m| m.value.as_object_members())
+            .unwrap_or_else(|| panic!("missing atom {name}"))
+    }
+
+    fn atom_field(hkx: &HkxFile, object_index: usize, atom_name: &str, field: &str) -> HkxValue {
+        atom(hkx, object_index, atom_name)
+            .iter()
+            .find(|m| m.name == field)
+            .map(|m| m.value.clone())
+            .unwrap_or_else(|| panic!("missing {atom_name}.{field}"))
+    }
+
     #[test]
-    fn migrate_skeleton_physics_renames_ball_and_socket_to_ragdoll() {
+    fn migrate_skeleton_physics_ball_and_socket_keeps_pivot_as_local_transforms() {
         let mut hkx = HkxFile::from_tagxml(
             12,
             "hk_2015.1.0-r1",
-            vec![object(
-                "hkpBallAndSocketConstraintData",
-                vec![
-                    member("memSizeAndFlags", HkxValue::U32(0xDEAD_BEEF)),
-                    member("refCount", HkxValue::U16(2)),
-                    member("atoms", HkxValue::Object(vec![])),
-                ],
-            )],
+            vec![ball_and_socket_constraint(), ragdoll_constraint_template()],
         );
         migrate_skeleton_physics(&mut hkx);
+
         assert_eq!(hkx.objects()[0].class_name, "hkpRagdollConstraintData");
         assert_eq!(hkx.objects()[0].members.len(), 1);
         assert_eq!(hkx.objects()[0].members[0].name, "atoms");
+
+        // The pivot survives as the transform translation column, not as zeros.
+        assert_eq!(
+            atom_field(&hkx, 0, "transforms", "type"),
+            HkxValue::U16(2),
+            "transforms atom must be TYPE_SET_LOCAL_TRANSFORMS, not TYPE_INVALID"
+        );
+        assert_eq!(
+            atom_field(&hkx, 0, "transforms", "transformA"),
+            local_transform([0.0, 0.0, 0.0])
+        );
+        assert_eq!(
+            atom_field(&hkx, 0, "transforms", "transformB"),
+            local_transform([0.5, -0.25, 1.75])
+        );
+
+        // Ball-and-socket means free rotation: every angular limit is disabled,
+        // but the atoms are still typed so FO4 can walk them.
+        for name in ["twistLimit", "coneLimit", "planesLimit"] {
+            assert_eq!(atom_field(&hkx, 0, name, "isEnabled"), HkxValue::U8(0));
+            assert_eq!(atom_field(&hkx, 0, name, "type"), HkxValue::U16(15));
+        }
+        assert_eq!(
+            atom_field(&hkx, 0, "angFriction", "isEnabled"),
+            HkxValue::U8(0)
+        );
+
+        // FO4 dereferences the motors during ragdoll activation.
+        assert_eq!(
+            atom_field(&hkx, 0, "ragdollMotors", "motors"),
+            HkxValue::Array(vec![
+                HkxValue::Pointer(Some(7)),
+                HkxValue::Pointer(Some(7)),
+                HkxValue::Pointer(Some(7)),
+            ])
+        );
+
+        // The constraint's own stabilization/ball-socket values are preserved.
+        assert_eq!(
+            atom_field(&hkx, 0, "setupStabilization", "enabled"),
+            HkxValue::U8(1)
+        );
+        assert_eq!(
+            atom_field(&hkx, 0, "ballSocket", "bodiesToNotify"),
+            HkxValue::U16(0)
+        );
+    }
+
+    #[test]
+    fn migrate_skeleton_physics_keeps_ball_and_socket_without_a_ragdoll_sibling() {
+        let mut hkx =
+            HkxFile::from_tagxml(12, "hk_2015.1.0-r1", vec![ball_and_socket_constraint()]);
+        migrate_skeleton_physics(&mut hkx);
+
+        // FO4 registers hkpBallAndSocketConstraintData, so keeping the class
+        // beats emitting a ragdoll constraint with no atom layout to copy.
+        assert_eq!(
+            hkx.objects()[0].class_name,
+            "hkpBallAndSocketConstraintData"
+        );
+        assert_eq!(hkx.objects()[0].members.len(), 1);
+        assert_eq!(hkx.objects()[0].members[0].name, "atoms");
+    }
+
+    #[test]
+    fn inject_ragdoll_motors_wires_constraints_the_source_left_null() {
+        let mut null_motors = ragdoll_constraint_template();
+        if let Some(motors) = null_motors
+            .members
+            .iter_mut()
+            .find(|m| m.name == "atoms")
+            .and_then(|m| m.value.as_object_members_mut())
+            .and_then(|atoms| atoms.iter_mut().find(|m| m.name == "ragdollMotors"))
+            .and_then(|m| m.value.as_object_members_mut())
+            .and_then(|rm| rm.iter_mut().find(|m| m.name == "motors"))
+        {
+            motors.value = HkxValue::Array(vec![HkxValue::Pointer(None); 3]);
+        }
+        let mut hkx = HkxFile::from_tagxml(
+            12,
+            "hk_2015.1.0-r1",
+            vec![ragdoll_constraint_template(), null_motors],
+        );
+        inject_ragdoll_motors(&mut hkx);
+
+        // A populated sibling must not stop the null one from being wired.
+        let HkxValue::Array(motors) = atom_field(&hkx, 1, "ragdollMotors", "motors") else {
+            panic!("motors is not an array");
+        };
+        assert!(
+            motors
+                .iter()
+                .all(|m| matches!(m, HkxValue::Pointer(Some(_))))
+        );
+        // The already-populated constraint keeps its own pointer.
+        assert_eq!(
+            atom_field(&hkx, 0, "ragdollMotors", "motors"),
+            HkxValue::Array(vec![HkxValue::Pointer(Some(7)); 3])
+        );
     }
 
     #[test]
@@ -11915,7 +13920,10 @@ mod tests {
     }
 
     #[test]
-    fn fix_blend_hint_enum_maps_fo76_additive_to_fo4_additive() {
+    fn blend_hint_survives_the_route_unchanged() {
+        // ADDITIVE_DEPRECATED (1) and ADDITIVE (2) are distinct additive
+        // conventions in both games' schema, so promoting 1→2 silently reframes
+        // the delta from parent space to bone-local space.
         let mut hkx = HkxFile::from_tagxml(
             12,
             "hk_2015.1.0-r1",
@@ -11926,27 +13934,28 @@ mod tests {
                 ),
                 object(
                     "hkaAnimationBinding",
+                    vec![member("blendHint", HkxValue::I32(2))],
+                ),
+                object(
+                    "hkaAnimationBinding",
                     vec![member("blendHint", HkxValue::I32(0))],
                 ),
             ],
         );
-        fix_blend_hint_enum(&mut hkx);
-        assert_eq!(
-            hkx.objects()[0]
-                .members
-                .iter()
-                .find(|member| member.name == "blendHint")
-                .and_then(|member| extract_int(&member.value)),
-            Some(2)
-        );
-        assert_eq!(
-            hkx.objects()[1]
-                .members
-                .iter()
-                .find(|member| member.name == "blendHint")
-                .and_then(|member| extract_int(&member.value)),
-            Some(0)
-        );
+        apply_for_test(&mut hkx);
+        let hints: Vec<Option<i32>> = hkx
+            .objects()
+            .iter()
+            .filter(|object| object.class_name == "hkaAnimationBinding")
+            .map(|object| {
+                object
+                    .members
+                    .iter()
+                    .find(|member| member.name == "blendHint")
+                    .and_then(|member| extract_int(&member.value))
+            })
+            .collect();
+        assert_eq!(hints, vec![Some(1), Some(2), Some(0)]);
     }
 
     // ── Pipeline-progression tests ────────────────────────────────────────────
@@ -12276,7 +14285,7 @@ mod tests {
     }
 
     #[test]
-    fn strip_trailing_ragdoll_controller_bodies_removes_unmapped_suffix() {
+    fn trailing_controller_body_pruning_preserves_mapped_or_constrained_bodies() {
         let named_body = |name: &str| {
             HkxValue::Object(vec![member(
                 "name",
@@ -12285,6 +14294,99 @@ mod tests {
                     is_null: false,
                 },
             )])
+        };
+        let constraint = |body_a: u32, body_b: u32| {
+            HkxValue::Object(vec![
+                member("bodyA", HkxValue::U32(body_a)),
+                member("bodyB", HkxValue::U32(body_b)),
+            ])
+        };
+        let mut hkx = HkxFile::from_tagxml(
+            12,
+            "hk_2015.1.0-r1",
+            vec![
+                object(
+                    "hknpRagdollData",
+                    vec![
+                        member(
+                            "boneToBodyMap",
+                            HkxValue::Array(vec![HkxValue::I32(0), HkxValue::I32(1)]),
+                        ),
+                        member(
+                            "bodyCinfos",
+                            HkxValue::Array(vec![
+                                named_body("Ragdoll_COM"),
+                                named_body("Ragdoll_Head"),
+                                named_body("CharacterBumper"),
+                                named_body("CharacterController"),
+                            ]),
+                        ),
+                        member(
+                            "motionCinfos",
+                            HkxValue::Array(vec![
+                                HkxValue::Object(vec![]),
+                                HkxValue::Object(vec![]),
+                                HkxValue::Object(vec![]),
+                                HkxValue::Object(vec![]),
+                            ]),
+                        ),
+                        member("constraintCinfos", HkxValue::Array(vec![constraint(1, 0)])),
+                    ],
+                ),
+                object(
+                    "hknpRagdollData",
+                    vec![
+                        member("boneToBodyMap", HkxValue::Array(vec![HkxValue::I32(0)])),
+                        member(
+                            "bodyCinfos",
+                            HkxValue::Array(vec![
+                                named_body("Ragdoll_COM"),
+                                named_body("CharacterBumper"),
+                            ]),
+                        ),
+                        member("constraintCinfos", HkxValue::Array(vec![constraint(1, 0)])),
+                    ],
+                ),
+            ],
+        );
+
+        strip_unmapped_trailing_ragdoll_controller_bodies(&mut hkx);
+
+        let array_len = |object_index: usize, member_name: &str| {
+            let member = hkx.objects()[object_index]
+                .members
+                .iter()
+                .find(|member| member.name == member_name)
+                .unwrap();
+            let HkxValue::Array(values) = &member.value else {
+                panic!("{member_name} must be an array")
+            };
+            values.len()
+        };
+        assert_eq!(array_len(0, "bodyCinfos"), 2);
+        assert_eq!(array_len(0, "motionCinfos"), 2);
+        assert_eq!(array_len(1, "bodyCinfos"), 2);
+    }
+
+    #[test]
+    fn ragdoll_controller_bodies_are_preserved_as_static_without_motions() {
+        let body = |name: &str, motion_properties_id: u16| {
+            HkxValue::Object(vec![
+                member(
+                    "name",
+                    HkxValue::String {
+                        value: name.to_string(),
+                        is_null: false,
+                    },
+                ),
+                member("flags", HkxValue::U32(0)),
+                member("motionId", HkxValue::U32(99)),
+                member("reservedBodyId", HkxValue::U32(0)),
+                member("motionPropertiesId", HkxValue::U16(motion_properties_id)),
+                member("mass", HkxValue::F32(2.0)),
+                member("position", HkxValue::F32List(vec![0.0, 0.0, 0.0, 0.0])),
+                member("orientation", HkxValue::F32List(vec![0.0, 0.0, 0.0, 1.0])),
+            ])
         };
         let mut hkx = HkxFile::from_tagxml(
             12,
@@ -12299,14 +14401,14 @@ mod tests {
                     member(
                         "bodyCinfos",
                         HkxValue::Array(vec![
-                            named_body("Ragdoll_COM"),
-                            named_body("Ragdoll_Head"),
-                            named_body("CharacterBumper"),
-                            named_body("CharacterController"),
+                            body("Ragdoll_COM", 2),
+                            body("Ragdoll_Head", 3),
+                            body("CharacterBumper", 0),
+                            body("CharacterController", 1),
                         ]),
                     ),
                     member(
-                        "motionCinfos",
+                        "motionProperties",
                         HkxValue::Array(vec![
                             HkxValue::Object(vec![]),
                             HkxValue::Object(vec![]),
@@ -12314,72 +14416,15 @@ mod tests {
                             HkxValue::Object(vec![]),
                         ]),
                     ),
-                    member(
-                        "constraintCinfos",
-                        HkxValue::Array(vec![HkxValue::Object(vec![
-                            member("bodyA", HkxValue::U32(1)),
-                            member("bodyB", HkxValue::U32(0)),
-                        ])]),
-                    ),
                 ],
             )],
         );
 
-        strip_trailing_ragdoll_controller_bodies(&mut hkx);
+        normalize_ragdoll_body_cinfos(&mut hkx);
+        synthesize_motion_cinfos(&mut hkx, &std::collections::HashMap::new());
 
         let ragdoll = &hkx.objects()[0];
-        for member_name in ["bodyCinfos", "motionCinfos"] {
-            let member = ragdoll
-                .members
-                .iter()
-                .find(|member| member.name == member_name)
-                .unwrap();
-            let HkxValue::Array(values) = &member.value else {
-                panic!("{member_name} must be an array")
-            };
-            assert_eq!(values.len(), 2);
-        }
-    }
-
-    #[test]
-    fn strip_trailing_ragdoll_controller_bodies_preserves_constrained_body() {
-        let named_body = |name: &str| {
-            HkxValue::Object(vec![member(
-                "name",
-                HkxValue::String {
-                    value: name.to_string(),
-                    is_null: false,
-                },
-            )])
-        };
-        let mut hkx = HkxFile::from_tagxml(
-            12,
-            "hk_2015.1.0-r1",
-            vec![object(
-                "hknpRagdollData",
-                vec![
-                    member("boneToBodyMap", HkxValue::Array(vec![HkxValue::I32(0)])),
-                    member(
-                        "bodyCinfos",
-                        HkxValue::Array(vec![
-                            named_body("Ragdoll_COM"),
-                            named_body("CharacterBumper"),
-                        ]),
-                    ),
-                    member(
-                        "constraintCinfos",
-                        HkxValue::Array(vec![HkxValue::Object(vec![
-                            member("bodyA", HkxValue::U32(1)),
-                            member("bodyB", HkxValue::U32(0)),
-                        ])]),
-                    ),
-                ],
-            )],
-        );
-
-        strip_trailing_ragdoll_controller_bodies(&mut hkx);
-
-        let bodies = hkx.objects()[0]
+        let bodies = ragdoll
             .members
             .iter()
             .find(|member| member.name == "bodyCinfos")
@@ -12387,10 +14432,39 @@ mod tests {
         let HkxValue::Array(bodies) = &bodies.value else {
             panic!("bodyCinfos must be an array")
         };
-        assert_eq!(bodies.len(), 2);
+        assert_eq!(bodies.len(), 4);
+
+        let motion_ids: Vec<i32> = bodies
+            .iter()
+            .map(|body| {
+                body.as_object_members()
+                    .and_then(|members| members.iter().find(|member| member.name == "motionId"))
+                    .and_then(|member| extract_int(&member.value))
+                    .expect("motionId")
+            })
+            .collect();
+        assert_eq!(motion_ids, vec![0, 1, 0x7FFF_FFFF, 0x7FFF_FFFF]);
+
+        for body in &bodies[2..] {
+            let flags = body
+                .as_object_members()
+                .and_then(|members| members.iter().find(|member| member.name == "flags"))
+                .and_then(|member| extract_int(&member.value));
+            assert_eq!(flags, Some(1));
+        }
+
+        let motions = ragdoll
+            .members
+            .iter()
+            .find(|member| member.name == "motionCinfos")
+            .expect("motionCinfos");
+        let HkxValue::Array(motions) = &motions.value else {
+            panic!("motionCinfos must be an array")
+        };
+        assert_eq!(motions.len(), 2);
     }
 
-    // ── Transform F: normalize_ragdoll_body_cinfos ───────────────────────────
+    // ── normalize_ragdoll_body_cinfos ───────────────────────────
 
     #[test]
     fn normalize_ragdoll_body_cinfos_sets_sequential_motion_id_and_invalid_reserved() {
@@ -12614,10 +14688,8 @@ mod tests {
 
     #[test]
     fn normalize_ragdoll_constraint_offsets_uses_fo4_cone_layout() {
-        let cone_limit = HkxValue::Object(vec![member(
-            "memOffsetToAngleOffset",
-            HkxValue::I16(160),
-        )]);
+        let cone_limit =
+            HkxValue::Object(vec![member("memOffsetToAngleOffset", HkxValue::I16(160))]);
         let atoms = HkxValue::Object(vec![
             member("coneLimit", cone_limit),
             member(
@@ -12672,7 +14744,7 @@ mod tests {
         );
     }
 
-    // ── Transform G: inject_ragdoll_motors ──────────────────────────────────
+    // ── inject_ragdoll_motors ──────────────────────────────────
 
     #[test]
     fn inject_ragdoll_motors_creates_motor_object_and_wires_pointer() {
@@ -12742,7 +14814,7 @@ mod tests {
         assert_eq!(hkx.objects().len(), before_len);
     }
 
-    // ── Transform H: synthesize_motion_cinfos ───────────────────────────────
+    // ── synthesize_motion_cinfos ───────────────────────────────
 
     #[test]
     fn synthesize_motion_cinfos_emits_typed_objects_with_correct_class_name() {
@@ -13093,10 +15165,7 @@ mod tests {
                         "inertiaTensor",
                         HkxValue::F32List(vec![0.060597, 0.046659, 0.060597, 0.0]),
                     ),
-                    member(
-                        "majorAxisSpace",
-                        HkxValue::F32List(major_axis.to_vec()),
-                    ),
+                    member("majorAxisSpace", HkxValue::F32List(major_axis.to_vec())),
                 ]),
             )],
         };
@@ -13756,6 +15825,58 @@ mod tests {
     }
 
     #[test]
+    fn populate_event_property_arrays_requires_source_epa_for_getup_exit() {
+        for (name, exit_epa) in [("DeathBackward", None), ("RagdollAndGetUp", Some(3))] {
+            let state = object(
+                "hkbStateMachineStateInfo",
+                vec![
+                    member("name", string(name)),
+                    member("enterNotifyEvents", HkxValue::Pointer(None)),
+                    member("exitNotifyEvents", HkxValue::Pointer(exit_epa)),
+                    member("generator", HkxValue::Pointer(Some(1))),
+                ],
+            );
+            let mut hkx = HkxFile::from_tagxml(
+                11,
+                "hk_2014.1.0-r1",
+                vec![
+                    behavior_string_data(&["GetUpEnd"]),
+                    object("hkbStateMachine", vec![]),
+                    state.clone(),
+                    object(
+                        "hkbStateMachineEventPropertyArray",
+                        vec![member("events", HkxValue::Array(vec![]))],
+                    ),
+                ],
+            );
+
+            populate_event_property_arrays(&mut hkx);
+
+            assert_eq!(hkx.objects().len(), 4, "{name}");
+            assert_eq!(hkx.objects()[2], state, "{name}");
+            let HkxValue::Array(events) = &hkx.objects()[3].members[0].value else {
+                panic!("expected exit event array");
+            };
+            if exit_epa.is_some() {
+                assert_eq!(events.len(), 1);
+                let HkxValue::TypedObject { members, .. } = &events[0] else {
+                    panic!("expected event property");
+                };
+                assert_eq!(
+                    members
+                        .iter()
+                        .find(|member| member.name == "id")
+                        .unwrap()
+                        .value,
+                    HkxValue::I32(0)
+                );
+            } else {
+                assert!(events.is_empty());
+            }
+        }
+    }
+
+    #[test]
     fn populate_event_property_arrays_no_op_for_non_behavior_file() {
         let mut hkx = HkxFile::from_tagxml(
             11,
@@ -13976,10 +16097,9 @@ mod tests {
         HkxFile::from_tagxml(11, "hk_2015.1.0-r1", vec![anim_obj, binding_obj])
     }
 
-    fn make_96track_spline_hkx() -> HkxFile {
+    fn make_spline_hkx(num_tracks: usize) -> HkxFile {
         use crate::animation::spline::{SplineFrame, SplineTransform, compress_spline};
 
-        let num_tracks = 96usize;
         let identity = SplineTransform {
             translation: [0.0, 0.0, 0.0],
             rotation: [0.0, 0.0, 0.0, 1.0],
@@ -14002,7 +16122,7 @@ mod tests {
             "hkaSplineCompressedAnimation",
             vec![
                 member("duration", HkxValue::F32(duration)),
-                member("numberOfTransformTracks", HkxValue::I32(96)),
+                member("numberOfTransformTracks", HkxValue::I32(num_tracks as i32)),
                 member("numberOfFloatTracks", HkxValue::I32(0)),
                 member("annotationTracks", HkxValue::Array(annotation_tracks)),
                 member("numFrames", HkxValue::I32(blob.num_frames as i32)),
@@ -14037,7 +16157,9 @@ mod tests {
         );
         anim_obj.name = Some("#spline".into());
 
-        let fo76_identity: Vec<HkxValue> = (0_i32..96).map(HkxValue::I32).collect();
+        let fo76_identity: Vec<HkxValue> = (0..num_tracks)
+            .map(|track| HkxValue::I32(track as i32))
+            .collect();
         let mut binding_obj = object(
             "hkaAnimationBinding",
             vec![
@@ -14051,6 +16173,10 @@ mod tests {
         binding_obj.name = Some("#binding".into());
 
         HkxFile::from_tagxml(11, "hk_2015.1.0-r1", vec![anim_obj, binding_obj])
+    }
+
+    fn make_96track_spline_hkx() -> HkxFile {
+        make_spline_hkx(96)
     }
 
     #[test]
@@ -14234,6 +16360,95 @@ mod tests {
             annotation_len,
             Some(95),
             "spline annotationTracks should follow the stripped transform tracks"
+        );
+    }
+
+    #[test]
+    fn auto_fix_human_bone_tracks_spline_keeps_serializable_animation_type() {
+        let mut hkx = make_96track_spline_hkx();
+
+        auto_fix_human_bone_tracks(&mut hkx);
+
+        let animation_type = hkx.objects()[0]
+            .members
+            .iter()
+            .find(|member| member.name == "type")
+            .map(|member| &member.value);
+        assert_eq!(
+            animation_type,
+            Some(&HkxValue::I32(HK_SPLINE_COMPRESSED_ANIMATION_TYPE)),
+            "hkaAnimation.AnimationType must remain the numeric spline enum"
+        );
+    }
+
+    #[test]
+    fn opt_in_spline_rewrite_preserves_94_track_binding_and_annotations() {
+        let input = make_spline_hkx(94);
+
+        let default = migrate_2015_packfile_to_2014_with_warnings(
+            input.clone(),
+            Fo76MigrationOptions::default(),
+        )
+        .expect("default migration");
+        assert_eq!(
+            default.hkx.objects()[0].class_name,
+            "hkaSplineCompressedAnimation"
+        );
+
+        let rewritten = migrate_2015_packfile_to_2014_with_warnings(
+            input,
+            Fo76MigrationOptions {
+                decompress_spline: true,
+                recompress: true,
+                ..Default::default()
+            },
+        )
+        .expect("migration with spline rewrite");
+
+        let animation = &rewritten.hkx.objects()[0];
+        assert_eq!(animation.class_name, "hkaSplineCompressedAnimation");
+        assert_eq!(
+            animation
+                .members
+                .iter()
+                .find(|member| member.name == "annotationTracks")
+                .and_then(|member| match &member.value {
+                    HkxValue::Array(values) => Some(values.len()),
+                    _ => None,
+                }),
+            Some(94)
+        );
+        assert_eq!(
+            animation
+                .members
+                .iter()
+                .find(|member| member.name == "floatBlockOffsets")
+                .and_then(|member| match &member.value {
+                    HkxValue::Array(values) => Some(values.len()),
+                    _ => None,
+                }),
+            Some(1)
+        );
+
+        let binding = &rewritten.hkx.objects()[1];
+        assert_eq!(
+            binding
+                .members
+                .iter()
+                .find(|member| member.name == "animation")
+                .map(|member| &member.value),
+            Some(&HkxValue::Pointer(Some(0)))
+        );
+        assert_eq!(
+            binding
+                .members
+                .iter()
+                .find(|member| member.name == "transformTrackToBoneIndices")
+                .and_then(|member| match &member.value {
+                    HkxValue::Array(values) => Some(values.len()),
+                    _ => None,
+                }),
+            Some(94)
         );
     }
 

@@ -1113,11 +1113,23 @@ impl BehaviorEvaluator {
         if let Some(master_child_object) = master_object {
             let child = self.parse_blender_child(master_child_object)?;
             let generated = self.evaluate_generator(child.generator, dt, sync, None)?;
-            master_sync = generated.sync.or(sync);
+            // A `MODE_SINGLE_PLAY` master clamps once it has played out and then reports no phase
+            // movement. Adopting that frozen interval stops every synced sibling dead, which is
+            // how the bolt-charge blend — a one-shot upper-body clip named as sync master over the
+            // whole locomotion tree — produced 798 all-zero speed contours where vanilla has none.
+            let master_moved = generated
+                .sync
+                .is_some_and(|interval| interval.new_phase != interval.old_phase);
+            master_sync = if dt > 0.0 && !master_moved {
+                sync
+            } else {
+                generated.sync.or(sync)
+            };
             cached_master = Some((master_child_object, generated));
         }
 
         let mut translation = RootTranslation::ZERO;
+        let mut root_weight_total = 0.0_f32;
         let mut events = Vec::new();
         let mut output_sync = master_sync;
         let mut child_traces = Vec::new();
@@ -1129,6 +1141,7 @@ impl BehaviorEvaluator {
                     self.evaluate_generator(child.generator, dt, master_sync, None)?
                 };
             let root_weight = weight * child.world_from_model_weight;
+            root_weight_total += root_weight;
             translation = translation.add(generated.translation.scale(root_weight));
             output_sync = output_sync.or(generated.sync);
             child_traces.push(BlenderChildTrace {
@@ -1148,6 +1161,15 @@ impl BehaviorEvaluator {
                 input_phase: sync.map(phase_trace),
                 children: child_traces,
             });
+        }
+
+        // World-from-model is blended by `weight * worldFromModelWeight` normalised by its own
+        // total, not by the pose weights. Children that only drive the pose carry
+        // `worldFromModelWeight = 0` (466 of 2810 in the stock FO4 behaviours), so accumulating
+        // without this divide scaled root motion down by the number of such siblings — the
+        // exact 2x/3x/4x deficits seen against the CK-built goldens.
+        if root_weight_total > 0.0 {
+            translation = translation.scale(1.0 / root_weight_total);
         }
 
         Ok(Generated {
@@ -1353,6 +1375,13 @@ impl BehaviorEvaluator {
             return Ok(());
         }
         if object.class_name == "hkbMirrorModifier"
+            && self.root_motion_projection == RootMotionProjection::MagnitudeOnly
+        {
+            return Ok(());
+        }
+        // SpeedInfo replays select the destination locomotion states explicitly. This modifier
+        // only emits speed-range selector events; it does not alter pose or root translation.
+        if object.class_name == "hkbEventsFromRangeModifier"
             && self.root_motion_projection == RootMotionProjection::MagnitudeOnly
         {
             return Ok(());

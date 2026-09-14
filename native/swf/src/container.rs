@@ -1,11 +1,10 @@
 //! SWF container: (de)compression, header parse, and a byte-exact tag-stream
 //! splitter.
 //!
-//! The splitter never decodes tag bodies — it returns each top-level tag as an
-//! opaque byte span into the decompressed movie body, so untouched tags survive
-//! byte-for-byte when we splice. This is the foundation for marker-symbol
-//! injection: the existing pure-Python codec re-minimizes shape bit widths and
-//! is therefore byte-lossy, which is unusable for editing real menu SWFs.
+//! The splitter never decodes tag bodies. Each top-level tag is an opaque byte
+//! span into the decompressed movie body, so untouched tags survive a splice
+//! byte for byte, which marker-symbol injection needs. The pure-Python codec
+//! re-minimizes shape bit widths, so it is byte-lossy on real menu SWFs.
 
 use std::io::{Read, Write};
 

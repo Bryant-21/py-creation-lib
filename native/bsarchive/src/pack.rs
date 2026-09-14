@@ -1,4 +1,4 @@
-use crate::incremental::{CompressionSettings, Fo4WriterKind, pack_fo4_direct};
+use crate::incremental::{CompressionSettings, DirectPackStats, Fo4WriterKind, pack_fo4_direct};
 use crate::{
     Borrowed, CompressionResult, ReaderWithOptions as _, containers::Bytes, fo4, pack_fo4_stream,
     tes4,
@@ -91,8 +91,12 @@ pub(crate) fn pack_archive(
     jobs: Option<usize>,
     filters: PackFilters,
 ) -> PackResult<usize> {
+    let playstation_profile = is_playstation_archive_type(archive_type);
     let kind = parse_pack_kind(archive_type)?;
     let entries = collect_files(source_dir, manifest_path, &filters)?;
+    if playstation_profile {
+        validate_playstation_audio(&entries)?;
+    }
     if let Some(parent) = output_path.parent() {
         fs::create_dir_all(parent).map_err(|err| err.to_string())?;
     }
@@ -122,7 +126,7 @@ pub(crate) fn pack_archive(
                     xbox_profile,
                 ) {
                     drop(out);
-                    pack_fo4_direct_entries(
+                    let _ = pack_fo4_direct_entries(
                         &entries,
                         output_path,
                         writer_kind,
@@ -178,15 +182,7 @@ pub(crate) fn pack_archive(
         Ok(())
     };
 
-    if let Some(jobs) = jobs {
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(jobs.max(1))
-            .build()
-            .map_err(|err| format!("rayon pool error: {err}"))?;
-        pool.install(run)?;
-    } else {
-        run()?;
-    }
+    crate::worker_pool::install(jobs, run).map_err(|err| format!("rayon pool error: {err}"))??;
 
     Ok(entries.len())
 }
@@ -201,6 +197,30 @@ pub(crate) fn pack_archive_entries(
     manifest_path: Option<&Path>,
     jobs: Option<usize>,
 ) -> PackResult<usize> {
+    pack_archive_entries_with_stats(
+        entries,
+        output_path,
+        archive_type,
+        compress,
+        compression_level,
+        share_data,
+        manifest_path,
+        jobs,
+    )
+    .map(|(file_count, _)| file_count)
+}
+
+pub(crate) fn pack_archive_entries_with_stats(
+    entries: &[PackEntrySpec],
+    output_path: &Path,
+    archive_type: &str,
+    compress: bool,
+    compression_level: u32,
+    share_data: bool,
+    manifest_path: Option<&Path>,
+    jobs: Option<usize>,
+) -> PackResult<(usize, Option<DirectPackStats>)> {
+    let playstation_profile = is_playstation_archive_type(archive_type);
     let kind = parse_pack_kind(archive_type)?;
     let mut entries = collect_entry_specs(entries)?;
     if let Some(manifest_path) = manifest_path {
@@ -208,19 +228,23 @@ pub(crate) fn pack_archive_entries(
             entries = apply_manifest(entries, manifest_path)?;
         }
     }
+    if playstation_profile {
+        validate_playstation_audio(&entries)?;
+    }
     if let Some(parent) = output_path.parent() {
         fs::create_dir_all(parent).map_err(|err| err.to_string())?;
     }
 
-    let run = || -> PackResult<()> {
+    let run = || -> PackResult<Option<DirectPackStats>> {
         let mut out = fs::File::create(output_path).map_err(|err| err.to_string())?;
-        match kind {
+        let direct_stats = match kind {
             PackKind::Tes4 { version } => {
                 let (archive, options) =
                     build_tes4_archive(&entries, version, compress, compression_level, share_data)?;
                 archive
                     .write(&mut out, &options)
                     .map_err(|err| err.to_string())?;
+                None
             }
             PackKind::Fo4 {
                 version,
@@ -237,14 +261,14 @@ pub(crate) fn pack_archive_entries(
                     xbox_profile,
                 ) {
                     drop(out);
-                    pack_fo4_direct_entries(
+                    Some(pack_fo4_direct_entries(
                         &entries,
                         output_path,
                         writer_kind,
                         version,
                         compress,
                         compression_level,
-                    )?;
+                    )?)
                 } else {
                     pack_fo4_stream::pack_archive(
                         &entries,
@@ -258,6 +282,7 @@ pub(crate) fn pack_archive_entries(
                         force_compress,
                         xbox_profile,
                     )?;
+                    None
                 }
             }
             PackKind::Fo4 {
@@ -288,22 +313,16 @@ pub(crate) fn pack_archive_entries(
                 archive
                     .write_in_order(&mut out, &options, &order)
                     .map_err(|err| err.to_string())?;
+                None
             }
-        }
-        Ok(())
+        };
+        Ok(direct_stats)
     };
 
-    if let Some(jobs) = jobs {
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(jobs.max(1))
-            .build()
-            .map_err(|err| format!("rayon pool error: {err}"))?;
-        pool.install(run)?;
-    } else {
-        run()?;
-    }
+    let direct_stats = crate::worker_pool::install(jobs, run)
+        .map_err(|err| format!("rayon pool error: {err}"))??;
 
-    Ok(entries.len())
+    Ok((entries.len(), direct_stats))
 }
 
 fn incremental_writer_kind(
@@ -347,7 +366,7 @@ fn pack_fo4_direct_entries(
     version: fo4::Version,
     compress: bool,
     compression_level: u32,
-) -> PackResult<()> {
+) -> PackResult<DirectPackStats> {
     pack_fo4_direct(
         entries,
         output_path,
@@ -414,6 +433,13 @@ fn parse_pack_kind(value: &str) -> PackResult<PackKind> {
             force_compress: true,
             xbox_profile: true,
         }),
+        "fo4ps" | "fo4psdds" => Ok(PackKind::Fo4 {
+            version: fo4::Version::v8,
+            format: fo4::Format::GNRL,
+            compression_format: fo4::CompressionFormat::Zip,
+            force_compress: false,
+            xbox_profile: false,
+        }),
         "starfield" | "sf" => Ok(PackKind::Fo4 {
             version: fo4::Version::v2,
             format: fo4::Format::GNRL,
@@ -432,6 +458,75 @@ fn parse_pack_kind(value: &str) -> PackResult<PackKind> {
     }
 }
 
+fn is_playstation_archive_type(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "fo4ps" | "fo4psdds"
+    )
+}
+
+fn validate_playstation_audio(entries: &[FileEntry]) -> PackResult<()> {
+    for entry in entries {
+        if entry.rel_slash_lower.ends_with(".xwm") {
+            return Err(format!(
+                "PlayStation archives do not support XWM audio: {}",
+                entry.rel_slash
+            ));
+        }
+        if !entry.rel_slash_lower.ends_with(".fuz") {
+            continue;
+        }
+
+        let bytes = fs::read(&entry.full_path).map_err(|err| err.to_string())?;
+        if bytes.len() < 12 || &bytes[..4] != b"FUZE" {
+            return Err(format!(
+                "invalid PlayStation FUZ container: {}",
+                entry.rel_slash
+            ));
+        }
+        let lip_size = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
+        let audio_offset = 12usize
+            .checked_add(lip_size)
+            .filter(|offset| *offset <= bytes.len())
+            .ok_or_else(|| format!("invalid PlayStation FUZ lip size: {}", entry.rel_slash))?;
+        let audio = &bytes[audio_offset..];
+        let wave_format = riff_wave_format_tag(audio);
+        if wave_format.is_none()
+            || wave_format.is_some_and(|format| (0x0160..=0x0166).contains(&format))
+            || wave_format == Some(0xfffe) && !crate::ps_audio::is_atrac9_wave(audio)
+        {
+            return Err(format!(
+                "PlayStation FUZ must embed PCM WAV or ATRAC9 audio: {}",
+                entry.rel_slash
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn riff_wave_format_tag(payload: &[u8]) -> Option<u16> {
+    if payload.len() < 12 || &payload[..4] != b"RIFF" || &payload[8..12] != b"WAVE" {
+        return None;
+    }
+    let mut offset = 12usize;
+    while offset.checked_add(8)? <= payload.len() {
+        let chunk_size =
+            u32::from_le_bytes(payload[offset + 4..offset + 8].try_into().ok()?) as usize;
+        let chunk_data = offset.checked_add(8)?;
+        let chunk_end = chunk_data.checked_add(chunk_size)?;
+        if chunk_end > payload.len() {
+            return None;
+        }
+        if &payload[offset..offset + 4] == b"fmt " && chunk_size >= 2 {
+            return Some(u16::from_le_bytes(
+                payload[chunk_data..chunk_data + 2].try_into().ok()?,
+            ));
+        }
+        offset = chunk_end.checked_add(chunk_size & 1)?;
+    }
+    None
+}
+
 pub(crate) fn archive_type_default_level(archive_type: &str) -> u32 {
     match parse_pack_kind(archive_type) {
         Ok(PackKind::Fo4 { format, .. }) => {
@@ -439,6 +534,28 @@ pub(crate) fn archive_type_default_level(archive_type: &str) -> u32 {
         }
         // TES4/BSA has no DX10/GNRL split; keep the historical pyfunction default.
         _ => crate::pack_fo4_stream::GNRL_COMPRESSION_LEVEL,
+    }
+}
+
+pub(crate) fn archive_type_compression_codec(archive_type: &str) -> &'static str {
+    match parse_pack_kind(archive_type) {
+        Ok(PackKind::Fo4 {
+            version,
+            format,
+            compression_format,
+            force_compress,
+            xbox_profile,
+        }) if incremental_writer_kind(
+            version,
+            format,
+            compression_format,
+            force_compress,
+            xbox_profile,
+        ) == Some(Fo4WriterKind::Dx10) =>
+        {
+            "libdeflate"
+        }
+        _ => "zlib",
     }
 }
 
@@ -869,10 +986,23 @@ pub(crate) fn allows_compression_for_path(rel_slash: &str) -> bool {
     compression_policy(rel_slash).allows_compression()
 }
 
+/// Audio payloads the engine streams straight out of the archive without ever
+/// inflating them. A compressed entry reads as silence: the line plays with zero
+/// duration and no audio, and nothing is logged. Bethesda stores every one of
+/// these — 137k `.fuz` across `Fallout4 - Voices.ba2` and the DLC
+/// `- Voices_en.ba2`, and all `.xwm`/`.wav` in `Fallout4 - Sounds.ba2`.
+const UNCOMPRESSED_AUDIO_EXTS: [&str; 3] = [".fuz", ".xwm", ".wav"];
+
 fn compression_policy(rel_slash: &str) -> CompressionPolicy {
     let path = rel_slash.trim_start_matches("./");
-    if path.ends_with(".fuz") {
-        return CompressionPolicy::Allow;
+    // Keyed on the payload, not the directory: audio outside the `sound/` and
+    // `music/` prefixes below would otherwise compress and go silent with no
+    // diagnostic.
+    if UNCOMPRESSED_AUDIO_EXTS
+        .iter()
+        .any(|ext| path.ends_with(ext))
+    {
+        return CompressionPolicy::Forbid;
     }
     if path.starts_with("sound/") || path.starts_with("music/") || path.starts_with("strings/") {
         CompressionPolicy::Forbid
@@ -907,6 +1037,44 @@ mod tests {
     };
 
     static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+
+    /// Compressed audio reads as silence in game: the engine streams it out of
+    /// the archive without inflating it, so the line plays with zero duration
+    /// and nothing is logged. Vanilla stores all of it.
+    #[test]
+    fn audio_payloads_are_never_compressed() {
+        for path in [
+            "sound/voice/seventysix.esm/storm_mq01_announcerf_vaulttec/0072a2b0_1.fuz",
+            "Sound/Voice/Fallout4.esm/PlayerVoiceMale01/0001A2B3_1.FUZ",
+            "./sound/voice/x/y.fuz",
+            "sound/fx/explosion.xwm",
+            "music/radio/track01.xwm",
+            "sound/fx/ui/click.wav",
+            // Keyed on the payload, so audio outside sound//music/ is still
+            // stored — the positional rule alone would have compressed these.
+            "misc/stray.fuz",
+            "meshes/oddly/placed.xwm",
+            "interface/beep.wav",
+        ] {
+            assert!(
+                !allows_compression_for_path(&path.to_ascii_lowercase()),
+                "{path} must be stored uncompressed"
+            );
+        }
+    }
+
+    #[test]
+    fn non_audio_payloads_still_compress() {
+        for path in [
+            "meshes/props/thing.nif",
+            "materials/x.bgsm",
+            "scripts/y.pex",
+        ] {
+            assert!(allows_compression_for_path(path), "{path} should compress");
+        }
+        // The sound/ rule itself must survive the .fuz carve-out's removal.
+        assert!(!allows_compression_for_path("sound/fx/explosion.xwm"));
+    }
 
     struct TestDir {
         path: PathBuf,
@@ -1474,6 +1642,8 @@ mod tests {
             fo4_kind("fo4xboxdds"),
             (fo4::Version::v8, fo4::Format::DX10)
         );
+        assert_eq!(fo4_kind("fo4ps"), (fo4::Version::v8, fo4::Format::GNRL));
+        assert_eq!(fo4_kind("fo4psdds"), (fo4::Version::v8, fo4::Format::GNRL));
         assert_eq!(fo4_kind("fo4og"), (fo4::Version::v1, fo4::Format::GNRL));
         assert_eq!(fo4_kind("fo4ogdds"), (fo4::Version::v1, fo4::Format::DX10));
     }
@@ -1527,8 +1697,153 @@ mod tests {
     fn archive_type_default_level_picks_per_format() {
         assert_eq!(archive_type_default_level("fo4dds"), 4);
         assert_eq!(archive_type_default_level("fo4"), 6);
+        assert_eq!(archive_type_default_level("fo4psdds"), 6);
         assert_eq!(archive_type_default_level("fo76dds"), 4);
         assert_eq!(archive_type_default_level("starfielddds"), 4);
         assert_eq!(archive_type_default_level("sse"), 6);
+    }
+
+    #[test]
+    fn archive_type_compression_codec_matches_direct_texture_writer() {
+        assert_eq!(archive_type_compression_codec("fo4dds"), "libdeflate");
+        assert_eq!(archive_type_compression_codec("fo76dds"), "libdeflate");
+        assert_eq!(archive_type_compression_codec("fo4"), "zlib");
+        assert_eq!(archive_type_compression_codec("fo4xboxdds"), "zlib");
+        assert_eq!(archive_type_compression_codec("fo4psdds"), "zlib");
+        assert_eq!(archive_type_compression_codec("starfielddds"), "zlib");
+    }
+
+    fn riff_wave_payload(format_tag: u16) -> Vec<u8> {
+        let mut fmt = Vec::with_capacity(16);
+        fmt.extend_from_slice(&format_tag.to_le_bytes());
+        fmt.extend_from_slice(&1u16.to_le_bytes());
+        fmt.extend_from_slice(&44_100u32.to_le_bytes());
+        fmt.extend_from_slice(&88_200u32.to_le_bytes());
+        fmt.extend_from_slice(&2u16.to_le_bytes());
+        fmt.extend_from_slice(&16u16.to_le_bytes());
+
+        let mut payload = b"RIFF".to_vec();
+        payload.extend_from_slice(&(fmt.len() as u32 + 12).to_le_bytes());
+        payload.extend_from_slice(b"WAVEfmt ");
+        payload.extend_from_slice(&(fmt.len() as u32).to_le_bytes());
+        payload.extend_from_slice(&fmt);
+        payload
+    }
+
+    fn atrac9_wave_payload() -> Vec<u8> {
+        let mut fmt = vec![0_u8; 40];
+        fmt[..2].copy_from_slice(&0xfffe_u16.to_le_bytes());
+        fmt[24..40].copy_from_slice(&[
+            0xd2, 0x42, 0xe1, 0x47, 0xba, 0x36, 0x8d, 0x4d, 0x88, 0xfc, 0x61, 0x65, 0x4f, 0x8c,
+            0x83, 0x6c,
+        ]);
+        let mut payload = b"RIFF".to_vec();
+        payload.extend_from_slice(&(fmt.len() as u32 + 12).to_le_bytes());
+        payload.extend_from_slice(b"WAVEfmt ");
+        payload.extend_from_slice(&(fmt.len() as u32).to_le_bytes());
+        payload.extend_from_slice(&fmt);
+        payload
+    }
+
+    #[test]
+    fn playstation_archive_rejects_xwm_audio() -> anyhow::Result<()> {
+        let dir = TestDir::new();
+        let source_dir = dir.path().join("source");
+        fs::create_dir_all(source_dir.join("Sound"))?;
+        fs::write(source_dir.join("Sound/test.xwm"), b"xwm")?;
+
+        let error = pack_archive(
+            &source_dir,
+            &dir.path().join("out.ba2"),
+            "fo4ps",
+            true,
+            6,
+            false,
+            None,
+            None,
+            PackFilters::default(),
+        )
+        .unwrap_err();
+
+        assert!(error.contains("do not support XWM audio"));
+        Ok(())
+    }
+
+    #[test]
+    fn playstation_archive_requires_wav_backed_fuz() -> anyhow::Result<()> {
+        let dir = TestDir::new();
+        let source_dir = dir.path().join("source");
+        fs::create_dir_all(source_dir.join("Sound/Voice"))?;
+        let mut fuz = b"FUZE\x01\x00\x00\x00\x03\x00\x00\x00LIP".to_vec();
+        fuz.extend_from_slice(&riff_wave_payload(0x0162));
+        fs::write(source_dir.join("Sound/Voice/test.fuz"), fuz)?;
+
+        let error = pack_archive(
+            &source_dir,
+            &dir.path().join("out.ba2"),
+            "fo4ps",
+            true,
+            6,
+            false,
+            None,
+            None,
+            PackFilters::default(),
+        )
+        .unwrap_err();
+
+        assert!(error.contains("must embed PCM WAV or ATRAC9 audio"));
+        Ok(())
+    }
+
+    #[test]
+    fn playstation_archive_accepts_wav_backed_fuz() -> anyhow::Result<()> {
+        let dir = TestDir::new();
+        let source_dir = dir.path().join("source");
+        fs::create_dir_all(source_dir.join("Sound/Voice"))?;
+        let mut fuz = b"FUZE\x01\x00\x00\x00\x03\x00\x00\x00LIP".to_vec();
+        fuz.extend_from_slice(&riff_wave_payload(1));
+        fs::write(source_dir.join("Sound/Voice/test.fuz"), fuz)?;
+
+        let written = pack_archive(
+            &source_dir,
+            &dir.path().join("out.ba2"),
+            "fo4ps",
+            true,
+            6,
+            false,
+            None,
+            None,
+            PackFilters::default(),
+        )
+        .map_err(anyhow::Error::msg)?;
+
+        assert_eq!(written, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn playstation_archive_accepts_at9_backed_fuz() -> anyhow::Result<()> {
+        let dir = TestDir::new();
+        let source_dir = dir.path().join("source");
+        fs::create_dir_all(source_dir.join("Sound/Voice"))?;
+        let mut fuz = b"FUZE\x01\x00\x00\x00\x03\x00\x00\x00LIP".to_vec();
+        fuz.extend_from_slice(&atrac9_wave_payload());
+        fs::write(source_dir.join("Sound/Voice/test.fuz"), fuz)?;
+
+        let written = pack_archive(
+            &source_dir,
+            &dir.path().join("out.ba2"),
+            "fo4ps",
+            true,
+            6,
+            false,
+            None,
+            None,
+            PackFilters::default(),
+        )
+        .map_err(anyhow::Error::msg)?;
+
+        assert_eq!(written, 1);
+        Ok(())
     }
 }

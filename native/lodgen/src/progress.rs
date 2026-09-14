@@ -84,12 +84,13 @@ pub struct ObjectQuadTelemetry {
     pub bto_path: Option<std::path::PathBuf>,
     pub bto_bytes: u64,
     pub output_shape_count: u64,
+    pub shape_build_secs: f64,
+    pub write_report: crate::output::bto::BtoWriteReport,
     pub simplify: ObjectSimplifyStats,
     pub models: Vec<ObjectModelTelemetry>,
 }
 
 /// Per-quad execution context passed to each terrain/object/tree generator.
-/// Contract §Per-type generators.
 pub struct QuadCtx<'a> {
     pub world: &'a crate::input::WorldspaceInput,
     pub settings: &'a crate::settings::LodSettings,

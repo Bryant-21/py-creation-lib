@@ -21,6 +21,21 @@ from creation_lib.papyrus_lsp.ast_nodes import (
 P = Pos(0, 0, 0, 0)
 TypeAdapter = Callable[[str], str]
 
+
+def _compat_local_for_dropped_param(param: Parameter) -> LocalVarStmt:
+    type_name = param.type.lower()
+    if type_name == "bool":
+        initial = LiteralExpr(False, "bool", P)
+    elif type_name == "int":
+        initial = LiteralExpr(0, "int", P)
+    elif type_name == "float":
+        initial = LiteralExpr(0.0, "float", P)
+    elif type_name == "string":
+        initial = LiteralExpr("", "string", P)
+    else:
+        initial = LiteralExpr(None, "none", P)
+    return LocalVarStmt(param.name, param.type, initial, P)
+
 # Opcode → binary operator string
 _BINARY_OPS = {
     PexOpcode.IADD: "+", PexOpcode.FADD: "+",
@@ -314,6 +329,28 @@ def _decompile_instruction(
             and raw_call_args[-1].type == ValueType.BOOL
         ):
             raw_call_args = raw_call_args[:-1]
+        # FO4 is GetRefsLinkedToMe(Keyword apLinkKeyword, Keyword apExcludeKeyword);
+        # FO76 takes a third bool. The native compiler does not validate arity, so
+        # keeping it ships a call the runtime rejects rather than a build error.
+        if (
+            fo4_api_compat
+            and (not obj_type or obj_type.lower() in {"objectreference", "actor"})
+            and str(method).lower() == "getrefslinkedtome"
+            and len(raw_call_args) == 3
+            and raw_call_args[-1].type == ValueType.BOOL
+        ):
+            raw_call_args = raw_call_args[:-1]
+        # FO76 inserts a critical-hit filter before abMatch; FO4 has no
+        # corresponding hit-event field and rejects the ten-argument call.
+        if (
+            fo4_api_compat
+            and str(method).lower()
+            in {"registerforhitevent", "unregisterforhitevent"}
+            and len(raw_call_args) == 10
+            and raw_call_args[8].type == ValueType.INTEGER
+            and raw_call_args[9].type == ValueType.BOOL
+        ):
+            raw_call_args = raw_call_args[:8] + raw_call_args[9:]
         if (
             fo4_api_compat
             and (not obj_type or obj_type.lower() == "actor")
@@ -1027,6 +1064,16 @@ def _decompile_object(
             else:
                 prop_flags.append("Auto")
         prop_flags.extend(_decode_user_flags(prop.user_flags, flag_names))
+        # The compiler moves Conditional off the property and onto its backing
+        # auto-variable, so recovering it means reading the variable's flags.
+        auto_var = variables_by_name.get(prop.auto_var or "")
+        if auto_var is not None:
+            already = {flag.lower() for flag in prop_flags}
+            prop_flags.extend(
+                flag
+                for flag in _decode_user_flags(auto_var.user_flags, flag_names)
+                if flag.lower() == "conditional" and flag.lower() not in already
+            )
         getter = None
         if prop.getter is not None:
             getter = FunctionDef(
@@ -1115,7 +1162,16 @@ def _decompile_object(
         state_fns = []
         state_evts = []
         for fn in state.functions:
-            if skip_internal_functions and fn.name.startswith("::"):
+            # `::remote_<Sender>_<Event>` is how BOTH FO76 and FO4 encode a custom
+            # event handler (`Event <Sender>.<Event>(...)`). It is compiler output,
+            # not an internal helper — dropping it silently leaves the script
+            # registering for an event it can no longer handle.
+            remote_event = _remote_event_parts(fn)
+            if (
+                skip_internal_functions
+                and fn.name.startswith("::")
+                and remote_event is None
+            ):
                 continue
             # Events: return None and name starts with "On" (or matches known names)
             is_event = (
@@ -1149,9 +1205,46 @@ def _decompile_object(
                     if any(_node_references_name(stmt, param.name) for stmt in body)
                 ]
                 body = [
-                    LocalVarStmt(param.name, param.type, None, P)
+                    _compat_local_for_dropped_param(param)
                     for param in used_dropped_params
                 ] + body
+            if (
+                fo4_api_compat
+                and is_event
+                and obj.parent.lower() == "activemagiceffect"
+                and fn.name.lower() == "oneffectfinish"
+                and len(params) == 5
+                and all(param.type.lower() == "float" for param in params[2:])
+            ):
+                dropped_params = params[2:]
+                params = params[:2]
+                body = [
+                    _compat_local_for_dropped_param(param)
+                    for param in dropped_params
+                    if any(_node_references_name(stmt, param.name) for stmt in body)
+                ] + body
+            if (
+                fo4_api_compat
+                and is_event
+                and fn.name.lower() == "onhit"
+                and len(params) == 10
+                and params[8].type.lower() == "bool"
+                and params[9].type.lower() == "string"
+            ):
+                dropped_param = params.pop(8)
+                if any(_node_references_name(stmt, dropped_param.name) for stmt in body):
+                    body = [_compat_local_for_dropped_param(dropped_param)] + body
+            if (
+                fo4_api_compat
+                and is_event
+                and fn.name.lower() == "onradiationdamage"
+                and len(params) == 3
+                and params[1].type.lower() == "float"
+                and params[2].type.lower() == "bool"
+            ):
+                dropped_param = params.pop(1)
+                if any(_node_references_name(stmt, dropped_param.name) for stmt in body):
+                    body = [_compat_local_for_dropped_param(dropped_param)] + body
             if (
                 fo4_api_compat
                 and is_event
@@ -1183,7 +1276,14 @@ def _decompile_object(
                     ))
                 body = compatibility_locals + body
 
-            if is_event:
+            if remote_event is not None:
+                sender, event_name = remote_event
+                state_evts.append(EventDef(
+                    name=f"{sender}.{event_name}", params=params,
+                    is_native=fn.is_native, docstring=fn.docstring,
+                    body=body, pos=P,
+                ))
+            elif is_event:
                 ast_node = EventDef(
                     name=fn.name, params=params, is_native=fn.is_native,
                     docstring=fn.docstring, body=body, pos=P,
@@ -1208,7 +1308,7 @@ def _decompile_object(
                 functions=state_fns, events=state_evts, pos=P,
             ))
 
-    return ScriptNode(
+    script = ScriptNode(
         name=obj.name,
         parent=normalize_type(obj.parent) if obj.parent else None,
         flags=script_flags,
@@ -1220,6 +1320,95 @@ def _decompile_object(
         structs=structs,
         pos=P,
     )
+    _restore_custom_event_names(script, member_types)
+    return script
+
+
+_CUSTOM_EVENT_SEND = {"sendcustomevent"}
+_CUSTOM_EVENT_REGISTER = {"registerforcustomevent", "unregisterforcustomevent"}
+
+
+def _remote_event_parts(fn) -> tuple[str, str] | None:
+    """Split `::remote_<Sender>_<Event>` using the handler's own `akSender` param
+    type — the script name itself can contain underscores, so the name alone is
+    ambiguous."""
+    prefix = "::remote_"
+    if not fn.name.startswith(prefix) or not fn.params:
+        return None
+    raw = fn.name[len(prefix):]
+    sender = _type_base_name(fn.params[0].type)
+    if sender and raw.lower().startswith(f"{sender.lower()}_"):
+        return sender, raw[len(sender) + 1:]
+    return None
+
+
+def _strip_event_prefix(literal: str, owner: str) -> str | None:
+    if not owner or not isinstance(literal, str):
+        return None
+    if literal.lower().startswith(f"{owner.lower()}_"):
+        return literal[len(owner) + 1:]
+    return None
+
+
+def _restore_custom_event_names(script: ScriptNode, member_types: dict) -> None:
+    """Rewrite custom-event calls from compiler-internal form back to source form.
+
+    A .pex stores the event name fully qualified (`<sender>_<Event>`) because the
+    compiler prefixes it at build time. Emitting that literal back into .psc makes
+    the next compile prefix it a SECOND time, so sender and receiver end up with
+    different strings and the event can never be delivered. The sender argument of
+    Register/UnregisterForCustomEvent is likewise stored with an explicit cast to
+    ScriptObject, which would make the prefix `scriptobject_`.
+    """
+    lowered_members = {str(k).lower(): v for k, v in (member_types or {}).items()}
+
+    def sender_type_of(expr) -> str:
+        if isinstance(expr, CastExpr):
+            return sender_type_of(expr.expr)
+        if isinstance(expr, NameExpr):
+            return _type_base_name(lowered_members.get(expr.name.lower(), ""))
+        return ""
+
+    def visit(node):
+        if isinstance(node, DotCallExpr):
+            method = str(node.method or "").lower()
+            if method in _CUSTOM_EVENT_SEND and node.args:
+                lit = node.args[0]
+                if isinstance(lit, LiteralExpr):
+                    bare = _strip_event_prefix(lit.value, script.name)
+                    if bare is not None:
+                        node.args[0] = LiteralExpr(bare, lit.type, lit.pos)
+            elif method in _CUSTOM_EVENT_REGISTER and len(node.args) >= 2:
+                sender = sender_type_of(node.args[0])
+                lit = node.args[1]
+                if isinstance(lit, LiteralExpr):
+                    bare = _strip_event_prefix(lit.value, sender)
+                    if bare is not None:
+                        node.args[1] = LiteralExpr(bare, lit.type, lit.pos)
+                # The cast to ScriptObject is compiler-inserted; keeping it makes
+                # the recompiled prefix `scriptobject_` instead of the real type.
+                arg0 = node.args[0]
+                if (
+                    isinstance(arg0, CastExpr)
+                    and str(arg0.target_type).lower() == "scriptobject"
+                ):
+                    node.args[0] = arg0.expr
+        for value in vars(node).values() if hasattr(node, "__dict__") else ():
+            if isinstance(value, list):
+                for item in value:
+                    if hasattr(item, "__dict__"):
+                        visit(item)
+            elif hasattr(value, "__dict__"):
+                visit(value)
+
+    for holder in (script.functions, script.events):
+        for fn in holder:
+            for stmt in fn.body:
+                visit(stmt)
+    for state in script.states:
+        for fn in list(state.functions) + list(state.events):
+            for stmt in fn.body:
+                visit(stmt)
 
 
 def _normalize_pex_type_name(

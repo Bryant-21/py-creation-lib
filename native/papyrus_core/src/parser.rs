@@ -1,14 +1,8 @@
 //! Hand-written recursive-descent Papyrus parser.
 //!
-//! Replaces `py_creation_lib/python/creation_lib/papyrus_lsp/parser.py` (Lark Earley + transformer). The grammar
-//! being implemented is documented in
-//! `plugins/papyrus_lsp_plugin/plugins/papyrus_lsp/grammar.lark`. Parity tests
-//! live in `tests/test_parser.py` under that plugin.
-//!
 //! Negative-number tokens are not pre-classified by the lexer (see lexer.rs);
 //! unary minus is handled here in `parse_unary`. Cast `as` and type-check `is`
-//! are both consumed at the `cast_expr` level, but only `as` produces a node —
-//! matching the Python transformer's behavior at `parser.py:603-620`.
+//! are both consumed at the `cast_expr` level, but only `as` produces a node.
 
 use crate::ast::*;
 use crate::lexer::{DocComment, Pos as LexPos, Token, TokenKind, tokenize_with_docs};
@@ -1092,7 +1086,7 @@ impl Parser {
     }
 
     /// Disambiguate local variable declaration vs. assignment vs. expression.
-    /// Local var: NAME (":" NAME)? ("[]" )? NAME ...
+    /// Local var: NAME (":" NAME)* ("[]" )? NAME ...
     /// Other:     NAME (anything else)
     fn parse_local_var_or_assign_or_expr(&mut self) -> Stmt {
         if self.lookahead_is_local_var() {
@@ -1140,7 +1134,7 @@ impl Parser {
             return false;
         }
         let mut i = 1usize;
-        if matches!(self.peek_at(i), TokenKind::Colon)
+        while matches!(self.peek_at(i), TokenKind::Colon)
             && matches!(self.peek_at(i + 1), TokenKind::Name(_))
         {
             i += 2;
@@ -1777,6 +1771,19 @@ mod tests {
     }
 
     #[test]
+    fn parse_multi_segment_namespaced_local_type() {
+        let s = parse_ok(
+            "ScriptName Foo\nFunction F()\n  Quests:U01A_Brewing:MasterScript master = None\nEndFunction\n",
+        );
+        let f = s.functions.iter().find(|f| f.name == "F").expect("fn");
+        let Stmt::LocalVarStmt { name, ty, .. } = &f.body[0] else {
+            panic!("expected local declaration");
+        };
+        assert_eq!(name, "master");
+        assert_eq!(ty, "Quests:U01A_Brewing:MasterScript");
+    }
+
+    #[test]
     fn case_insensitive_keywords() {
         let s = parse_ok("scriptname Foo EXTENDS Bar\n");
         assert_eq!(s.name, "Foo");
@@ -1963,8 +1970,8 @@ mod tests {
 
     #[test]
     fn var_array_local_does_not_hang() {
-        // Regression: `Var[]` local declaration used to infinite-loop the
-        // statement parser (lookahead only matched `Var name`, not `Var[] name`).
+        // The local-declaration lookahead must match `Var[] name`, not only
+        // `Var name`; otherwise the statement parser loops forever.
         let r = parse_script(
             "ScriptName Foo\nFunction Bar()\n  Var[] kargs = new Var[3]\nEndFunction\n",
         );

@@ -486,19 +486,57 @@ impl CompiledSchema {
         None
     }
 
-    /// THE shared enum-ref locator — the enum analogue of `allowed_targets`
-    /// validator A2 and conv-flags' Class A clamp call
-    /// this so they agree by construction on which field carries which enum.
+    /// THE shared enum-ref locator — the enum analogue of `allowed_targets`.
     /// `field_path` is the subrecord sig (enum is the whole subrecord) or
     /// `"<SUB>.<field_id>"` for a field inside a struct codec. Returns the
     /// `enum_ref` id; resolve it to a `SchemaEnumJson` via `enum_def()`.
+    ///
+    /// SCOPE-BLIND: matches the FIRST spec for the sig, ignoring `scope_id`.
+    /// For scope-overloaded subrecords (`QUST.FNAM` means objective flags in
+    /// `scope_id="objectives"` and a completely different 25-bit alias flag set
+    /// in `scope_id="aliases"`) that silently returns the wrong enum. Any caller
+    /// that MASKS or CLAMPS a value — where a wrong enum destroys real bits —
+    /// must use `enum_ref_at_in_scope` with the scope it is currently walking.
     pub fn enum_ref_at(&self, record_sig: &str, field_path: &str) -> Option<&str> {
+        self.enum_ref_at_impl(record_sig, field_path, None)
+    }
+
+    /// Scope-aware `enum_ref_at`. `scope` is the `scope_id` of the group the
+    /// caller is currently inside (`None` = unscoped/top-level subrecords).
+    /// Falls back to the scope-blind match when no spec carries that scope, so
+    /// a schema without scope annotations behaves as before.
+    pub fn enum_ref_at_in_scope(
+        &self,
+        record_sig: &str,
+        field_path: &str,
+        scope: Option<&str>,
+    ) -> Option<&str> {
+        self.enum_ref_at_impl(record_sig, field_path, Some(scope))
+    }
+
+    /// `scope`: `None` = don't filter on scope at all; `Some(s)` = prefer specs
+    /// whose `scope_id` equals `s`, falling back to unfiltered.
+    fn enum_ref_at_impl(
+        &self,
+        record_sig: &str,
+        field_path: &str,
+        scope: Option<Option<&str>>,
+    ) -> Option<&str> {
         let record = self.records.get(record_sig)?;
         let (sub_sig, field_id) = match field_path.split_once('.') {
             Some((s, f)) => (s, Some(f)),
             None => (field_path, None),
         };
-        let sub = record.subrecords.iter().find(|s| s.id == sub_sig)?;
+        let scoped = scope.and_then(|scope| {
+            record
+                .subrecords
+                .iter()
+                .find(|s| s.id == sub_sig && s.scope_id.as_deref() == scope)
+        });
+        let sub = match scoped {
+            Some(sub) => sub,
+            None => record.subrecords.iter().find(|s| s.id == sub_sig)?,
+        };
         if let Some(field_id) = field_id {
             let field = sub.fields.iter().find(|f| f.id == field_id)?;
             return field.enum_ref.as_deref();
@@ -517,8 +555,61 @@ impl CompiledSchema {
     }
 
     /// Convenience: resolve `enum_ref_at` straight to the enum definition.
+    /// Inherits `enum_ref_at`'s scope-blindness — see its doc.
     pub fn enum_def_at(&self, record_sig: &str, field_path: &str) -> Option<&SchemaEnumJson> {
         let enum_ref = self.enum_ref_at(record_sig, field_path)?;
+        self.enums.get(enum_ref)
+    }
+
+    /// Every distinct `enum_ref` bound to `field_path` across ALL scope
+    /// variants of the subrecord, in schema order.
+    ///
+    /// For the common (non-overloaded) subrecord this is a 1-element vec equal
+    /// to `enum_ref_at`. For a scope-overloaded one (QUST.FNAM: objective flags
+    /// vs alias flags) it yields both. A WARN-ONLY consumer that cannot see the
+    /// scope it is walking must accept a value valid under ANY candidate rather
+    /// than false-positive against an arbitrarily-chosen one. A consumer that
+    /// MASKS or CLAMPS must instead use `enum_ref_at_in_scope` — the union is
+    /// too permissive to strip against.
+    pub fn enum_refs_at_all_scopes(&self, record_sig: &str, field_path: &str) -> Vec<&str> {
+        let Some(record) = self.records.get(record_sig) else {
+            return Vec::new();
+        };
+        let (sub_sig, field_id) = match field_path.split_once('.') {
+            Some((s, f)) => (s, Some(f)),
+            None => (field_path, None),
+        };
+        let mut out: Vec<&str> = Vec::new();
+        for sub in record.subrecords.iter().filter(|s| s.id == sub_sig) {
+            let enum_ref = match field_id {
+                Some(field_id) => sub
+                    .fields
+                    .iter()
+                    .find(|f| f.id == field_id)
+                    .and_then(|f| f.enum_ref.as_deref()),
+                None => sub.enum_ref.as_deref().or_else(|| {
+                    let enum_fields: Vec<&SchemaFieldJson> =
+                        sub.fields.iter().filter(|f| f.enum_ref.is_some()).collect();
+                    (enum_fields.len() == 1).then(|| enum_fields[0].enum_ref.as_deref())?
+                }),
+            };
+            if let Some(enum_ref) = enum_ref {
+                if !out.contains(&enum_ref) {
+                    out.push(enum_ref);
+                }
+            }
+        }
+        out
+    }
+
+    /// Scope-aware `enum_def_at`.
+    pub fn enum_def_at_in_scope(
+        &self,
+        record_sig: &str,
+        field_path: &str,
+        scope: Option<&str>,
+    ) -> Option<&SchemaEnumJson> {
+        let enum_ref = self.enum_ref_at_in_scope(record_sig, field_path, scope)?;
         self.enums.get(enum_ref)
     }
 
@@ -526,21 +617,18 @@ impl CompiledSchema {
     /// whose codec is `struct:<TYPETAGS>`, yields one `StructFieldInfo` per
     /// schema field: its dotted `field_path` ("<SUB>.<field_id>"), byte offset,
     /// width, and the field's `enum_ref` / `formlink_targets` / `null_allowed`.
-    /// conv-flags (mask nested flag/enum bits in raw Bytes at offset),
-    /// conv-refs (validate nested FKs), and validator (detect nested A1/A2/D)
-    /// ALL consume this one util so they agree by construction. This is a
-    /// byte-offset view, NOT a full struct decoder (no source_read blast radius).
+    /// conv-flags (masking), conv-refs (nested FK validation), and the validator
+    /// (nested A1/A2/D) all use it, so they agree by construction. A byte-offset
+    /// view, not a struct decoder.
     ///
     /// Returns empty when the subrecord isn't a fixed `struct:` codec (variable-
     /// width tokens like zstring abort: offset past such a field is undefined).
     ///
-    /// UNION-AWARE: when the subrecord is a `record_form_version` union
-    /// (e.g. EFSH.DNAM), the active variant — and therefore field offsets/widths
-    /// — depends on the record's form_version. The 2-arg form picks the variant
-    /// matching an UNKNOWN version (the unconditional / first variant); pass the
-    /// record's form_version to `struct_field_layout_versioned` for the correct
-    /// active variant. Consumers masking union subrecords MUST use the versioned
-    /// form (the record's `form_version` is on `ParsedRecord`).
+    /// For a `record_form_version` union (e.g. EFSH.DNAM) the active variant, and
+    /// so the offsets/widths, depends on form_version. This form picks the variant
+    /// for an unknown version (unconditional / first); consumers masking union
+    /// subrecords MUST use `struct_field_layout_versioned` with the record's
+    /// `form_version`.
     pub fn struct_field_layout(
         &self,
         record_sig: &str,
@@ -579,18 +667,16 @@ impl CompiledSchema {
         struct_field_layout_for(&sub.id, sub.codec.as_deref(), &sub.fields, form_version)
     }
 
-    /// THE shared flag-field enumerator. Yields every
-    /// FLAG-storage enum field in a record as (field_path, &SchemaEnumJson),
-    /// flattening struct codecs AND union variants so struct-nested flag bytes
-    /// (DSTD@3, BOOK.DNAM@0, LIGH.DATA, EXPL.DATA, RACE.DATA.flags_2, EFSH.DNAM
-    /// union variants, ...) are surfaced. conv-flags masks each
-    /// (raw & enum.valid_flag_mask()) and
-    /// the validator detects unknown bits over the SAME set, so they agree by
-    /// construction. field_path is the subrecord sig for a subrecord-level flag
-    /// enum, or "<SUB>.<field_id>" for a struct/variant sub-field. For UNION
-    /// subrecords every variant's flag fields are yielded (deduped by path);
-    /// pair with `struct_field_layout_versioned(form_version)` to get the byte
-    /// offset/width of the ACTIVE variant before masking.
+    /// THE shared flag-field enumerator. Yields every FLAG-storage enum field in
+    /// a record as (field_path, &SchemaEnumJson), flattening struct codecs AND
+    /// union variants so struct-nested flag bytes (DSTD@3, BOOK.DNAM@0,
+    /// LIGH.DATA, EXPL.DATA, RACE.DATA.flags_2, EFSH.DNAM union variants, ...)
+    /// are included. conv-flags masks each (raw & enum.valid_flag_mask()) and the
+    /// validator checks the SAME set, so they agree by construction. field_path is
+    /// the subrecord sig for a subrecord-level flag enum, or "<SUB>.<field_id>"
+    /// for a struct/variant sub-field. UNION subrecords yield every variant's flag
+    /// fields (deduped by path); use `struct_field_layout_versioned(form_version)`
+    /// for the ACTIVE variant's offset/width before masking.
     pub fn iter_flag_fields(&self, record_sig: &str) -> Vec<(String, &SchemaEnumJson)> {
         let Some(record) = self.records.get(record_sig) else {
             return Vec::new();
@@ -739,10 +825,10 @@ fn struct_field_layout_for<'a>(
     // the on-disk struct when the record's form_version doesn't satisfy it (e.g.
     // RACE.DATA's wbFromVersion(143) floats and wbFromVersion(188) backpack int).
     // Such a field consumes ZERO bytes, so it must be skipped for both width
-    // accumulation and emission — otherwise every following field's offset is
-    // skewed (the RACE.DATA FK corruption). Only filter when an explicit
-    // form_version is supplied; the version-less call keeps the maximal layout so
-    // existing consumers (validator / class_a masking that pass None) are unchanged.
+    // accumulation and emission; otherwise every following field's offset is
+    // skewed and RACE.DATA FKs are corrupted. Only filter when an explicit
+    // form_version is supplied; the version-less call (validator / class_a
+    // masking pass None) keeps the maximal layout.
     let field_present = |field: &SchemaFieldJson| -> bool {
         match form_version {
             Some(_) if !field.presence_conditions.is_empty() => field
@@ -1149,6 +1235,39 @@ mod metadata_tests {
         assert!(book.is_flags());
         // No enum ⇒ None.
         assert!(s.enum_ref_at("KYWD", "EDID").is_none());
+    }
+
+    #[test]
+    fn enum_ref_locator_disambiguates_scope_overloaded_qust_fnam() {
+        let s = fo4();
+        // Scope-blind: first FNAM spec wins — the 2-bit objective flag table.
+        let blind = s.enum_def_at("QUST", "FNAM").expect("QUST.FNAM enum");
+        assert_eq!(blind.valid_flag_mask(), 0x3);
+
+        // Scope-aware: the alias FNAM is a different, 25-bit flag set. Masking
+        // an alias row against the objective table would destroy quest_object
+        // (0x4), allow_dead (0x10), essential (0x40), is_companion (0x80_0000)…
+        let aliases = s
+            .enum_def_at_in_scope("QUST", "FNAM", Some("aliases"))
+            .expect("QUST.FNAM@aliases enum");
+        assert_eq!(aliases.valid_flag_mask(), 0x1ff_ffff);
+        for bit in [0x4_i128, 0x10, 0x40, 0x80_0000] {
+            assert!(
+                aliases.valid_flag_mask() & bit == bit,
+                "alias flag {bit:#x} must survive masking"
+            );
+        }
+
+        let objectives = s
+            .enum_def_at_in_scope("QUST", "FNAM", Some("objectives"))
+            .expect("QUST.FNAM@objectives enum");
+        assert_eq!(objectives.valid_flag_mask(), 0x3);
+
+        // Unknown scope falls back to the scope-blind match rather than None.
+        assert!(
+            s.enum_ref_at_in_scope("QUST", "FNAM", Some("no_such_scope"))
+                .is_some()
+        );
     }
 
     #[test]

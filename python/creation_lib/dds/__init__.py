@@ -84,22 +84,15 @@ def batch_resize(input_dir: str, output_dir: str, sizes: list[int],
                  use_gpu: bool = True) -> dict:
     """Batch resize DDS files.
 
-    Args:
-        input_dir: Source directory containing DDS files.
-        output_dir: Output directory for resized files.
-        sizes: List of target sizes (max dimension).
-        generate_mips: Whether to generate mipmaps.
-        no_upscale: If True, copy files that are already at or below target size.
-        per_size_subfolders: Create size-named subfolders in output_dir.
-        bc3_convert: Convert BC7 textures to BC3 format.
-        recurse: Recursively process subdirectories.
-        downscale_method: Resampling method ("lanczos", "bicubic", etc.).
-        ignore_patterns: Glob patterns for directories to skip.
-        progress_callback: Called with (current, total, message).
-        cancel_check: Returns True if operation should be cancelled.
+    ``sizes`` are target max dimensions. ``no_upscale`` copies files already
+    at or below a target size. ``per_size_subfolders`` writes each size to a
+    size-named subfolder of ``output_dir``. ``bc3_convert`` re-encodes BC7 as
+    BC3. ``downscale_method`` is a resampler name ("lanczos", "bicubic", ...).
+    ``ignore_patterns`` are glob patterns for directories to skip.
+    ``progress_callback`` gets ``(current, total, message)``; ``cancel_check``
+    returns True to cancel.
 
-    Returns:
-        dict with keys: processed, failed, errors.
+    Returns ``{"processed", "failed", "errors"}``.
     """
     import concurrent.futures
     import fnmatch
@@ -312,18 +305,7 @@ def _pillow_resize_and_save(src_path: str, out_path: str, size: int,
 def batch_to_png(input_dir: str, output_dir: str, recurse: bool = True,
                  progress_callback: Callable[[int, int, str], None] | None = None,
                  cancel_check: Callable[[], bool] | None = None) -> dict:
-    """Batch convert DDS files to PNG.
-
-    Args:
-        input_dir: Source directory containing DDS files.
-        output_dir: Output directory for PNG files.
-        recurse: Recursively process subdirectories.
-        progress_callback: Called with (current, total, message).
-        cancel_check: Returns True if operation should be cancelled.
-
-    Returns:
-        dict with keys: processed, failed.
-    """
+    """Batch convert DDS files to PNG. Returns ``{"processed", "failed"}``."""
     result = {"processed": 0, "failed": 0}
 
     dds_files: list[str] = []

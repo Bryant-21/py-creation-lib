@@ -1,12 +1,11 @@
 """Thin Python boundary for native Papyrus core entrypoints.
 
 Mirrors the loader pattern in `py_creation_lib/python/creation_lib/esp/native_runtime.py`. The native module is
-optional — callers should gate use behind `is_available()` or the environment
-flag `MODKIT_PAPYRUS_NATIVE=1`.
+optional; callers gate use behind `is_available()` / `is_enabled()`.
 
-GIL discipline: every native function we call here releases the GIL inside Rust
-(see `py_creation_lib/native/papyrus_core/src/bindings.rs`). The Python boundary only does
-JSON unmarshalling, which is cheap.
+Every native function called here releases the GIL inside Rust (see
+`py_creation_lib/native/papyrus_core/src/bindings.rs`); the Python side only
+unmarshals JSON.
 """
 from __future__ import annotations
 
@@ -66,8 +65,8 @@ def configure_native_enabled(enabled: bool | None) -> None:
 def is_enabled() -> bool:
     """True when the native backend should be used.
 
-    Native is the default. Set `MODKIT_PAPYRUS_NATIVE=0` to force the
-    Python fallback (e.g. for debugging a parity regression).
+    Native is the default when available; `configure_native_enabled(False)`
+    turns it off.
     """
     if not is_available():
         return False

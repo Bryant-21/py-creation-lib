@@ -12,10 +12,14 @@ from __future__ import annotations
 import glob
 import logging
 import os
+import shutil
 import subprocess
 import yaml
+from dataclasses import dataclass
+from pathlib import Path
 
 from creation_lib.audio import has_loop_or_cue_markers
+from creation_lib.core.game_profiles import get_profile
 
 _log = logging.getLogger("creation_lib.audio.release")
 
@@ -34,6 +38,7 @@ def _tool_paths(resource_dir: str | os.PathLike[str]) -> dict[str, str]:
         "fonix_cdf": os.path.join(lipgen_dir, "FonixData.cdf"),
         "xwma": os.path.join(resource, "xWMAEncode.exe"),
         "bmlfuz": os.path.join(resource, "BmlFuzEncode.exe"),
+        "bmlfuz_decode": os.path.join(resource, "BmlFuzDecode.exe"),
     }
 
 
@@ -141,6 +146,38 @@ def create_fuz(
         return True
     except Exception as e:
         _log.error("create_fuz error for %s: %s", os.path.basename(fuz_path), e)
+        return False
+
+
+def create_ogg(
+    wav_path: str,
+    ogg_path: str,
+    *,
+    ffmpeg_path: str = "ffmpeg",
+) -> bool:
+    """Encode WAV to mono Ogg Vorbis, the container FNV and FO3 use.
+
+    The source rate is kept; callers resample before this point.
+    """
+    cmd = [
+        ffmpeg_path, "-y", "-i", wav_path,
+        "-c:a", "libvorbis", "-q:a", "5", "-ac", "1",
+        ogg_path,
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, creationflags=_CREATE_NO_WINDOW)
+        if proc.returncode != 0:
+            _log.error("ffmpeg ogg encode failed for %s: %s",
+                       os.path.basename(wav_path), proc.stderr.decode(errors="replace"))
+            return False
+        if not os.path.isfile(ogg_path):
+            _log.error("ffmpeg reported success but wrote no OGG for %s",
+                       os.path.basename(wav_path))
+            return False
+        _log.debug("OGG created: %s", ogg_path)
+        return True
+    except Exception as e:
+        _log.error("create_ogg error for %s: %s", os.path.basename(wav_path), e)
         return False
 
 
@@ -378,3 +415,74 @@ def _transcribe_whisper(wav_path: str) -> str | None:
     result = _transcription_model.transcribe(wav_path)
     text = result.get("text", "")
     return text.strip() if text else None
+
+
+@dataclass(frozen=True)
+class VoiceRelease:
+    """What a release produced. `intermediates` are safe for the caller to delete."""
+
+    primary: Path
+    lip: Path | None = None
+    intermediates: tuple[Path, ...] = ()
+
+
+def create_voice_release(
+    wav_path: str,
+    *,
+    game: str,
+    transcript: str,
+    out_dir: str | os.PathLike[str] | None = None,
+    existing_lip: str | None = None,
+    ffmpeg_path: str = "ffmpeg",
+    language: str = "USEnglish",
+    resource_dir: str | os.PathLike[str] | None = None,
+) -> VoiceRelease | None:
+    """Package a WAV into the game-ready voice format for `game`.
+
+    Returns None when the game's container cannot be produced. A game whose
+    container is "wav" is a pass-through: browse and audition only.
+    """
+    profile = get_profile(game)
+    container = profile.voice_container
+    if container not in ("fuz", "ogg", "wav"):
+        raise ValueError(f"No voice release support for {game}: container={container!r}")
+
+    source = Path(wav_path)
+    out = Path(out_dir) if out_dir is not None else source.parent
+    out.mkdir(parents=True, exist_ok=True)
+
+    lip_path: Path | None = None
+    if profile.voice_lip:
+        if existing_lip is not None:
+            lip_path = Path(existing_lip)
+        elif profile.facefx_game:
+            candidate = out / f"{source.stem}.lip"
+            if create_lip(
+                str(source), str(candidate), transcript,
+                ffmpeg_path=ffmpeg_path, game=profile.facefx_game,
+                language=language, resource_dir=resource_dir,
+            ):
+                lip_path = candidate
+
+    if container == "fuz":
+        if lip_path is None:
+            _log.error("FUZ needs a LIP and none was produced for %s", source.name)
+            return None
+        xwm = out / f"{source.stem}.xwm"
+        if not create_xwm(str(source), str(xwm), resource_dir=resource_dir):
+            return None
+        fuz = out / f"{source.stem}.fuz"
+        if not create_fuz(str(fuz), str(xwm), str(lip_path), resource_dir=resource_dir):
+            return None
+        return VoiceRelease(primary=fuz, lip=lip_path, intermediates=(xwm,))
+
+    if container == "ogg":
+        ogg = out / f"{source.stem}.ogg"
+        if not create_ogg(str(source), str(ogg), ffmpeg_path=ffmpeg_path):
+            return None
+        return VoiceRelease(primary=ogg, lip=lip_path)
+
+    target = out / source.name
+    if target.resolve(strict=False) != source.resolve(strict=False):
+        shutil.copy2(source, target)
+    return VoiceRelease(primary=target)

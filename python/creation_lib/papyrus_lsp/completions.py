@@ -63,21 +63,12 @@ def _infer_type_from_script(ast, receiver_word: str, db) -> str | None:
 
 
 def get_completions(text: str, line: int, col: int, db) -> list[CompletionItem]:
-    """Return completion items for cursor at (line, col) in text.
+    """Return completion items for the cursor at 0-based (line, col) in text.
 
-    If cursor is after '.', resolves left-hand type and returns its
-    functions/properties from db. Otherwise returns all known script
-    type names matching the current prefix. On parse failure or no match,
-    falls back to all known script type names (never returns []).
-
-    Args:
-        text: Full script text.
-        line: 0-based line index.
-        col: 0-based column index (cursor position).
-        db: ScriptDB instance.
-
-    Returns:
-        List of CompletionItem — never empty if db has any scripts.
+    After '.', resolves the left-hand type and returns its functions/properties
+    from db. Otherwise returns known script type names matching the current
+    prefix. On parse failure or no match, falls back to all known script type
+    names, so the result is never empty if db has any scripts.
     """
     from . import parse_script
 

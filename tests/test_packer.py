@@ -197,6 +197,59 @@ def test_pack_mod_prefers_native_pack_when_available(tmp_path):
     ]
 
 
+def test_pack_mod_fo4_og_uses_v1_archive_tokens(tmp_path):
+    mod_name = "B21_TestPack"
+    _build_mod_tree(tmp_path, mod_name)
+
+    archive_types: list[str] = []
+
+    def _fake_native_pack(src, out, archive_type, **kwargs):
+        archive_types.append(archive_type)
+        Path(out).write_bytes(b"native")
+
+    with patch(
+        "creation_lib.build.packer.native_runtime.native_function_available",
+        return_value=True,
+    ), patch(
+        "creation_lib.build.packer.native_runtime.pack_mod_archives",
+        side_effect=AssertionError("OG packing must use the v1-capable path"),
+    ), patch(
+        "creation_lib.build.packer.native_runtime.pack_archive",
+        side_effect=_fake_native_pack,
+    ):
+        pack_mod(
+            mod_name,
+            pc=True,
+            xbox=False,
+            game="fo4",
+            project_root=tmp_path,
+            fo4_ba2_target="og",
+        )
+
+    assert archive_types == ["fo4og", "fo4ogdds"]
+
+
+def test_pack_mod_fo4_og_writes_v1_header(tmp_path):
+    mod_name = "B21_TestPack"
+    mod_dir = tmp_path / "mods" / mod_name
+    mesh = mod_dir / "data" / "Meshes" / "model.nif"
+    mesh.parent.mkdir(parents=True)
+    mesh.write_bytes(b"mesh")
+
+    pack_mod(
+        mod_name,
+        pc=True,
+        xbox=False,
+        game="fo4",
+        project_root=tmp_path,
+        fo4_ba2_target="og",
+    )
+
+    header = (mod_dir / f"{mod_name} - Main.ba2").read_bytes()[:8]
+    assert header[:4] == b"BTDX"
+    assert int.from_bytes(header[4:8], "little") == 1
+
+
 def test_pack_mod_prefers_native_pack_for_xbox_fo4(tmp_path):
     mod_name = "B21_TestPack"
     _build_mod_tree(tmp_path, mod_name)

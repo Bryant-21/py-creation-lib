@@ -1508,11 +1508,8 @@ fn build_cm_classnames() -> (Vec<u8>, std::collections::HashMap<String, usize>) 
 
 /// Build the 0x50 hknpMaterial body-props payload. Friction and restitution
 /// are stored as truncated float16 (upper 16 bits of f32) at offsets 0x12,
-/// 0x14, and 0x16. When `raw` is `Some`, the friction/restitution patches
-/// are applied first and then the caller-supplied 16-byte material region
-/// (`[0x10..0x20]`) overwrites them — so callers preserving pynifly-style
-/// `body_props_raw` get a byte-exact round-trip even if those fields differ
-/// from the friction/restitution values reconstructed from defaults.
+/// 0x14, and 0x16. A `raw` material region (`[0x10..0x20]`) is written after
+/// those patches, so pynifly-style `body_props_raw` round-trips byte-exact.
 pub(crate) fn build_body_props_with_raw(
     friction: f32,
     restitution: f32,

@@ -1,10 +1,6 @@
-// Semantic-category constants for subrecord signatures.
-//
-// These lists drive semantic_type inference, FormID rewriting, and localized-string
-// resolution. They live in Rust because authoring.rs, build_subrecord /
-// populate_record, and semantic decoders all consume them. A thin
-// PyO3 bridge keeps the existing Python callers in py_creation_lib/python/creation_lib/esp/codecs/core.py and
-// py_creation_lib/python/creation_lib/esp/plugin.py.
+// Semantic-category constants for subrecord signatures. They drive semantic_type
+// inference, FormID rewriting, and localized-string resolution in authoring.rs,
+// build_subrecord / populate_record, and the semantic decoders.
 
 pub(crate) const LOCALIZED_STRING_SUBRECORDS: &[&str] =
     &["DESC", "FULL", "ITXT", "NAM1", "NNAM", "RNAM", "SHRT"];

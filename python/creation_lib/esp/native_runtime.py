@@ -478,6 +478,18 @@ def plugin_handle_import_text(text: str, format: str = "json", game: str | None 
     raise RuntimeError("esp_authoring_core is missing required function plugin_handle_import_text()")
 
 
+def plugin_handle_identity(handle: Any) -> tuple[str, str, str | None, str] | None:
+    """(plugin_name, file_path, game, default_language), or None if unavailable.
+
+    Cheap counterpart to the full metadata payload, whose record_count costs a
+    pass over the file on an index-only handle.
+    """
+    native_fn = _optional_native_function("plugin_handle_identity")
+    if native_fn is None:
+        return None
+    return tuple(native_fn(handle))
+
+
 def plugin_handle_close(handle: Any) -> bool:
     native_fn = _optional_native_function("plugin_handle_close")
     if callable(native_fn):
@@ -489,6 +501,15 @@ def plugin_handle_group_signatures(handle: Any) -> list[tuple[str, int]]:
     """Return (label, child_count) for each top-level group, without materializing records."""
     native_fn = _require_native_function("plugin_handle_group_signatures")
     return [(str(label), int(count)) for label, count in native_fn(handle)]
+
+
+def plugin_handle_record_counts(handle: Any) -> dict[str, int]:
+    return dict(_require_native_function("plugin_handle_record_counts")(handle))
+
+
+def schema_field_layout(game: str, signature: str, subrecord: str, form_version: int | None = None) -> dict:
+    import json
+    return json.loads(_require_native_function("schema_field_layout")(game, signature, subrecord, form_version))
 
 
 def _record_summary_from_tuple(value: Any) -> RecordSummary:
@@ -583,6 +604,26 @@ def plugin_handle_owned_object_ids(handle: Any) -> list[int]:
 def plugin_handle_record_form_ids(handle: Any, signatures: list[str] | None = None) -> list[int]:
     native_fn = _require_native_function("plugin_handle_record_form_ids")
     return [int(value) for value in native_fn(handle, signatures)]
+
+
+def plugin_handle_inspection_records(
+    handle: Any, signatures: list[str], subrecord_signatures: list[str]
+) -> list[dict[str, Any]]:
+    native_fn = _require_native_function("plugin_handle_inspection_records")
+    return [
+        {
+            "signature": str(signature),
+            "form_id": int(form_id),
+            "form_version": form_version,
+            "subrecords": [
+                {"signature": str(subrecord_signature), "data": bytes(data)}
+                for subrecord_signature, data in subrecords
+            ],
+        }
+        for signature, form_id, form_version, subrecords in native_fn(
+            int(handle), signatures, subrecord_signatures
+        )
+    ]
 
 
 def plugin_handle_validation_records(handle: Any) -> list[dict[str, Any]]:
@@ -779,6 +820,14 @@ def plugin_handle_read_authoring_record(handle: Any, form_id: int) -> str | None
     return native_fn(int(handle), int(form_id) & 0xFFFFFFFF)
 
 
+def plugin_handle_inspect_record(handle: Any, raw_form_id: int) -> dict[str, Any] | None:
+    import json
+
+    native_fn = _require_native_function("plugin_handle_inspect_record")
+    payload = native_fn(int(handle), int(raw_form_id) & 0xFFFFFFFF)
+    return json.loads(payload) if payload is not None else None
+
+
 def plugin_handle_used_master_indices(handle: Any) -> list[int]:
     native_fn = _require_native_function("plugin_handle_used_master_indices")
     return [int(value) for value in native_fn(handle)]
@@ -872,11 +921,11 @@ def plugin_handle_collect_cell_slice_roots(
 def plugin_handle_collect_cell_children(handle: Any, cell_form_id: int) -> list[dict[str, Any]]:
     """Return every record under a cell's child group as {form_id, form_key, signature, group_type}.
 
-    Works for interior and exterior cells. cell_form_id is the local object id
-    (low 24 bits); the high byte is ignored.
+    Works for interior and exterior cells. Pass a raw 32-bit FormID to select a
+    master override exactly, or a low-24-bit object ID for legacy lookup.
     """
     native_fn = _require_native_function("plugin_handle_collect_cell_children")
-    return [dict(entry) for entry in native_fn(int(handle), int(cell_form_id) & 0x00FFFFFF)]
+    return [dict(entry) for entry in native_fn(int(handle), int(cell_form_id) & 0xFFFFFFFF)]
 
 
 def plugin_handle_remove_records(handle: Any, form_ids: list[int]) -> int:
@@ -1294,6 +1343,63 @@ def voice_reference_read_index(db_path: str) -> list[tuple[Any, ...]]:
     return [tuple(item) for item in native_fn(db_path)]
 
 
+def _decode_idle_topology(nodes: Any) -> list[dict[str, Any]]:
+    topology: list[dict[str, Any]] = []
+    for node in nodes or ():
+        if isinstance(node, Mapping):
+            topology.append(dict(node))
+            continue
+        topology.append(
+            {
+                "form_key": node[0],
+                "model_path": node[1],
+                "parent_form_key": node[2],
+                "previous_form_key": node[3],
+                "conditions": [
+                    {"signature": condition[0], "raw_hex": condition[1]}
+                    for condition in node[4]
+                ],
+            }
+        )
+    return topology
+
+
+def _decode_asset_owner_claims(
+    claims: Any,
+    *,
+    source_form_key: Any,
+    source_record_signature: Any,
+    source_subrecord_sig: Any,
+) -> list[dict[str, Any]]:
+    if not claims:
+        return [
+            {
+                "source_form_key": source_form_key,
+                "source_record_signature": source_record_signature,
+                "source_subrecord_sig": source_subrecord_sig,
+                "idle_topology": [],
+            }
+        ]
+    decoded: list[dict[str, Any]] = []
+    for claim in claims:
+        if isinstance(claim, Mapping):
+            value = dict(claim)
+            value["idle_topology"] = _decode_idle_topology(
+                value.get("idle_topology")
+            )
+            decoded.append(value)
+        else:
+            decoded.append(
+                {
+                    "source_form_key": claim[0],
+                    "source_record_signature": claim[1],
+                    "source_subrecord_sig": claim[2],
+                    "idle_topology": _decode_idle_topology(claim[3]),
+                }
+            )
+    return decoded
+
+
 def plugin_handle_collect_assets(
     source_handles: list[Any],
     master_handles: list[Any],
@@ -1313,15 +1419,32 @@ def plugin_handle_collect_assets(
     assets: list[dict[str, Any]] = []
     for item in payload:
         if isinstance(item, dict):
-            assets.append(item)
+            asset = dict(item)
+            asset["owner_claims"] = _decode_asset_owner_claims(
+                asset.get("owner_claims"),
+                source_form_key=asset.get("source_form_key"),
+                source_record_signature=asset.get("source_record_signature", ""),
+                source_subrecord_sig=asset.get("source_subrecord_sig", ""),
+            )
+            assets.append(asset)
         else:
+            source_record_signature = item[3] if len(item) > 4 else ""
+            source_subrecord_sig = item[4] if len(item) > 4 else item[3]
             assets.append(
                 {
                     "asset_type": item[0],
                     "source_path": item[1],
                     "source_form_key": item[2],
-                    "source_record_signature": item[3] if len(item) > 4 else "",
-                    "source_subrecord_sig": item[4] if len(item) > 4 else item[3],
+                    "source_record_signature": source_record_signature,
+                    "source_subrecord_sig": source_subrecord_sig,
+                    "workshop_wire_point": item[5] if len(item) > 5 else None,
+                    "workshop_snap_points": item[6] if len(item) > 6 else None,
+                    "owner_claims": _decode_asset_owner_claims(
+                        item[7] if len(item) > 7 else None,
+                        source_form_key=item[2],
+                        source_record_signature=source_record_signature,
+                        source_subrecord_sig=source_subrecord_sig,
+                    ),
                 }
             )
     return assets
@@ -1471,20 +1594,12 @@ def build_authoring_dir_streaming_native(
     jobs: int | None = None,
     master_esm_paths: list[str] | None = None,
 ) -> Any:
-    """Stream-build a .esp from an authoring dir without materializing the
-    plugin tree. Peak memory scales with `jobs` × largest record being parsed
-    in flight — not with the whole plugin size.
+    """Stream-build a .esp from an authoring dir without materializing the plugin tree.
 
-    `jobs` controls the parallel-decode thread count. None = global rayon pool
-    (= num_cpus, fastest, peak RSS up to ~9 GB on Starfield-scale plugins).
-    Pass jobs=1 for the serial path (~1 GB peak, ~30 min wall-clock on
-    Starfield). jobs=4 is a reasonable middle ground.
-
-    `master_esm_paths` are filesystem paths to the plugin's masters (the
-    first one is scanned to derive the canonical top-level GRUP order so
-    KYWD lands before COBJ etc. — survives Bethesda content updates without
-    code changes). When None or unreadable, falls back to a hardcoded
-    baseline per game.
+    Peak memory scales with `jobs` × the largest in-flight record: `None` uses the
+    rayon pool (up to ~9 GB RSS on Starfield), `1` is serial (~1 GB, ~30 min). The
+    first of `master_esm_paths` supplies the canonical top-level GRUP order (KYWD
+    before COBJ); when absent or unreadable, a per-game hardcoded baseline is used.
     """
     return _require_native_function("build_authoring_dir_streaming_native")(
         source_dir,

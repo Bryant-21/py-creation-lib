@@ -187,7 +187,7 @@ use lodgen_native::atlas::atlas::{AtlasMapRow, AtlasRect, parse_atlas_map, write
 #[test]
 fn atlas_map_row_byte_exact() {
     // port: wbLOD.pas:1557-1566
-    // Exactly matches R3 §2c sample format: TAB-separated, LF-terminated, no BOM.
+    // TAB-separated, LF-terminated, no BOM.
     let rows = vec![AtlasMapRow {
         source: r"textures\lod\airport01_lod_d.dds".to_string(),
         tile_w: 256,
@@ -352,6 +352,7 @@ fn shapeflags_values() {
     assert_eq!(ShapeFlags::IS_CROWN.bits(), 0x8000u32);
     assert_eq!(ShapeFlags::IS_BILLBOARD.bits(), 0x10000u32);
     assert_eq!(ShapeFlags::HAS_VERTEX_ALPHA.bits(), 0x20000u32);
+    assert_eq!(ShapeFlags::CASTS_SHADOWS.bits(), 0x40000u32);
 }
 
 #[test]
@@ -708,17 +709,16 @@ fn geometry_update_bbox() {
 // ShapeDesc / parse_nif (real DLC03 LOD NIF via nif_core + materials)
 // ---------------------------------------------------------------------------
 //
-// Validation approach: a REAL vanilla FO4 LOD model from the extracted game
-// data — `Meshes\DLC03\LOD\Architecture\Barn\BarnDoorMedL01_LOD.nif`. Its
-// block graph (verified via `modkit nif inspect`) is:
+// Fixture: vanilla `Meshes\DLC03\LOD\Architecture\Barn\BarnDoorMedL01_LOD.nif`
+// from extracted/fo4. Block graph (per `modkit nif inspect`):
 //   NiNode "BarnDoorMedL01_LOD"
 //     └─ BSTriShape "BarnDoorMedL01_LOD:36"  (8 verts, 4 tris, Vertex Desc 474989027590661)
 //          ├─ BSLightingShaderProperty  Name="Materials\DLC03\LOD\DLC03Barn01LOD.BGSM"
 //          │     └─ BSShaderTextureSet  slots 0/1/7 = _d/_n/_s.dds
 //          └─ NiAlphaProperty  Flags=37612 Threshold=90
-// This single file exercises geometry, BSShaderTextureSet, the BGSM material
-// read (via the `materials` crate), alpha, and clamp-mode — so no synthetic NIF
-// is needed. The matching BGSM ships alongside it under extracted/fo4/Materials.
+// It covers geometry, BSShaderTextureSet, the BGSM read (`materials` crate), alpha
+// and clamp mode, so no synthetic NIF is needed. The BGSM ships under
+// extracted/fo4/Materials.
 
 use lodgen_native::game::Game;
 use lodgen_native::input::{StaticDesc, WorldspaceInput};
@@ -984,13 +984,8 @@ fn make_shape_one_vert(
 
 #[test]
 fn transform_shape_quad_space() {
-    // Identity node transform, node_scale=1, stat.scale=2
-    // stat position [100, 200, 50], rot=[0,0,0], quad at (0,0) level=16
-    // vertex [0,0,0] → rotated by identity → scaled by stat.scale=2 → [0,0,0]
-    // translated by stat_rel = [100-0*4096, 200-0*4096, 50] → [100, 200, 50]
-    // divided by quad_level=16 → [6.25, 12.5, 3.125]
-    // shape.x = stat.x - quad.x*4096 = 100 - 0 = 100
-    // shape.y = stat.y - quad.y*4096 = 200 - 0 = 200
+    // Identity node transform, node_scale=1, stat.scale=2, stat at [100,200,50],
+    // rot=0, quad (0,0) L16. shape.x/y = stat.x/y - quad.x/y*4096 = 100/200.
     let quad = make_quad(16, 0, 0);
     let stat = make_stat([100.0, 200.0, 50.0], [0.0, 0.0, 0.0], 2.0);
     let mut shape = make_shape_one_vert([0.0, 0.0, 0.0], [0.5, 0.5]);
@@ -1102,9 +1097,8 @@ fn transform_shape_atlas_uv_remap() {
 
 #[test]
 fn transform_shape_atlas_per_slot_substitution() {
-    // Phase-2 fix #3: the atlas swap maps each slot individually and PRESERVES
-    // the White/Gray/Flat sentinels (port LODApp.cs:741-816), instead of blindly
-    // overwriting slots [0]/[1]/[7].
+    // The atlas swap maps each slot individually and preserves the White/Gray/Flat
+    // sentinels (port LODApp.cs:741-816) rather than overwriting slots [0]/[1]/[7].
     let mut atlas = lodgen_native::atlas::atlas::AtlasList::new();
     let rect = lodgen_native::atlas::atlas::AtlasRect::from_map_row(
         256,
@@ -1248,9 +1242,9 @@ fn transform_shape_bbox_grown() {
 
 #[test]
 fn transform_shape_applies_node_translation() {
-    // Phase-2 fix #2: the FULL node_transform (incl. its translation column) must be
-    // applied to vertices, not just the upper-3x3. Expected values computed against
-    // the exact C# Matrix44/Vector3 algebra (see /tmp/csharp_sim.py reasoning):
+    // The full node_transform (including its translation column) must be applied to
+    // vertices, not just the upper 3x3. Expected values follow the C# Matrix44/Vector3
+    // algebra:
     //
     //   node_transform = matrix7_col with rotation=identity, translation=[11,22,33]
     //     (= geom-local trans [1,2,3] folded with parent-node trans [10,20,30]).
@@ -1319,9 +1313,8 @@ fn transform_shape_applies_node_translation() {
 
 #[test]
 fn transform_shape_calls_generate_segments() {
-    // Phase-2 fix #1: transform_shape's LAST step is GenerateSegments
-    // (port LODApp.cs:1050). Before the fix shape.segments stayed empty,
-    // so build_bto emitted Num Segments=0. Assert a non-empty segment now.
+    // transform_shape's last step is GenerateSegments (port LODApp.cs:1050);
+    // without it build_bto emits Num Segments=0.
     let quad = make_quad(16, 0, 0);
     let stat = make_stat([100.0, 200.0, 50.0], [0.0, 0.0, 0.0], 1.0);
     let mut shape = make_shape_one_vert([0.0, 0.0, 0.0], [0.5, 0.5]);
@@ -1353,7 +1346,7 @@ fn transform_shape_calls_generate_segments() {
 
 #[test]
 fn real_flow_yields_num_segments_ge_1() {
-    // Phase-2 fix #1 end-to-end: transform_shape → build_bto → expand_segments →
+    // End-to-end: transform_shape → build_bto → expand_segments →
     // build_bto_nif must yield a BSSubIndexTriShape with Num Segments >= 1.
     use lodgen_native::objects::static_desc::ShapeFlags;
     use nif_core_native::model::{NifFile, NifValue};
@@ -1407,8 +1400,8 @@ fn real_flow_yields_num_segments_ge_1() {
         num_segments >= 1,
         "real flow must yield Num Segments >= 1, got {num_segments}"
     );
-    // KNOWN nif_core GAP (fix #5): top-level Num Primitives is calc'd as
-    // NumTriangles by nif_core (golden is NumTriangles*2). Document, don't fail.
+    // Known nif_core gap: top-level Num Primitives is calc'd as NumTriangles
+    // (golden is NumTriangles*2). Document, don't fail.
     assert_eq!(
         top_prims, num_tris,
         "nif_core GAP: top Num Primitives calc'd as NumTriangles"
@@ -1417,10 +1410,9 @@ fn real_flow_yields_num_segments_ge_1() {
 
 #[test]
 fn iterate_nif_accumulates_node_transform_in_order() {
-    // Phase-2 fix #2 (parse side): node-transform accumulation must use the
-    // C#-correct order (column: parent · node_local · geom_local). A synthetic
-    // 2-NiNode chain with rotation+translation distinguishes the correct order
-    // from the previous (wrong) `node_local · parent`.
+    // Parse side: node-transform accumulation must use the C# order (column:
+    // parent · node_local · geom_local). A synthetic 2-NiNode chain with
+    // rotation+translation distinguishes it from `node_local · parent`.
     //
     //   NiNode A: Rz(90deg) rows [[0,-1,0],[1,0,0],[0,0,1]], translation [100,0,0]
     //   NiNode B: identity, translation [0,10,0]
@@ -1757,6 +1749,66 @@ fn build_atlas_from_synthetic_dds() {
 }
 
 #[test]
+fn missing_specular_tiles_and_atlas_padding_are_neutral_black() {
+    use lodgen_native::atlas::atlas::build_atlas_from_tiles;
+
+    let tmp = std::env::temp_dir().join(format!(
+        "lodgen_neutral_specular_atlas_{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).unwrap();
+
+    let tile_a = tmp.join("tile_a_d.dds");
+    let tile_b = tmp.join("tile_b_d.dds");
+    directxtex_native::write_dds_rgba_image(
+        &tile_a,
+        4,
+        4,
+        &vec![255u8, 0, 0, 255].repeat(16),
+        "BC1_UNORM",
+        false,
+    )
+    .unwrap();
+    directxtex_native::write_dds_rgba_image(
+        &tile_b,
+        2,
+        2,
+        &vec![0u8, 0, 255, 255].repeat(4),
+        "BC1_UNORM",
+        false,
+    )
+    .unwrap();
+
+    let atlas = build_atlas_from_tiles(
+        &[tile_a, tile_b],
+        &tmp.join("World.Objects.dds"),
+        &tmp.join("World.Objects.txt"),
+        4096,
+        512,
+        "BC2_UNORM",
+        "BC1_UNORM",
+        "BC5_UNORM",
+    )
+    .unwrap();
+    assert!(
+        atlas.atlas_size.0 * atlas.atlas_size.1 > 20,
+        "unequal tiles must leave unused atlas padding"
+    );
+
+    let decoded = directxtex_native::read_dds_mips_rgba8(&atlas.specular).unwrap();
+    assert!(
+        decoded.mips.iter().all(|mip| mip
+            .2
+            .chunks_exact(4)
+            .all(|pixel| { pixel[0] == 0 && pixel[1] == 0 })),
+        "missing specular data and atlas padding must stay neutral through every mip"
+    );
+
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[test]
 fn build_atlas_keys_by_diffuse_normal() {
     // Fix #7: when an `_n` sibling exists, the atlas must key by "diffuse,normal"
     // (not bare diffuse) so transform_shape's atlas_build_key -> atlas_get_key
@@ -2083,6 +2135,29 @@ fn build_bto_doublesided_flag() {
             assert_eq!(*flags2 & 0x10, 0x10, "double-sided sets flags2 bit 0x10");
         }
     }
+}
+
+#[test]
+fn build_bto_cast_shadows_flag() {
+    use lodgen_native::objects::static_desc::ShapeFlags;
+    let mut quad = make_quad(16, 0, 0);
+    let settings = LodSettings::fo4_default();
+    let shape = bto_test_shape(atlas_textures(), ShapeFlags::CASTS_SHADOWS, 0);
+    let out = build_bto(&mut quad, vec![shape], &settings.objects);
+    match &out[0].shader {
+        BtoShader::Lighting { flags1, .. } => {
+            assert_eq!(*flags1 & 0x200, 0x200, "cast-shadows sets flags1 bit 0x200");
+        }
+    }
+    let mut nif = build_bto_nif(&out).expect("build BTO");
+    let bytes = nif.to_bytes().expect("serialize BTO");
+    let reloaded = nif_core_native::model::NifFile::from_bytes(&bytes, None).expect("reload BTO");
+    let shader = reloaded
+        .blocks
+        .iter()
+        .find(|block| block.type_name == "BSLightingShaderProperty")
+        .expect("lighting shader");
+    assert_eq!(flag_mask(shader, "Shader Flags 1").unwrap() & 0x200, 0x200);
 }
 
 #[test]
@@ -2437,7 +2512,7 @@ fn bto_structural_equality_vs_golden() {
     let g_data_size = g_sits.get_field("Data Size").map(NifValue::as_i64).unwrap();
     assert_eq!(g_data_size, g_num_verts * 20 + g_num_tris * 6);
 
-    // 7. Segments — GOLDEN GATE (Phase-2 fix #1 / #5).
+    // 7. Segments (golden gate).
     //    Golden DLC03FarHarbor.16.-9.5.bto: Num Segments=1, Total Segments=1,
     //    Segment[0].Num Primitives == Num Triangles (178), top-level
     //    Num Primitives == Num Triangles * 2 (356).
@@ -2721,7 +2796,7 @@ fn generate_quad_writes_bto_path() {
 
 #[test]
 fn generate_quad_per_quad_isolation() {
-    // port: DoLOD spec §6 — a ref whose LOD model can't be loaded is skipped (not a hard error);
+    // port: DoLOD — a ref whose LOD model can't be loaded is skipped (not a hard error);
     // the quad still produces output for the remaining valid refs.
     if !fixture_present() {
         eprintln!("SKIP generate_quad_per_quad_isolation: extracted/fo4 barn LOD fixture absent");
@@ -2744,17 +2819,14 @@ fn generate_quad_per_quad_isolation() {
     );
 }
 
-/// P4-A2 object gate (default build): build a REAL object atlas from the barn LOD
-/// fixture, run `objects::generate_quad` against that NON-STUB atlas, and assert a
-/// valid `.bto` is produced whose tri-count matches the barn LOD model's geometry
-/// (4 tris) within tolerance and whose UVs were remapped through the atlas when
-/// the barn's diffuse is atlassed.
+/// Object gate (default build): build a real object atlas from the barn LOD fixture,
+/// run `objects::generate_quad` against it, and assert a valid `.bto` whose tri-count
+/// matches the barn model's geometry (4 tris) within tolerance, with UVs remapped
+/// through the atlas when the barn's diffuse is atlassed.
 ///
-/// This is the un-ignored former Phase-4 gate. The cross-validation against the
-/// xLODGen golden corpus (FarHarbor enumeration → .bto tri-count vs golden +
-/// atlas .dds dims) lives in the `real-esp` e2e `golden_objects_e2e.rs`
-/// (`object_bto_matches_golden_l16`), which needs the ESP reader the default lib
-/// can't link (directxtex FFI collision).
+/// Cross-validation against the xLODGen corpus (.bto tri-count and atlas .dds dims)
+/// lives in `golden_objects_e2e.rs` (`object_bto_matches_golden_l16`); it needs the
+/// `real-esp` ESP reader, which the default lib can't link (directxtex FFI collision).
 #[test]
 fn generate_quad_counts_within_tolerance() {
     if !fixture_present() {
@@ -2849,15 +2921,13 @@ fn generate_quad_counts_within_tolerance() {
 }
 
 // ---------------------------------------------------------------------------
-// Bug fix: Data\-prefix path normalization in atlas resolver + key builder
+// Data\-prefix path normalization in atlas resolver + key builder
 // ---------------------------------------------------------------------------
 // FO4 LOD NIFs store diffuse texture slots with a leading `Data\` prefix
-// (e.g. `Data\Textures\LOD\...` or `Data\LOD\...`).  The atlas texture resolver
-// and the atlas-key lookup must both agree on the canonical stripped form so that
-// (a) the file resolves on disk, and (b) transform_shape's atlas-key lookup
-// finds the same entry the atlas was built with.
-//
-// These tests are the TDD anchors: they must FAIL before the fix and PASS after.
+// (e.g. `Data\Textures\LOD\...` or `Data\LOD\...`). The atlas texture resolver
+// and the atlas-key lookup must agree on the canonical stripped form so the file
+// resolves on disk and transform_shape's lookup finds the entry the atlas was
+// built with.
 
 use lodgen_native::atlas::atlas::strip_normalize_texture_path;
 
@@ -2927,11 +2997,9 @@ fn strip_normalize_case_insensitive() {
     );
 }
 
-/// Build an atlas from a synthetic tile stored under a path whose `Data\LOD\...`
-/// form (missing Textures\ segment) would have failed resolution before the fix.
-/// After the fix `build_atlas_from_tiles` receives the resolved abs path and the
-/// key stored in AtlasList is `textures\lod\...`, while transform_shape sees
-/// `lod\...` as the diffuse slot — the fix must make `atlas.contains(&key)` true.
+/// Atlas a synthetic tile from `Textures\LOD\`: AtlasList keys it as `textures\lod\...`,
+/// while transform_shape sees `lod\...` (from a NIF `Data\LOD\...` slot) as the diffuse.
+/// `atlas_build_key` must bridge the two so `atlas.contains(&key)` holds.
 #[test]
 fn atlas_resolves_and_keys_data_lod_path() {
     use lodgen_native::atlas::atlas::build_atlas_from_tiles;
@@ -2977,11 +3045,9 @@ fn atlas_resolves_and_keys_data_lod_path() {
     );
 }
 
-/// End-to-end: a shape whose diffuse was `Data\LOD\...` in the NIF (stripped by
-/// parse_nif to `lod\...`) must get atlas-remapped by transform_shape after the
-/// fix.  We inject the canonical atlas key directly (simulating what
-/// build_object_atlas would store after the fix) and verify transform_shape
-/// applies the UV remap.
+/// A shape whose NIF diffuse was `Data\LOD\...` (stripped by parse_nif to `lod\...`)
+/// must be atlas-remapped by transform_shape. The canonical atlas key is injected
+/// directly, as build_object_atlas stores it.
 #[test]
 fn transform_shape_remaps_data_lod_diffuse_after_fix() {
     // The atlas was built with the tile keyed under `textures\lod\synth_d.dds`
@@ -2997,7 +3063,7 @@ fn transform_shape_remaps_data_lod_diffuse_after_fix() {
         r"Textures\Terrain\W\Objects\WObjects.dds",
         false,
     );
-    // Store with canonical key — what build_object_atlas produces after the fix.
+    // Canonical key, as build_object_atlas stores it.
     atlas.insert(r"textures\lod\synth_d.dds".to_string(), rect.clone());
 
     let quad = make_quad(16, 0, 0);
@@ -3012,9 +3078,8 @@ fn transform_shape_remaps_data_lod_diffuse_after_fix() {
     let kept = transform_shape(&quad, &stat, &mut shape, &atlas, &settings.objects);
     assert!(kept);
 
-    // After the fix, the atlas-key lookup must find the shape and remap its UVs.
-    // Before the fix: atlas.contains("lod\synth_d.dds") was false → no remap →
-    // textures[0] stayed as "lod\synth_d.dds".
+    // The atlas-key lookup must resolve to the canonical key and remap; a raw
+    // `lod\synth_d.dds` lookup misses and leaves textures[0] unchanged.
     assert_eq!(
         shape.textures[0], rect.atlas_diffuse,
         "shape.textures[0] must be swapped to atlas diffuse after fix; \

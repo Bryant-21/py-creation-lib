@@ -203,17 +203,9 @@ class SkinnedRenderer:
                                           ) -> SkinnedMesh | None:
         """Build a SkinnedMesh from pre-extracted SkinData arrays.
 
-        This enables loading composite body meshes (body + hands + head) that
-        have been merged via reference_body._merge_skin_data().
-
-        Args:
-            skin: SkinData instance with vertices, normals, uvs, weights,
-                bone_indices, triangles, and bone_names.
-            segment_colors: Optional (N, 3) float32 per-vertex segment
-                colors. If None, zeros are used.
-
-        Returns:
-            SkinnedMesh or None if shader not compiled.
+        Loads composite body meshes (body + hands + head) merged by
+        ``reference_body._merge_skin_data``. ``segment_colors`` is (N, 3) float32,
+        zeros when None. Returns None if the shader isn't compiled.
         """
         if self.program is None:
             return None
@@ -354,25 +346,12 @@ class SkinnedRenderer:
                weight_mode: bool = False, selected_bone_index: int = -1,
                segment_mode: bool = False, vertex_color_mode: bool = False,
                alpha: float = 1.0, show_mask: bool = False):
-        """Render a skinned mesh with bone palette.
+        """Render a skinned mesh with its bone palette.
 
-        Args:
-            mesh: SkinnedMesh to render.
-            mvp: Model-view-projection matrix as tuple.
-            model: Model matrix as tuple.
-            normal_matrix: Normal matrix (3x3) as tuple.
-            bone_matrices: List of 4x4 bone matrices for skinning.
-            light_dir: Directional light direction.
-            light_color: Directional light color.
-            ambient: Ambient light color.
-            weight_mode: If True, render bone weight heatmap instead of
-                normal shading.
-            selected_bone_index: Which bone index to visualize weights for.
-                -1 = show total weight sum.
-            segment_mode: If True, render segment/dismemberment colors.
-            vertex_color_mode: If True, render per-vertex colors from NIF.
-            alpha: Opacity (0.0-1.0) for transparent overlay rendering.
-            show_mask: If True, darken masked vertices.
+        ``weight_mode`` draws a weight heatmap for ``selected_bone_index``
+        (-1 = total weight sum). ``segment_mode`` draws segment/dismemberment
+        colors, ``vertex_color_mode`` the NIF vertex colors, and ``show_mask``
+        darkens masked vertices.
         """
         if self.program is None or mesh is None:
             return
@@ -431,14 +410,9 @@ class SkinnedRenderer:
                          show_mask: bool = False):
         """Render segment submeshes with flat per-submesh colors (hard boundaries).
 
-        Each segment submesh is rendered as a separate draw call with a
-        solid color uniform, eliminating the per-vertex color bleeding that
-        occurs at segment boundaries.
-
-        Args:
-            mesh: SkinnedMesh with populated segment_submeshes.
-            selected_segment_id: Which segment to highlight (-1 = none).
-            dim_factor: Dimming multiplier for non-selected segments.
+        One draw call per submesh with a solid color uniform avoids per-vertex
+        color bleeding at segment boundaries. When ``selected_segment_id`` is set
+        (-1 = none), other segments are scaled by ``dim_factor``.
         """
         if self.program is None or mesh is None:
             return
@@ -496,11 +470,10 @@ class SkinnedRenderer:
                               anim_rotations: dict | None = None) -> list[np.ndarray]:
         """Compute skinning matrices for a skinned mesh.
 
-        Uses a two-part approach for accuracy:
-        1. bind_correction = nif_bind_world * bsskin_inv_bind (precomputed,
-           exact identity rotation + model→world translation offset)
-        2. anim_delta = current_world * inv(ref_hkx_world) (exact delta)
-        3. skin_matrix = anim_delta * bind_correction
+        skin_matrix = anim_delta * bind_correction, where
+        bind_correction = nif_bind_world * bsskin_inv_bind (precomputed: identity
+        rotation plus the model→world offset) and
+        anim_delta = current_world * inv(ref_hkx_world).
 
         This avoids HKX-vs-NIF rotation errors that compound in extreme poses.
         Falls back to direct HKX world * BSSkin when NIF bind data isn't available.
@@ -664,15 +637,10 @@ class SkinnedRenderer:
 
 
 def attach_nif_bind_worlds(skeleton_nif_path: str, meshes: list[SkinnedMesh]):
-    """Compute bone world transforms from NIF skeleton and attach to skinned meshes.
+    """Attach bone world transforms from the skeleton NIF to each skinned mesh.
 
-    This ensures the reference pose uses the same coordinate system as the
-    BSSkin::BoneData inverse bind transforms, so they cancel out perfectly.
-    Shared by bone_editor and aligner.
-
-    Args:
-        skeleton_nif_path: Path to the skeleton .nif file.
-        meshes: List of SkinnedMesh instances to update.
+    The reference pose then shares a coordinate system with the BSSkin::BoneData
+    inverse binds, so they cancel exactly. Used by bone_editor and aligner.
     """
     from creation_lib.nif.nif_file import NifFile
 

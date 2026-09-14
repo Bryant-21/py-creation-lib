@@ -1,8 +1,4 @@
-"""BGSM / BGEM → Starfield .mat JSON converter.
-
-Starfield uses a JSON-based layered material system instead of binary BGSM/BGEM.
-This module converts legacy material data to the version-2 .mat format used by
-the Creation Kit and the Starfield engine.
+"""BGSM / BGEM → Starfield version-2 .mat JSON (layered materials, used by CK and engine).
 
 Starfield .mat structure:
   {
@@ -18,11 +14,6 @@ Starfield .mat structure:
       "BSMaterial::EmittanceComponent": {...},   # top-level emittance
     }
   }
-
-Public API:
-  bgsm_to_mat(bgsm, source_profile, target_profile) -> dict
-  bgem_to_mat(bgem, source_profile, target_profile) -> dict
-  write_mat(obj, path)
 """
 from __future__ import annotations
 
@@ -77,16 +68,7 @@ def bgsm_to_mat(
     source_profile: "GameProfile",
     target_profile: "GameProfile",
 ) -> dict:
-    """Convert a BGSMData to a Starfield .mat dict.
-
-    Args:
-        bgsm: Source material data (any version).
-        source_profile: Game profile the BGSM was authored for.
-        target_profile: Starfield game profile.
-
-    Returns:
-        dict ready to serialise as JSON.
-    """
+    """Convert a BGSMData (any version) to a Starfield .mat dict ready for JSON."""
     def t(path: str | None) -> str:
         return _tex(path, source_profile, target_profile)
 

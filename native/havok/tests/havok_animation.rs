@@ -291,7 +291,7 @@ fn decompress_spline_static_all_tracks_returns_expected_frames() {
 #[test]
 fn decompress_spline_threecomp40_static_rotation_matches_python() {
     // 1 track, 1 frame, static THREECOMP40 rotation
-    // Python: _unpack_threecomp40(bytes([254,235,191,254,59]), 0)
+    // Reference: THREECOMP40 bytes [254,235,191,254,59]
     //       → [0.35338, 0.35338, 0.35338, 0.79080]
     // trans_q=0, rot_q=1(THREECOMP40), scale_q=0
     // packed_q = 0 | (1<<2) | 0 = 0x04

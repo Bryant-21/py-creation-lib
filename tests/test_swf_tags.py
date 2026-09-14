@@ -8,11 +8,11 @@ from creation_lib.swf.shapes import ShapeDef, StraightEdge, StyleChange, EndShap
 from creation_lib.swf.tags import (
     RawTag, EndTag, ShowFrameTag, SetBackgroundColorTag,
     DefineShapeTag, PlaceObject2Tag, RemoveObject2Tag,
-    DefineSpriteTag, FrameLabelTag, FileAttributesTag,
+    DefineSpriteTag, FrameLabelTag, FileAttributesTag, SymbolClassTag,
     TAG_END, TAG_SHOW_FRAME, TAG_SET_BG_COLOR,
     TAG_DEFINE_SHAPE, TAG_DEFINE_SHAPE2, TAG_DEFINE_SHAPE3, TAG_DEFINE_SHAPE4,
     TAG_PLACE_OBJECT2, TAG_REMOVE_OBJECT2,
-    TAG_DEFINE_SPRITE, TAG_FRAME_LABEL, TAG_FILE_ATTRIBUTES,
+    TAG_DEFINE_SPRITE, TAG_FRAME_LABEL, TAG_FILE_ATTRIBUTES, TAG_SYMBOL_CLASS,
     parse_tag_body, write_tag,
 )
 
@@ -80,3 +80,34 @@ class TestFrameLabelTag:
         data = tag.to_bytes()
         parsed = FrameLabelTag.parse(data)
         assert parsed.name == "idle"
+
+
+class TestSymbolClassTag:
+    def test_tag_id(self):
+        assert TAG_SYMBOL_CLASS == 76
+
+    def test_body_layout_matches_spec(self):
+        """UI16 NumSymbols, then per symbol UI16 CharacterID + NUL-terminated name."""
+        tag = SymbolClassTag(symbols=[(10, "StarRow"), (0, "Root")])
+        assert tag.to_bytes() == (
+            b"\x02\x00"
+            + b"\x0a\x00" + b"StarRow\x00"
+            + b"\x00\x00" + b"Root\x00"
+        )
+
+    def test_round_trip(self):
+        tag = SymbolClassTag(symbols=[(3, "CritMeterStar"), (643, "HUDMenu_fla.Group_116")])
+        assert SymbolClassTag.parse(tag.to_bytes()).symbols == [
+            (3, "CritMeterStar"), (643, "HUDMenu_fla.Group_116"),
+        ]
+
+    def test_empty_table(self):
+        assert SymbolClassTag().to_bytes() == b"\x00\x00"
+        assert SymbolClassTag.parse(b"\x00\x00").symbols == []
+
+    def test_dispatches_through_tag_stream_helpers(self):
+        body = SymbolClassTag(symbols=[(7, "Widget")]).to_bytes()
+        tag = parse_tag_body(TAG_SYMBOL_CLASS, body)
+        assert isinstance(tag, SymbolClassTag)
+        assert tag.symbols == [(7, "Widget")]
+        assert write_tag(tag) == (TAG_SYMBOL_CLASS, body)

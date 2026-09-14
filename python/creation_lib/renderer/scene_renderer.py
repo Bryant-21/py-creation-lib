@@ -63,8 +63,8 @@ class Material:
     """Material properties extracted from BSLightingShaderProperty or BSEffectShaderProperty.
 
     Textures are stored in a semantic dict keyed by name (diffuse, normal,
-    specular, cubemap, glow, greyscale, envmask).  Legacy field-name
-    access (e.g. mat.diffuse_tex) still works via @property helpers.
+    specular, cubemap, glow, greyscale, envmask). Legacy attributes such as
+    ``mat.diffuse_tex`` are @property views onto it.
     """
     # Semantic texture dict — preferred access path
     textures: dict[str, moderngl.Texture | None] = field(default_factory=dict)
@@ -239,12 +239,10 @@ class SceneRenderer:
         self.fbo_depth: moderngl.Renderbuffer | None = None
         self._fbo_size = (0, 0)
 
-        # Scene root: deliberately kept on SceneRenderer (not on the
-        # backend). It's shared infra used by picking, selection, and
-        # animation — not exclusively a draw-loop concern. Also app.py
-        # writes to it before render() picks the backend, so storing it
-        # on the backend would mean assignments could land on a backend
-        # about to be swapped out on game change.
+        # Scene root stays on SceneRenderer, not the backend: picking,
+        # selection, and animation share it, and app.py assigns it before
+        # render() picks the backend, so it could land on a backend about to
+        # be swapped on a game change.
         self.scene_root: SceneNode | None = None
 
         # Shader programs
@@ -276,8 +274,8 @@ class SceneRenderer:
         self._current_view = glm.mat4(1.0)
         self._current_lighting = None
         self._current_camera_pos = (0.0, 0.0, 0.0)
-        # _current_effect_prog also lives on the backend now. The
-        # render() body still assigns to it via the @property shim below.
+        # _current_effect_prog lives on the backend; render() assigns it
+        # through the @property shim below.
 
         # --- SSAO state ---
         self._ssao_enabled = False
@@ -318,15 +316,11 @@ class SceneRenderer:
         self._collision_solid_selection = None
 
         # --- Scene backend ---
-        # Per-game draw delegate that owns scene_root, _current_effect_prog,
-        # the FO4 draw walk, the shadow walk, and the selection overlays.
-        # SceneRenderer keeps FBOs, post-processing, the camera, the grid,
-        # and shadow infrastructure.
-        #
-        # Eager construction with fo4 as the default: scene_root /
-        # _current_effect_prog become available the moment SceneRenderer
-        # is constructed, before any NIF is loaded. _ensure_backend() will
-        # rebuild on game switch.
+        # Per-game draw delegate: _current_effect_prog, the FO4 draw walk, the
+        # shadow walk, and the selection overlays. SceneRenderer keeps
+        # scene_root, FBOs, post-processing, the camera, the grid, and shadow
+        # infrastructure. Built eagerly for fo4 so backend state exists before
+        # any NIF loads; _ensure_backend() rebuilds it on a game switch.
         self.backend: "Fo4Backend | SfBackend | None" = None
         self._backend_game_id: str | None = None
         self._ensure_backend("fo4")
@@ -1793,14 +1787,11 @@ class SceneRenderer:
 
     def get_fbo_texture_id(self) -> int:
         """Return OpenGL texture handle for imgui.image()."""
-        # When SSAO is active AND the composite pass ran (scene present),
-        # the composited result is in _composite_tex.
-        # Without a scene, the composite pass is skipped, so fall back to
-        # fbo_texture (which still has the grid and background).
-        # SfBackend: writes view-space normals to color attachment 1 when
-        # SSAO is enabled, so the composite path works the same as FO4.
-        # Delegated to the backend so future per-game backends pick the
-        # right texture without another branch here.
+        # With SSAO on and a scene present, the composite result is in
+        # _composite_tex. With no scene the composite pass is skipped and
+        # fbo_texture holds the grid and background. SfBackend writes
+        # view-space normals to color attachment 1 under SSAO, so it
+        # composites the same way as FO4.
         from creation_lib.renderer.backends.sf_backend import SfBackend
         if isinstance(self.backend, SfBackend) and self.backend.has_scene():
             return self.backend.get_fbo_texture_id()

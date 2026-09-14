@@ -20,44 +20,6 @@ from imgui_bundle import hello_imgui, imgui, immapp
 _log = logging.getLogger("imgui_app")
 
 
-def _apply_darcula_theme():
-    """Apply a dark theme similar to Darcula/VS Code Dark."""
-    style = imgui.get_style()
-    style.window_rounding = 4.0
-    style.frame_rounding = 2.0
-    style.grab_rounding = 2.0
-    style.scrollbar_rounding = 4.0
-    style.frame_border_size = 1.0
-
-    sc = style.set_color_
-    sc(imgui.Col_.window_bg, imgui.ImVec4(0.12, 0.12, 0.14, 1.0))
-    sc(imgui.Col_.child_bg, imgui.ImVec4(0.10, 0.10, 0.12, 1.0))
-    sc(imgui.Col_.popup_bg, imgui.ImVec4(0.14, 0.14, 0.16, 1.0))
-    sc(imgui.Col_.border, imgui.ImVec4(0.28, 0.28, 0.30, 1.0))
-    sc(imgui.Col_.frame_bg, imgui.ImVec4(0.18, 0.18, 0.20, 1.0))
-    sc(imgui.Col_.frame_bg_hovered, imgui.ImVec4(0.22, 0.22, 0.25, 1.0))
-    sc(imgui.Col_.frame_bg_active, imgui.ImVec4(0.25, 0.25, 0.28, 1.0))
-    sc(imgui.Col_.title_bg, imgui.ImVec4(0.10, 0.10, 0.12, 1.0))
-    sc(imgui.Col_.title_bg_active, imgui.ImVec4(0.16, 0.16, 0.18, 1.0))
-    sc(imgui.Col_.menu_bar_bg, imgui.ImVec4(0.14, 0.14, 0.16, 1.0))
-    sc(imgui.Col_.scrollbar_bg, imgui.ImVec4(0.10, 0.10, 0.12, 1.0))
-    sc(imgui.Col_.scrollbar_grab, imgui.ImVec4(0.30, 0.30, 0.32, 1.0))
-    sc(imgui.Col_.scrollbar_grab_hovered, imgui.ImVec4(0.40, 0.40, 0.42, 1.0))
-    sc(imgui.Col_.check_mark, imgui.ImVec4(0.40, 0.70, 1.0, 1.0))
-    sc(imgui.Col_.button, imgui.ImVec4(0.22, 0.22, 0.25, 1.0))
-    sc(imgui.Col_.button_hovered, imgui.ImVec4(0.30, 0.30, 0.35, 1.0))
-    sc(imgui.Col_.button_active, imgui.ImVec4(0.35, 0.50, 0.75, 1.0))
-    sc(imgui.Col_.header, imgui.ImVec4(0.22, 0.22, 0.25, 1.0))
-    sc(imgui.Col_.header_hovered, imgui.ImVec4(0.28, 0.28, 0.32, 1.0))
-    sc(imgui.Col_.header_active, imgui.ImVec4(0.30, 0.45, 0.70, 1.0))
-    sc(imgui.Col_.separator, imgui.ImVec4(0.28, 0.28, 0.30, 1.0))
-    sc(imgui.Col_.tab, imgui.ImVec4(0.16, 0.16, 0.18, 1.0))
-    sc(imgui.Col_.tab_hovered, imgui.ImVec4(0.28, 0.28, 0.32, 1.0))
-    sc(imgui.Col_.tab_selected, imgui.ImVec4(0.22, 0.22, 0.28, 1.0))
-    sc(imgui.Col_.text, imgui.ImVec4(0.85, 0.85, 0.85, 1.0))
-    sc(imgui.Col_.text_disabled, imgui.ImVec4(0.50, 0.50, 0.50, 1.0))
-
-
 def set_native_dark_title_bar() -> None:
     """Request the native Windows title bar/menu chrome to use dark mode."""
     if os.name != "nt":
@@ -122,15 +84,9 @@ def create_runner_params(
 ) -> hello_imgui.RunnerParams:
     """Create hello_imgui RunnerParams with standard dark theme and docking.
 
-    Args:
-        title: Window title.
-        width: Initial window width.
-        height: Initial window height.
-        gui_fn: Callable for the main GUI loop (called each frame).
-        layout_fn: Optional callable returning hello_imgui.DockingParams.
-        on_exit_fn: Optional callable invoked on app exit.
-        ini_name: Short name for the .ini file (stored in settings/ folder).
-                  If empty, derived from title.
+    ``gui_fn`` runs each frame; ``layout_fn`` returns hello_imgui.DockingParams.
+    ``ini_name`` names the .ini in the settings/ folder and defaults to one
+    derived from ``title``.
     """
     params = hello_imgui.RunnerParams()
     params.app_window_params.window_title = title
@@ -148,22 +104,18 @@ def create_runner_params(
     )
     params.imgui_window_params.enable_viewports = False
     params.imgui_window_params.show_menu_bar = False
-    params.imgui_window_params.show_status_bar = True
+    params.imgui_window_params.show_status_bar = False
+    params.imgui_window_params.show_status_fps = False
+    params.imgui_window_params.remember_status_bar_settings = False
 
     if gui_fn:
         params.callbacks.show_gui = gui_fn
 
-    # Apply theme on first frame
-    _theme_applied = False
+    from .appearance import configure_runner_appearance
+    from .themes import DEFAULT_THEME_ID, get_theme
 
-    def _post_init():
-        nonlocal _theme_applied
-        if not _theme_applied:
-            _apply_darcula_theme()
-            set_native_dark_title_bar()
-            _theme_applied = True
-
-    params.callbacks.post_init = _post_init
+    params.callbacks.post_init = set_native_dark_title_bar
+    configure_runner_appearance(params, get_theme(DEFAULT_THEME_ID))
 
     if layout_fn:
         params.docking_params = layout_fn()

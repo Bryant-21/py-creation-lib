@@ -1,19 +1,16 @@
 /*!
-Port of `py_creation_lib/python/creation_lib/hkxpack/writer.py` + write-side of `py_creation_lib/python/creation_lib/hkxpack/packfile.py`.
+Havok packfile writer.
 
 Two-phase approach:
   Phase 1: Write all objects to a data buffer, collecting fixup lists.
   Phase 2: Assemble sections, resolve global fixups, write fixup tables.
-
-The 7 layout rules from `py_creation_lib/python/creation_lib/hkxpack/CLAUDE.md` are reproduced here;
-each rule is cited by number in the relevant code section.
 */
 
 use std::collections::HashMap;
 
 use tracing::warn;
 
-use super::descriptors::{DescriptorRegistry, MemberTemplate};
+use super::descriptors::{DescriptorRegistry, MemberTemplate, StructureLayout};
 use super::model::{HkxFile, HkxMember, HkxObject};
 use super::packfile::{
     ClassnameEntry, PackfileHeader, SectionHeader, snap_to_16, write_classnames,
@@ -134,7 +131,7 @@ pub fn max_member_alignment(
 ) -> usize {
     let mut max_align = 1usize;
     for m in members {
-        let a = match m.vtype.family() {
+        let inferred = match m.vtype.family() {
             HkxTypeFamily::Complex => 16, // Rule 4: SIMD types always 16-byte
             HkxTypeFamily::Object if !m.ctype.is_empty() => {
                 let nested = registry.get_all_members(&m.ctype).unwrap_or_default();
@@ -143,6 +140,13 @@ pub fn max_member_alignment(
             HkxTypeFamily::Pointer | HkxTypeFamily::Array | HkxTypeFamily::String => 8,
             HkxTypeFamily::Enum => m.vsubtype.size().max(1), // Rule 4: vsubtype width
             _ => m.vtype.size().max(1).min(8),               // Direct scalars, capped at 8
+        };
+        let a = if m.flags.contains("ALIGN_16") {
+            inferred.max(16)
+        } else if m.flags.contains("ALIGN_8") {
+            inferred.max(8)
+        } else {
+            inferred
         };
         if a > max_align {
             max_align = a;
@@ -181,6 +185,7 @@ pub fn calc_inline_struct_size(
 
 struct WriterContext {
     buf: Vec<u8>,
+    structure_layout: StructureLayout,
     /// DATA1: local fixups (src_rel, dst_rel) — values are section-relative.
     /// Rule 2: sorted by (dst, src) when written via write_local_fixups.
     data1: Vec<(u32, u32)>,
@@ -198,9 +203,10 @@ struct WriterContext {
 }
 
 impl WriterContext {
-    fn new() -> Self {
+    fn new(structure_layout: StructureLayout) -> Self {
         Self {
             buf: Vec::new(),
+            structure_layout,
             data1: Vec::new(),
             data2_deferred: Vec::new(),
             data3: Vec::new(),
@@ -247,7 +253,16 @@ impl WriterContext {
 
 /// Write an HkxFile to binary HKX v11 packfile bytes.
 pub fn write_hkx(hkx_file: &HkxFile, registry: &mut DescriptorRegistry) -> Vec<u8> {
-    let mut ctx = WriterContext::new();
+    write_hkx_with_layout(hkx_file, registry, StructureLayout::Msvc)
+}
+
+pub fn write_hkx_with_layout(
+    hkx_file: &HkxFile,
+    registry: &mut DescriptorRegistry,
+    structure_layout: StructureLayout,
+) -> Vec<u8> {
+    registry.set_structure_layout(structure_layout);
+    let mut ctx = WriterContext::new(structure_layout);
 
     // Phase 0: collect classnames.
     // Always prepend the four Havok reflection-metadata classes so that the
@@ -314,7 +329,7 @@ pub fn write_hkx(hkx_file: &HkxFile, registry: &mut DescriptorRegistry) -> Vec<u
     // hkaSplineCompressedAnimation, etc.) DOES use padding=16 in vanilla, so
     // we keep the heuristic for those.
     let is_physics_packfile = root_class_name == "hknpPhysicsSystemData";
-    let padding_size = if hkx_file.padding_size() > 0 {
+    let padding_size = if !hkx_file.source_bytes().is_empty() {
         hkx_file.padding_size()
     } else if !is_physics_packfile && needs_sixteen_byte_data_padding(hkx_file, registry) {
         16
@@ -338,6 +353,9 @@ pub fn write_hkx(hkx_file: &HkxFile, registry: &mut DescriptorRegistry) -> Vec<u
         version_name: hkx_file.contents_version().to_string(),
         padding_size,
         pointer_size: 8,
+        little_endian: 1,
+        reuse_padding_optimization: u8::from(structure_layout == StructureLayout::Generic),
+        empty_base_class_optimization: 1,
         section_header_size,
         contents_section_index: 2,
         contents_section_offset: 0,
@@ -1055,10 +1073,11 @@ fn write_array_contents(
             }
             write_pos = body_pos;
 
-            // Snap to 16-byte boundary before the first deferred payload so
-            // that per-element string bodies align with vanilla FO4 layout
-            // (element bodies may leave write_pos on an 8-byte boundary).
-            write_pos = snap_to_16(write_pos);
+            // Havok 64g consumes the tail padding of inline array elements;
+            // 64m starts their deferred payloads on the next 16-byte line.
+            if ctx.structure_layout == StructureLayout::Msvc {
+                write_pos = snap_to_16(write_pos);
+            }
 
             // Phase B: per-element interleave of deferred payloads (Rule 1).
             for (elem_cbs, elem_dp) in per_elem.into_iter().zip(per_elem_dp.into_iter()) {

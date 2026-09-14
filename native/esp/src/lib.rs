@@ -4,16 +4,11 @@ use plugin_runtime::{
     save_plugin_native_impl, validate_authoring_native,
 };
 
-// Swap the process-wide allocator to mimalloc. Windows' default heap is a
-// well-known contention bottleneck for parallel Rust workloads — the rayon
-// pass in `build_refs_section` was net-slower than sequential because of
-// allocator serialization on FormKey / Vec / HashMap construction. mimalloc
-// is a near-zero-effort drop-in that fixes the contention without any code
-// changes elsewhere; it benefits every hot path that allocates (walker,
-// fixups, EDID-decode, translate). On Linux this is also a real win for
-// the same reason (glibc malloc is fine but mimalloc is faster on multi-
-// threaded allocator-heavy workloads). Profiling builds can opt into DHAT
-// instead; normal builds keep mimalloc.
+// Swap the process-wide allocator to mimalloc. The Windows default heap
+// serializes parallel allocation: the rayon pass in `build_refs_section` ran
+// slower than sequential on FormKey / Vec / HashMap construction. mimalloc
+// removes that contention for every allocating hot path. Profiling builds can
+// opt into DHAT instead.
 #[cfg(feature = "dhat-heap")]
 #[global_allocator]
 static GLOBAL: dhat::Alloc = dhat::Alloc;
@@ -23,11 +18,10 @@ static GLOBAL: dhat::Alloc = dhat::Alloc;
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 // Return freed mimalloc pages to the OS. mimalloc keeps freed pages in its
-// segment cache by default, so a phase that drops gigabytes shows no RSS fall
-// until those pages are decommitted — earlier per-phase RSS even *rose* after a
-// confirmed 2.56 GB free. `mi_collect(true)` forces the decommit; the conversion
-// phase boundaries call it (via `trim_allocator_native`) so each track's frees
-// actually land in peak RSS. No-op build unless mimalloc is the live allocator.
+// segment cache, so a phase that drops gigabytes shows no RSS fall until they
+// are decommitted. `mi_collect(true)` forces the decommit; conversion phase
+// boundaries call it via `trim_allocator_native`. No-op build unless mimalloc
+// is the live allocator.
 #[cfg(all(not(feature = "dhat-heap"), feature = "mimalloc-allocator"))]
 pub fn trim_allocator() {
     // SAFETY: mi_collect has no preconditions — it walks the active mimalloc
@@ -55,6 +49,7 @@ pub mod land;
 pub mod nvnm;
 pub mod plugin_runtime;
 mod previs_merge;
+mod record_cursor;
 pub mod schema_registry;
 mod strings_py;
 mod topology_audit;
@@ -329,6 +324,31 @@ fn schema_json_for_game(game: &str) -> PyResult<&'static str> {
             "unsupported game '{game}'. supported games: {supported}"
         ))
     })
+}
+
+#[pyfunction]
+#[pyo3(signature = (game, record_signature, subrecord_signature, form_version=None))]
+fn schema_field_layout(
+    game: &str, record_signature: &str, subrecord_signature: &str, form_version: Option<u16>,
+) -> PyResult<String> {
+    let schema = plugin_runtime::compiled_schema_for_game(game)?;
+    let record = schema.records.get(record_signature)
+        .ok_or_else(|| PyValueError::new_err(format!("Unknown record signature: {record_signature}")))?;
+    let definitions: Vec<_> = record.subrecords.iter().filter(|sub| sub.id == subrecord_signature).collect();
+    let sub = definitions.first()
+        .ok_or_else(|| PyValueError::new_err(format!("Unknown subrecord: {record_signature}.{subrecord_signature}")))?;
+    let fields: Vec<_> = schema.struct_field_layout_versioned(record_signature, subrecord_signature, form_version)
+        .iter().map(|field| serde_json::json!({
+            "path": field.field_path, "offset": field.offset, "width": field.width,
+            "enum": field.enum_ref, "formlink_targets": field.formlink_targets,
+            "null_allowed": field.null_allowed,
+        })).collect();
+    Ok(serde_json::json!({
+        "game": game, "record": record_signature, "subrecord": subrecord_signature,
+        "form_version": form_version, "codec": sub.codec, "scope": sub.scope_id,
+        "definition_count": definitions.len(), "layout_available": !fields.is_empty(), "fields": fields,
+        "limitations": "Fixed schema layout only; variable-length/custom payloads have no static offsets. Repeated signatures use the first schema scope. Specify form_version for versioned fields.",
+    }).to_string())
 }
 
 #[cfg(feature = "dhat-heap")]
@@ -1227,6 +1247,7 @@ pub fn register_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(supported_games, m)?)?;
     m.add_function(wrap_pyfunction!(fo76_custom_marker_icons, m)?)?;
     m.add_function(wrap_pyfunction!(schema_json_for_game, m)?)?;
+    m.add_function(wrap_pyfunction!(schema_field_layout, m)?)?;
     m.add_function(wrap_pyfunction!(dhat_heap_start_native, m)?)?;
     m.add_function(wrap_pyfunction!(dhat_heap_stop_native, m)?)?;
     m.add_function(wrap_pyfunction!(trim_allocator_native, m)?)?;
@@ -1375,6 +1396,10 @@ pub fn register_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
         m
     )?)?;
     m.add_function(wrap_pyfunction!(
+        crate::plugin_runtime::plugin_handle_record_counts_native,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
         crate::plugin_runtime::plugin_handle_group_record_summaries_native,
         m
     )?)?;
@@ -1440,6 +1465,10 @@ pub fn register_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     )?)?;
     m.add_function(wrap_pyfunction!(
         crate::plugin_runtime::plugin_handle_read_authoring_record_native,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        crate::plugin_runtime::plugin_handle_inspect_record_native,
         m
     )?)?;
     m.add_function(wrap_pyfunction!(
@@ -1531,6 +1560,10 @@ pub fn register_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
         m
     )?)?;
     m.add_function(wrap_pyfunction!(
+        crate::plugin_runtime::plugin_handle_inspection_records_native,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
         crate::plugin_runtime::plugin_handle_search_records_native,
         m
     )?)?;
@@ -1592,6 +1625,10 @@ pub fn register_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     )?)?;
     m.add_function(wrap_pyfunction!(
         crate::plugin_runtime::plugin_handle_save_localized_strings_native,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        crate::plugin_runtime::plugin_handle_identity_native,
         m
     )?)?;
     m.add_function(wrap_pyfunction!(

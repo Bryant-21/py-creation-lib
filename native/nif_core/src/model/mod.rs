@@ -7,7 +7,7 @@ use indexmap::IndexMap;
 
 pub const FLOAT_NAN_TAG: u64 = 1u64 << 32;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum NifValue {
     Null,
     Bool(bool),
@@ -172,6 +172,18 @@ impl NifBlock {
         None
     }
 
+    pub fn get_field_mut(&mut self, name: &str) -> Option<&mut NifValue> {
+        if self.fields.contains_key(name) {
+            return self.fields.get_mut(name);
+        }
+        let matching_key = self
+            .fields
+            .keys()
+            .find(|key| bare_name(key) == name)
+            .cloned()?;
+        self.fields.get_mut(&matching_key)
+    }
+
     /// Set a field value. Tries exact match first, then bare-name fallback.
     /// If no existing slot matches, appends a new entry preserving insertion order.
     pub fn set_field(&mut self, name: &str, value: NifValue) {
@@ -288,6 +300,18 @@ impl NifFile {
         Ok(nif)
     }
 
+    /// Parse a complete NIF without retaining writer-only original block bytes
+    /// and hashes. Use the default loader when raw-block reuse may be required.
+    pub fn from_bytes_lean(
+        bytes: &[u8],
+        path: Option<PathBuf>,
+    ) -> Result<Self, crate::io::ReadError> {
+        let schema = &*crate::schema::SCHEMA;
+        let mut nif = crate::io::NifReader::read_lean(bytes, schema)?;
+        nif.path = path;
+        Ok(nif)
+    }
+
     /// Read a NIF file from disk via [`crate::io::NifReader`].
     pub fn load(path: impl Into<PathBuf>) -> Result<Self, crate::io::ReadError> {
         let path: PathBuf = path.into();
@@ -295,6 +319,52 @@ impl NifFile {
             crate::io::ReadError::Other(format!("failed to read {}: {}", path.display(), e))
         })?;
         Self::from_bytes(&bytes, Some(path))
+    }
+
+    /// Read and fully decode a NIF without retaining writer-only original block data.
+    pub fn load_lean(path: impl Into<PathBuf>) -> Result<Self, crate::io::ReadError> {
+        let path: PathBuf = path.into();
+        let bytes = std::fs::read(&path).map_err(|e| {
+            crate::io::ReadError::Other(format!("failed to read {}: {}", path.display(), e))
+        })?;
+        Self::from_bytes_lean(&bytes, Some(path))
+    }
+
+    pub(crate) fn load_for_header_retarget(
+        path: impl Into<PathBuf>,
+        target_game: &str,
+    ) -> Result<Self, crate::io::ReadError> {
+        let path: PathBuf = path.into();
+        let bytes = std::fs::read(&path).map_err(|e| {
+            crate::io::ReadError::Other(format!("failed to read {}: {}", path.display(), e))
+        })?;
+        let mut header_reader = crate::io::BasicReader::new(std::io::Cursor::new(bytes.as_slice()));
+        let source_header = crate::io::reader::read_header(&mut header_reader)?;
+        let target_header = Self::new(target_game).header;
+        let will_retarget = source_header.version_packed != target_header.version_packed
+            || source_header.user_version != target_header.user_version
+            || source_header.bs_version != target_header.bs_version;
+        if will_retarget {
+            Self::from_bytes_lean(&bytes, Some(path))
+        } else {
+            Self::from_bytes(&bytes, Some(path))
+        }
+    }
+
+    /// Read external material and texture references without decoding unrelated
+    /// sized blocks. Legacy NIFs retain the full-reader path.
+    pub fn load_referenced_asset_paths(
+        path: impl Into<PathBuf>,
+    ) -> Result<ReferencedAssetPaths, crate::io::ReadError> {
+        let path = path.into();
+        let file = std::fs::File::open(&path).map_err(|e| {
+            crate::io::ReadError::Other(format!("failed to read {}: {}", path.display(), e))
+        })?;
+        let schema = &*crate::schema::SCHEMA;
+        match crate::io::NifReader::read_referenced_asset_paths(file, schema)? {
+            Some(refs) => Ok(refs),
+            None => Self::load(path).map(|nif| nif.referenced_asset_paths()),
+        }
     }
 
     /// Serialize this NIF to bytes via [`crate::io::NifWriter`].
@@ -317,8 +387,8 @@ impl NifFile {
         Ok(())
     }
 
-    /// Construct a blank NIF with a game-appropriate header and a `BSFadeNode`
-    /// root block. Supports the short aliases (`"fo4"`, `"skyrimse"`,
+    /// Construct a blank NIF with a game-appropriate header and root block.
+    /// Supports the short aliases (`"fo4"`, `"skyrimse"`,
     /// `"fo76"`, `"starfield"`) and falls back to FO4 defaults for unknown
     /// values, mirroring `NifFile.new` in Python.
     pub fn new(game: &str) -> Self {
@@ -338,7 +408,15 @@ impl NifFile {
         nif.header.endian_type = 1;
         nif.header.export_info = vec![String::new(), String::new(), String::new()];
 
-        let mut root = NifBlock::new(0, "BSFadeNode");
+        let root_type = if matches!(
+            game.to_ascii_lowercase().as_str(),
+            "morrowind" | "tes3" | "oblivion" | "tes4"
+        ) {
+            "NiNode"
+        } else {
+            "BSFadeNode"
+        };
+        let mut root = NifBlock::new(0, root_type);
         root.set_field("Name", NifValue::String(String::new()));
         root.set_field("Num Extra Data List", NifValue::UInt(0));
         root.set_field("Extra Data List", NifValue::Array(Vec::new()));
@@ -355,9 +433,10 @@ impl NifFile {
         root.set_field("Children", NifValue::Array(Vec::new()));
         nif.blocks.push(root);
         nif.header.num_blocks = 1;
-        nif.header.block_type_names = vec!["BSFadeNode".to_string()];
+        nif.header.block_type_names = vec![root_type.to_string()];
         nif.header.block_type_index = vec![0];
         nif.header.block_sizes = vec![0];
+        nif.header.footer_roots = vec![0];
         nif
     }
 
@@ -402,6 +481,33 @@ impl NifFile {
         bid
     }
 
+    pub fn insert_block(&mut self, index: usize, type_name: impl Into<String>) -> usize {
+        let index = index.min(self.blocks.len());
+        let block_id = self.add_block(type_name, None);
+        let block = self.blocks.pop().unwrap();
+        let type_index = self.header.block_type_index.pop().unwrap();
+        let block_size = self.header.block_sizes.pop().unwrap();
+        for existing in &mut self.blocks {
+            for value in existing.fields.values_mut() {
+                shift_refs_at_or_after(value, index);
+            }
+        }
+        for root in &mut self.header.footer_roots {
+            if *root >= index as i32 {
+                *root += 1;
+            }
+        }
+        self.blocks.insert(index, block);
+        self.header.block_type_index.insert(index, type_index);
+        self.header.block_sizes.insert(index, block_size);
+        for (new_id, block) in self.blocks.iter_mut().enumerate() {
+            block.block_id = new_id;
+        }
+        self.header.num_blocks = self.blocks.len() as u32;
+        debug_assert_eq!(block_id, self.blocks.len() - 1);
+        index
+    }
+
     /// Remove blocks by id and remap every remaining Ref/Ptr to the new index
     /// space. Refs targeting removed blocks are rewritten to `-1`.
     pub fn remove_blocks(&mut self, block_ids: &[usize]) {
@@ -430,8 +536,69 @@ impl NifFile {
             new_blocks.push(block);
         }
         self.blocks = new_blocks;
+        self.header.footer_roots = self
+            .header
+            .footer_roots
+            .iter()
+            .filter_map(|root| id_map.get(root).copied())
+            .filter(|root| *root >= 0)
+            .collect();
         self.remap_refs(&id_map);
         self.rebuild_header();
+    }
+
+    pub fn convert_block_type(&mut self, block_id: usize, new_type: &str) -> Result<bool, String> {
+        let Some(definition) = crate::schema::SCHEMA.get_niobject(new_type) else {
+            return Err(format!("Unknown NIF block type: {new_type}"));
+        };
+        if definition.abstract_ {
+            return Err(format!("Cannot convert to abstract block type: {new_type}"));
+        }
+        let Some(block) = self.blocks.get(block_id) else {
+            return Err(format!("Block {block_id} does not exist"));
+        };
+        if block.type_name == new_type {
+            return Ok(false);
+        }
+        let old_hierarchy = crate::schema::SCHEMA
+            .get_type_hierarchy(&block.type_name)
+            .into_iter()
+            .collect::<HashSet<_>>();
+        if !crate::schema::SCHEMA
+            .get_type_hierarchy(new_type)
+            .iter()
+            .any(|type_name| old_hierarchy.contains(type_name))
+        {
+            return Err(format!(
+                "{} and {new_type} do not share a NIF base type",
+                block.type_name
+            ));
+        }
+        let old_fields = block
+            .fields
+            .iter()
+            .map(|(name, value)| (bare_name(name).to_string(), value.clone()))
+            .collect::<HashMap<_, _>>();
+        let mut new_fields = IndexMap::new();
+        for field in crate::schema::SCHEMA.get_all_fields(new_type) {
+            if field.is_abstract {
+                continue;
+            }
+            new_fields.insert(
+                field_key(field),
+                old_fields
+                    .get(field.name)
+                    .cloned()
+                    .unwrap_or_else(|| default_value_for_field(field, &crate::schema::SCHEMA)),
+            );
+        }
+        let block = &mut self.blocks[block_id];
+        block.type_name = new_type.to_string();
+        block.fields = new_fields;
+        block.original_bytes = None;
+        block.original_content_hash = None;
+        self.rebuild_header();
+        Ok(true)
     }
 
     /// Rewrite Ref/Ptr values in every block according to `id_map`. Refs not
@@ -498,6 +665,23 @@ impl NifFile {
     }
 }
 
+fn shift_refs_at_or_after(value: &mut NifValue, index: usize) {
+    match value {
+        NifValue::Ref(reference) if *reference >= index as i32 => *reference += 1,
+        NifValue::Array(values) => {
+            for value in values {
+                shift_refs_at_or_after(value, index);
+            }
+        }
+        NifValue::Struct(fields) => {
+            for value in fields.values_mut() {
+                shift_refs_at_or_after(value, index);
+            }
+        }
+        _ => {}
+    }
+}
+
 // ---------- helpers ----------
 
 fn bare_name(key: &str) -> &str {
@@ -517,6 +701,9 @@ fn field_key(fdef: &crate::schema::FieldDef) -> String {
 fn default_game_versions(game: &str) -> ((u8, u8, u8, u8), u32, u32) {
     let g = game.to_ascii_lowercase();
     match g.as_str() {
+        "morrowind" | "tes3" => ((4, 0, 0, 2), 0, 0),
+        "oblivion" | "tes4" => ((20, 0, 0, 5), 11, 11),
+        "skyrim" | "tes5" => ((20, 2, 0, 7), 12, 83),
         "fo4" => ((20, 2, 0, 7), 12, 130),
         "skyrimse" => ((20, 2, 0, 7), 12, 100),
         "fo76" => ((20, 2, 0, 7), 12, 155),
@@ -800,10 +987,11 @@ pub struct ReferencedAssetPaths {
 }
 
 impl NifFile {
-    /// Enumerate the texture-slot (`BSShaderTextureSet.Textures`) and external
-    /// material (`Name` on a shader property) paths this NIF references, as
-    /// normalized data-relative rel-paths (lowercase, forward-slash). Empty
-    /// strings and duplicates are dropped; insertion order preserved.
+    /// Enumerate texture-slot (`BSShaderTextureSet.Textures`), legacy inline
+    /// texture (`File Name`), and external material (`Name` on a shader
+    /// property) paths this NIF references, as normalized data-relative
+    /// rel-paths (lowercase, forward-slash). Empty strings and duplicates are
+    /// dropped; insertion order preserved.
     pub fn referenced_asset_paths(&self) -> ReferencedAssetPaths {
         fn norm(raw: &str, root: &str) -> Option<String> {
             let s = raw.trim().trim_matches('\0').trim();
@@ -844,12 +1032,40 @@ impl NifFile {
                         }
                     }
                 }
+                "TallGrassShaderProperty" | "BSShaderNoLightingProperty" => {
+                    if let Some(NifValue::String(path)) = block.get_field("File Name") {
+                        if let Some(normalized) = norm(path, "textures") {
+                            if !out.textures.contains(&normalized) {
+                                out.textures.push(normalized);
+                            }
+                        }
+                    }
+                }
                 "BSLightingShaderProperty" | "BSEffectShaderProperty" => {
+                    let mut has_external_material = false;
                     if let Some(NifValue::String(name)) = block.get_field("Name") {
                         if let Some(n) = norm(name, "materials") {
                             let is_material = n.ends_with(".bgsm") || n.ends_with(".bgem");
                             if is_material && !out.materials.contains(&n) {
                                 out.materials.push(n);
+                            }
+                            has_external_material = is_material;
+                        }
+                    }
+                    if block.type_name == "BSEffectShaderProperty" && !has_external_material {
+                        for field in [
+                            "Source Texture",
+                            "Greyscale Texture",
+                            "Env Map Texture",
+                            "Normal Texture",
+                            "Env Mask Texture",
+                        ] {
+                            if let Some(NifValue::String(path)) = block.get_field(field) {
+                                if let Some(normalized) = norm(path, "textures") {
+                                    if !out.textures.contains(&normalized) {
+                                        out.textures.push(normalized);
+                                    }
+                                }
                             }
                         }
                     }
@@ -955,6 +1171,39 @@ mod tests {
                 "textures/landscape/rock01_s.dds".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn referenced_asset_paths_collects_fnv_tall_grass_texture() {
+        let mut nif = NifFile::new("fnv");
+        let mut shader = NifBlock::new(0, "TallGrassShaderProperty");
+        shader.set_field(
+            "File Name",
+            NifValue::String("textures\\landscape\\grass\\GrassWastelandComp01.dds".to_string()),
+        );
+        nif.blocks.push(shader);
+
+        let refs = nif.referenced_asset_paths();
+
+        assert_eq!(
+            refs.textures,
+            vec!["textures/landscape/grass/grasswastelandcomp01.dds"]
+        );
+    }
+
+    #[test]
+    fn referenced_asset_paths_collects_fnv_no_lighting_texture() {
+        let mut nif = NifFile::new("fnv");
+        let mut shader = NifBlock::new(0, "BSShaderNoLightingProperty");
+        shader.set_field(
+            "File Name",
+            NifValue::String("textures\\effects\\FXDustSmallGen01.dds".to_string()),
+        );
+        nif.blocks.push(shader);
+
+        let refs = nif.referenced_asset_paths();
+
+        assert_eq!(refs.textures, vec!["textures/effects/fxdustsmallgen01.dds"]);
     }
 
     #[test]
@@ -1100,6 +1349,44 @@ mod tests {
     }
 
     #[test]
+    fn retarget_loader_keeps_raw_metadata_when_header_already_matches() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("fo4_donor.nif");
+        let mut source = NifFile::new("fo4");
+        source.blocks[0].set_field("Name", NifValue::String("Nonempty donor root".into()));
+        let source_bytes = source.to_bytes().unwrap();
+        std::fs::write(&path, &source_bytes).unwrap();
+
+        let mut parsed = NifFile::load_for_header_retarget(&path, "fo4").unwrap();
+        assert!(parsed.blocks.iter().all(|block| block.original_bytes.is_some()));
+        assert!(
+            parsed
+                .blocks
+                .iter()
+                .all(|block| block.original_content_hash.is_some())
+        );
+        assert!(!parsed.header.strings.is_empty());
+        assert_eq!(parsed.to_bytes().unwrap(), source_bytes);
+    }
+
+    #[test]
+    fn retarget_loader_uses_lean_decode_when_header_will_change() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("fo76_source.nif");
+        let mut source = NifFile::new("fo76");
+        std::fs::write(&path, source.to_bytes().unwrap()).unwrap();
+
+        let parsed = NifFile::load_for_header_retarget(&path, "fo4").unwrap();
+        assert!(parsed.blocks.iter().all(|block| block.original_bytes.is_none()));
+        assert!(
+            parsed
+                .blocks
+                .iter()
+                .all(|block| block.original_content_hash.is_none())
+        );
+    }
+
+    #[test]
     fn get_hierarchy_returns_refs_per_block() {
         let mut nif = NifFile::default();
         nif.add_block("NiNode", None);
@@ -1134,5 +1421,15 @@ mod tests {
         assert!(names.contains(&"Controller"));
         assert!(names.contains(&"Children"));
         assert!(!names.contains(&"Name"));
+    }
+
+    #[test]
+    fn lean_load_preserves_filesystem_error_interface() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("missing.nif");
+        assert_eq!(
+            format!("{:?}", NifFile::load(&path).unwrap_err()),
+            format!("{:?}", NifFile::load_lean(&path).unwrap_err())
+        );
     }
 }

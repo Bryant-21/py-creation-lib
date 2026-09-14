@@ -1,27 +1,33 @@
-use crate::btd::{BtdFile, BtdHeader};
+use crate::btd::{BtdFile, BtdHeader, BtdTileCacheStats};
 #[cfg(test)]
 use crate::btd::{CellTextureSet, QuadrantTextureSet};
 use crate::diagnostics::{CellDiagnostic, TerrainDiagnostics};
 use crate::global_blend::{
-    GlobalLandscapeBlend, SourceAlphaLookup, collect_required_source_ltex_object_ids,
+    GlobalLandscapeBlend, LAND_QUADRANT_VERTICES, SourceAlphaLookup,
+    collect_required_source_ltex_object_ids_profiled, fo76_layer_alpha_passes,
 };
-use crate::height_resample::{LANCZOS2_REACH, clamp_offset_index, lanczos2_kernel};
+use crate::height_resample::{
+    AxisTap, LANCZOS2_REACH, LANCZOS2_TAPS, build_axis_taps, clamp_offset_index, lanczos2_kernel,
+};
+#[cfg(test)]
+use crate::land_encode::{EncodedVhgt, decode_vhgt_heights};
 use crate::land_encode::{encode_vhgt, generate_vnml};
 use crate::texture_bridge::{ConvertedTerrainGrass, ConvertedTerrainTexture, TextureManifest};
 #[cfg(test)]
 use crate::texture_layers::{decode_alpha_layers, map_cell_layers};
+use rayon::prelude::*;
 use serde::{Deserialize, Deserializer, Serialize};
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::io::{self, BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant, SystemTime};
 use thiserror::Error;
 
 const CELL_SOURCE_SAMPLES: usize = 128;
 const LAND_CELL_VERTICES: usize = 33;
 const LAND_CELL_INTERVALS: usize = 32;
-const LAND_QUADRANT_VERTICES: usize = 17;
 #[cfg(test)]
 const CELL_SOURCE_QUADRANT_SAMPLES: usize = 64;
 #[cfg(test)]
@@ -43,6 +49,7 @@ const LAND_FLAG_UNKNOWN_4: u32 = 0x08;
 const LAND_FLAG_AUTO_CALC_NORMALS: u32 = 0x10;
 const FO76_VCLR_NEUTRAL_SRGB_BYTE: f32 = 187.67568;
 const FO4_DEFAULT_WATER_OBJECT_ID: u32 = 0x0C8633;
+const SOURCE_TEXTURE_ALPHA_CACHE_MAX_BYTES: usize = 256 * 1024 * 1024;
 
 #[derive(Debug, Error)]
 pub enum AuthoringEmitError {
@@ -106,19 +113,16 @@ pub struct ConvertOptions {
     /// (consumed by the B21_BTD plugin). Empty disables the emit (zero-cost).
     #[serde(default, deserialize_with = "deserialize_string_or_default")]
     pub btd4_output_path: String,
-    /// Retained for compatibility; texture conversion workers are now owned by
-    /// the caller's unified texture phase.
+    /// Unused; kept for compatibility. The caller's texture phase owns the
+    /// conversion workers.
     #[serde(default)]
     pub conversion_workers: Option<usize>,
-    /// When true, LAND BTXT/ATXT layers resolve the PLAIN base LTEX instead of the
-    /// `{base}_GC_{gcvr}` ground-cover composite. The composite eats a 6th per-quad
-    /// texture slot and its incomplete TXST makes FO4's landscape shader render the
-    /// quad black (the data is valid — render.exe + CK confirm — the engine chokes
-    /// on the max-density quad). Ground cover still flows to the `.btd4` GCVR channel
-    /// for the native scatter (M4). Default false preserves legacy baked-GC behavior.
+    /// Ignored: LAND BTXT/ATXT layers always resolve the plain base LTEX, never the
+    /// `{base}_GC_{gcvr}` composite. Ground cover reaches the native scatter
+    /// through the `.btd4` GCVR channel. Kept for compatibility.
     #[serde(default)]
     pub land_skip_ground_cover_variants: bool,
-    /// Retained for compatibility; terrain planning no longer encodes DDS files.
+    /// Unused; kept for compatibility (terrain planning does not encode DDS files).
     #[serde(default)]
     pub reuse_existing_textures: bool,
 }
@@ -161,6 +165,12 @@ pub struct ConvertReport {
     pub heightmap_cell_0_0_preview_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub heightmap_cell_0_0_stats_path: Option<String>,
+    /// Starfield only: count of FO4 quadrants whose BTXT-base area vote had a
+    /// runner-up candidate within 10% of the winner (0 for FO76 identity).
+    #[serde(default)]
+    pub quadrant_base_split: u32,
+    #[serde(default)]
+    pub operation_counts: BTreeMap<String, u64>,
     pub timings: Vec<TimingEntry>,
 }
 
@@ -175,6 +185,13 @@ pub struct AuthoringRecordPayload {
     pub signature: String,
     pub relative_path: String,
     pub yaml: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct AuthoringRecordValuePayload {
+    pub signature: String,
+    pub relative_path: String,
+    pub value: serde_json::Value,
 }
 
 #[derive(Debug, Default, Clone, Serialize)]
@@ -202,8 +219,14 @@ struct AuthoringOutput<'a> {
     collect_records: bool,
     record_sink:
         Option<&'a mut dyn FnMut(AuthoringRecordPayload) -> Result<(), AuthoringEmitError>>,
+    record_value_sink:
+        Option<&'a mut dyn FnMut(AuthoringRecordValuePayload) -> Result<(), AuthoringEmitError>>,
     plugin_yaml: String,
     records: Vec<AuthoringRecordPayload>,
+    record_sink_elapsed: Duration,
+    record_sink_payload_count: u64,
+    record_sink_yaml_bytes: u64,
+    structured_cell_payload_count: u64,
 }
 
 impl<'a> AuthoringOutput<'a> {
@@ -213,8 +236,13 @@ impl<'a> AuthoringOutput<'a> {
             write_files: true,
             collect_records: true,
             record_sink: None,
+            record_value_sink: None,
             plugin_yaml: String::new(),
             records: Vec::new(),
+            record_sink_elapsed: Duration::ZERO,
+            record_sink_payload_count: 0,
+            record_sink_yaml_bytes: 0,
+            structured_cell_payload_count: 0,
         }
     }
 
@@ -224,8 +252,13 @@ impl<'a> AuthoringOutput<'a> {
             write_files: false,
             collect_records: true,
             record_sink: None,
+            record_value_sink: None,
             plugin_yaml: String::new(),
             records: Vec::new(),
+            record_sink_elapsed: Duration::ZERO,
+            record_sink_payload_count: 0,
+            record_sink_yaml_bytes: 0,
+            structured_cell_payload_count: 0,
         }
     }
 
@@ -238,8 +271,35 @@ impl<'a> AuthoringOutput<'a> {
             write_files: false,
             collect_records: false,
             record_sink: Some(record_sink),
+            record_value_sink: None,
             plugin_yaml: String::new(),
             records: Vec::new(),
+            record_sink_elapsed: Duration::ZERO,
+            record_sink_payload_count: 0,
+            record_sink_yaml_bytes: 0,
+            structured_cell_payload_count: 0,
+        }
+    }
+
+    fn stream_records_with_structured_cells(
+        output_dir: PathBuf,
+        record_sink: &'a mut dyn FnMut(AuthoringRecordPayload) -> Result<(), AuthoringEmitError>,
+        record_value_sink: &'a mut dyn FnMut(
+            AuthoringRecordValuePayload,
+        ) -> Result<(), AuthoringEmitError>,
+    ) -> Self {
+        Self {
+            output_dir,
+            write_files: false,
+            collect_records: false,
+            record_sink: Some(record_sink),
+            record_value_sink: Some(record_value_sink),
+            plugin_yaml: String::new(),
+            records: Vec::new(),
+            record_sink_elapsed: Duration::ZERO,
+            record_sink_payload_count: 0,
+            record_sink_yaml_bytes: 0,
+            structured_cell_payload_count: 0,
         }
     }
 
@@ -249,8 +309,13 @@ impl<'a> AuthoringOutput<'a> {
             write_files: false,
             collect_records: false,
             record_sink: None,
+            record_value_sink: None,
             plugin_yaml: String::new(),
             records: Vec::new(),
+            record_sink_elapsed: Duration::ZERO,
+            record_sink_payload_count: 0,
+            record_sink_yaml_bytes: 0,
+            structured_cell_payload_count: 0,
         }
     }
 
@@ -288,10 +353,53 @@ impl<'a> AuthoringOutput<'a> {
                 self.records.push(payload.clone());
             }
             if let Some(record_sink) = self.record_sink.as_mut() {
-                record_sink(payload)?;
+                self.record_sink_payload_count = self.record_sink_payload_count.saturating_add(1);
+                self.record_sink_yaml_bytes = self
+                    .record_sink_yaml_bytes
+                    .saturating_add(payload.yaml.len() as u64);
+                let sink_started = Instant::now();
+                let result = record_sink(payload);
+                self.record_sink_elapsed += sink_started.elapsed();
+                result?;
             }
         }
         Ok(())
+    }
+
+    fn write_record_value(
+        &mut self,
+        signature: &str,
+        relative_path: PathBuf,
+        value: serde_json::Value,
+    ) -> Result<(), AuthoringEmitError> {
+        let Some(record_value_sink) = self.record_value_sink.as_mut() else {
+            return Err(AuthoringEmitError::Message(
+                "structured terrain record sink is not configured".to_owned(),
+            ));
+        };
+        self.record_sink_payload_count = self.record_sink_payload_count.saturating_add(1);
+        self.structured_cell_payload_count = self.structured_cell_payload_count.saturating_add(1);
+        let sink_started = Instant::now();
+        let result = record_value_sink(AuthoringRecordValuePayload {
+            signature: signature.to_owned(),
+            relative_path: relative_path.display().to_string().replace('\\', "/"),
+            value,
+        });
+        self.record_sink_elapsed += sink_started.elapsed();
+        result
+    }
+
+    fn uses_structured_cell_sink(&self) -> bool {
+        self.record_value_sink.is_some()
+    }
+
+    fn record_sink_profile(&self) -> (Duration, u64, u64, u64) {
+        (
+            self.record_sink_elapsed,
+            self.record_sink_payload_count,
+            self.record_sink_yaml_bytes,
+            self.structured_cell_payload_count,
+        )
     }
 
     fn finish(self) -> CollectedAuthoringOutput {
@@ -402,6 +510,7 @@ struct DiagnosticsReport {
     heightmap_cell_0_0_output_path: Option<String>,
     heightmap_cell_0_0_preview_path: Option<String>,
     heightmap_cell_0_0_stats_path: Option<String>,
+    operation_counts: BTreeMap<String, u64>,
     timings: Vec<TimingEntry>,
 }
 
@@ -413,6 +522,27 @@ pub struct RequiredTextureUsage {
 }
 
 #[derive(Debug, Clone)]
+pub struct RequiredTextureUsageProfile {
+    pub usages: Vec<RequiredTextureUsage>,
+    pub timings: Vec<TimingEntry>,
+    pub operation_counts: BTreeMap<String, u64>,
+}
+
+pub struct PreparedTerrainSource {
+    btd: BtdFile,
+    btd_path: String,
+    source_min_x: i32,
+    source_min_y: i32,
+    source_max_x: i32,
+    source_max_y: i32,
+}
+
+pub struct PreparedTerrainTextureScan {
+    pub profile: RequiredTextureUsageProfile,
+    pub source: PreparedTerrainSource,
+}
+
+#[derive(Debug, Clone)]
 struct EmittedTexture {
     converted: ConvertedTerrainTexture,
     txst_object_id: u32,
@@ -421,16 +551,83 @@ struct EmittedTexture {
 }
 
 struct LandTextureFields {
-    fields: Vec<String>,
+    fields: Vec<LandTextureField>,
     layer_count: u32,
     ground_cover_layer_count: u32,
     no_ground_cover_layer_count: u32,
-    btd4_layer_object_ids: Vec<u32>,
-    btd4_grass_object_ids: Vec<u32>,
-    // Dense per-quadrant texture-blend planes for the .btd4 ALPH channel
-    // (Some only when `want_dense_alpha` and the cell has ≥1 emitted alpha layer).
-    // ALPH_PLANE_COUNT planes of ALPH_PLANE_LEN u8; plane = quadrant*5 + slot.
-    dense_alpha: Option<Vec<Vec<u8>>>,
+    // Ordered as four repetitions of [base, alpha0..alpha4]. Empty material
+    // slots remain None so the v2 runtime can validate the exact live LAND stack.
+    btd4_layer_object_ids: Vec<Option<u32>>,
+    btd4_source_layer_object_ids: Vec<Option<u32>>,
+}
+
+enum LandTextureField {
+    Layer {
+        signature: &'static str,
+        texture_object_id: u32,
+        plugin_name: String,
+        quadrant: u8,
+        layer: i16,
+    },
+    AlphaLayerData {
+        raw_hex: String,
+    },
+}
+
+impl LandTextureField {
+    fn yaml(&self) -> String {
+        match self {
+            Self::Layer {
+                signature,
+                texture_object_id,
+                plugin_name,
+                quadrant,
+                layer,
+            } => land_texture_layer_field(
+                signature,
+                *texture_object_id,
+                plugin_name,
+                *quadrant,
+                *layer,
+            ),
+            Self::AlphaLayerData { raw_hex } => {
+                format!("    - AlphaLayerData:\n        raw_hex: \"{raw_hex}\"\n")
+            }
+        }
+    }
+
+    fn value(&self) -> serde_json::Value {
+        match self {
+            Self::Layer {
+                signature,
+                texture_object_id,
+                plugin_name,
+                quadrant,
+                layer,
+            } => {
+                let unknown_byte_3 = if *signature == "BTXT" { 2 } else { 0 };
+                let mut field = serde_json::Map::new();
+                field.insert(
+                    (*signature).to_owned(),
+                    serde_json::json!({
+                        "Texture": {
+                            "reference": {
+                                "plugin": plugin_name,
+                                "object_id": form_id_hex(*texture_object_id),
+                            }
+                        },
+                        "Quadrant": quadrant,
+                        "UnknownByte3": unknown_byte_3,
+                        "Layer": layer,
+                    }),
+                );
+                serde_json::Value::Object(field)
+            }
+            Self::AlphaLayerData { raw_hex } => serde_json::json!({
+                "AlphaLayerData": { "raw_hex": raw_hex }
+            }),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -438,10 +635,11 @@ struct TextureAlphaMasks {
     by_source_ltex_object_id: HashMap<u32, TextureAlphaMask>,
 }
 
+#[derive(Clone)]
 struct TextureAlphaMask {
     width: usize,
     height: usize,
-    alpha: Vec<u8>,
+    alpha: Arc<[u8]>,
 }
 
 impl TextureAlphaMask {
@@ -460,6 +658,79 @@ impl SourceAlphaLookup for TextureAlphaMasks {
             .unwrap_or(u8::MAX)
     }
 }
+
+struct CachedTextureAlphaMask {
+    file_len: u64,
+    modified: Option<SystemTime>,
+    last_used: u64,
+    mask: TextureAlphaMask,
+}
+
+#[derive(Default)]
+struct TextureAlphaMaskCache {
+    entries: HashMap<PathBuf, CachedTextureAlphaMask>,
+    bytes: usize,
+    tick: u64,
+}
+
+impl TextureAlphaMaskCache {
+    fn get(
+        &mut self,
+        path: &Path,
+        file_len: u64,
+        modified: Option<SystemTime>,
+    ) -> Option<TextureAlphaMask> {
+        self.tick = self.tick.wrapping_add(1);
+        let entry = self.entries.get_mut(path)?;
+        if entry.file_len != file_len || entry.modified != modified {
+            return None;
+        }
+        entry.last_used = self.tick;
+        Some(entry.mask.clone())
+    }
+
+    fn insert(
+        &mut self,
+        path: PathBuf,
+        file_len: u64,
+        modified: Option<SystemTime>,
+        mask: TextureAlphaMask,
+    ) {
+        let mask_bytes = mask.alpha.len();
+        if mask_bytes > SOURCE_TEXTURE_ALPHA_CACHE_MAX_BYTES {
+            return;
+        }
+        if let Some(previous) = self.entries.remove(&path) {
+            self.bytes = self.bytes.saturating_sub(previous.mask.alpha.len());
+        }
+        while self.bytes + mask_bytes > SOURCE_TEXTURE_ALPHA_CACHE_MAX_BYTES {
+            let Some(oldest_path) = self
+                .entries
+                .iter()
+                .min_by_key(|(_, entry)| entry.last_used)
+                .map(|(path, _)| path.clone())
+            else {
+                break;
+            };
+            if let Some(removed) = self.entries.remove(&oldest_path) {
+                self.bytes = self.bytes.saturating_sub(removed.mask.alpha.len());
+            }
+        }
+        self.tick = self.tick.wrapping_add(1);
+        self.bytes += mask_bytes;
+        self.entries.insert(
+            path,
+            CachedTextureAlphaMask {
+                file_len,
+                modified,
+                last_used: self.tick,
+                mask,
+            },
+        );
+    }
+}
+
+static SOURCE_TEXTURE_ALPHA_CACHE: OnceLock<Mutex<TextureAlphaMaskCache>> = OnceLock::new();
 
 #[derive(Debug, Clone, Deserialize)]
 struct WaterManifest {
@@ -527,6 +798,25 @@ impl VhgtDeltaClampStats {
     }
 }
 
+/// World frame of a BTD's source data, chosen once per header. FO76 identity:
+/// BTD == FO4 world, half-cell shifted. Starfield: 100m SF cells, converted via
+/// `sf_frame`. Emitters branch on this instead of sharing addressing math.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SourceFrame {
+    Fo76Identity,
+    Starfield,
+}
+
+impl SourceFrame {
+    fn for_header(h: &BtdHeader) -> Self {
+        if h.is_starfield_layout {
+            Self::Starfield
+        } else {
+            Self::Fo76Identity
+        }
+    }
+}
+
 struct SourceCellCache {
     cells: HashMap<(i32, i32), Vec<f32>>,
     // Parallel cache of RAW u16 source samples (never dequantized). HGTS for the
@@ -539,10 +829,35 @@ struct SourceCellCache {
     source_min_y: i32,
     source_width: usize,
     source_height: usize,
+    frame: SourceFrame,
+    // Starfield only: the BTD's own SF cell-min anchor (`source_min_x/y` under
+    // Starfield mirrors this — kept as a separate, explicitly-named field so
+    // call sites never have to guess which "min" a given value is), and the
+    // FO4 window's first cell, needed to re-derive `sf_frame` positions for
+    // resample modes that don't consume the precomputed `axis_taps_*`.
+    btd_cell_min_x: i32,
+    btd_cell_min_y: i32,
+    target_cell_min_x: i32,
+    target_cell_min_y: i32,
+    axis_taps_x: Option<Vec<AxisTap>>,
+    axis_taps_y: Option<Vec<AxisTap>>,
 }
 
 impl SourceCellCache {
     fn new(
+        header: &BtdHeader,
+        options: &ConvertOptions,
+        cells_x: usize,
+        cells_y: usize,
+        frame: SourceFrame,
+    ) -> Result<Self, AuthoringEmitError> {
+        match frame {
+            SourceFrame::Fo76Identity => Self::new_fo76_identity(header, options, cells_x, cells_y),
+            SourceFrame::Starfield => Self::new_starfield(header, options, cells_x, cells_y),
+        }
+    }
+
+    fn new_fo76_identity(
         header: &BtdHeader,
         options: &ConvertOptions,
         cells_x: usize,
@@ -572,7 +887,95 @@ impl SourceCellCache {
             source_min_y: options.source_min_y,
             source_width,
             source_height,
+            frame: SourceFrame::Fo76Identity,
+            btd_cell_min_x: header.cell_min_x,
+            btd_cell_min_y: header.cell_min_y,
+            target_cell_min_x: options.source_min_x,
+            target_cell_min_y: options.source_min_y,
+            axis_taps_x: None,
+            axis_taps_y: None,
         })
+    }
+
+    fn new_starfield(
+        header: &BtdHeader,
+        options: &ConvertOptions,
+        cells_x: usize,
+        cells_y: usize,
+    ) -> Result<Self, AuthoringEmitError> {
+        // Bounds against the BTD's real SF-cell extent (not the FO4 window,
+        // which has no fixed relationship to the SF cell count); every access
+        // clamps into this range, so sizing to the full file is simply safe.
+        let source_width = header
+            .cells_x
+            .checked_mul(CELL_SOURCE_SAMPLES)
+            .ok_or_else(|| AuthoringEmitError::Message("source grid width overflow".to_string()))?;
+        let source_height = header
+            .cells_y
+            .checked_mul(CELL_SOURCE_SAMPLES)
+            .ok_or_else(|| {
+                AuthoringEmitError::Message("source grid height overflow".to_string())
+            })?;
+        let vertex_count_x = cells_x
+            .checked_mul(LAND_CELL_INTERVALS)
+            .and_then(|v| v.checked_add(1))
+            .ok_or_else(|| AuthoringEmitError::Message("target grid width overflow".to_string()))?;
+        let vertex_count_y = cells_y
+            .checked_mul(LAND_CELL_INTERVALS)
+            .and_then(|v| v.checked_add(1))
+            .ok_or_else(|| {
+                AuthoringEmitError::Message("target grid height overflow".to_string())
+            })?;
+        let axis_taps_x = build_axis_taps(
+            vertex_count_x,
+            options.source_min_x,
+            header.cell_min_x,
+            crate::sf_frame::SF_SAMPLES_PER_FO4_INTERVAL,
+        );
+        let axis_taps_y = build_axis_taps(
+            vertex_count_y,
+            options.source_min_y,
+            header.cell_min_y,
+            crate::sf_frame::SF_SAMPLES_PER_FO4_INTERVAL,
+        );
+        Ok(Self {
+            cells: HashMap::new(),
+            raw_cells: HashMap::new(),
+            // Starfield header floats are meters; LAND's VHGT lattice is FO4
+            // units. This is the ONLY Z-scale site — cell_values() below,
+            // encode_vhgt, generate_vnml, and WHGT all consume the result and
+            // come out in FO4 units for free.
+            height_min: crate::sf_frame::meters_to_fo4_units(header.world_height_min as f64) as f32,
+            height_scale: crate::sf_frame::meters_to_fo4_units(
+                ((header.world_height_max - header.world_height_min) / u16::MAX as f32) as f64,
+            ) as f32,
+            source_min_x: header.cell_min_x,
+            source_min_y: header.cell_min_y,
+            source_width,
+            source_height,
+            frame: SourceFrame::Starfield,
+            btd_cell_min_x: header.cell_min_x,
+            btd_cell_min_y: header.cell_min_y,
+            target_cell_min_x: options.source_min_x,
+            target_cell_min_y: options.source_min_y,
+            axis_taps_x: Some(axis_taps_x.taps),
+            axis_taps_y: Some(axis_taps_y.taps),
+        })
+    }
+
+    /// Fractional global BTD sample position (relative to `btd_cell_min_x`,
+    /// matching `sample()`'s Starfield addressing) for FO4 target vertex
+    /// `target_x` in the emitted window. Shared by the non-Lanczos resample
+    /// modes, which need a fractional center rather than the precomputed
+    /// per-vertex `axis_taps_x`.
+    fn starfield_center_x(&self, target_x: usize) -> f64 {
+        let units = crate::sf_frame::fo4_land_vertex_units(self.target_cell_min_x, target_x);
+        crate::sf_frame::fo4_units_to_btd_sample(units, self.btd_cell_min_x)
+    }
+
+    fn starfield_center_y(&self, target_y: usize) -> f64 {
+        let units = crate::sf_frame::fo4_land_vertex_units(self.target_cell_min_y, target_y);
+        crate::sf_frame::fo4_units_to_btd_sample(units, self.btd_cell_min_y)
     }
 
     fn retain_neighbor_rows(&mut self, cell_y: i32) {
@@ -584,17 +987,30 @@ impl SourceCellCache {
             .retain(|(_, cached_y), _| *cached_y >= min_y && *cached_y <= max_y);
     }
 
+    /// Clamp a caller's source index into bounds. FO76 identity: callers pass the
+    /// unshifted index and this adds the +HALF_CELL_SAMPLES layout shift.
+    /// Starfield: callers pass the `sf_frame` global sample index (relative to
+    /// `btd_cell_min_x/y`), which must not get the FO76 shift.
+    fn resolve_sample_index(&self, source_x: usize, source_y: usize) -> (usize, usize) {
+        match self.frame {
+            SourceFrame::Fo76Identity => (
+                (source_x + crate::fo4_frame::HALF_CELL_SAMPLES).min(self.source_width - 1),
+                (source_y + crate::fo4_frame::HALF_CELL_SAMPLES).min(self.source_height - 1),
+            ),
+            SourceFrame::Starfield => (
+                source_x.min(self.source_width - 1),
+                source_y.min(self.source_height - 1),
+            ),
+        }
+    }
+
     fn sample(
         &mut self,
         btd: &mut BtdFile,
         source_x: usize,
         source_y: usize,
     ) -> Result<f32, AuthoringEmitError> {
-        // Identity frame (BTD is half-cell offset): FO4 world == FO76 world, so
-        // the global source sample index shifts +HALF_CELL_SAMPLES per axis. At
-        // the outer BTD edge the clamp stretches the final half cell.
-        let source_x = (source_x + crate::fo4_frame::HALF_CELL_SAMPLES).min(self.source_width - 1);
-        let source_y = (source_y + crate::fo4_frame::HALF_CELL_SAMPLES).min(self.source_height - 1);
+        let (source_x, source_y) = self.resolve_sample_index(source_x, source_y);
         let cell_offset_x = source_x / CELL_SOURCE_SAMPLES;
         let cell_offset_y = source_y / CELL_SOURCE_SAMPLES;
         let local_x = source_x % CELL_SOURCE_SAMPLES;
@@ -638,17 +1054,16 @@ impl SourceCellCache {
         Ok(self.cells.get(&(cell_x, cell_y)).unwrap())
     }
 
-    /// RAW-u16 twin of `sample` (identical +HALF_CELL_SAMPLES shift, clamp, and
-    /// cell/local arithmetic). Returns the undequantized source sample so the
-    /// .btd4 HGTS aligns byte-for-byte with the f32 LAND heights' source.
+    /// RAW-u16 twin of `sample` (identical `resolve_sample_index` addressing
+    /// and cell/local arithmetic). Returns the undequantized source sample so
+    /// the .btd4 HGTS aligns byte-for-byte with the f32 LAND heights' source.
     fn sample_raw_u16(
         &mut self,
         btd: &mut BtdFile,
         source_x: usize,
         source_y: usize,
     ) -> Result<u16, AuthoringEmitError> {
-        let source_x = (source_x + crate::fo4_frame::HALF_CELL_SAMPLES).min(self.source_width - 1);
-        let source_y = (source_y + crate::fo4_frame::HALF_CELL_SAMPLES).min(self.source_height - 1);
+        let (source_x, source_y) = self.resolve_sample_index(source_x, source_y);
         let cell_offset_x = source_x / CELL_SOURCE_SAMPLES;
         let cell_offset_y = source_y / CELL_SOURCE_SAMPLES;
         let local_x = source_x % CELL_SOURCE_SAMPLES;
@@ -715,13 +1130,44 @@ pub fn collect_required_texture_usages_for_options(
 }
 
 pub fn collect_required_texture_usages_lightweight_for_options(
-    mut options: ConvertOptions,
+    options: ConvertOptions,
 ) -> Result<Vec<RequiredTextureUsage>, AuthoringEmitError> {
+    collect_required_texture_usages_lightweight_profiled_for_options(options)
+        .map(|profile| profile.usages)
+}
+
+pub fn collect_required_texture_usages_lightweight_profiled_for_options(
+    options: ConvertOptions,
+) -> Result<RequiredTextureUsageProfile, AuthoringEmitError> {
+    prepare_terrain_texture_scan(options).map(|prepared| prepared.profile)
+}
+
+pub fn prepare_terrain_texture_scan(
+    mut options: ConvertOptions,
+) -> Result<PreparedTerrainTextureScan, AuthoringEmitError> {
     let mut btd = BtdFile::open(&options.btd_path)?;
     resolve_full_extent_sentinel(&mut options, btd.header());
     validate_range(&options)?;
     validate_btd_bounds(&btd, &options)?;
-    collect_required_texture_usages_lightweight(&mut btd, &options)
+    let cache_before = btd.tile_cache_stats();
+    let mut profile = collect_required_texture_usages_lightweight_profiled(&mut btd, &options)?;
+    append_btd_cache_counts(
+        &mut profile.operation_counts,
+        "btd_cache",
+        cache_before,
+        btd.tile_cache_stats(),
+    );
+    Ok(PreparedTerrainTextureScan {
+        profile,
+        source: PreparedTerrainSource {
+            btd,
+            btd_path: options.btd_path,
+            source_min_x: options.source_min_x,
+            source_min_y: options.source_min_y,
+            source_max_x: options.source_max_x,
+            source_max_y: options.source_max_y,
+        },
+    })
 }
 
 pub fn convert_btd_with_record_sink<F>(
@@ -733,7 +1179,33 @@ where
 {
     let sink: &mut dyn FnMut(AuthoringRecordPayload) -> Result<(), AuthoringEmitError> =
         record_sink;
-    let output = convert_btd_inner(options, TerrainRecordOutput::CollectOnly, Some(sink))?;
+    let output = convert_btd_inner(
+        options,
+        TerrainRecordOutput::CollectOnly,
+        Some(sink),
+        None,
+        None,
+    )?;
+    Ok(output.report)
+}
+
+pub fn convert_prepared_btd_with_record_sink<F>(
+    prepared: PreparedTerrainSource,
+    options: ConvertOptions,
+    record_sink: &mut F,
+) -> Result<ConvertReport, AuthoringEmitError>
+where
+    F: FnMut(AuthoringRecordPayload) -> Result<(), AuthoringEmitError>,
+{
+    let sink: &mut dyn FnMut(AuthoringRecordPayload) -> Result<(), AuthoringEmitError> =
+        record_sink;
+    let output = convert_btd_inner(
+        options,
+        TerrainRecordOutput::CollectOnly,
+        Some(sink),
+        None,
+        Some(prepared),
+    )?;
     Ok(output.report)
 }
 
@@ -741,19 +1213,91 @@ pub fn convert_btd(
     options: ConvertOptions,
     output: TerrainRecordOutput,
 ) -> Result<ConvertOutput, AuthoringEmitError> {
-    convert_btd_inner(options, output, None)
+    convert_btd_inner(options, output, None, None, None)
+}
+
+pub fn convert_prepared_btd(
+    prepared: PreparedTerrainSource,
+    options: ConvertOptions,
+    output: TerrainRecordOutput,
+) -> Result<ConvertOutput, AuthoringEmitError> {
+    convert_btd_inner(options, output, None, None, Some(prepared))
+}
+
+pub fn convert_prepared_btd_with_structured_cell_sink<F, G>(
+    prepared: PreparedTerrainSource,
+    options: ConvertOptions,
+    record_sink: &mut F,
+    structured_cell_sink: &mut G,
+) -> Result<ConvertReport, AuthoringEmitError>
+where
+    F: FnMut(AuthoringRecordPayload) -> Result<(), AuthoringEmitError>,
+    G: FnMut(AuthoringRecordValuePayload) -> Result<(), AuthoringEmitError>,
+{
+    let record_sink: &mut dyn FnMut(AuthoringRecordPayload) -> Result<(), AuthoringEmitError> =
+        record_sink;
+    let structured_cell_sink: &mut dyn FnMut(
+        AuthoringRecordValuePayload,
+    ) -> Result<(), AuthoringEmitError> = structured_cell_sink;
+    let output = convert_btd_inner(
+        options,
+        TerrainRecordOutput::CollectOnly,
+        Some(record_sink),
+        Some(structured_cell_sink),
+        Some(prepared),
+    )?;
+    Ok(output.report)
 }
 
 fn convert_btd_inner(
     mut options: ConvertOptions,
     output: TerrainRecordOutput,
     record_sink: Option<&mut dyn FnMut(AuthoringRecordPayload) -> Result<(), AuthoringEmitError>>,
+    record_value_sink: Option<
+        &mut dyn FnMut(AuthoringRecordValuePayload) -> Result<(), AuthoringEmitError>,
+    >,
+    prepared_source: Option<PreparedTerrainSource>,
 ) -> Result<ConvertOutput, AuthoringEmitError> {
     let total_started = Instant::now();
     let mut timings = Vec::new();
+    let mut operation_counts = BTreeMap::new();
     let setup_started = Instant::now();
-    let mut btd = BtdFile::open(&options.btd_path)?;
+    let reused_prepared_source = prepared_source.is_some();
+    let (mut btd, prepared_bounds) = match prepared_source {
+        Some(prepared) => {
+            if prepared.btd_path != options.btd_path {
+                return Err(AuthoringEmitError::Message(
+                    "prepared terrain BTD path does not match conversion options".to_owned(),
+                ));
+            }
+            (
+                prepared.btd,
+                Some((
+                    prepared.source_min_x,
+                    prepared.source_min_y,
+                    prepared.source_max_x,
+                    prepared.source_max_y,
+                )),
+            )
+        }
+        None => (BtdFile::open(&options.btd_path)?, None),
+    };
+    let btd_cache_before = btd.tile_cache_stats();
+    let frame = SourceFrame::for_header(btd.header());
     resolve_full_extent_sentinel(&mut options, btd.header());
+    if prepared_bounds.is_some()
+        && prepared_bounds
+            != Some((
+                options.source_min_x,
+                options.source_min_y,
+                options.source_max_x,
+                options.source_max_y,
+            ))
+    {
+        return Err(AuthoringEmitError::Message(
+            "prepared terrain cell range does not match conversion options".to_owned(),
+        ));
+    }
     validate_range(&options)?;
     let cells_x = cell_span(options.source_min_x, options.source_max_x)?;
     let cells_y = cell_span(options.source_min_y, options.source_max_y)?;
@@ -767,13 +1311,24 @@ fn convert_btd_inner(
             ensure_game_file(&output_dir)?;
             AuthoringOutput::write_files(output_dir.clone())
         }
-        TerrainRecordOutput::CollectOnly => {
-            if let Some(record_sink) = record_sink {
-                AuthoringOutput::stream_records(output_dir.clone(), record_sink)
-            } else {
-                AuthoringOutput::collect_only(output_dir.clone())
+        TerrainRecordOutput::CollectOnly => match (record_sink, record_value_sink) {
+            (Some(record_sink), Some(record_value_sink)) => {
+                AuthoringOutput::stream_records_with_structured_cells(
+                    output_dir.clone(),
+                    record_sink,
+                    record_value_sink,
+                )
             }
-        }
+            (Some(record_sink), None) => {
+                AuthoringOutput::stream_records(output_dir.clone(), record_sink)
+            }
+            (None, None) => AuthoringOutput::collect_only(output_dir.clone()),
+            (None, Some(_)) => {
+                return Err(AuthoringEmitError::Message(
+                    "structured terrain cell sink requires a YAML header sink".to_owned(),
+                ));
+            }
+        },
         TerrainRecordOutput::ReportOnly => AuthoringOutput::report_only(output_dir.clone()),
     };
 
@@ -808,7 +1363,7 @@ fn convert_btd_inner(
     );
 
     let id_plan_started = Instant::now();
-    let id_plan = build_terrain_id_plan(&options, &preserved_ids, cells_x, cells_y)?;
+    let mut id_plan = build_terrain_id_plan(&options, &preserved_ids, cells_x, cells_y)?;
     push_timing(
         &mut timings,
         "metadata_and_texture_setup.build_terrain_id_plan",
@@ -828,7 +1383,7 @@ fn convert_btd_inner(
         id_plan.next_object_id_after_terrain,
         converted_textures,
         options.preserve_source_ids,
-        &id_plan.used_object_ids,
+        std::mem::take(&mut id_plan.used_object_ids),
     )?;
     push_timing(
         &mut timings,
@@ -855,6 +1410,7 @@ fn convert_btd_inner(
 
     let texture_index_started = Instant::now();
     let textures_by_source_usage = index_textures_by_source_usage(&emitted_textures);
+    let gcvr_grass_object_ids = index_grass_by_source_gcvr(&emitted_textures);
     push_timing(
         &mut timings,
         "metadata_and_texture_setup.index_textures_by_source_usage",
@@ -870,7 +1426,7 @@ fn convert_btd_inner(
     );
 
     let global_blend_started = Instant::now();
-    let global_blend = GlobalLandscapeBlend::build(
+    let (global_blend, global_blend_profile) = GlobalLandscapeBlend::build_profiled(
         &mut btd,
         options.source_min_x,
         options.source_min_y,
@@ -878,17 +1434,45 @@ fn convert_btd_inner(
         cells_y,
         &source_alpha_masks,
     )?;
+    push_measured_timing(
+        &mut timings,
+        "metadata_and_texture_setup.build_global_landscape_blend.sample_and_materialize_vertices_exclusive",
+        global_blend_profile.sample_and_materialize_seconds,
+    );
+    push_measured_timing(
+        &mut timings,
+        "metadata_and_texture_setup.build_global_landscape_blend.collect_quadrant_bases_exclusive",
+        global_blend_profile.quadrant_bases_seconds,
+    );
+    push_measured_timing(
+        &mut timings,
+        "metadata_and_texture_setup.build_global_landscape_blend.plan_edge_retention_exclusive",
+        global_blend_profile.edge_retention_seconds,
+    );
     push_timing(
         &mut timings,
         "metadata_and_texture_setup.build_global_landscape_blend",
         global_blend_started,
     );
+    operation_counts.insert(
+        "global_blend.expected_global_vertices".to_owned(),
+        global_blend_profile.global_vertex_count,
+    );
+    operation_counts.insert(
+        "global_blend.expected_source_sample_selections".to_owned(),
+        global_blend_profile.source_sample_selection_count,
+    );
+    operation_counts.insert(
+        "global_blend.expected_quadrants".to_owned(),
+        global_blend_profile.quadrant_count,
+    );
 
     let required_ltex_started = Instant::now();
+    let is_starfield_layout = btd.header().is_starfield_layout;
     let required_ltex_form_ids = global_blend
         .source_ltex_object_ids()
         .into_iter()
-        .map(source_ltex_form_key)
+        .map(|object_id| source_ltex_form_key(object_id, is_starfield_layout))
         .collect::<Vec<_>>();
     push_timing(
         &mut timings,
@@ -929,6 +1513,7 @@ fn convert_btd_inner(
         &world_editor_id,
     )?;
     push_timing(&mut timings, "write_header_records", header_started);
+    let sink_profile_before_cells = authoring_output.record_sink_profile();
 
     let mut index = 0u32;
     let mut height_error_sum = 0.0f64;
@@ -939,7 +1524,7 @@ fn convert_btd_inner(
     let mut no_ground_cover_layers = 0u32;
     let mut vhgt_delta_clamp_stats = VhgtDeltaClampStats::default();
     let mut cell_diagnostics = Vec::with_capacity(cell_count as usize);
-    let mut source_cache = SourceCellCache::new(btd.header(), &options, cells_x, cells_y)?;
+    let mut source_cache = SourceCellCache::new(btd.header(), &options, cells_x, cells_y, frame)?;
     let height_grid_started = Instant::now();
     let target_heights = build_target_height_grid(
         &mut btd,
@@ -968,12 +1553,24 @@ fn convert_btd_inner(
     };
     push_timing(&mut timings, "build_height_grid", height_grid_started);
 
-    // Optional dense `.btd4` sidecar (zero-cost when the path is empty).
-    let mut btd4_writer = if options.btd4_output_path.is_empty() {
+    // Optional dense `.btd4` sidecar. It carries the lossless raw grid, which only
+    // exists for FO76 identity; Starfield samples are already resampled onto the
+    // FO4 lattice, so no .btd4 is written for them.
+    let mut btd4_writer = if frame == SourceFrame::Starfield {
+        if !options.btd4_output_path.is_empty() {
+            eprintln!(
+                "terrain_native: ignoring btd4_output_path=\"{}\" for a Starfield source — \
+                 Starfield BTD samples are already resampled onto the FO4 lattice by the time \
+                 LAND is emitted, so no lossless raw grid exists to write a .btd4 sidecar from.",
+                options.btd4_output_path
+            );
+        }
+        None
+    } else if options.btd4_output_path.is_empty() {
         None
     } else {
         Some(crate::btd4::Btd4Writer::new(crate::btd4::Btd4Header {
-            version: 1,
+            version: crate::btd4::BTD4_VERSION,
             density: CELL_SOURCE_SAMPLES as u32,
             height_min: source_cache.height_min,
             height_scale: source_cache.height_scale,
@@ -988,6 +1585,8 @@ fn convert_btd_inner(
     let mut btd4_layers_recovered = 0u32;
 
     let write_cells_started = Instant::now();
+    let mut land_texture_fields_elapsed = Duration::ZERO;
+    let mut cell_payload_emit_elapsed = Duration::ZERO;
     for cell_y in options.source_min_y..=options.source_max_y {
         for cell_x in options.source_min_x..=options.source_max_x {
             let target_cell_offset_x =
@@ -1043,6 +1642,9 @@ fn convert_btd_inner(
                 ));
             }
             let vclr = build_land_vertex_colors(&mut btd, cell_x, cell_y)?;
+            // Starfield's vclr is a synthetic neutral fill, not real source
+            // data — never claim LAND_FLAG_HAS_VERTEX_COLORS for it.
+            let has_vertex_colors = frame == SourceFrame::Fo76Identity;
 
             let cell_dir = world_dir
                 .join(format!(
@@ -1056,7 +1658,8 @@ fn convert_btd_inner(
                     floor_div(cell_y, 8)
                 ))
                 .join(format!("{cell_x}, {cell_y}"));
-            let mut texture_fields = build_land_texture_fields(
+            let land_texture_fields_started = Instant::now();
+            let texture_fields = build_land_texture_fields(
                 cell_x,
                 cell_y,
                 &global_blend,
@@ -1066,12 +1669,14 @@ fn convert_btd_inner(
                 btd4_writer.is_some(),
                 options.land_skip_ground_cover_variants,
             )?;
+            land_texture_fields_elapsed += land_texture_fields_started.elapsed();
             let cell_layers = texture_fields.layer_count;
             ground_cover_layers =
                 ground_cover_layers.saturating_add(texture_fields.ground_cover_layer_count);
             no_ground_cover_layers =
                 no_ground_cover_layers.saturating_add(texture_fields.no_ground_cover_layer_count);
             let cell_eid = id_plan.cell_editor_id(&options, cell_x, cell_y);
+            let cell_payload_emit_started = Instant::now();
             write_cell_yaml(
                 &mut authoring_output,
                 &cell_dir,
@@ -1084,9 +1689,11 @@ fn convert_btd_inner(
                 &vnml,
                 &vhgt.raw,
                 &vclr,
+                has_vertex_colors,
                 &texture_fields.fields,
                 water_cells.get(&(cell_x, cell_y)),
             )?;
+            cell_payload_emit_elapsed += cell_payload_emit_started.elapsed();
             let cell_rms_error = if cell_error_count == 0 {
                 0.0
             } else {
@@ -1109,9 +1716,10 @@ fn convert_btd_inner(
                     target_cell_offset_x,
                     target_cell_offset_y,
                     &texture_fields.btd4_layer_object_ids,
-                    &texture_fields.btd4_grass_object_ids,
+                    &texture_fields.btd4_source_layer_object_ids,
+                    &gcvr_grass_object_ids,
+                    &source_alpha_masks,
                     &mut source_cache,
-                    texture_fields.dense_alpha.take(),
                 )?;
                 btd4_layers_recovered =
                     btd4_layers_recovered.saturating_add(gathered.layers_recovered);
@@ -1122,7 +1730,83 @@ fn convert_btd_inner(
             index += 1;
         }
     }
-    push_timing(&mut timings, "write_cells", write_cells_started);
+    let write_cells_elapsed = write_cells_started.elapsed();
+    let sink_profile_after_cells = authoring_output.record_sink_profile();
+    let cell_sink_elapsed = sink_profile_after_cells
+        .0
+        .saturating_sub(sink_profile_before_cells.0);
+    let cell_sink_payload_count = sink_profile_after_cells
+        .1
+        .saturating_sub(sink_profile_before_cells.1);
+    let cell_sink_yaml_bytes = sink_profile_after_cells
+        .2
+        .saturating_sub(sink_profile_before_cells.2);
+    let structured_cell_payload_count = sink_profile_after_cells
+        .3
+        .saturating_sub(sink_profile_before_cells.3);
+    let yaml_format_elapsed = cell_payload_emit_elapsed.saturating_sub(cell_sink_elapsed);
+    let remaining_cell_work_elapsed = write_cells_elapsed
+        .saturating_sub(land_texture_fields_elapsed)
+        .saturating_sub(cell_payload_emit_elapsed);
+    push_elapsed_timing(
+        &mut timings,
+        "write_cells.build_land_texture_fields_exclusive",
+        land_texture_fields_elapsed,
+    );
+    let (yaml_elapsed, structured_value_elapsed) = if structured_cell_payload_count > 0 {
+        (Duration::ZERO, yaml_format_elapsed)
+    } else {
+        (yaml_format_elapsed, Duration::ZERO)
+    };
+    push_elapsed_timing(
+        &mut timings,
+        "write_cells.format_cell_yaml_excluding_sink",
+        yaml_elapsed,
+    );
+    push_elapsed_timing(
+        &mut timings,
+        "write_cells.build_structured_cell_values_excluding_sink",
+        structured_value_elapsed,
+    );
+    push_elapsed_timing(
+        &mut timings,
+        "write_cells.record_sink_callback_exclusive",
+        cell_sink_elapsed,
+    );
+    push_elapsed_timing(
+        &mut timings,
+        "write_cells.remaining_cell_work_exclusive",
+        remaining_cell_work_elapsed,
+    );
+    push_elapsed_timing(&mut timings, "write_cells", write_cells_elapsed);
+    let cell_count_u64 = u64::from(cell_count);
+    operation_counts.insert("write_cells.cells".to_owned(), cell_count_u64);
+    operation_counts.insert(
+        "write_cells.cell_yaml_documents".to_owned(),
+        cell_count_u64.saturating_sub(structured_cell_payload_count),
+    );
+    operation_counts.insert(
+        "write_cells.expected_quadrant_serializations".to_owned(),
+        cell_count_u64.saturating_mul(4),
+    );
+    operation_counts.insert(
+        "write_cells.expected_vertex_quantizations".to_owned(),
+        cell_count_u64
+            .saturating_mul(4)
+            .saturating_mul((LAND_QUADRANT_VERTICES * LAND_QUADRANT_VERTICES) as u64),
+    );
+    operation_counts.insert(
+        "write_cells.record_sink_payloads".to_owned(),
+        cell_sink_payload_count,
+    );
+    operation_counts.insert(
+        "write_cells.record_sink_yaml_bytes".to_owned(),
+        cell_sink_yaml_bytes,
+    );
+    operation_counts.insert(
+        "write_cells.structured_cell_payloads".to_owned(),
+        structured_cell_payload_count,
+    );
 
     let btd4_started = Instant::now();
     let btd4_output_path = if let Some(writer) = btd4_writer.take() {
@@ -1212,6 +1896,16 @@ fn convert_btd_inner(
     } else {
         (height_error_sum / height_error_count as f64).sqrt() as f32
     };
+    append_btd_cache_counts(
+        &mut operation_counts,
+        "btd_cache",
+        btd_cache_before,
+        btd.tile_cache_stats(),
+    );
+    operation_counts.insert(
+        "btd_cache.prepared_source_reused".to_owned(),
+        u64::from(reused_prepared_source),
+    );
 
     let terrain_diagnostics = TerrainDiagnostics {
         height_rms_error,
@@ -1248,6 +1942,7 @@ fn convert_btd_inner(
         heightmap_cell_0_0_output_path: heightmap_cell_0_0_output_path.clone(),
         heightmap_cell_0_0_preview_path: heightmap_cell_0_0_preview_path.clone(),
         heightmap_cell_0_0_stats_path: heightmap_cell_0_0_stats_path.clone(),
+        operation_counts: operation_counts.clone(),
         timings: timings.clone(),
     };
     let diagnostics_started = Instant::now();
@@ -1285,6 +1980,8 @@ fn convert_btd_inner(
         heightmap_cell_0_0_output_path,
         heightmap_cell_0_0_preview_path,
         heightmap_cell_0_0_stats_path,
+        quadrant_base_split: global_blend.quadrant_base_split_count(),
+        operation_counts,
         timings,
     };
     Ok(ConvertOutput {
@@ -1320,31 +2017,95 @@ fn load_source_texture_alpha_masks(
         if masks.by_source_ltex_object_id.contains_key(&object_id) {
             continue;
         }
-        let image = directxtex_native::read_dds_rgba_image(Path::new(&bundle.diffuse_path))
-            .map_err(AuthoringEmitError::Message)?;
-        let alpha = image
-            .rgba
-            .chunks_exact(4)
-            .map(|pixel| pixel[3])
-            .collect::<Vec<_>>();
         masks.by_source_ltex_object_id.insert(
             object_id,
-            TextureAlphaMask {
-                width: image.width as usize,
-                height: image.height as usize,
-                alpha,
-            },
+            load_source_texture_alpha_mask(Path::new(&bundle.diffuse_path))?,
         );
     }
     Ok(masks)
 }
 
+fn load_source_texture_alpha_mask(path: &Path) -> Result<TextureAlphaMask, AuthoringEmitError> {
+    let metadata = fs::metadata(path).map_err(|error| {
+        AuthoringEmitError::Message(format!(
+            "read terrain texture metadata {}: {error}",
+            path.display()
+        ))
+    })?;
+    let file_len = metadata.len();
+    let modified = metadata.modified().ok();
+    let cache = SOURCE_TEXTURE_ALPHA_CACHE.get_or_init(Default::default);
+    {
+        let mut cache = cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(mask) = cache.get(path, file_len, modified) {
+            return Ok(mask);
+        }
+    }
+
+    let image =
+        directxtex_native::read_dds_rgba_image(path).map_err(AuthoringEmitError::Message)?;
+    let mask = TextureAlphaMask {
+        width: image.width as usize,
+        height: image.height as usize,
+        alpha: image
+            .rgba
+            .chunks_exact(4)
+            .map(|pixel| pixel[3])
+            .collect::<Vec<_>>()
+            .into(),
+    };
+
+    let mut cache = cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(cached) = cache.get(path, file_len, modified) {
+        return Ok(cached);
+    }
+    cache.insert(path.to_path_buf(), file_len, modified, mask.clone());
+    Ok(mask)
+}
+
 fn push_timing(timings: &mut Vec<TimingEntry>, name: &str, started: Instant) {
-    let elapsed = started.elapsed().as_secs_f64();
+    push_elapsed_timing(timings, name, started.elapsed());
+}
+
+fn push_elapsed_timing(timings: &mut Vec<TimingEntry>, name: &str, elapsed: Duration) {
+    push_measured_timing(timings, name, elapsed.as_secs_f64());
+}
+
+fn push_measured_timing(timings: &mut Vec<TimingEntry>, name: &str, elapsed_seconds: f64) {
     timings.push(TimingEntry {
         name: name.to_owned(),
-        elapsed_seconds: (elapsed * 1_000_000.0).round() / 1_000_000.0,
+        elapsed_seconds: (elapsed_seconds * 1_000_000.0).round() / 1_000_000.0,
     });
+}
+
+fn append_btd_cache_counts(
+    counts: &mut BTreeMap<String, u64>,
+    prefix: &str,
+    before: BtdTileCacheStats,
+    after: BtdTileCacheStats,
+) {
+    counts.insert(
+        format!("{prefix}.hits"),
+        after.hits.saturating_sub(before.hits),
+    );
+    counts.insert(
+        format!("{prefix}.misses"),
+        after.misses.saturating_sub(before.misses),
+    );
+    counts.insert(format!("{prefix}.cached_tiles_start"), before.cached_tiles);
+    counts.insert(format!("{prefix}.cached_tiles_end"), after.cached_tiles);
+    counts.insert(
+        format!("{prefix}.cached_payload_bytes_start"),
+        before.cached_payload_bytes,
+    );
+    counts.insert(
+        format!("{prefix}.cached_payload_bytes_end"),
+        after.cached_payload_bytes,
+    );
 }
 
 fn load_water_cells(
@@ -1380,15 +2141,10 @@ fn assign_texture_form_ids(
     first_texture_object_id: u32,
     converted: Vec<ConvertedTerrainTexture>,
     preserve_source_ids: bool,
-    initial_used_object_ids: &HashSet<u32>,
+    mut used_object_ids: HashSet<u32>,
 ) -> Result<Vec<EmittedTexture>, AuthoringEmitError> {
     let mut emitted = Vec::with_capacity(converted.len());
     let mut next_object_id = first_texture_object_id;
-    let mut used_object_ids: BTreeSet<u32> = initial_used_object_ids
-        .iter()
-        .map(|id| id & 0x00FF_FFFF)
-        .filter(|id| *id != 0)
-        .collect();
     let mut txst_object_ids: HashMap<String, u32> = HashMap::new();
     let mut grass_object_ids_by_source: HashMap<String, u32> = HashMap::new();
     for texture in converted {
@@ -1461,7 +2217,7 @@ fn preserved_or_allocated_object_id(
     source_form_key: &str,
     preserve_source_ids: bool,
     next_object_id: &mut u32,
-    used_object_ids: &mut BTreeSet<u32>,
+    used_object_ids: &mut HashSet<u32>,
 ) -> Result<u32, AuthoringEmitError> {
     if preserve_source_ids {
         if let Some(object_id) = object_id_from_source_form_key(source_form_key) {
@@ -1482,7 +2238,7 @@ fn preserved_or_allocated_object_id(
 
 fn allocate_next_texture_object_id(
     next_object_id: &mut u32,
-    used_object_ids: &mut BTreeSet<u32>,
+    used_object_ids: &mut HashSet<u32>,
 ) -> Result<u32, AuthoringEmitError> {
     loop {
         let object_id = *next_object_id;
@@ -1535,6 +2291,28 @@ fn index_textures_by_source_usage(
     result
 }
 
+fn index_grass_by_source_gcvr(textures: &[EmittedTexture]) -> HashMap<u32, Vec<u32>> {
+    let mut result = HashMap::<u32, Vec<u32>>::new();
+    for texture in textures {
+        let Some(source_gcvr) = texture
+            .converted
+            .source_gcvr_form_key
+            .as_deref()
+            .and_then(object_id_from_source_form_key)
+        else {
+            continue;
+        };
+        let grass = result.entry(source_gcvr).or_default();
+        for object_id in &texture.grass_object_ids {
+            if !grass.contains(object_id) {
+                grass.push(*object_id);
+            }
+        }
+        grass.sort_unstable();
+    }
+    result
+}
+
 fn collect_required_ltex_form_ids(
     btd: &mut BtdFile,
     options: &ConvertOptions,
@@ -1581,22 +2359,75 @@ fn collect_required_texture_usages(
     texture_usages_for_required_ids(btd, options, &required_source_ltex_object_ids)
 }
 
-fn collect_required_texture_usages_lightweight(
+fn collect_required_texture_usages_lightweight_profiled(
     btd: &mut BtdFile,
     options: &ConvertOptions,
-) -> Result<Vec<RequiredTextureUsage>, AuthoringEmitError> {
+) -> Result<RequiredTextureUsageProfile, AuthoringEmitError> {
+    let mut timings = Vec::new();
+    let mut operation_counts = BTreeMap::new();
     let cells_x = cell_span(options.source_min_x, options.source_max_x)?;
     let cells_y = cell_span(options.source_min_y, options.source_max_y)?;
+    let source_alpha_started = Instant::now();
     let source_alpha_masks = load_source_texture_alpha_masks(options)?;
-    let required_source_ltex_object_ids = collect_required_source_ltex_object_ids(
-        btd,
-        options.source_min_x,
-        options.source_min_y,
-        cells_x,
-        cells_y,
-        &source_alpha_masks,
-    )?;
-    texture_usages_for_required_ids(btd, options, &required_source_ltex_object_ids)
+    push_timing(
+        &mut timings,
+        "load_source_texture_alpha_masks_exclusive",
+        source_alpha_started,
+    );
+    let (required_source_ltex_object_ids, blend_profile) =
+        collect_required_source_ltex_object_ids_profiled(
+            btd,
+            options.source_min_x,
+            options.source_min_y,
+            cells_x,
+            cells_y,
+            &source_alpha_masks,
+        )?;
+    push_measured_timing(
+        &mut timings,
+        "sample_quantize_and_summarize_vertices_exclusive",
+        blend_profile.sample_and_summarize_seconds,
+    );
+    push_measured_timing(
+        &mut timings,
+        "collect_quadrant_bases_exclusive",
+        blend_profile.quadrant_bases_seconds,
+    );
+    push_measured_timing(
+        &mut timings,
+        "edge_retention_and_texture_selection_exclusive",
+        blend_profile.retention_and_selection_seconds,
+    );
+    operation_counts.insert(
+        "global_blend.expected_global_vertices".to_owned(),
+        blend_profile.global_vertex_count,
+    );
+    operation_counts.insert(
+        "global_blend.expected_source_sample_selections".to_owned(),
+        blend_profile.source_sample_selection_count,
+    );
+    operation_counts.insert(
+        "global_blend.expected_quadrants".to_owned(),
+        blend_profile.quadrant_count,
+    );
+
+    let resolve_usages_started = Instant::now();
+    let usages = texture_usages_for_required_ids(btd, options, &required_source_ltex_object_ids)?;
+    push_timing(
+        &mut timings,
+        "resolve_texture_usages_exclusive",
+        resolve_usages_started,
+    );
+    operation_counts.insert(
+        "required_source_ltex_object_ids".to_owned(),
+        required_source_ltex_object_ids.len() as u64,
+    );
+    operation_counts.insert("resolved_texture_usages".to_owned(), usages.len() as u64);
+    Ok(RequiredTextureUsageProfile {
+        usages,
+        timings,
+        operation_counts,
+    })
 }
 
 fn texture_usages_for_required_ids(
@@ -1604,14 +2435,19 @@ fn texture_usages_for_required_ids(
     options: &ConvertOptions,
     required_source_ltex_object_ids: &BTreeSet<u32>,
 ) -> Result<Vec<RequiredTextureUsage>, AuthoringEmitError> {
+    let is_starfield_layout = btd.header().is_starfield_layout;
     let mut usages = required_source_ltex_object_ids
         .iter()
         .copied()
         .map(|object_id| RequiredTextureUsage {
-            ltex_form_key: source_ltex_form_key(object_id),
+            ltex_form_key: source_ltex_form_key(object_id, is_starfield_layout),
             ground_cover_form_key: None,
         })
         .collect::<BTreeSet<_>>();
+
+    if btd.header().gcvr_count == 0 {
+        return Ok(usages.into_iter().collect());
+    }
 
     for cell_y in options.source_min_y..=options.source_max_y {
         for cell_x in options.source_min_x..=options.source_max_x {
@@ -1679,8 +2515,14 @@ fn add_ground_cover_usage_for_layer(
         return;
     };
     usages.insert(RequiredTextureUsage {
-        ltex_form_key: source_ltex_form_key(source_ltex_object_id),
-        ground_cover_form_key: Some(source_ltex_form_key(ground_cover_object_id)),
+        ltex_form_key: source_ltex_form_key(
+            source_ltex_object_id,
+            btd.header().is_starfield_layout,
+        ),
+        ground_cover_form_key: Some(source_ltex_form_key(
+            ground_cover_object_id,
+            btd.header().is_starfield_layout,
+        )),
     });
 }
 
@@ -1688,10 +2530,27 @@ fn resolve_full_extent_sentinel(options: &mut ConvertOptions, header: &BtdHeader
     if options.source_max_x != -1 || options.source_max_y != -1 {
         return;
     }
-    options.source_min_x = header.cell_min_x;
-    options.source_min_y = header.cell_min_y;
-    options.source_max_x = header.cell_max_x;
-    options.source_max_y = header.cell_max_y;
+    match SourceFrame::for_header(header) {
+        SourceFrame::Fo76Identity => {
+            options.source_min_x = header.cell_min_x;
+            options.source_min_y = header.cell_min_y;
+            options.source_max_x = header.cell_max_x;
+            options.source_max_y = header.cell_max_y;
+        }
+        // Under the Starfield frame, source_min/max_x/y denote the emitted
+        // FO4 cell window, not BTD (SF) cell indices — fill from the FO4
+        // window that covers the BTD's full SF cell extent.
+        SourceFrame::Starfield => {
+            let (min_x, max_x) =
+                crate::sf_frame::fo4_cell_range(header.cell_min_x, header.cell_max_x);
+            let (min_y, max_y) =
+                crate::sf_frame::fo4_cell_range(header.cell_min_y, header.cell_max_y);
+            options.source_min_x = min_x;
+            options.source_max_x = max_x;
+            options.source_min_y = min_y;
+            options.source_max_y = max_y;
+        }
+    }
 }
 
 fn validate_range(options: &ConvertOptions) -> Result<(), AuthoringEmitError> {
@@ -1705,10 +2564,28 @@ fn validate_range(options: &ConvertOptions) -> Result<(), AuthoringEmitError> {
 
 fn validate_btd_bounds(btd: &BtdFile, options: &ConvertOptions) -> Result<(), AuthoringEmitError> {
     let header = btd.header();
-    if options.source_min_x < header.cell_min_x
-        || options.source_max_x > header.cell_max_x
-        || options.source_min_y < header.cell_min_y
-        || options.source_max_y > header.cell_max_y
+    // Under Starfield, options.source_min/max_x/y are FO4 cell coordinates —
+    // compare against the FO4 window that covers the BTD's SF cell extent,
+    // not the raw (SF-space) header bounds.
+    let (min_x, max_x, min_y, max_y) = match SourceFrame::for_header(header) {
+        SourceFrame::Fo76Identity => (
+            header.cell_min_x,
+            header.cell_max_x,
+            header.cell_min_y,
+            header.cell_max_y,
+        ),
+        SourceFrame::Starfield => {
+            let (min_x, max_x) =
+                crate::sf_frame::fo4_cell_range(header.cell_min_x, header.cell_max_x);
+            let (min_y, max_y) =
+                crate::sf_frame::fo4_cell_range(header.cell_min_y, header.cell_max_y);
+            (min_x, max_x, min_y, max_y)
+        }
+    };
+    if options.source_min_x < min_x
+        || options.source_max_x > max_x
+        || options.source_min_y < min_y
+        || options.source_max_y > max_y
     {
         return Err(AuthoringEmitError::Message(format!(
             "requested cell range ({}, {})..({}, {}) is outside BTD bounds ({}, {})..({}, {})",
@@ -1716,10 +2593,10 @@ fn validate_btd_bounds(btd: &BtdFile, options: &ConvertOptions) -> Result<(), Au
             options.source_min_y,
             options.source_max_x,
             options.source_max_y,
-            header.cell_min_x,
-            header.cell_min_y,
-            header.cell_max_x,
-            header.cell_max_y
+            min_x,
+            min_y,
+            max_x,
+            max_y
         )));
     }
     Ok(())
@@ -1763,6 +2640,9 @@ fn build_target_height_grid(
         ));
     }
 
+    if source_cache.frame == SourceFrame::Fo76Identity && matches!(mode, ResampleMode::Lanczos) {
+        return build_fo76_lanczos_height_grid(btd, source_cache, width, height);
+    }
     let mut values = Vec::with_capacity(len);
     for target_y in 0..height {
         let source_y = target_y
@@ -1794,6 +2674,105 @@ fn build_target_height_grid(
         }
     }
 
+    Ok(TargetHeightGrid {
+        width,
+        height,
+        values,
+    })
+}
+
+fn build_fo76_lanczos_height_grid(
+    btd: &mut BtdFile,
+    source_cache: &mut SourceCellCache,
+    width: usize,
+    height: usize,
+) -> Result<TargetHeightGrid, AuthoringEmitError> {
+    let kernel = lanczos2_kernel();
+    let taps = |target: usize, extent: usize| -> [usize; LANCZOS2_TAPS] {
+        std::array::from_fn(|index| {
+            let unshifted = clamp_offset_index(
+                target.saturating_mul(4),
+                index as isize - LANCZOS2_REACH,
+                extent,
+            );
+            (unshifted + crate::fo4_frame::HALF_CELL_SAMPLES).min(extent - 1)
+        })
+    };
+    let x_taps: Vec<_> = (0..width)
+        .map(|x| taps(x, source_cache.source_width))
+        .collect();
+    let mut rows: HashMap<usize, Vec<f32>> = HashMap::new();
+    let mut values = Vec::with_capacity(width * height);
+    let mut load_time = std::time::Duration::ZERO;
+    let mut sample_time = std::time::Duration::ZERO;
+    for target_y in 0..height {
+        let ys = taps(target_y, source_cache.source_height);
+        let started = Instant::now();
+        rows.retain(|y, _| ys.contains(y));
+        let center_cell_y = source_cache
+            .source_min_y
+            .checked_add(usize_to_i32(ys[LANCZOS2_TAPS / 2] / CELL_SOURCE_SAMPLES)?)
+            .ok_or_else(|| {
+                AuthoringEmitError::Message("source cell y coordinate overflow".into())
+            })?;
+        source_cache.retain_neighbor_rows(center_cell_y);
+        for y in ys {
+            if rows.contains_key(&y) {
+                continue;
+            }
+            let cell_y = source_cache
+                .source_min_y
+                .checked_add(usize_to_i32(y / CELL_SOURCE_SAMPLES)?)
+                .ok_or_else(|| {
+                    AuthoringEmitError::Message("source cell y coordinate overflow".into())
+                })?;
+            let mut row = Vec::with_capacity(source_cache.source_width);
+            for cell_offset_x in 0..source_cache.source_width / CELL_SOURCE_SAMPLES {
+                let cell_x = source_cache
+                    .source_min_x
+                    .checked_add(usize_to_i32(cell_offset_x)?)
+                    .ok_or_else(|| {
+                        AuthoringEmitError::Message("source cell x coordinate overflow".into())
+                    })?;
+                let start = (y % CELL_SOURCE_SAMPLES) * CELL_SOURCE_SAMPLES;
+                row.extend_from_slice(
+                    &source_cache.cell_values(btd, cell_x, cell_y)?
+                        [start..start + CELL_SOURCE_SAMPLES],
+                );
+            }
+            rows.insert(y, row);
+        }
+        load_time += started.elapsed();
+        let started = Instant::now();
+        let source_rows: [&[f32]; LANCZOS2_TAPS] =
+            std::array::from_fn(|index| rows[&ys[index]].as_slice());
+        let row: Vec<f32> = x_taps
+            .par_iter()
+            .map(|xs| {
+                let mut weighted_sum = 0.0f64;
+                let mut min_value = f32::INFINITY;
+                let mut max_value = f32::NEG_INFINITY;
+                for (ky, wy) in kernel.iter().enumerate() {
+                    for (kx, wx) in kernel.iter().enumerate() {
+                        let value = source_rows[ky][xs[kx]];
+                        min_value = min_value.min(value);
+                        max_value = max_value.max(value);
+                        weighted_sum += (wx * wy) as f64 * value as f64;
+                    }
+                }
+                (weighted_sum as f32).clamp(min_value, max_value)
+            })
+            .collect();
+        values.extend(row);
+        sample_time += started.elapsed();
+    }
+    eprintln!(
+        "[terrain_height_grid] frame=fo76 mode=lanczos vertices={} workers={} source_rows_ms={} resample_ms={}",
+        values.len(),
+        rayon::current_num_threads(),
+        load_time.as_millis(),
+        sample_time.as_millis()
+    );
     Ok(TargetHeightGrid {
         width,
         height,
@@ -1921,13 +2900,28 @@ fn write_heightmap_stats(
     Ok(())
 }
 
+/// Nearest BTD sample index for a fractional `sf_frame` position, never
+/// negative (mirrors `sample()`'s Starfield lower-bound clamp).
+fn round_nonneg_index(value: f64) -> usize {
+    value.round().max(0.0) as usize
+}
+
 fn sample4_target_height(
     btd: &mut BtdFile,
     source_cache: &mut SourceCellCache,
     target_x: usize,
     target_y: usize,
 ) -> Result<f32, AuthoringEmitError> {
-    source_cache.sample(btd, target_x.saturating_mul(4), target_y.saturating_mul(4))
+    match source_cache.frame {
+        SourceFrame::Fo76Identity => {
+            source_cache.sample(btd, target_x.saturating_mul(4), target_y.saturating_mul(4))
+        }
+        SourceFrame::Starfield => {
+            let x = round_nonneg_index(source_cache.starfield_center_x(target_x));
+            let y = round_nonneg_index(source_cache.starfield_center_y(target_y));
+            source_cache.sample(btd, x, y)
+        }
+    }
 }
 
 fn weighted_target_height(
@@ -1936,8 +2930,16 @@ fn weighted_target_height(
     target_x: usize,
     target_y: usize,
 ) -> Result<f32, AuthoringEmitError> {
-    let center_x = target_x.saturating_mul(4) as f32;
-    let center_y = target_y.saturating_mul(4) as f32;
+    let (center_x, center_y) = match source_cache.frame {
+        SourceFrame::Fo76Identity => (
+            target_x.saturating_mul(4) as f32,
+            target_y.saturating_mul(4) as f32,
+        ),
+        SourceFrame::Starfield => (
+            source_cache.starfield_center_x(target_x) as f32,
+            source_cache.starfield_center_y(target_y) as f32,
+        ),
+    };
     let min_x = clamp_floor_index(center_x - 1.0, source_cache.source_width);
     let max_x = clamp_ceil_index(center_x + 2.0, source_cache.source_width);
     let min_y = clamp_floor_index(center_y - 1.0, source_cache.source_height);
@@ -1999,8 +3001,16 @@ fn feature_target_height(
     target_x: usize,
     target_y: usize,
 ) -> Result<f32, AuthoringEmitError> {
-    let center_x = target_x.saturating_mul(4) as f32;
-    let center_y = target_y.saturating_mul(4) as f32;
+    let (center_x, center_y) = match source_cache.frame {
+        SourceFrame::Fo76Identity => (
+            target_x.saturating_mul(4) as f32,
+            target_y.saturating_mul(4) as f32,
+        ),
+        SourceFrame::Starfield => (
+            source_cache.starfield_center_x(target_x) as f32,
+            source_cache.starfield_center_y(target_y) as f32,
+        ),
+    };
     let min_x = clamp_floor_index(center_x - 2.0, source_cache.source_width);
     let max_x = clamp_ceil_index(center_x + 2.0, source_cache.source_width);
     let min_y = clamp_floor_index(center_y - 2.0, source_cache.source_height);
@@ -2053,41 +3063,88 @@ fn feature_target_height(
     Ok((weighted * (1.0 - blend) + feature * blend).clamp(min_value, max_value))
 }
 
+/// Absolute (`AxisTap.first`-relative) BTD sample index, clamped in bounds —
+/// the Starfield twin of `clamp_offset_index`, which takes a `usize` center
+/// + `isize` offset instead of a signed absolute index.
+fn clamp_absolute_index(value: i32, extent: usize) -> usize {
+    value.clamp(0, extent as i32 - 1) as usize
+}
+
 fn lanczos_target_height(
     btd: &mut BtdFile,
     source_cache: &mut SourceCellCache,
     target_x: usize,
     target_y: usize,
 ) -> Result<f32, AuthoringEmitError> {
-    let kernel = lanczos2_kernel();
-    let center_x = target_x.saturating_mul(4);
-    let center_y = target_y.saturating_mul(4);
-    let mut weighted_sum = 0.0f64;
-    let mut min_value = f32::INFINITY;
-    let mut max_value = f32::NEG_INFINITY;
+    match source_cache.frame {
+        SourceFrame::Fo76Identity => {
+            let kernel = lanczos2_kernel();
+            let center_x = target_x.saturating_mul(4);
+            let center_y = target_y.saturating_mul(4);
+            let mut weighted_sum = 0.0f64;
+            let mut min_value = f32::INFINITY;
+            let mut max_value = f32::NEG_INFINITY;
 
-    for (ky, wy) in kernel.iter().enumerate() {
-        let y = clamp_offset_index(
-            center_y,
-            ky as isize - LANCZOS2_REACH,
-            source_cache.source_height,
-        );
-        for (kx, wx) in kernel.iter().enumerate() {
-            let x = clamp_offset_index(
-                center_x,
-                kx as isize - LANCZOS2_REACH,
-                source_cache.source_width,
-            );
-            let value = source_cache.sample(btd, x, y)?;
-            min_value = min_value.min(value);
-            max_value = max_value.max(value);
-            weighted_sum += (wx * wy) as f64 * value as f64;
+            for (ky, wy) in kernel.iter().enumerate() {
+                let y = clamp_offset_index(
+                    center_y,
+                    ky as isize - LANCZOS2_REACH,
+                    source_cache.source_height,
+                );
+                for (kx, wx) in kernel.iter().enumerate() {
+                    let x = clamp_offset_index(
+                        center_x,
+                        kx as isize - LANCZOS2_REACH,
+                        source_cache.source_width,
+                    );
+                    let value = source_cache.sample(btd, x, y)?;
+                    min_value = min_value.min(value);
+                    max_value = max_value.max(value);
+                    weighted_sum += (wx * wy) as f64 * value as f64;
+                }
+            }
+
+            // Clamp to the footprint range so negative-lobe ringing cannot
+            // overshoot past what the VHGT delta encode can represent.
+            Ok((weighted_sum as f32).clamp(min_value, max_value))
+        }
+        // Starfield: the fixed-ratio-4 15-tap kernel above doesn't apply (the
+        // source/target sample ratio is SF_SAMPLES_PER_FO4_INTERVAL, not 4) —
+        // use the precomputed, variable-width taps instead. Separable: each
+        // axis's tap set was built once in `SourceCellCache::new` from the
+        // same `sf_frame` addressing `starfield_center_x/y` use elsewhere.
+        SourceFrame::Starfield => {
+            let tap_x = source_cache
+                .axis_taps_x
+                .as_ref()
+                .expect("Starfield frame must have precomputed axis_taps_x")[target_x]
+                .clone();
+            let tap_y = source_cache
+                .axis_taps_y
+                .as_ref()
+                .expect("Starfield frame must have precomputed axis_taps_y")[target_y]
+                .clone();
+            let mut weighted_sum = 0.0f64;
+            let mut min_value = f32::INFINITY;
+            let mut max_value = f32::NEG_INFINITY;
+
+            for ky in 0..tap_y.count as usize {
+                let y = clamp_absolute_index(tap_y.first + ky as i32, source_cache.source_height);
+                let wy = tap_y.weights[ky];
+                for kx in 0..tap_x.count as usize {
+                    let x =
+                        clamp_absolute_index(tap_x.first + kx as i32, source_cache.source_width);
+                    let wx = tap_x.weights[kx];
+                    let value = source_cache.sample(btd, x, y)?;
+                    min_value = min_value.min(value);
+                    max_value = max_value.max(value);
+                    weighted_sum += (wx * wy) as f64 * value as f64;
+                }
+            }
+
+            Ok((weighted_sum as f32).clamp(min_value, max_value))
         }
     }
-
-    // Clamp to the footprint range so negative-lobe ringing cannot overshoot
-    // past what the VHGT delta encode can represent.
-    Ok((weighted_sum as f32).clamp(min_value, max_value))
 }
 
 #[cfg(test)]
@@ -2134,11 +3191,17 @@ fn build_land_vertex_colors(
     cell_x: i32,
     cell_y: i32,
 ) -> Result<Vec<u8>, AuthoringEmitError> {
+    // Starfield BTD carries no vertex-colour LOD4 section at all (see
+    // btd.rs's is_starfield_layout parsing) — there is nothing to sample.
+    if btd.header().is_starfield_layout {
+        return Ok(starfield_neutral_vertex_colors());
+    }
     let (max_x, max_y) = (btd.header().cell_max_x, btd.header().cell_max_y);
     let colors = crate::fo4_frame::assemble_cell_grid(
         |cx, cy| btd.cell_terrain_color_u16(cx.min(max_x), cy.min(max_y), 0),
         cell_x,
         cell_y,
+        None,
     )?;
     let mut out = Vec::with_capacity(LAND_CELL_VERTICES * LAND_CELL_VERTICES * 3);
     for y in 0..LAND_CELL_VERTICES {
@@ -2151,6 +3214,18 @@ fn build_land_vertex_colors(
         }
     }
     Ok(out)
+}
+
+/// Neutral (no-tint) vertex-colour fill for a Starfield-sourced cell.
+/// `FO76_VCLR_NEUTRAL_SRGB_BYTE` is calibrated so a neutral FO76 input
+/// saturates to output byte 255 through `fo76_vclr_channel_to_fo4_byte`
+/// (its srgb=1.0 "no tint" case) — reuse that formula directly instead of
+/// hard-coding 255, so the two stay derived from the same constant.
+fn starfield_neutral_vertex_colors() -> Vec<u8> {
+    let neutral = (255.0 * 255.0 / FO76_VCLR_NEUTRAL_SRGB_BYTE)
+        .round()
+        .clamp(0.0, 255.0) as u8;
+    vec![neutral; LAND_CELL_VERTICES * LAND_CELL_VERTICES * 3]
 }
 
 fn fo76_vclr_to_fo4_vclr(value: u16) -> [u8; 3] {
@@ -2313,13 +3388,10 @@ fn write_texture_records(
             .insert(texture.txst_object_id)
             .then(|| {
                 format!(
-                    // FO4 terrain (landscape) materials have NO emissive map.
-                    // The FO76->FO4 terrain remix derives a `_g` glow from the
-                    // FO76 lighting map's alpha, but binding it into the TXST Glow
-                    // slot puts the landscape shader on a glow permutation it does
-                    // not have -> the quad renders black. Vanilla terrain TXSTs are
-                    // Diffuse + NormalGloss + SmoothSpec only, so we omit Glow.
-                    // Vanilla landscape TXSTs also set the NoSpecularMap flag.
+                    // No Glow slot: the FO76 remix derives a `_g` glow from the
+                    // lighting map's alpha, but the FO4 landscape shader has no glow
+                    // permutation and the quad renders black. Vanilla terrain TXSTs
+                    // use Diffuse + NormalGloss + SmoothSpec only, with NoSpecularMap.
                     "form_id: \"{}\"\nform_version: 131\nversion2: 1\neid: {}\nfields:\n- ObjectBounds:\n    ObjectBoundsX1: -8\n    ObjectBoundsY1: -30\n    ObjectBoundsZ1: -20\n    ObjectBoundsX2: 7\n    ObjectBoundsY2: 30\n    ObjectBoundsZ2: 20\n- TexturesRgbAs:\n  - Diffuse: {}\n    NormalGloss: {}\n    SmoothSpec: {}\n- Flags:\n  - NoSpecularMap\n",
                     form_id_hex(texture.txst_object_id),
                     txst_eid,
@@ -2339,17 +3411,21 @@ fn write_texture_records(
                 )
             })
             .unwrap_or_default();
-        let grass_payload = texture
-            .grass_object_ids
-            .iter()
-            .map(|object_id| {
-                format!(
-                    "- Grass:\n    reference:\n      plugin: {}\n      object_id: \"{}\"\n",
-                    options.plugin_name,
-                    form_id_hex(*object_id)
-                )
-            })
-            .collect::<String>();
+        let grass_payload = if options.btd4_output_path.is_empty() {
+            texture
+                .grass_object_ids
+                .iter()
+                .map(|object_id| {
+                    format!(
+                        "- Grass:\n    reference:\n      plugin: {}\n      object_id: \"{}\"\n",
+                        options.plugin_name,
+                        form_id_hex(*object_id)
+                    )
+                })
+                .collect::<String>()
+        } else {
+            String::new()
+        };
         let ltex_payload = format!(
             "form_id: \"{}\"\nform_version: 131\nversion2: 1\neid: {}\nfields:\n- TextureSet:\n    reference:\n      plugin: {}\n      object_id: \"{}\"\n{}- HavokData:\n    Friction: {}\n    Restitution: {}\n- TextureSpecularExponent: 30\n{}",
             form_id_hex(texture.ltex_object_id),
@@ -2520,9 +3596,27 @@ fn write_cell_yaml(
     vnml: &[u8],
     vhgt: &[u8],
     vclr: &[u8],
-    texture_fields: &[String],
+    has_vertex_colors: bool,
+    texture_fields: &[LandTextureField],
     water_cell: Option<&WaterCell>,
 ) -> Result<(), AuthoringEmitError> {
+    if output.uses_structured_cell_sink() {
+        let value = cell_record_value(
+            options,
+            cell_x,
+            cell_y,
+            cell_eid,
+            cell_form_id,
+            land_form_id,
+            vnml,
+            vhgt,
+            vclr,
+            has_vertex_colors,
+            texture_fields,
+            water_cell,
+        );
+        return output.write_record_value("CELL", cell_dir.join("RecordData.yaml"), value);
+    }
     let xclc_hex = format!("{}{}00000000", i32_hex(cell_x), i32_hex(cell_y));
     // FO4 exterior cells always have DATA bit 1 (has_water) set — vanilla
     // Commonwealth/DLC cells all carry this flag whether or not a per-cell
@@ -2541,7 +3635,7 @@ fn write_cell_yaml(
         // height" sentinel vanilla FO4 cells use when they have no override.
         None => ("FFFF7F7F".to_string(), String::new()),
     };
-    let land_data_flags = land_data_flags(!texture_fields.is_empty(), !vclr.is_empty());
+    let land_data_flags = land_data_flags(!texture_fields.is_empty(), has_vertex_colors);
     let mut land_fields = format!(
         "    - Flags: {}\n    - VertexNormals:\n        raw_hex: \"{}\"\n    - VertexHeightMap:\n        raw_hex: \"{}\"\n",
         land_data_flags,
@@ -2555,7 +3649,7 @@ fn write_cell_yaml(
         ));
     }
     for field in texture_fields {
-        land_fields.push_str(field);
+        land_fields.push_str(&field.yaml());
     }
     let editor_id_fields = cell_eid
         .map(|eid| {
@@ -2580,6 +3674,99 @@ fn write_cell_yaml(
         land_fields
     );
     output.write_record_yaml("CELL", cell_dir.join("RecordData.yaml"), payload)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cell_record_value(
+    options: &ConvertOptions,
+    cell_x: i32,
+    cell_y: i32,
+    cell_eid: Option<&str>,
+    cell_form_id: u32,
+    land_form_id: u32,
+    vnml: &[u8],
+    vhgt: &[u8],
+    vclr: &[u8],
+    has_vertex_colors: bool,
+    texture_fields: &[LandTextureField],
+    water_cell: Option<&WaterCell>,
+) -> serde_json::Value {
+    let mut subrecords = Vec::with_capacity(5);
+    if let Some(eid) = cell_eid {
+        subrecords.push(serde_json::json!({
+            "signature": "EDID",
+            "data_hex": zstring_hex(eid),
+        }));
+    }
+    subrecords.push(serde_json::json!({
+        "signature": "DATA",
+        "data_hex": u16_hex(2),
+    }));
+    subrecords.push(serde_json::json!({
+        "signature": "XCLC",
+        "data_hex": format!("{}{}00000000", i32_hex(cell_x), i32_hex(cell_y)),
+    }));
+    subrecords.push(serde_json::json!({
+        "signature": "XCLW",
+        "data_hex": water_cell
+            .map(|water| f32_hex(water.height))
+            .unwrap_or_else(|| "FFFF7F7F".to_owned()),
+    }));
+    if let Some(water) = water_cell {
+        subrecords.push(serde_json::json!({
+            "signature": "XCWT",
+            "data_hex": u32_hex(master_form_id(water.water_object_id)),
+        }));
+    }
+
+    let mut land_fields = vec![
+        serde_json::json!({
+            "Flags": land_data_flags(!texture_fields.is_empty(), has_vertex_colors),
+        }),
+        serde_json::json!({
+            "VertexNormals": { "raw_hex": bytes_hex(vnml) },
+        }),
+        serde_json::json!({
+            "VertexHeightMap": { "raw_hex": bytes_hex(vhgt) },
+        }),
+    ];
+    if !vclr.is_empty() {
+        land_fields.push(serde_json::json!({
+            "VertexColors": { "raw_hex": bytes_hex(vclr) },
+        }));
+    }
+    land_fields.extend(texture_fields.iter().map(LandTextureField::value));
+
+    let mut cell = serde_json::Map::new();
+    cell.insert("signature".to_owned(), serde_json::json!("CELL"));
+    cell.insert(
+        "form_id".to_owned(),
+        serde_json::json!(format!(
+            "{}:{}",
+            form_id_hex(cell_form_id),
+            options.plugin_name
+        )),
+    );
+    cell.insert("form_version".to_owned(), serde_json::json!(131));
+    cell.insert("version2".to_owned(), serde_json::json!(1));
+    if let Some(eid) = cell_eid {
+        cell.insert("eid".to_owned(), serde_json::json!(eid));
+    }
+    cell.insert(
+        "subrecords".to_owned(),
+        serde_json::Value::Array(subrecords),
+    );
+    cell.insert(
+        "Landscape".to_owned(),
+        serde_json::json!({
+            "signature": "LAND",
+            "form_id": format!("{}:{}", form_id_hex(land_form_id), options.plugin_name),
+            "form_version": 131,
+            "version2": 1,
+            "fields": land_fields,
+        }),
+    );
+    serde_json::Value::Object(cell)
 }
 
 fn land_data_flags(has_layers: bool, has_vertex_colors: bool) -> u32 {
@@ -2614,14 +3801,10 @@ struct GrassInstance {
     z: f32,
 }
 
-/// Per-cell grass placement, computed from the FO76 BTD 128x128 ground-cover
-/// stencil instead of FO4's texture-% scatter. For every ground-cover-bearing
-/// texture slot we walk the quadrant's samples and emit one grass instance per set
-/// mask bit (stride-thinned), grouped by target GRAS object id. Grass type metadata
-/// (NIF path, GRAS id) reuses the same `texture_for_layer` resolution the LTEX path
-/// uses. Z is bilinear-interpolated from the cell's authored LAND heights so grass
-/// sits on the terrain. World XY uses the FO4 cell origin directly (no +2048
-/// placed-record offset — terrain is authored fresh in FO4 convention).
+/// Grass placement from the FO76 BTD 128x128 ground-cover stencil instead of
+/// FO4's texture-% scatter: one instance per set mask bit (stride-thinned),
+/// grouped by GRAS object id. Z is bilinear from the cell's LAND heights. XY
+/// uses the FO4 cell origin directly, with no +2048 placed-record offset.
 #[cfg(test)]
 #[allow(dead_code)]
 fn collect_cell_grass_instances(
@@ -2639,6 +3822,7 @@ fn collect_cell_grass_instances(
         |cx, cy| btd.cell_ground_cover_mask_u8(cx.min(max_x), cy.min(max_y), 0),
         cell_x,
         cell_y,
+        None,
     )?;
     let layers = map_cell_layers(&set);
 
@@ -2789,7 +3973,7 @@ fn build_land_texture_fields(
     textures_by_source_usage: &HashMap<SourceTextureUsageKey, &EmittedTexture>,
     plugin_name: &str,
     dropped_texture_layers: &mut u32,
-    want_dense_alpha: bool,
+    _want_dense_alpha: bool,
     _land_skip_ground_cover_variants: bool,
 ) -> Result<LandTextureFields, AuthoringEmitError> {
     if textures_by_source_usage.is_empty() {
@@ -2798,9 +3982,8 @@ fn build_land_texture_fields(
             layer_count: 0,
             ground_cover_layer_count: 0,
             no_ground_cover_layer_count: 0,
-            btd4_layer_object_ids: Vec::new(),
-            btd4_grass_object_ids: Vec::new(),
-            dense_alpha: None,
+            btd4_layer_object_ids: vec![None; 24],
+            btd4_source_layer_object_ids: vec![None; 24],
         });
     }
 
@@ -2808,14 +3991,8 @@ fn build_land_texture_fields(
     let mut layer_count = 0u32;
     let mut ground_cover_layer_count = 0u32;
     let mut no_ground_cover_layer_count = 0u32;
-    let mut btd4_layer_object_ids = Vec::new();
-    let mut btd4_grass_object_ids = Vec::new();
-    let mut dense_alpha_planes: Vec<Vec<u8>> = if want_dense_alpha {
-        vec![vec![0u8; crate::btd4::ALPH_PLANE_LEN]; crate::btd4::ALPH_PLANE_COUNT]
-    } else {
-        Vec::new()
-    };
-    let mut dense_alpha_any = false;
+    let mut btd4_layer_object_ids = vec![None; 24];
+    let mut btd4_source_layer_object_ids = vec![None; 24];
 
     for quadrant in 0..4u8 {
         let Some(quadrant_blend) = global_blend
@@ -2845,27 +4022,24 @@ fn build_land_texture_fields(
             &mut ground_cover_layer_count,
             &mut no_ground_cover_layer_count,
         );
-        fields.push(land_texture_layer_field(
-            "BTXT",
-            base_texture.ltex_object_id,
-            plugin_name,
+        fields.push(LandTextureField::Layer {
+            signature: "BTXT",
+            texture_object_id: base_texture.ltex_object_id,
+            plugin_name: plugin_name.to_owned(),
             quadrant,
-            -1,
-        ));
+            layer: -1,
+        });
         layer_count = layer_count.saturating_add(1);
-        push_btd4_layer_refs(
-            base_texture,
-            &mut btd4_layer_object_ids,
-            &mut btd4_grass_object_ids,
-        );
+        let btd4_base = quadrant as usize * 6;
+        btd4_layer_object_ids[btd4_base] = Some(base_texture.ltex_object_id);
+        btd4_source_layer_object_ids[btd4_base] = Some(quadrant_blend.base_source_ltex_object_id);
 
-        let mut emitted_alpha_slots = Vec::new();
-        for (source_slot, (source_ltex_object_id, vtxt)) in quadrant_blend
+        let mut next_alpha_slot = 0usize;
+        for (source_ltex_object_id, vtxt) in quadrant_blend
             .alpha_source_ltex_object_ids
             .iter()
             .copied()
             .zip(quadrant_blend.alpha_vtxt.iter())
-            .enumerate()
         {
             if vtxt.is_empty() {
                 continue;
@@ -2877,41 +4051,29 @@ fn build_land_texture_fields(
                             "missing converted plain LTEX for source {source_ltex_object_id:06X} used as ATXT in cell ({cell_x},{cell_y}) quadrant {quadrant}",
                         ))
                     })?;
-            let new_slot = emitted_alpha_slots.len();
+            let new_slot = next_alpha_slot;
             count_texture_layer_ground_cover(
                 false,
                 &mut ground_cover_layer_count,
                 &mut no_ground_cover_layer_count,
             );
-            fields.push(land_texture_layer_field(
-                "ATXT",
-                texture.ltex_object_id,
-                plugin_name,
+            fields.push(LandTextureField::Layer {
+                signature: "ATXT",
+                texture_object_id: texture.ltex_object_id,
+                plugin_name: plugin_name.to_owned(),
                 quadrant,
-                new_slot as i16,
-            ));
-            fields.push(alpha_layer_data_field(vtxt));
+                layer: new_slot as i16,
+            });
+            fields.push(LandTextureField::AlphaLayerData {
+                raw_hex: bytes_hex(vtxt),
+            });
             layer_count = layer_count.saturating_add(1);
-            push_btd4_layer_refs(
-                texture,
-                &mut btd4_layer_object_ids,
-                &mut btd4_grass_object_ids,
-            );
-            emitted_alpha_slots.push(source_slot);
-        }
-
-        if want_dense_alpha && !emitted_alpha_slots.is_empty() {
-            let dense_slot_limit = crate::btd4::ALPH_PLANE_COUNT / 4;
-            for (new_slot, &source_slot) in emitted_alpha_slots
-                .iter()
-                .take(dense_slot_limit)
-                .enumerate()
-            {
-                let plane =
-                    &mut dense_alpha_planes[quadrant as usize * dense_slot_limit + new_slot];
-                fill_dense_alpha_from_land_vtxt(&quadrant_blend.alpha_vtxt[source_slot], plane);
-                dense_alpha_any = true;
+            if new_slot < 5 {
+                btd4_layer_object_ids[btd4_base + 1 + new_slot] = Some(texture.ltex_object_id);
+                btd4_source_layer_object_ids[btd4_base + 1 + new_slot] =
+                    Some(source_ltex_object_id);
             }
+            next_alpha_slot += 1;
         }
     }
 
@@ -2921,71 +4083,27 @@ fn build_land_texture_fields(
         ground_cover_layer_count,
         no_ground_cover_layer_count,
         btd4_layer_object_ids,
-        btd4_grass_object_ids,
-        dense_alpha: if dense_alpha_any {
-            Some(dense_alpha_planes)
-        } else {
-            None
-        },
+        btd4_source_layer_object_ids,
     })
-}
-
-fn push_btd4_layer_refs(
-    texture: &EmittedTexture,
-    layer_object_ids: &mut Vec<u32>,
-    grass_object_ids: &mut Vec<u32>,
-) {
-    if !layer_object_ids.contains(&texture.ltex_object_id) {
-        layer_object_ids.push(texture.ltex_object_id);
-    }
-    for grass_id in &texture.grass_object_ids {
-        if !grass_object_ids.contains(grass_id) {
-            grass_object_ids.push(*grass_id);
-        }
-    }
-}
-
-fn fill_dense_alpha_from_land_vtxt(vtxt: &[u8], plane: &mut [u8]) {
-    const LAND_V: usize = LAND_QUADRANT_VERTICES;
-    const DENSE_V: usize = crate::btd4::ALPH_PLANE_VERTS;
-    let mut land = [0u8; LAND_V * LAND_V];
-    for entry in vtxt.chunks_exact(8) {
-        let position = u16::from_le_bytes([entry[0], entry[1]]) as usize;
-        if position >= land.len() {
-            continue;
-        }
-        let opacity = f32::from_le_bytes([entry[4], entry[5], entry[6], entry[7]]);
-        land[position] = (opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
-    }
-    for j in 0..DENSE_V {
-        for i in 0..DENSE_V {
-            let row = ((j + 2) / 4).min(LAND_V - 1);
-            let column = ((i + 2) / 4).min(LAND_V - 1);
-            plane[j * DENSE_V + i] = land[row * LAND_V + column];
-        }
-    }
 }
 
 /// Per-cell channel gather for the `.btd4` dense sidecar.
 ///
-/// - HGTS: 129x129 RAW u16 samples, read via `SourceCellCache::sample_raw_u16`
-///   so they share the +HALF_CELL_SAMPLES shift / clamp / cell-local arithmetic
-///   with the f32 LAND heights (the LAND's 33x33 verts are the vx,vy in
-///   {0,4,...,128} subset of this grid). The +1 edge column/row reads into the
-///   next source cell, which the extra-cell growth already covers.
-/// - LAYR: every mapped layer (base + alpha + synthesized + dropped), deduped by
-///   emitted LTEX object id, all `plugin_index = 0` (the producer plugin) and
-///   `kind = 0` (LTEX). `recovered` counts the layers referenced here that the
-///   LAND's per-quadrant stack dropped — the sidecar's extra coverage.
-/// - GCVR: the assembled 128x128 ground-cover mask, plus the union of the
-///   producer-plugin GRAS object ids referenced by this cell's mapped layers.
-///   Emitted only when there is ground-cover data (mask non-empty or forms).
-/// - ALPH: dense per-quadrant blend planes, passed in from
-///   `build_land_texture_fields` (`dense_alpha`) so they share that function's
-///   exact per-quadrant ATXT slot ordering — the engine reuses the vanilla LAND
-///   material for the dense terrain, so the planes must match its percentArrays
-///   layout. None when the cell has no alpha layers.
-/// - CLRS: deferred (None) — the FO76 vertex-color chunk is not yet decoded.
+/// - HGTS: 129x129 raw u16 via `SourceCellCache::sample_raw_u16`, sharing the
+///   +HALF_CELL_SAMPLES shift and clamping with the f32 LAND heights (the LAND's
+///   33x33 verts are the {0,4,...,128} subset). The +1 edge row/column reads into
+///   the next source cell, which the extra-cell growth covers.
+/// - LAYR: the 24-slot table (4 quadrants × base + 5 alpha) from
+///   `build_land_texture_fields`; `kind = 0` (LTEX), `plugin_index = 0` (the
+///   producer) or `u8::MAX` for an empty slot.
+/// - GCVR: one 128x128 mask per producer GRAS object id; errors past FO4's 16
+///   grass types per LAND interval.
+/// - ALPH: planes in the LAND's per-quadrant ATXT slot order, since the engine
+///   reuses the vanilla LAND material for the dense terrain; `None` without
+///   alpha layers.
+/// - CLRS: 129x129 RGB converted from the BTD terrain colors.
+///
+/// `layers_recovered` is always 0.
 struct Btd4CellGather {
     channels: crate::btd4::CellChannels,
     layers_recovered: u32,
@@ -2994,14 +4112,15 @@ struct Btd4CellGather {
 #[allow(clippy::too_many_arguments)]
 fn gather_btd4_cell_channels(
     btd: &mut BtdFile,
-    _cell_x: i32,
-    _cell_y: i32,
+    cell_x: i32,
+    cell_y: i32,
     target_cell_offset_x: usize,
     target_cell_offset_y: usize,
-    layer_object_ids: &[u32],
-    grass_object_ids: &[u32],
+    layer_object_ids: &[Option<u32>],
+    source_layer_object_ids: &[Option<u32>],
+    grass_object_ids_by_gcvr: &HashMap<u32, Vec<u32>>,
+    source_alpha_masks: &TextureAlphaMasks,
     source_cache: &mut SourceCellCache,
-    dense_alpha: Option<Vec<Vec<u8>>>,
 ) -> Result<Btd4CellGather, AuthoringEmitError> {
     let mut heights = Vec::with_capacity(129 * 129);
     for vy in 0..=128usize {
@@ -3012,56 +4131,282 @@ fn gather_btd4_cell_channels(
         }
     }
 
+    if layer_object_ids.len() != 24 || source_layer_object_ids.len() != 24 {
+        return Err(AuthoringEmitError::Message(format!(
+            "cell ({cell_x},{cell_y}) did not produce the 24-slot BTD4 material table"
+        )));
+    }
     let layers: Vec<crate::btd4::LayerRef> = layer_object_ids
         .iter()
         .map(|object_id| crate::btd4::LayerRef {
-            plugin_index: 0,
-            object_id: *object_id,
+            plugin_index: if object_id.is_some() { 0 } else { u8::MAX },
+            object_id: object_id.unwrap_or(0),
             kind: 0,
         })
         .collect();
-    // Writer caps LAYR rows and GCVR forms at 255; drop the long tail rather
-    // than fail the whole emit on a pathological cell.
-    let layers = if layers.len() > 255 {
-        layers[..255].to_vec()
-    } else {
-        layers
-    };
 
-    let gcvr_has_data = !grass_object_ids.is_empty();
-    let gcvr = if gcvr_has_data {
-        let mut forms: Vec<u32> = grass_object_ids.to_vec();
-        forms.sort_unstable();
-        forms.dedup();
-        forms.truncate(255);
-        Some(crate::btd4::GcvrChunk {
-            mask: vec![0; CELL_SOURCE_SAMPLES * CELL_SOURCE_SAMPLES],
-            forms: forms
-                .into_iter()
-                .map(|object_id| crate::btd4::GcvrForm {
-                    plugin_index: 0,
-                    object_id,
-                })
-                .collect(),
-        })
-    } else {
-        None
-    };
+    let dense_texture_ids = dense_cell_texture_object_ids(btd, cell_x, cell_y, source_alpha_masks)?;
+    let dense_alpha = dense_alpha_planes(&dense_texture_ids, source_layer_object_ids);
+    let gcvr = dense_gcvr_entries(btd, cell_x, cell_y, grass_object_ids_by_gcvr)?;
+    let colors = dense_cell_colors(btd, cell_x, cell_y)?;
 
     Ok(Btd4CellGather {
         channels: crate::btd4::CellChannels {
             heights: Some(heights),
             alphas: dense_alpha,
-            layers: if layers.is_empty() {
-                None
-            } else {
-                Some(layers)
-            },
+            layers: Some(layers),
             gcvr,
-            colors: None,
+            colors: Some(colors),
         },
         layers_recovered: 0,
     })
+}
+
+fn dense_cell_texture_object_ids(
+    btd: &mut BtdFile,
+    cell_x: i32,
+    cell_y: i32,
+    alpha_lookup: &impl SourceAlphaLookup,
+) -> Result<Vec<Option<u32>>, AuthoringEmitError> {
+    let header = btd.header();
+    let (min_x, min_y, max_x, max_y) = (
+        header.cell_min_x,
+        header.cell_min_y,
+        header.cell_max_x,
+        header.cell_max_y,
+    );
+    let is_starfield = header.is_starfield_layout;
+    let starfield_btd_cell_min = is_starfield.then_some((header.cell_min_x, header.cell_min_y));
+    let textures = crate::fo4_frame::assemble_cell_texture_set(btd, cell_x, cell_y)?;
+    let packed = crate::fo4_frame::assemble_cell_grid(
+        |cx, cy| btd.cell_land_alpha_u16(cx.clamp(min_x, max_x), cy.clamp(min_y, max_y), 0),
+        cell_x,
+        cell_y,
+        starfield_btd_cell_min,
+    )?;
+    let mut result = vec![None; CELL_SOURCE_SAMPLES * CELL_SOURCE_SAMPLES];
+    for y in 0..CELL_SOURCE_SAMPLES {
+        for x in 0..CELL_SOURCE_SAMPLES {
+            let quadrant = (x / 64) | ((y / 64) << 1);
+            let quad = &textures.quadrants[quadrant];
+            let alpha = packed[y * CELL_SOURCE_SAMPLES + x];
+            // Starfield: the true global source sample index via sf_frame,
+            // not the FO76 half-cell-shifted `cell*128+64+x`.
+            let (source_world_x, source_world_y) = if is_starfield {
+                (
+                    crate::fo4_frame::starfield_global_sample_index(cell_x, x, min_x),
+                    crate::fo4_frame::starfield_global_sample_index(cell_y, y, min_y),
+                )
+            } else {
+                (
+                    cell_x * CELL_SOURCE_SAMPLES as i32
+                        + crate::fo4_frame::HALF_CELL_SAMPLES as i32
+                        + x as i32,
+                    cell_y * CELL_SOURCE_SAMPLES as i32
+                        + crate::fo4_frame::HALF_CELL_SAMPLES as i32
+                        + y as i32,
+                )
+            };
+            let u = source_world_x - source_world_y;
+            let v = source_world_x + source_world_y;
+            let mut selected = None;
+            for slot in (0..5usize).rev() {
+                let layer_value = ((alpha >> (slot * 3)) & 0x7) as u8;
+                let Some(texture_index) = quad.additional[slot] else {
+                    continue;
+                };
+                let Some(source_ltex) = btd
+                    .land_texture_form_id(texture_index as usize)
+                    .map(|form_id| form_id & 0x00FF_FFFF)
+                else {
+                    continue;
+                };
+                if fo76_layer_alpha_passes(
+                    layer_value,
+                    alpha_lookup.sample_alpha(source_ltex, u, v),
+                ) {
+                    selected = Some(source_ltex);
+                    break;
+                }
+            }
+            if selected.is_none() {
+                selected = quad.base.and_then(|texture_index| {
+                    btd.land_texture_form_id(texture_index as usize)
+                        .map(|form_id| form_id & 0x00FF_FFFF)
+                });
+            }
+            result[y * CELL_SOURCE_SAMPLES + x] = selected;
+        }
+    }
+    Ok(result)
+}
+
+fn dense_alpha_planes(
+    texture_ids: &[Option<u32>],
+    ordered_source_layers: &[Option<u32>],
+) -> Option<Vec<Vec<u8>>> {
+    let has_alpha = (0..4usize).any(|quadrant| {
+        ordered_source_layers[quadrant * 6 + 1..quadrant * 6 + 6]
+            .iter()
+            .any(Option::is_some)
+    });
+    if !has_alpha {
+        return None;
+    }
+    let mut planes = vec![vec![0u8; crate::btd4::ALPH_PLANE_LEN]; crate::btd4::ALPH_PLANE_COUNT];
+    for quadrant in 0..4usize {
+        let qx = quadrant & 1;
+        let qy = quadrant >> 1;
+        for y in 0..crate::btd4::ALPH_PLANE_VERTS {
+            for x in 0..crate::btd4::ALPH_PLANE_VERTS {
+                let sample_x = qx * 64 + x.min(63);
+                let sample_y = qy * 64 + y.min(63);
+                let selected = texture_ids[sample_y * CELL_SOURCE_SAMPLES + sample_x];
+                for slot in 0..5usize {
+                    if selected.is_some()
+                        && selected == ordered_source_layers[quadrant * 6 + 1 + slot]
+                    {
+                        planes[quadrant * 5 + slot][y * crate::btd4::ALPH_PLANE_VERTS + x] =
+                            u8::MAX;
+                    }
+                }
+            }
+        }
+    }
+    Some(planes)
+}
+
+fn dense_gcvr_entries(
+    btd: &BtdFile,
+    cell_x: i32,
+    cell_y: i32,
+    grass_object_ids_by_gcvr: &HashMap<u32, Vec<u32>>,
+) -> Result<Option<crate::btd4::GcvrChunk>, AuthoringEmitError> {
+    let header = btd.header();
+    let (min_x, min_y, max_x, max_y) = (
+        header.cell_min_x,
+        header.cell_min_y,
+        header.cell_max_x,
+        header.cell_max_y,
+    );
+    let starfield_btd_cell_min = header
+        .is_starfield_layout
+        .then_some((header.cell_min_x, header.cell_min_y));
+    let textures = crate::fo4_frame::assemble_cell_texture_set(btd, cell_x, cell_y)?;
+    let packed = crate::fo4_frame::assemble_cell_grid(
+        |cx, cy| btd.cell_ground_cover_mask_u8(cx.clamp(min_x, max_x), cy.clamp(min_y, max_y), 0),
+        cell_x,
+        cell_y,
+        starfield_btd_cell_min,
+    )?;
+    let mut masks = std::collections::BTreeMap::<u32, Vec<u8>>::new();
+    for y in 0..CELL_SOURCE_SAMPLES {
+        for x in 0..CELL_SOURCE_SAMPLES {
+            let value = packed[y * CELL_SOURCE_SAMPLES + x];
+            if value == 0 {
+                continue;
+            }
+            let quadrant = (x / 64) | ((y / 64) << 1);
+            let quad = &textures.quadrants[quadrant];
+            for source_slot in 0..8usize {
+                let bit = 1u8 << (7 - source_slot);
+                if value & bit == 0 {
+                    continue;
+                }
+                let Some(gcvr_index) = quad.ground_cover[source_slot] else {
+                    continue;
+                };
+                let Some(source_gcvr) = btd
+                    .ground_cover_form_id(gcvr_index as usize)
+                    .map(|form_id| form_id & 0x00FF_FFFF)
+                else {
+                    continue;
+                };
+                let Some(grass_ids) = grass_object_ids_by_gcvr.get(&source_gcvr) else {
+                    continue;
+                };
+                for object_id in grass_ids {
+                    masks
+                        .entry(*object_id)
+                        .or_insert_with(|| vec![0; CELL_SOURCE_SAMPLES * CELL_SOURCE_SAMPLES])
+                        [y * CELL_SOURCE_SAMPLES + x] = u8::MAX;
+                }
+            }
+        }
+    }
+    for interval_y in 0..32usize {
+        for interval_x in 0..32usize {
+            let covering = masks
+                .values()
+                .filter(|mask| {
+                    (interval_y * 4..interval_y * 4 + 4).any(|y| {
+                        (interval_x * 4..interval_x * 4 + 4)
+                            .any(|x| mask[y * CELL_SOURCE_SAMPLES + x] != 0)
+                    })
+                })
+                .count();
+            if covering > 16 {
+                return Err(AuthoringEmitError::Message(format!(
+                    "BTD4 GCVR cell ({cell_x},{cell_y}) interval ({interval_x},{interval_y}) uses {covering} grass types; FO4 supports at most 16"
+                )));
+            }
+        }
+    }
+    if masks.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(crate::btd4::GcvrChunk {
+        entries: masks
+            .into_iter()
+            .map(|(object_id, mask)| crate::btd4::GcvrEntry {
+                plugin_index: 0,
+                object_id,
+                mask,
+            })
+            .collect(),
+    }))
+}
+
+fn dense_cell_colors(
+    btd: &mut BtdFile,
+    cell_x: i32,
+    cell_y: i32,
+) -> Result<Vec<u8>, AuthoringEmitError> {
+    let header = btd.header();
+    let (min_x, min_y, max_x, max_y) = (
+        header.cell_min_x,
+        header.cell_min_y,
+        header.cell_max_x,
+        header.cell_max_y,
+    );
+    let starfield_btd_cell_min = header
+        .is_starfield_layout
+        .then_some((header.cell_min_x, header.cell_min_y));
+    let mut fetch = |cx: i32, cy: i32| {
+        crate::fo4_frame::assemble_cell_grid(
+            |sx, sy| btd.cell_terrain_color_u16(sx.clamp(min_x, max_x), sy.clamp(min_y, max_y), 0),
+            cx,
+            cy,
+            starfield_btd_cell_min,
+        )
+    };
+    let current = fetch(cell_x, cell_y)?;
+    let right = fetch(cell_x.saturating_add(1), cell_y)?;
+    let top = fetch(cell_x, cell_y.saturating_add(1))?;
+    let diagonal = fetch(cell_x.saturating_add(1), cell_y.saturating_add(1))?;
+    let mut colors = Vec::with_capacity(129 * 129 * 3);
+    for y in 0..=128usize {
+        for x in 0..=128usize {
+            let value = match (x == 128, y == 128) {
+                (false, false) => current[y * CELL_SOURCE_SAMPLES + x],
+                (true, false) => right[y * CELL_SOURCE_SAMPLES],
+                (false, true) => top[x],
+                (true, true) => diagonal[0],
+            };
+            colors.extend_from_slice(&fo76_vclr_to_fo4_vclr(value));
+        }
+    }
+    Ok(colors)
 }
 
 fn count_texture_layer_ground_cover(
@@ -3259,13 +4604,6 @@ fn land_texture_layer_field(
         quadrant,
         unknown_byte_3,
         layer
-    )
-}
-
-fn alpha_layer_data_field(bytes: &[u8]) -> String {
-    format!(
-        "    - AlphaLayerData:\n        raw_hex: \"{}\"\n",
-        bytes_hex(bytes)
     )
 }
 
@@ -3910,8 +5248,13 @@ fn compact_form_id_hex(value: u32) -> String {
     format!("{:x}", value & 0x00FF_FFFF)
 }
 
-fn source_ltex_form_key(value: u32) -> String {
-    format!("{:06X}:SeventySix.esm", value & 0x00FF_FFFF)
+fn source_ltex_form_key(value: u32, is_starfield_layout: bool) -> String {
+    let plugin_name = if is_starfield_layout {
+        "Starfield.esm"
+    } else {
+        "SeventySix.esm"
+    };
+    format!("{:06X}:{plugin_name}", value & 0x00FF_FFFF)
 }
 
 fn default_first_form_id() -> u32 {
@@ -3946,6 +5289,49 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_texture_alpha_masks_reuse_cached_decode() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("terrain_alpha.dds");
+        let rgba = vec![
+            10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160,
+        ];
+        directxtex_native::write_dds_rgba_image(&path, 2, 2, &rgba, "R8G8B8A8_UNORM", false)
+            .expect("write fixture DDS");
+
+        let first = load_source_texture_alpha_mask(&path).expect("first decode");
+        let second = load_source_texture_alpha_mask(&path).expect("cached decode");
+
+        assert_eq!(&*first.alpha, &[40, 80, 120, 160]);
+        assert!(Arc::ptr_eq(&first.alpha, &second.alpha));
+    }
+
+    #[test]
+    fn dense_alpha_preserves_full_resolution_slot_changes() {
+        let mut ordered_layers = vec![None; 24];
+        ordered_layers[1] = Some(0x100);
+        ordered_layers[2] = Some(0x200);
+        ordered_layers[7] = Some(0x200);
+        let mut texture_ids = vec![None; CELL_SOURCE_SAMPLES * CELL_SOURCE_SAMPLES];
+        for y in 0..CELL_SOURCE_SAMPLES {
+            for x in 0..CELL_SOURCE_SAMPLES {
+                texture_ids[y * CELL_SOURCE_SAMPLES + x] =
+                    Some(if x & 1 == 0 { 0x100 } else { 0x200 });
+            }
+            texture_ids[y * CELL_SOURCE_SAMPLES + 63] = Some(0x100);
+            texture_ids[y * CELL_SOURCE_SAMPLES + 64] = Some(0x200);
+        }
+
+        let planes = dense_alpha_planes(&texture_ids, &ordered_layers).expect("dense alpha");
+        assert_eq!(planes.len(), crate::btd4::ALPH_PLANE_COUNT);
+        assert_eq!(planes[0][10], u8::MAX);
+        assert_eq!(planes[0][11], 0);
+        assert_eq!(planes[1][10], 0);
+        assert_eq!(planes[1][11], u8::MAX);
+        assert_eq!(planes[0][64], u8::MAX);
+        assert_eq!(planes[5][0], u8::MAX);
+    }
 
     #[test]
     fn per_cell_quantization_matches_full_grid_quantization() {
@@ -4148,7 +5534,7 @@ mod tests {
         }];
 
         let emitted =
-            assign_texture_form_ids(terrain_next_object_id, converted, false, &HashSet::new())
+            assign_texture_form_ids(terrain_next_object_id, converted, false, HashSet::new())
                 .expect("texture IDs");
 
         assert_eq!(emitted[0].txst_object_id, terrain_next_object_id);
@@ -4193,7 +5579,7 @@ mod tests {
         }];
 
         let emitted =
-            assign_texture_form_ids(0x800, converted, true, &HashSet::new()).expect("texture IDs");
+            assign_texture_form_ids(0x800, converted, true, HashSet::new()).expect("texture IDs");
 
         assert_eq!(emitted[0].txst_object_id, 0x001235);
         assert_eq!(emitted[0].ltex_object_id, 0x001234);
@@ -4247,7 +5633,7 @@ mod tests {
             0x800,
             vec![base, variant, second_variant],
             true,
-            &HashSet::new(),
+            HashSet::new(),
         )
         .expect("texture IDs");
 
@@ -4284,7 +5670,7 @@ mod tests {
         let reserved = HashSet::from([0x001235]);
 
         let emitted =
-            assign_texture_form_ids(0x800, converted, true, &reserved).expect("texture IDs");
+            assign_texture_form_ids(0x800, converted, true, reserved).expect("texture IDs");
 
         assert_eq!(emitted[0].txst_object_id, 0x800);
         assert_eq!(emitted[0].ltex_object_id, 0x001234);
@@ -4324,7 +5710,7 @@ mod tests {
         }];
 
         let emitted =
-            assign_texture_form_ids(0x800, converted, true, &HashSet::new()).expect("texture IDs");
+            assign_texture_form_ids(0x800, converted, true, HashSet::new()).expect("texture IDs");
 
         assert_eq!(emitted[0].txst_object_id, 0x001235);
         assert_eq!(emitted[0].ltex_object_id, 0x003B1B);
@@ -4394,7 +5780,7 @@ mod tests {
         };
 
         let mut output = AuthoringOutput::write_files(output_dir.clone());
-        write_texture_records(&mut output, &options, &[texture], "APPALACHIA")
+        write_texture_records(&mut output, &options, &[texture.clone()], "APPALACHIA")
             .expect("texture records");
         let txst_path = output_dir
             .join("records")
@@ -4521,7 +5907,7 @@ mod tests {
         };
 
         let mut output = AuthoringOutput::write_files(output_dir.clone());
-        write_texture_records(&mut output, &options, &[texture], "APPALACHIA")
+        write_texture_records(&mut output, &options, &[texture.clone()], "APPALACHIA")
             .expect("texture records");
         let ltex_payload = fs::read_to_string(
             output_dir
@@ -4556,6 +5942,27 @@ mod tests {
         assert!(grass_payload.contains("    WavePeriod: 145\n"));
         assert!(grass_payload.contains("    - VertexLighting\n"));
         assert!(grass_payload.contains("    - FitToSlope\n"));
+
+        let mut btd4_options = options.clone();
+        btd4_options.btd4_output_path = "Terrain/B21TestWorld.btd4".to_string();
+        let mut btd4_output = AuthoringOutput::collect_only(output_dir);
+        write_texture_records(&mut btd4_output, &btd4_options, &[texture], "APPALACHIA")
+            .expect("BTD4 texture records");
+        let records = btd4_output.finish();
+        let btd4_ltex = records
+            .records
+            .iter()
+            .find(|record| record.signature == "LTEX")
+            .expect("BTD4 LTEX");
+        assert!(!btd4_ltex.yaml.contains("- Grass:\n"));
+        assert_eq!(
+            records
+                .records
+                .iter()
+                .filter(|record| record.signature == "GRAS")
+                .count(),
+            1
+        );
     }
 
     #[test]
@@ -4677,8 +6084,15 @@ mod tests {
     }
 
     #[test]
-    fn source_ltex_form_key_formats_fo76_object_id() {
-        assert_eq!(source_ltex_form_key(0xFF00_ABCD), "00ABCD:SeventySix.esm");
+    fn source_ltex_form_key_uses_btd_layout_owner() {
+        assert_eq!(
+            source_ltex_form_key(0xFF00_ABCD, false),
+            "00ABCD:SeventySix.esm"
+        );
+        assert_eq!(
+            source_ltex_form_key(0xFF00_ABCD, true),
+            "00ABCD:Starfield.esm"
+        );
     }
 
     #[test]
@@ -5691,6 +7105,7 @@ fields:
             &[],
             &[],
             &[],
+            false,
             &[],
             None,
         )
@@ -5770,6 +7185,7 @@ fields:
             &[],
             &[],
             &[],
+            false,
             &[],
             None,
         )
@@ -5851,6 +7267,7 @@ fields:
             &[],
             &[],
             &[],
+            false,
             &[],
             Some(&water),
         )
@@ -5863,6 +7280,84 @@ fields:
         assert!(payload.contains("  - signature: XCLW\n    data_hex: \"0000C844\"\n"));
         assert!(payload.contains("  - signature: XCWT\n    data_hex: \"33860C00\"\n"));
         assert!(!payload.contains("FFFF7F7F"));
+    }
+
+    #[test]
+    fn structured_cell_value_matches_legacy_yaml_for_binary_and_scalar_edges() {
+        let options = texture_usage_options(Path::new("unused.btd"), -7, -7);
+        let cell_eid = "B21_Terrain_Été_XN007YP013";
+        let water = WaterCell {
+            height: -123.45679,
+            water_object_id: 0x01C8633,
+        };
+        let vnml = [0x00, 0x7F, 0x80, 0xFF];
+        let vhgt = [0xFF, 0x00, 0xA5, 0x5A];
+        let vclr = [0x01, 0xFE, 0x10, 0xEF];
+        let texture_fields = vec![
+            LandTextureField::Layer {
+                signature: "BTXT",
+                texture_object_id: 0x008A26,
+                plugin_name: options.plugin_name.clone(),
+                quadrant: 3,
+                layer: -1,
+            },
+            LandTextureField::Layer {
+                signature: "ATXT",
+                texture_object_id: 0x008A27,
+                plugin_name: options.plugin_name.clone(),
+                quadrant: 3,
+                layer: 0,
+            },
+            LandTextureField::AlphaLayerData {
+                raw_hex: "00FF7F80A55A".to_owned(),
+            },
+        ];
+
+        let mut output = AuthoringOutput::collect_only(PathBuf::new());
+        write_cell_yaml(
+            &mut output,
+            Path::new("-1, 1/-1, 1/-7, 13"),
+            &options,
+            -7,
+            13,
+            Some(cell_eid),
+            0x801,
+            0x802,
+            &vnml,
+            &vhgt,
+            &vclr,
+            true,
+            &texture_fields,
+            Some(&water),
+        )
+        .expect("legacy cell YAML");
+        let legacy = output.finish().records.pop().expect("legacy CELL payload");
+        let parsed: serde_json::Value =
+            serde_saphyr::from_str(&legacy.yaml).expect("parse legacy CELL YAML");
+        let structured = cell_record_value(
+            &options,
+            -7,
+            13,
+            Some(cell_eid),
+            0x801,
+            0x802,
+            &vnml,
+            &vhgt,
+            &vclr,
+            true,
+            &texture_fields,
+            Some(&water),
+        );
+
+        assert_eq!(structured, parsed);
+        assert_eq!(
+            structured["subrecords"][3]["data_hex"],
+            serde_json::json!(f32_hex(water.height))
+        );
+        assert_eq!(
+            structured["Landscape"]["fields"][6]["AlphaLayerData"]["raw_hex"],
+            "00FF7F80A55A"
+        );
     }
 
     // ---- .btd4 dense sidecar ----------------------------------------
@@ -6046,9 +7541,267 @@ fields:
         }
     }
 
+    fn alpha_fallthrough_options() -> (tempfile::TempDir, ConvertOptions) {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let btd_path = temp.path().join("alpha_fallthrough.btd");
+        fs::write(
+            &btd_path,
+            one_cell_btd(
+                0x6000,
+                &[0x000100, 0x000200],
+                base_and_additional_texture_maps(),
+            ),
+        )
+        .expect("write BTD fixture");
+
+        let base_diffuse_path = temp.path().join("base_d.dds");
+        let overlay_diffuse_path = temp.path().join("overlay_d.dds");
+        directxtex_native::write_dds_rgba_image(
+            &base_diffuse_path,
+            2,
+            2,
+            &[
+                10, 20, 30, 255, 40, 50, 60, 255, 70, 80, 90, 255, 1, 2, 3, 255,
+            ],
+            "R8G8B8A8_UNORM",
+            false,
+        )
+        .expect("write base DDS fixture");
+        directxtex_native::write_dds_rgba_image(
+            &overlay_diffuse_path,
+            2,
+            2,
+            &[10, 20, 30, 0, 40, 50, 60, 0, 70, 80, 90, 0, 1, 2, 3, 0],
+            "R8G8B8A8_UNORM",
+            false,
+        )
+        .expect("write transparent overlay DDS fixture");
+
+        let manifest_path = temp.path().join("texture_manifest.json");
+        let texture_bundle = |object_id: &str, editor_id: &str, diffuse_path: &Path| {
+            serde_json::json!({
+                "source_ltex_form_key": format!("{object_id}:SeventySix.esm"),
+                "source_ltex_editor_id": editor_id,
+                "source_txst_form_key": format!("{object_id}:SeventySix.esm"),
+                "source_txst_editor_id": format!("{editor_id}TXST"),
+                "diffuse_path": diffuse_path,
+                "normal_path": "",
+                "reflectivity_path": "",
+                "lighting_path": "",
+                "output_prefix": format!("textures/terrain/{editor_id}"),
+                "output_material_path": null,
+                "material_type_object_id": null,
+                "havok_friction": 30,
+                "havok_restitution": 30,
+                "grass": [],
+            })
+        };
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec(&serde_json::json!({
+                "textures": [
+                    texture_bundle("000100", "B21_TestBase", &base_diffuse_path),
+                    texture_bundle("000200", "B21_TestOverlay", &overlay_diffuse_path),
+                ]
+            }))
+            .expect("serialize texture manifest"),
+        )
+        .expect("write texture manifest");
+
+        let mut options = texture_usage_options(&btd_path, 0, 0);
+        options.output_authoring_dir = temp.path().join("authoring").display().to_string();
+        options.debug_output_dir = temp.path().join("debug").display().to_string();
+        options.texture_manifest_path = manifest_path.display().to_string();
+        options.emit_textures = true;
+        (temp, options)
+    }
+
+    fn prepare_without_manifest(options: &ConvertOptions) -> PreparedTerrainTextureScan {
+        let mut scan_options = options.clone();
+        scan_options.emit_textures = false;
+        scan_options.texture_manifest_path.clear();
+        prepare_terrain_texture_scan(scan_options).expect("prepare texture scan")
+    }
+
+    fn assert_yaml_records_equal(
+        left: &[AuthoringRecordPayload],
+        right: &[AuthoringRecordPayload],
+    ) {
+        assert_eq!(left.len(), right.len());
+        for (left, right) in left.iter().zip(right) {
+            assert_eq!(left.signature, right.signature);
+            assert_eq!(left.relative_path, right.relative_path);
+            assert_eq!(left.yaml, right.yaml);
+        }
+    }
+
+    fn report_without_measurements(report: &ConvertReport) -> serde_json::Value {
+        let mut value = serde_json::to_value(report).expect("serialize report");
+        let object = value.as_object_mut().expect("report object");
+        object.remove("timings");
+        object.remove("operation_counts");
+        value
+    }
+
+    #[test]
+    fn prepared_btd_reuse_matches_reopened_alpha_fallthrough() {
+        let (_temp, options) = alpha_fallthrough_options();
+        let prepared = prepare_without_manifest(&options);
+        assert!(
+            prepared
+                .profile
+                .usages
+                .iter()
+                .any(|usage| usage.ltex_form_key == "000200:SeventySix.esm"),
+            "pass 1 must retain the overlay that needs a manifest alpha check in pass 2"
+        );
+
+        let mut reopened_records = Vec::new();
+        let reopened_report = convert_btd_with_record_sink(options.clone(), &mut |record| {
+            reopened_records.push(record);
+            Ok(())
+        })
+        .expect("legacy reopened conversion");
+        let mut prepared_records = Vec::new();
+        let prepared_report =
+            convert_prepared_btd_with_record_sink(prepared.source, options, &mut |record| {
+                prepared_records.push(record);
+                Ok(())
+            })
+            .expect("prepared conversion");
+
+        assert_yaml_records_equal(&reopened_records, &prepared_records);
+        assert_eq!(
+            report_without_measurements(&reopened_report),
+            report_without_measurements(&prepared_report)
+        );
+        let cell_yaml = prepared_records
+            .iter()
+            .find(|record| record.signature == "CELL")
+            .expect("CELL record")
+            .yaml
+            .as_str();
+        assert!(cell_yaml.contains("    - BTXT:"));
+        assert!(
+            !cell_yaml.contains("    - ATXT:"),
+            "pass 2 must use the real transparent overlay alpha and fall through to the base"
+        );
+        assert_eq!(
+            reopened_report
+                .operation_counts
+                .get("btd_cache.cached_tiles_start"),
+            Some(&0)
+        );
+        assert!(
+            prepared_report.operation_counts["btd_cache.cached_tiles_start"] > 0,
+            "the prepared source must carry decoded tiles into pass 2"
+        );
+        assert!(
+            prepared_report.operation_counts["btd_cache.misses"]
+                < reopened_report.operation_counts["btd_cache.misses"]
+        );
+    }
+
+    #[test]
+    fn prepared_structured_cells_match_reopened_legacy_yaml_records() {
+        let (_temp, options) = alpha_fallthrough_options();
+        let mut legacy_records = Vec::new();
+        let legacy_report = convert_btd_with_record_sink(options.clone(), &mut |record| {
+            legacy_records.push(record);
+            Ok(())
+        })
+        .expect("legacy YAML conversion");
+
+        let prepared = prepare_without_manifest(&options);
+        let mut structured_headers = Vec::new();
+        let mut structured_cells = Vec::new();
+        let structured_report = convert_prepared_btd_with_structured_cell_sink(
+            prepared.source,
+            options,
+            &mut |record| {
+                structured_headers.push(record);
+                Ok(())
+            },
+            &mut |record| {
+                structured_cells.push(record);
+                Ok(())
+            },
+        )
+        .expect("prepared structured conversion");
+
+        let legacy_headers = legacy_records
+            .iter()
+            .filter(|record| record.signature != "CELL")
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_yaml_records_equal(&legacy_headers, &structured_headers);
+        let legacy_cells = legacy_records
+            .iter()
+            .filter(|record| record.signature == "CELL")
+            .collect::<Vec<_>>();
+        assert_eq!(legacy_cells.len(), structured_cells.len());
+        for (legacy, structured) in legacy_cells.into_iter().zip(&structured_cells) {
+            assert_eq!(legacy.signature, structured.signature);
+            assert_eq!(legacy.relative_path, structured.relative_path);
+            let parsed: serde_json::Value =
+                serde_saphyr::from_str(&legacy.yaml).expect("parse legacy CELL YAML");
+            assert_eq!(parsed, structured.value);
+        }
+        assert_eq!(
+            report_without_measurements(&legacy_report),
+            report_without_measurements(&structured_report)
+        );
+        assert_eq!(
+            structured_report.operation_counts["write_cells.cell_yaml_documents"],
+            0
+        );
+        assert_eq!(
+            structured_report.operation_counts["write_cells.structured_cell_payloads"],
+            1
+        );
+    }
+
     fn compare_texture_usage_collectors(options: ConvertOptions) -> Vec<RequiredTextureUsage> {
-        let lightweight =
-            collect_required_texture_usages_lightweight_for_options(options.clone()).unwrap();
+        let profile =
+            collect_required_texture_usages_lightweight_profiled_for_options(options.clone())
+                .unwrap();
+        let cells_x = u64::try_from(options.source_max_x - options.source_min_x + 1).unwrap();
+        let cells_y = u64::try_from(options.source_max_y - options.source_min_y + 1).unwrap();
+        let global_vertices =
+            (cells_x * LAND_CELL_INTERVALS as u64 + 1) * (cells_y * LAND_CELL_INTERVALS as u64 + 1);
+        assert_eq!(
+            profile
+                .operation_counts
+                .get("global_blend.expected_global_vertices"),
+            Some(&global_vertices)
+        );
+        assert_eq!(
+            profile
+                .operation_counts
+                .get("global_blend.expected_source_sample_selections"),
+            Some(&(global_vertices * 16))
+        );
+        assert_eq!(
+            profile
+                .operation_counts
+                .get("global_blend.expected_quadrants"),
+            Some(&(cells_x * cells_y * 4))
+        );
+        assert_eq!(
+            profile
+                .timings
+                .iter()
+                .map(|entry| entry.name.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "load_source_texture_alpha_masks_exclusive",
+                "sample_quantize_and_summarize_vertices_exclusive",
+                "collect_quadrant_bases_exclusive",
+                "edge_retention_and_texture_selection_exclusive",
+                "resolve_texture_usages_exclusive",
+            ]
+        );
+        let lightweight = profile.usages;
         let blended = collect_required_texture_usages_for_options(options).unwrap();
         assert_eq!(lightweight, blended);
         lightweight
@@ -6280,7 +8033,8 @@ fields:
             land_skip_ground_cover_variants: false,
             reuse_existing_textures: false,
         };
-        let mut cache = SourceCellCache::new(btd.header(), &options, 1, 1).unwrap();
+        let mut cache =
+            SourceCellCache::new(btd.header(), &options, 1, 1, SourceFrame::Fo76Identity).unwrap();
 
         // The exact decoded sample at a coordinate depends on the BTD line-walk,
         // which the test deliberately does not re-derive; instead it asserts the
@@ -6354,7 +8108,7 @@ fields:
 
         let reader = crate::btd4::Btd4Reader::open(&btd4_path).expect("open sidecar");
         let header = reader.header();
-        assert_eq!(header.version, 1);
+        assert_eq!(header.version, crate::btd4::BTD4_VERSION);
         assert_eq!(header.density, 128);
         assert_eq!(header.cell_min_x, 0);
         assert_eq!(header.cell_max_x, 0);
@@ -6386,7 +8140,14 @@ fields:
             source_max_y: 0,
             ..clone_options_for_probe(&btd_path)
         };
-        let mut probe_cache = SourceCellCache::new(btd2.header(), &probe_options, 1, 1).unwrap();
+        let mut probe_cache = SourceCellCache::new(
+            btd2.header(),
+            &probe_options,
+            1,
+            1,
+            SourceFrame::Fo76Identity,
+        )
+        .unwrap();
         for vy in 0..=128usize {
             for vx in 0..=128usize {
                 let expected = probe_cache.sample_raw_u16(&mut btd2, vx, vy).unwrap();
@@ -6447,5 +8208,393 @@ fields:
             land_skip_ground_cover_variants: false,
             reuse_existing_textures: false,
         }
+    }
+
+    fn lanczos_grid_probe(
+        cells_x: usize,
+        threads: usize,
+    ) -> (std::time::Duration, std::time::Duration) {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("height.btd");
+        fs::write(&path, one_cell_btd_constant_height(12345)).unwrap();
+        let mut btd = BtdFile::open(path.to_str().unwrap()).unwrap();
+        let mut options = clone_options_for_probe(&path);
+        options.source_min_x = -2;
+        options.source_max_x = cells_x as i32 - 3;
+        options.source_max_y = 1;
+        let cache = || {
+            let mut cache = SourceCellCache::new(
+                btd.header(),
+                &options,
+                cells_x,
+                2,
+                SourceFrame::Fo76Identity,
+            )
+            .unwrap();
+            for cy in 0..cache.source_height / CELL_SOURCE_SAMPLES {
+                for cx in 0..cache.source_width / CELL_SOURCE_SAMPLES {
+                    let samples = (0..CELL_SOURCE_SAMPLES * CELL_SOURCE_SAMPLES)
+                        .map(|index| {
+                            let x = cx * CELL_SOURCE_SAMPLES + index % CELL_SOURCE_SAMPLES;
+                            let y = cy * CELL_SOURCE_SAMPLES + index / CELL_SOURCE_SAMPLES;
+                            ((x * 719 + y * 157 + x * y) % 65536) as f32 * 0.375 - 9000.0
+                        })
+                        .collect();
+                    cache
+                        .cells
+                        .insert((options.source_min_x + cx as i32, cy as i32), samples);
+                }
+            }
+            cache
+        };
+        let mut reference_cache = cache();
+        let mut buffered_cache = cache();
+        let width = cells_x * LAND_CELL_INTERVALS + 1;
+        let height = 2 * LAND_CELL_INTERVALS + 1;
+        let started = Instant::now();
+        let mut reference = Vec::new();
+        for y in 0..height {
+            for x in 0..width {
+                reference.push(
+                    lanczos_target_height(&mut btd, &mut reference_cache, x, y)
+                        .unwrap()
+                        .to_bits(),
+                );
+            }
+        }
+        let reference_time = started.elapsed();
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .unwrap();
+        let started = Instant::now();
+        let grid = pool
+            .install(|| {
+                build_target_height_grid(
+                    &mut btd,
+                    &options,
+                    cells_x,
+                    2,
+                    ResampleMode::Lanczos,
+                    &mut buffered_cache,
+                )
+            })
+            .unwrap();
+        let buffered_time = started.elapsed();
+        assert_eq!(
+            reference,
+            grid.values.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
+        );
+        (reference_time, buffered_time)
+    }
+
+    #[test]
+    fn buffered_lanczos_preserves_sample_bits_at_cell_and_world_edges() {
+        for threads in [1, 4] {
+            lanczos_grid_probe(2, threads);
+            lanczos_grid_probe(3, threads);
+        }
+    }
+
+    #[test]
+    #[ignore = "manual full-overwrite resampling benchmark"]
+    fn benchmark_buffered_lanczos() {
+        let (reference, buffered) = lanczos_grid_probe(64, 4);
+        eprintln!("lanczos reference={reference:?} buffered={buffered:?} equal_bits=true");
+    }
+
+    fn extract_raw_hex_field(yaml: &str, field_name: &str) -> Option<String> {
+        let marker = format!("{field_name}:\n        raw_hex: \"");
+        let start = yaml.find(&marker)? + marker.len();
+        let end = yaml[start..].find('"')? + start;
+        Some(yaml[start..end].to_string())
+    }
+
+    /// The golden VHGT hex predates the Starfield frame: the FO76 identity path
+    /// must stay bit-identical, so any change means shared height/addressing code
+    /// was altered instead of branched on `SourceFrame`.
+    #[test]
+    fn fo76_identity_frame_is_bit_identical() {
+        let height_sample = 12345u16;
+        let btd_bytes = one_cell_btd_constant_height(height_sample);
+        let btd_path = temp_path("golden_identity", "btd");
+        fs::write(&btd_path, &btd_bytes).unwrap();
+
+        let options = clone_options_for_probe(&btd_path);
+        let output = convert_btd(options, TerrainRecordOutput::CollectOnly).expect("convert");
+        let _ = fs::remove_file(&btd_path);
+
+        let cell_record = output
+            .authoring
+            .records
+            .iter()
+            .find(|record| record.signature == "CELL")
+            .expect("CELL record present");
+        let vhgt_hex = extract_raw_hex_field(&cell_record.yaml, "VertexHeightMap")
+            .expect("VertexHeightMap raw_hex present");
+
+        assert_eq!(
+            vhgt_hex,
+            "0000000000180000E8180000E8180000E81800000000000000000000000000000000000000180000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000E8180000E8180000E8180000E81800000000000000000000000000000000000000180000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000E8180000E8180000E8180000E81800000000000000000000000000000000000000180000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000E8180000E8180000E8180000E81800000000000000000000000000000000000000180000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+        );
+    }
+
+    fn starfield_akila_btd_path() -> PathBuf {
+        let root = std::env::var_os("STARFIELD_EXTRACTED_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../extracted/starfield")
+            });
+        root.join("terrain/akilacity.btd")
+    }
+
+    fn starfield_akila_options() -> ConvertOptions {
+        ConvertOptions {
+            btd_path: starfield_akila_btd_path().display().to_string(),
+            output_authoring_dir: String::new(),
+            plugin_name: "B21_AkilaTest.esp".to_string(),
+            worldspace_editor_id: "B21_AkilaTest".to_string(),
+            source_min_x: 0,
+            source_min_y: 0,
+            source_max_x: -1,
+            source_max_y: -1,
+            first_form_id: 0x000800,
+            world_form_id: 0,
+            first_cell_form_id: 0,
+            resample_mode: "lanczos".to_string(),
+            debug_output_dir: String::new(),
+            texture_manifest_path: String::new(),
+            water_manifest_path: String::new(),
+            emit_textures: false,
+            export_heightmap: false,
+            debug_flat_land: false,
+            preserve_source_ids: false,
+            reserved_object_ids: Vec::new(),
+            source_worldspace_authoring_dir: String::new(),
+            source_worldspace_terrain_ids_json: String::new(),
+            heightmap_output_path: String::new(),
+            btd4_output_path: String::new(),
+            conversion_workers: None,
+            land_skip_ground_cover_variants: false,
+            reuse_existing_textures: false,
+        }
+    }
+
+    #[test]
+    fn starfield_lightweight_texture_scan_skips_absent_ground_cover() {
+        let path = starfield_akila_btd_path();
+        if !path.exists() {
+            eprintln!("skip: starfield extracted data not present");
+            return;
+        }
+
+        let usages =
+            collect_required_texture_usages_lightweight_for_options(starfield_akila_options())
+                .expect("Starfield texture scan accepts the emitted FO4 cell window");
+
+        assert!(!usages.is_empty());
+        assert!(
+            usages
+                .iter()
+                .any(|usage| usage.ltex_form_key == "01085C:Starfield.esm")
+        );
+        assert!(
+            usages
+                .iter()
+                .all(|usage| usage.ground_cover_form_key.is_none())
+        );
+    }
+
+    /// Runs the real Akila conversion once per test binary (the 3 real-data
+    /// tests below all need it) and caches the result. `None` means the
+    /// extracted fixture is absent -- every caller must skip, not fail.
+    fn starfield_akila_conversion() -> Option<&'static ConvertOutput> {
+        static RESULT: std::sync::OnceLock<Option<ConvertOutput>> = std::sync::OnceLock::new();
+        RESULT
+            .get_or_init(|| {
+                let path = starfield_akila_btd_path();
+                if !path.exists() {
+                    return None;
+                }
+                let options = starfield_akila_options();
+                Some(convert_btd(options, TerrainRecordOutput::CollectOnly).expect("akila convert"))
+            })
+            .as_ref()
+    }
+
+    fn hex_to_bytes(hex: &str) -> Vec<u8> {
+        (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).expect("valid hex byte"))
+            .collect()
+    }
+
+    fn decode_cell_land_heights(record: &AuthoringRecordPayload) -> Vec<f32> {
+        let hex = extract_raw_hex_field(&record.yaml, "VertexHeightMap")
+            .expect("VertexHeightMap raw_hex present");
+        let encoded = EncodedVhgt {
+            offset: 0.0,
+            raw: hex_to_bytes(&hex),
+        };
+        decode_vhgt_heights(&encoded).expect("VHGT decodes")
+    }
+
+    /// Real akilacity.btd, skip-if-missing: the Starfield frame emits the
+    /// FO4 cell window that `sf_frame::fo4_cell_range` predicts for Akila's
+    /// SF cell extent (-4..=4 both axes) -- 16x16 = 256 cells, (-7,-7)..(8,8).
+    #[test]
+    fn starfield_frame_emits_expected_fo4_cell_window() {
+        let Some(output) = starfield_akila_conversion() else {
+            eprintln!("skip: starfield extracted data not present");
+            return;
+        };
+        assert_eq!(output.report.cells_written, 256);
+
+        let mut min_x = i32::MAX;
+        let mut max_x = i32::MIN;
+        let mut min_y = i32::MAX;
+        let mut max_y = i32::MIN;
+        let mut cell_dirs = 0u32;
+        for record in &output.authoring.records {
+            if record.signature != "CELL" {
+                continue;
+            }
+            cell_dirs += 1;
+            let cell_dir = Path::new(&record.relative_path)
+                .parent()
+                .expect("CELL record has a parent dir");
+            let name = cell_dir
+                .file_name()
+                .and_then(|n| n.to_str())
+                .expect("cell dir has a name");
+            let (x_str, y_str) = name.split_once(", ").expect("cell dir name is 'x, y'");
+            let x: i32 = x_str.parse().expect("cell x parses");
+            let y: i32 = y_str.parse().expect("cell y parses");
+            min_x = min_x.min(x);
+            max_x = max_x.max(x);
+            min_y = min_y.min(y);
+            max_y = max_y.max(y);
+        }
+        assert_eq!(cell_dirs, 256);
+        assert_eq!((min_x, min_y), (-7, -7));
+        assert_eq!((max_x, max_y), (8, 8));
+        // 256 cells * 4 quadrants each; the split counter can never exceed
+        // the number of quadrants that had a base to vote on at all.
+        assert!(output.report.quadrant_base_split <= 256 * 4);
+        eprintln!(
+            "Akila quadrant_base_split = {} (of up to {} quadrants)",
+            output.report.quadrant_base_split,
+            256 * 4
+        );
+    }
+
+    /// Real akilacity.btd, skip-if-missing. Expected values come from the BTD's
+    /// own per-cell f32 min/max table (`cell_height_minmax` at HEADER_LEN +
+    /// ltex*4), read independently of the resample code: max 49.187m at SF cell
+    /// (1,0), min -2.998m at SF cell (0,4).
+    ///
+    /// Checks proximity, not containment, since a flat plane (e.g.
+    /// `debug_flat_land`) also lies inside [min, max]. The 0.995 floor allows
+    /// slight lanczos attenuation (a real run measured max 3440, span 3648 FO4
+    /// units, within ~0.15%); the 3-VHGT-step ceiling covers quantisation only,
+    /// because `lanczos_target_height` clamps to its footprint's min/max.
+    #[test]
+    fn starfield_heights_land_in_fo4_units() {
+        let Some(output) = starfield_akila_conversion() else {
+            eprintln!("skip: starfield extracted data not present");
+            return;
+        };
+        let mut min_h = f32::INFINITY;
+        let mut max_h = f32::NEG_INFINITY;
+        for record in &output.authoring.records {
+            if record.signature != "CELL" {
+                continue;
+            }
+            for height in decode_cell_land_heights(record) {
+                min_h = min_h.min(height);
+                max_h = max_h.max(height);
+            }
+        }
+        assert!(min_h.is_finite() && max_h.is_finite(), "no heights decoded");
+        let span_h = max_h - min_h;
+
+        let expected_max_m = 49.187f32;
+        let expected_min_m = -2.998f32;
+        let expected_max_h = expected_max_m * crate::sf_frame::FO4_UNITS_PER_METER as f32;
+        let expected_span_h =
+            (expected_max_m - expected_min_m) * crate::sf_frame::FO4_UNITS_PER_METER as f32;
+        let quantisation_headroom = 3.0 * VHGT_HEIGHT_STEP;
+        let floor_ratio = 0.995;
+
+        assert!(
+            max_h >= expected_max_h * floor_ratio
+                && max_h <= expected_max_h + quantisation_headroom,
+            "max height {max_h} outside [{}, {}]",
+            expected_max_h * floor_ratio,
+            expected_max_h + quantisation_headroom
+        );
+        assert!(
+            span_h >= expected_span_h * floor_ratio
+                && span_h <= expected_span_h + quantisation_headroom,
+            "height span {span_h} outside [{}, {}]",
+            expected_span_h * floor_ratio,
+            expected_span_h + quantisation_headroom
+        );
+    }
+
+    /// Real akilacity.btd, skip-if-missing: VHGT's signed-i8 delta clamp
+    /// should rarely trigger on real terrain -- bound overflows to under 1%
+    /// of the emitted vertices as a sanity check on the Starfield resampler's
+    /// output smoothness.
+    #[test]
+    fn vhgt_delta_clamp_stats_stay_bounded() {
+        let Some(output) = starfield_akila_conversion() else {
+            eprintln!("skip: starfield extracted data not present");
+            return;
+        };
+        let total_vertices = u64::from(output.report.cells_written)
+            * (LAND_CELL_VERTICES as u64)
+            * (LAND_CELL_VERTICES as u64);
+        let overflow_ratio =
+            f64::from(output.report.vhgt_delta_clamp_overflows) / total_vertices as f64;
+        assert!(
+            overflow_ratio < 0.01,
+            "vhgt_delta_clamp_overflows {} / {} vertices = {:.4}%, expected < 1%",
+            output.report.vhgt_delta_clamp_overflows,
+            total_vertices,
+            overflow_ratio * 100.0
+        );
+    }
+
+    /// `sf_frame::SF_BTD_ORIGIN_BIAS_METERS` is a const 0.0, so a shim of the same
+    /// formula with an explicit bias checks that the real function matches it at
+    /// bias 0 and that a 50m bias shifts the grid by ~3500 units.
+    #[test]
+    fn origin_bias_is_zero() {
+        fn shim_fo4_units_to_btd_sample(units: f64, btd_cell_min: i32, bias_meters: f64) -> f64 {
+            let origin_meters = btd_cell_min as f64 * crate::sf_frame::SF_CELL_METERS - bias_meters;
+            (crate::sf_frame::fo4_units_to_meters(units) - origin_meters)
+                / crate::sf_frame::SF_BTD_SAMPLE_METERS
+        }
+
+        let units = crate::sf_frame::fo4_land_vertex_units(3, 17);
+        let btd_cell_min = -2;
+
+        let real = crate::sf_frame::fo4_units_to_btd_sample(units, btd_cell_min);
+        let shim_zero_bias = shim_fo4_units_to_btd_sample(units, btd_cell_min, 0.0);
+        assert!(
+            (real - shim_zero_bias).abs() < 1e-9,
+            "real {real} vs shim-at-zero-bias {shim_zero_bias} -- SF_BTD_ORIGIN_BIAS_METERS may not be 0"
+        );
+
+        let shim_fifty_bias = shim_fo4_units_to_btd_sample(units, btd_cell_min, 50.0);
+        let sample_shift = shim_fifty_bias - shim_zero_bias;
+        let unit_shift = crate::sf_frame::btd_sample_to_fo4_units(sample_shift, 0)
+            - crate::sf_frame::btd_sample_to_fo4_units(0.0, 0);
+        assert!(
+            (unit_shift - 3500.0).abs() < 1.0,
+            "expected a ~3500 unit grid shift for a 50m origin bias, got {unit_shift} -- \
+             SF_BTD_ORIGIN_BIAS_METERS is not load-bearing in the position formula"
+        );
     }
 }

@@ -161,6 +161,7 @@ pub struct IndividualEvaluation {
 pub struct SpeedSampledEvaluation {
     pub record: RecipeRecordHandle,
     pub domain: SampleDomain,
+    pub direction_input_scale: f32,
     pub directional_summary: Vec<DirectionalSummaryEvaluation>,
     pub replay: Vec<BehaviorReplay>,
 }

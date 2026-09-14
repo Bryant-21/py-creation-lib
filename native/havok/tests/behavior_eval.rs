@@ -673,6 +673,50 @@ fn modifier_list_applies_enabled_children_in_order_for_magnitude_projection() {
 }
 
 #[test]
+fn events_from_range_is_root_motion_neutral_only_for_magnitude_projection() {
+    let mut fixture = GraphFixture::new();
+    let modifier = fixture.push(
+        "hkbEventsFromRangeModifier",
+        vec![member("enable", HkxValue::Bool(true))],
+    );
+    let moving = clip(&mut fixture, default_clip("moving", "move.hkt"));
+    let root = fixture.push(
+        "hkbModifierGenerator",
+        vec![
+            member("name", string("root")),
+            member("modifier", pointer(modifier)),
+            member("generator", pointer(moving)),
+        ],
+    );
+    let behavior = fixture.finish(root);
+    let animation = linear_animation(1.0, 10.0);
+    let sources = [AnimationPackfile::new("move.hkt", &animation)];
+
+    let mut vector = BehaviorEvaluator::load(&behavior, &sources, LoadOptions::default()).unwrap();
+    assert!(matches!(
+        vector.advance(0.25),
+        Err(BehaviorEvalError::UnsupportedActiveClass {
+            object_index,
+            class_name,
+        }) if object_index == modifier && class_name == "hkbEventsFromRangeModifier"
+    ));
+
+    let mut magnitude = BehaviorEvaluator::load(
+        &behavior,
+        &sources,
+        LoadOptions {
+            root_motion_projection: RootMotionProjection::MagnitudeOnly,
+            ..LoadOptions::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        magnitude.advance(0.25).unwrap().x.to_bits(),
+        2.5_f32.to_bits()
+    );
+}
+
+#[test]
 fn modifier_assignment_runs_again_after_state_reactivation() {
     let mut fixture = GraphFixture::new();
     let value = fixture.real_variable("Assigned", 0.0);

@@ -92,16 +92,9 @@ pub fn runtime_layout_for_subrecord_schema(
 }
 
 // -------------------------------------------------------------------------
-// validate_record — pure Rust port of `creation_lib.esp.authoring.validate_record`.
-//
-// Checks that a Python `Record` (PyRecord) conforms to its `RecordSpec`:
-//   * no duplicate non-repeatable subrecords,
-//   * no missing required subrecords.
-//
-// Ports `py_creation_lib/python/creation_lib/esp/authoring.py::validate_record` + `_missing_required_signatures`.
-// Byte-exact invariant is not affected — this function only raises errors on
-// bad input and never mutates the record.
-//
+// validate_record: checks a Python `Record` (PyRecord) against its
+// `RecordSpec` (no duplicate non-repeatable subrecords, no missing required
+// subrecords). Only raises on bad input; never mutates the record.
 // -------------------------------------------------------------------------
 
 /// Pure-Rust validation over a `SchemaRecordJson`. Returns the user-facing
@@ -351,11 +344,10 @@ fn field_codec_from_str(codec: &str) -> Option<crate::FieldCodec> {
 /// Build a DecodeSpec for a union of SchemaUnionVariantJson entries.
 /// Returns None if any variant lacks a codec or has an unsupported layout.
 ///
-/// `parse_partial` is forwarded into each variant's struct decoder so that
+/// `parse_partial` is forwarded into each variant's struct decoder so
 /// truncatable wbUnion-of-wbStruct subrecords (kind=parsed_with_raw_fallback)
-/// accept short payloads — e.g. MOVT.SPED variant {1} declares 124 bytes but
-/// real records carry only 44; xEdit tolerates the missing tail by filling
-/// defaults, and our runtime mirrors that here.
+/// accept short payloads, as in xEdit, which fills the missing tail with
+/// defaults. E.g. MOVT.SPED variant {1} declares 124 bytes; real records carry 44.
 fn decode_spec_for_union_rs(
     sig: &str,
     variants: &[SchemaUnionVariantJson],
@@ -2572,7 +2564,7 @@ fn read_vmad_fragments_quest_json(
     Some(serde_json::Value::Object(block))
 }
 
-fn compact_vmad_payload_json(
+pub fn compact_vmad_payload_json(
     data: &[u8],
     masters: &[String],
     plugin_name: &str,
@@ -3030,9 +3022,8 @@ fn decode_model_info_entry_json(data: &[u8], offset: usize) -> Option<serde_json
 /// consistently with other struct subrecords. Returns `None` to let the
 /// caller fall back to raw-hex preservation.
 ///
-/// `pub` (rather than crate-private like the omod_data counterpart) so
-/// `esp/tests/modt_roundtrip.rs` can exercise the codec against the real
-/// generated schema once schema_forge has wired MODT to codec=`model_info`.
+/// `pub` (unlike the omod_data counterpart) so `esp/tests/modt_roundtrip.rs`
+/// can exercise the codec against the real generated schema.
 pub fn compact_model_info_payload_json(
     data: &[u8],
     sub_spec: &SchemaSubrecordJson,
@@ -3176,7 +3167,10 @@ fn enum_payload_to_json(enum_def: &SchemaEnumJson, value: i128) -> serde_json::V
         return flags_payload_to_json(enum_def, value);
     }
     if let Some(display) = enum_def.display_for_value(value) {
-        return serde_json::Value::String(authoring_camel_case(display));
+        let compact = authoring_camel_case(display);
+        if enum_def.value_for_token_or_label(compact.as_str()) == Some(value) {
+            return serde_json::Value::String(compact);
+        }
     }
     enum_verbose_payload_to_json(enum_def, value)
 }
@@ -3292,15 +3286,12 @@ fn localized_value_payload_to_json(
         }
         return serde_json::Value::Object(map);
     }
-    let mut codes: Vec<&str> = strings.by_language.keys().map(|s| s.as_str()).collect();
-    codes.sort_unstable();
+    let codes = strings.language_codes();
 
     let mut entries: Vec<(String, String)> = Vec::new();
     for code in &codes {
-        if let Some(table) = strings.by_language.get(*code) {
-            if let Some(text) = table.get(&string_id) {
-                entries.push((language_display_name(code).to_string(), text.clone()));
-            }
+        if let Some(text) = strings.resolve(code.as_str(), string_id) {
+            entries.push((language_display_name(code.as_str()).to_string(), text));
         }
     }
 
@@ -4216,10 +4207,8 @@ fn compact_typed_value_json(
     )
 }
 
-/// GIL-free compact subrecord serialization (Step 2).
-///
-/// Mirrors the legacy schema-driven authoring serializer but returns
-/// `serde_json::Value` and requires no `py: Python<'_>` parameter.
+/// GIL-free compact subrecord serialization (Step 2). Returns
+/// `serde_json::Value` and needs no `Python<'_>`.
 ///
 /// `spec` is the pre-computed `DecodeSpec` from `schema_subrecord_to_decode_spec`
 /// (or `None` when no schema is available — falls back to raw-hex).
@@ -4371,10 +4360,9 @@ pub fn compact_subrecord_to_json(
 // RACE/PERK structured payloads, etc.
 // -------------------------------------------------------------------------
 
-/// Walk a subrecord's schema spec + raw bytes, emitting any FormID values
-/// nested inside compound layouts. The caller is expected to have already
-/// handled flat top-level formid/formid_array signatures via the legacy
-/// heuristic; this helper covers everything else.
+/// Walk a subrecord's schema spec + raw bytes, emitting its FormID values:
+/// top-level `formid` / `formid_array` payloads and FormIDs nested inside
+/// compound layouts.
 ///
 /// Skips raw subrecords, VMAD layouts, and signatures whose schema has no
 /// FormID field anywhere (cheap pre-check before invoking the decoder).
@@ -4572,12 +4560,10 @@ fn rewrite_custom_codec_form_ids(
                 return false;
             }
             let rewritten = crate::nvnm::write_nvnm(&payload);
-            // Only mutate in place when the new bytes fit the original buffer
-            // exactly — the caller's `data: &mut [u8]` has fixed length. NVNM
-            // byte length is fully determined by the structural counts (no
-            // strings / variable widths), so a FormID-only rewrite must
-            // preserve length; bail loudly if not so we don't silently
-            // truncate.
+            // The caller's `data: &mut [u8]` has fixed length. NVNM length is
+            // fully determined by the structural counts (no strings / variable
+            // widths), so a FormID-only rewrite preserves it; refuse rather
+            // than truncate if it doesn't.
             if rewritten.len() != data.len() {
                 return false;
             }
@@ -4735,7 +4721,7 @@ fn rewrite_fixed_struct_row_form_ids(
         return false;
     }
 
-    let mut changed = false;
+    let mut slots = Vec::with_capacity(fields.len());
     let mut offset = 0usize;
     let mut token_index = 0usize;
     for field in fields {
@@ -4753,14 +4739,28 @@ fn rewrite_fixed_struct_row_form_ids(
         let token = tokens[token_index];
         let size = token_width_rs(token).unwrap_or(0);
         if size == 0 {
-            return changed;
+            return false;
         }
-
-        if field.kind == "formid" && size == 4 {
-            changed |= rewrite_raw_formid_at(data, row_start + offset, rewrite_formid);
-        }
+        slots.push((field, row_start + offset, size, token));
         offset += size;
         token_index += 1;
+    }
+    let mut context = std::collections::HashMap::new();
+    if fields.iter().any(|field| !field.union_variants.is_empty()) {
+        for (field, offset, _, token) in &slots {
+            if let Some(value) = read_count_value(data, *offset, token) {
+                context.insert(field.id.clone(), serde_json::json!(value));
+            }
+        }
+    }
+    let mut changed = false;
+    for (field, offset, size, _) in slots {
+        let is_reference = field.kind == "formid" || field.union_variants.iter()
+            .find(|variant| conditions_match_json(&context, &schema_conditions_to_rust(&variant.conditions)))
+            .is_some_and(|variant| variant.codec.as_deref() == Some("formid"));
+        if is_reference && size == 4 {
+            changed |= rewrite_raw_formid_at(data, offset, rewrite_formid);
+        }
     }
     changed
 }
@@ -5752,6 +5752,49 @@ mod tests {
     }
 
     #[test]
+    fn enum_payload_keeps_numeric_value_when_display_text_is_ambiguous() {
+        let enum_def = SchemaEnumJson {
+            id: "DIAL.DATA.subtype".to_string(),
+            values: vec![
+                SchemaEnumValueJson {
+                    value: 0,
+                    id: "custom".to_string(),
+                },
+                SchemaEnumValueJson {
+                    value: 3,
+                    id: "custom".to_string(),
+                },
+            ],
+            labels: vec![
+                SchemaEnumLabelJson {
+                    value: 0,
+                    label: "Custom".to_string(),
+                },
+                SchemaEnumLabelJson {
+                    value: 3,
+                    label: "Custom".to_string(),
+                },
+            ],
+            aliases: Vec::new(),
+            scope: "scoped".to_string(),
+            storage_kind: "enum".to_string(),
+            byte_width: 2,
+            default_value: None,
+        };
+
+        assert_eq!(
+            enum_payload_to_json(&enum_def, 3),
+            serde_json::json!({
+                "value": 3,
+                "token": "custom",
+                "label": "Custom",
+                "enum": "DIAL.DATA.subtype",
+                "scope": "scoped"
+            })
+        );
+    }
+
+    #[test]
     fn enum_payload_compacts_flags_to_camel_case_label_list() {
         let enum_def = SchemaEnumJson {
             id: "WEAP.DNAM.flags".to_string(),
@@ -6598,12 +6641,11 @@ mod tests {
     // STAG.TNAM (Sound) struct:I + trailing zstring tail
     // -----------------------------------------------------------------------
     //
-    // xEdit defines TNAM as wbStruct(formid, wbString) — the schema codec is
-    // ``struct:I`` (one token) but the field list has two entries. Without the
-    // string-tail support exercised here, the trailing ``action`` zstring
-    // would have no token to bind to, the builder would fall through to
-    // ``return None``, and every TNAM in the audit would emit raw_hex
-    // (193 hits across 21 records on Fallout4.esm).
+    // xEdit defines TNAM as wbStruct(formid, wbString): the schema codec is
+    // ``struct:I`` (one token) but the field list has two entries. Without
+    // string-tail support the trailing ``action`` zstring has no token to bind
+    // to, the builder returns None, and every TNAM falls back to raw_hex
+    // (193 on Fallout4.esm).
     fn make_stag_tnam_spec() -> SchemaSubrecordJson {
         SchemaSubrecordJson {
             id: "TNAM".to_string(),

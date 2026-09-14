@@ -2,12 +2,11 @@
 //! form the FO4 multi-body re-encode can graft back on.
 //!
 //! The NIF collision re-encode (`nif_core::fo76_collision` → [`super::multi_body`])
-//! rebuilds each body's shape from scratch and has no notion of constraints, so an
-//! articulated assembly (a hanging chime, swinging sign, …) loses the ragdoll
-//! constraints that link its dynamic bodies — it stops moving and its segments get
-//! reclassified as loose clutter. FO76 and FO4 use the *same* `hkpRagdollConstraintData`
-//! class here (vanilla `TrapCanChimes01` is byte-for-byte the same shape), so the
-//! fix is to carry the constraint objects + `constraintCinfos` through verbatim.
+//! rebuilds shapes without constraints, so articulated assemblies (hanging chimes,
+//! swinging signs) would lose their ragdoll constraints, stop moving, and be
+//! reclassified as loose clutter. FO76 and FO4 share `hkpRagdollConstraintData`
+//! (vanilla `TrapCanChimes01` has the same shape), so the constraint objects and
+//! `constraintCinfos` are carried verbatim.
 
 use std::collections::{HashSet, VecDeque};
 

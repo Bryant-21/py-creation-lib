@@ -1,8 +1,4 @@
-"""records.content is zstd-compressed on write; readers decompress transparently.
-
-Phase 1 of the SQLite size-reduction plan
-(docs/superpowers/plans/2026-05-10-sqlite-db-size-reduction.md).
-"""
+"""records.content is zstd-compressed on write; readers decompress transparently."""
 
 import os
 import sqlite3

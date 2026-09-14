@@ -1,19 +1,10 @@
 """Compatibility-patch authoring on top of `EditorSession`.
 
-A "patch plugin" is a freshly-created `.esp` that lists conflicting source
-plugins as masters and contains overrides combining each source's edits.
-
-This module supplies the imperative primitives the UI calls:
-
-- `create_patch_plugin` — build an empty patch handle and register it as the
-  session's patch target.
-- `add_winner_to_patch` — copy the load-order winner of a conflict report into
-  the patch as a single override (no merging).
-- `automerge_to_patch` — dispatch mergeable reports to the Rust-native merge
-  operation; falls back to copy-winner for non-mergeable signatures.
-
-Cross-plugin FormID master-index remapping is handled inside native copy and
-merge operations.
+A patch plugin is a new `.esp` that masters the conflicting plugins and holds
+overrides combining their edits. `add_winner_to_patch` copies a conflict's
+load-order winner without merging; `automerge_to_patch` runs the native merge and
+falls back to copy-winner for non-mergeable signatures. Native copy and merge
+handle master-index remapping.
 """
 
 from __future__ import annotations

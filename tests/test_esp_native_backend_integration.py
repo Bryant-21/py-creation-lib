@@ -28,12 +28,7 @@ logger = logging.getLogger(__name__)
 
 
 def _rebuild_via_streaming(authoring_dir: Path, *, game: str = "fo4", jobs: int | None = None) -> Plugin:
-    """Stream-build a .esp from `authoring_dir` and load it as a Plugin.
-
-    This is the replacement for the deleted `import_authoring_dir` that exercises
-    the streaming dir → .esp pipeline. Tests that previously parsed an authoring
-    dir into an in-memory Plugin go through this two-step shim instead.
-    """
+    """Stream-build a .esp from `authoring_dir` and load it as a Plugin."""
     rebuilt_esp = authoring_dir.parent / f"{authoring_dir.name}.rebuilt.esp"
     build_authoring_dir(authoring_dir, rebuilt_esp, game=game, jobs=jobs)
     return Plugin.load(rebuilt_esp, game=game, backend="native")

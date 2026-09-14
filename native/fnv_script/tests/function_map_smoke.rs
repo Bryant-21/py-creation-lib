@@ -39,3 +39,45 @@ RewardKarma:
     ));
     assert_eq!(map.len(), 3);
 }
+
+#[test]
+fn rejects_templates_that_drop_or_invent_arguments() {
+    let dropped = r#"
+AddScriptPackage:
+  papyrus: "{self}.EvaluatePackage(true)"
+  arg_kinds: [package]
+  return_kind: void
+"#;
+    let err = FunctionMap::from_yaml(dropped).unwrap_err();
+    assert!(err.to_string().contains("does not consume"));
+
+    let invented = r#"
+GetPlayer:
+  papyrus: "Game.GetPlayer({arg0})"
+  arg_kinds: []
+  return_kind: actor
+"#;
+    let err = FunctionMap::from_yaml(invented).unwrap_err();
+    assert!(err.to_string().contains("declares 0 argument"));
+}
+
+#[test]
+fn rejects_malformed_placeholders_and_unknown_argument_kinds() {
+    let malformed = r#"
+Activate:
+  papyrus: "{argx}.Activate({self})"
+  arg_kinds: [actor]
+  return_kind: void
+"#;
+    let err = FunctionMap::from_yaml(malformed).unwrap_err();
+    assert!(err.to_string().contains("malformed argument placeholder"));
+
+    let unknown_kind = r#"
+Activate:
+  papyrus: "{arg0}.Activate({self})"
+  arg_kinds: [anything]
+  return_kind: void
+"#;
+    let err = FunctionMap::from_yaml(unknown_kind).unwrap_err();
+    assert!(err.to_string().contains("unsupported arg kind"));
+}

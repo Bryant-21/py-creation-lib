@@ -133,16 +133,7 @@ def _get_existing_extra_data_types(nif: NifFile, root_block_id: int) -> set[str]
 
 
 def import_nif(app, source: NifFile, options: ImportOptions) -> ImportResult:
-    """Execute the full NIF import/merge flow.
-
-    Args:
-        app: NifEditorApp instance (provides .nif, .nif_file, .undo_manager, etc.)
-        source: Already-loaded source NifFile to import from.
-        options: Which block categories to import.
-
-    Returns:
-        ImportResult with count of imported blocks and any skipped info.
-    """
+    """Import the block categories selected in ``options`` from ``source`` into ``app.nif``."""
     from creation_lib.nif.actions import SnapshotAction
     from creation_lib.nif.operations.sanitize import sanitize_links
 

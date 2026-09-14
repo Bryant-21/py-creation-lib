@@ -1,6 +1,4 @@
-"""Terrain archive family (upgrade-gen Task 1). Cases sourced from the
-verified audit (docs/superpowers/specs/appalachia_family_map_verified.md
-§2c) — exercised against paths from the deployed Appalachia tree."""
+"""Terrain and LOD archive routing from the deployed Appalachia tree."""
 from __future__ import annotations
 
 import pytest
@@ -8,10 +6,10 @@ import pytest
 from creation_lib.build.archive_plan import classify_archive_family
 
 CASES = [
-    # convert_terrain full-res tiles + materials -> Terrain.
-    ("Textures/Terrain/Appalachia/lswamprocks01_g.dds", "Terrain"),
-    ("Materials/Terrain/Appalachia/blend.bgsm", "Terrain"),
-    ("Terrain/Appalachia.btd4", "Terrain"),
+    # convert_terrain full-res tiles and materials use the generic archives.
+    ("Textures/Terrain/Appalachia/lswamprocks01_g.dds", "Textures"),
+    ("Materials/Terrain/Appalachia/blend.bgsm", "Materials"),
+    ("Terrain/Appalachia.btd4", "Main"),
     # lodgen terrain-LOD quad tiles -> LOD, not Terrain.
     ("Textures/Terrain/Appalachia/appalachia.16.-110.-77.dds", "LOD"),
     ("Textures/Terrain/Appalachia/appalachia.16.-110.-77_msn.dds", "LOD"),

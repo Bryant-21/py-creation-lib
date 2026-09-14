@@ -27,21 +27,11 @@ def create_mopp_shape(
     havok_scale_factor: float = HAVOK_SCALE,
     material: int = 0,
 ) -> tuple[int, int, int] | None:
-    """Create bhkMoppBvTreeShape from triangle mesh geometry.
+    """Create bhkMoppBvTreeShape -> bhkPackedNiTriStripsShape -> hkPackedNiTriStripsData.
 
-    Builds the full NIF block hierarchy:
-      bhkMoppBvTreeShape -> bhkPackedNiTriStripsShape -> hkPackedNiTriStripsData
-
-    Args:
-        nif: NifFile instance.
-        verts_nif: Nx3 float32 vertices in NIF space.
-        triangles: Mx3 int32 triangle indices.
-        radius: Collision radius (0.005 Skyrim, 0.1 FO3/Oblivion).
-        havok_scale_factor: NIF-to-Havok scale (69.99125).
-        material: Havok material index for all triangles.
-
-    Returns:
-        (mopp_block_id, packed_shape_id, data_block_id) or None on failure.
+    ``verts_nif`` are in NIF space. ``radius`` is 0.005 for Skyrim, 0.1 for
+    FO3/Oblivion; ``material`` applies to every triangle. Returns
+    ``(mopp_block_id, packed_shape_id, data_block_id)`` or None.
     """
     from .mopp_compiler import compile_mopp
 
@@ -179,19 +169,9 @@ def create_compressed_mesh_shape(
 ) -> tuple[int, int] | None:
     """Create bhkCompressedMeshShape + bhkCompressedMeshShapeData.
 
-    Uses the 'big verts/tris' path (uncompressed) for simplicity.
-    Chunk-based compression can be added later for size optimization.
-
-    Args:
-        nif: NifFile instance.
-        verts_nif: Nx3 float32 vertices in NIF space.
-        triangles: Mx3 int32 triangle indices.
-        havok_scale_factor: NIF-to-Havok scale (69.99125).
-        material: Havok material index for all triangles.
-        radius: Collision radius.
-
-    Returns:
-        (shape_block_id, data_block_id) or None on failure.
+    Writes only the uncompressed "big verts/tris" arrays, no chunks. ``verts_nif``
+    are in NIF space; ``material`` applies to every triangle. Returns
+    ``(shape_block_id, data_block_id)`` or None.
     """
     if len(triangles) == 0:
         return None

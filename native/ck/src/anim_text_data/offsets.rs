@@ -1,54 +1,53 @@
-//! AnimationOffsets per-subgraph populated emission — root-motion fixup (CK-free).
+//! AnimationOffsets per-subgraph populated emission: root-motion fixup (CK-free).
 //!
-//! The engine treats a present-but-EMPTY `AnimationOffsets/<id>.txt` as authoritative
-//! ("this subgraph has no root motion"), which kills forward locomotion / turn
-//! displacement for converted creatures (sliding / moonwalking). So a **moving** subgraph
-//! must ship a populated per-subgraph file with non-empty translation/rotation blocks.
+//! The engine treats a present-but-empty `AnimationOffsets/<id>.txt` as authoritative ("no
+//! root motion"), which kills locomotion and turn displacement for converted creatures
+//! (sliding / moonwalking). A moving subgraph must ship non-empty translation/rotation blocks.
 
 //!
 //! ## Source (RE: `bucket5_offsets_findings.md`, `reframe.py`)
-//! Root motion is the clip's baked `hkaDefaultAnimatedReferenceFrame` — NOT the root bone
+//! Root motion is the clip's baked `hkaDefaultAnimatedReferenceFrame`, not the root bone
 //! channel (`root_motion.rs::extract_from_root_channel` reads the wrong source). Each
-//! `referenceFrameSamples[i]` is a `Vector4 (x,y,z,w)` where `(x,y,z)` is the per-frame
-//! world displacement and `w` = `paraDistance` = accumulated heading angle in radians.
-//! The Offsets rotation key is the axis-angle quaternion about the reference-frame `up`:
-//! `q = (up.x·sin(θ/2), up.y·sin(θ/2), up.z·sin(θ/2), cos(θ/2))`, `θ = w`. Read from the
-//! **binary** `HkxValue` (true f32) — `unpack_hkx_to_xml`'s `%f` text truncates ~1 ULP.
+//! `referenceFrameSamples[i]` is a `Vector4 (x,y,z,w)`: `(x,y,z)` is the per-frame world
+//! displacement and `w` = `paraDistance`, the accumulated heading in radians. The rotation
+//! key is the axis-angle quaternion about the reference-frame `up`:
+//! `q = (up.x·sin(θ/2), up.y·sin(θ/2), up.z·sin(θ/2), cos(θ/2))`, `θ = w`. Values come from
+//! the binary `HkxValue` (true f32); `unpack_hkx_to_xml`'s `%f` text truncates ~1 ULP.
 //! Signed zeros fall out of the plain f32 multiply (right turns: `0.0·(−s) = −0.0`).
 //!
 //! ## Keyframe reduction
 //! `reduce_lanes` reduces the dense per-frame samples to a sparse keyset via `grow_while_fits`
-//! (selection/count/time byte-exact vs CK, `offsets_byte_exact.md`; sampled values within
-//! ≤1 ULP). The engine interpolates linearly between the kept keys.
+//! (selection/count/time byte-exact vs CK; values within 1 ULP). The engine interpolates
+//! linearly between kept keys.
 //!
-//! ## Clip set (RE: validated against the CK Snallygaster oracle file-for-file)
-//! The offsets clip set is the AI-action subset — NOT the AnimationFileData closure
-//! (which also lists locomotion/idle/reaction clips that CK keeps OUT of offsets):
-//! * `section1` (`clip_name` → `anim_path`, no motion block) = the **AnimEventInfo
-//!   non-dynamic clip targets** (combat attacks/evades/fire). Proven equal to the CK
-//!   section-1 set; the only AnimEventInfo clip dropped is the dynamic `DynamicAnimA`,
-//!   which has no on-disk anim (the clip-generator scan already requires a non-empty
-//!   `animationName`).
-//! * `section2` (`anim_path` → root-motion block) = the section-1 clips **plus** the
-//!   engine's directional turn-in-place clips (`TurnLeft<deg>`/`TurnRight<deg>` found on
-//!   disk; the plain `TurnLeft`/`TurnRight` are excluded). The directional turns are
-//!   driven by the engine turn-to-face system, not the behavior graph, so they are NOT
-//!   `hkbClipGenerator`s — they are collected by on-disk name pattern across the SAPT
-//!   chain. Locomotion (walk/run/jog), idle, hit-reactions, staggers and deaths are
-//!   excluded (CK does not put them in this cache; the locomotion system owns their
-//!   root motion). The byte-exact grammar is `offsets_struct.py` (3159/3162 re-emit).
+//! ## Clip set (creature builder)
+//! * `section1` (`clip_name` → `anim_path`, no motion block): the core behavior's named clip
+//!   generators whose generator name equals their animation basename. That invariant holds
+//!   across all 511064 vanilla section-1 entries and the runtime depends on it (see the guard
+//!   in `build_subgraph_offsets_body`). Generators with an empty `animationName`, dynamic
+//!   clips playing the `Idle` placeholder (RadHog's `DodgeLeft`/`EvadeLeft`), and aliased
+//!   clips the engine could not resolve are dropped.
+//! * `section2` (`anim_path` → root-motion block): the section-1 clips with a baked reference
+//!   frame, plus the engine's directional turn-in-place clips (`TurnLeft<deg>`/`TurnRight<deg>`
+//!   on disk; plain `TurnLeft`/`TurnRight` excluded). The turn-to-face system drives those, not
+//!   the behavior graph, so they are collected by on-disk name across the SAPT chain.
+//!
+//! The weapon and furniture builders differ; see [`build_subgraph_offsets_body_weapon`] and
+//! [`build_subgraph_offsets_body_furniture`].
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
 
 use havok_native::hkx::HkxObject;
 use havok_native::hkx::read_packfile;
 use havok_native::hkx::types::HkxValue;
 
-use super::behavior_index::{clip_leaf, resolve_leaf};
+use super::behavior_index::{clip_leaf, core_project_dir, resolve_leaf};
 use super::bucket_files::{OffsetsClipNoMotion, OffsetsMotion, animation_offsets_populated_body};
 use super::emit::SubgraphInput;
 use super::graph::GraphResolver;
+use super::hkx_cache::{FileMemo, path_key};
 
 /// Subgraphs whose IDs appear in the vanilla aggregate but must be excluded
 /// when rebuilding. These are WeaponBehavior/GunBehavior entries whose SAPT
@@ -124,6 +123,17 @@ pub(super) struct BakedReferenceFrame {
     pub(super) duration: f32,
     /// Dense per-frame `(x, y, z, headingAngleRadians)`.
     pub(super) samples: Vec<[f32; 4]>,
+    reduced_lanes: OnceLock<ReducedLanes>,
+}
+
+type ReducedLanes = (Vec<(f32, [f32; 3])>, Vec<(f32, [f32; 4])>);
+
+impl BakedReferenceFrame {
+    fn reduced_lanes(&self) -> ReducedLanes {
+        self.reduced_lanes
+            .get_or_init(|| reduce_lanes(self))
+            .clone()
+    }
 }
 
 fn f32_member(obj: &HkxObject, name: &str) -> Option<f32> {
@@ -147,12 +157,63 @@ fn f32list_member<'a>(obj: &'a HkxObject, name: &str) -> Option<&'a [f32]> {
         })
 }
 
-/// Read the baked reference frame from a clip `.hkx` (binary model, true f32).
-pub(super) fn extract_baked_reference_frame(clip_hkx: &Path) -> Option<BakedReferenceFrame> {
-    let data = std::fs::read(clip_hkx).ok()?;
-    let hkx = read_packfile(&data).ok()?;
-    let obj = hkx
-        .objects()
+/// One clip's cached derivations, shared by every subgraph that reaches the clip. The
+/// reference frame, annotations and duration come from a single parse.
+struct ClipMemoEntry {
+    reference_frame: Option<Arc<BakedReferenceFrame>>,
+    annotations: Arc<Vec<(f32, String)>>,
+    duration: Option<f32>,
+}
+
+static CLIPS: FileMemo<Arc<ClipMemoEntry>> = FileMemo::new();
+
+fn clip_memo(clip_hkx: &Path) -> Arc<ClipMemoEntry> {
+    CLIPS.get_or_init(&path_key(clip_hkx), || {
+        let hkx = std::fs::read(clip_hkx)
+            .ok()
+            .and_then(|data| read_packfile(&data).ok());
+        Arc::new(ClipMemoEntry {
+            reference_frame: hkx
+                .as_ref()
+                .and_then(|hkx| baked_reference_frame(hkx.objects()))
+                .map(Arc::new),
+            annotations: Arc::new(
+                hkx.as_ref()
+                    .map(|hkx| root_annotations(hkx.objects()))
+                    .unwrap_or_default(),
+            ),
+            duration: hkx
+                .as_ref()
+                .and_then(|hkx| animation_duration(hkx.objects())),
+        })
+    })
+}
+
+pub(super) fn clear_clip_memo() {
+    CLIPS.clear();
+}
+
+/// A stationary clip carries no `hkaDefaultAnimatedReferenceFrame`, so its length has to come
+/// off the animation itself. CK still writes a section-2 block for those clips with their real
+/// duration, e.g. `WPNPitchDownReadyAdd` at 0.333s.
+fn animation_duration(objects: &[HkxObject]) -> Option<f32> {
+    objects
+        .iter()
+        .find(|o| o.class_name.starts_with("hka") && o.class_name.ends_with("Animation"))
+        .and_then(|o| f32_member(o, "duration"))
+}
+
+pub(super) fn extract_clip_duration(clip_hkx: &Path) -> Option<f32> {
+    clip_memo(clip_hkx).duration
+}
+
+/// Read the baked reference frame from a clip `.hkx` (binary model, true f32), memoized.
+pub(super) fn extract_baked_reference_frame(clip_hkx: &Path) -> Option<Arc<BakedReferenceFrame>> {
+    clip_memo(clip_hkx).reference_frame.clone()
+}
+
+fn baked_reference_frame(objects: &[HkxObject]) -> Option<BakedReferenceFrame> {
+    let obj = objects
         .iter()
         .find(|o| o.class_name == "hkaDefaultAnimatedReferenceFrame")?;
 
@@ -181,14 +242,15 @@ pub(super) fn extract_baked_reference_frame(clip_hkx: &Path) -> Option<BakedRefe
         up,
         duration,
         samples,
+        reduced_lanes: OnceLock::new(),
     })
 }
 
 /// Streaming **grow-while-fits** piecewise-linear decimation. Returns the kept frame
 /// indices: frame 0 is the IMPLICIT origin (NEVER emitted) and the terminal frame `N-1` is
 /// always retained. `err(a,b,j)` = the error of dropping interior frame `j` from the chord
-/// `a→b`; a segment `[a,b]` fits iff every interior `j` has `err ≤ tol`. (RE:
-/// `offsets_byte_exact.md` §1 — this is NOT RDP and NOT furthest-reachable.)
+/// `a→b`; a segment `[a,b]` fits iff every interior `j` has `err ≤ tol`. Not RDP and not
+/// furthest-reachable (RE: `offsets_byte_exact.md`).
 fn grow_while_fits(n: usize, tol: f32, err: impl Fn(usize, usize, usize) -> f32) -> Vec<usize> {
     let mut keys: Vec<usize> = Vec::new();
     if n <= 1 {
@@ -212,18 +274,16 @@ fn grow_while_fits(n: usize, tol: f32, err: impl Fn(usize, usize, usize) -> f32)
 }
 
 /// CK keyframe-reduced translation `(time,X,Y,Z)` + rotation `(time,qx,qy,qz,qw)` lanes.
-/// SELECTION + COUNT + TIME are byte-exact vs CK (`offsets_byte_exact.md`):
-/// * translation — grow-while-fits, Euclidean-3D chord error, `tol = 2.0`.
-/// * rotation — grow-while-fits, heading-angle error `|Δw|`, `tol = 0.3°`, plus the antipode
-///   rule (a segment spanning ≥180° — `dot(q_a,q_b) ≤ 0` — forces a key at the last frame
-///   before `qw` goes negative; disambiguates ±180° turns, gated on the f32 `qw` sign so
-///   `+π` TurnLeft180 forces a key but `−π` TurnRight180 does not).
-/// * time — `t[fr] = f32(fr · f32(duration/(N-1)))` (NOT `fr/fps`, which is 1 ULP off).
-/// * values — sampled from the reference frame at the key time via Havok `getReferenceFrame`
-///   interpolation (§4), NOT a verbatim `samples[fr]` read → ≤1 ULP (the last ULP is the
-///   exact f32 getter widths/op-order, an accepted refinement). SELECTION still runs on the
-///   verbatim dense samples.
-fn reduce_lanes(rf: &BakedReferenceFrame) -> (Vec<(f32, [f32; 3])>, Vec<(f32, [f32; 4])>) {
+/// Selection, count and time are byte-exact vs CK (`offsets_byte_exact.md`):
+/// * translation: grow-while-fits, Euclidean-3D chord error, `tol = 2.0`.
+/// * rotation: grow-while-fits, heading-angle error `|Δw|`, `tol = 0.3°`, plus the antipode
+///   rule: a segment spanning ≥180° (`dot(q_a,q_b) ≤ 0`) forces a key at the last frame
+///   before `qw` goes negative. Gated on the f32 `qw` sign, so `+π` TurnLeft180 forces a key
+///   but `−π` TurnRight180 does not.
+/// * time: `t[fr] = f32(fr · f32(duration/(N-1)))`, not `fr/fps` (1 ULP off).
+/// * values: sampled at the key time via Havok `getReferenceFrame` interpolation, not read
+///   verbatim from `samples[fr]`; within 1 ULP of CK. Selection runs on the dense samples.
+fn reduce_lanes(rf: &BakedReferenceFrame) -> ReducedLanes {
     let n = rf.samples.len();
     if n == 0 {
         return (Vec::new(), Vec::new());
@@ -284,9 +344,9 @@ fn reduce_lanes(rf: &BakedReferenceFrame) -> (Vec<(f32, [f32; 3])>, Vec<(f32, [f
         rot_keys.dedup();
     }
 
-    // VALUE source = Havok `getReferenceFrame(t)` sampled at the key time, NOT the verbatim
-    // `samples[fr]` (offsets_byte_exact.md §4). The f32 `time→p` round-trip lands `p` a hair
-    // off the integer, so the lerp nudges an on-frame key by ≤1 ULP — exactly what CK stores.
+    // Values come from Havok `getReferenceFrame(t)` at the key time, not the verbatim
+    // `samples[fr]`. The f32 `time→p` round-trip lands `p` a hair off the integer, so the lerp
+    // nudges an on-frame key by up to 1 ULP, which is what CK stores.
     let sample_at = |t: f32| -> [f32; 4] {
         if n == 1 || rf.duration == 0.0 {
             return rf.samples[0];
@@ -336,13 +396,11 @@ fn frame_has_motion(rf: &BakedReferenceFrame) -> bool {
 /// Best-effort (dense emission is not byte-identical, so CK's name canonicalization /
 /// same-timestamp reorder is not replicated).
 fn extract_root_annotations(clip_hkx: &Path) -> Vec<(f32, String)> {
-    let Ok(data) = std::fs::read(clip_hkx) else {
-        return Vec::new();
-    };
-    let Ok(hkx) = read_packfile(&data) else {
-        return Vec::new();
-    };
-    for obj in hkx.objects() {
+    (*clip_memo(clip_hkx).annotations).clone()
+}
+
+fn root_annotations(objects: &[HkxObject]) -> Vec<(f32, String)> {
+    for obj in objects {
         let Some(tracks_member) = obj.members.iter().find(|m| m.name == "annotationTracks") else {
             continue;
         };
@@ -392,10 +450,7 @@ fn extract_root_annotations(clip_hkx: &Path) -> Vec<(f32, String)> {
 
 /// Walk a behavior `.hkx` for its `hkbClipGenerator` `(name, animationName)` pairs.
 fn collect_clip_generators(behavior: &Path) -> Vec<(String, String)> {
-    let Ok(data) = std::fs::read(behavior) else {
-        return Vec::new();
-    };
-    let Ok(hkx) = read_packfile(&data) else {
+    let Some(hkx) = super::hkx_cache::behavior_packfile(behavior) else {
         return Vec::new();
     };
     let mut out = Vec::new();
@@ -486,7 +541,7 @@ fn push_motion_entry(
     };
     *any_motion |= frame_has_motion(&rf);
     let annotations = extract_root_annotations(disk);
-    let (translations, rotations) = reduce_lanes(&rf);
+    let (translations, rotations) = rf.reduced_lanes();
     section2.push(OffsetsMotion {
         anim_path: anim_path_no_ext,
         duration: rf.duration,
@@ -496,15 +551,12 @@ fn push_motion_entry(
     });
 }
 
-/// Build the **populated** per-subgraph `AnimationOffsets/<id>.txt` body for one subgraph,
-/// or `None` if no clip in the subgraph actually moves (then the engine rebuilds offsets
-/// from the empty project-level entry — correct for a genuinely static subgraph).
+/// Build the populated per-subgraph `AnimationOffsets/<id>.txt` body for a creature, or
+/// `None` if no clip moves (the engine then rebuilds offsets from the empty project-level
+/// entry, which is correct for a static subgraph).
 ///
-/// * `core_behavior_disk` — the subgraph's core behavior `.hkx` on disk (clip source).
-/// * `core_behavior_rel`  — the FO4 relpath written as the V4 `core_behavior` string.
-/// * `meshes_root`        — mod Meshes root (clip `.hkx` + SAPT override resolution).
-/// * `sapt_chain`         — the subgraph SAPT chain, self-first.
-/// * `event_clip_names`   — AnimEventInfo clip targets (ci) → the section1 named-clip set.
+/// `core_behavior_disk` is the clip source; `core_behavior_rel` is the FO4 relpath written as
+/// the V4 `core_behavior` string. `event_clip_names` is unused: section 1 is the whole clip set.
 pub fn build_subgraph_offsets_body(
     core_behavior_disk: &Path,
     core_behavior_rel: &str,
@@ -518,30 +570,34 @@ pub fn build_subgraph_offsets_body(
     // Dedup section2 by anim path (a clip can be referenced by >1 generator).
     let mut seen_paths: BTreeSet<String> = BTreeSet::new();
 
-    // 1) Combat clips = the AnimEventInfo non-dynamic clip targets, resolved from the
-    //    core behavior's named clip generators. Each → section1 (name→path) AND section2
-    //    (motion block) — unconditionally, matching CK (a static-but-annotated attack
-    //    like `Attack7` still gets a section2 entry).
+    // 1) The core behavior's named clip generators → section1 (name→path) and section2
+    //    (motion block), unconditionally, as CK does (a static-but-annotated attack like
+    //    `Attack7` still gets a section2 entry).
     //
-    //    The dynamic clip `DynamicAnimA` IS an AnimEventInfo target, but its generator
-    //    plays the `Idle.hkt` *placeholder* (its real animation is runtime-injected), so
-    //    it has no static root motion and CK drops it from this cache. Distinguish it
-    //    structurally: a real named combat clip plays its OWN animation (`Attack6` →
-    //    `Attack6.hkx`); a dynamic/aliased clip's resolved anim basename differs from its
-    //    name.
+    //    Name identity is a format invariant; keep the guard. All 511064 section-1 entries in
+    //    the 3156 vanilla files have `clip_name == basename(anim_path)`. The runtime
+    //    (`0x1313BE0`) looks a clip up by generator name, then probes a per-subgraph table
+    //    keyed by clip name with the record's animation basename, so an aliased entry
+    //    (`AttackMelee_TuskSwipe_Front` over `TuskSwipe_Front.hkx`) is dropped in-game and
+    //    `attackTime` stays 0.0. Aliased generators are repaired upstream (`align_clip_names`).
+    //    The guard also drops dynamic clips, whose generator plays the `Idle.hkt` placeholder
+    //    (real animation injected at runtime); CK excludes those too.
     for (clip_name, animation_name) in collect_clip_generators(core_behavior_disk) {
-        if !event_clip_names.contains(&clip_name.to_ascii_lowercase()) {
-            continue; // not an AI-action combat clip — CK keeps it out of offsets
-        }
+        // NOT gated on `event_clip_names`. Section 1 is the subgraph's whole clip set, not the
+        // AI-action subset: restricting it to AnimEventInfo targets cost 110 distinct names
+        // against the CK-built golden, `WPNIdleSighted` in all 47 subgraphs among them.
+        let _ = &event_clip_names;
         let leaf = clip_leaf(&animation_name);
-        let rel = resolve_leaf(meshes_root, sapt_chain, &leaf); // e.g. Actors\X\Animations\Foo.hkx
+        // e.g. Actors\X\Animations\Foo.hkx
+        let rel = resolve_leaf(
+            meshes_root,
+            sapt_chain,
+            &leaf,
+            core_project_dir(meshes_root, core_behavior_disk).as_deref(),
+        );
         let anim_path_no_ext = rel.strip_suffix(".hkx").unwrap_or(&rel).to_string();
-        let anim_base = anim_path_no_ext
-            .rsplit(['\\', '/'])
-            .next()
-            .unwrap_or(&anim_path_no_ext);
-        if !anim_base.eq_ignore_ascii_case(&clip_name) {
-            continue; // dynamic/placeholder clip (e.g. DynamicAnimA → Idle) — no offset
+        if !clip_name_matches_animation(&clip_name, &anim_path_no_ext) {
+            continue; // aliased or placeholder clip — unresolvable at runtime (see above)
         }
         section1.push(OffsetsClipNoMotion {
             clip_name: clip_name.clone(),
@@ -586,11 +642,11 @@ fn basename_lc(anim_no_ext: &str) -> String {
         .to_ascii_lowercase()
 }
 
-/// The engine's on-disk locomotion **transition** clips (weapon_path.md §6b.2): the
-/// start/stop/turn-in-place clips driven by the locomotion system, not the behavior graph
-/// (so not `hkbClipGenerator`s). Generalizes the creature `is_directional_turn`:
-/// `stand_to_*`, `*_to_stand`, `*_to_idle`, `turninplace*`, `relaxedturninplace*`. The `_loop`
-/// hold variants are EXCLUDED (those are cyclic — SpeedInfo's, not Offsets').
+/// The engine's on-disk locomotion transition clips (weapon_path.md): start/stop/turn-in-place
+/// clips driven by the locomotion system, not the behavior graph (so not `hkbClipGenerator`s).
+/// Generalizes the creature `is_directional_turn`: `stand_to_*`, `*_to_stand`, `*_to_idle`,
+/// `turninplace*`, `relaxedturninplace*`. `_loop` hold variants are cyclic and belong to
+/// SpeedInfo, not Offsets.
 fn is_weapon_transition(stem: &str) -> bool {
     let lc = stem.to_ascii_lowercase();
     if lc.ends_with("_loop") {
@@ -603,11 +659,10 @@ fn is_weapon_transition(stem: &str) -> bool {
         || lc.starts_with("relaxedturninplace")
 }
 
-/// Non-action clip families that CK keeps OUT of a 3rd-person weapon subgraph's Offsets even
-/// though they carry root motion: hit reactions, staggers/stumbles, deaths/getups, cameras,
-/// jumps, equip/recoil, cover crouch-walks. (Calibrated against the FAN oracle: 0 of these
-/// appear in any section-1; weapon_path.md §6b.5.) Applied ONLY to 3rd-person locomotion
-/// subgraphs — 1st-person/additive cores (no SpeedInfo) keep their full closure.
+/// Non-action clip families CK keeps out of a 3rd-person weapon subgraph's Offsets despite
+/// root motion: hit reactions, staggers/stumbles, deaths/getups, cameras, jumps, equip/recoil,
+/// cover crouch-walks (none appear in any FAN-oracle section 1). Applied only to 3rd-person
+/// locomotion subgraphs; 1st-person/additive cores (no SpeedInfo) keep their full closure.
 fn is_non_action_clip(base: &str) -> bool {
     base.starts_with("hit")
         || base.starts_with("riflehit")
@@ -672,26 +727,35 @@ fn weapon_transition_anims(roots: &[&Path], sapt_chain: &[String]) -> Vec<(Strin
     out
 }
 
-/// Build the weapon/character per-subgraph `AnimationOffsets/<id>.txt` (weapon_path.md §6b).
+/// FO4's AnimationOffsets name-identity invariant: a section-1 row resolves at runtime only
+/// when the clip generator's name equals the basename of the animation it plays. Shared by
+/// the creature and weapon builders so the two cannot drift apart.
+pub(super) fn clip_name_matches_animation(clip_name: &str, anim_path_no_ext: &str) -> bool {
+    let base = anim_path_no_ext
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or(anim_path_no_ext);
+    base.eq_ignore_ascii_case(clip_name)
+}
+
+/// Build the weapon/character per-subgraph `AnimationOffsets/<id>.txt` (weapon_path.md).
 ///
-/// The creature builder ([`build_subgraph_offsets_body`]) is single-file + mod-only; a weapon
-/// subgraph's clips live across `[mod, base]` behind the base-game character behavior graph. So
-/// this path differs in three ways: (1) the clip universe is the cross-file `GraphResolver`
-/// closure (the SAME closure `AnimationFileData` uses — `collect_clip_generators(core)` finds 1
-/// of 411 for a wrapping behavior); (2) clips resolve across `[mod, base]`; (3) the on-disk
-/// transition sweep covers the full weapon set ([`weapon_transition_anims`]).
+/// Unlike the creature builder ([`build_subgraph_offsets_body`], single-file, mod-only), a
+/// weapon subgraph's clips live across `[mod, base]` behind the base-game character graph:
+/// the clip universe is the cross-file `GraphResolver` closure that `AnimationFileData` uses
+/// (`collect_clip_generators(core)` finds 1 of 411 for a wrapping behavior), clips resolve
+/// across `[mod, base]`, and the on-disk transition sweep covers the full weapon set
+/// ([`weapon_transition_anims`]).
 ///
-/// `speedinfo_loops` = the subgraph's `AnimationSpeedInfo` directional-contour leaf basenames
-/// ([`super::speed::speed_info_leaf_basenames`]). Those cyclic loops are
-/// EXCLUDED (moonwalk guard); the exclusion is conditional — an empty set (a subgraph with no
-/// SpeedInfo, e.g. 1st-person `GunBehavior`) drops nothing, so its loops stay in Offsets.
+/// `speedinfo_loops` holds the subgraph's `AnimationSpeedInfo` contour leaf basenames
+/// ([`super::speed::speed_info_leaf_basenames`]); those cyclic loops are excluded (moonwalk
+/// guard). An empty set (no SpeedInfo, e.g. 1st-person `GunBehavior`) excludes nothing.
 ///
-/// `section1` is the on-disk closure named set minus the loops and (for a 3rd-person locomotion
-/// subgraph) the non-action families ([`is_non_action_clip`]). The exact action sub-selection
-/// the human CK pass makes within the remainder (e.g. `WPNFireSingleAdditive` kept but
-/// `wpnfireautoadditive` dropped) is graph-event-reachability the weapon oracle ships no
-/// AnimEventInfo to pin — a documented byte-parity residual (weapon_path.md §6b.5). Dense-vs-CK-
-/// keyframe-reduction caveat carries over from the creature path (functionally exact, larger).
+/// `section1` is the on-disk closure minus the loops and, for 3rd-person locomotion
+/// subgraphs, the non-action families ([`is_non_action_clip`]). CK's finer action selection
+/// within the rest (`WPNFireSingleAdditive` kept, `wpnfireautoadditive` dropped) depends on
+/// graph-event reachability that the weapon oracle ships no AnimEventInfo to pin, so it is
+/// not reproduced.
 pub fn build_subgraph_offsets_body_weapon(
     resolver: &mut GraphResolver,
     core_behavior_rel: &str,
@@ -707,10 +771,10 @@ pub fn build_subgraph_offsets_body_weapon(
     // 1st-person / additive cores (no contour) carry their full moving closure.
     let third_person = !speedinfo_loops.is_empty();
 
-    // 1) Cross-file closure clips → section1 (clip→path) + section2 (motion). A clip enters
-    //    only if it has a baked reference frame (matches CK's s1 ⊆ s2; pure additive/pose clips
-    //    with no root frame are dropped here, exactly as they are absent from the oracle).
-    for (clip_name, anim_no_ext, disk) in
+    // 1) Cross-file closure clips → section1 (clip→path) + section2 (motion block; empty lanes
+    //    and the clip's own duration when it has no baked reference frame).
+    // Weapon/creature section 1 keys on the generator's own `name`, byte-exact against CK.
+    for (clip_name, _anim_basename, anim_no_ext, disk) in
         resolver.resolve_clip_generators(core_behavior_rel, sapt_chain)
     {
         let base = basename_lc(&anim_no_ext);
@@ -720,9 +784,17 @@ pub fn build_subgraph_offsets_body_weapon(
         if third_person && is_non_action_clip(&base) {
             continue;
         }
-        let Some(rf) = extract_baked_reference_frame(&disk) else {
-            continue;
-        };
+        // Name-identity invariant, as in the creature path: the runtime resolves the clip's
+        // animation through a table keyed by clip name, so an aliased row is unresolvable.
+        // Vanilla always satisfies it (zero aliased rows in every vanilla SuperMutant
+        // subgraph); converted FO76 humanoids reach this path through the shared
+        // Weapon/Melee/MT cores and may not.
+        //
+        // Checked before the `seen_paths` insert: an aliased generator must not take the path's
+        // one slot from a later well-named generator playing the same animation.
+        if !clip_name_matches_animation(&clip_name, &anim_no_ext) {
+            continue; // aliased clip — the engine cannot resolve it, so CK never writes it
+        }
         if !seen_paths.insert(anim_no_ext.clone()) {
             continue;
         }
@@ -730,12 +802,26 @@ pub fn build_subgraph_offsets_body_weapon(
             clip_name,
             anim_path: anim_no_ext.clone(),
         });
-        any_motion |= frame_has_motion(&rf);
+        // Root motion decides the motion block, not registration: CK's section 1 includes
+        // stationary clips (`WPNIdleSighted` in all 47 subgraphs of the CK-built golden,
+        // `WPNIdleReady`, the cover/kneel idles, `SneakWPNFireSingleReady`).
+        let reference_frame = extract_baked_reference_frame(&disk);
         let annotations = extract_root_annotations(&disk);
-        let (translations, rotations) = reduce_lanes(&rf);
+        let (duration, translations, rotations) = match reference_frame.as_deref() {
+            Some(rf) => {
+                any_motion |= frame_has_motion(rf);
+                let (translations, rotations) = rf.reduced_lanes();
+                (rf.duration, translations, rotations)
+            }
+            None => (
+                extract_clip_duration(&disk).unwrap_or_default(),
+                Vec::new(),
+                Vec::new(),
+            ),
+        };
         section2.push(OffsetsMotion {
             anim_path: anim_no_ext,
-            duration: rf.duration,
+            duration,
             translations,
             rotations,
             annotations,
@@ -769,9 +855,16 @@ pub fn build_subgraph_offsets_body_weapon(
 
 /// True for the FO4 furniture behavior cores (`WorkbenchFurnitureBehavior`,
 /// `FurnitureBehavior`, `FurnitureNoMirrorBehavior`, `1stPFurnitureIdleBehavior`,
-/// `SingleAnimFurniture`, the furniture wrapping behaviors).
+/// `SingleAnimFurniture`, the furniture wrapping behaviors) plus `AmbushBehavior`,
+/// the shared burrow/emerge core.
+///
+/// The RACE mounts `AmbushBehavior` in a Furniture-role block (FO76 floater; FO4 ships
+/// vanilla offsets entries for it). In the weapon builder its motion gate emits no file and
+/// the creature cannot build the subgraph. The real discriminator is the `SRAF` role; the
+/// name match is a proxy because `SubgraphInput` does not carry the role.
 pub fn is_furniture_core_behavior(core_behavior_rel: &str) -> bool {
-    core_behavior_rel.to_ascii_lowercase().contains("furniture")
+    let lowercase = core_behavior_rel.to_ascii_lowercase();
+    lowercase.contains("furniture") || lowercase.contains("ambushbehavior")
 }
 
 /// The clip's own duration, for clips that ship no baked reference frame.
@@ -786,22 +879,17 @@ fn clip_duration(clip_hkx: &Path) -> Option<f32> {
 
 /// Build the per-subgraph `AnimationOffsets/<id>.txt` body for a **furniture** subgraph.
 ///
-/// Furniture differs from the creature/weapon builders in two ways, both taken from CK
-/// output rather than inferred:
+/// Differs from the creature/weapon builders, per CK output:
+/// 1. No motion gate. All 252 of FO4's Furniture-role subgraph blocks ship an offsets entry,
+///    including static ones (`Furniture\Chair` and `Furniture\BarStool` each carry one clip
+///    whose single translation sample is `(0,0,0)`); without the file the engine cannot
+///    build the subgraph.
+/// 2. Clips with no baked reference frame get a synthesized neutral frame. FO76 furniture
+///    clips carry a null `extractedMotion` in the source itself, and CK's static-furniture
+///    entries are exactly a neutral frame; dropping the clips would empty both sections.
 ///
-/// 1. **No motion gate.** Every one of FO4's 252 Furniture-role subgraph blocks ships an
-///    offsets entry, including wholly static ones — `Furniture\Chair` and
-///    `Furniture\BarStool` each carry one clip whose single translation sample is
-///    `(0,0,0)`. The creature/weapon builders return `None` when nothing moves; for
-///    furniture that would drop the file the engine needs to build the subgraph at all.
-/// 2. **Clips with no baked reference frame still get an entry.** FO76 furniture clips
-///    carry a null `extractedMotion` (verified on the FO76 *source*, so this is a
-///    convention difference, not a conversion loss). CK's static-furniture entries are
-///    exactly a neutral frame, so synthesize one rather than dropping the clip — dropping
-///    it empties both sections and yields no file.
-///
-/// The clip universe is the same cross-file `GraphResolver` closure `AnimationFileData`
-/// uses, because a furniture core behavior lives in the base game, not the mod.
+/// The clip universe is the cross-file `GraphResolver` closure, since furniture cores live
+/// in the base game.
 pub fn build_subgraph_offsets_body_furniture(
     resolver: &mut GraphResolver,
     core_behavior_rel: &str,
@@ -811,19 +899,24 @@ pub fn build_subgraph_offsets_body_furniture(
     let mut section2: Vec<OffsetsMotion> = Vec::new();
     let mut seen_paths: BTreeSet<String> = BTreeSet::new();
 
-    for (clip_name, anim_no_ext, disk) in
+    // Furniture section 1 keys on the ANIMATION basename, not the generator's `name`. FO4's
+    // shared furniture graph names a generator `Standing Enter` whose animation is
+    // `EnterFromStand`; CK writes the latter, and `Standing Enter` appears in 0 of the 3156
+    // vanilla AnimationOffsets files. Using the generator name makes GetClipInformation miss,
+    // which removes the InteractionData entry and yields `sFailedActivation`.
+    for (_generator_name, anim_basename, anim_no_ext, disk) in
         resolver.resolve_clip_generators(core_behavior_rel, sapt_chain)
     {
         if !seen_paths.insert(anim_no_ext.clone()) {
             continue;
         }
         section1.push(OffsetsClipNoMotion {
-            clip_name,
+            clip_name: anim_basename,
             anim_path: anim_no_ext.clone(),
         });
         let (duration, translations, rotations) = match extract_baked_reference_frame(&disk) {
             Some(rf) => {
-                let (translations, rotations) = reduce_lanes(&rf);
+                let (translations, rotations) = rf.reduced_lanes();
                 (rf.duration, translations, rotations)
             }
             None => {
@@ -860,6 +953,139 @@ pub fn build_subgraph_offsets_body_furniture(
 mod tests {
     use super::*;
 
+    #[test]
+    fn shared_motion_reduction_preserves_lanes_under_parallel_reuse() {
+        let frame = BakedReferenceFrame {
+            up: [-0.0, 0.0, 1.0],
+            duration: 2.0,
+            samples: (0..120)
+                .map(|i| {
+                    let t = i as f32 / 60.0;
+                    [t, t * t, -0.0, t * 0.25]
+                })
+                .collect(),
+            reduced_lanes: OnceLock::new(),
+        };
+        let expected = reduce_lanes(&frame);
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                let frame = &frame;
+                let expected = &expected;
+                scope.spawn(move || {
+                    let actual = frame.reduced_lanes();
+                    let bits = |lanes: &ReducedLanes| {
+                        lanes
+                            .0
+                            .iter()
+                            .flat_map(|(t, v)| std::iter::once(t).chain(v))
+                            .chain(
+                                lanes
+                                    .1
+                                    .iter()
+                                    .flat_map(|(t, v)| std::iter::once(t).chain(v)),
+                            )
+                            .map(|v| v.to_bits())
+                            .collect::<Vec<_>>()
+                    };
+                    assert_eq!(bits(&actual), bits(expected));
+                });
+            }
+        });
+        assert!(frame.reduced_lanes.get().is_some());
+    }
+
+    #[test]
+    #[ignore = "manual conversion performance benchmark"]
+    fn benchmark_shared_motion_reduction() {
+        let frame = BakedReferenceFrame {
+            up: [0.0, 0.0, 1.0],
+            duration: 10.0,
+            samples: (0..600).map(|i| [i as f32, 0.0, 0.0, 0.0]).collect(),
+            reduced_lanes: OnceLock::new(),
+        };
+        let started = std::time::Instant::now();
+        for _ in 0..100 {
+            std::hint::black_box(reduce_lanes(std::hint::black_box(&frame)));
+        }
+        let uncached = started.elapsed();
+        let started = std::time::Instant::now();
+        for _ in 0..100 {
+            std::hint::black_box(frame.reduced_lanes());
+        }
+        let cached = started.elapsed();
+        assert_eq!(frame.reduced_lanes(), reduce_lanes(&frame));
+        eprintln!("100 reductions, 600 samples: uncached={uncached:?}, cached including first reduction={cached:?}");
+    }
+
+    /// The identity rule both the creature and weapon builders gate on. It once existed only
+    /// on the creature path, and the humanoids routing through the weapon path shipped 20533
+    /// aliased rows the runtime cannot resolve.
+    #[test]
+    fn clip_name_identity_accepts_only_the_animations_own_basename() {
+        // The shape CK ships: generator named for the animation it plays.
+        assert!(clip_name_matches_animation(
+            "SprintForward",
+            r"Actors\MoleMiner\Animations\MT\sprintforward"
+        ));
+        // Case is not significant — the emitted paths are lowercased, the generators are not.
+        assert!(clip_name_matches_animation(
+            "AttackStandingA",
+            r"Actors\MoleMiner\Animations\H2H\attackstandinga"
+        ));
+        // Only the leaf is compared; the directory chain must not participate.
+        assert!(clip_name_matches_animation(
+            "idle",
+            r"Actors/Character/Animations/MT/idle"
+        ));
+        // A numeric-suffixed generator is the common FO76 alias and is NOT resolvable.
+        assert!(!clip_name_matches_animation(
+            "AttackStandingA01",
+            r"Actors\MoleMiner\Animations\H2H\attackstandinga"
+        ));
+        // Nor is a genuinely renamed one.
+        assert!(!clip_name_matches_animation(
+            "MTJumpLandToRun",
+            r"Actors\MoleMiner\Animations\MT\jumprunland"
+        ));
+        // A directory that happens to match the generator must not rescue a mismatched leaf.
+        assert!(!clip_name_matches_animation(
+            "MT",
+            r"Actors\MoleMiner\Animations\MT\jumprunland"
+        ));
+    }
+
+    /// The furniture builder must key section 1 on the animation basename. Rebuilding FO4's
+    /// own `WorkbenchChemistryA` subgraph has CK's shipped file as the oracle: it contains
+    /// `EnterFromStand` and no vanilla offsets file anywhere contains the generator name
+    /// `Standing Enter`. Regressing to the generator name silently breaks activation.
+    #[test]
+    fn furniture_offsets_body_keys_section1_on_animation_basename() {
+        let meshes =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../extracted/fo4/Meshes");
+        let core = r"Actors\Character\Behaviors\WorkbenchFurnitureBehavior.hkx";
+        let sapt = r"Actors\Character\Animations\Furniture\WorkbenchChemistryA";
+        if !meshes
+            .join("Actors/Character/Animations/Furniture/WorkbenchChemistryA")
+            .is_dir()
+        {
+            eprintln!("extracted WorkbenchChemistryA fixture absent; skipping");
+            return;
+        }
+        let mut resolver = GraphResolver::new(vec![meshes]);
+        let body = build_subgraph_offsets_body_furniture(&mut resolver, core, &[sapt.to_string()])
+            .expect("chem furniture subgraph must produce an offsets body");
+
+        let contains = |needle: &str| body.windows(needle.len()).any(|w| w == needle.as_bytes());
+        assert!(
+            contains("EnterFromStand"),
+            "section 1 must key on the animation basename, as CK's own file does",
+        );
+        assert!(
+            !contains("Standing Enter"),
+            "generator name leaked into section 1 — this is the activation-breaking regression",
+        );
+    }
+
     /// Every FO4 furniture core must route to the furniture builder; creature and weapon
     /// cores must not, so their byte-exact paths keep owning their subgraphs.
     #[test]
@@ -872,6 +1098,8 @@ mod tests {
             r"Actors\Character\_1stPerson\Behaviors\1stPFurnitureIdleBehavior.hkx",
             r"Actors\Character\Behaviors\UseBodyMorphOffsetFurnitureWrappingBehavior.hkx",
             r"Actors\Character\Behaviors\EnableSneakFurnitureWrappingBehavior.hkx",
+            // Furniture-role block, no "furniture" in the path.
+            r"Actors\Shared\Behaviors\AmbushBehavior.hkx",
         ] {
             assert!(is_furniture_core_behavior(core), "{core}");
         }
@@ -1006,5 +1234,4 @@ mod tests {
             );
         }
     }
-
 }

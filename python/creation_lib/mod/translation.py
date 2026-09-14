@@ -11,19 +11,13 @@ from __future__ import annotations
 
 import logging
 import os
-import re
+from collections.abc import Mapping
 from typing import Any, Callable
 
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
-from creation_lib.esp.strings import (
-    STRING_TABLE_EXTENSIONS,
-    language_code,
-    load_string_tables,
-    localized_table_type_for_signature,
-    write_string_table,
-)
+from creation_lib.esp.strings import language_code, load_all_string_tables
 
 _log = logging.getLogger(__name__)
 
@@ -107,11 +101,6 @@ def _translate_string(text: str, src_lang: str, tgt_lang: str) -> str:
 
 # ── raw_hex helpers ──────────────────────────────────────────────────────────
 
-def _encode_raw_hex(string_id: int) -> str:
-    """Encode a string-table ID as 8-char little-endian uppercase hex."""
-    return string_id.to_bytes(4, "little").hex().upper()
-
-
 def _decode_raw_hex(raw_hex: str) -> int | None:
     """Decode an 8-char little-endian hex string ID. Mirrors the records
     preprocessor (``py_creation_lib/python/creation_lib/preprocessor/records.py:_decode_raw_hex_string_id``).
@@ -162,14 +151,33 @@ def find_translatable_paths(doc: Any) -> dict[str, str]:
     return results
 
 
-def build_localized_field(string_id: int) -> CommentedMap:
-    """Build the ``{TargetLanguage, raw_hex}`` dict that replaces a literal
-    localized string. ``TargetLanguage`` is always English — the actual
-    translations land in the per-language ``.STRINGS`` sidecars.
+def build_localized_field(translations: Mapping[str, str]) -> CommentedMap:
+    """Build the ``{TargetLanguage, Values}`` dict that replaces a literal
+    localized string, carrying the text for every language in the record.
+
+    This is the shape the ESP exporter produces and the builder consumes
+    (``data/fo4_esm_yaml`` WEAP alone has 226 ``Values`` blocks and no
+    ``raw_hex``). A ``{TargetLanguage, raw_hex}`` id with the text in a
+    ``Strings/`` sidecar loses every translation on override, makes the
+    authoring dir unreadable, and shows LOOKUP FAILED in game when the id
+    reaches no loaded table.
+
+    Allocating ids and writing tables is the builder's job
+    (``EspPlugin.save_localized_strings``); doing it here too would create a
+    second, non-merging table set.
     """
     cm = CommentedMap()
     cm["TargetLanguage"] = "English"
-    cm["raw_hex"] = _encode_raw_hex(string_id)
+    rows = []
+    for language in LANGUAGE_ORDER:
+        text = translations.get(language)
+        if text is None:
+            continue
+        row = CommentedMap()
+        row["Language"] = language
+        row["String"] = text
+        rows.append(row)
+    cm["Values"] = rows
     return cm
 
 
@@ -189,15 +197,6 @@ def _read_plugin_manifest(yaml_dir: str) -> tuple[str, dict] | None:
     if not plugin_name:
         return None
     return plugin_name, doc
-
-
-def _next_string_id(strings: dict[int, str]) -> int:
-    """Return the next free string-table ID. IDs start at 1 — ID 0 is
-    reserved by the Bethesda format as "no string".
-    """
-    if not strings:
-        return 1
-    return max(strings) + 1
 
 
 def set_localized_flag(yaml_dir: str) -> None:
@@ -235,26 +234,44 @@ def set_localized_flag(yaml_dir: str) -> None:
 
 # ── YAML field rewriting ─────────────────────────────────────────────────────
 
+def translate_to_all_languages(english: str) -> dict[str, str]:
+    """English text to one entry per language in ``LANGUAGE_ORDER``.
+
+    A language whose translation fails falls back to the English text rather
+    than being dropped, so every record carries a full set of rows.
+    """
+    english_code = NLLB_LANG_MAP["English"]
+    out: dict[str, str] = {}
+    for language in LANGUAGE_ORDER:
+        code = NLLB_LANG_MAP[language]
+        if code == english_code:
+            out[language] = english
+            continue
+        try:
+            out[language] = _translate_string(english, english_code, code)
+        except Exception:  # noqa: BLE001 - a failed language must not lose the row
+            out[language] = english
+    return out
+
+
 def _rewrite_record_fields(
     doc: Any,
     *,
-    strings: dict[int, str],
-    next_id: list[int],
-) -> tuple[int, list[tuple[int, str, str]]]:
-    """Rewrite literal localized fields in a record doc.
+    translate: Callable[[str], dict[str, str]] | None = None,
+) -> int:
+    """Rewrite literal localized fields in a record doc to ``Values`` blocks.
 
-    Returns ``(rewrites, allocated)`` where ``allocated`` is a list of
-    ``(string_id, signature, english_text)`` tuples for every newly-allocated
-    string. ``next_id`` is a 1-element list used as a mutable counter so the
-    caller can keep allocating across files.
+    Returns the number of fields rewritten. No string ids are allocated here:
+    the text stays in the record and the builder assigns ids and emits the
+    tables when it writes the plugin.
     """
     if not isinstance(doc, dict):
-        return 0, []
+        return 0
     fields = doc.get("fields")
     if not isinstance(fields, list):
-        return 0, []
+        return 0
 
-    allocated: list[tuple[int, str, str]] = []
+    translate_fn = translate or translate_to_all_languages
     rewrites = 0
 
     for entry in fields:
@@ -264,59 +281,181 @@ def _rewrite_record_fields(
         value = entry[key]
         if not is_translatable_field(key, value):
             continue
-        signature = _LOCALIZED_FIELD_SIGNATURES[key]
-        sid = next_id[0]
-        next_id[0] += 1
-        strings[sid] = value
-        allocated.append((sid, signature, value))
-        entry[key] = build_localized_field(sid)
+        entry[key] = build_localized_field(translate_fn(value))
         rewrites += 1
 
-    return rewrites, allocated
+    return rewrites
 
 
-# ── Strings/ sidecar writers ─────────────────────────────────────────────────
+# ── raw_hex migration ────────────────────────────────────────────────────────
 
-def _strings_path(yaml_dir: str, plugin_name: str, lang: str, table_type: str) -> str:
-    """Path of a STRINGS sidecar. ``plugin_name`` is the full filename with
-    extension (``B21_MyMod.esl``); the sidecar uses the stem.
+def _default_strings_dirs(mod_dir: str) -> list[str]:
+    """Where a mod's shipped string tables live, most authoritative first."""
+    return [
+        os.path.join(mod_dir, "data", "Strings"),
+        os.path.join(mod_dir, "yaml", "Strings"),
+        os.path.join(mod_dir, "Strings"),
+    ]
+
+
+def _is_promoted_string(value: Any) -> bool:
+    """Whether a dict is a localized field that was promoted to a string id.
+
+    Both keys are required. An unparsed subrecord blob carries ``raw_hex``
+    alone -- COBJ's ``CTDA`` is 32 bytes of condition data whose first four
+    would otherwise read as a string id.
     """
-    stem = re.sub(r"\.es[plm]$", "", plugin_name, flags=re.IGNORECASE)
-    ext = STRING_TABLE_EXTENSIONS[table_type]
-    return os.path.join(yaml_dir, "Strings", f"{stem}_{lang}{ext}")
+    return isinstance(value, dict) and "raw_hex" in value and "TargetLanguage" in value
 
 
-def _load_existing_table(
-    yaml_dir: str,
-    plugin_name: str,
-    lang_display: str,
-    table_type: str,
-) -> dict[int, str]:
-    """Best-effort load of an existing per-language STRINGS sidecar."""
-    strings_dir = os.path.join(yaml_dir, "Strings")
-    if not os.path.isdir(strings_dir):
-        return {}
+def _restore_field(
+    entry: dict,
+    key: Any,
+    tables: Mapping[str, Mapping[int, str]],
+) -> bool:
+    """Replace one ``{TargetLanguage, raw_hex}`` field with its ``Values`` block.
+
+    Returns False -- leaving the field untouched -- when the id resolves to
+    nothing, so an unreadable table degrades to "nothing changed" instead of
+    silently blanking the record's text.
+    """
+    value = entry.get(key)
+    if not _is_promoted_string(value):
+        return False
+    string_id = _decode_raw_hex(value.get("raw_hex"))
+    if not string_id:  # id 0 is the format's "no string" - not a lookup failure
+        return False
+
+    # load_all_string_tables keys by language code ("de"), the record by
+    # display name ("German").
+    translations = {
+        language: text
+        for language in LANGUAGE_ORDER
+        if (text := tables.get(language_code(language), {}).get(string_id)) is not None
+    }
+    if not translations:
+        return False
+
+    entry[key] = build_localized_field(translations)
+    return True
+
+
+def _restore_node(node: Any, tables: Mapping[str, Mapping[int, str]]) -> tuple[int, int]:
+    """Restore every promoted string under ``node``. Returns (restored, unresolved).
+
+    Walks the whole document, not just top-level ``fields`` entries: a CELL's
+    map-marker ``Name`` sits two levels down inside ``MapMarkers``, and a
+    top-level-only pass silently leaves those behind.
+    """
+    restored = unresolved = 0
+    if isinstance(node, dict):
+        for key, value in list(node.items()):
+            if _is_promoted_string(value):
+                if _restore_field(node, key, tables):
+                    restored += 1
+                else:
+                    unresolved += 1
+            else:
+                sub_r, sub_u = _restore_node(value, tables)
+                restored += sub_r
+                unresolved += sub_u
+    elif isinstance(node, list):
+        for item in node:
+            sub_r, sub_u = _restore_node(item, tables)
+            restored += sub_r
+            unresolved += sub_u
+    return restored, unresolved
+
+
+def restore_localized_values(
+    mod_dir: str,
+    strings_dir: str | None = None,
+    progress_cb: Callable[[str], None] | None = None,
+) -> dict:
+    """Migrate ``{TargetLanguage, raw_hex}`` fields back to ``Values`` blocks.
+
+    Repairs authoring dirs whose localized text was moved out of the record
+    into a sidecar. Reads the text back from the mod's shipped string tables,
+    so it only recovers what actually shipped: a field whose id is missing
+    from every table is reported under ``unresolved`` and left alone.
+
+    Args:
+        mod_dir: Mod directory (e.g. ``mods/B21_MyMod``).
+        strings_dir: Table directory. Defaults to the first of ``data/Strings``,
+            ``yaml/Strings``, ``Strings`` that exists.
+
+    Returns:
+        ``{records, fields, unresolved, languages, strings_dir, errors}``.
+    """
+    def report(msg: str) -> None:
+        _log.info(msg)
+        if progress_cb:
+            progress_cb(msg)
+
+    yaml_dir = os.path.join(mod_dir, "yaml")
+    manifest = _read_plugin_manifest(yaml_dir)
+    if manifest is None:
+        return {"records": 0, "fields": 0, "unresolved": 0, "languages": 0,
+                "strings_dir": None, "errors": ["no readable plugin.yaml"]}
+    plugin_name, _ = manifest
+
+    candidates = [strings_dir] if strings_dir else _default_strings_dirs(mod_dir)
+    source = next((d for d in candidates if d and os.path.isdir(d)), None)
+    if source is None:
+        return {"records": 0, "fields": 0, "unresolved": 0, "languages": 0,
+                "strings_dir": None, "errors": [f"no string tables found for {plugin_name}"]}
+
     try:
-        tables = load_string_tables(plugin_name, strings_dir=strings_dir, language=lang_display)
-    except Exception:
-        return {}
-    if not tables:
-        return {}
-    return {int(k): str(v) for k, v in tables.items()}
+        tables, _table_types = load_all_string_tables(plugin_name, strings_dir=source)
+    except Exception as exc:  # noqa: BLE001 - surfaced in the result, not raised
+        return {"records": 0, "fields": 0, "unresolved": 0, "languages": 0,
+                "strings_dir": source, "errors": [f"could not read tables: {exc}"]}
 
+    languages = [lang for lang in LANGUAGE_ORDER if tables.get(language_code(lang))]
+    report(f"loaded {len(languages)} language table(s) from {source}")
 
-def _write_language_table(
-    yaml_dir: str,
-    plugin_name: str,
-    lang_display: str,
-    table_type: str,
-    table: dict[int, str],
-) -> None:
-    """Write a per-language STRINGS sidecar."""
-    lang = language_code(lang_display)
-    out_path = _strings_path(yaml_dir, plugin_name, lang, table_type)
-    os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    write_string_table(out_path, table, table_type=table_type)
+    records_dir = os.path.join(yaml_dir, "records")
+    yaml = YAML()
+    yaml.preserve_quotes = True
+    records = fields = unresolved = 0
+    errors: list[str] = []
+
+    for root, _dirs, names in os.walk(records_dir):
+        for name in sorted(names):
+            if not name.endswith((".yaml", ".yml")):
+                continue
+            path = os.path.join(root, name)
+            try:
+                with open(path, encoding="utf-8") as f:
+                    doc = yaml.load(f)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{name}: {exc}")
+                continue
+            if not isinstance(doc, dict):
+                continue
+
+            changed, missed = _restore_node(doc, tables)
+            unresolved += missed
+            if not changed:
+                continue
+            try:
+                with open(path, "w", encoding="utf-8") as f:
+                    yaml.dump(doc, f)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{name}: {exc}")
+                continue
+            records += 1
+            fields += changed
+
+    report(f"restored {fields} field(s) across {records} record(s); {unresolved} unresolved")
+    return {
+        "records": records,
+        "fields": fields,
+        "unresolved": unresolved,
+        "languages": len(languages),
+        "strings_dir": source,
+        "errors": errors,
+    }
 
 
 # ── Public API ───────────────────────────────────────────────────────────────
@@ -324,19 +463,12 @@ def _write_language_table(
 def translate_mod(mod_dir: str, progress_cb: Callable[[str], None] | None = None) -> dict:
     """Translate every literal localized string in a mod's YAML to 11 languages.
 
-    Walks ``mod_dir/yaml/records/<SIG>/*.yaml``, finds ``Name`` /
-    ``Description`` / ``ShortName`` entries whose value is a literal string,
-    allocates a string-table ID for each, rewrites the entry to
-    ``{TargetLanguage: English, raw_hex: "..."}``, writes the per-language
-    ``Strings/<Plugin>_<lang>.STRINGS`` sidecars (one per language in
-    ``LANGUAGE_ORDER``), and sets the Localized flag on ``plugin.yaml``.
+    Walks ``mod_dir/yaml/records/<SIG>/*.yaml``, rewrites translatable fields
+    whose value is a literal string into a ``{TargetLanguage, Values}`` block
+    (see ``build_localized_field``), and sets the Localized flag on
+    ``plugin.yaml`` when no file failed. ``progress_cb`` defaults to logging.
 
-    Args:
-        mod_dir: Path to the mod directory (e.g. ``mods/B21_MyMod``).
-        progress_cb: Called with log messages. Defaults to logging.
-
-    Returns:
-        ``{"translated": int, "skipped": int, "errors": list[str]}``
+    Returns ``{"translated": int, "skipped": int, "errors": list[str]}``.
     """
     cb = progress_cb or _log.info
     yaml_dir = os.path.join(mod_dir, "yaml")
@@ -371,19 +503,11 @@ def translate_mod(mod_dir: str, progress_cb: Callable[[str], None] | None = None
 
     cb(f"Scanning {len(files)} record YAML file(s)...")
 
-    # Existing English STRINGS table is the seed for ID allocation.
-    english_strings = _load_existing_table(yaml_dir, plugin_name, "English", "strings")
-    english_dlstrings = _load_existing_table(yaml_dir, plugin_name, "English", "dlstrings")
-    english_ilstrings = _load_existing_table(yaml_dir, plugin_name, "English", "ilstrings")
-
-    # The full ID space spans all three table types — string IDs are unique
-    # across the whole plugin, not per-table.
-    seed = {**english_strings, **english_dlstrings, **english_ilstrings}
-    next_id = [_next_string_id(seed)]
-
-    # Per-table accumulator of (sid, english_text, signature) for translation pass.
-    new_entries: list[tuple[int, str, str]] = []
-
+    # No id allocation and no sidecar tables. The translated text is written
+    # into the record as a Values block; the builder assigns ids and emits the
+    # string tables when it writes the plugin. Allocating here too would create
+    # a second Strings/ table set that never merges with the one the packer
+    # ships, so the ids would resolve to nothing in game.
     for filepath in files:
         try:
             with open(filepath, encoding="utf-8") as f:
@@ -392,9 +516,7 @@ def translate_mod(mod_dir: str, progress_cb: Callable[[str], None] | None = None
                 skipped += 1
                 continue
 
-            count, allocated = _rewrite_record_fields(
-                doc, strings=seed, next_id=next_id,
-            )
+            count = _rewrite_record_fields(doc)
             if count == 0:
                 skipped += 1
                 continue
@@ -405,7 +527,6 @@ def translate_mod(mod_dir: str, progress_cb: Callable[[str], None] | None = None
                 yaml.dump(doc, f)
 
             translated += count
-            new_entries.extend(allocated)
 
         except Exception as e:
             msg = f"Failed to process {os.path.basename(filepath)}: {e}"
@@ -413,47 +534,6 @@ def translate_mod(mod_dir: str, progress_cb: Callable[[str], None] | None = None
             errors.append(msg)
             skipped += 1
             continue
-
-    if new_entries:
-        # Bucket newly-allocated entries by table type.
-        by_table: dict[str, list[tuple[int, str]]] = {
-            "strings": [],
-            "dlstrings": [],
-            "ilstrings": [],
-        }
-        for sid, signature, text in new_entries:
-            table_type = localized_table_type_for_signature(signature)
-            by_table[table_type].append((sid, text))
-
-        existing_by_table = {
-            "strings": english_strings,
-            "dlstrings": english_dlstrings,
-            "ilstrings": english_ilstrings,
-        }
-
-        cb("Writing localized string tables...")
-        for lang in LANGUAGE_ORDER:
-            for table_type, additions in by_table.items():
-                if not additions and not existing_by_table[table_type]:
-                    continue
-                # English passes the source text through; other languages get
-                # NLLB output (or fall back to English if translation fails).
-                table = dict(existing_by_table[table_type])
-                if lang == "English":
-                    for sid, text in additions:
-                        table[sid] = text
-                else:
-                    nllb_code = NLLB_LANG_MAP[lang]
-                    for sid, text in additions:
-                        if nllb_code == NLLB_LANG_MAP["English"]:
-                            table[sid] = text
-                            continue
-                        try:
-                            table[sid] = _translate_string(text, "eng_Latn", nllb_code)
-                        except Exception as e:
-                            cb(f"    Warning: {lang} translation failed, using English: {e}")
-                            table[sid] = text
-                _write_language_table(yaml_dir, plugin_name, lang, table_type, table)
 
     if not errors:
         set_localized_flag(yaml_dir)

@@ -29,7 +29,12 @@ TAG_DEFINE_SHAPE3 = 32
 TAG_DEFINE_SPRITE = 39
 TAG_FRAME_LABEL = 43
 TAG_FILE_ATTRIBUTES = 69
+TAG_SYMBOL_CLASS = 76
 TAG_METADATA = 77
+# DoABCDefine has no dataclass on purpose: ABC bytes are emitted and read by the
+# native crate, so they stay a RawTag here rather than passing through this
+# byte-lossy codec.
+TAG_DO_ABC = 82
 TAG_DEFINE_SHAPE4 = 83
 
 DEFINE_SHAPE_IDS = {TAG_DEFINE_SHAPE, TAG_DEFINE_SHAPE2, TAG_DEFINE_SHAPE3, TAG_DEFINE_SHAPE4}
@@ -120,6 +125,38 @@ class FileAttributesTag:
             flags |= 1
         writer = BitWriter()
         writer.write_ui32(flags)
+        return writer.getvalue()
+
+
+@dataclass
+class SymbolClassTag:
+    """SymbolClass -- binds character IDs to AS3 class names.
+
+    This is the only handle anything outside the SWF has on a character: FO4
+    resolves marker icons and HUD widgets by export name, and the native
+    splicer refuses to inject into a file that has no SymbolClass tag.
+    """
+    symbols: list[tuple[int, str]] = field(default_factory=list)  # (character_id, class_name)
+    tag_id: int = TAG_SYMBOL_CLASS
+
+    @classmethod
+    def parse(cls, data: bytes) -> "SymbolClassTag":
+        if len(data) < 2:
+            return cls()
+        reader = BitReader(data)
+        count = reader.read_ui16()
+        symbols = []
+        for _ in range(count):
+            character_id = reader.read_ui16()
+            symbols.append((character_id, reader.read_string()))
+        return cls(symbols=symbols)
+
+    def to_bytes(self) -> bytes:
+        writer = BitWriter()
+        writer.write_ui16(len(self.symbols))
+        for character_id, name in self.symbols:
+            writer.write_ui16(character_id)
+            writer.write_string(name)
         return writer.getvalue()
 
 
@@ -368,8 +405,8 @@ class DefineSpriteTag:
 # Type alias for any parsed tag
 SwfTag = (
     EndTag | ShowFrameTag | SetBackgroundColorTag | FileAttributesTag |
-    MetadataTag | DefineShapeTag | PlaceObject2Tag | RemoveObject2Tag |
-    FrameLabelTag | DefineSpriteTag | RawTag
+    MetadataTag | SymbolClassTag | DefineShapeTag | PlaceObject2Tag |
+    RemoveObject2Tag | FrameLabelTag | DefineSpriteTag | RawTag
 )
 
 
@@ -383,6 +420,8 @@ def parse_tag_body(tag_id: int, data: bytes, tag_parser=None) -> SwfTag:
         return SetBackgroundColorTag.parse(data)
     if tag_id == TAG_FILE_ATTRIBUTES:
         return FileAttributesTag.parse(data)
+    if tag_id == TAG_SYMBOL_CLASS:
+        return SymbolClassTag.parse(data)
     if tag_id == TAG_METADATA:
         return MetadataTag.parse(data)
     if tag_id in DEFINE_SHAPE_IDS:
@@ -412,6 +451,8 @@ def write_tag(tag: SwfTag, tag_writer=None) -> tuple[int, bytes]:
     if isinstance(tag, FileAttributesTag):
         return tag.tag_id, tag.to_bytes()
     if isinstance(tag, MetadataTag):
+        return tag.tag_id, tag.to_bytes()
+    if isinstance(tag, SymbolClassTag):
         return tag.tag_id, tag.to_bytes()
     if isinstance(tag, DefineShapeTag):
         return tag.tag_id, tag.to_bytes()

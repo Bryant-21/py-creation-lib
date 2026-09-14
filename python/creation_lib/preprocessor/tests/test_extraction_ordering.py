@@ -127,3 +127,28 @@ def test_large_archives_receive_the_full_worker_budget(tmp_path: Path, monkeypat
         ["Textures02.ba2"],
     ]
     assert [[task.file_workers for task in batch] for batch in batches] == [[8], [8]]
+
+
+def test_planning_reads_header_counts_without_parsing_members(tmp_path, monkeypatch):
+    archive = tmp_path / "Main.ba2"
+    archive.write_bytes(b"archive")
+    monkeypatch.setattr(extraction.native_runtime, "archive_entry_count", lambda _path: 25_000)
+
+    def unexpected_full_parse(_path):
+        raise AssertionError("planning must not parse all archive members")
+
+    monkeypatch.setattr(extraction.native_runtime, "archive_info", unexpected_full_parse)
+    batches = extraction.plan_archive_extraction_batches([archive], 8)
+    assert batches[0][0].file_count == 25_000
+    assert batches[0][0].file_workers == 3
+
+
+def test_planning_keeps_size_budget_when_header_is_invalid(tmp_path, monkeypatch):
+    def invalid_header(_path):
+        raise RuntimeError("invalid archive header")
+
+    monkeypatch.setattr(extraction.native_runtime, "archive_entry_count", invalid_header)
+    monkeypatch.setattr(extraction, "archive_size_bytes", lambda _path: 4 * 1024**3)
+    task = extraction.plan_archive_extraction_batches([tmp_path / "Main.ba2"], 8)[0][0]
+    assert task.file_count == 0
+    assert task.file_workers == 8

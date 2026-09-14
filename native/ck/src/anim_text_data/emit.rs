@@ -1,11 +1,10 @@
-//! End-to-end AnimTextData emission (CK-free): writes bucket files to disk for a
-//! set of subgraphs, deriving the id from the RACE-record fields (core behavior +
-//! SAPT chain) and the file list from the behavior graph + on-disk SAPT resolution.
+//! End-to-end AnimTextData emission (CK-free): writes bucket files for a set of
+//! subgraphs, deriving each id from the RACE fields (core behavior + SAPT chain) and each
+//! file list from the behavior graph plus on-disk SAPT resolution.
 //!
-//! This is the production `generate_anim_text_data` emitter. It writes the
-//! independently derivable creature buckets plus the serialized project-wide
-//! Offsets aggregate and per-combo weapon StanceData (byte-exact base reuse where
-//! the combo is a vanilla subgraph, generated from the converted skeleton otherwise).
+//! Also writes the project-wide Offsets aggregate and per-combo weapon StanceData (base
+//! bytes reused where the combo is a vanilla subgraph, else generated from the converted
+//! skeleton).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -13,7 +12,9 @@ use std::time::Instant;
 
 use rayon::prelude::*;
 
-use super::behavior_index::resolve_subgraph_files;
+use super::behavior_index::{
+    add_direct_sapt_hkx_files, behavior_uses_dynamic_animation_tags, resolve_subgraph_files,
+};
 use super::bucket_files::{
     anim_event_info_body, animation_file_data_body, animation_offsets_empty_body,
     clip_generator_data_body, dynamic_idle_data_body, project_manifest_body, sync_anim_data_body,
@@ -23,7 +24,7 @@ use super::core::{name_id, subgraph_id};
 use super::event_resolver::resolve_anim_events;
 use super::extract::{
     clip_generator_entries, expand_idle_glob, extract_fx_manifest, extract_project_manifest,
-    fx_project_dirs, project_hkx_relpath, race_dir_of, race_name_of, race_name_of_dir,
+    fx_project_dirs, project_hkx_relpath_for_race_dir, race_dir_of, race_name_of, race_name_of_dir,
 };
 use super::graph::GraphResolver;
 use super::offsets::{
@@ -38,7 +39,9 @@ use super::stance::{
     WeaponStanceBuilder, WeaponSubgraphMetadata, behavior_wants_head_tracking,
     emit_stance_for_subgraph,
 };
-use super::sync::{build_plugin_sync_anim_data, plugin_sync_anim_filename, weapon_sync_anim_filenames};
+use super::sync::{
+    build_plugin_sync_anim_data, plugin_sync_anim_filename, weapon_sync_anim_filenames,
+};
 
 const AUTHORITATIVE_MANIFEST: &str = "AnimTextData/.modkit-authoritative-files.json";
 
@@ -157,11 +160,9 @@ fn exact_base_stance_body(
     })
 }
 
-/// Whether a profile carried by the converted plugin's races is a weapon graft.
-/// A weapon subgraph grafts onto base-game character behaviors, so its core is
-/// never shipped by the mod; a converted creature's core is. Owner-plugin alone
-/// is not enough — in a whole-plugin conversion every creature race lives in the
-/// target plugin.
+// Converted weapon subgraphs can ship their own core. Creature body graphs use SRAF
+// role 1 too, but only weapon subgraphs are selected by weapon keywords (STKD), and
+// the bodies still require the single-file creature writers.
 fn is_target_weapon_profile(
     profile: &WeaponProfileInput,
     target_plugin_name: &str,
@@ -173,9 +174,10 @@ fn is_target_weapon_profile(
         .owner_race
         .plugin
         .eq_ignore_ascii_case(target_plugin_name)
-        && !src_meshes_root
-            .join(profile.stance.core_behavior.replace('\\', "/"))
-            .is_file()
+        && ((profile.stance.sraf.role == 1 && !profile.stance.stkd.is_empty())
+            || !src_meshes_root
+                .join(profile.stance.core_behavior.replace('\\', "/"))
+                .is_file())
 }
 
 /// Subgraph ids the derivable creature writers must skip because they are weapon
@@ -218,6 +220,27 @@ pub fn generate_anim_text_data_with_progress(
     progress: &mut dyn FnMut(&str),
 ) -> Result<AnimTextDataReport, String> {
     let started = Instant::now();
+    // Repair aliased clips FIRST: BOTH offsets builders now enforce the name-identity guard,
+    // which is a faithful reproduction of the format and drops anything still aliased, so this
+    // has to land before any bucket is read off these graphs. Every entry point — including
+    // `creature_closure` — funnels through here.
+    match super::align_clip_names::align_clip_generator_names(inputs, src_meshes_root) {
+        Ok(0) => {}
+        Ok(n) => progress(&format!("aligned {n} clip generator name(s)")),
+        // Advisory: a clip that stays aliased is dropped by the guard, which is the status quo
+        // for it — not a reason to abort AnimTextData generation.
+        Err(error) => progress(&format!("clip alignment skipped: {error}")),
+    }
+    // Then give sweep-window attacks the `HitFrame` FO4 needs to time them. Order matters:
+    // alignment can rename the animation a generator plays, and the HitFrame pass reads that
+    // animation to decide whether the hit is already annotated there.
+    match super::synth_hitframe::synthesize_missing_hit_frames(inputs, src_meshes_root) {
+        Ok(0) => {}
+        Ok(n) => progress(&format!("synthesized {n} HitFrame trigger(s)")),
+        // Advisory for the same reason as above: no HitFrame means that attack stays
+        // unusable, which is the status quo, not a reason to abort.
+        Err(error) => progress(&format!("HitFrame synthesis skipped: {error}")),
+    }
     let subgraphs = deduplicated_subgraphs(&inputs.subgraphs);
     let weapon_subgraph_ids = collect_weapon_subgraph_ids(
         &inputs.weapon_profiles,
@@ -261,6 +284,13 @@ pub fn generate_anim_text_data_with_progress(
         phase_started.elapsed().as_secs_f64(),
     ));
 
+    progress(&format!(
+        "authoritative timings: stance_prepare={:.3}s stance_build={:.3}s sync={:.3}s donors_prepared={}",
+        authoritative.stance_prepare_seconds,
+        authoritative.stance_build_seconds,
+        authoritative.sync_seconds,
+        authoritative.stance_donors_prepared,
+    ));
     let mut written = authoritative.written;
     let phase_started = Instant::now();
     progress(&format!(
@@ -312,6 +342,10 @@ pub fn generate_anim_text_data_with_progress(
         ));
     }
 
+    // The memoized packfiles/skeletons are worth hundreds of MB on a full conversion and
+    // are useless past this point — the run continues into the asset phases.
+    super::hkx_cache::clear_all();
+
     progress(&format!(
         "complete: wrote {written} AnimTextData bucket file(s) in {:.1}s",
         started.elapsed().as_secs_f64(),
@@ -326,24 +360,21 @@ pub fn generate_anim_text_data_with_progress(
     })
 }
 
-const SINGLE_FILE_NAME: &str =
-    "behaviorclipinformationandsubgraphanimationoffsetssinglefile.txt";
+const SINGLE_FILE_NAME: &str = "behaviorclipinformationandsubgraphanimationoffsetssinglefile.txt";
 
-/// Off: mods must not ship dirlists or the singlefile. Shipped CK-built fan mods
-/// (B21_PlasmaCaster, Snallygaster) carry neither — only per-bucket data files and a
-/// plugin-level SyncAnimData file — and they work, which disproves the "singlefile is
-/// the only clip-generator channel" premise this phase was built on. Emitting one is
-/// actively harmful: a mod's copy is the merged-VFS winner, so it shadows vanilla's
-/// entire clip table. The writers stay tested and available behind this flag.
+/// Off: mods must not ship dirlists or the singlefile. CK-built fan mods
+/// (B21_PlasmaCaster, Snallygaster) carry neither, only per-bucket data files and a
+/// plugin-level SyncAnimData file, and they work. A mod's singlefile is the merged-VFS
+/// winner, so it shadows vanilla's entire clip table. The writers stay tested behind
+/// this flag.
 const EMIT_STRUCTURAL_AGGREGATES: bool = false;
 
-/// Final aggregation phase: CK-parity dirlists + the merged singlefile. Must run after
-/// every bucket writer (it aggregates the final on-disk set). Returns files written.
-/// Gated off by `EMIT_STRUCTURAL_AGGREGATES`.
+/// Write CK-parity dirlists and the merged singlefile; returns files written. Must run
+/// after every bucket writer, since it aggregates the final on-disk set. Gated off by
+/// `EMIT_STRUCTURAL_AGGREGATES`.
 ///
-/// Singlefile policy, when enabled: a mod's copy fully shadows vanilla's, so ours =
-/// vanilla's entries verbatim + our ClipGeneratorData entries appended. No vanilla
-/// singlefile → emit none (engine reads vanilla's own).
+/// A mod's singlefile fully shadows vanilla's, so it is vanilla's entries verbatim plus
+/// our ClipGeneratorData entries. Without a vanilla singlefile none is emitted.
 fn emit_structural_aggregates(
     out_meshes_root: &Path,
     base_meshes_root: Option<&Path>,
@@ -355,20 +386,21 @@ fn emit_structural_aggregates(
         .map(|base| base.join("AnimTextData").join(SINGLE_FILE_NAME))
         .filter(|path| path.is_file());
     match vanilla_path {
-        None => progress("singlefile: no vanilla source; skipping (engine falls back to vanilla's)"),
+        None => {
+            progress("singlefile: no vanilla source; skipping (engine falls back to vanilla's)")
+        }
         Some(vanilla_path) => {
-            let vanilla = std::fs::read(&vanilla_path).map_err(|error| {
-                format!("failed to read {}: {error}", vanilla_path.display())
-            })?;
+            let vanilla = std::fs::read(&vanilla_path)
+                .map_err(|error| format!("failed to read {}: {error}", vanilla_path.display()))?;
             let clipgen_dir = out_meshes_root
                 .join("AnimTextData")
                 .join("ClipGeneratorData");
             let mut additions: Vec<(u32, Vec<u8>)> = Vec::new();
             if clipgen_dir.is_dir() {
                 let mut keyed: Vec<(u32, PathBuf)> = Vec::new();
-                for entry in std::fs::read_dir(&clipgen_dir).map_err(|error| {
-                    format!("failed to list {}: {error}", clipgen_dir.display())
-                })? {
+                for entry in std::fs::read_dir(&clipgen_dir)
+                    .map_err(|error| format!("failed to list {}: {error}", clipgen_dir.display()))?
+                {
                     let path = entry
                         .map_err(|error| {
                             format!("failed to list {}: {error}", clipgen_dir.display())
@@ -383,9 +415,8 @@ fn emit_structural_aggregates(
                 }
                 keyed.sort_by_key(|(key, _)| *key);
                 for (key, path) in keyed {
-                    let body = std::fs::read(&path).map_err(|error| {
-                        format!("failed to read {}: {error}", path.display())
-                    })?;
+                    let body = std::fs::read(&path)
+                        .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
                     additions.push((key, body));
                 }
             }
@@ -410,16 +441,13 @@ fn emit_structural_aggregates(
 }
 
 /// Write `AnimTextData/AnimationFileData/<id>.txt` for each subgraph under
-/// `out_meshes_root`. Returns the number of files written.
+/// `out_meshes_root`; returns the number written.
 ///
-/// Resolution dispatches on RACE weapon metadata first, then on where the core
-/// behavior lives. Weapon/character subgraphs always use the recursive graph walk;
-/// a FO76-specific wrapper may be present in the mod while still depending on the
-/// shared character graph. Only non-weapon local cores use the self-contained
-/// creature resolver.
-///
-/// Subgraphs whose body resolves to zero files are skipped (never emit an empty
-/// body — the engine rebuilds an absent file at load, but trusts an empty one).
+/// Weapon subgraphs, furniture cores, cores outside the mod, and cores with behavior
+/// references use the recursive graph walk (a FO76 wrapper in the mod may still depend on
+/// the shared character graph). Other local cores use the self-contained creature
+/// resolver. Subgraphs that resolve to zero files are skipped: the engine rebuilds an
+/// absent file at load but trusts an empty one.
 pub fn emit_animation_file_data(
     subgraphs: &[SubgraphInput],
     src_meshes_root: &Path,
@@ -452,36 +480,87 @@ fn emit_animation_file_data_with_weapon_ids(
     if let Some(base) = base_meshes_root {
         roots.push(base.to_path_buf());
     }
-    let mut resolver = GraphResolver::new(roots);
-
-    let mut written = 0u32;
-    for sg in deduplicated_subgraphs(subgraphs) {
-        let id = sg.id();
-        let core_in_mod = src_meshes_root
-            .join(sg.core_behavior.replace('\\', "/"))
-            .is_file();
-        let mut files = if core_in_mod && !weapon_subgraph_ids.contains(&id) {
-            let core_file = src_meshes_root.join(sg.core_behavior.replace('\\', "/"));
-            resolve_subgraph_files(&core_file, src_meshes_root, &sg.sapt_chain)
-        } else {
-            resolver.resolve_body(&sg.core_behavior, &sg.sapt_chain)
-        };
-        // A reference-only wrapping graph (e.g. `GraftonCore_InjuredWrappingBehavior.hkx`:
-        // a `hkbBehaviorReferenceGenerator` with no `hkbClipGenerator`) carries no direct
-        // clips, so the single-file creature walk is empty. Fall through to the cross-file
-        // resolver, which follows the behavior reference into the referenced core and lists
-        // it + its SAPT-resolved clips — exactly what CK caches. Cores that already yield
-        // clips never reach this fallthrough, so normal creatures are unaffected.
-        if files.is_empty() && core_in_mod && !weapon_subgraph_ids.contains(&id) {
-            files = resolver.resolve_body(&sg.core_behavior, &sg.sapt_chain);
-        }
-        if files.is_empty() {
-            continue; // safe-skip: let the engine rebuild rather than ship an empty body
-        }
-        let body = animation_file_data_body(id, &files);
-        std::fs::write(bucket_dir.join(format!("{id}.txt")), body)?;
-        written += 1;
-    }
+    // Subgraphs are deduplicated by id, so each iteration owns its output file and the
+    // pass is order-independent — parallel over subgraphs, one resolver per worker (the
+    // resolver's caches are `&mut self`, so they stay thread-local; the underlying
+    // packfile parses are shared through the process-wide memo).
+    let written: u32 = deduplicated_subgraphs(subgraphs)
+        .par_iter()
+        .map_init(
+            || GraphResolver::new(roots.clone()),
+            |resolver, sg| -> std::io::Result<u32> {
+                let id = sg.id();
+                let core_in_mod = src_meshes_root
+                    .join(sg.core_behavior.replace('\\', "/"))
+                    .is_file();
+                let has_behavior_references = core_in_mod
+                    && super::hkx_cache::behavior_packfile(
+                        &src_meshes_root.join(sg.core_behavior.replace('\\', "/")),
+                    )
+                    .is_some_and(|hkx| hkx.objects().iter().any(|object| {
+                        object.class_name == "hkbBehaviorReferenceGenerator"
+                    }));
+                // A local core can contain both clips and references (FO76 MT -> Dialogue).
+                // A nonempty clip-only manifest still strands those referenced graphs.
+                let mut files = if core_in_mod
+                    && !weapon_subgraph_ids.contains(&id)
+                    && !is_furniture_core_behavior(&sg.core_behavior)
+                    && !has_behavior_references
+                {
+                    let core_file = src_meshes_root.join(sg.core_behavior.replace('\\', "/"));
+                    resolve_subgraph_files(&core_file, src_meshes_root, &sg.sapt_chain)
+                        .into_iter()
+                        .filter(|relative| roots.iter().any(|root| {
+                            root.join(relative.replace('\\', "/")).is_file()
+                        }))
+                        .collect()
+                } else {
+                    resolver.resolve_body(&sg.core_behavior, &sg.sapt_chain)
+                };
+                // A core with no direct clips (e.g. a reference-only wrapping graph such as
+                // `GraftonCore_InjuredWrappingBehavior.hkx`) falls through to the cross-file
+                // resolver, which follows the reference into the referenced core and lists it
+                // plus its SAPT-resolved clips, as CK caches.
+                if files.is_empty() && core_in_mod && !weapon_subgraph_ids.contains(&id) {
+                    files = resolver.resolve_body(&sg.core_behavior, &sg.sapt_chain);
+                }
+                let core_file = if core_in_mod {
+                    Some(src_meshes_root.join(sg.core_behavior.replace('\\', "/")))
+                } else {
+                    base_meshes_root
+                        .map(|root| root.join(sg.core_behavior.replace('\\', "/")))
+                        .filter(|path| path.is_file())
+                };
+                if let (Some(core_file), Some(sapt)) = (core_file, sg.sapt_chain.first())
+                    && behavior_uses_dynamic_animation_tags(&core_file)
+                {
+                    // CK keeps the resolver's core-first dependency order
+                    // (vanilla SuperMutant melee lists MeleeBehavior.hkx first);
+                    // a BTreeSet round-trip here alphabetized the rows and
+                    // buried the stance core mid-list. Append the direct-SAPT
+                    // files without disturbing the resolved order.
+                    let mut seen: std::collections::HashSet<String> =
+                        files.iter().map(|f| super::graph::norm_key(f)).collect();
+                    let mut direct: BTreeSet<String> = BTreeSet::new();
+                    add_direct_sapt_hkx_files(&mut direct, src_meshes_root, sapt);
+                    for file in direct {
+                        if seen.insert(super::graph::norm_key(&file)) {
+                            files.push(file);
+                        }
+                    }
+                }
+                if files.is_empty() {
+                    // safe-skip: let the engine rebuild rather than ship an empty body
+                    return Ok(0);
+                }
+                let body = animation_file_data_body(id, &files);
+                std::fs::write(bucket_dir.join(format!("{id}.txt")), body)?;
+                Ok(1)
+            },
+        )
+        .collect::<std::io::Result<Vec<u32>>>()?
+        .into_iter()
+        .sum();
     Ok(written)
 }
 
@@ -552,15 +631,21 @@ impl PendingBucketFiles {
 struct DerivableRaceEmission {
     files: PendingBucketFiles,
     elapsed_seconds: f64,
+    timings: Vec<(&'static str, f64)>,
+    workers: usize,
 }
 
 #[derive(Debug, Default)]
 pub struct AuthoritativeEmissionReport {
     pub written: u32,
+    pub stance_donors_prepared: usize,
     pub stance_reused: u32,
     pub stance_generated: u32,
     pub stance_skipped: u32,
     pub stance_builder_error: Option<String>,
+    pub stance_prepare_seconds: f64,
+    pub stance_build_seconds: f64,
+    pub sync_seconds: f64,
 }
 
 struct AuthoritativeFile {
@@ -822,6 +907,7 @@ pub fn emit_serialized_production_buckets(
                 body: aggregate,
             });
 
+            let prepare_started = Instant::now();
             let base_profiles = deduplicated_stance_profiles(base_stance_profiles);
             if base_profiles.iter().any(|profile| {
                 profile
@@ -836,31 +922,41 @@ pub fn emit_serialized_production_buckets(
                 );
             }
             let base_stance_root = base.join("AnimTextData").join("AnimationStanceData");
-            // Weapon StanceData, one file per subgraph combo. The byte-exact base file is
-            // ground truth when the combo is a vanilla reuse (target id == a base id with the
-            // same graph identity); every other combo is generated from the converted
-            // character skeleton (first section) with the aim grid sidestepped from the
-            // base-game donor whose behavior role matches. The builder is constructed once
-            // so the donor catalog is decoded a single time. It needs the base RACE donors,
-            // so a target-only handle (none supplied) withholds generated stance and lets
-            // the engine rebuild it. A builder that cannot be
-            // constructed (e.g. no character skeleton) degrades to byte-exact reuse rather
-            // than dropping the aggregate that shares this transaction.
-            let mut builder = if base_profiles.is_empty() {
+            let base_bodies: Vec<_> = targets
+                .iter()
+                .map(|target| exact_base_stance_body(target, &base_profiles, &base_stance_root))
+                .collect::<Result<_, _>>()?;
+            let generated_targets: Vec<_> = targets
+                .iter()
+                .zip(&base_bodies)
+                .filter_map(|(target, body)| body.is_none().then_some(target))
+                .collect();
+            // Unavailable donors withhold generated stance so the engine can rebuild
+            // it; trusted base bytes and the offsets aggregate still publish.
+            let mut builder = if base_profiles.is_empty() || generated_targets.is_empty() {
                 None
             } else {
-                match WeaponStanceBuilder::new(&base_profiles, src, base, &base_stance_root) {
-                    Ok(builder) => Some(builder),
+                match WeaponStanceBuilder::for_targets(
+                    &base_profiles,
+                    &generated_targets,
+                    src,
+                    base,
+                    &base_stance_root,
+                ) {
+                    Ok(builder) => {
+                        report.stance_donors_prepared = builder.donor_count();
+                        Some(builder)
+                    }
                     Err(error) => {
                         report.stance_builder_error = Some(error.to_string());
                         None
                     }
                 }
             };
-            for target in &targets {
-                let body = if let Some(body) =
-                    exact_base_stance_body(target, &base_profiles, &base_stance_root)?
-                {
+            report.stance_prepare_seconds = prepare_started.elapsed().as_secs_f64();
+            let build_started = Instant::now();
+            for (target, base_body) in targets.iter().zip(base_bodies) {
+                let body = if let Some(body) = base_body {
                     report.stance_reused += 1;
                     Some(body)
                 } else if let Some(builder) = builder.as_mut() {
@@ -886,8 +982,10 @@ pub fn emit_serialized_production_buckets(
                     });
                 }
             }
+            report.stance_build_seconds = build_started.elapsed().as_secs_f64();
         }
 
+        let sync_started = Instant::now();
         if let Some(filename) = plugin_sync_anim_filename(target_plugin_name) {
             match build_plugin_sync_anim_data(subgraphs, src, base_meshes_root) {
                 Ok(body) => files.push(AuthoritativeFile {
@@ -900,6 +998,7 @@ pub fn emit_serialized_production_buckets(
                 }
             }
         }
+        report.sync_seconds = sync_started.elapsed().as_secs_f64();
 
         report.written = files.len() as u32;
         Ok((files, report))
@@ -949,6 +1048,8 @@ fn emit_derivable_buckets_with_progress(
 
     let emit_race = |race_dir: &String, sgs: &Vec<&SubgraphInput>| {
         let race_started = Instant::now();
+        let mut step_started = Instant::now();
+        let mut timings = Vec::new();
         let mut pending_files = PendingBucketFiles::default();
         // --- ClipGeneratorData: one file per distinct CORE behavior ---
         let mut seen_core: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -1007,8 +1108,13 @@ fn emit_derivable_buckets_with_progress(
         pool.dedup();
         if !pool.is_empty() {
             let body = dynamic_idle_data_body(&pool);
+            // A race that ships its own project.hkx is a real creature: replicate the idle
+            // pool to ALL its blocks, weapon-classified or not (vanilla SuperMutant and
+            // FO76's own ATD both cover weapon blocks). Weapon-classification only means
+            // "true graft" when the race dir ships no project (e.g. Actors\Character).
+            let race_ships_project = project_hkx_relpath_for_race_dir(race_dir, src).is_some();
             for sg in sgs {
-                if weapon_subgraph_ids.contains(&sg.id()) {
+                if weapon_subgraph_ids.contains(&sg.id()) && !race_ships_project {
                     continue;
                 }
                 pending_files.push("DynamicIdleData", format!("{}.txt", sg.id()), &body);
@@ -1032,13 +1138,16 @@ fn emit_derivable_buckets_with_progress(
             }
         }
 
-        // --- AnimationStanceData: count=1 creature camera-framing pose, PER SUBGRAPH ---
-        // The byte-exact-validated emitter (MirelurkKing container byte-identical) samples
-        // the creature skeleton + idle clip frame-0 (Head + torso pivot). Each subgraph's
-        // pose comes from ITS OWN idle clip (the SAPT self-leaf dir) — injured-leg subgraphs
-        // stand in a distinct limp/crouch, so sourcing the shared base idle is wrong for
-        // files 2/3/4. Stance degrades gracefully when absent, so emit none on failure.
-        // (RE: stance_pose_perSubgraph.md.)
+        timings.push((
+            "core_events_and_idles",
+            step_started.elapsed().as_secs_f64(),
+        ));
+        step_started = Instant::now();
+        // --- AnimationStanceData: count=1 creature camera-framing pose, per subgraph ---
+        // Samples the creature skeleton at idle clip frame 0 (Head + torso pivot). Each
+        // subgraph uses its own idle clip (SAPT self-leaf dir), since injured-leg subgraphs
+        // stand in a distinct limp/crouch. Stance degrades gracefully when absent, so a
+        // failure emits nothing. (RE: stance_pose_perSubgraph.md.)
         let race_disk = src.join(race_dir.replace('\\', "/"));
         // Head-tracking (declared by the core behavior) selects the 174 B converted-
         // creature StanceData vs the 124 B vanilla form; the gate is skeleton-/core-level
@@ -1051,28 +1160,33 @@ fn emit_derivable_buckets_with_progress(
             })
             .map(|sg| behavior_wants_head_tracking(&src.join(sg.core_behavior.replace('\\', "/"))))
             .unwrap_or(false);
-        for sg in sgs {
-            if weapon_subgraph_ids.contains(&sg.id())
-                || !src.join(sg.core_behavior.replace('\\', "/")).is_file()
-            {
-                continue;
-            }
-            if let Some(body) =
+        // Parallel per subgraph; the ordered flush below keeps emission order identical to
+        // the serial form.
+        let stance_bodies: Vec<_> = sgs
+            .par_iter()
+            .map(|sg| {
+                if weapon_subgraph_ids.contains(&sg.id())
+                    || !src.join(sg.core_behavior.replace('\\', "/")).is_file()
+                {
+                    return None;
+                }
                 emit_stance_for_subgraph(&race_disk, src, &sg.sapt_chain, head_tracking)
-            {
-                pending_files.push("AnimationStanceData", format!("{}.txt", sg.id()), &body);
-            }
+                    .map(|body| (sg.id(), body))
+            })
+            .collect();
+        for (id, body) in stance_bodies.into_iter().flatten() {
+            pending_files.push("AnimationStanceData", format!("{id}.txt"), &body);
         }
 
         // --- AnimationOffsets: populated per-subgraph root motion. ---
-        // A moving subgraph MUST ship non-empty trans/rot or the engine treats the
-        // (empty) project-level cache as "no root motion" and the creature moonwalks.
-        // Samples are keyframe-reduced by `reduce_lanes` (byte-exact selection/count/time
-        // vs CK; values within ≤1 ULP). Keyed by subgraph id — distinct from the project-
-        // level empty entry emitted below.
-        // Weapon subgraphs (core only in the base game) resolve their clip set cross-file
-        // through the same GraphResolver AnimationFileData uses. Each parallel job owns its
-        // resolver so graph-cache mutation stays thread-local.
+        // A moving subgraph must ship non-empty trans/rot, or the engine treats the empty
+        // project-level cache as "no root motion" and the creature moonwalks. Keyed by
+        // subgraph id, distinct from the project-level empty entry emitted below. Weapon
+        // subgraphs (core only in the base game) resolve their clip set cross-file through
+        // the GraphResolver AnimationFileData uses; each parallel job owns its resolver so
+        // graph-cache mutation stays thread-local.
+        timings.push(("stance", step_started.elapsed().as_secs_f64()));
+        step_started = Instant::now();
         let weapon_speed_info: BTreeMap<u64, (Vec<u8>, BTreeSet<String>)> = base_meshes_root
             .map(|base| {
                 let roots = [src, base];
@@ -1096,17 +1210,30 @@ fn emit_derivable_buckets_with_progress(
                 entries.into_iter().flatten().collect()
             })
             .unwrap_or_default();
+        timings.push(("weapon_speed_info", step_started.elapsed().as_secs_f64()));
+        step_started = Instant::now();
         let offset_files: Vec<_> = sgs
             .par_iter()
             .map_init(
                 || {
-                    base_meshes_root
-                        .map(|base| GraphResolver::new(vec![src.to_path_buf(), base.to_path_buf()]))
+                    GraphResolver::new(
+                        std::iter::once(src.to_path_buf())
+                            .chain(base_meshes_root.map(Path::to_path_buf))
+                            .collect(),
+                    )
                 },
                 |offsets_resolver, sg| {
                     let core_file = src.join(sg.core_behavior.replace('\\', "/"));
-                    let body = if core_file.is_file() && !weapon_subgraph_ids.contains(&sg.id()) {
-                        // Creature: self-contained single-file path (byte-exact, unchanged).
+                    let body = if is_furniture_core_behavior(&sg.core_behavior) {
+                        // Furniture requires offsets even when a mod supplies the core and
+                        // its clips have no extracted motion.
+                        build_subgraph_offsets_body_furniture(
+                            offsets_resolver,
+                            &sg.core_behavior,
+                            &sg.sapt_chain,
+                        )
+                    } else if core_file.is_file() && !weapon_subgraph_ids.contains(&sg.id()) {
+                        // Creature: self-contained single-file path (byte-exact).
                         let empty_clips = BTreeSet::new();
                         let event_clips = core_event_clips
                             .get(&sg.core_behavior.to_ascii_lowercase())
@@ -1118,28 +1245,14 @@ fn emit_derivable_buckets_with_progress(
                             &sg.sapt_chain,
                             event_clips,
                         )
-                    } else if is_furniture_core_behavior(&sg.core_behavior) {
-                        // Furniture cores live in the base game, so they reach here rather
-                        // than the creature branch. They need their own builder: CK emits an
-                        // offsets entry for every furniture subgraph, motion or not, and FO76
-                        // furniture clips ship no baked reference frame.
-                        offsets_resolver.as_mut().and_then(|resolver| {
-                            build_subgraph_offsets_body_furniture(
-                                resolver,
-                                &sg.core_behavior,
-                                &sg.sapt_chain,
-                            )
-                        })
-                    } else if let (Some(base), Some(resolver)) =
-                        (base_meshes_root, offsets_resolver.as_mut())
-                    {
+                    } else if let Some(base) = base_meshes_root {
                         let empty_loops = BTreeSet::new();
                         let loops = weapon_speed_info
                             .get(&sg.id())
                             .map(|(_, loops)| loops)
                             .unwrap_or(&empty_loops);
                         build_subgraph_offsets_body_weapon(
-                            resolver,
+                            offsets_resolver,
                             &sg.core_behavior,
                             &[src, base],
                             &sg.sapt_chain,
@@ -1162,41 +1275,55 @@ fn emit_derivable_buckets_with_progress(
 
         // --- AnimationSpeedInfo: per-subgraph locomotion speed contour (generative). ---
         // The tree is the locomotion SM's generator sub-tree (SM children by stateId, unary
-        // collapsed, no-speed pruned); each leaf's value/direction come from ITS subgraph's
+        // collapsed, no-speed pruned); each leaf's value/direction come from its subgraph's
         // SAPT-resolved loop clip's binary root motion. Keyed by subgraph id; non-locomotion
-        // subgraphs (no contour) emit nothing. (RE: speedinfo_generate.md, weapon_path.md §6a.)
+        // subgraphs (no contour) emit nothing. (RE: speedinfo_generate.md, weapon_path.md.)
         //
-        // CREATURE (core in the mod) → byte-exact single-file path, clips in the mod only.
+        // Creatures (core in the mod) use the byte-exact single-file path, mod clips only.
         // Weapon output is precomputed before Offsets so the two caches switch ownership
         // atomically: a failed SpeedInfo build leaves every locomotion loop in Offsets.
-        for sg in sgs {
-            let core_file = src.join(sg.core_behavior.replace('\\', "/"));
-            let body = if core_file.is_file() && !weapon_subgraph_ids.contains(&sg.id()) {
-                build_speed_info_body(&core_file, &[src], &sg.sapt_chain)
-            } else {
-                weapon_speed_info
-                    .get(&sg.id())
-                    .map(|(body, _)| body.clone())
-            };
-            if let Some(body) = body {
-                pending_files.push("AnimationSpeedInfo", format!("{}.txt", sg.id()), &body);
-            }
+        timings.push(("offsets", step_started.elapsed().as_secs_f64()));
+        step_started = Instant::now();
+        let speed_bodies: Vec<_> = sgs
+            .par_iter()
+            .map(|sg| {
+                let core_file = src.join(sg.core_behavior.replace('\\', "/"));
+                let body = if core_file.is_file() && !weapon_subgraph_ids.contains(&sg.id()) {
+                    build_speed_info_body(&core_file, &[src], &sg.sapt_chain)
+                } else {
+                    weapon_speed_info
+                        .get(&sg.id())
+                        .map(|(body, _)| body.clone())
+                };
+                body.map(|body| (sg.id(), body))
+            })
+            .collect();
+        for (id, body) in speed_bodies.into_iter().flatten() {
+            pending_files.push("AnimationSpeedInfo", format!("{id}.txt"), &body);
         }
 
+        timings.push(("creature_speed_info", step_started.elapsed().as_secs_f64()));
+        step_started = Instant::now();
         // --- SyncAnimData: creature empty forms stay per project. Generated weapon
         // SyncAnimData remains absent until its CK representation is exact. ---
-        if let Some(creature) = sgs.iter().find(|sg| {
+        // The seed is the RACE's own project on disk, not a subgraph whose core the mod ships:
+        // a humanoid creature mounts the shared `Actors\Character\Behaviors\*` graphs, so it has
+        // no in-mod core and would emit nothing at all (mole miner, scorched).
+        let in_mod_core = sgs.iter().find(|sg| {
             !weapon_subgraph_ids.contains(&sg.id())
                 && src.join(sg.core_behavior.replace('\\', "/")).is_file()
-        }) {
+        });
+        if in_mod_core.is_some() || project_hkx_relpath_for_race_dir(race_dir, src).is_some() {
             // Ordinary creatures keep the core-path-derived name so their authored case
             // (`ScorchBeast`) survives; the race dir comes from a lowercased `ANAM` path
             // and is only authoritative when the core path names a different race — the
             // humanoid case, where it is the sole source of the project name.
-            if let Some(race_name) = race_name_of(&creature.core_behavior)
-                .filter(|_| {
-                    race_dir_of(&creature.core_behavior)
-                        .is_some_and(|dir| dir.eq_ignore_ascii_case(race_dir))
+            if let Some(race_name) = in_mod_core
+                .and_then(|creature| {
+                    race_name_of(&creature.core_behavior).filter(|_| {
+                        race_dir_of(&creature.core_behavior)
+                            .is_some_and(|dir| dir.eq_ignore_ascii_case(race_dir))
+                    })
                 })
                 .or_else(|| race_name_of_dir(race_dir))
             {
@@ -1221,13 +1348,10 @@ fn emit_derivable_buckets_with_progress(
         }
 
         // --- Main project manifest + project-level entries (root tables / offsets / idle) ---
-        let creature = sgs.iter().find(|sg| {
-            !weapon_subgraph_ids.contains(&sg.id())
-                && src.join(sg.core_behavior.replace('\\', "/")).is_file()
-        });
-        if let Some((proj_name, files)) =
-            creature.and_then(|_| extract_project_manifest(race_dir, src))
-        {
+        // `extract_project_manifest` is its own gate: it returns None unless the mod ships this
+        // race's project .hkx. Humanoids have no in-mod core but still ship their project,
+        // character and skeleton.
+        if let Some((proj_name, files)) = extract_project_manifest(race_dir, src) {
             if !files.is_empty() {
                 pending_files.push(
                     "AnimationFileData",
@@ -1256,9 +1380,7 @@ fn emit_derivable_buckets_with_progress(
                 // project .hkx path and its body references the ROOT behavior
                 // (files[0]). Byte-exact and genuinely empty in CK — safe to ship
                 // alongside the independently emitted populated per-subgraph offsets.
-                if let Some(proj_rel) =
-                    creature.and_then(|sg| project_hkx_relpath(&sg.core_behavior, src))
-                {
+                if let Some(proj_rel) = project_hkx_relpath_for_race_dir(race_dir, src) {
                     pending_files.push(
                         "AnimationOffsets",
                         format!("{}.txt", name_id(&proj_rel)),
@@ -1278,9 +1400,12 @@ fn emit_derivable_buckets_with_progress(
                 }
             }
         }
+        timings.push(("project_metadata", step_started.elapsed().as_secs_f64()));
         DerivableRaceEmission {
             files: pending_files,
             elapsed_seconds: race_started.elapsed().as_secs_f64(),
+            timings,
+            workers: rayon::current_num_threads(),
         }
     };
 
@@ -1296,21 +1421,75 @@ fn emit_derivable_buckets_with_progress(
         ));
     }
 
-    // Workers stage bodies so the ordered flush preserves serial overwrite and progress semantics.
-    let race_emissions: Vec<_> = races
-        .par_iter()
-        .map(|race| {
-            let (race_dir, sgs) = *race;
-            emit_race(race_dir, sgs)
-        })
-        .collect();
+    // Workers stage bodies so the ordered flush preserves serial overwrite and progress
+    // semantics. Races are scheduled biggest first: the weapon/character race holds most
+    // subgraphs and would otherwise run alone at the end. Emission order is restored before
+    // the flush. The slowest race can take minutes, so workers report completions over a
+    // channel that the calling thread (the only one that may touch `progress`) drains live.
+    let total_subgraphs: usize = races.iter().map(|(_, sgs)| sgs.len()).sum();
+    let mut schedule: Vec<usize> = (0..races.len()).collect();
+    schedule.sort_by_key(|&index| std::cmp::Reverse(races[index].1.len()));
+
+    let (sender, receiver) = std::sync::mpsc::channel::<(usize, DerivableRaceEmission)>();
+    let race_emissions = rayon::in_place_scope(|scope| {
+        let races = &races;
+        let emit_race = &emit_race;
+        scope.spawn(move |_| {
+            schedule.par_iter().for_each_with(sender, |sender, &index| {
+                let (race_dir, sgs) = races[index];
+                let emission = emit_race(race_dir, sgs);
+                let _ = sender.send((index, emission));
+            });
+        });
+
+        let mut done_races = 0usize;
+        let mut done_subgraphs = 0usize;
+        let mut emissions = Vec::with_capacity(races.len());
+        loop {
+            let (index, emission) =
+                match receiver.recv_timeout(std::time::Duration::from_millis(25)) {
+                    Ok(result) => result,
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        // The callback stays on its caller; a one-worker pool must still execute its queued work.
+                        rayon::yield_now();
+                        continue;
+                    }
+                };
+            done_races += 1;
+            done_subgraphs += races[index].1.len();
+            progress(&format!(
+                "derivable: {done_races}/{race_count} race(s), \
+                 {done_subgraphs}/{total_subgraphs} subgraph(s) built \
+                 (just finished {})",
+                races[index].0,
+            ));
+            emissions.push((index, emission));
+        }
+        emissions.sort_by_key(|(index, _)| *index);
+        emissions
+            .into_iter()
+            .map(|(_, emission)| emission)
+            .collect::<Vec<_>>()
+    });
 
     for (race_index, ((race_dir, _), emission)) in races.into_iter().zip(race_emissions).enumerate()
     {
         let written_before = report.written;
         let write_started = Instant::now();
         emission.files.write_to(&atd, &mut report);
-        let elapsed_seconds = emission.elapsed_seconds + write_started.elapsed().as_secs_f64();
+        let write_seconds = write_started.elapsed().as_secs_f64();
+        let elapsed_seconds = emission.elapsed_seconds + write_seconds;
+        let timings = emission
+            .timings
+            .iter()
+            .map(|(name, seconds)| format!("{name}={seconds:.3}s"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        progress(&format!(
+            "derivable timings: {race_dir} workers={} {timings} write={write_seconds:.3}s",
+            emission.workers
+        ));
         progress(&format!(
             "derivable race {}/{}: {} wrote {} file(s) in {:.1}s",
             race_index + 1,
@@ -1349,6 +1528,66 @@ mod tests {
     use super::*;
     use std::collections::BTreeSet;
     use std::path::PathBuf;
+
+    #[test]
+    #[ignore = "requires local converted and base game fixtures"]
+    fn authoritative_corpus_equivalence() {
+        let config_path = std::env::var("MODKIT_ANIM_CORPUS").unwrap();
+        let config: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(config_path).unwrap()).unwrap();
+        let path = |key: &str| PathBuf::from(config[key].as_str().unwrap());
+        let inputs = super::super::race_decode::subgraph_inputs_from_plugin(
+            &path("plugin"),
+            "fo4",
+            &[path("base_plugin")],
+        )
+        .unwrap();
+        let out = tempfile::tempdir().unwrap();
+        let started = Instant::now();
+        let report = emit_serialized_production_buckets(
+            &deduplicated_subgraphs(&inputs.subgraphs),
+            &inputs.weapon_profiles,
+            &inputs.base_stance_profiles,
+            &inputs.target_plugin_name,
+            &path("meshes"),
+            out.path(),
+            Some(&path("base_meshes")),
+        )
+        .unwrap();
+        eprintln!(
+            "authoritative corpus: {report:?} elapsed={:.6}s profiles={} base_profiles={}",
+            started.elapsed().as_secs_f64(),
+            inputs.weapon_profiles.len(),
+            inputs.base_stance_profiles.len()
+        );
+        assert_eq!(report.written, 4);
+        assert_eq!(report.stance_reused, 1);
+        assert_eq!(report.stance_generated, 1);
+        assert_eq!(report.stance_skipped, 0);
+        let manifest: AuthoritativeManifest = serde_json::from_slice(
+            &std::fs::read(out.path().join(AUTHORITATIVE_MANIFEST)).unwrap(),
+        )
+        .unwrap();
+        let record = std::env::var_os("MODKIT_ANIM_RECORD").is_some();
+        for relative in manifest
+            .files
+            .iter()
+            .map(String::as_str)
+            .chain(std::iter::once(AUTHORITATIVE_MANIFEST))
+        {
+            let body = std::fs::read(out.path().join(relative)).unwrap();
+            let expected = path("baseline").join(relative);
+            if record {
+                std::fs::create_dir_all(expected.parent().unwrap()).unwrap();
+                std::fs::write(expected, body).unwrap();
+            } else {
+                assert!(
+                    std::fs::read(expected).unwrap() == body,
+                    "different bytes: {relative}"
+                );
+            }
+        }
+    }
 
     fn make_target_profile(core: &str, sapt: &[&str]) -> WeaponProfileInput {
         let subgraph = SubgraphInput {
@@ -1414,6 +1653,177 @@ mod tests {
             ids.contains(&weapon.subgraph.id()),
             "base-game weapon graft must stay weapon-classified"
         );
+
+        let mut creature_body = creature.clone();
+        creature_body.stance.sraf.role = 1;
+        assert!(
+            !is_target_weapon_profile(&creature_body, "SeventySix.esm", dir.path()),
+            "role-1 creature body without weapon keywords must stay a creature"
+        );
+
+        let mut local_weapon = creature_body.clone();
+        local_weapon.stance.stkd = vec![StanceFormKey {
+            plugin: "SeventySix.esm".to_string(),
+            local: 0x00D192,
+        }];
+        assert!(is_target_weapon_profile(&local_weapon, "SeventySix.esm", dir.path()));
+        assert!(!is_target_weapon_profile(&local_weapon, "Another.esm", dir.path()));
+    }
+
+    #[test]
+    fn local_furniture_core_emits_stationary_animation_offsets() {
+        use havok_native::hkx::descriptors::DescriptorRegistry;
+        use havok_native::hkx::types::HkxValue;
+        use havok_native::hkx::{HkxFile, HkxMember, HkxObject, write_hkx};
+
+        let src = tempfile::tempdir().unwrap();
+        let base = tempfile::tempdir().unwrap();
+        let core = r"Actors\Character\Behaviors\CustomFurniture.hkx";
+        let sapt = r"Actors\Character\Animations\CustomWorkbench";
+        let graph = HkxFile::from_tagxml(
+            11,
+            "hk_2014.1.0-r1",
+            vec![HkxObject {
+                name: Some("#0001".to_string()),
+                offset: 0,
+                signature: 0,
+                class_name: "hkbClipGenerator".to_string(),
+                members: vec![
+                    HkxMember {
+                        name: "name".to_string(),
+                        value: HkxValue::String {
+                            value: "Standing Enter".to_string(),
+                            is_null: false,
+                        },
+                    },
+                    HkxMember {
+                        name: "animationName".to_string(),
+                        value: HkxValue::String {
+                            value: r"Animations\EnterFromStand.hkt".to_string(),
+                            is_null: false,
+                        },
+                    },
+                ],
+            }],
+        );
+        let core_file = src.path().join(core.replace('\\', "/"));
+        std::fs::create_dir_all(core_file.parent().unwrap()).unwrap();
+        let mut registry = DescriptorRegistry::for_contents_version("hk_2014.1.0-r1");
+        std::fs::write(core_file, write_hkx(&graph, &mut registry)).unwrap();
+        let clip = src.path().join(sapt.replace('\\', "/")).join("EnterFromStand.hkx");
+        std::fs::create_dir_all(clip.parent().unwrap()).unwrap();
+        std::fs::write(clip, b"clip without extracted motion").unwrap();
+        let subgraph = SubgraphInput {
+            core_behavior: core.to_string(),
+            sapt_chain: vec![sapt.to_string()],
+            race_dir: Some(r"Actors\Character".to_string()),
+        };
+        for base_root in [None, Some(base.path())] {
+            let out = tempfile::tempdir().unwrap();
+            emit_animation_file_data(
+                std::slice::from_ref(&subgraph), src.path(), out.path(), base_root,
+            ).unwrap();
+            let manifest = std::fs::read_to_string(out.path().join("AnimTextData/AnimationFileData")
+                .join(format!("{}.txt", subgraph.id()))).unwrap();
+            assert_eq!(manifest.lines().nth(4), Some(core));
+            emit_derivable_buckets_with_progress(
+                std::slice::from_ref(&subgraph),
+                &BTreeSet::new(),
+                &[],
+                &[],
+                src.path(),
+                out.path(),
+                base_root,
+                None,
+                &mut |_| {},
+            );
+            let body = std::fs::read(out.path().join("AnimTextData/AnimationOffsets")
+                .join(format!("{}.txt", subgraph.id())))
+                .expect("local stationary furniture must have offsets, with or without base meshes");
+            assert!(body.windows(14).any(|bytes| bytes == b"EnterFromStand"));
+            assert!(!body.windows(14).any(|bytes| bytes == b"Standing Enter"));
+        }
+    }
+
+    #[test]
+    fn base_dynamic_furniture_behavior_includes_all_direct_override_clips() {
+        use havok_native::hkx::descriptors::DescriptorRegistry;
+        use havok_native::hkx::types::HkxValue;
+        use havok_native::hkx::{HkxFile, HkxMember, HkxObject, write_hkx};
+
+        let src = tempfile::tempdir().unwrap();
+        let base = tempfile::tempdir().unwrap();
+        let out = tempfile::tempdir().unwrap();
+        let core_behavior = r"Actors\Character\Behaviors\WorkbenchFurnitureBehavior.hkx";
+        let core_file = base.path().join(core_behavior.replace('\\', "/"));
+        std::fs::create_dir_all(core_file.parent().unwrap()).unwrap();
+        let hkx = HkxFile::from_tagxml(
+            11,
+            "hk_2014.1.0-r1",
+            vec![
+                HkxObject {
+                    name: Some("#0001".to_string()),
+                    offset: 0,
+                    signature: 0,
+                    class_name: "hkbClipGenerator".to_string(),
+                    members: vec![HkxMember {
+                        name: "animationName".to_string(),
+                        value: HkxValue::String {
+                            value: r"Animations\PoseA_IdleFlavor2.hkt".to_string(),
+                            is_null: false,
+                        },
+                    }],
+                },
+                HkxObject {
+                    name: Some("#0002".to_string()),
+                    offset: 0,
+                    signature: 0,
+                    class_name: "DynamicAnimationTaggingGenerator".to_string(),
+                    members: Vec::new(),
+                },
+            ],
+        );
+        let mut registry = DescriptorRegistry::for_contents_version("hk_2014.1.0-r1");
+        std::fs::write(&core_file, write_hkx(&hkx, &mut registry)).unwrap();
+
+        let sapt = r"Actors\Character\Animations\Furniture\WorkbenchTinkers";
+        for clip in [
+            "PoseA_IdleFlavor1.hkx",
+            "PoseA_IdleFlavor2.hkx",
+            "PoseA_IdleFlavor3.hkx",
+        ] {
+            let path = src.path().join(sapt.replace('\\', "/")).join(clip);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"animation").unwrap();
+        }
+
+        let subgraph = SubgraphInput {
+            core_behavior: core_behavior.to_string(),
+            sapt_chain: vec![sapt.to_string()],
+            race_dir: Some(r"Actors\Character".to_string()),
+        };
+        let written = emit_animation_file_data(
+            std::slice::from_ref(&subgraph),
+            src.path(),
+            out.path(),
+            Some(base.path()),
+        )
+        .unwrap();
+
+        assert_eq!(written, 1);
+        let body = std::fs::read_to_string(
+            out.path()
+                .join("AnimTextData/AnimationFileData")
+                .join(format!("{}.txt", subgraph.id())),
+        )
+        .unwrap();
+        for clip in [
+            "PoseA_IdleFlavor1.hkx",
+            "PoseA_IdleFlavor2.hkx",
+            "PoseA_IdleFlavor3.hkx",
+        ] {
+            assert!(body.contains(clip), "{clip} missing from:\n{body}");
+        }
     }
 
     /// A humanoid creature (scorched, mole miner) mounts the SHARED
@@ -1461,6 +1871,127 @@ mod tests {
             std::fs::read_dir(&bucket)
                 .map(|d| d.flatten().map(|e| e.file_name()).collect::<Vec<_>>())
                 .unwrap_or_default()
+        );
+    }
+
+    /// The realistic humanoid case: the shared core is NOT shipped by the mod (it lives in the
+    /// base game), so every one of the race's subgraphs is weapon-classified and the old
+    /// in-mod-core seed found nothing — dropping `<race>project.txt` even though the project,
+    /// root behavior and character all shipped. The sibling test above writes the shared core
+    /// into the mod, which no real conversion does, so it passed while production was broken.
+    #[test]
+    fn humanoid_creature_project_manifest_emitted_when_shared_core_is_base_game_only() {
+        let src = tempfile::tempdir().unwrap();
+        let write = |rel: &str| {
+            let p = src.path().join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, b"not a packfile").unwrap();
+        };
+        // The race's own project + root behavior ship; the mounted core does NOT.
+        write("Actors/MoleMiner/MoleMinerProject.hkx");
+        write("Actors/MoleMiner/Behaviors/MoleMinerRootBehavior.hkx");
+
+        let subgraphs = vec![SubgraphInput {
+            core_behavior: r"Actors\Character\Behaviors\MTBehavior.hkx".to_string(),
+            sapt_chain: vec![r"Actors\MoleMiner\Animations\MT".to_string()],
+            race_dir: Some(r"Actors\MoleMiner".to_string()),
+        }];
+        // Production reality: core-not-in-mod => the block is weapon-classified.
+        let weapon_ids: BTreeSet<u64> = subgraphs.iter().map(|sg| sg.id()).collect();
+
+        let out = tempfile::tempdir().unwrap();
+        emit_derivable_buckets_with_progress(
+            &subgraphs,
+            &weapon_ids,
+            &[],
+            &[],
+            src.path(),
+            out.path(),
+            None,
+            None,
+            &mut |_| {},
+        );
+
+        let bucket = out.path().join("AnimTextData/AnimationFileData");
+        assert!(
+            bucket.join("moleminerproject.txt").is_file(),
+            "humanoid creature whose cores live in the base game must still get its project \
+             manifest; emitted instead: {:?}",
+            std::fs::read_dir(&bucket)
+                .map(|d| d.flatten().map(|e| e.file_name()).collect::<Vec<_>>())
+                .unwrap_or_default()
+        );
+        let sync = out.path().join("AnimTextData/SyncAnimData");
+        assert!(
+            sync.join("ResolvedSyncAnimDataMoleMiner.txt").is_file(),
+            "…and its SyncAnimData; emitted instead: {:?}",
+            std::fs::read_dir(&sync)
+                .map(|d| d.flatten().map(|e| e.file_name()).collect::<Vec<_>>())
+                .unwrap_or_default()
+        );
+    }
+
+    /// DynamicIdleData replicates the race idle pool to every subgraph of a real creature
+    /// race — vanilla FO4 (SuperMutant) and FO76's own ATD both ship it for weapon blocks
+    /// too. A humanoid creature's blocks are all weapon-classified (cores live in the base
+    /// game), which starved the bucket to 0/23 for MoleMiner. The race shipping its own
+    /// project.hkx is what separates a creature block from a true weapon graft.
+    #[test]
+    fn humanoid_creature_dynamic_idle_data_reaches_weapon_classified_subgraphs() {
+        let src = tempfile::tempdir().unwrap();
+        let write = |rel: &str| {
+            let p = src.path().join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, b"not a packfile").unwrap();
+        };
+        write("Actors/MoleMiner/MoleMinerProject.hkx");
+        write("Actors/MoleMiner/Behaviors/MoleMinerRootBehavior.hkx");
+        write("Actors/MoleMiner/Animations/PoseA_Idle1.hkx");
+        // A true weapon graft's race dir ships no project.
+        write("Actors/Character/Animations/PoseB_Idle1.hkx");
+
+        let creature = SubgraphInput {
+            core_behavior: r"Actors\Character\Behaviors\WeaponBehavior.hkx".to_string(),
+            sapt_chain: vec![r"Actors\MoleMiner\Animations\GripAssault".to_string()],
+            race_dir: Some(r"Actors\MoleMiner".to_string()),
+        };
+        let graft = SubgraphInput {
+            core_behavior: r"Actors\Character\Behaviors\WeaponBehavior.hkx".to_string(),
+            sapt_chain: vec![r"Actors\Character\Animations\Weapon\PepperShaker".to_string()],
+            race_dir: Some(r"Actors\Character".to_string()),
+        };
+        let subgraphs = vec![creature, graft];
+        let weapon_ids: BTreeSet<u64> = subgraphs.iter().map(|sg| sg.id()).collect();
+        let idle_globs = vec![
+            r"Actors\MoleMiner\Animations\PoseA_Idle*.hkx".to_string(),
+            r"Actors\Character\Animations\PoseB_Idle*.hkx".to_string(),
+        ];
+
+        let out = tempfile::tempdir().unwrap();
+        emit_derivable_buckets_with_progress(
+            &subgraphs,
+            &weapon_ids,
+            &idle_globs,
+            &[],
+            src.path(),
+            out.path(),
+            None,
+            None,
+            &mut |_| {},
+        );
+
+        let bucket = out.path().join("AnimTextData/DynamicIdleData");
+        assert!(
+            bucket.join(format!("{}.txt", subgraphs[0].id())).is_file(),
+            "shipped creature race must get DynamicIdleData on its weapon-classified blocks; \
+             emitted instead: {:?}",
+            std::fs::read_dir(&bucket)
+                .map(|d| d.flatten().map(|e| e.file_name()).collect::<Vec<_>>())
+                .unwrap_or_default()
+        );
+        assert!(
+            !bucket.join(format!("{}.txt", subgraphs[1].id())).is_file(),
+            "a true weapon graft (race dir ships no project.hkx) must stay skipped"
         );
     }
 
@@ -1560,6 +2091,19 @@ mod tests {
         let parallel_out = tempfile::tempdir().unwrap();
         let (serial_report, serial_messages) = run(1, serial_out.path());
         let (parallel_report, parallel_messages) = run(4, parallel_out.path());
+
+        assert!(
+            serial_messages
+                .iter()
+                .any(|message| message.starts_with("derivable timings:")
+                    && message.contains("workers=1 "))
+        );
+        assert!(
+            parallel_messages
+                .iter()
+                .any(|message| message.starts_with("derivable timings:")
+                    && message.contains("workers=4 "))
+        );
 
         assert_eq!(serial_report.written, 4);
         assert_eq!(parallel_report.written, serial_report.written);
@@ -1966,7 +2510,10 @@ mod tests {
         .unwrap();
         // 2 = the trusted aggregate + the plugin-level ResolvedSyncAnimDataTest.txt empty
         // form (V4\n0\n), now always emitted alongside the authoritative buckets.
-        assert_eq!(report.written, 2, "only the trusted aggregate + plugin sync file are emitted");
+        assert_eq!(
+            report.written, 2,
+            "only the trusted aggregate + plugin sync file are emitted"
+        );
         let atd = out.path().join("AnimTextData");
         assert!(
             atd.join("AnimationOffsets/PersistantSubgraphInfoAndOffsetData.txt")
@@ -2034,11 +2581,283 @@ mod tests {
         let parsed = super::single_file::parse_single_file(&merged).unwrap();
         assert_eq!(parsed.block_a.len(), 2); // vanilla + ours
         assert_eq!(parsed.block_a[1].key, our_key as u64);
-        assert!(out
+        assert!(
+            out.path()
+                .join("AnimTextData")
+                .join("AnimationFileData")
+                .join("dirlist.txt")
+                .is_file()
+        );
+    }
+
+    /// The engine loads a weapon-role stance from the subgraph's AnimationFileData
+    /// manifest, and CK lists the stance's own core graph as the first behavior row
+    /// (vanilla SuperMutant melee FileData starts with `MeleeBehavior.hkx`). Without it,
+    /// shared-core creature stances (MoleMiner melee/MT/injured wrappers) never run.
+    #[test]
+    fn shared_core_subgraph_file_data_lists_core_behavior_first() {
+        use havok_native::hkx::descriptors::DescriptorRegistry;
+        use havok_native::hkx::types::HkxValue;
+        use havok_native::hkx::{HkxFile, HkxMember, HkxObject, write_hkx};
+
+        let src = tempfile::tempdir().unwrap();
+        let base = tempfile::tempdir().unwrap();
+        let out = tempfile::tempdir().unwrap();
+
+        // The shared core lives ONLY in the base game — the mole miner reality.
+        let core_behavior = r"Actors\Character\Behaviors\MeleeBehavior.hkx";
+        let core_file = base.path().join(core_behavior.replace('\\', "/"));
+        std::fs::create_dir_all(core_file.parent().unwrap()).unwrap();
+        let hkx = HkxFile::from_tagxml(
+            11,
+            "hk_2014.1.0-r1",
+            vec![HkxObject {
+                name: Some("#0001".to_string()),
+                offset: 0,
+                signature: 0,
+                class_name: "hkbClipGenerator".to_string(),
+                members: vec![HkxMember {
+                    name: "animationName".to_string(),
+                    value: HkxValue::String {
+                        value: r"Animations\1HM\AttackForwardA.hkt".to_string(),
+                        is_null: false,
+                    },
+                }],
+            }],
+        );
+        let mut registry = DescriptorRegistry::for_contents_version("hk_2014.1.0-r1");
+        std::fs::write(&core_file, write_hkx(&hkx, &mut registry)).unwrap();
+
+        let clip = src
             .path()
-            .join("AnimTextData")
-            .join("AnimationFileData")
-            .join("dirlist.txt")
-            .is_file());
+            .join("Actors/MoleMiner/Animations/H2H/attackforwarda.hkx");
+        std::fs::create_dir_all(clip.parent().unwrap()).unwrap();
+        std::fs::write(clip, b"animation").unwrap();
+
+        let subgraph = SubgraphInput {
+            core_behavior: core_behavior.to_string(),
+            sapt_chain: vec![
+                r"Actors\MoleMiner\Animations\H2H".to_string(),
+                r"Actors\MoleMiner\Animations\Shared".to_string(),
+            ],
+            race_dir: Some(r"Actors\MoleMiner".to_string()),
+        };
+        let written = emit_animation_file_data(
+            std::slice::from_ref(&subgraph),
+            src.path(),
+            out.path(),
+            Some(base.path()),
+        )
+        .unwrap();
+        assert_eq!(written, 1);
+
+        let body = std::fs::read_to_string(
+            out.path()
+                .join("AnimTextData/AnimationFileData")
+                .join(format!("{}.txt", subgraph.id())),
+        )
+        .unwrap();
+        let lines: Vec<&str> = body.lines().collect();
+        let first_file_row = lines
+            .iter()
+            .position(|l| l.contains('\\'))
+            .expect("body must list files");
+        assert_eq!(
+            lines[first_file_row], core_behavior,
+            "CK lists the stance's own core graph first; body:\n{body}"
+        );
+        assert!(
+            body.contains(r"Actors\MoleMiner\Animations\H2H\attackforwarda.hkx"),
+            "clip row missing; body:\n{body}"
+        );
+    }
+
+    #[test]
+    fn local_core_manifest_omits_missing_clip_paths() {
+        use havok_native::hkx::descriptors::DescriptorRegistry;
+        use havok_native::hkx::types::HkxValue;
+        use havok_native::hkx::{HkxFile, HkxMember, HkxObject, write_hkx};
+
+        let src = tempfile::tempdir().unwrap();
+        let out = tempfile::tempdir().unwrap();
+        let core = r"Actors\Fixture\MoleMiner\Behaviors\Gun.hkx";
+        let core_file = src.path().join(core.replace('\\', "/"));
+        std::fs::create_dir_all(core_file.parent().unwrap()).unwrap();
+        let objects = [r"Animations\Present.hkt", r"..\Source\Missing.hkt"]
+            .into_iter()
+            .enumerate()
+            .map(|(index, animation)| HkxObject {
+                name: Some(format!("#{index:04}")),
+                offset: 0,
+                signature: 0,
+                class_name: "hkbClipGenerator".to_string(),
+                members: vec![HkxMember {
+                    name: "animationName".to_string(),
+                    value: HkxValue::String { value: animation.to_string(), is_null: false },
+                }],
+            })
+            .collect();
+        let hkx = HkxFile::from_tagxml(11, "hk_2014.1.0-r1", objects);
+        let mut registry = DescriptorRegistry::for_contents_version("hk_2014.1.0-r1");
+        std::fs::write(core_file, write_hkx(&hkx, &mut registry)).unwrap();
+        let clip = r"Actors\Fixture\MoleMiner\Animations\Present.hkx";
+        let clip_file = src.path().join(clip.replace('\\', "/"));
+        std::fs::create_dir_all(clip_file.parent().unwrap()).unwrap();
+        std::fs::write(clip_file, b"animation").unwrap();
+        let subgraph = SubgraphInput {
+            core_behavior: core.to_string(),
+            sapt_chain: vec![r"Actors\Fixture\MoleMiner\Animations".to_string()],
+            race_dir: Some(r"Actors\Fixture\MoleMiner".to_string()),
+        };
+        assert_eq!(emit_animation_file_data(std::slice::from_ref(&subgraph), src.path(), out.path(), None).unwrap(), 1);
+        let body = std::fs::read_to_string(out.path().join(format!(
+            "AnimTextData/AnimationFileData/{}.txt", subgraph.id()
+        ))).unwrap();
+        assert_eq!(body.lines().skip(4).collect::<Vec<_>>(), vec![clip]);
+    }
+
+    /// CK keeps the resolver's core-first dependency order even for cores carrying a
+    /// `DynamicAnimationTaggingGenerator` (vanilla SuperMutant melee lists
+    /// `MeleeBehavior.hkx` first, then its support graphs, not alphabetically).
+    /// Appending the direct-SAPT files must not alphabetize the manifest.
+    #[test]
+    fn dynamic_tag_core_subgraph_keeps_core_first_and_appends_sapt_files() {
+        assert_dynamic_subgraph_dependencies(false);
+    }
+
+    #[test]
+    fn local_core_with_clips_keeps_referenced_behavior_in_manifest() {
+        assert_dynamic_subgraph_dependencies(true);
+    }
+
+    fn assert_dynamic_subgraph_dependencies(core_in_mod: bool) {
+        use havok_native::hkx::descriptors::DescriptorRegistry;
+        use havok_native::hkx::types::HkxValue;
+        use havok_native::hkx::{HkxFile, HkxMember, HkxObject, write_hkx};
+
+        let src = tempfile::tempdir().unwrap();
+        let base = tempfile::tempdir().unwrap();
+        let out = tempfile::tempdir().unwrap();
+
+        let core_behavior = r"Actors\Character\Behaviors\MeleeBehavior.hkx";
+        // Support behavior that sorts BEFORE the core alphabetically — the
+        // Dialogue-vs-Melee reality that exposed the reordering.
+        let support_behavior = r"Actors\Character\Behaviors\AaaSupportBehavior.hkx";
+        let graph_root = if core_in_mod { src.path() } else { base.path() };
+
+        let write_graph = |path: &std::path::Path, objects: Vec<HkxObject>| {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let hkx = HkxFile::from_tagxml(11, "hk_2014.1.0-r1", objects);
+            let mut registry = DescriptorRegistry::for_contents_version("hk_2014.1.0-r1");
+            std::fs::write(path, write_hkx(&hkx, &mut registry)).unwrap();
+        };
+
+        write_graph(
+            &graph_root.join(core_behavior.replace('\\', "/")),
+            vec![
+                HkxObject {
+                    name: Some("#0001".to_string()),
+                    offset: 0,
+                    signature: 0,
+                    class_name: "hkbClipGenerator".to_string(),
+                    members: vec![HkxMember {
+                        name: "animationName".to_string(),
+                        value: HkxValue::String {
+                            value: r"Animations\1HM\AttackForwardA.hkt".to_string(),
+                            is_null: false,
+                        },
+                    }],
+                },
+                HkxObject {
+                    name: Some("#0002".to_string()),
+                    offset: 0,
+                    signature: 0,
+                    class_name: "hkbBehaviorReferenceGenerator".to_string(),
+                    members: vec![HkxMember {
+                        name: "behaviorName".to_string(),
+                        value: HkxValue::String {
+                            value: r"Behaviors\AaaSupportBehavior.hkx".to_string(),
+                            is_null: false,
+                        },
+                    }],
+                },
+                HkxObject {
+                    name: Some("#0003".to_string()),
+                    offset: 0,
+                    signature: 0,
+                    class_name: "DynamicAnimationTaggingGenerator".to_string(),
+                    members: vec![],
+                },
+            ],
+        );
+        write_graph(
+            &graph_root.join(support_behavior.replace('\\', "/")),
+            vec![HkxObject {
+                name: Some("#0001".to_string()),
+                offset: 0,
+                signature: 0,
+                class_name: "hkbClipGenerator".to_string(),
+                members: vec![HkxMember {
+                    name: "animationName".to_string(),
+                    value: HkxValue::String {
+                        value: r"Animations\1HM\SupportLoop.hkt".to_string(),
+                        is_null: false,
+                    },
+                }],
+            }],
+        );
+
+        for clip in ["attackforwarda.hkx", "supportloop.hkx", "extraloop.hkx"] {
+            let p = src
+                .path()
+                .join("Actors/MoleMiner/Animations/H2H")
+                .join(clip);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, b"animation").unwrap();
+        }
+
+        let subgraph = SubgraphInput {
+            core_behavior: core_behavior.to_string(),
+            sapt_chain: vec![
+                r"Actors\MoleMiner\Animations\H2H".to_string(),
+                r"Actors\MoleMiner\Animations\Shared".to_string(),
+            ],
+            race_dir: Some(r"Actors\MoleMiner".to_string()),
+        };
+        let written = emit_animation_file_data(
+            std::slice::from_ref(&subgraph),
+            src.path(),
+            out.path(),
+            Some(base.path()),
+        )
+        .unwrap();
+        assert_eq!(written, 1);
+
+        let body = std::fs::read_to_string(
+            out.path()
+                .join("AnimTextData/AnimationFileData")
+                .join(format!("{}.txt", subgraph.id())),
+        )
+        .unwrap();
+        let lines: Vec<&str> = body.lines().collect();
+        assert!(lines.contains(&support_behavior), "referenced behavior missing: {body}");
+        let first_file_row = lines
+            .iter()
+            .position(|l| l.contains('\\'))
+            .expect("body must list files");
+        assert_eq!(
+            lines[first_file_row], core_behavior,
+            "core graph must stay the first row despite dynamic-tag SAPT append; body:\n{body}"
+        );
+        assert!(
+            body.contains(r"Actors\MoleMiner\Animations\H2H\extraloop.hkx"),
+            "direct-SAPT file must still be appended; body:\n{body}"
+        );
+        // No duplicate rows after the append.
+        let mut sorted = lines[first_file_row..].to_vec();
+        sorted.sort_unstable();
+        let before = sorted.len();
+        sorted.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+        assert_eq!(before, sorted.len(), "duplicate rows; body:\n{body}");
     }
 }

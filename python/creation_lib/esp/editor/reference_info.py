@@ -1,12 +1,8 @@
-"""Build Reference Info — warm the native back-reference cache.
+"""Build Reference Info: pre-warm the native back-reference index.
 
-The native crate (`plugin_index.rs`) lazily builds a back-reference index
-the first time `get_referencing_form_ids` or similar is called. This module
-exposes a UI-friendly "Build Reference Info" button that pre-warms the
-index across every loaded plugin so subsequent ReferencedBy lookups are
-instant.
-
-xEdit equivalent: `mniNavBuildRef`.
+The native index (`plugin_index.rs`) builds lazily on the first
+`get_referencing_form_ids`-style call. Warming it across all loaded plugins makes
+later ReferencedBy lookups instant. xEdit equivalent: `mniNavBuildRef`.
 """
 
 from __future__ import annotations

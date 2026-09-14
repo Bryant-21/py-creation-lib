@@ -18,10 +18,8 @@ from creation_lib.animation.models import (
     FloatChannel,
 )
 
-# Cycle type string → NIF enum value
-# NOTE: The reader maps 0→loop, 1→clamp, 2→reverse.  This matches
-# the binary values observed in shipped FO3/FNV .kf files (which differ
-# from the nif.xml enum names).
+# Cycle type string → NIF enum value, same mapping as the reader. These are
+# the values shipped FO3/FNV .kf files use; they differ from the nif.xml names.
 _CYCLE_TYPE_ENUM = {
     "loop": 0,
     "clamp": 1,
@@ -39,14 +37,7 @@ _INTERP_ENUM = {
 def write_kf(clip: AnimationClip, path: str | Path, game: str = "fo3") -> None:
     """Write an AnimationClip to a .kf NIF file.
 
-    Parameters
-    ----------
-    clip : AnimationClip
-        The animation to write.
-    path : str or Path
-        Output file path.
-    game : str
-        Game target: ``"fo3"`` or ``"fnv"``.  Controls NIF header versions.
+    ``game`` is ``"fo3"`` or ``"fnv"`` and selects the NIF header versions.
     """
     nif = NifFile()
     profile = get_profile(game)
@@ -60,16 +51,13 @@ def write_kf(clip: AnimationClip, path: str | Path, game: str = "fo3") -> None:
     nif.header.creator = "modkit21"
     nif.header.export_info = []
 
-    # We will build blocks manually and use NifFile.add_block() to keep
-    # header metadata (type index, sizes) in sync.
-
-    # Count how many blocks we will produce so we can compute refs.
-    # Layout:
+    # Blocks go through NifFile.add_block() to keep header metadata (type
+    # index, sizes) in sync. Indices are pre-computed for the Controlled
+    # Blocks refs. Layout:
     #   0  NiControllerSequence
     #   1  NiTextKeyExtraData
     #   2+ For each BoneChannel:  NiTransformInterpolator, NiTransformData (if has keys)
     #      For each FloatChannel: NiFloatInterpolator, NiFloatData (if has keys)
-    # We need to pre-calculate block indices for the Controlled Blocks refs.
 
     block_idx = 2  # first available index after seq + text keys
     interp_refs: list[int] = []  # interpolator block index per channel

@@ -4,14 +4,13 @@
 // Unlike polytope/CM, sphere packfiles have NO hkRefCountedProperties and NO
 // hknpShapeMassProperties — the shape stores its radius in the inherited
 // hknpShape::convexRadius field. The shape object's bytes are hand-coded after
-// `Poolball_Cue.nif`: the descriptor doesn't cover the full 0x50-byte trailer
-// (offsets 0x34-0x4F carry the 0x00100004 marker and the 0.5 float that the
-// FO4 runtime requires for sphere shapes).
+// `Poolball_Cue.nif`: the descriptor covers the hkRelArray header but not the
+// four SIMD-padded support vectors stored after it.
 //
-// Because those trailer bytes aren't in `hknpSphereShape_0.xml`, a round-trip
-// through `HkxFile::read → save` would silently strip them. The single-body
+// Because those support vectors aren't represented in `hknpSphereShape_0.xml`,
+// a round-trip through `HkxFile::read → save` would silently strip them. The single-body
 // sphere path in `build_fo4_multi_body_collision` short-circuits the merge
-// for `[Sphere]` and returns the raw blob directly to preserve the trailer.
+// for `[Sphere]` and returns the raw blob directly to preserve them.
 
 use super::compressed_mesh::{
     BuildOptions, FixupBuilder, build_body_cinfo, build_body_props_with_raw, build_classnames,
@@ -33,20 +32,21 @@ const PF_SPHERE_CLASS_ENTRIES: &[(u32, &str)] = &[
 /// NO_GET_SHAPE_KEYS_ON_SPU), numShapeKeyBits=0, dispatchType=1.
 const SPHERE_FLAGS_NSK_DISPATCH: u32 = 0x01000111;
 
-/// Marker u32 at `+0x30` (vertices hkRelArray field on hknpConvexShape).
-/// Matches vanilla Poolball_Cue.nif. The descriptor only declares the 4-byte
-/// header here, but the FO4 runtime expects this exact value.
-const SPHERE_TRAILER_MARKER: u32 = 0x00100004;
+/// `hkRelArray<hkVector4>` header at `+0x30`: four entries starting `0x10`
+/// bytes after the header.
+const SPHERE_SUPPORT_ARRAY_HEADER: u32 = 0x00100004;
 
-/// Sphere shape blob (0x50 bytes). `radius` lives in `hknpShape::convexRadius`
-/// at offset 0x14. `_user_data` is accepted for API parity but pynifly leaves
-/// hknpShape::userData at zero — write zero so vanilla NIF byte-diffs match.
-fn build_sphere_shape_blob(radius: f32, _user_data: u64) -> [u8; 0x50] {
-    let mut buf = [0u8; 0x50];
+/// Sphere shape blob (0x80 bytes). `radius` lives in `hknpShape::convexRadius`
+/// at offset 0x14; four identical support vectors follow the rel-array header.
+fn build_sphere_shape_blob(radius: f32, user_data: u64) -> [u8; 0x80] {
+    let mut buf = [0u8; 0x80];
     buf[0x10..0x14].copy_from_slice(&SPHERE_FLAGS_NSK_DISPATCH.to_le_bytes());
     buf[0x14..0x18].copy_from_slice(&radius.to_le_bytes());
-    buf[0x30..0x34].copy_from_slice(&SPHERE_TRAILER_MARKER.to_le_bytes());
-    buf[0x4C..0x50].copy_from_slice(&0.5f32.to_le_bytes());
+    buf[0x18..0x20].copy_from_slice(&user_data.to_le_bytes());
+    buf[0x30..0x34].copy_from_slice(&SPHERE_SUPPORT_ARRAY_HEADER.to_le_bytes());
+    for offset in [0x40, 0x50, 0x60, 0x70] {
+        buf[offset + 0x0C..offset + 0x10].copy_from_slice(&0.5f32.to_le_bytes());
+    }
     buf
 }
 
@@ -116,7 +116,7 @@ fn build_sphere_data_section(
     write_bytes!(&[0u8; 16]);
     fx.add_local(referenced_off, shape_entry_rel);
 
-    // -- hknpSphereShape (0x50 bytes) --
+    // -- hknpSphereShape (0x80 bytes) --
     let shape_rel = rel!();
     fx.add_virtual(shape_rel, 0, *name_offs.get("hknpSphereShape").unwrap());
     let shape_blob = build_sphere_shape_blob(radius, opts.user_data.unwrap_or(0));
@@ -203,6 +203,7 @@ pub fn build_fo4_sphere_collision(
 mod tests {
     use super::*;
     use crate::hkx::HkxFile;
+    use crate::hkx::types::HkxValue;
 
     #[test]
     fn sphere_blob_parses_as_packfile() {
@@ -263,13 +264,53 @@ mod tests {
             "expected radius 0.75 in convexRadius, got {radius}"
         );
 
-        // Trailer marker at +0x30 and 0.5 magic at +0x4C must be present
-        // — game requires them for sphere stability.
-        let marker =
+        let support_header =
             u32::from_le_bytes(blob[shape_abs + 0x30..shape_abs + 0x34].try_into().unwrap());
-        assert_eq!(marker, SPHERE_TRAILER_MARKER);
-        let trailer =
-            f32::from_le_bytes(blob[shape_abs + 0x4C..shape_abs + 0x50].try_into().unwrap());
-        assert!((trailer - 0.5).abs() < 1e-6);
+        assert_eq!(support_header, SPHERE_SUPPORT_ARRAY_HEADER);
+        for offset in [0x40, 0x50, 0x60, 0x70] {
+            let support_w = f32::from_le_bytes(
+                blob[shape_abs + offset + 0x0C..shape_abs + offset + 0x10]
+                    .try_into()
+                    .unwrap(),
+            );
+            assert!((support_w - 0.5).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn sphere_shape_preserves_material_crc_and_support_vectors() {
+        let material_crc = 0x7DFC_D805;
+        let opts = BuildOptions {
+            user_data: Some(material_crc),
+            ..BuildOptions::default()
+        };
+        let blob = build_fo4_sphere_collision(0.18173781, [0.0, 0.0, 0.17502968], &opts)
+            .expect("build sphere");
+        let file = HkxFile::read(&blob).expect("parse sphere packfile");
+        let shape = file
+            .objects()
+            .iter()
+            .find(|object| object.class_name == "hknpSphereShape")
+            .expect("sphere shape");
+
+        let user_data = shape
+            .members
+            .iter()
+            .find(|member| member.name == "userData")
+            .map(|member| &member.value);
+        assert_eq!(user_data, Some(&HkxValue::U64(material_crc)));
+
+        let vertices = shape
+            .members
+            .iter()
+            .find(|member| member.name == "vertices")
+            .and_then(|member| match &member.value {
+                HkxValue::Array(values) => Some(values),
+                _ => None,
+            })
+            .expect("sphere support vectors");
+        assert_eq!(vertices.len(), 4);
+        assert!(vertices.windows(2).all(|pair| pair[0] == pair[1]));
+        assert_eq!(vertices[0], HkxValue::F32List(vec![0.0, 0.0, 0.0, 0.5]));
     }
 }

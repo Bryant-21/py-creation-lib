@@ -104,6 +104,12 @@ LOCALIZED_RECORD_SIGNATURE_TABLE_TYPES = {
     ("TERM", "RNAM"): "strings",
     ("MESG", "DESC"): "strings",
     ("MESG", "ITXT"): "strings",
+    # CNAM defaults to STRINGS, but on these two it is long-form prose (book
+    # text, quest log entry) and the write path files it under DLSTRINGS. Absent
+    # here, a reader looks in the wrong table and the field comes back
+    # unresolved.
+    ("BOOK", "CNAM"): "dlstrings",
+    ("QUST", "CNAM"): "dlstrings",
 }
 
 

@@ -28,18 +28,9 @@ def resolve_includes(
     include_map: dict[str, str],
     _seen: set[str] | None = None,
 ) -> str:
-    """Resolve #include directives in GLSL source.
+    """Recursively inline ``#include "path"`` directives from ``include_map`` (path -> content).
 
-    Args:
-        source: GLSL source text with #include "path" directives.
-        include_map: Maps include path -> file content.
-        _seen: Tracks visited includes for circular detection.
-
-    Returns:
-        Fully resolved GLSL source with all includes inlined.
-
-    Raises:
-        ValueError: On circular includes or missing include files.
+    Raises ValueError on circular or missing includes.
     """
     if _seen is None:
         _seen = set()
@@ -155,16 +146,11 @@ def load_composed_shader(
     game_id: str = "fo4",
     defines: dict[str, str | None] | None = None,
 ) -> moderngl.Program:
-    """Load a composed shader from compose/ with #include preprocessing.
+    """Compile a composed shader from compose/ with #include preprocessing.
 
-    Args:
-        ctx: ModernGL context.
-        role: Shader role — "default" or "effect".
-        game_id: Shader family id — "fo4", "skyrimse", "fo76", "starfield", or "gamebryo".
-        defines: Extra #defines to inject (e.g. {"HAS_PALETTE": None}).
-
-    Returns:
-        Compiled ModernGL program.
+    ``role`` is "default" or "effect"; ``game_id`` is "fo4", "skyrimse", "fo76",
+    "starfield", or "gamebryo"; ``defines`` are extra #defines (e.g.
+    ``{"HAS_PALETTE": None}``).
     """
     defines_str = ",".join(
         f"{k}={v}" for k, v in sorted((defines or {}).items())
@@ -1206,15 +1192,12 @@ def compute_irradiance_cube(ctx: moderngl.Context, src_cube: moderngl.TextureCub
     return cube
 
 
-# Compute shader: copies a samplerCube into a specific mip level of a
-# destination imageCube. Used to stitch the GGX-prefiltered roughness chain
-# (one cube per roughness step) into a single cube whose mip levels carry
-# the prefiltered convolutions — so the editor's
-#   textureLod(envMap, R, lod)
-# call (starfield_default.frag:411) reads the GGX-correct response at every
-# roughness instead of the box-filtered downsamples build_mipmaps() would
-# produce. moderngl's high-level API has no per-mip cube write or per-face
-# FBO attach, but bind_to_image(level=N) + imageCube + compute does work.
+# Compute shader: copies a samplerCube into one mip level of a destination
+# imageCube, stitching the GGX-prefiltered roughness chain (one cube per step)
+# into a single cube. starfield_default.frag's textureLod(envMap, R, lod) then
+# reads the GGX response at every roughness instead of build_mipmaps()'s
+# box-filtered downsamples. moderngl has no per-mip cube write or per-face FBO
+# attach, but bind_to_image(level=N) + imageCube + compute works.
 _CUBE_BLIT_TO_MIP_CS = """
 #version 430
 layout(local_size_x=8, local_size_y=8, local_size_z=1) in;
@@ -1251,12 +1234,9 @@ def _stitch_prefiltered_into_cube(
     single destination cube via a compute shader.
 
     `prefiltered[i]` is the GGX cube at roughness=i/(N-1), with face size
-    `base_size >> i` (clamped to >=8 in prefilter_cubemap_ggx). Mip level i
-    of the returned cube receives the contents of `prefiltered[i]` (the
-    compute shader resamples the source cube's level 0 at the destination
-    mip resolution; for the standalone's 256/128/64/32/16/8 chain against
-    a 256-base destination the sizes match exactly so it's effectively a
-    1:1 copy).
+    `base_size >> i` (clamped to >=8 in prefilter_cubemap_ggx). The compute
+    shader resamples its level 0 at the mip size; for a 256 base and the
+    256/128/64/32/16/8 chain the sizes match, so it is a 1:1 copy.
     """
     dst = ctx.texture_cube((base_size, base_size), 4, dtype="f2")
     # Allocate the full mip chain. We overwrite each level via compute below;

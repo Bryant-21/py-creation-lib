@@ -1,21 +1,20 @@
-"""End-to-end proof for the Python LOD facade against the real FO4 install.
+"""End-to-end test of the Python LOD facade against the real FO4 install.
 
 Drives `creation_lib.lod.generate_lod` through the umbrella `_native.pyd` with REAL
 ESP enumeration (the `lodgen_native/real-esp` feature, enabled in the umbrella
-`lodgen` feature). Skips cleanly when the FO4 install is absent.
+`lodgen` feature). Skips when the FO4 install is absent.
 
-Worldspace choice: `run()` in `lodgen_native/src/lib.rs` only opens a plugin whose
-file name matches `<world_editor_id>.es[mp]` or falls back to `Fallout4.esm`. The
-FarHarbor world (`DLC03FarHarbor`) lives in `DLCCoast.esm`, whose file name does
-NOT match the editor id, so it is unreachable through the facade. The facade-reachable
-worlds are the ones inside `Fallout4.esm`; `DiamondCity` is small (a few hundred
-cells) yet still carries terrain LAND *and* placed objects, so it exercises the full
-path (terrain `.btr` + `.dds`, object `.bto`, `.lod`) fast enough for a routine gate.
+`run()` in `lodgen_native/src/lib.rs` only opens a plugin named
+`<world_editor_id>.es[mp]`, falling back to `Fallout4.esm`, so FarHarbor
+(`DLC03FarHarbor`, in `DLCCoast.esm`) is unreachable through the facade.
+`DiamondCity` is in `Fallout4.esm`, small (a few hundred cells), and has terrain
+LAND and placed objects, so it covers terrain `.btr` + `.dds`, object `.bto` and
+`.lod` quickly.
 
-The DDS-header assertion is the load-bearing proof that the external `directxtex`
-(via `bsarchive`) and our `directxtex_native` coexist in the cdylib without the
-`E_NOTIMPL` / wrong-copy collision: a real BC-encoded terrain texture is written and
-parses as a valid DDS.
+The DDS-header assertion checks that the external `directxtex` (via `bsarchive`)
+and `directxtex_native` coexist in the cdylib without the `E_NOTIMPL` /
+wrong-copy collision: a real BC-encoded terrain texture is written and parses
+as a valid DDS.
 """
 from __future__ import annotations
 

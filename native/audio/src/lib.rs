@@ -1,7 +1,35 @@
 use numpy::{PyArray1, PyReadonlyArray1};
+use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
+use std::path::PathBuf;
 
+pub mod atrac9;
 pub mod pitch_shift;
+pub mod wwise_vorbis;
+
+#[pyfunction]
+#[pyo3(name = "encode_at9", signature = (source_wav, output_at9))]
+fn encode_at9_py(py: Python<'_>, source_wav: &str, output_at9: &str) -> PyResult<()> {
+    let source_wav = PathBuf::from(source_wav);
+    let output_at9 = PathBuf::from(output_at9);
+    py.detach(|| atrac9::encode_wav(&source_wav, &output_at9))
+        .map_err(PyRuntimeError::new_err)
+}
+
+#[pyfunction]
+#[pyo3(name = "wem_to_ogg", signature = (source_wem, output_ogg, codebook_executable))]
+fn wem_to_ogg_py(
+    py: Python<'_>,
+    source_wem: &str,
+    output_ogg: &str,
+    codebook_executable: &str,
+) -> PyResult<()> {
+    let source_wem = PathBuf::from(source_wem);
+    let output_ogg = PathBuf::from(output_ogg);
+    let codebook_executable = PathBuf::from(codebook_executable);
+    py.detach(|| wwise_vorbis::convert_wem_file(&source_wem, &output_ogg, &codebook_executable))
+        .map_err(PyRuntimeError::new_err)
+}
 
 #[pyfunction]
 #[pyo3(name = "pitch_shift", signature = (samples, sr, semitones))]
@@ -23,6 +51,8 @@ fn pitch_shift_py<'py>(
 }
 
 pub fn register_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(encode_at9_py, m)?)?;
+    m.add_function(wrap_pyfunction!(wem_to_ogg_py, m)?)?;
     m.add_function(wrap_pyfunction!(pitch_shift_py, m)?)?;
     Ok(())
 }

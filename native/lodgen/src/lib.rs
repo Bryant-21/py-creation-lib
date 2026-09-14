@@ -23,10 +23,10 @@ pub fn crate_marker() -> &'static str {
 // Rust-level entry points (test seam + real run)
 // ---------------------------------------------------------------------------
 
-/// Test seam: run full LOD generation (terrain + objects + trees) from a
-/// pre-built `WorldspaceInput` (bypassing ESP). Used by unit tests and the
-/// Phase-1/4 run tests. Object/tree LOD is skipped when `world.refs` is empty
-/// (terrain-only worlds), preserving the Phase-1 terrain-only behavior.
+/// Run full LOD generation (terrain + objects + trees) from a pre-built
+/// `WorldspaceInput` (bypassing ESP). `run` calls it after enumeration; tests call
+/// it directly. Object/tree LOD is skipped when `world.refs` is empty (terrain-only
+/// worlds).
 pub fn run_with_world(
     world: &input::WorldspaceInput,
     settings: &settings::LodSettings,
@@ -43,22 +43,31 @@ pub fn run_with_world(
             if let Some(source) =
                 output::lodsettings::read_source(source_data_dir, &world.editor_id)?
             {
-                resolved_settings.global.southwest_cell =
-                    Some([source.southwest.0, source.southwest.1]);
-                resolved_settings.global.stride = Some(source.stride);
-                resolved_settings.global.lod_min = source.min;
-                resolved_settings.global.lod_max = source.max;
-                progress.report(
-                    &format!(
-                        "using source LOD settings: southwest=({},{}) stride={} levels={}..{}",
-                        source.southwest.0,
-                        source.southwest.1,
-                        source.stride,
-                        source.min,
-                        source.max
-                    ),
-                    0.0,
-                );
+                if source.starfield_cell_grid {
+                    progress.report(
+                        "ignoring Starfield source LOD settings: they count 100 m cells, not FO4 cells",
+                        0.0,
+                    );
+                } else {
+                    resolved_settings.global.southwest_cell =
+                        Some([source.southwest.0, source.southwest.1]);
+                    resolved_settings.global.stride = Some(source.stride);
+                    if let Some((min, max)) = source.levels {
+                        resolved_settings.global.lod_min = min;
+                        resolved_settings.global.lod_max = max;
+                    }
+                    progress.report(
+                        &format!(
+                            "using source LOD settings: southwest=({},{}) stride={} levels={}..{}",
+                            source.southwest.0,
+                            source.southwest.1,
+                            source.stride,
+                            resolved_settings.global.lod_min,
+                            resolved_settings.global.lod_max
+                        ),
+                        0.0,
+                    );
+                }
             }
         }
     }
@@ -108,13 +117,9 @@ pub fn run_with_world(
     Ok(stats)
 }
 
-/// Full entry: open the first plugin in `paths.data_dirs` that contains the
-/// named WRLD, enumerate it into a `WorldspaceInput`, then run.
-///
-/// Phase-1 decision: if the esp Rust read API cannot extract LAND layers,
-/// `enumerate_worldspace` returns an error — the caller (Python wrapper) must
-/// supply a pre-built `WorldspaceInput` JSON via the Phase-4 delivery path.
-/// The mesh path is the Phase-1 gate; texture fidelity degrades gracefully.
+/// Full entry: enumerate the named WRLD into a `WorldspaceInput`, then run. The
+/// plugin is `working_esm` when given, else the first plugin in `paths.data_dirs`
+/// that contains the WRLD.
 pub fn run(
     world_id: &str,
     settings: &settings::LodSettings,
@@ -145,36 +150,31 @@ fn run_with_object_lod_overlay(
         return run_with_world(&world, settings, paths, progress);
     }
 
-    // Pinned source (conversion path): when an explicit working ESM is supplied
-    // (the FO76→FO4 output, mods/<out>/<out>.esm), it is the SOLE source of the
-    // worldspace and every record lodgen reads (WRLD/CELL/LAND/REFR + base MNAM).
-    // `paths.data_dirs` is ASSET-ONLY in this mode; the plugin is NEVER discovered
-    // by scanning data_dirs, so a stale copy of the plugin in the FO4 game install
-    // can never shadow the freshly-built output (which carries the synthesized
-    // DistantLOD/MNAM that object LOD depends on). A working ESM that is missing or
-    // does not contain the worldspace is a hard error — there is intentionally no
-    // fallback to the game data dir.
+    // Pinned source (conversion path): an explicit working ESM (the FO76→FO4 output,
+    // mods/<out>/<out>.esm) is the sole source of the worldspace and every record
+    // lodgen reads (WRLD/CELL/LAND/REFR + base MNAM). `paths.data_dirs` is asset-only
+    // here, so a stale plugin copy in the game install cannot shadow the fresh output
+    // (which carries the synthesized DistantLOD/MNAM object LOD depends on). A missing
+    // ESM or one without the worldspace is a hard error, with no fallback to the game
+    // data dir.
     if let Some(esm) = working_esm {
         progress.report(
             &format!("enumerating worldspace {world_id} from {}", esm.display()),
             0.0,
         );
-        let world = try_enumerate(world_id, esm, settings, object_lod_overlay)?;
+        let world = try_enumerate(world_id, esm, settings, object_lod_overlay, progress)?;
         return run_with_world(&world, settings, paths, progress);
     }
 
     // Two-phase plugin discovery (standalone / UI use, no explicit working ESM):
     //
-    // Phase A (fast path): try the three named candidates per data_dir.
-    //   "<world_id>.esm", "<world_id>.esp", "Fallout4.esm"
-    //   This covers worldspaces whose editor id matches the plugin stem (common
-    //   case) and the base-game plugin.
+    // Phase A (fast path): named candidates per data_dir ("<world_id>.esm",
+    //   "<world_id>.esp", "Fallout4.esm", "SeventySix.esm").
     //
-    // Phase B (scan fallback): if no named candidate matched, scan every .esm/.esp
-    //   in each data_dir (sorted for determinism) and select the last one (load-order
-    //   winner) that actually contains a WRLD record with the requested editor id.
-    //   Handles DLC worldspaces (e.g. DLC03FarHarbor in DLCCoast.esm) and
-    //   arbitrarily-named converted-mod plugins.
+    // Phase B (scan fallback): scan every .esm/.esp in each data_dir (sorted) and
+    //   take the last one that contains a WRLD with the requested editor id. Handles
+    //   DLC worldspaces (e.g. DLC03FarHarbor in DLCCoast.esm) and arbitrarily named
+    //   converted-mod plugins.
     let mut esp_error: Option<anyhow::Error> = None;
 
     // Phase A — named fast-path candidates.
@@ -191,7 +191,7 @@ fn run_with_object_lod_overlay(
         for candidate in &plugin_candidates {
             let plugin_path = dir.join(candidate);
             if plugin_path.is_file() {
-                match try_enumerate(world_id, &plugin_path, settings, None) {
+                match try_enumerate(world_id, &plugin_path, settings, None, progress) {
                     Ok(world) => {
                         return run_with_world(&world, settings, paths, progress);
                     }
@@ -203,24 +203,10 @@ fn run_with_object_lod_overlay(
         }
     }
 
-    // Phase B — full directory scan.
-    //
-    // Phase A either returned early (worldspace successfully enumerated — not
-    // reachable here) or failed to enumerate the worldspace. A failure can mean:
-    //   (a) No named candidate file existed (file not present).
-    //   (b) A named candidate file existed but does not contain the WRLD record
-    //       ("worldspace '...' not found in plugin" — a SOFT MISS).
-    //   (c) A named candidate file existed but failed to parse (IO/format error).
-    //
-    // In ALL three cases we must scan: (a) and (b) are clearly benign; (c) is
-    // also benign because the target worldspace likely lives in a different plugin
-    // that the scan will find. The old gate `!fast_path_hit || esp_error.is_none()`
-    // incorrectly treated (b) as a hard error and suppressed the scan whenever
-    // Fallout4.esm was present but did not contain the requested DLC worldspace —
-    // making every DLC worldspace (e.g. DLC03FarHarbor) unreachable via run().
-    //
-    // The correct invariant: if Phase A did not return a WorldspaceInput, Phase B
-    // must always run. The `already_tried` dedup below prevents redundant re-opens.
+    // Phase B: full directory scan. Reaching here means Phase A found no named
+    // candidate, found one without the WRLD (a soft miss, e.g. Fallout4.esm for a
+    // DLC worldspace), or hit a parse error. In every case the worldspace may live in
+    // another plugin, so the scan always runs. `already_tried` prevents re-opens.
     {
         // Collect all candidate paths from the scan (one winner per dir, last
         // sorted = load-order winner) then try them.
@@ -238,7 +224,7 @@ fn run_with_object_lod_overlay(
                 if already_tried {
                     continue;
                 }
-                match try_enumerate(world_id, &plugin_path, settings, None) {
+                match try_enumerate(world_id, &plugin_path, settings, None, progress) {
                     Ok(world) => {
                         return run_with_world(&world, settings, paths, progress);
                     }
@@ -280,12 +266,31 @@ fn try_enumerate(
     plugin_path: &std::path::Path,
     settings: &settings::LodSettings,
     object_lod_overlay: Option<&std::path::Path>,
+    progress: &mut dyn progress::Progress,
 ) -> anyhow::Result<input::WorldspaceInput> {
     // Load the plugin (+ masters from the same dir) and enumerate the WRLD.
     // If this plugin does not contain `world_id`, enumerate_worldspace errors and
     // the caller (`run`) advances to the next plugin candidate.
+    let started = std::time::Instant::now();
     let handle = input::EspHandle::load_with_overlay(plugin_path, "fo4", object_lod_overlay)?;
-    input::enumerate_worldspace(&handle, world_id, settings)
+    progress.report(
+        &format!(
+            "LOD plugin load and index: {:.3}s ({})",
+            started.elapsed().as_secs_f64(),
+            plugin_path.display()
+        ),
+        0.0,
+    );
+    let started = std::time::Instant::now();
+    let world = input::enumerate_worldspace(&handle, world_id, settings)?;
+    progress.report(
+        &format!(
+            "LOD world enumeration: {:.3}s ({world_id})",
+            started.elapsed().as_secs_f64()
+        ),
+        0.0,
+    );
+    Ok(world)
 }
 
 // ---------------------------------------------------------------------------
@@ -445,13 +450,12 @@ fn collect_fo76_bto_tree_billboard_species(
 
 /// PyO3 entry point.
 ///
-/// `settings_json` is a JSON-serialized `LodSettings`. `paths` supplies data dirs and
-/// output dir. `progress` is an optional Python callable `(msg: str, frac: float)`.
+/// `settings_json` is a JSON-serialized `LodSettings`; `paths` supplies data and output
+/// dirs; `progress` is an optional Python callable `(msg: str, frac: float)`.
 ///
-/// The GIL is released for the duration of the heavy Rust generation so that other
-/// Python threads (e.g. the `ui/lodgen` background-thread UI) remain responsive.
-/// `PyProgress::report` re-acquires the GIL internally via `Python::attach` before
-/// invoking the callback, so progress notifications work correctly while detached.
+/// The GIL is released during generation so other Python threads (e.g. the `ui/lodgen`
+/// UI) stay responsive; `PyProgress::report` re-acquires it via `Python::attach` for
+/// the callback.
 #[pyfunction]
 fn generate_lod(
     py: pyo3::Python<'_>,
@@ -741,7 +745,7 @@ mod run_tests {
         run_with_world(&world, &settings, &aligned_paths, &mut NullProgress).unwrap();
         assert_eq!(
             std::fs::read(aligned_output.join("LODSettings/Tamriel.lod")).unwrap(),
-            crate::output::lodsettings::encode((-60, -44), 4, 4, 32)
+            crate::output::lodsettings::encode((-60, -44), 32, 4, 32)
         );
 
         settings.global.align = 0;
@@ -755,7 +759,54 @@ mod run_tests {
         run_with_world(&world, &settings, &disabled_paths, &mut NullProgress).unwrap();
         assert_eq!(
             std::fs::read(disabled_output.join("LODSettings/Tamriel.lod")).unwrap(),
-            crate::output::lodsettings::encode((-57, -43), 1, 4, 32)
+            crate::output::lodsettings::encode((-57, -43), 32, 4, 32)
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn run_with_world_ignores_starfield_source_lodsettings() {
+        let world = crate::input::WorldspaceInput::from_cells(
+            "AkilaCity",
+            vec![crate::input::CellInput {
+                x: -57,
+                y: -43,
+                heights: vec![0.0; 33 * 33],
+                vertex_colors: vec![[255, 255, 255]; 33 * 33],
+                layers: Vec::new(),
+                hidden_quadrants: [false; 4],
+                water_height: f32::MIN,
+            }],
+        );
+        let root = std::env::temp_dir().join(format!(
+            "lodgen_starfield_source_window_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let source_dir = root.join("source");
+        let settings_dir = source_dir.join("LODSettings");
+        std::fs::create_dir_all(&settings_dir).unwrap();
+        let mut starfield_lod = Vec::with_capacity(20);
+        starfield_lod.extend_from_slice(&(-35i32).to_le_bytes());
+        starfield_lod.extend_from_slice(&(-59i32).to_le_bytes());
+        starfield_lod.extend_from_slice(&72i32.to_le_bytes());
+        starfield_lod.extend_from_slice(&0i32.to_le_bytes());
+        starfield_lod.extend_from_slice(&0i32.to_le_bytes());
+        std::fs::write(settings_dir.join("AkilaCity.lod"), starfield_lod).unwrap();
+
+        let mut settings = LodSettings::fo4_default();
+        settings.global.generate_objects = false;
+        let output = root.join("output");
+        let paths = LodPaths {
+            data_dirs: vec![root.clone()],
+            output_dir: output.clone(),
+            source_data_dir: Some(source_dir),
+        };
+        run_with_world(&world, &settings, &paths, &mut NullProgress).unwrap();
+        assert_eq!(
+            std::fs::read(output.join("LODSettings/AkilaCity.lod")).unwrap(),
+            crate::output::lodsettings::encode((-57, -43), 32, 4, 32)
         );
 
         let _ = std::fs::remove_dir_all(&root);

@@ -1,15 +1,8 @@
-//! End-to-end plugin-discovery gate (Phase-4 companion).
+//! End-to-end plugin-discovery gate: `run()` must find plugins whose filename differs
+//! from the worldspace editor id (`DLC03FarHarbor` lives in `DLCCoast.esm`), while
+//! base-game worldspaces (`DiamondCity` in `Fallout4.esm`) resolve via the fast path.
 //!
-//! Verifies that `run()` discovers plugins whose filename does NOT match the
-//! worldspace editor id — e.g. `DLC03FarHarbor` lives in `DLCCoast.esm`, not
-//! `DLC03FarHarbor.esm`. Before this fix the candidate list never opened
-//! DLCCoast.esm, so that worldspace was unreachable via `run()`.
-//!
-//! Also confirms that base-game worldspaces (e.g. `DiamondCity` in
-//! `Fallout4.esm`) still work via the fast path (no regression).
-//!
-//! Requires the `real-esp` feature. Skips cleanly when the FO4 install is
-//! absent at the expected path.
+//! Requires the `real-esp` feature. Skips when the FO4 install is absent.
 #![cfg(feature = "real-esp")]
 
 use std::path::PathBuf;
@@ -88,9 +81,8 @@ fn fast_path_candidate_does_not_exist_for_farharbor() {
 // Enumeration via scanned plugin: DLC03FarHarbor is discoverable and non-empty
 // ---------------------------------------------------------------------------
 
-/// Load `DLCCoast.esm` (found via scan) and enumerate `DLC03FarHarbor`. Assert
-/// cells > 0 and refs > 0, proving the worldspace is both reachable and
-/// non-trivially populated. Before the fix, `run()` would never open DLCCoast.esm.
+/// Load `DLCCoast.esm` (found via scan) and enumerate `DLC03FarHarbor`: the
+/// worldspace must be reachable and populated (>100 cells, some placed refs).
 #[test]
 fn farharbor_enumerated_via_scanned_plugin() {
     let Some(data) = fo4_data() else { return };
@@ -122,12 +114,11 @@ fn farharbor_enumerated_via_scanned_plugin() {
 }
 
 // ---------------------------------------------------------------------------
-// Regression: DiamondCity (Fallout4.esm) still works via the fast path
+// DiamondCity (Fallout4.esm) resolves via the fast path
 // ---------------------------------------------------------------------------
 
-/// `DiamondCity` lives in `Fallout4.esm`, which IS one of the named fast-path
-/// candidates. It must enumerate successfully, proving the fast path still
-/// functions after the scan fallback was added.
+/// `DiamondCity` lives in `Fallout4.esm`, one of the named fast-path candidates,
+/// and must enumerate from it directly.
 #[test]
 fn diamond_city_fast_path_still_works() {
     let Some(data) = fo4_data() else { return };
@@ -156,38 +147,23 @@ fn diamond_city_fast_path_still_works() {
 }
 
 // ---------------------------------------------------------------------------
-// Gate-level regression: run() must resolve DLC worldspaces via Phase-B scan
+// run() must resolve DLC worldspaces via the Phase-B scan
 //
-// This is the reproducing test for the gate bug in run() at:
-//   let scan_needed = !fast_path_hit || esp_error.is_none();
-//
-// When data_dirs includes the FO4 Data dir, Phase A finds Fallout4.esm (it
-// exists) and tries to enumerate DLC03FarHarbor from it. Fallout4.esm does
-// NOT contain that worldspace, so enumerate_worldspace errors. Before the fix:
-//   fast_path_hit = true, esp_error = Some(...) → scan_needed = !true || false = FALSE
-// Phase B is skipped → run() returns "worldspace not found" for any DLC world.
-//
-// After the fix: a "WRLD not in this plugin" miss is a soft miss; Phase B
-// ALWAYS runs when Phase A did not successfully enumerate the target world.
+// With the FO4 Data dir in data_dirs, Phase A finds Fallout4.esm and fails to
+// enumerate DLC03FarHarbor from it. That "WRLD not in this plugin" miss is soft:
+// Phase B must run whenever Phase A did not enumerate the target world. Gating
+// the scan on `!fast_path_hit || esp_error.is_none()` skips it here, and run()
+// returns "worldspace not found" for every DLC world.
 // ---------------------------------------------------------------------------
 
-/// Reproducing test for the run() gate bug.
-///
-/// Calls `run()` with data_dirs = [FO4 Data dir] — Fallout4.esm IS present,
-/// so Phase A "hits" it but cannot enumerate DLC03FarHarbor (not in that
-/// plugin). Phase B must then scan and find DLCCoast.esm.
-///
-/// Before the fix this test fails with "worldspace 'DLC03FarHarbor' not found
-/// in plugin" (Phase B was gated off). After the fix it passes with cells > 0.
-///
-/// The output dir is a temp directory — no real LOD files need to be produced
-/// for this assertion; we only care that run() resolves the worldspace.
+/// `run()` with data_dirs = [FO4 Data]: Phase A opens Fallout4.esm but cannot
+/// enumerate DLC03FarHarbor from it, so Phase B must scan and find DLCCoast.esm.
+/// Output goes to a temp dir; only worldspace resolution matters here.
 #[test]
 fn run_resolves_dlc_worldspace_via_scan_when_fallout4_esm_hits_first() {
     let Some(data) = fo4_data() else { return };
 
-    // Sanity: Fallout4.esm must be present (it IS one of the Phase-A candidates
-    // that causes the hit — this is the prerequisite for the bug to manifest).
+    // Fallout4.esm must be present: it is the Phase-A candidate that hits first.
     assert!(
         data.join("Fallout4.esm").is_file(),
         "Fallout4.esm not found; prerequisite for bug reproduction"
@@ -231,11 +207,8 @@ fn run_resolves_dlc_worldspace_via_scan_when_fallout4_esm_hits_first() {
     }
 }
 
-/// Control: run() still resolves DiamondCity (Fallout4.esm) via the fast path.
-///
-/// This guards against regressions where fixing the Phase-B gate accidentally
-/// breaks the Phase-A fast path. Fallout4.esm IS a named candidate, and
-/// DiamondCity IS in it — so Phase A must still short-circuit.
+/// Control: run() resolves DiamondCity via the Phase-A fast path. Fallout4.esm is a
+/// named candidate and contains DiamondCity, so Phase A must short-circuit.
 #[test]
 fn run_resolves_base_game_worldspace_via_fast_path() {
     let Some(data) = fo4_data() else { return };

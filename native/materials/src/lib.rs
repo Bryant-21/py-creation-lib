@@ -7,10 +7,12 @@ pub mod bgem;
 pub mod bgsm;
 pub mod bsrefl;
 pub mod cdb;
+pub mod cdb_to_bgsm;
 mod ce2;
 pub mod convert;
 pub mod error;
 mod pbr;
+pub mod starfield_mat;
 mod string_table;
 pub mod texture_convert;
 

@@ -1,4 +1,4 @@
-use std::io::{Cursor, Read, Seek};
+use std::io::{Cursor, Read, Seek, SeekFrom};
 
 use indexmap::IndexMap;
 
@@ -466,14 +466,14 @@ fn read_normbyte_vec3<R: Read + Seek>(reader: &mut BasicReader<R>) -> Result<Nif
 }
 
 fn read_half_tex_coord<R: Read + Seek>(reader: &mut BasicReader<R>) -> Result<NifValue, IoError> {
-    let mut fields = IndexMap::new();
+    let mut fields = IndexMap::with_capacity(2);
     fields.insert("u".to_string(), reader.read_hfloat()?);
     fields.insert("v".to_string(), reader.read_hfloat()?);
     Ok(NifValue::Struct(fields))
 }
 
 fn read_byte_color4<R: Read + Seek>(reader: &mut BasicReader<R>) -> Result<NifValue, IoError> {
-    let mut fields = IndexMap::new();
+    let mut fields = IndexMap::with_capacity(4);
     fields.insert("r".to_string(), NifValue::UInt(reader.read_byte()? as u64));
     fields.insert("g".to_string(), NifValue::UInt(reader.read_byte()? as u64));
     fields.insert("b".to_string(), NifValue::UInt(reader.read_byte()? as u64));
@@ -498,7 +498,15 @@ fn read_bs_vertex_data<R: Read + Seek>(
     attributes: u64,
     reader: &mut BasicReader<R>,
 ) -> Result<NifValue, IoError> {
-    let mut fields = IndexMap::new();
+    let mut field_count = 0;
+    field_count += 2 * usize::from(attributes & 0x1 != 0);
+    field_count += usize::from(attributes & 0x2 != 0);
+    field_count += 2 * usize::from(attributes & 0x8 != 0);
+    field_count += 2 * usize::from(attributes & 0x18 == 0x18);
+    field_count += usize::from(attributes & 0x20 != 0);
+    field_count += 2 * usize::from(attributes & 0x40 != 0);
+    field_count += usize::from(attributes & 0x100 != 0);
+    let mut fields = IndexMap::with_capacity(field_count);
     if type_name == "BSVertexDataSSE" {
         if attributes & 0x1 != 0 {
             fields.insert("Vertex".to_string(), read_float_vec3(reader)?);
@@ -570,6 +578,7 @@ fn read_bs_vertex_data<R: Read + Seek>(
         fields.insert("Eye Data".to_string(), reader.read_float()?);
     }
 
+    debug_assert_eq!(fields.len(), field_count);
     Ok(NifValue::Struct(fields))
 }
 
@@ -958,7 +967,109 @@ fn read_block_fields<R: Read + Seek>(
 }
 
 impl NifReader {
+    /// Read only the blocks that can contribute external asset dependencies.
+    ///
+    /// Sized-block NIFs let this skip geometry payloads without constructing their
+    /// values. Older formats without block boundaries must use the full reader.
+    pub fn read_referenced_asset_paths<R: Read + Seek>(
+        source: R,
+        schema: &NifSchema,
+    ) -> Result<Option<crate::model::ReferencedAssetPaths>, ReadError> {
+        let mut reader = BasicReader::new(source);
+        let header = read_header(&mut reader)?;
+        if header.version_packed < 0x14020005
+            || header.block_sizes.len() != header.num_blocks as usize
+        {
+            return Ok(None);
+        }
+
+        let blocks_start = reader.pos();
+        let file_len = reader
+            .reader
+            .seek(SeekFrom::End(0))
+            .map_err(IoError::from)?;
+        reader.seek(blocks_start)?;
+
+        let mut nif = NifFile {
+            header,
+            ..Default::default()
+        };
+        let v = nif.header.version_packed;
+        let uv = nif.header.user_version;
+        let bv = nif.header.bs_version;
+
+        for block_idx in 0..nif.header.num_blocks as usize {
+            let type_idx = nif
+                .header
+                .block_type_index
+                .get(block_idx)
+                .copied()
+                .unwrap_or(0) as usize;
+            let type_name = nif
+                .header
+                .block_type_names
+                .get(type_idx)
+                .cloned()
+                .unwrap_or_else(|| "NiUnknown".to_string());
+            let size = nif.header.block_sizes[block_idx] as u64;
+            let block_start = reader.pos();
+            let block_end = block_start.checked_add(size).ok_or_else(|| {
+                ReadError::Other(format!("block {block_idx} extends past u64 range"))
+            })?;
+            if block_end > file_len {
+                return Err(ReadError::Other(format!(
+                    "block {block_idx} extends past end of file"
+                )));
+            }
+
+            let is_dependency_block = matches!(
+                type_name.as_str(),
+                "BSShaderTextureSet"
+                    | "TallGrassShaderProperty"
+                    | "BSShaderNoLightingProperty"
+                    | "BSLightingShaderProperty"
+                    | "BSEffectShaderProperty"
+            );
+            if !is_dependency_block {
+                reader.seek(block_end)?;
+                continue;
+            }
+
+            let block_bytes = reader.read_n_bytes(size as usize)?;
+            let mut block_reader = BasicReader::new(Cursor::new(block_bytes.as_slice()));
+            block_reader.big_endian = reader.big_endian;
+            let mut block = NifBlock::new(block_idx, &type_name);
+            read_block_fields(
+                &mut block,
+                &mut block_reader,
+                Some(size as u32),
+                schema,
+                v,
+                uv,
+                bv,
+                &nif.header.strings,
+            )?;
+            nif.blocks.push(block);
+        }
+
+        Ok(Some(nif.referenced_asset_paths()))
+    }
+
     pub fn read(data: &[u8], schema: &NifSchema) -> Result<NifFile, ReadError> {
+        Self::read_with_original_metadata(data, schema, true)
+    }
+
+    /// Decode a complete NIF without retaining per-block source bytes or
+    /// content hashes used only by lossless raw-block reuse during writing.
+    pub fn read_lean(data: &[u8], schema: &NifSchema) -> Result<NifFile, ReadError> {
+        Self::read_with_original_metadata(data, schema, false)
+    }
+
+    fn read_with_original_metadata(
+        data: &[u8],
+        schema: &NifSchema,
+        retain_original_metadata: bool,
+    ) -> Result<NifFile, ReadError> {
         let cursor = Cursor::new(data);
         let mut reader = BasicReader::new(cursor);
         let mut nif = NifFile::default();
@@ -992,21 +1103,49 @@ impl NifReader {
             let mut block = NifBlock::new(block_idx, &type_name);
 
             if let Some(size) = expected_size {
-                let block_bytes = reader.read_n_bytes(size as usize)?;
-                let mut block_reader = BasicReader::new(Cursor::new(block_bytes.as_slice()));
-                block_reader.big_endian = reader.big_endian;
-                read_block_fields(
-                    &mut block,
-                    &mut block_reader,
-                    Some(size),
-                    schema,
-                    v,
-                    uv,
-                    bv,
-                    &nif.header.strings,
-                )?;
-                block.original_bytes = Some(block_bytes);
-                block.original_content_hash = Some(block.content_hash());
+                if retain_original_metadata {
+                    let block_bytes = reader.read_n_bytes(size as usize)?;
+                    let mut block_reader = BasicReader::new(Cursor::new(block_bytes.as_slice()));
+                    block_reader.big_endian = reader.big_endian;
+                    read_block_fields(
+                        &mut block,
+                        &mut block_reader,
+                        Some(size),
+                        schema,
+                        v,
+                        uv,
+                        bv,
+                        &nif.header.strings,
+                    )?;
+                    block.original_bytes = Some(block_bytes);
+                    block.original_content_hash = Some(block.content_hash());
+                } else {
+                    let block_end = block_start.checked_add(size as u64).ok_or_else(|| {
+                        ReadError::Other(format!("block {block_idx} extends past u64 range"))
+                    })?;
+                    if block_end > data.len() as u64 {
+                        return Err(IoError::Io(std::io::Error::new(
+                            std::io::ErrorKind::UnexpectedEof,
+                            "failed to fill whole buffer",
+                        ))
+                        .into());
+                    }
+                    let mut block_reader = BasicReader::new(Cursor::new(
+                        &data[block_start as usize..block_end as usize],
+                    ));
+                    block_reader.big_endian = reader.big_endian;
+                    read_block_fields(
+                        &mut block,
+                        &mut block_reader,
+                        Some(size),
+                        schema,
+                        v,
+                        uv,
+                        bv,
+                        &nif.header.strings,
+                    )?;
+                    reader.seek(block_end)?;
+                }
             } else {
                 read_block_fields(
                     &mut block,
@@ -1019,7 +1158,10 @@ impl NifReader {
                     &nif.header.strings,
                 )?;
                 let block_end = reader.pos();
-                if block_start <= block_end && block_end <= data.len() as u64 {
+                if retain_original_metadata
+                    && block_start <= block_end
+                    && block_end <= data.len() as u64
+                {
                     let start = block_start as usize;
                     let end = block_end as usize;
                     block.original_bytes = Some(data[start..end].to_vec());
@@ -1069,6 +1211,216 @@ mod tests {
             NifValue::Float(f) => assert!((f - 1.5).abs() < 1e-6),
             other => panic!("expected Float, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn dependency_reader_matches_full_reader_across_asset_path_blocks() {
+        let mut nif = NifFile::new("fo4");
+
+        let mut lighting = IndexMap::new();
+        lighting.insert(
+            "Name".to_string(),
+            NifValue::String("Materials\\Landscape\\Rock.bgsm".to_string()),
+        );
+        nif.add_block("BSLightingShaderProperty", Some(lighting));
+
+        let mut texture_set = IndexMap::new();
+        texture_set.insert(
+            "Textures".to_string(),
+            NifValue::Array(vec![
+                NifValue::String("Textures\\Landscape\\Rock_d.dds".to_string()),
+                NifValue::String("textures/landscape/rock_d.dds".to_string()),
+                NifValue::String("Textures\\Landscape\\Rock_n.dds".to_string()),
+            ]),
+        );
+        nif.add_block("BSShaderTextureSet", Some(texture_set));
+
+        let mut tall_grass = IndexMap::new();
+        tall_grass.insert(
+            "File Name".to_string(),
+            NifValue::String("Textures\\Grass\\Tall.dds".to_string()),
+        );
+        nif.add_block("TallGrassShaderProperty", Some(tall_grass));
+
+        let mut no_lighting = IndexMap::new();
+        no_lighting.insert(
+            "File Name".to_string(),
+            NifValue::String("Textures\\Effects\\NoLight.dds".to_string()),
+        );
+        nif.add_block("BSShaderNoLightingProperty", Some(no_lighting));
+
+        let mut effect = IndexMap::new();
+        effect.insert(
+            "Source Texture".to_string(),
+            NifValue::String("Textures\\Effects\\Source.dds".to_string()),
+        );
+        effect.insert(
+            "Greyscale Texture".to_string(),
+            NifValue::String("Textures\\Effects\\Grey.dds".to_string()),
+        );
+        effect.insert(
+            "Env Map Texture".to_string(),
+            NifValue::String("Textures\\Effects\\Env.dds".to_string()),
+        );
+        effect.insert(
+            "Normal Texture".to_string(),
+            NifValue::String("Textures\\Effects\\Normal.dds".to_string()),
+        );
+        effect.insert(
+            "Env Mask Texture".to_string(),
+            NifValue::String("Textures\\Effects\\Mask.dds".to_string()),
+        );
+        nif.add_block("BSEffectShaderProperty", Some(effect));
+
+        let mut unrelated = IndexMap::new();
+        unrelated.insert(
+            "Name".to_string(),
+            NifValue::String("unrelated".to_string()),
+        );
+        nif.add_block("NiNode", Some(unrelated));
+
+        let bytes = nif.to_bytes().expect("serialize fixture");
+        let schema = NifSchema::from_generated();
+        let full = NifReader::read(&bytes, &schema)
+            .expect("full parse")
+            .referenced_asset_paths();
+        let selective = NifReader::read_referenced_asset_paths(Cursor::new(bytes), &schema)
+            .expect("selective parse")
+            .expect("sized FO76 fixture");
+
+        assert_eq!(selective, full);
+        assert_eq!(selective.materials, vec!["materials/landscape/rock.bgsm"],);
+        assert_eq!(
+            selective.textures,
+            vec![
+                "textures/landscape/rock_d.dds",
+                "textures/landscape/rock_n.dds",
+                "textures/grass/tall.dds",
+                "textures/effects/nolight.dds",
+                "textures/effects/source.dds",
+                "textures/effects/grey.dds",
+                "textures/effects/env.dds",
+                "textures/effects/normal.dds",
+                "textures/effects/mask.dds",
+            ]
+        );
+    }
+
+    #[test]
+    fn dependency_reader_rejects_sized_block_past_end_of_file() {
+        let mut nif = NifFile::new("fo76");
+        nif.add_block("NiNode", None);
+        let bytes = nif.to_bytes().expect("serialize fixture");
+        let mut header_reader = BasicReader::new(Cursor::new(bytes.as_slice()));
+        let header = read_header(&mut header_reader).expect("read fixture header");
+        let block_end = header_reader.pos() as usize + header.block_sizes[0] as usize;
+        let truncated = bytes[..block_end - 1].to_vec();
+
+        let schema = NifSchema::from_generated();
+        assert!(NifReader::read(&truncated, &schema).is_err());
+        assert!(NifReader::read_referenced_asset_paths(Cursor::new(truncated), &schema).is_err());
+    }
+
+    #[test]
+    fn dependency_reader_matches_full_reader_for_invalid_block_type_index() {
+        let mut nif = NifFile::new("fo76");
+        let mut bytes = nif.to_bytes().expect("serialize fixture");
+        let type_name = b"BSFadeNode";
+        let name_offset = bytes
+            .windows(type_name.len())
+            .position(|window| window == type_name)
+            .expect("block type name in header");
+        let index_offset = name_offset + type_name.len();
+        bytes[index_offset..index_offset + 2].copy_from_slice(&u16::MAX.to_le_bytes());
+
+        let mut header_reader = BasicReader::new(Cursor::new(bytes.as_slice()));
+        let header = read_header(&mut header_reader).expect("read patched header");
+        assert_eq!(header.num_blocks, 1);
+        assert_eq!(header.block_type_index, vec![0x7fff]);
+
+        let schema = NifSchema::from_generated();
+        let full = NifReader::read(&bytes, &schema)
+            .expect("full parser tolerates unknown type index")
+            .referenced_asset_paths();
+        let selective = NifReader::read_referenced_asset_paths(Cursor::new(bytes), &schema)
+            .expect("selective parser tolerates unknown type index")
+            .expect("sized FO76 fixture");
+
+        assert_eq!(selective, full);
+    }
+
+    #[test]
+    fn dependency_reader_falls_back_for_valid_legacy_header_without_block_sizes() {
+        let mut bytes = b"Gamebryo File Format, Version 20.0.0.5\n".to_vec();
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // FileVersion
+        bytes.push(1); // little-endian
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // User Version
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // Num Blocks
+        bytes.extend_from_slice(&0u16.to_le_bytes()); // Num Block Types
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // Num Groups
+
+        let schema = NifSchema::from_generated();
+        assert!(NifReader::read(&bytes, &schema).is_ok());
+        assert!(NifReader::read_referenced_asset_paths(Cursor::new(bytes), &schema)
+            .expect("legacy header is readable")
+            .is_none());
+    }
+
+    #[test]
+    fn lean_reader_matches_lossless_decode_without_original_metadata() {
+        let mut nif = NifFile::new("fo4");
+        nif.blocks[0].set_field(
+            "Scale",
+            NifValue::FloatNan(crate::model::FLOAT_NAN_TAG | 0x7FC0_0001),
+        );
+        let bytes = nif.to_bytes().expect("serialize fixture");
+        let schema = NifSchema::from_generated();
+        let lossless = NifReader::read(&bytes, &schema).expect("lossless parse");
+        let lean = NifReader::read_lean(&bytes, &schema).expect("lean parse");
+
+        assert_eq!(format!("{:?}", lean.header), format!("{:?}", lossless.header));
+        assert_eq!(lean.blocks.len(), lossless.blocks.len());
+        for (lean_block, lossless_block) in lean.blocks.iter().zip(&lossless.blocks) {
+            assert_eq!(lean_block.block_id, lossless_block.block_id);
+            assert_eq!(lean_block.type_name, lossless_block.type_name);
+            assert_eq!(lean_block.fields, lossless_block.fields);
+            assert_eq!(lean_block.remainder, lossless_block.remainder);
+            assert!(lean_block.original_bytes.is_none());
+            assert!(lean_block.original_content_hash.is_none());
+            assert!(lossless_block.original_bytes.is_some());
+            assert!(lossless_block.original_content_hash.is_some());
+        }
+        assert_eq!(lean.raw_block_context, lossless.raw_block_context);
+        assert_eq!(lean.referenced_asset_paths(), lossless.referenced_asset_paths());
+    }
+
+    #[test]
+    fn lean_reader_matches_lossless_errors_and_unknown_block_remainder() {
+        let mut nif = NifFile::new("fo4");
+        let mut bytes = nif.to_bytes().expect("serialize fixture");
+        let type_name = b"BSFadeNode";
+        let name_offset = bytes
+            .windows(type_name.len())
+            .position(|window| window == type_name)
+            .expect("block type name in header");
+        let index_offset = name_offset + type_name.len();
+        bytes[index_offset..index_offset + 2].copy_from_slice(&u16::MAX.to_le_bytes());
+
+        let schema = NifSchema::from_generated();
+        let lossless = NifReader::read(&bytes, &schema).expect("lossless unknown parse");
+        let lean = NifReader::read_lean(&bytes, &schema).expect("lean unknown parse");
+        assert_eq!(lean.blocks[0].type_name, "NiUnknown");
+        assert_eq!(lean.blocks[0].fields, lossless.blocks[0].fields);
+        assert_eq!(lean.blocks[0].remainder, lossless.blocks[0].remainder);
+        assert!(!lean.blocks[0].remainder.is_empty());
+
+        let mut header_reader = BasicReader::new(Cursor::new(bytes.as_slice()));
+        let header = read_header(&mut header_reader).expect("read patched header");
+        let block_end = header_reader.pos() as usize + header.block_sizes[0] as usize;
+        let truncated = &bytes[..block_end - 1];
+        let lossless_error = NifReader::read(truncated, &schema).unwrap_err();
+        let lean_error = NifReader::read_lean(truncated, &schema).unwrap_err();
+        assert_eq!(lossless_error.to_string(), lean_error.to_string());
     }
 
     #[test]

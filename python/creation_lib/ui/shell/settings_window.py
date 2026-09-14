@@ -228,7 +228,10 @@ class SettingsWindow:
             imgui.set_next_window_focus()
             self._pending_focus = False
 
-        imgui.set_next_window_size(imgui.ImVec2(800, 600), imgui.Cond_.first_use_ever)
+        from creation_lib.ui.widgets.modern import navigation_item, prepare_dialog, scaled
+
+        scale = scaled(1)
+        prepare_dialog(880, 640)
         flags = imgui.WindowFlags_.no_docking
         expanded, is_open = imgui.begin("Settings##toolkit_settings", True, flags)
 
@@ -245,34 +248,24 @@ class SettingsWindow:
             return
 
         avail = imgui.get_content_region_avail()
-        sidebar_w = 180.0
-        btn_h = 28.0  # height reserved for Close button row
+        sidebar_w = 180.0 * scale
+        btn_h = 50.0 * scale
         content_h = avail.y - btn_h
 
         # Left sidebar
         imgui.begin_child("##settings_sidebar", imgui.ImVec2(sidebar_w, content_h))
         for sec in self._sections:
             is_active = self._active_section == sec.id
-            if is_active:
-                imgui.push_style_color(
-                    imgui.Col_.button, imgui.ImVec4(0.26, 0.59, 0.98, 1.0)
-                )
-            if imgui.button(sec.label, imgui.ImVec2(-1, 0)):
+            clicked = navigation_item(sec.id, sec.label, selected=is_active)
+            if clicked:
                 self._active_section = sec.id
-            if is_active:
-                imgui.pop_style_color()
         if self._active_workspace and hasattr(self._active_workspace, "draw_settings"):
             ws_key = f"ws:{self._active_workspace.id}"
             ws_label = self._SECTION_LABELS.get(ws_key, self._active_workspace.name)
             is_active = self._active_section == ws_key
-            if is_active:
-                imgui.push_style_color(
-                    imgui.Col_.button, imgui.ImVec4(0.26, 0.59, 0.98, 1.0)
-                )
-            if imgui.button(ws_label, imgui.ImVec2(-1, 0)):
+            clicked = navigation_item(ws_key, ws_label, selected=is_active)
+            if clicked:
                 self._active_section = ws_key
-            if is_active:
-                imgui.pop_style_color()
         imgui.end_child()
 
         imgui.same_line()
@@ -280,7 +273,8 @@ class SettingsWindow:
         # Right content area
         imgui.begin_child(
             "##settings_content",
-            imgui.ImVec2(avail.x - sidebar_w - 8, content_h),
+            imgui.ImVec2(avail.x - sidebar_w - imgui.get_style().item_spacing.x, content_h),
+            imgui.ChildFlags_.borders,
         )
         ctx = SettingsContext(
             active_game=self._active_game,
@@ -298,7 +292,7 @@ class SettingsWindow:
         imgui.end_child()
 
         # Close button — bottom right
-        close_w = 80.0
+        close_w = 80.0 * scale
         imgui.set_cursor_pos_x(
             imgui.get_cursor_pos_x() + imgui.get_content_region_avail().x - close_w
         )

@@ -1,15 +1,8 @@
 //! Batch FormKey rewrite/scan/replace over `serde_json::Value` trees.
 //!
-//! Mirrors the Python implementations in
-//! `bacup_lib.formkey.formkey_mapper.FormKeyMapper.rewrite_formkeys`,
-//! `ConversionFixups._find_stale_formkeys`, and
-//! `ConversionFixups._replace_formkeys` exactly. The Python versions walk
-//! `dict | list | str` trees recursively; this Rust port walks the equivalent
-//! `serde_json::Value::{Object, Array, String}` cases.
-//!
+//! Rewrite matches `bacup_lib.formkey.formkey_mapper.FormKeyMapper.rewrite_formkeys`.
 //! All three batch entry points take a JSON string (an array of records),
 //! parse once, walk natively, and return a JSON string the caller decodes.
-//! Matches the Tier A authoring-value pattern used by native export paths.
 
 use serde_json::{Map as JsonMap, Value as JsonValue};
 

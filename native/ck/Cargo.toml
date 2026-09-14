@@ -26,3 +26,4 @@ thiserror          = { workspace = true }
 bytes          = "1.7"
 serde-saphyr   = { workspace = true }
 smol_str       = "0.3"
+tempfile       = { workspace = true }

@@ -1,13 +1,10 @@
 //! Case-insensitive loose-file index built via a parallel directory walk.
 //!
-//! The renderer resolves NIF texture/material paths against on-disk "loose"
-//! directories (extracted game data, mod folders). Those trees can hold ~1M
-//! files, and a serial walk to build the lookup stalls the NIF-load thread.
-//! [`FsIndex`] walks the tree in parallel (rayon over depth-2 subtrees) and the
-//! PyO3 wrapper builds it with the GIL released, so the UI is never starved.
+//! Loose trees (extracted game data, mod folders) can hold ~1M files; a serial walk
+//! stalls the renderer's NIF-load thread. [`FsIndex`] walks depth-2 subtrees with
+//! rayon, and the PyO3 wrapper builds it with the GIL released.
 //!
-//! Maps `rel_lower` — the path relative to the root, `/`-separated and
-//! lowercased — to the absolute path on disk.
+//! Maps `rel_lower` (root-relative, `/`-separated, lowercased) to the absolute path.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -57,10 +54,18 @@ impl FsIndex {
             }
         }
 
-        let per_unit: Vec<Vec<(String, String)>> = units
-            .par_iter()
-            .map(|unit| walk_unit(unit, prefix_len))
-            .collect();
+        let per_unit: Vec<Vec<(String, String)>> = crate::worker_pool::install(None, || {
+            units
+                .par_iter()
+                .map(|unit| walk_unit(unit, prefix_len))
+                .collect()
+        })
+        .unwrap_or_else(|_| {
+            units
+                .iter()
+                .map(|unit| walk_unit(unit, prefix_len))
+                .collect()
+        });
 
         let capacity: usize = per_unit.iter().map(Vec::len).sum::<usize>() + shallow.len();
         let mut lookup: HashMap<String, String> = HashMap::with_capacity(capacity);

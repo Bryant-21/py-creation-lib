@@ -32,6 +32,42 @@ pub fn convert_buffers(
         None => None,
     };
 
+    convert_pixels(
+        &albedo,
+        &metallic,
+        &roughness,
+        ao.as_deref(),
+        pixel_count,
+        params,
+    )
+}
+
+pub fn convert_pixels(
+    albedo: &[f32],
+    metallic: &[f32],
+    roughness: &[f32],
+    ao: Option<&[f32]>,
+    pixel_count: usize,
+    params: PbrToSpecGlossParams,
+) -> Result<PbrToSpecGlossBuffers> {
+    let albedo_count = pixel_count
+        .checked_mul(3)
+        .ok_or_else(|| MaterialError::invalid("albedo buffer is too large"))?;
+    for (name, values, expected) in [
+        ("albedo", albedo, albedo_count),
+        ("metallic", metallic, pixel_count),
+        ("roughness", roughness, pixel_count),
+    ] {
+        if values.len() != expected {
+            return Err(MaterialError::invalid(format!(
+                "{name} buffer has {} values; expected {expected}",
+                values.len()
+            )));
+        }
+    }
+    if ao.is_some_and(|values| values.len() != pixel_count) {
+        return Err(MaterialError::invalid("ao buffer length mismatch"));
+    }
     let mut diffuse = Vec::with_capacity(pixel_count * 3);
     let mut specular = Vec::with_capacity(pixel_count * 3);
     let mut gloss = Vec::with_capacity(pixel_count);

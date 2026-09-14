@@ -3,20 +3,14 @@
 // dead_code rather than gating each one.
 #![allow(dead_code)]
 
-//! Tagfile2014 (binary tagfile v13) reader.
+//! Tagfile2014 binary stream reader, plus a narrow writer for simple graphs.
 //!
-//! FO4 inline animation blobs (BSBound / cloth setup nested in NIFs) and
-//! Skyrim SE `.hkt` skeleton files use this format. Magic bytes:
-//! `0xCAB00D1E` then `0xD011FACE` (v13). The encoding is stream-oriented:
-//! after the 16-byte header, the file is a sequence of VLE-tagged records
-//! (TAG_FILE_INFO, TAG_METADATA, TAG_OBJECT, TAG_OBJECT_REMEMBER,
-//! TAG_OBJECT_NULL, TAG_FILE_END) and is unrelated to TAG0's
-//! section-based HFF layout.
-//!
-//! Reference: SDK Format/Tagfile2014/hkTagfileReadFormat2014.cpp and
-//! hkTagfileCommon2014.h. Hand-rewritten from header semantics — no SDK
-//! code is copied. The writer intentionally covers only simple HkxFile
-//! object graphs whose metadata can be inferred from the public model.
+//! Used by FO4 inline animation blobs (BSBound / cloth setup nested in NIFs)
+//! and Skyrim SE `.hkt` skeletons. Magic `0xCAB00D1E` `0xD011FACE`, then a
+//! stream of VLE-tagged records (TAG_FILE_INFO, TAG_METADATA, TAG_OBJECT,
+//! TAG_OBJECT_REMEMBER, TAG_OBJECT_NULL, TAG_FILE_END); unrelated to TAG0's
+//! section-based HFF layout. Follows SDK Format/Tagfile2014/
+//! hkTagfileReadFormat2014.cpp and hkTagfileCommon2014.h (no SDK code copied).
 
 use crate::error::{HavokError, HavokResult};
 
@@ -26,9 +20,9 @@ use super::types::HkxValue;
 pub const BINARY_MAGIC_0: u32 = 0xCAB0_0D1E;
 pub const BINARY_MAGIC_1: u32 = 0xD011_FACE;
 
-/// Single supported tagfile layout version: v13 ("new tagfile" per SDK
-/// hkTagfileCommon2014.cpp:53). v0/v1 (recursive) and v2..v12 (transitional)
-/// are not produced by Bethesda content tools and are not implemented.
+/// Compatibility marker used by the repository's earlier synthetic fixtures.
+/// Real HCT 2014 stream tagfiles do not store this fixed word after the magic;
+/// their first byte at offset 8 is the VLE-encoded TAG_FILE_INFO record.
 pub const TAGFILE_VERSION_2014_2: u32 = 13;
 
 /// Sniff a buffer for the binary tagfile v13 magic in either endianness.
@@ -50,27 +44,24 @@ pub fn is_binary_tagfile_magic(data: &[u8]) -> bool {
     m0_be == BINARY_MAGIC_0 && m1_be == BINARY_MAGIC_1
 }
 
-/// Parsed binary tagfile v13 header. Mirrors `hkBinaryTagfile2014::Header`
-/// from SDK hkTagfileCommon2014.h, restricted to the v13 ("new tagfile")
-/// case. `swap_bytes` is set when the file's magic appears big-endian on a
-/// little-endian host; the rest of the stream must then be read with byte
-/// swapping. Bethesda content is consistently little-endian on disk, but
-/// the SDK supports both — so we mirror that.
+/// Parsed binary tagfile container prefix. `stream_offset` is normally 8 for
+/// HCT 2014 output. Offset 16 is retained only for compatibility with the
+/// repository's pre-existing synthetic fixtures, which inserted a private
+/// `(tag=1, version=13)` prefix before the real stream.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tagfile2014Header {
     pub swap_bytes: bool,
-    pub tag: u32,
-    pub version: u32,
+    pub stream_offset: usize,
 }
 
-const HEADER_SIZE: usize = 16;
+const MAGIC_SIZE: usize = 8;
+const SYNTHETIC_PREFIX_SIZE: usize = 16;
 
-/// Parse the 16-byte header. Validates magic, swap detection, tag, and
-/// version. SDK ref: hkTagfileCommon2014.cpp:16-47 (Header::read).
+/// Parse the binary stream prefix and locate its first VLE record.
 pub fn parse_header(data: &[u8]) -> HavokResult<Tagfile2014Header> {
-    if data.len() < HEADER_SIZE {
+    if data.len() < MAGIC_SIZE {
         return Err(HavokError::InvalidInput(format!(
-            "Tagfile2014 header requires {HEADER_SIZE} bytes, got {}",
+            "Tagfile2014 magic requires {MAGIC_SIZE} bytes, got {}",
             data.len()
         )));
     }
@@ -100,26 +91,42 @@ pub fn parse_header(data: &[u8]) -> HavokResult<Tagfile2014Header> {
             "Tagfile2014 magic1 mismatch: got {magic1:#010X}, expected {BINARY_MAGIC_1:#010X}"
         )));
     }
-    // Per SDK hkTagfileCommon2014.cpp:42, the tag word must be 1 unless the
-    // version word is 11 (a legacy compatibility carve-out). We only support
-    // v13 — so the tag must be exactly 1.
-    let tag = read_u32(8);
-    let version = read_u32(12);
-    if tag != 1 {
+    let stream_offset = if data.len() >= SYNTHETIC_PREFIX_SIZE
+        && read_u32(8) == 1
+        && read_u32(12) == TAGFILE_VERSION_2014_2
+    {
+        SYNTHETIC_PREFIX_SIZE
+    } else {
+        MAGIC_SIZE
+    };
+    let (first_tag, _) = read_vle_signed(data, stream_offset)?;
+    if first_tag != TAG_FILE_INFO {
         return Err(HavokError::UnsupportedFormat(format!(
-            "Tagfile2014 tag word {tag} (expected 1 for v13 layout)"
-        )));
-    }
-    if version != TAGFILE_VERSION_2014_2 {
-        return Err(HavokError::UnsupportedFormat(format!(
-            "Tagfile2014 layout version {version} not supported (only v{TAGFILE_VERSION_2014_2})"
+            "Tagfile2014 stream at offset {stream_offset:#X} starts with tag {first_tag}; expected TAG_FILE_INFO ({TAG_FILE_INFO})"
         )));
     }
     Ok(Tagfile2014Header {
         swap_bytes,
-        tag,
-        version,
+        stream_offset,
     })
+}
+
+/// Read only TAG_FILE_INFO and report the embedded Havok SDK version without
+/// decoding the object graph.
+pub fn read_tagfile2014_version(blob: &[u8]) -> HavokResult<String> {
+    let header = parse_header(blob)?;
+    let mut reader = Tagfile2014Reader::new(blob, header.swap_bytes, header.stream_offset);
+    let tag_offset = reader.pos;
+    let tag = reader.read_int()?;
+    if tag != TAG_FILE_INFO {
+        return Err(HavokError::UnsupportedFormat(format!(
+            "Tagfile2014 stream at offset {tag_offset:#X} starts with tag {tag}; expected TAG_FILE_INFO ({TAG_FILE_INFO})"
+        )));
+    }
+    reader.parse_file_info()?;
+    Ok(reader
+        .sdk_version
+        .unwrap_or_else(|| format!("tagfile-stream-v{}", reader.tagfile_version)))
 }
 
 // ---------------------------------------------------------------------------
@@ -239,6 +246,8 @@ pub(crate) struct Tagfile2014Reader<'a> {
     pub(crate) classes: Vec<ClassDef>,
     /// Set after TAG_FILE_INFO is parsed. Drives version-gated parsing.
     pub(crate) tagfile_version: i32,
+    /// SDK contents version carried by TAG_FILE_INFO v4+.
+    pub(crate) sdk_version: Option<String>,
     /// Set when tagfile_version >= 6 — Real fields are 64-bit doubles, not
     /// 32-bit floats. Bethesda content uses single precision exclusively.
     pub(crate) real_is_double: bool,
@@ -253,7 +262,7 @@ pub(crate) struct Tagfile2014Reader<'a> {
 }
 
 impl<'a> Tagfile2014Reader<'a> {
-    pub(crate) fn new(data: &'a [u8], swap_bytes: bool) -> Self {
+    pub(crate) fn new(data: &'a [u8], swap_bytes: bool, stream_offset: usize) -> Self {
         // Sentinel ClassDef at index 0, paralleling SDK m_classes.pushBack(NULL)
         // in Reader::Reader (hkTagfileReadFormat2014.cpp:291).
         let sentinel = ClassDef {
@@ -264,11 +273,12 @@ impl<'a> Tagfile2014Reader<'a> {
         };
         Self {
             data,
-            pos: HEADER_SIZE,
+            pos: stream_offset,
             swap_bytes,
             prev_strings: vec![Some(String::new()), None],
             classes: vec![sentinel],
             tagfile_version: 0,
+            sdk_version: None,
             real_is_double: false,
             remembered_objects: Vec::new(),
             objects: Vec::new(),
@@ -406,7 +416,7 @@ impl<'a> Tagfile2014Reader<'a> {
                 // This makes id 0 the canonical null object reference.
                 self.remembered_objects.push(None);
                 if version_i32 >= 4 {
-                    let _sdk_version = self.read_string()?;
+                    self.sdk_version = self.read_string()?;
                 }
                 if version_i32 >= 5 {
                     let _max_predicate = self.read_u16()?;
@@ -552,12 +562,9 @@ impl<'a> Tagfile2014Reader<'a> {
         Ok(f64::from_le_bytes(arr))
     }
 
-    /// Read one Real value as f32 — single precision is the only mode that
-    /// vanilla Bethesda content uses, but the SDK also supports double when
-    /// `m_realIsDouble` is set (tagfile_version >= 6). We narrow doubles
-    /// to f32 here since `HkxValue::F32`/`F32List` are our public model;
-    /// downcasting is lossy but matches what the rest of the codebase
-    /// expects to receive.
+    /// Read one Real as f32. Vanilla content is single precision; doubles
+    /// (`m_realIsDouble`, tagfile_version >= 6) are narrowed to f32 to fit
+    /// `HkxValue::F32`/`F32List`.
     fn read_real(&mut self) -> HavokResult<f32> {
         if self.real_is_double {
             Ok(self.read_f64()? as f32)
@@ -657,83 +664,167 @@ impl<'a> Tagfile2014Reader<'a> {
             // Sanity bound to keep a malformed file from driving a huge
             // allocation; vanilla content rarely exceeds a few thousand
             // bones / poses, and a NIF-embedded inline blob is much smaller.
-            const MAX_ARRAY_LEN: usize = 1_000_000;
+            const MAX_ARRAY_LEN: usize = 100_000;
             if asize > MAX_ARRAY_LEN {
                 return Err(HavokError::InvalidInput(format!(
                     "Tagfile2014 field {} array size {} exceeds sanity bound",
                     field.name, asize
                 )));
             }
-            let mut elements = Vec::with_capacity(asize);
-            for _ in 0..asize {
-                elements.push(self.read_basic_value(basic, field)?);
-            }
-            return Ok(HkxValue::Array(elements));
-        }
-
-        if (field.legacy_type & LT_TYPE_TUPLE) != 0 {
-            if basic == LT_TYPE_STRUCT {
-                // TUPLE+STRUCT (KIND_RECORD bitfield-then-row): SDK writes ONE
-                // shared presence bitfield of `tuple_count * num_fields` bits
-                // (row-major: all fields of element 0 first, then element 1,
-                // ...), then all present field values in the same order.
-                // SDK ref: hkTagfileReadFormat2014.cpp readBinaryValue struct
-                // branch — shared bitfield, then per-element field reads.
-                let class_name = field.class_name.as_deref().ok_or_else(|| {
+            if basic == LT_TYPE_BYTE {
+                let end = self.pos.checked_add(asize).ok_or_else(|| {
                     HavokError::InvalidInput(format!(
-                        "Tagfile2014 field {} TUPLE+STRUCT has no class name",
+                        "Tagfile2014 field {} byte-array end offset overflow",
                         field.name
                     ))
                 })?;
-                let class_index = self.find_class_by_name(class_name)?;
-                let fields = self.collect_fields_with_ancestors(class_index)?;
-                let num_fields = fields.len();
-                let total_bits = tuple_count * num_fields;
-                let presence = self.read_bitfield(total_bits)?;
-                let mut elements: Vec<HkxValue> = Vec::with_capacity(tuple_count);
-                for _ in 0..tuple_count {
-                    elements.push(HkxValue::TypedObject {
-                        class_name: class_name.to_string(),
-                        members: Vec::new(),
-                    });
-                }
-                // Read field values in row-major order: for each element,
-                // for each field, check the shared presence bit and read.
-                let mut bit_index = 0usize;
-                for elem_index in 0..tuple_count {
-                    for f in &fields {
-                        let present = presence[bit_index];
-                        bit_index += 1;
-                        if !present {
-                            continue;
-                        }
-                        let value = self.read_basic_value(f.legacy_type & LT_TYPE_MASK_BASIC, f)?;
-                        if let HkxValue::TypedObject { members, .. } = &mut elements[elem_index] {
-                            members.push(HkxMember {
-                                name: f.name.clone(),
-                                value,
-                            });
-                        }
-                    }
-                }
+                let bytes = self.data.get(self.pos..end).ok_or_else(|| {
+                    HavokError::InvalidInput(format!(
+                        "Tagfile2014 field {} byte array declares {} bytes at offset {:#X}, but only {} bytes remain",
+                        field.name,
+                        asize,
+                        self.pos,
+                        self.data.len().saturating_sub(self.pos)
+                    ))
+                })?;
+                let elements = bytes.iter().copied().map(HkxValue::U8).collect();
+                self.pos = end;
                 return Ok(HkxValue::Array(elements));
             }
+            return Ok(HkxValue::Array(self.read_array_items(field, asize)?));
+        }
 
-            // T[N] scalar/vector array — encoded as `tuple_count` items in
-            // stream order. Each item is dispatched through `read_basic_value`.
-            //
-            // For REAL the SDK packs T[3] as VEC_12 (12 floats) rather than
-            // emitting a TUPLE+REAL bitfield — Bethesda content never emits
-            // TUPLE+REAL in practice. If we do encounter it, read `tuple_count`
-            // reals into an array rather than returning a single scalar.
-            let mut elements = Vec::with_capacity(tuple_count);
-            for _ in 0..tuple_count {
-                elements.push(self.read_basic_value(basic, field)?);
+        if (field.legacy_type & LT_TYPE_TUPLE) != 0 {
+            if basic == LT_TYPE_BYTE {
+                let end = self.pos.checked_add(tuple_count).ok_or_else(|| {
+                    HavokError::InvalidInput(format!(
+                        "Tagfile2014 field {} byte-tuple end offset overflow",
+                        field.name
+                    ))
+                })?;
+                let bytes = self.data.get(self.pos..end).ok_or_else(|| {
+                    HavokError::InvalidInput(format!(
+                        "Tagfile2014 field {} byte tuple requires {} bytes at offset {:#X}",
+                        field.name, tuple_count, self.pos
+                    ))
+                })?;
+                let elements = bytes.iter().copied().map(HkxValue::U8).collect();
+                self.pos = end;
+                return Ok(HkxValue::Array(elements));
             }
-            return Ok(HkxValue::Array(elements));
+            return Ok(HkxValue::Array(self.read_array_items(field, tuple_count)?));
         }
 
         self.read_basic_value(basic, field)
+    }
+
+    /// Arrays in the 2014 stream are type-aware. Integer arrays carry a
+    /// storage-width prefix, vec4 arrays carry their component count, and
+    /// struct arrays are encoded column-major under one member bitmap shared
+    /// by every element.
+    fn read_array_items(&mut self, field: &FieldDef, count: usize) -> HavokResult<Vec<HkxValue>> {
+        let basic = field.legacy_type & LT_TYPE_MASK_BASIC;
+        let prefix = match basic {
+            LT_TYPE_INT => Some(self.read_int()?),
+            LT_TYPE_VEC_4 => {
+                let components = self.read_int()?;
+                if !(1..=4).contains(&components) {
+                    return Err(HavokError::InvalidInput(format!(
+                        "Tagfile2014 field {} vec4 array component count {} is outside 1..=4",
+                        field.name, components
+                    )));
+                }
+                Some(components)
+            }
+            _ => None,
+        };
+
+        if basic == LT_TYPE_STRUCT {
+            return self.read_struct_array(field, count);
+        }
+
+        let mut elements = Vec::with_capacity(count);
+        for _ in 0..count {
+            if basic == LT_TYPE_VEC_4 {
+                let components = usize::try_from(prefix.expect("vec4 prefix validated"))
+                    .expect("positive vec4 prefix fits usize");
+                let mut values = vec![0.0; 4];
+                for value in values.iter_mut().take(components) {
+                    *value = self.read_real()?;
+                }
+                elements.push(HkxValue::F32List(values));
+            } else {
+                elements.push(self.read_basic_value(basic, field)?);
+            }
+        }
+        Ok(elements)
+    }
+
+    fn read_struct_array(&mut self, field: &FieldDef, count: usize) -> HavokResult<Vec<HkxValue>> {
+        let class_name = field.class_name.as_deref().ok_or_else(|| {
+            HavokError::InvalidInput(format!(
+                "Tagfile2014 field {} STRUCT array has no class name",
+                field.name
+            ))
+        })?;
+        let class_index = self.find_class_by_name(class_name)?;
+        let fields = self.collect_fields_with_ancestors(class_index)?;
+        let presence = self.read_bitfield(fields.len())?;
+        let mut rows = (0..count)
+            .map(|_| HkxValue::TypedObject {
+                class_name: class_name.to_string(),
+                members: Vec::new(),
+            })
+            .collect::<Vec<_>>();
+
+        for (field_index, struct_field) in fields.iter().enumerate() {
+            if !presence[field_index] {
+                continue;
+            }
+            let is_nested_collection =
+                (struct_field.legacy_type & (LT_TYPE_ARRAY | LT_TYPE_TUPLE)) != 0;
+            let values = if is_nested_collection {
+                if struct_field.legacy_type != (LT_TYPE_ARRAY | LT_TYPE_INT) {
+                    return Err(HavokError::UnsupportedFormat(format!(
+                        "Tagfile2014 HCT 2014 nested collection payload {}.{} within {} at offset {:#X} has unsupported legacy type {:#X}",
+                        class_name,
+                        struct_field.name,
+                        field.name,
+                        self.pos,
+                        struct_field.legacy_type
+                    )));
+                }
+                let mut nested_arrays = Vec::with_capacity(count);
+                for row_index in 0..count {
+                    let row_offset = self.pos;
+                    let value = self.read_value(struct_field).map_err(|error| {
+                        HavokError::InvalidInput(format!(
+                            "Tagfile2014 nested INT array {}.{} within {} row {} at offset {:#X}: {}",
+                            class_name,
+                            struct_field.name,
+                            field.name,
+                            row_index,
+                            row_offset,
+                            error
+                        ))
+                    })?;
+                    nested_arrays.push(value);
+                }
+                nested_arrays
+            } else {
+                self.read_array_items(struct_field, count)?
+            };
+            for (row, value) in rows.iter_mut().zip(values) {
+                let HkxValue::TypedObject { members, .. } = row else {
+                    unreachable!("struct-array rows are initialized as typed objects");
+                };
+                members.push(HkxMember {
+                    name: struct_field.name.clone(),
+                    value,
+                });
+            }
+        }
+        Ok(rows)
     }
 
     /// Decode a single non-array, non-tuple value of the given basic type
@@ -1031,7 +1122,7 @@ fn remap_value(map: &[Option<usize>], value: &mut HkxValue, errors: &mut Vec<Str
 /// context.
 pub fn read_tagfile2014(blob: &[u8]) -> HavokResult<HkxFile> {
     let header = parse_header(blob)?;
-    let mut reader = Tagfile2014Reader::new(blob, header.swap_bytes);
+    let mut reader = Tagfile2014Reader::new(blob, header.swap_bytes, header.stream_offset);
     let mut next_tag = reader.parse_classes_until_first_object()?;
     // Drive the object stream until TAG_FILE_END.
     loop {
@@ -1042,7 +1133,8 @@ pub fn read_tagfile2014(blob: &[u8]) -> HavokResult<HkxFile> {
             }
             other => {
                 return Err(HavokError::InvalidInput(format!(
-                    "Tagfile2014: unexpected object-stream tag {other}"
+                    "Tagfile2014: unexpected object-stream tag {other} at offset {:#X}",
+                    reader.pos
                 )));
             }
         }
@@ -1053,7 +1145,10 @@ pub fn read_tagfile2014(blob: &[u8]) -> HavokResult<HkxFile> {
     // hk_2014.x.x-rN; we have no string in the header to distinguish flavors,
     // so report a generic 2014 contents-version that downstream callers can
     // map to the FO4/Skyrim-SE descriptor sets via DescriptorRegistry.
-    let contents_version = "hk_2014.1.0-r1".to_string();
+    let contents_version = reader
+        .sdk_version
+        .clone()
+        .unwrap_or_else(|| "hk_2014.1.0-r1".to_string());
     Ok(HkxFile::from_tagxml(11, contents_version, reader.objects))
 }
 
@@ -1069,8 +1164,6 @@ pub fn write_tagfile2014(hkx: &HkxFile) -> HavokResult<Vec<u8>> {
     let mut out = Vec::new();
     out.extend_from_slice(&BINARY_MAGIC_0.to_le_bytes());
     out.extend_from_slice(&BINARY_MAGIC_1.to_le_bytes());
-    out.extend_from_slice(&1u32.to_le_bytes());
-    out.extend_from_slice(&TAGFILE_VERSION_2014_2.to_le_bytes());
 
     write_vle_signed(&mut out, TAG_FILE_INFO)?;
     write_vle_signed(&mut out, 3)?;

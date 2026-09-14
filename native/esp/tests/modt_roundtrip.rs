@@ -1,24 +1,16 @@
 // Integration test for the `model_info` MODT codec against the REAL
 // generated schema, as opposed to authoring_serialize.rs's
 // `model_info_roundtrips_*` unit tests, which use the same fixture bytes but
-// a hand-built `SchemaSubrecordJson`.
+// a hand-built `SchemaSubrecordJson`. Each test prints a reason and skips if
+// the generated schema doesn't report codec=`model_info` for MODT.
 //
-// `tools/schema_forge/` owns `py_creation_lib/native/esp/generated/*.rs` (see
-// that crate's CLAUDE.md) — until it has been regenerated with MODT wired to
-// codec=`model_info`, the schema still reports `codec: "bytes"`. Rather than
-// fail red on every `cargo test` until that regen happens, each test SKIPS
-// cleanly (prints why, returns) when the precondition isn't met yet, and
-// only runs the byte-exact assertions once the real schema says
-// codec=`model_info`. That makes this test auto-activate post-regen with no
-// manual un-ignore step.
-//
-// Fixtures are real MODT bytes captured live, not synthesized:
+// Fixtures are real MODT bytes, not synthesized:
 //   - `048280:Fallout4.esm` (STAT MetalBarrel01Fire01_Static) via
 //     `modkit esp get-record --authoring`.
 //   - `13CB50:Fallout4.esm` (TERM DN035_RobotControlTerminal, sourced from
-//     DLCRobot.esm) via `modkit esp export --mode lossless`, picked because
-//     it's the only MODT found (scanning 2326 candidates) with a non-empty
-//     addon_nodes array as well as multiple materials.
+//     DLCRobot.esm) via `modkit esp export --mode lossless`: the only MODT
+//     among 2326 scanned with a non-empty addon_nodes array and multiple
+//     materials.
 
 use esp_authoring_core::plugin_runtime::authoring::authoring_serialize::compact_model_info_payload_json;
 use esp_authoring_core::plugin_runtime::{compiled_schema_for_game_str, encode_model_info_json};

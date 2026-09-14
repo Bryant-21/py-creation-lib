@@ -1,26 +1,10 @@
-"""BSReflection type registry reader.
+"""BSReflection stream reader, used only by materials_cdb.py.
 
-Internal -- used only by materials_cdb.py. Port of
-refs/fo76texconv/Texture Converter 0.8 - Source/py_creation_lib/python/creation_lib/libfo76utils/src/bsrefl.cpp
-and bsrefl.hpp.
-
-This module exposes:
-
-- ``ChunkType``        - the BETH/STRT/TYPE/CLAS/... chunk kind enum
-- ``StringType``       - the in-band "meta-type" integer enum used by CDB
-                         records (String_None=0, String_String=1, ..., and
-                         the BSMaterial_* class ids)
-- ``BSReflStream``     - parses a BETH-wrapped CDB byte buffer, walks chunks
-- ``Chunk``            - per-chunk primitive reader (readBool / readU8 / ...)
-- ``find_master_string`` - binary search into the master 1156-entry table
-- ``read_bsrefl``      - thin wrapper for the plan scaffold API shape
-
-The port preserves the cpp control flow 1:1 so it can be read side-by-side
-against bsrefl.cpp. We deviate from the scaffold API (``FieldKind``/
-``TypeDef``/``BSReflectionRegistry``) because the real cpp surface is a
-stream class, not a flat registry blob. The higher-level type/class registry
-is assembled by ``materials_cdb.py`` on top of this stream by consuming the
-TYPE/CLAS chunks; it does not belong in this module.
+Port of libfo76utils ``bsrefl.cpp``/``bsrefl.hpp`` that keeps the C++ control
+flow 1:1 for side-by-side reading. ``StringType`` holds the in-band meta-type ids
+CDB records use (String_None=0, String_String=1, ..., and the BSMaterial_* class
+ids). The type/class registry built from TYPE/CLAS chunks lives in
+``materials_cdb.py``.
 """
 from __future__ import annotations
 
@@ -257,10 +241,8 @@ class Chunk:
 # Stream
 # ---------------------------------------------------------------------------
 
-# BETH header magic, little-endian u64: "BETH\0\0\0\0" with high byte = 8.
-# This matches the cpp constant 0x0000000848544542ULL -- the trailing 0x08
-# is not part of the ASCII tag; it appears to be a format subversion byte
-# baked into the 64-bit read.
+# "BETH" tag plus its u32 chunk size (8: the version and chunk-count u32s),
+# read as one little-endian u64 (cpp 0x0000000848544542ULL).
 _BETH_MAGIC: int = 0x0000000848544542
 
 
@@ -399,20 +381,14 @@ class BSReflStream:
 
 
 # ---------------------------------------------------------------------------
-# Plan scaffold shim
+# One-shot reader
 # ---------------------------------------------------------------------------
 
 def read_bsrefl(data: bytes, offset: int = 0) -> tuple[BSReflStream, int]:
-    """Thin wrapper matching the plan scaffold signature.
+    """Parse ``data[offset:]`` and drain every chunk; return ``(stream, new_offset)``.
 
-    Returns ``(stream, new_offset)``. ``new_offset`` is the absolute position
-    after the header + STRT chunk plus every trailing chunk, i.e. the point
-    at which the caller would resume if this stream were embedded in a
-    larger container. For a standalone CDB file ``new_offset == len(data)``
-    after iterating all chunks; we drain here so the contract is simple.
-
-    A higher-level ``BSReflectionRegistry`` dataclass that turns the
-    TYPE/CLAS chunk schema into typed field metadata is not built here.
+    ``new_offset`` is the absolute position after the last chunk, where a caller
+    would resume if the stream were embedded in a larger container.
     """
     if offset:
         data = data[offset:]

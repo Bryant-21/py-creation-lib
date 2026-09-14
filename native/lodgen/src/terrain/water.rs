@@ -1,6 +1,6 @@
 // Landless/ocean coarse water-sheet generation.
 //
-// Faithful 1:1 port of xLODGen `TerrainLOD.GenerateWater` — the FO4 coarse
+// Port of xLODGen `TerrainLOD.GenerateWater` — the FO4 coarse
 // (lodLevel != 4) path (`TerrainLOD.cs:980-1066`) plus the water shape
 // transform from `Geometry.ToBSTriShape` / `Geometry.ShiftZ`
 // (`Geometry.cs:315-352`, `Geometry.cs:2165-2175`). The writer emits this mesh
@@ -59,7 +59,7 @@ fn emit_water(num12: f32, pz2: f32) -> bool {
 /// Build the coarse water sheet for `quad`, or `None` if no cell passes the
 /// water-emit rule (the common dry/landlocked case — no water block written).
 ///
-/// Faithful port of `GenerateWater`'s FO4 coarse `else` branch
+/// Port of `GenerateWater`'s FO4 coarse `else` branch
 /// (`TerrainLOD.cs:980-1066`):
 ///   - `num = 4096 / lodLevel` is the per-cell stride in local block space,
 ///   - each emitted cell adds its 4 corner verts at `z = water / lodLevel` and

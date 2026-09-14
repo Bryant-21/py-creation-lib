@@ -14,7 +14,7 @@ from creation_lib.swf.types import BitReader, RECT, RGBA
 from creation_lib.swf.tags import (
     SwfTag, RawTag, EndTag, ShowFrameTag, SetBackgroundColorTag,
     DefineShapeTag, PlaceObject2Tag, RemoveObject2Tag,
-    DefineSpriteTag, FrameLabelTag,
+    DefineSpriteTag, FrameLabelTag, SymbolClassTag,
     TAG_END, TAG_SHOW_FRAME, TAG_PLACE_OBJECT2, TAG_REMOVE_OBJECT2,
     TAG_DEFINE_SPRITE, DEFINE_SHAPE_IDS,
     parse_tag_body,
@@ -41,6 +41,7 @@ class SwfDocument:
     main_timeline: Timeline = field(default_factory=Timeline)
     shapes: dict[int, ShapeDef] = field(default_factory=dict)       # character_id -> ShapeDef
     sprites: dict[int, SpriteDef] = field(default_factory=dict)     # character_id -> SpriteDef
+    symbols: list[tuple[int, str]] = field(default_factory=list)    # (character_id, class name)
     tags: list[SwfTag] = field(default_factory=list)                # all tags in order
     raw_tags: list[RawTag] = field(default_factory=list)            # unparsed tags only
 
@@ -149,6 +150,9 @@ def _build_document(doc: SwfDocument, tags: list[SwfTag]) -> None:
     for tag in tags:
         if isinstance(tag, SetBackgroundColorTag):
             doc.background_color = tag.color
+
+        elif isinstance(tag, SymbolClassTag):
+            doc.symbols.extend(tag.symbols)
 
         elif isinstance(tag, DefineShapeTag):
             doc.shapes[tag.shape.shape_id] = tag.shape

@@ -1,10 +1,5 @@
-/// Generate per-version classxml directories from SDK patches.
-///
-/// Port of `py_creation_lib/python/creation_lib/havok/gen_classxml.py`.
-///
-/// Key public API:
-/// - `parse_patches(content: &str) -> Vec<(Option<String>, i32, Option<String>, i32)>`
-/// - `generate_per_version_classxml(source_dir, patches_dir, targets, output_dir)`
+/// Generate per-version classxml directories from SDK patches
+/// (port of `py_creation_lib/python/creation_lib/havok/gen_classxml.py`).
 use std::collections::HashMap;
 use std::path::Path;
 

@@ -277,7 +277,7 @@ fn c10_fo4_compressed_mesh_blob_is_parseable_packfile() {
 }
 
 // ---------------------------------------------------------------------------
-// Regression: vanilla FO4 physics packfiles use padding_size=0 (section table
+// Vanilla FO4 physics packfiles use padding_size=0 (section table
 // starts at 0x40, NOT 0x50). Auto-emitting padding_size=16 shifts every
 // section header by 16 bytes; the in-game Havok runtime hardcodes 0x40 as the
 // section table offset (only animation HKX loaders honor the padding byte), so
@@ -365,7 +365,7 @@ fn fo4_physics_packfile_emits_padding_size_zero() {
 }
 
 // ---------------------------------------------------------------------------
-// Regression: hknpCompressedMeshShapeData.m_simdTree.m_nodes must always have
+// hknpCompressedMeshShapeData.m_simdTree.m_nodes must always have
 // at least 2 entries. The in-game Havok runtime's hkcdSimdTree::isEmpty() reads
 // `m_nodes[1].isAllocated()` directly (no bounds check), so an empty m_nodes
 // array means a null-data ptr is dereferenced, crashing in workshop-placement

@@ -1,22 +1,12 @@
 """Starfield scene backend.
 
-Owns the wholesale-port SFScene
-that lives in ``creation_lib.renderer.sf_engine`` and the entire bypass code path
-that previously sat inline inside ``SceneRenderer.render()`` as an
-``if game_id == "starfield"`` early-return branch.
+Owns the ``SFScene`` from ``creation_lib.renderer.sf_engine``, a separate draw
+path because Starfield's PBR shader, layered material model, and cubemap pipeline
+don't fit the FO4 shader's uniforms.
 
-The wholesale port exists because Starfield's PBR shader, layered
-material model, and cubemap pipeline don't fit the FO4 shader's
-uniforms. This backend preserves that architecture but moves it behind
-the ``SceneBackend`` interface so it doesn't have to be a silent ``return``
-branch in the host renderer.
-
-The "attached NIF" interim fix is preserved as-is — it walks
-``renderer.scene_root.children`` for ``AttachmentNode`` subtrees and
-runs them through an internal ``Fo4Backend`` instance with the FO4-style
-``programs["starfield"]`` shader. This is band-aid quality and should be
-replaced by ``attach_nif`` once that's implemented (see
-``project_sf_attach_decal_transparency.md`` in memory).
+``AttachmentNode`` subtrees under ``renderer.scene_root`` that SFScene failed to
+load fall back to an internal ``Fo4Backend`` with the FO4-style
+``programs["starfield"]`` shader: visible, but without PBR.
 """
 
 from __future__ import annotations
@@ -37,36 +27,26 @@ _PHASE4 = "sf_backend: not implemented until Phase 4 (see handoff)"
 
 
 class SfBackend:
-    """Starfield wholesale-port draw backend.
+    """Starfield draw backend.
 
-    Wraps ``ui.editor.sf_engine.SFScene`` (the actual draw loop) and
-    re-exposes it through the ``SceneBackend`` protocol. Holds an
-    internal ``Fo4Backend`` for the attached-NIF interim fix.
+    Exposes ``sf_engine.SFScene`` (the draw loop) through the ``SceneBackend``
+    protocol.
     """
 
     def __init__(self, renderer: "SceneRenderer") -> None:
         self._r = renderer
-        self.sf_scene: Any = None  # ui.editor.sf_engine.SFScene | None
+        self.sf_scene: Any = None  # sf_engine.SFScene | None
         self._sf_render_logged: bool = False
-        # Internal Fo4Backend used by:
-        #   - the attached-NIF interim pass (for AttachmentNodes that
-        #     SfBackend.attach_nif couldn't load through SFScene)
-        #   - the selection outline overlay (operates on the FO4-shaped
-        #     SceneNode the user clicked in the tree)
-        # Shares the host renderer's GL state via the same back-ref, so
-        # there's no duplicated state.
+        # Draws AttachmentNodes SfBackend.attach_nif couldn't load through
+        # SFScene, and the selection outline for the FO4-shaped SceneNode
+        # clicked in the tree. Shares the host renderer's GL state.
         self._fo4_for_attach = Fo4Backend(renderer)
 
     # ----- Lifecycle (SF-specific entrypoints used by app.py) -----------
 
     def load_sf_scene(self, nif_path: Any, extracted_dir: Any,
                       exr_path: Any = None) -> None:
-        """Build the parallel Starfield engine scene for a NIF.
-
-        Destroys any previously loaded SF scene first. Mirrors the
-        signature of the old ``SceneRenderer.load_sf_scene`` so the
-        thin shim on the renderer stays a one-liner.
-        """
+        """Build the Starfield engine scene for a NIF, replacing any loaded one."""
         self.unload_sf_scene()
         self._sf_render_logged = False
         try:
@@ -101,14 +81,10 @@ class SfBackend:
 
     def render_full(self, camera: Any, lighting: Any, view: Any, proj: Any,
                     vp: Any, mode: Any, rm: Any) -> bool:
-        """Run the full SF draw + grid + attach pass + SSAO/composite.
+        """Run the full SF draw, grid, attachment fallback, overlays, and SSAO/composite.
 
-        Returns True if anything was drawn (i.e. an SF scene was loaded).
-        Returns False if there's no SF scene yet — caller falls through
+        Returns False when no SF scene is loaded, so the caller falls through
         to the FO4 path.
-
-        The attached-NIF interim fix is preserved between the grid pass
-        and the SSAO pass.
         """
         import moderngl
         import numpy as _np
@@ -151,25 +127,17 @@ class SfBackend:
                 kc = lighting.key_color
                 ki = float(lighting.key_intensity)
                 sf_light_col = (float(kc.x) * ki, float(kc.y) * ki, float(kc.z) * ki)
-                # Ambient: the SF shader applies *several* amplifiers in
-                # sequence to whatever sf_ambient we pass it. Specifically:
+                # The SF shader amplifies sf_ambient in sequence:
                 #
                 #   ambient *= irradianceCube * uEnvIntensity   (×8 default)
                 #   amb     = ambient * uDbgAmbientBoost        (×4.2 preset)
                 #   color  *= (uDbgExposure / 4.23)             (×2.84 preset)
                 #
-                # The original 0.7 magnitude baseline came from
-                # tools/sf_render_test.py which runs with ambientBoost=1.0
-                # AND exposure=4.23 (factor 1.0). With the editor's
-                # Starfield preset (ambientBoost≈4.2, exposure≈12) the
-                # combined post-shader product is ~12× the standalone,
-                # which bleaches the frame whenever skylight is enabled.
-                #
-                # Compensate by dividing the target magnitude by both
-                # amplifiers so the post-shader product matches the
-                # standalone calibration regardless of which preset the
-                # user has loaded. Skylight=off keeps its small fixed
-                # fallback (already in range).
+                # tools/sf_render_test.py is calibrated at ambientBoost=1.0 and
+                # exposure=4.23. The editor's Starfield preset (ambientBoost≈4.2,
+                # exposure≈12) makes that ~12× brighter and bleaches the frame
+                # with skylight on, so the target magnitude is divided by both
+                # amplifiers. Skylight off keeps a small fixed fallback.
                 if getattr(lighting, "skylight", True):
                     ac = lighting.ambient_color
                     max_ch = max(float(ac.x), float(ac.y), float(ac.z), 1e-3)
@@ -177,12 +145,9 @@ class SfBackend:
                     exposure = float(getattr(r, "_dbg_exposure", 4.23))
                     exposure_factor = max(1.0, exposure / 4.23)
                     combined = max(1.0, amb_boost) * exposure_factor
-                    # Baseline magnitude. 0.7 matches tools/sf_render_test.py
-                    # exactly but felt slightly underexposed in the editor —
-                    # bumped to 1.0 (~43% brighter) so skylight reads with
-                    # more presence. Tunable: lower for darker, higher for
-                    # brighter. The /combined divisor keeps this preset-
-                    # independent.
+                    # Baseline 1.0 rather than sf_render_test.py's 0.7, which
+                    # looks underexposed in the editor. Tunable; the /combined
+                    # divisor keeps it preset-independent.
                     target_mag = 1.0 / combined
                     k = target_mag / max_ch
                     sf_ambient = (float(ac.x) * k, float(ac.y) * k, float(ac.z) * k)
@@ -256,14 +221,8 @@ class SfBackend:
                 _dlog.exception("SF diagnostics dump failed")
             self._sf_render_logged = True
 
-        # The standalone tools/sf_render_test.py runs without CULL_FACE,
-        # and Starfield .mesh triangle winding produces invisible geometry
-        # under the editor's default CCW cull. Disable culling for the
-        # duration of the SF draw; restore after.
-        # Shadow state pulled from the host renderer. The shadow map
-        # texture and light-space matrix were populated by
-        # _render_shadow_map(), which runs before the SF draw when the
-        # supports_shadows capability flag is set.
+        # Shadow map and light-space matrix come from _render_shadow_map(),
+        # which runs before the SF draw when supports_shadows is set.
         sf_shadow_enabled = bool(r._shadow_enabled)
         sf_shadow_map = r._shadow_depth_tex if sf_shadow_enabled else None
         sf_light_space_np = None
@@ -273,6 +232,9 @@ class SfBackend:
                 [[lsm[c][rr] for c in range(4)] for rr in range(4)],
                 dtype=_np.float32)
 
+        # Starfield .mesh winding renders invisible under the editor's default
+        # CCW cull (tools/sf_render_test.py runs without CULL_FACE), so culling
+        # is off for the SF draw.
         r.ctx.disable(moderngl.CULL_FACE)
         try:
             sf_scene.render(
@@ -306,13 +268,10 @@ class SfBackend:
             r.ctx.enable(moderngl.CULL_FACE)
 
         # --- Attached-NIF FO4 fallback pass ---------------------------------
-        # SfBackend.attach_nif loads attachments natively into
-        # sf_scene.meshes (above) so they render with PBR alongside the
-        # main scene. AttachmentNodes whose SF load succeeded are tagged
-        # with ``_sf_loaded = True`` by app.attach_nif and skipped here.
-        # The fallback only runs for attachments where SF loading failed
-        # (unsupported NIF, missing assets, etc.) — visual quality won't
-        # match PBR but the geometry is at least visible.
+        # SfBackend.attach_nif loads attachments into sf_scene.meshes for PBR,
+        # and app.attach_nif tags those AttachmentNodes ``_sf_loaded = True``.
+        # Only attachments SF failed to load (unsupported NIF, missing assets)
+        # draw here: visible, but without PBR.
         if r.scene_root is not None:
             sf_attach_prog = (
                 r.programs.get("starfield")
@@ -338,13 +297,10 @@ class SfBackend:
                         child, sf_attach_prog, "transparent", use_alt_vao=False)
 
         # --- Overlays (vertex points, collision, selection outline) --------
-        # These were silently broken under the old SF bypass because the
-        # bypass returned early before the renderer's overlay section.
-        # Run them here, before SSAO/composite, so SSAO captures them.
-        # Each overlay is gated by its own app toggle/state, mirroring
-        # the FO4 overlay section in SceneRenderer.render().
-        # Show Vertices — uses SFScene's tiny GL_POINTS program over
-        # the actual SF mesh VBOs. Skips invisible meshes.
+        # Drawn before SSAO/composite so SSAO captures them. Each is gated by
+        # its own app toggle/state, mirroring the FO4 overlay section in
+        # SceneRenderer.render(). Show Vertices uses SFScene's GL_POINTS
+        # program over the SF mesh VBOs and skips invisible meshes.
         if r.toggles.show_vertices:
             try:
                 sf_scene.draw_vertex_points(view_np, proj_np)
@@ -417,21 +373,16 @@ class SfBackend:
     # ----- Protocol implementations -------------------------------------
 
     def load_nif(self, path: Path) -> None:
-        # The SF entry point is load_sf_scene() above, which takes the
-        # extra extracted_dir + exr_path arguments the wholesale port
-        # needs. The protocol's single-arg load_nif() is reserved for a
-        # future generic entry point and is unused for SF today — calling
-        # it would lose the EXR/extracted-dir context.
+        # The single-arg protocol load_nif() can't carry the extracted_dir and
+        # exr_path that SFScene needs.
         raise NotImplementedError(
             "Use load_sf_scene(nif_path, extracted_dir, exr_path) instead")
 
     def detach_meshes(self, meshes: list) -> None:
-        """Remove a previously-attached mesh list from the SF scene.
+        """Remove a mesh list returned by ``attach_nif`` from the SF scene.
 
-        Counterpart to ``attach_nif`` — call this from ``app.detach_nif``
-        with the list returned by the original attach call. Releases the
-        meshes' GL resources and removes them from ``sf_scene.meshes`` so
-        they stop drawing. Silently no-ops on a stale call.
+        Releases the meshes' GL resources and drops them from
+        ``sf_scene.meshes``. No-op on a stale call.
         """
         if self.sf_scene is None or not meshes:
             return
@@ -461,14 +412,10 @@ class SfBackend:
                    parent: NodeHandle | None = None) -> NodeHandle:
         """Load a child NIF as an attachment into the active SF scene.
 
-        ``parent`` is interpreted as a 4x4 numpy world transform (the
-        connect-point world matrix the caller computed). If None,
-        identity is used. Returns the list of newly added RenderMesh
-        instances as the opaque NodeHandle so the caller can later flip
-        their visibility or remove them.
-
-        Returns an empty list if there's no SF scene loaded yet, or if
-        the loader failed (logged at WARNING).
+        ``parent`` is the connect point's 4x4 numpy world transform (identity
+        if None). Returns the added RenderMesh list as the NodeHandle, or an
+        empty list when no SF scene is loaded or the load fails (logged at
+        WARNING).
         """
         import numpy as _np
         if self.sf_scene is None:
@@ -494,22 +441,15 @@ class SfBackend:
                               shadow_prog: Any = None) -> None:
         """Render every visible SF mesh depth-only into the bound shadow FBO.
 
-        The host renderer's _render_shadow_map binds the shadow FBO +
-        sets cull_face=front, then calls this method with a numpy
-        light-space matrix and the shadow_depth program. We delegate to
-        SFScene.render_shadow_casters which builds per-mesh alt-VAOs
-        against the shadow_depth program.
+        Called by ``_render_shadow_map`` after it binds the FBO and sets
+        cull_face=front. SFScene builds per-mesh alt-VAOs against ``shadow_prog``.
         """
         if self.sf_scene is None or shadow_prog is None:
             return
         self.sf_scene.render_shadow_casters(light_space_matrix, shadow_prog)
 
-    # The SceneNode-flavoured introspection methods aren't meaningful
-    # until the editor's tree shows SF mesh handles instead of the
-    # placeholder FO4 SceneNodes. They're left as no-ops returning
-    # sensible defaults so callers that probe them via getattr don't
-    # crash. The "Hide mesh part" toggle works through set_visible
-    # below by accepting either an int index or a RenderMesh handle.
+    # Introspection over SF RenderMesh handles (an int index or a RenderMesh);
+    # the editor tree still shows placeholder FO4 SceneNodes.
 
     def iter_nodes(self) -> Iterable[NodeHandle]:
         if self.sf_scene is None:
@@ -521,12 +461,10 @@ class SfBackend:
         return bool(mesh.visible) if mesh is not None else False
 
     def set_visible(self, h: NodeHandle, v: bool) -> None:
-        """Toggle visibility of a single SF mesh.
+        """Toggle one SF mesh's visibility (the Starfield "Hide mesh part" toggle).
 
-        Accepts either an integer index into ``sf_scene.meshes`` or a
-        ``RenderMesh`` instance directly. Used to wire the "Hide mesh
-        part" UI toggle for Starfield. Silently no-ops if there's no SF
-        scene or the handle is bad — UI code shouldn't have to guard.
+        Accepts an index into ``sf_scene.meshes`` or a ``RenderMesh``. No-op
+        with no SF scene or a bad handle.
         """
         mesh = self._resolve_handle(h)
         if mesh is not None:
@@ -564,30 +502,16 @@ class SfBackend:
         return None
 
     def draw_vertex_points(self, vp: Any) -> None:
-        """Draw vertex dots for every visible SF mesh.
-
-        ``vp`` is unused — SFScene.draw_vertex_points takes raw view+proj
-        numpy matrices that the host renderer composes inside
-        render_full(). This method exists for protocol completeness;
-        render_full() invokes the underlying scene method directly with
-        the matrices it already has on hand.
+        """Protocol no-op: render_full() calls ``sf_scene.draw_vertex_points``
+        with the view/proj numpy matrices it already computed.
         """
-        # Intentional no-op in protocol form. render_full() invokes
-        # self.sf_scene.draw_vertex_points(view_np, proj_np) with the
-        # view/proj matrices it already computed for the main draw,
-        # avoiding a redundant glm→numpy conversion.
         return None
 
     def draw_collision(self, vp: Any) -> None:
-        """Draw the collision wireframe overlay.
+        """Draw the collision wireframe via ``SceneRenderer._render_collision_overlay``.
 
-        Delegates to ``SceneRenderer._render_collision_overlay`` because
-        the existing collision system already walks ``scene_root`` for
-        bhk* blocks — and Starfield NIFs have a parallel FO4-loaded
-        scene_root with the same bhk* data. No SF-specific collision
-        parser needed; the existing path Just Works once it actually
-        gets called for SF (which it didn't before the lift because the
-        old bypass returned early).
+        Starfield NIFs also load an FO4-style ``scene_root`` carrying the same
+        bhk* blocks, so no SF-specific collision parser is needed.
         """
         r = self._r
         # Reuse the renderer's collision overlay verbatim. ``vp`` is the
@@ -595,15 +519,12 @@ class SfBackend:
         r._render_collision_overlay(vp)
 
     def draw_selection_outline(self, h: NodeHandle, vp: Any, color: Any) -> None:
-        """Draw a glowy outline around the selected mesh.
+        """Draw the selection outline.
 
-        Two paths:
-        1. If ``h`` resolves to an SF RenderMesh, use SFScene's outline
-           shader against that mesh's actual VBO/IBO — visually correct.
-        2. Otherwise (the common case: user clicked an FO4-style
-           SceneNode in the tree which carries a placeholder bbox mesh),
-           delegate to the inner Fo4Backend so the bbox volume gets
-           outlined at the right world location.
+        An SF RenderMesh handle is outlined by render_full() with SFScene's
+        outline shader, so this returns early. Otherwise (usually an FO4-style
+        SceneNode with a placeholder bbox mesh) the inner Fo4Backend outlines
+        the bbox at its world location.
         """
         mesh = self._resolve_handle(h)
         if mesh is not None and self.sf_scene is not None:

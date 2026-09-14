@@ -18,6 +18,7 @@ use crate::settings::{Fo76BtoMultiboundMode, ObjectSettings};
 const FO4_SAFE_BTO_ROOT_CHILDREN: usize = 8192;
 const FO4_SAFE_BTO_SHAPE_VERTICES: usize = 60_000;
 const FO4_SAFE_BTO_SHAPE_TRIANGLES: usize = 60_000;
+const FO4_SHADER_FLAG_CAST_SHADOWS: u32 = 1 << 9;
 
 // parse_nif / ShapeDesc loader lives in the `parse_nif` submodule
 // (port: LODApp.IterateNodes/ParseNif + ShapeDesc ctor, FO4 object path).
@@ -265,8 +266,8 @@ fn transform_shape_impl(
     shape.x = tx;
     shape.y = ty;
 
-    // TODO(phase3): C# TransformShape also implements three behaviours we drop here
-    // because Phase 2 targets static object LOD only; Phase 3 (trees/grass) needs them:
+    // TODO: C# TransformShape also implements three behaviours not ported here; static
+    // object LOD doesn't need them, trees/grass do:
     //   - "scalexy" / "scalexy=<f>" name-hack — scales vertices in XY about the bbox
     //     center by `scaleXY` (or the parsed value) (LODApp.cs:830-855).
     //   - stat.scaleZ (flag6): per-vertex z-only scale when stat.scaleZ != 1
@@ -370,13 +371,11 @@ fn transform_shape_impl(
         if let Some(rect) = atlas.get(&textures_key) {
             let rect = rect.clone();
 
-            // UV tolerance check (skip if force=true) — port: GroupShape :506-515.
+            // UV tolerance check (skip if force=true); port: GroupShape :506-515.
             //
-            // DELIBERATE DEVIATION from 1:1: the C# AtlasDesc.UVAtlas v-axis check
-            // (AtlasDesc.cs:77) has a typo — it tests `u > AtlasToleranceMax` again
-            // instead of `v > AtlasToleranceMax`, so an out-of-range v with an
-            // in-range u is wrongly accepted. We "correct" the typo here by testing
-            // `uv[1] > tol_max` (v) as intended. Reported as a known deviation.
+            // Deliberate deviation: C# AtlasDesc.UVAtlas (AtlasDesc.cs:77) tests
+            // `u > AtlasToleranceMax` twice, accepting an out-of-range v with an
+            // in-range u. This tests `uv[1] > tol_max` as intended.
             if !force {
                 for uv in &shape.geometry.uvcoords {
                     if uv[0] < tol_min || uv[0] > tol_max || uv[1] < tol_min || uv[1] > tol_max {
@@ -407,9 +406,8 @@ fn transform_shape_impl(
             let diffuse = shape.textures[0].clone();
             let normal = shape.textures[1].clone();
             let specular = shape.textures[7].clone();
-            // DEVIATION/GAP: C# also maps slot[2] glow → AtlasTextureG when
-            // present. Phase-2 atlas builds no glow atlas (AtlasRect has no glow
-            // field), so glow slots are not remapped here — noted as a gap.
+            // C# also maps slot[2] glow → AtlasTextureG when present; no glow atlas
+            // is built (AtlasRect has no glow field), so glow slots are not remapped.
             let mut new_slots: [String; 10] = Default::default();
             for l in 0..10 {
                 let t = &shape.textures[l];
@@ -704,7 +702,12 @@ pub fn build_source_bto_with_telemetry(
     shapes: Vec<ShapeDesc>,
     settings: &ObjectSettings,
 ) -> (Vec<BtoShape>, ObjectQuadTelemetry) {
-    build_source_bto_with_telemetry_impl(quad, shapes, settings, false)
+    build_source_bto_with_telemetry_impl(
+        quad,
+        shapes,
+        settings,
+        settings.fo76_bto_merge_atlassed_shapes,
+    )
 }
 
 pub fn build_atlassed_source_bto_with_telemetry(
@@ -818,6 +821,9 @@ fn build_bto_shapes(
         // Shader flags — port: LODApp.cs:2589-2620 (non-passthru branch).
         let mut flags1: u32 = 2151677953; // 0x80400801 = Specular|Own_Emit|ZBuffer_Test
         let mut flags2: u32 = 1; // ZBuffer_Write
+        if shape.flags.contains(ShapeFlags::CASTS_SHADOWS) {
+            flags1 |= FO4_SHADER_FLAG_CAST_SHADOWS;
+        }
         if shape.flags.contains(ShapeFlags::IS_DECAL) {
             flags1 |= 0x4000000;
             flags1 |= 0x8000000;
@@ -1508,7 +1514,7 @@ mod unseen_tests {
     }
 
     #[test]
-    fn source_bto_builder_does_not_merge_compatible_shapes() {
+    fn source_bto_builder_keeps_compatible_shapes_separate_when_merge_disabled() {
         let settings = LodSettings::fo4_default().objects;
         let mut q = quad();
         q.quad_level = 16;
@@ -1520,6 +1526,32 @@ mod unseen_tests {
         let (bto, telemetry) = build_source_bto_with_telemetry(&mut q, vec![s1, s2], &settings);
 
         assert_eq!(bto.len(), 2);
+        assert_eq!(telemetry.simplify.triangles_after, 2);
+    }
+
+    #[test]
+    fn source_bto_builder_merges_compatible_shapes_when_enabled() {
+        let mut settings = LodSettings::fo4_default().objects;
+        settings.fo76_bto_merge_atlassed_shapes = true;
+        let mut q = quad();
+        let mut s1 = shape([0.0, 0.0, 0.0]);
+        let mut s2 = shape([10.0, 10.0, 0.0]);
+        s2.x = 5000.0;
+        s1.segments = generate_segments(&q, s1.x, s1.y, s1.geometry.num_triangles() as u16);
+        s2.segments = generate_segments(&q, s2.x, s2.y, s2.geometry.num_triangles() as u16);
+
+        let (bto, telemetry) = build_source_bto_with_telemetry(&mut q, vec![s1, s2], &settings);
+
+        assert_eq!(bto.len(), 1);
+        assert_eq!(bto[0].geometry.num_triangles(), 2);
+        assert_eq!(
+            bto[0]
+                .segments
+                .iter()
+                .map(|segment| segment.id)
+                .collect::<Vec<_>>(),
+            vec![0, 4]
+        );
         assert_eq!(telemetry.simplify.triangles_after, 2);
     }
 

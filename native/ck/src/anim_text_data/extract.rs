@@ -1,26 +1,23 @@
 //! Offline extractors that feed the AnimTextData bucket writers (CK-free).
 //!
-//! Sources, per the byte-exact RE specs (`scratchpad/atd_re/`):
-//! * **ClipGeneratorData** — the behavior `.hkx` (`hkbClipGenerator` + its
+//! Sources:
+//! * ClipGeneratorData: the behavior `.hkx` (`hkbClipGenerator` + its
 //!   `hkbClipTriggerArray` + `hkbBehaviorGraphStringData.eventNames`).
-//! * **DynamicIdleData** — the FO4 **IDLE** record's `GNAM` animation filename
-//!   (a `*` glob), expanded against the converted mod's on-disk `Animations` dir.
-//! * **Main project manifest** — the project + character + root-behavior `.hkx`
-//!   string data, with on-disk fallbacks.
+//! * DynamicIdleData: the FO4 IDLE record's `GNAM` animation filename (a `*` glob),
+//!   expanded against the converted mod's on-disk `Animations` dir.
+//! * Main project manifest: the project + character + root-behavior `.hkx` string
+//!   data, with on-disk fallbacks.
 //!
-//! Content **count/order** is relaxed-to-functional (a behavior-arena traversal
-//! artifact, not reproducible offline — same decision as `AnimationFileData`); the
-//! byte **format** of each bucket is exact (see `anim_text_data_bucket_files.rs`).
+//! Content count/order is not CK's (a behavior-arena traversal artifact); each bucket's
+//! byte format is exact (see `bucket_files.rs`).
 //!
-//! NOTE: trigger arrays and `eventNames`/`characterFilenames` are pointer/array reads
-//! that require the TAG0 8-byte pointer-array stride; a 4-byte stride returns them
-//! short/half-null, degrading extraction to fewer triggers / a disk-fallback file list
-//! rather than wrong bytes.
+//! Trigger arrays and `eventNames`/`characterFilenames` need the TAG0 8-byte
+//! pointer-array stride; a 4-byte stride returns them short or half-null, which yields
+//! fewer triggers or a disk-fallback file list rather than wrong bytes.
 
 use std::collections::HashSet;
 use std::path::Path;
 
-use havok_native::hkx::read_packfile;
 use havok_native::hkx::types::HkxValue;
 
 use super::bucket_files::{ClipGenEntry, ClipTrigger};
@@ -192,7 +189,7 @@ fn extract_triggers(
             out.push(ClipTrigger {
                 name,
                 time,
-                flag: 1,
+                flag: u8::from(relative),
             });
         }
     }
@@ -201,16 +198,11 @@ fn extract_triggers(
 
 /// Extract the `ClipGeneratorData` entry list from a behavior `.hkx`.
 ///
-/// Every `hkbClipGenerator` becomes one entry (real fields + resolved triggers).
-/// This is a **superset** of CK's content (CK keeps only animation-event-target
-/// clips) — relaxed-to-functional; every emitted entry is real behavior data, none
-/// fabricated. Returns an empty list (caller skips the file) if the behavior cannot
-/// be read.
+/// Every `hkbClipGenerator` becomes one entry, a superset of CK's content (CK keeps
+/// only animation-event-target clips); nothing is fabricated. Empty if the behavior
+/// cannot be read (caller skips the file).
 pub fn clip_generator_entries(behavior_file: &Path) -> Vec<ClipGenEntry> {
-    let Ok(data) = std::fs::read(behavior_file) else {
-        return Vec::new();
-    };
-    let Ok(hkx) = read_packfile(&data) else {
+    let Some(hkx) = super::hkx_cache::behavior_packfile(behavior_file) else {
         return Vec::new();
     };
     let objects = hkx.objects();
@@ -305,17 +297,15 @@ pub fn race_name_of(core_behavior: &str) -> Option<String> {
 // DynamicIdleData: expand an IDLE GNAM wildcard against on-disk Animations
 // ---------------------------------------------------------------------------
 
-/// Expand a wildcard IDLE animation path (`GNAM`, e.g.
-/// `Actors\X\Animations\Idle_Flavor*.hkx`) against `meshes_root` on disk, stripping
-/// the extension. Returns the matched paths (`Actors\X\Animations\Idle_Flavor1`, …).
-/// Empty if the path has no `*`, the dir is absent, or nothing matches.
+/// Expand a wildcard IDLE `GNAM` path (e.g. `Actors\X\Animations\Idle_Flavor*.hkx`)
+/// against `meshes_root`, stripping the extension. Empty if the path has no `*`, the dir
+/// is absent, or nothing matches.
 ///
-/// CK canonicalises the body path (RE: `dynidle_6th.md` (b)): the **directory** uses the
-/// real on-disk case (not the GNAM template's authored case — a `SnallyGaster` typo
-/// resolves to disk `Snallygaster`); the **filename** uses the GNAM template prefix casing
-/// (`Idle_Flavor`) followed by only the wildcard-matched portion from disk (`1`) — NOT the
-/// full lower-cased disk stem. So `Actors\SnallyGaster\Animations\Idle_Flavor*.hkx` over a
-/// disk `idle_flavor1.hkx` emits `Actors\Snallygaster\Animations\Idle_Flavor1`.
+/// CK canonicalises the result (RE: `dynidle_6th.md`): the directory takes the on-disk
+/// case (a `SnallyGaster` typo resolves to disk `Snallygaster`); the filename takes the
+/// GNAM prefix casing (`Idle_Flavor`) plus only the wildcard-matched part from disk (`1`).
+/// So `Actors\SnallyGaster\Animations\Idle_Flavor*.hkx` over disk `idle_flavor1.hkx`
+/// emits `Actors\Snallygaster\Animations\Idle_Flavor1`.
 pub fn expand_idle_glob(gnam: &str, meshes_root: &Path) -> Vec<String> {
     let norm = gnam.replace('/', "\\");
     if !norm.contains('*') {
@@ -458,9 +448,7 @@ fn hkx_string_array(
 }
 
 fn read_objects(file: &Path) -> Vec<havok_native::hkx::HkxObject> {
-    std::fs::read(file)
-        .ok()
-        .and_then(|d| read_packfile(&d).ok())
+    super::hkx_cache::behavior_packfile(file)
         .map(|h| h.objects().to_vec())
         .unwrap_or_default()
 }
@@ -490,15 +478,13 @@ fn force_hkx_ext(rel: &str) -> String {
     }
 }
 
-/// Build the MAIN project manifest `(project_name, project-relative file list)` for a
-/// creature, given its converted `Meshes` root and its race dir (`Actors\<Race>`).
-/// Reads the project/character/root-behavior `.hkx` for the canonical strings; falls
-/// back to on-disk discovery where a read comes back empty. Returns `None` only if the
-/// race dir cannot be located.
+/// Build the main project manifest `(project_name, project-relative file list)` for a
+/// creature from its race dir (`Actors\<Race>`). Reads the project/character/root-behavior
+/// `.hkx` strings, falling back to on-disk discovery where a read is empty. `None` when no
+/// root behavior can be found.
 ///
-/// Takes the race dir rather than a core-behavior path because humanoid creatures mount
-/// the shared `Actors\Character\Behaviors\*` cores — their core path names `Character`,
-/// not the race that owns the project.
+/// Takes the race dir, not a core-behavior path: humanoid creatures mount the shared
+/// `Actors\Character\Behaviors\*` cores, whose path names `Character`, not the race.
 pub fn extract_project_manifest(
     race_dir: &str,
     meshes_root: &Path,
@@ -507,13 +493,16 @@ pub fn extract_project_manifest(
     let race_disk = meshes_root.join(race_dir.replace('\\', "/"));
 
     // --- project .hkx: name + characterFilenames ---
-    let project_file = find_file(&race_disk, |n| n.ends_with("project.hkx"));
+    let project_file = find_creature_project_file(&race_disk, &race_name);
     let project_objs = project_file
         .as_ref()
         .map(|f| read_objects(&race_disk.join(f)))
         .unwrap_or_default();
-    let project_name = hkx_string_field(&project_objs, "hkbProjectStringData", "name")
-        .unwrap_or_else(|| format!("{race_name}Project"));
+    let project_name = manifest_project_name(
+        hkx_string_field(&project_objs, "hkbProjectStringData", "name"),
+        project_file.as_deref(),
+        &race_name,
+    );
     let character_filenames =
         hkx_string_array(&project_objs, "hkbProjectStringData", "characterFilenames");
 
@@ -605,21 +594,62 @@ fn resolve_disk_case(base_dir: &Path, rel: &str) -> String {
     norm
 }
 
-/// The creature's project `.hkx` path relative to `meshes_root`
-/// (`Actors\<Race>\<race>project.hkx`), discovered on disk. This is what keys the
-/// project-level empty `AnimationOffsets` entry: its filename id is
-/// `name_id(project_hkx_relpath)` (RE-confirmed: the Snallygaster
-/// `AnimationOffsets/1776463414.txt` == `name_id` of this path), and its body is the
-/// empty form referencing the ROOT behavior.
+/// The creature's project `.hkx` path relative to `meshes_root`, found on disk: usually
+/// `Actors\<Race>\<race>project.hkx`, but RadHog uses `Actors\RadHog\RadHog.hkx`. It keys
+/// the project-level empty `AnimationOffsets` entry: filename id `name_id(path)` (the
+/// Snallygaster `AnimationOffsets/1776463414.txt`), body referencing the ROOT behavior.
 pub fn project_hkx_relpath(core_behavior: &str, meshes_root: &Path) -> Option<String> {
     let race_dir = race_dir_of(core_behavior)?;
+    project_hkx_relpath_for_race_dir(&race_dir, meshes_root)
+}
+
+/// Same, from the race DIR rather than a core-behavior path. A humanoid creature's cores all
+/// live in the shared `Actors\Character\Behaviors` tree, so `race_dir_of(core)` names the wrong
+/// race (or none) and only the race dir — from the RACE's `ANAM` skeletal model — identifies the
+/// project the mod actually ships.
+pub fn project_hkx_relpath_for_race_dir(race_dir: &str, meshes_root: &Path) -> Option<String> {
+    let race_name = race_name_of_dir(race_dir)?;
     let race_disk = meshes_root.join(race_dir.replace('\\', "/"));
-    let project_file = find_file(&race_disk, |n| n.ends_with("project.hkx"))?;
+    let project_file = find_creature_project_file(&race_disk, &race_name)?;
     Some(format!("{race_dir}\\{project_file}"))
 }
 
-/// ROOT-behavior clip animations as project-relative `Animations\<stem>.hkx`, in
-/// behavior object order (relaxed-to-functional).
+/// Manifest identity for a creature project.
+///
+/// FO4 looks a project manifest up by the stem of the project `.hkx` the RACE points at
+/// (vanilla `baby.hkx` -> `baby.txt`); `hkbProjectStringData` carries no `name`. RadHog
+/// ships `RadHog.hkx`, so a `radhogproject.txt` manifest leaves it with no clips. The
+/// `<Race>Project` spelling is kept when it already names the shipped file, so conforming
+/// creatures round-trip byte-identically.
+fn manifest_project_name(
+    declared: Option<String>,
+    project_file: Option<&str>,
+    race_name: &str,
+) -> String {
+    let fallback = format!("{race_name}Project");
+    declared
+        .or_else(|| {
+            let stem = Path::new(project_file?).file_stem()?.to_str()?.to_string();
+            (!stem.eq_ignore_ascii_case(&fallback)).then_some(stem)
+        })
+        .unwrap_or(fallback)
+}
+
+fn find_creature_project_file(race_disk: &Path, race_name: &str) -> Option<String> {
+    find_file(race_disk, |name| name.ends_with("project.hkx")).or_else(|| {
+        let actor_named_project = format!("{}.hkx", race_name.to_ascii_lowercase());
+        find_file(race_disk, |name| name == actor_named_project)
+    })
+}
+
+/// Root-behavior clip animations as project-relative paths, in behavior object order.
+///
+/// `animationName` is kept verbatim apart from the `.hkt` -> `.hkx` swap: it may name a
+/// subdirectory (`Animations\Shared\DeathChest01`) or escape the project
+/// (`..\Character\Animations\Death1`), and CK writes it verbatim (vanilla ships e.g.
+/// `..\Bloatfly\Animations\AmbushCeiling\Ambush.hkx`). Flattening it to
+/// `Animations\<stem>.hkx` points the manifest at missing files for any creature that
+/// uses subfolders.
 pub fn root_behavior_clip_anims(root_behavior_file: &Path) -> Vec<String> {
     let objs = read_objects(root_behavior_file);
     let mut out = Vec::new();
@@ -632,9 +662,9 @@ pub fn root_behavior_clip_anims(root_behavior_file: &Path) -> Vec<String> {
             if m.name == "animationName" {
                 if let Some(s) = as_str(&m.value) {
                     if !s.is_empty() {
-                        let stem = anim_basename_no_ext(s);
-                        if seen.insert(stem.to_ascii_lowercase()) {
-                            out.push(format!("Animations\\{stem}.hkx"));
+                        let rel = force_hkx_ext(s);
+                        if seen.insert(rel.to_ascii_lowercase()) {
+                            out.push(rel);
                         }
                     }
                 }
@@ -692,16 +722,14 @@ pub fn fx_project_dirs(meshes_root: &Path) -> Vec<String> {
 /// Build the FX project manifest `(project_name, project-relative file list)` for a
 /// single `UniqueBehaviors\<fx_dir_name>\` project. Reads the FX project + character
 /// `.hkx` string data:
-/// * `behaviorFilename` (character) — `Behaviors\Behavior.hkx`
-/// * `characterFilenames[*]` (project) — `Characters\Character.hkx`
-/// * `normalize(rigName)` (character) — `..\..\GenericBehaviors\…\SingleBoneSkeleton.hkx`
-/// FX projects carry no root animation names, so the file count is 3.
+/// * `behaviorFilename` (character): `Behaviors\Behavior.hkx`
+/// * `characterFilenames[*]` (project): `Characters\Character.hkx`
+/// * `normalize(rigName)` (character): `..\..\GenericBehaviors\…\SingleBoneSkeleton.hkx`
 ///
-/// `ProjectName` casing is not stored in any `.hkx`; it is the FX dir name verbatim
-/// (the FO76 authoring case). On a BA2-lowercased source this differs from CK's
-/// original-case oracle line — runtime-irrelevant (lookup is case-insensitive); only
-/// offline byte-parity needs the original case. Returns `None` if the project hkx is
-/// absent or carries no behaviorFilename.
+/// FX projects carry no root animation names, so the file count is 3. `ProjectName`
+/// casing is not stored in any `.hkx`; it is the FX dir name verbatim, which on a
+/// BA2-lowercased source differs from CK's output only in case (lookup is
+/// case-insensitive). `None` if the project hkx is absent or has no behaviorFilename.
 pub fn extract_fx_manifest(meshes_root: &Path, fx_dir_name: &str) -> Option<(String, Vec<String>)> {
     let fx_dir = meshes_root.join("UniqueBehaviors").join(fx_dir_name);
     let project_file = fx_dir.join(format!("{fx_dir_name}.hkx"));
@@ -747,6 +775,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn clip_trigger_timing_preserves_start_and_end_origins() {
+        use havok_native::hkx::{HkxMember, HkxObject};
+
+        let member = |name: &str, value| HkxMember { name: name.into(), value };
+        let triggers = [(2.5, false), (-0.5, true), (0.0, true)]
+            .into_iter()
+            .map(|(time, relative)| HkxValue::Object(vec![
+                member("localTime", HkxValue::F32(time)),
+                member("relativeToEndOfClip", HkxValue::Bool(relative)),
+                member("event", HkxValue::Object(vec![member("id", HkxValue::I32(0))])),
+            ]))
+            .collect();
+        let objects = [HkxObject {
+            name: None,
+            offset: 0,
+            signature: 0,
+            class_name: "hkbClipTriggerArray".into(),
+            members: vec![member("triggers", HkxValue::Array(triggers))],
+        }];
+        let extracted = extract_triggers(&objects, 0, &["HitFrame".into()]);
+        let engine_times: Vec<_> = extracted.iter().map(|trigger| {
+            if trigger.flag != 0 { 9.0 - trigger.time } else { trigger.time }
+        }).collect();
+        assert_eq!(engine_times, [2.5, 8.5, 9.0]);
+    }
+
+    #[test]
     fn race_name_and_dir_from_core_behavior() {
         let core = r"Actors\Snallygaster\Behaviors\SnallygasterCoreBehavior.hkx";
         assert_eq!(race_dir_of(core).as_deref(), Some(r"Actors\Snallygaster"));
@@ -754,9 +809,69 @@ mod tests {
     }
 
     #[test]
+    fn manifest_name_follows_the_shipped_project_file_stem() {
+        // RadHog ships `RadHog.hkx`, not `RadHogProject.hkx`. FO4 looks the
+        // manifest up by that stem, so emitting `radhogproject.txt` left the
+        // creature with no animation data at all.
+        assert_eq!(
+            manifest_project_name(None, Some("radhog.hkx"), "radhog"),
+            "radhog"
+        );
+    }
+
+    #[test]
+    fn conforming_creatures_keep_the_race_project_spelling() {
+        // Byte-identical output for every creature that already agreed.
+        assert_eq!(
+            manifest_project_name(None, Some("snallygasterproject.hkx"), "Snallygaster"),
+            "SnallygasterProject"
+        );
+    }
+
+    #[test]
+    fn manifest_name_falls_back_when_no_project_ships() {
+        assert_eq!(
+            manifest_project_name(None, None, "Snallygaster"),
+            "SnallygasterProject"
+        );
+    }
+
+    #[test]
+    fn declared_project_name_wins() {
+        assert_eq!(
+            manifest_project_name(Some("Authored".into()), Some("radhog.hkx"), "radhog"),
+            "Authored"
+        );
+    }
+
+    #[test]
     fn anim_basename_strips_dir_and_ext() {
         assert_eq!(anim_basename_no_ext(r"Animations\Idle.hkt"), "Idle");
         assert_eq!(anim_basename_no_ext("Attack1"), "Attack1");
+    }
+
+    #[test]
+    fn force_hkx_ext_keeps_subdirectories_and_parent_escapes() {
+        // The manifest must reproduce the clip path, not just its basename:
+        // flattening these to `Animations\<stem>.hkx` is what killed the
+        // mole miner / scorched project manifests.
+        assert_eq!(
+            force_hkx_ext(r"Animations\Shared\DeathChest01.hkt"),
+            r"Animations\Shared\DeathChest01.hkx"
+        );
+        assert_eq!(
+            force_hkx_ext(r"Animations\AutoGrenadeLauncher\PoseA_Idle1.hkt"),
+            r"Animations\AutoGrenadeLauncher\PoseA_Idle1.hkx"
+        );
+        assert_eq!(
+            force_hkx_ext(r"..\Character\Animations\Death1.hkt"),
+            r"..\Character\Animations\Death1.hkx"
+        );
+        // already-correct paths and flat paths are untouched
+        assert_eq!(
+            force_hkx_ext(r"Animations\Idle.hkx"),
+            r"Animations\Idle.hkx"
+        );
     }
 
     #[test]
@@ -767,4 +882,43 @@ mod tests {
         );
     }
 
+    #[test]
+    fn finds_actor_named_creature_project() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("RadHog.hkx"), b"project").unwrap();
+
+        assert_eq!(
+            find_creature_project_file(temp.path(), "RadHog").as_deref(),
+            Some("RadHog.hkx")
+        );
+    }
+
+    #[test]
+    fn resolves_actor_named_project_relpath() {
+        let temp = tempfile::tempdir().unwrap();
+        let race_dir = temp.path().join("Actors").join("RadHog");
+        std::fs::create_dir_all(&race_dir).unwrap();
+        std::fs::write(race_dir.join("RadHog.hkx"), b"project").unwrap();
+
+        assert_eq!(
+            project_hkx_relpath(
+                r"Actors\RadHog\Behaviors\RadHogCoreBehavior.hkx",
+                temp.path()
+            )
+            .as_deref(),
+            Some(r"Actors\RadHog\RadHog.hkx")
+        );
+    }
+
+    #[test]
+    fn conventional_project_name_wins_over_actor_named_fallback() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("RadHog.hkx"), b"fallback").unwrap();
+        std::fs::write(temp.path().join("RadHogProject.hkx"), b"project").unwrap();
+
+        assert_eq!(
+            find_creature_project_file(temp.path(), "RadHog").as_deref(),
+            Some("RadHogProject.hkx")
+        );
+    }
 }

@@ -18,6 +18,8 @@ use crate::objects::static_desc::{ShaderKind, ShapeDesc, ShapeFlags, atlas_build
 use crate::progress::{LodGenStats, LodPaths, Progress, QuadCtx};
 use crate::settings::{LodSettings, ObjectSource};
 
+const FO76_SHADER_CRC_TWO_SIDED: u64 = 759_557_230;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SourceBtoTile {
     pub world: String,
@@ -139,6 +141,8 @@ struct SourceTileStats {
     tree_secs: f64,
     extract_secs: f64,
     write_secs: f64,
+    shape_build_secs: f64,
+    bto_write: crate::output::bto::BtoWriteReport,
     btt_secs: f64,
     total_secs: f64,
     tree_instances_to_btt: u64,
@@ -366,6 +370,11 @@ pub fn build_object_lod(
     let mut tree_secs = 0.0;
     let mut extract_secs = 0.0;
     let mut write_secs = 0.0;
+    let mut shape_build_secs = 0.0;
+    let mut nif_build_secs = 0.0;
+    let mut serialize_secs = 0.0;
+    let mut file_write_secs = 0.0;
+    let mut bto_bytes = 0u64;
     let mut btt_secs = 0.0;
     let mut total_secs = 0.0;
     let mut tree_instances_to_btt = 0u64;
@@ -383,6 +392,11 @@ pub fn build_object_lod(
         tree_secs += tile_stats.tree_secs;
         extract_secs += tile_stats.extract_secs;
         write_secs += tile_stats.write_secs;
+        shape_build_secs += tile_stats.shape_build_secs;
+        nif_build_secs += tile_stats.bto_write.nif_build_secs;
+        serialize_secs += tile_stats.bto_write.serialize_secs;
+        file_write_secs += tile_stats.bto_write.file_write_secs;
+        bto_bytes += tile_stats.bto_write.bytes;
         btt_secs += tile_stats.btt_secs;
         total_secs += tile_stats.total_secs;
         tree_instances_to_btt += tile_stats.tree_instances_to_btt;
@@ -395,6 +409,14 @@ pub fn build_object_lod(
             stats.warnings.push(warning);
         }
     }
+    let other_write_secs =
+        (write_secs - shape_build_secs - nif_build_secs - serialize_secs - file_write_secs).max(0.0);
+    progress.report(
+        &format!(
+            "source BTO worker-seconds: shape_build={shape_build_secs:.3} nif_build={nif_build_secs:.3} serialize={serialize_secs:.3} file_write={file_write_secs:.3} other_write={other_write_secs:.3} bytes={bto_bytes}"
+        ),
+        1.0,
+    );
     if mode.is_atlas() {
         if let Some(manifest) = billboard_manifest.as_ref() {
             if !placed_tree_indices.is_empty() {
@@ -691,7 +713,7 @@ fn scan_one_source_bto_for_atlas(
         instance_models: BTreeMap::new(),
         warnings: Vec::new(),
     };
-    let nif = match NifFile::load(&tile.path) {
+    let nif = match NifFile::load_lean(&tile.path) {
         Ok(nif) => nif,
         Err(err) => {
             result.warnings.push(format!(
@@ -1607,14 +1629,19 @@ fn build_paged_hybrid_atlas(
         .into_iter()
         .enumerate()
         {
-            match crate::atlas::atlas::write_atlas_dds(
-                path,
-                atlas_w,
-                atlas_h,
-                buf,
-                fmt,
-                index == 0 && settings.objects.atlas_mip_flooding,
-            ) {
+            let write_result = if index == 0 {
+                crate::atlas::atlas::write_linear_diffuse_atlas_dds(
+                    path,
+                    atlas_w,
+                    atlas_h,
+                    buf,
+                    fmt,
+                    settings.objects.atlas_mip_flooding,
+                )
+            } else {
+                crate::atlas::atlas::write_atlas_dds(path, atlas_w, atlas_h, buf, fmt, false)
+            };
+            match write_result {
                 Ok(()) => stats.dds_written += 1,
                 Err(err) => eprintln!(
                     "[lodgen] hybrid-atlas objects: DDS write skipped ({}): {err}",
@@ -1805,7 +1832,21 @@ fn load_one_hybrid_atlas_texture(
                     warning: None,
                 };
             };
-            (img.width, img.height, img.rgba, None)
+            let rgba = if directxtex_native::is_srgb_dxgi_format(img.dxgi_format) {
+                img.rgba
+            } else {
+                let Ok(rgba) = directxtex_native::convert_srgb_texels_to_linear_unorm(
+                    img.width, img.height, &img.rgba,
+                ) else {
+                    return HybridAtlasLoadResult {
+                        index,
+                        tile: None,
+                        warning: None,
+                    };
+                };
+                rgba
+            };
+            (img.width, img.height, rgba, None)
         };
     let page_size = hybrid_atlas_effective_page_size(settings, &texture);
     if source_w > page_size || source_h > page_size {
@@ -2238,7 +2279,8 @@ fn source_bto_tree_instance_models(
     tile: &SourceBtoTile,
     resolver: &ResourceResolver,
 ) -> anyhow::Result<BTreeMap<String, u64>> {
-    let nif = NifFile::load(&tile.path).map_err(|e| anyhow::anyhow!("read source BTO: {e:?}"))?;
+    let nif =
+        NifFile::load_lean(&tile.path).map_err(|e| anyhow::anyhow!("read source BTO: {e:?}"))?;
     let mut out = BTreeMap::<String, u64>::new();
     for block in &nif.blocks {
         if block.type_name != "BSDistantObjectInstancedNode" {
@@ -2286,11 +2328,49 @@ pub fn split_texture_array_triangles(geometry: &LodGeometry) -> BTreeMap<i32, Lo
         .into_iter()
         .filter_map(|(slice, tris)| {
             let mut geom = remap_geometry_for_triangles(geometry, &tris);
-            geom.tangents.clear();
-            geom.bitangents.clear();
+            reconstruct_texture_array_bitangents(&mut geom);
             (geom.num_triangles() > 0).then_some((slice, geom))
         })
         .collect()
+}
+
+fn reconstruct_texture_array_bitangents(geometry: &mut LodGeometry) {
+    let vertex_count = geometry.vertices.len();
+    if geometry.normals.len() != vertex_count
+        || geometry.tangents.len() != vertex_count
+        || geometry.bitangents.len() != vertex_count
+    {
+        geometry.tangents.clear();
+        geometry.bitangents.clear();
+        return;
+    }
+
+    for i in 0..vertex_count {
+        let normal = geometry.normals[i];
+        let tangent = geometry.tangents[i];
+        let encoded = geometry.bitangents[i];
+        let mut bitangent = [
+            normal[1] * tangent[2] - normal[2] * tangent[1],
+            normal[2] * tangent[0] - normal[0] * tangent[2],
+            normal[0] * tangent[1] - normal[1] * tangent[0],
+        ];
+        if bitangent[1] * encoded[1] + bitangent[2] * encoded[2] < 0.0 {
+            bitangent = [-bitangent[0], -bitangent[1], -bitangent[2]];
+        }
+        let length = (bitangent[0] * bitangent[0]
+            + bitangent[1] * bitangent[1]
+            + bitangent[2] * bitangent[2])
+            .sqrt();
+        geometry.bitangents[i] = if length > f32::EPSILON {
+            [
+                bitangent[0] / length,
+                bitangent[1] / length,
+                bitangent[2] / length,
+            ]
+        } else {
+            [0.0, 1.0, 0.0]
+        };
+    }
 }
 
 fn convert_tile(
@@ -2309,7 +2389,8 @@ fn convert_tile(
 ) -> anyhow::Result<SourceTileStats> {
     let total_started = Instant::now();
     let load_started = Instant::now();
-    let nif = NifFile::load(&tile.path).map_err(|e| anyhow::anyhow!("read source BTO: {e:?}"))?;
+    let nif =
+        NifFile::load_lean(&tile.path).map_err(|e| anyhow::anyhow!("read source BTO: {e:?}"))?;
     let load_secs = load_started.elapsed().as_secs_f64();
     let quad = source_quad(tile);
     let local_paths = paths_with_source_root(paths, source_root);
@@ -2411,6 +2492,10 @@ fn convert_tile(
         crate::objects::write_source_bto_shapes(&quad, &ctx, shapes)?
     };
     tile_stats.write_secs = write_started.elapsed().as_secs_f64();
+    if let Some(telemetry) = &outputs.object_lod {
+        tile_stats.shape_build_secs = telemetry.shape_build_secs;
+        tile_stats.bto_write = telemetry.write_report;
+    }
     tile_stats.output_shapes = outputs
         .object_lod
         .as_ref()
@@ -2629,6 +2714,7 @@ fn extract_baked_shapes(
 
     let alpha = alpha_info(nif, geom_block);
     let clamp = shader_clamp_mode(shader);
+    let double_sided = shader_has_crc(shader, FO76_SHADER_CRC_TWO_SIDED);
     let source_segment_id = source_segment_id(geom_block);
     let bto_translation = vec3(geom_block.get_field("Translation")).unwrap_or([
         tile.x as f32 * 4096.0,
@@ -2652,6 +2738,7 @@ fn extract_baked_shapes(
                 texture_set,
                 alpha,
                 clamp,
+                double_sided,
                 source_segment_id,
                 bto_translation,
                 bto_scale,
@@ -2673,6 +2760,7 @@ fn extract_baked_shapes(
             texture_set,
             alpha,
             clamp,
+            double_sided,
             source_segment_id,
             bto_translation,
             bto_scale,
@@ -2693,18 +2781,31 @@ fn make_baked_shape(
     textures: [String; 10],
     alpha: Option<(u16, u8)>,
     texture_clamp_mode: u32,
+    double_sided: bool,
     source_segment_id: Option<i32>,
-    bto_translation: [f32; 3],
-    bto_scale: f32,
+    source_bto_translation: [f32; 3],
+    source_bto_scale: f32,
 ) -> ShapeDesc {
+    let bto_translation = [quad.x as f32 * 4096.0, quad.y as f32 * 4096.0, 0.0];
+    let bto_scale = quad.quad_level as f32;
+    for vertex in &mut geometry.vertices {
+        for axis in 0..3 {
+            vertex[axis] = (source_bto_translation[axis] + vertex[axis] * source_bto_scale
+                - bto_translation[axis])
+                / bto_scale;
+        }
+    }
     geometry.update_bbox();
     let center = geometry.bbox.center(false);
     let (segment_x, segment_y) = source_segment_id
         .and_then(|id| segment_position_from_source_id(quad, id))
         .unwrap_or((center[0] * bto_scale, center[1] * bto_scale));
-    let mut flags = ShapeFlags::HAS_LOD_FLAG;
+    let mut flags = ShapeFlags::HAS_LOD_FLAG | ShapeFlags::CASTS_SHADOWS;
     if geometry.has_vertex_colors() {
         flags |= ShapeFlags::HAS_VERTEX_COLOR;
+    }
+    if double_sided {
+        flags |= ShapeFlags::IS_DOUBLE_SIDED;
     }
     if alpha.is_some() || baked_shape_name_implies_alpha(&name) {
         flags |= ShapeFlags::IS_ALPHA;
@@ -3099,6 +3200,17 @@ fn shader_texture_arrays(shader: &NifBlock) -> Option<Vec<Vec<String>>> {
     Some(arrays)
 }
 
+fn shader_has_crc(shader: &NifBlock, crc: u64) -> bool {
+    let Some(data) = as_struct(shader.get_field("Shader Property Data")) else {
+        return false;
+    };
+    ["SF1", "SF2"].into_iter().any(|field| {
+        val_array(data.get(field))
+            .iter()
+            .any(|value| val_u64(Some(value)) == Some(crc))
+    })
+}
+
 fn shader_texture_set(nif: &NifFile, shader: &NifBlock) -> Option<[String; 10]> {
     let data_ref = as_struct(shader.get_field("Shader Property Data"))
         .and_then(|data| val_ref(data.get("Texture Set")))
@@ -3289,6 +3401,9 @@ fn rewrite_texture_path(
     if is_fo4_shared_texture(&normalized) {
         return normalized;
     }
+    if let Some(converted) = converted_fo4_texture_rel(output_dir, &normalized, specular) {
+        return converted;
+    }
     let dest_rel = hybrid_texture_rel(world, &normalized, specular);
     let dst_path = output_dir.join(dest_rel.replace('\\', "/"));
     if src_path.is_file() {
@@ -3310,6 +3425,19 @@ fn rewrite_texture_path(
         return dest_rel;
     }
     normalized
+}
+
+fn converted_fo4_texture_rel(
+    output_dir: &Path,
+    normalized: &str,
+    specular: bool,
+) -> Option<String> {
+    let converted = if specular {
+        fo4_specular_name(normalized)
+    } else {
+        normalized.to_string()
+    };
+    resolve_source_data_path_ci(output_dir, &converted).map(|_| converted)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -3947,6 +4075,376 @@ mod tests {
     use crate::objects::static_desc::ShapeFlags;
 
     #[test]
+    #[ignore = "requires BTO_WRITE_CORPUS, BTO_WRITE_DATA, BTO_WRITE_BASELINE; BTO_WRITE_RECORD=1 records baseline"]
+    fn bto_write_corpus_equivalence_and_timings() {
+        let corpus = std::env::var_os("BTO_WRITE_CORPUS").unwrap();
+        let paths: Vec<PathBuf> = serde_json::from_slice(&std::fs::read(corpus).unwrap()).unwrap();
+        assert!(!paths.is_empty());
+        let data = PathBuf::from(std::env::var_os("BTO_WRITE_DATA").unwrap());
+        let baseline = PathBuf::from(std::env::var_os("BTO_WRITE_BASELINE").unwrap());
+        let recording = std::env::var("BTO_WRITE_RECORD").as_deref() == Ok("1");
+        if recording {
+            std::fs::create_dir_all(&baseline).unwrap();
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let output = LodPaths {
+            data_dirs: vec![data.clone()],
+            output_dir: temp.path().to_path_buf(),
+            source_data_dir: Some(data.clone()),
+        };
+        let copied = Mutex::new(HashSet::new());
+        let atlas = empty_atlas_result();
+        let game = Game::fo4();
+        let resolver = ResourceResolver::build(&data).unwrap();
+        let mut settings = LodSettings::fo4_default();
+        let mut reports = Vec::new();
+        for (index, path) in paths.iter().enumerate() {
+            let tile = parse_source_bto_filename(path).unwrap();
+            let world = WorldspaceInput::from_cells(&tile.world, Vec::new());
+            let quad = source_quad(&tile);
+            let source_bytes = std::fs::read(path).unwrap();
+            let extract = |lean: bool| {
+                let started = Instant::now();
+                let nif = if lean {
+                    NifFile::from_bytes_lean(&source_bytes, Some(path.clone()))
+                } else {
+                    NifFile::from_bytes(&source_bytes, Some(path.clone()))
+                }
+                .unwrap();
+                let parse_elapsed = started.elapsed();
+                let mut sink = TextureSink::new(&data, temp.path(), &tile.world, &copied);
+                let extract_started = Instant::now();
+                let mut shapes = Vec::new();
+                for block in &nif.blocks {
+                    if block.type_name == "BSSubIndexTriShape" {
+                        shapes.extend(extract_baked_shapes(
+                            &nif,
+                            block,
+                            &quad,
+                            &tile,
+                            SourceBtoMode::Raw,
+                            &atlas,
+                            &mut sink,
+                        ));
+                    }
+                }
+                (parse_elapsed, extract_started.elapsed(), nif, shapes)
+            };
+            drop(extract(false));
+            drop(extract(true));
+            let mut paired_shapes = None;
+            for sample in 0..4 {
+                let lean_first = sample % 2 == 1;
+                let (first_parse, first_extract, first_nif, first_shapes) = extract(lean_first);
+                let (second_parse, second_extract, second_nif, second_shapes) =
+                    extract(!lean_first);
+                let (
+                    lossless_parse,
+                    lossless_extract,
+                    lossless_nif,
+                    lossless_shapes,
+                    lean_parse,
+                    lean_extract,
+                    lean_nif,
+                    lean_shapes,
+                ) = if lean_first {
+                    (
+                        second_parse,
+                        second_extract,
+                        second_nif,
+                        second_shapes,
+                        first_parse,
+                        first_extract,
+                        first_nif,
+                        first_shapes,
+                    )
+                } else {
+                    (
+                        first_parse,
+                        first_extract,
+                        first_nif,
+                        first_shapes,
+                        second_parse,
+                        second_extract,
+                        second_nif,
+                        second_shapes,
+                    )
+                };
+                eprintln!(
+                    "lod_lean_bto sample={sample} source={} lossless_parse_ms={:.3} lean_parse_ms={:.3} lossless_extract_ms={:.3} lean_extract_ms={:.3} shapes={}",
+                    path.display(),
+                    lossless_parse.as_secs_f64() * 1000.0,
+                    lean_parse.as_secs_f64() * 1000.0,
+                    lossless_extract.as_secs_f64() * 1000.0,
+                    lean_extract.as_secs_f64() * 1000.0,
+                    lossless_shapes.len()
+                );
+                crate::objects::parse_nif::assert_shape_descs_eq(&lossless_shapes, &lean_shapes);
+                let mut lossless_textures = BTreeMap::new();
+                let mut lossless_models = BTreeMap::new();
+                let mut lean_textures = BTreeMap::new();
+                let mut lean_models = BTreeMap::new();
+                let scan_ctx = QuadCtx {
+                    world: &world,
+                    settings: &settings,
+                    game: &game,
+                    paths: &output,
+                    level: tile.level,
+                };
+                scan_source_bto_atlas_textures(
+                    &lossless_nif,
+                    &tile,
+                    &data,
+                    &resolver,
+                    &scan_ctx,
+                    &mut lossless_textures,
+                    &mut lossless_models,
+                );
+                scan_source_bto_atlas_textures(
+                    &lean_nif,
+                    &tile,
+                    &data,
+                    &resolver,
+                    &scan_ctx,
+                    &mut lean_textures,
+                    &mut lean_models,
+                );
+                assert_eq!(
+                    lossless_textures.keys().collect::<Vec<_>>(),
+                    lean_textures.keys().collect::<Vec<_>>()
+                );
+                for (key, lossless) in &lossless_textures {
+                    let lean = &lean_textures[key];
+                    assert_eq!(lossless.diffuse_rel, lean.diffuse_rel);
+                    assert_eq!(lossless.normal_rel, lean.normal_rel);
+                    assert_eq!(lossless.lighting_rel, lean.lighting_rel);
+                    assert_eq!(lossless.specular_rel, lean.specular_rel);
+                    assert_eq!(lossless.diffuse_path, lean.diffuse_path);
+                    assert_eq!(lossless.normal_path, lean.normal_path);
+                    assert_eq!(lossless.lighting_path, lean.lighting_path);
+                    assert_eq!(lossless.specular_path, lean.specular_path);
+                }
+                assert_eq!(lossless_models, lean_models);
+                paired_shapes = Some((lossless_shapes, lean_shapes));
+            }
+            let (lossless_shapes, shapes) = paired_shapes.unwrap();
+            assert!(!shapes.is_empty(), "{}", path.display());
+            for mode in ["raw", "atlassed", "generated", "grouped"] {
+                settings.objects.fo76_bto_node_layout = if mode == "grouped" {
+                    crate::settings::Fo76BtoNodeLayout::Fo76Grouped
+                } else {
+                    crate::settings::Fo76BtoNodeLayout::Fo4PerShape
+                };
+                let ctx = QuadCtx {
+                    world: &world,
+                    settings: &settings,
+                    game: &game,
+                    paths: &output,
+                    level: tile.level,
+                };
+                let baseline_input = lossless_shapes.clone();
+                let baseline_result = match mode {
+                    "generated" => crate::objects::write_quad_shapes(&quad, &ctx, baseline_input),
+                    "atlassed" => crate::objects::write_atlassed_source_bto_shapes(
+                        &quad,
+                        &ctx,
+                        baseline_input,
+                    ),
+                    _ => crate::objects::write_source_bto_shapes(&quad, &ctx, baseline_input),
+                }
+                .unwrap();
+                let baseline_bytes = std::fs::read(&baseline_result.meshes[0]).unwrap();
+                let input = shapes.clone();
+                let started = Instant::now();
+                let result = match mode {
+                    "generated" => crate::objects::write_quad_shapes(&quad, &ctx, input),
+                    "atlassed" => {
+                        crate::objects::write_atlassed_source_bto_shapes(&quad, &ctx, input)
+                    }
+                    _ => crate::objects::write_source_bto_shapes(&quad, &ctx, input),
+                }
+                .unwrap();
+                let total_secs = started.elapsed().as_secs_f64();
+                let telemetry = result.object_lod.unwrap();
+                let bytes = std::fs::read(&result.meshes[0]).unwrap();
+                assert_eq!(
+                    baseline_bytes,
+                    bytes,
+                    "{} {mode} lean output",
+                    path.display()
+                );
+                assert_eq!(telemetry.bto_bytes, bytes.len() as u64);
+                let expected = baseline.join(format!("{index:02}-{mode}.bto"));
+                if recording {
+                    std::fs::write(expected, &bytes).unwrap();
+                } else {
+                    assert!(
+                        std::fs::read(expected).unwrap() == bytes,
+                        "{} {mode}",
+                        path.display()
+                    );
+                }
+                NifFile::from_bytes(&bytes, None).unwrap();
+                let report = serde_json::json!({
+                    "source": path, "mode": mode, "bytes": bytes.len(),
+                    "input_shapes": shapes.len(), "output_shapes": telemetry.output_shape_count,
+                    "shape_build_secs": telemetry.shape_build_secs,
+                    "nif_build_secs": telemetry.write_report.nif_build_secs,
+                    "serialize_secs": telemetry.write_report.serialize_secs,
+                    "file_write_secs": telemetry.write_report.file_write_secs,
+                    "total_secs": total_secs,
+                });
+                eprintln!("{report}");
+                reports.push(report);
+            }
+        }
+        let report = serde_json::json!({"recording": recording, "cases": reports});
+        if let Some(path) = std::env::var_os("BTO_WRITE_REPORT") {
+            std::fs::write(path, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
+        }
+    }
+
+    #[test]
+    #[ignore = "requires BTO_VERTEX_CORPUS, BTO_VERTEX_DATA, BTO_VERTEX_BASELINE, and BTO_VERTEX_ENCODING"]
+    fn bto_vertex_encoding_corpus_equivalence_and_timings() {
+        let corpus = std::env::var_os("BTO_VERTEX_CORPUS").unwrap();
+        let paths: Vec<PathBuf> = serde_json::from_slice(&std::fs::read(corpus).unwrap()).unwrap();
+        assert!(!paths.is_empty());
+        let data = PathBuf::from(std::env::var_os("BTO_VERTEX_DATA").unwrap());
+        let baseline = PathBuf::from(std::env::var_os("BTO_VERTEX_BASELINE").unwrap());
+        let encoding = std::env::var("BTO_VERTEX_ENCODING").unwrap();
+        let named_vertices = match encoding.as_str() {
+            "named" => true,
+            "positional" => false,
+            _ => panic!("BTO_VERTEX_ENCODING must be named or positional"),
+        };
+        let recording = std::env::var("BTO_VERTEX_RECORD").as_deref() == Ok("1");
+        if recording {
+            std::fs::create_dir_all(&baseline).unwrap();
+        }
+        for index in 0..paths.len() {
+            for layout_name in ["per-shape", "grouped"] {
+                let expected = baseline.join(format!("{index:02}-{layout_name}.bto"));
+                assert_eq!(
+                    expected.exists(),
+                    !recording,
+                    "baseline preflight failed: {}",
+                    expected.display()
+                );
+            }
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let copied = Mutex::new(HashSet::new());
+        let atlas = empty_atlas_result();
+        let mut settings = LodSettings::fo4_default();
+        let mut reports = Vec::new();
+
+        for (index, path) in paths.iter().enumerate() {
+            let tile = parse_source_bto_filename(path).unwrap();
+            let quad = source_quad(&tile);
+            let source_bytes = std::fs::read(path).unwrap();
+            let nif = NifFile::from_bytes_lean(&source_bytes, Some(path.clone())).unwrap();
+            let mut sink = TextureSink::new(&data, temp.path(), &tile.world, &copied);
+            let mut shapes = Vec::new();
+            for block in &nif.blocks {
+                if block.type_name == "BSSubIndexTriShape" {
+                    shapes.extend(extract_baked_shapes(
+                        &nif,
+                        block,
+                        &quad,
+                        &tile,
+                        SourceBtoMode::Raw,
+                        &atlas,
+                        &mut sink,
+                    ));
+                }
+            }
+            assert!(!shapes.is_empty(), "{}", path.display());
+
+            for (layout_name, layout) in [
+                ("per-shape", crate::settings::Fo76BtoNodeLayout::Fo4PerShape),
+                ("grouped", crate::settings::Fo76BtoNodeLayout::Fo76Grouped),
+            ] {
+                settings.objects.fo76_bto_node_layout = layout;
+                let tile_started = Instant::now();
+                let shape_started = Instant::now();
+                let mut output_quad = quad.clone();
+                let (bto_shapes, _) = crate::objects::object_lod::build_source_bto_with_telemetry(
+                    &mut output_quad,
+                    shapes.clone(),
+                    &settings.objects,
+                );
+                let shape_build_secs = shape_started.elapsed().as_secs_f64();
+                let vertices = bto_shapes
+                    .iter()
+                    .map(|shape| shape.geometry.vertices.len())
+                    .sum::<usize>();
+                let triangles = bto_shapes
+                    .iter()
+                    .map(|shape| shape.geometry.triangles.len())
+                    .sum::<usize>();
+                let output = temp
+                    .path()
+                    .join(format!("{index:02}-{layout_name}-{encoding}.bto"));
+                std::fs::write(&output, vec![0xCD; 32_768]).unwrap();
+                let write = crate::output::bto::write_bto_with_layout_and_named_vertices_for_test(
+                    &output,
+                    &bto_shapes,
+                    layout,
+                    named_vertices,
+                )
+                .unwrap();
+                let bytes = std::fs::read(&output).unwrap();
+                assert_eq!(write.write.bytes, bytes.len() as u64);
+                NifFile::from_bytes(&bytes, None).unwrap();
+                let expected = baseline.join(format!("{index:02}-{layout_name}.bto"));
+                if recording {
+                    use std::io::Write as _;
+                    std::fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(expected)
+                        .unwrap()
+                        .write_all(&bytes)
+                        .unwrap();
+                } else {
+                    assert_eq!(std::fs::read(expected).unwrap(), bytes);
+                }
+                reports.push(serde_json::json!({
+                    "source": path,
+                    "layout": layout_name,
+                    "encoding": encoding,
+                    "bytes": bytes.len(),
+                    "input_shapes": shapes.len(),
+                    "output_shapes": bto_shapes.len(),
+                    "vertices": vertices,
+                    "triangles": triangles,
+                    "shape_build_secs": shape_build_secs,
+                    "nif_build_secs": write.write.nif_build_secs,
+                    "serialize_secs": write.write.serialize_secs,
+                    "file_write_secs": write.write.file_write_secs,
+                    "drop_secs": write.drop_secs,
+                    "write_total_secs": write.total_secs,
+                    "tile_total_secs": tile_started.elapsed().as_secs_f64(),
+                }));
+            }
+        }
+
+        let report = serde_json::json!({"encoding": encoding, "cases": reports});
+        eprintln!("{report}");
+        if let Some(path) = std::env::var_os("BTO_VERTEX_REPORT") {
+            use std::io::Write as _;
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(path)
+                .unwrap()
+                .write_all(&serde_json::to_vec_pretty(&report).unwrap())
+                .unwrap();
+        }
+    }
+
+    #[test]
     fn source_bto_enumerator_counts_only_matching_world_tiles() {
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -4021,6 +4519,31 @@ mod tests {
     }
 
     #[test]
+    fn source_shader_crc_detects_two_sided() {
+        let mut shader = NifBlock::new(0, "BSLightingShaderProperty");
+        shader.set_field(
+            "Shader Property Data",
+            NifValue::Struct(
+                [
+                    (
+                        "SF1".to_string(),
+                        NifValue::Array(vec![
+                            NifValue::UInt(1_740_048_692),
+                            NifValue::UInt(FO76_SHADER_CRC_TWO_SIDED),
+                        ]),
+                    ),
+                    ("SF2".to_string(), NifValue::Array(Vec::new())),
+                ]
+                .into_iter()
+                .collect(),
+            ),
+        );
+
+        assert!(shader_has_crc(&shader, FO76_SHADER_CRC_TWO_SIDED));
+        assert!(!shader_has_crc(&shader, 1_563_274_220));
+    }
+
+    #[test]
     fn make_baked_shape_keeps_not_alpha_tested_names_opaque_without_alpha_property() {
         let mut geometry = LodGeometry::new();
         geometry.vertices = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
@@ -4044,6 +4567,7 @@ mod tests {
             Default::default(),
             None,
             3,
+            false,
             None,
             [0.0, 0.0, 0.0],
             16.0,
@@ -4076,12 +4600,15 @@ mod tests {
             Default::default(),
             Some((4844, 128)),
             3,
+            true,
             None,
             [0.0, 0.0, 0.0],
             16.0,
         );
 
         assert!(shape.flags.contains(ShapeFlags::IS_ALPHA));
+        assert!(shape.flags.contains(ShapeFlags::IS_DOUBLE_SIDED));
+        assert!(shape.flags.contains(ShapeFlags::CASTS_SHADOWS));
     }
 
     #[test]
@@ -4112,6 +4639,7 @@ mod tests {
             Default::default(),
             None,
             3,
+            false,
             Some(6),
             [-40960.0, -4096.0, 0.0],
             4.0,
@@ -4124,6 +4652,44 @@ mod tests {
         );
 
         assert_eq!(segments[0].id, 6);
+    }
+
+    #[test]
+    fn make_baked_shape_rebases_source_transform_to_quad_transform() {
+        let mut geometry = LodGeometry::new();
+        geometry.vertices = vec![[10.0, 20.0, 30.0], [11.0, 20.0, 30.0], [10.0, 21.0, 30.0]];
+        geometry.uvcoords = vec![[0.0, 0.0]; 3];
+        geometry.triangles = vec![[0, 1, 2]];
+
+        let tile = SourceBtoTile {
+            world: "APPALACHIA".to_string(),
+            level: 4,
+            x: 2,
+            y: -1,
+            path: PathBuf::from("Appalachia.4.2.-1.bto"),
+        };
+        let quad = source_quad(&tile);
+
+        let shape = make_baked_shape(
+            "RemeshedShape_Test".to_string(),
+            &tile,
+            &quad,
+            geometry,
+            Default::default(),
+            None,
+            3,
+            false,
+            Some(0),
+            [10_000.0, -3_000.0, 400.0],
+            1.0,
+        );
+
+        assert_eq!(shape.bto_translation, Some([8192.0, -4096.0, 0.0]));
+        assert_eq!(shape.bto_scale, Some(4.0));
+        let vertex = shape.geometry.vertices[0];
+        assert!((vertex[0] - 454.5).abs() < 0.001);
+        assert!((vertex[1] - 279.0).abs() < 0.001);
+        assert!((vertex[2] - 107.5).abs() < 0.001);
     }
 
     #[test]
@@ -4584,6 +5150,7 @@ mod tests {
             Default::default(),
             Some((4844, 128)),
             3,
+            false,
             None,
             [8192.0, 12288.0, 0.0],
             32.0,
@@ -4607,13 +5174,15 @@ mod tests {
             [2.0, 2.0, 0.0],
         ];
         geom.uvcoords = vec![[0.0, 0.0]; 6];
+        geom.normals = vec![[0.0, 0.0, 1.0]; 6];
+        geom.tangents = vec![[1.0, 0.0, 0.0]; 6];
         geom.bitangents = vec![
-            [2.0, 0.0, 0.0],
-            [2.0, 0.0, 0.0],
-            [2.0, 0.0, 0.0],
-            [9.0, 0.0, 0.0],
-            [9.0, 0.0, 0.0],
-            [9.0, 0.0, 0.0],
+            [2.0, 1.0, 0.0],
+            [2.0, 1.0, 0.0],
+            [2.0, 1.0, 0.0],
+            [9.0, -1.0, 0.0],
+            [9.0, -1.0, 0.0],
+            [9.0, -1.0, 0.0],
         ];
         geom.triangles = vec![[0, 1, 2], [3, 4, 5]];
 
@@ -4621,6 +5190,9 @@ mod tests {
         assert_eq!(split.len(), 2);
         assert_eq!(split.get(&2).unwrap().num_triangles(), 1);
         assert_eq!(split.get(&9).unwrap().num_triangles(), 1);
+        assert_eq!(split.get(&2).unwrap().tangents, vec![[1.0, 0.0, 0.0]; 3]);
+        assert_eq!(split.get(&2).unwrap().bitangents, vec![[0.0, 1.0, 0.0]; 3]);
+        assert_eq!(split.get(&9).unwrap().bitangents, vec![[0.0, -1.0, 0.0]; 3]);
     }
 
     #[test]
@@ -4650,6 +5222,7 @@ mod tests {
             textures,
             None,
             3,
+            false,
             None,
             [-188416.0, -118784.0, 0.0],
             16.0,
@@ -4748,6 +5321,93 @@ mod tests {
         );
         assert_eq!(written, 1);
         assert!(output.join(rel.replace('\\', "/")).is_file());
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rewrite_texture_path_reuses_preconverted_fo4_texture_bundle() {
+        let unique = format!(
+            "lodgen_fo76_bto_preconverted_texture_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(unique);
+        let source = root.join("source");
+        let output = root.join("output");
+        let rel_dir = Path::new("textures/lod/generated/texturearrays/notalphatested");
+        std::fs::create_dir_all(source.join(rel_dir)).unwrap();
+        std::fs::create_dir_all(output.join(rel_dir)).unwrap();
+        for suffix in ["d", "n", "r"] {
+            std::fs::write(
+                source
+                    .join(rel_dir)
+                    .join(format!("notalphatested_106_{suffix}.dds")),
+                b"source",
+            )
+            .unwrap();
+        }
+        for suffix in ["d", "n", "s"] {
+            std::fs::write(
+                output
+                    .join(rel_dir)
+                    .join(format!("notalphatested_106_{suffix}.dds")),
+                b"converted",
+            )
+            .unwrap();
+        }
+
+        let copied = Mutex::new(HashSet::new());
+        let mut written = 0;
+        let diffuse = rewrite_texture_path(
+            &source,
+            &output,
+            "APPALACHIA",
+            r"textures\lod\generated\texturearrays\notalphatested\notalphatested_106_d.dds",
+            false,
+            &copied,
+            &mut written,
+        );
+        let normal = rewrite_texture_path(
+            &source,
+            &output,
+            "APPALACHIA",
+            r"textures\lod\generated\texturearrays\notalphatested\notalphatested_106_n.dds",
+            false,
+            &copied,
+            &mut written,
+        );
+        let specular = rewrite_texture_path(
+            &source,
+            &output,
+            "APPALACHIA",
+            r"textures\lod\generated\texturearrays\notalphatested\notalphatested_106_r.dds",
+            true,
+            &copied,
+            &mut written,
+        );
+
+        assert_eq!(
+            diffuse,
+            r"textures\lod\generated\texturearrays\notalphatested\notalphatested_106_d.dds"
+        );
+        assert_eq!(
+            normal,
+            r"textures\lod\generated\texturearrays\notalphatested\notalphatested_106_n.dds"
+        );
+        assert_eq!(
+            specular,
+            r"textures\lod\generated\texturearrays\notalphatested\notalphatested_106_s.dds"
+        );
+        assert_eq!(written, 0);
+        assert!(
+            !output
+                .join("textures/terrain/appalachia/objects/hybrid/notalphatested")
+                .exists()
+        );
 
         std::fs::remove_dir_all(root).unwrap();
     }

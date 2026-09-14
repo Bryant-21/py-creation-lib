@@ -1,9 +1,9 @@
 """Auto-generated detector schema for fo4.
 
 # @schema_forge:generated
-# regen_at: 2026-07-10T05:07:02Z
-# esm_corpus: SeventySix.esm @ sha256:c718422996d5c12c...
-# source_hash: 47a487bc8313e87992cb6f73e81476cf3e778b06c96c630f99000b7e63373176
+# regen_at: 2026-09-07T23:55:31Z
+# esm_corpus: SeventySix.esm @ sha256:ca9f8b1ff866c2e3...
+# source_hash: 4529f78e6330e9589f9415a44472933a64f4b12f7ee19b150347f6fce5e8b467
 """
 from __future__ import annotations
 
@@ -1702,6 +1702,12 @@ def build_schema() -> GameSchema:
         labels=((1, 'ORed With Previous'), (2, 'No Stats Tracking')),
         storage_kind='flags',
     )
+    enums['QUST.FNAM.flags@aliases'] = EnumDef(
+        name='QUST.FNAM.flags@aliases',
+        values=((1, 'reserves_location_reference'), (2, 'optional'), (4, 'quest_object'), (8, 'allow_reuse_in_quest'), (16, 'allow_dead'), (32, 'matching_ref_in_loaded_area'), (64, 'essential'), (128, 'allow_disabled'), (256, 'stores_text'), (512, 'allow_reserved'), (1024, 'protected'), (2048, 'forced_by_aliases'), (4096, 'allow_destroyed'), (8192, 'matching_ref_closest'), (16384, 'uses_stored_text'), (32768, 'initially_disabled'), (65536, 'allow_cleared'), (131072, 'clear_names_when_removed'), (262144, 'matching_ref_actors_only'), (524288, 'create_ref_temp'), (1048576, 'external_alias_linked'), (2097152, 'no_pickpocket'), (4194304, 'can_apply_data_to_non_aliased_refs'), (8388608, 'is_companion'), (16777216, 'optional_all_scenes')),
+        labels=((1, 'Reserves Location/Reference'), (2, 'Optional'), (4, 'Quest Object'), (8, 'Allow Reuse in Quest'), (16, 'Allow Dead'), (32, 'Matching Ref - In Loaded Area'), (64, 'Essential'), (128, 'Allow Disabled'), (256, 'Stores Text'), (512, 'Allow Reserved'), (1024, 'Protected'), (2048, 'Forced by Aliases'), (4096, 'Allow Destroyed'), (8192, 'Matching Ref - Closest'), (16384, 'Uses Stored Text'), (32768, 'Initially Disabled'), (65536, 'Allow Cleared'), (131072, 'Clear Names When Removed'), (262144, 'Matching Ref - Actors Only'), (524288, 'Create Ref - Temp'), (1048576, 'External Alias - Linked'), (2097152, 'No Pickpocket'), (4194304, 'Can Apply Data To Non-Aliased Refs'), (8388608, 'Is Companion'), (16777216, 'Optional All Scenes')),
+        storage_kind='flags',
+    )
     enums['QUST.INDX.flags'] = EnumDef(
         name='QUST.INDX.flags',
         values=((1, 'unknown_1'), (2, 'run_on_start'), (4, 'run_on_stop'), (8, 'keep_instance_data_from_here_on')),
@@ -1934,6 +1940,19 @@ def build_schema() -> GameSchema:
         values=((1, 'begin_on_quest_start'), (2, 'stop_on_quest_end'), (4, 'show_all_text'), (8, 'repeat_conditions_while_true'), (16, 'interruptible'), (32, 'has_player_dialogue'), (64, 'prevent_player_exit_dialogue'), (128, 'unknown_7'), (256, 'unknown_8'), (512, 'pause_actors_current_scenes'), (1024, 'unknown_10'), (2048, 'disable_dialogue_camera'), (4096, 'no_follower_idle_chatter')),
         labels=((1, 'Begin on Quest Start'), (2, 'Stop on Quest End'), (4, 'Show All Text'), (8, 'Repeat Conditions While True'), (16, 'Interruptible'), (32, 'Has Player Dialogue'), (64, 'Prevent Player Exit Dialogue'), (128, 'Unknown 7'), (256, 'Unknown 8'), (512, 'Pause Actors Current Scenes'), (1024, 'Unknown 10'), (2048, 'Disable Dialogue Camera'), (4096, 'No Follower Idle Chatter')),
         storage_kind='flags',
+    )
+    enums['SCEN.FNAM.flags@actions'] = EnumDef(
+        name='SCEN.FNAM.flags@actions',
+        values=((1, 'unknown_0'), (2, 'unknown_1'), (4, 'unknown_2'), (8, 'unknown_3'), (16, 'unknown_4'), (32, 'unknown_5'), (64, 'unknown_6'), (128, 'player_positive_use_dialogue_subtype_hold_into_next_scene'), (256, 'player_negative_use_dialogue_subtype'), (512, 'player_neutral_use_dialogue_subtype'), (1024, 'use_dialogue_subtype'), (2048, 'player_question_use_dialogue_subtype'), (4096, 'keep_clear_target_on_action_end'), (8192, 'unknown_13'), (16384, 'run_on_end_of_phase'), (32768, 'face_target'), (65536, 'looping'), (131072, 'headtrack_player'), (262144, 'unknown_18'), (524288, 'ignore_for_completion'), (1048576, 'unknown_20'), (2097152, 'camera_speaker_target'), (4194304, 'complete_face_target'), (8388608, 'unknown_23'), (16777216, 'unknown_24'), (33554432, 'unknown_25'), (67108864, 'unknown_26'), (134217728, 'npc_positive_use_dialogue_subtype'), (268435456, 'npc_negative_use_dialogue_subtype'), (536870912, 'npc_neutral_use_dialogue_subtype'), (1073741824, 'npc_question_use_dialogue_subtype')),
+        labels=((1, 'Unknown 0'), (2, 'Unknown 1'), (4, 'Unknown 2'), (8, 'Unknown 3'), (16, 'Unknown 4'), (32, 'Unknown 5'), (64, 'Unknown 6'), (128, 'Player Positive Use Dialogue Subtype / Hold Into Next Scene'), (256, 'Player Negative Use Dialogue Subtype'), (512, 'Player Neutral Use Dialogue Subtype'), (1024, 'Use Dialogue Subtype'), (2048, 'Player Question Use Dialogue Subtype'), (4096, 'Keep/Clear Target on Action End'), (8192, 'Unknown 13'), (16384, 'Run on End of Phase'), (32768, 'Face Target'), (65536, 'Looping'), (131072, 'Headtrack Player'), (262144, 'Unknown 18'), (524288, 'Ignore For Completion'), (1048576, 'Unknown 20'), (2097152, 'Camera Speaker Target'), (4194304, 'Complete Face Target'), (8388608, 'Unknown 23'), (16777216, 'Unknown 24'), (33554432, 'Unknown 25'), (67108864, 'Unknown 26'), (134217728, 'NPC Positive Use Dialogue Subtype'), (268435456, 'NPC Negative Use Dialogue Subtype'), (536870912, 'NPC Neutral Use Dialogue Subtype'), (1073741824, 'NPC Question Use Dialogue Subtype')),
+        storage_kind='flags',
+    )
+    enums['SCEN.FNAM.flags@phases'] = EnumDef(
+        name='SCEN.FNAM.flags@phases',
+        values=((1, 'start_walkaway_phase'), (2, 'don_t_run_end_scripts_on_scene_jump'), (4, 'start_inherit_in_templated_scenes')),
+        labels=((1, 'Start - WalkAway Phase'), (2, 'Don\'t Run End Scripts on Scene Jump'), (4, 'Start - Inherit In Templated Scenes')),
+        storage_kind='flags',
+        byte_width=2,
     )
     enums['SCEN.LNAM.flags'] = EnumDef(
         name='SCEN.LNAM.flags',
@@ -2430,8 +2449,8 @@ def build_schema() -> GameSchema:
     )
     enums['equip_type'] = EnumDef(
         name='equip_type',
-        values=((1, 'hand_to_hand_melee'), (2, 'one_hand_sword'), (4, 'one_hand_dagger'), (8, 'one_hand_axe'), (16, 'one_hand_mace'), (32, 'two_hand_sword'), (64, 'two_hand_axe'), (128, 'bow'), (256, 'staff'), (512, 'gun'), (1024, 'grenade'), (2048, 'mine'), (4096, 'spell'), (8192, 'shield'), (16384, 'torch')),
-        labels=((1, 'Hand To Hand Melee'), (2, 'One Hand Sword'), (4, 'One Hand Dagger'), (8, 'One Hand Axe'), (16, 'One Hand Mace'), (32, 'Two Hand Sword'), (64, 'Two Hand Axe'), (128, 'Bow'), (256, 'Staff'), (512, 'Gun'), (1024, 'Grenade'), (2048, 'Mine'), (4096, 'Spell'), (8192, 'Shield'), (16384, 'Torch')),
+        values=((1, 'hand_to_hand_melee'), (2, 'one_hand_sword'), (4, 'one_hand_dagger'), (8, 'one_hand_axe'), (16, 'one_hand_mace'), (32, 'two_hand_sword'), (64, 'two_hand_axe'), (128, 'bow'), (256, 'staff'), (512, 'gun'), (1024, 'grenade'), (2048, 'mine'), (4096, 'spell'), (8192, 'shield'), (16384, 'torch'), (32768, 'unknown_15'), (65536, 'unknown_16'), (131072, 'unknown_17'), (262144, 'unknown_18'), (524288, 'unknown_19'), (1048576, 'unknown_20'), (2097152, 'unknown_21'), (4194304, 'unknown_22'), (8388608, 'unknown_23'), (16777216, 'unknown_24'), (33554432, 'unknown_25'), (67108864, 'unknown_26'), (134217728, 'unknown_27'), (268435456, 'unknown_28'), (536870912, 'unknown_29'), (1073741824, 'unknown_30'), (2147483648, 'unknown_31')),
+        labels=((1, 'Hand To Hand Melee'), (2, 'One Hand Sword'), (4, 'One Hand Dagger'), (8, 'One Hand Axe'), (16, 'One Hand Mace'), (32, 'Two Hand Sword'), (64, 'Two Hand Axe'), (128, 'Bow'), (256, 'Staff'), (512, 'Gun'), (1024, 'Grenade'), (2048, 'Mine'), (4096, 'Spell'), (8192, 'Shield'), (16384, 'Torch'), (32768, 'Unknown 15'), (65536, 'Unknown 16'), (131072, 'Unknown 17'), (262144, 'Unknown 18'), (524288, 'Unknown 19'), (1048576, 'Unknown 20'), (2097152, 'Unknown 21'), (4194304, 'Unknown 22'), (8388608, 'Unknown 23'), (16777216, 'Unknown 24'), (33554432, 'Unknown 25'), (67108864, 'Unknown 26'), (134217728, 'Unknown 27'), (268435456, 'Unknown 28'), (536870912, 'Unknown 29'), (1073741824, 'Unknown 30'), (2147483648, 'Unknown 31')),
         storage_kind='flags',
     )
     enums['event_member_enum'] = EnumDef(
@@ -2519,8 +2538,8 @@ def build_schema() -> GameSchema:
     )
     enums['package_flags'] = EnumDef(
         name='package_flags',
-        values=((1, 'offers_services'), (4, 'must_complete'), (64, 'unlock_doors_at_package_start'), (128, 'unlock_doors_at_package_end'), (512, 'continue_if_pc_near'), (1024, 'once_per_day'), (131072, 'always_sneak'), (262144, 'allow_swimming'), (2097152, 'weapons_unequipped')),
-        labels=((1, 'Offers Services'), (4, 'Must Complete'), (64, 'Unlock Doors At Package Start'), (128, 'Unlock Doors At Package End'), (512, 'Continue If PC Near'), (1024, 'Once Per Day'), (131072, 'Always Sneak'), (262144, 'Allow Swimming'), (2097152, 'Weapons Unequipped')),
+        values=((1, 'offers_services'), (4, 'must_complete'), (8, 'maintain_speed_at_goal'), (16, 'treat_as_player_follower'), (64, 'unlock_doors_at_package_start'), (128, 'unlock_doors_at_package_end'), (256, 'request_block_idles'), (512, 'continue_if_pc_near'), (1024, 'once_per_day'), (4096, 'skip_load_into_furniture'), (8192, 'preferred_speed'), (131072, 'always_sneak'), (262144, 'allow_swimming'), (1048576, 'ignore_combat'), (2097152, 'weapons_unequipped'), (8388608, 'weapon_drawn'), (134217728, 'no_combat_alert')),
+        labels=((1, 'Offers Services'), (4, 'Must Complete'), (8, 'Maintain Speed At Goal'), (16, 'Treat As Player Follower'), (64, 'Unlock Doors At Package Start'), (128, 'Unlock Doors At Package End'), (256, 'Request Block Idles'), (512, 'Continue If PC Near'), (1024, 'Once Per Day'), (4096, 'Skip Load Into Furniture'), (8192, 'Preferred Speed'), (131072, 'Always Sneak'), (262144, 'Allow Swimming'), (1048576, 'Ignore Combat'), (2097152, 'Weapons Unequipped'), (8388608, 'Weapon Drawn'), (134217728, 'No Combat Alert')),
         storage_kind='flags',
     )
     enums['package_schedule_day_of_month_enum'] = EnumDef(
@@ -37008,19 +37027,13 @@ def build_schema() -> GameSchema:
                 sig='WBDT',
                 kind=FieldKind.PARSED_WITH_RAW_FALLBACK,
                 display_label='Workbench Data',
-                codec='struct:B,B',
+                codec='struct:B',
                 fields=(
                     FieldSpec(
                         name='bench_type',
                         kind='uint8',
                         enum_ref='FURN.WBDT.bench_type',
                         authoring_label='Bench Type',
-                    ),
-                    FieldSpec(
-                        name='unknown_u8_1',
-                        kind='uint8',
-                        authoring_label='Unknown Byte 2',
-                        notes='wbUnused(1)',
                     ),
                 ),
             ),
@@ -72844,7 +72857,7 @@ def build_schema() -> GameSchema:
                         name='unknown_u8_4',
                         kind='uint8',
                         authoring_label='Unknown Byte 5',
-                        default_value=66,
+                        default_value=0,
                         notes='wbUnused(1)',
                     ),
                 ),
@@ -107129,13 +107142,13 @@ def build_schema() -> GameSchema:
                     FieldSpec(
                         name='flags',
                         kind='uint32',
-                        enum_ref='QUST.FNAM.flags',
+                        enum_ref='QUST.FNAM.flags@aliases',
                         authoring_label='Flags',
                     ),
                 ),
                 repeatable=True,
                 required=True,
-                enum_ref='QUST.FNAM.flags',
+                enum_ref='QUST.FNAM.flags@aliases',
                 scope_id='aliases',
             ),
             SubrecordSpec(
@@ -108699,13 +108712,13 @@ def build_schema() -> GameSchema:
                     FieldSpec(
                         name='flags',
                         kind='uint32',
-                        enum_ref='QUST.FNAM.flags',
+                        enum_ref='QUST.FNAM.flags@aliases',
                         authoring_label='Flags',
                     ),
                 ),
                 repeatable=True,
                 required=True,
-                enum_ref='QUST.FNAM.flags',
+                enum_ref='QUST.FNAM.flags@aliases',
                 scope_id='aliases',
             ),
             SubrecordSpec(
@@ -117767,6 +117780,42 @@ def build_schema() -> GameSchema:
                 ),
             ),
             SubrecordSpec(
+                sig='INDX',
+                kind=FieldKind.PARSED,
+                display_label='Head Part Number',
+                codec='uint32',
+                fields=(
+                    FieldSpec(
+                        name='head_part_number',
+                        kind='uint32',
+                        authoring_label='Head Part Number',
+                    ),
+                ),
+                repeatable=True,
+                scope_id='male_head_parts',
+            ),
+            SubrecordSpec(
+                sig='HEAD',
+                kind=FieldKind.PARSED,
+                display_label='Head',
+                codec='formid',
+                fields=(
+                    FieldSpec(
+                        name='head',
+                        kind='formid',
+                        formlink_target='HDPT',
+                        formlink_targets=('HDPT',),
+                        null_allowed=True,
+                        authoring_label='Head',
+                    ),
+                ),
+                repeatable=True,
+                formlink_target='HDPT',
+                formlink_targets=('HDPT',),
+                null_allowed=True,
+                scope_id='male_head_parts',
+            ),
+            SubrecordSpec(
                 sig='RPRM',
                 kind=FieldKind.PARSED,
                 display_label='Preset NPC',
@@ -119025,6 +119074,33 @@ def build_schema() -> GameSchema:
                 scope_id='male_morph_groups',
             ),
             SubrecordSpec(
+                sig='FMRI',
+                kind=FieldKind.PARSED,
+                display_label='Index',
+                codec='uint32',
+                fields=(
+                    FieldSpec(
+                        name='index',
+                        kind='uint32',
+                        authoring_label='Index',
+                    ),
+                ),
+                repeatable=True,
+                scope_id='male_face_morphs',
+            ),
+            SubrecordSpec(
+                sig='FMRN',
+                kind=FieldKind.PARSED,
+                display_label='Name',
+                codec='lstring',
+                fields=(
+                    FieldSpec(name='lstring_0', kind='lstring'),
+                ),
+                repeatable=True,
+                localized=True,
+                scope_id='male_face_morphs',
+            ),
+            SubrecordSpec(
                 sig='WMAP',
                 kind=FieldKind.PARSED,
                 display_label='Male Wrinkle Map Path',
@@ -119110,6 +119186,42 @@ def build_schema() -> GameSchema:
                         authoring_label='Y',
                     ),
                 ),
+            ),
+            SubrecordSpec(
+                sig='INDX',
+                kind=FieldKind.PARSED,
+                display_label='Head Part Number',
+                codec='uint32',
+                fields=(
+                    FieldSpec(
+                        name='head_part_number',
+                        kind='uint32',
+                        authoring_label='Head Part Number',
+                    ),
+                ),
+                repeatable=True,
+                scope_id='female_head_parts',
+            ),
+            SubrecordSpec(
+                sig='HEAD',
+                kind=FieldKind.PARSED,
+                display_label='Head',
+                codec='formid',
+                fields=(
+                    FieldSpec(
+                        name='head',
+                        kind='formid',
+                        formlink_target='HDPT',
+                        formlink_targets=('HDPT',),
+                        null_allowed=True,
+                        authoring_label='Head',
+                    ),
+                ),
+                repeatable=True,
+                formlink_target='HDPT',
+                formlink_targets=('HDPT',),
+                null_allowed=True,
+                scope_id='female_head_parts',
             ),
             SubrecordSpec(
                 sig='RPRF',
@@ -120370,6 +120482,33 @@ def build_schema() -> GameSchema:
                 scope_id='female_morph_groups',
             ),
             SubrecordSpec(
+                sig='FMRI',
+                kind=FieldKind.PARSED,
+                display_label='Index',
+                codec='uint32',
+                fields=(
+                    FieldSpec(
+                        name='index',
+                        kind='uint32',
+                        authoring_label='Index',
+                    ),
+                ),
+                repeatable=True,
+                scope_id='female_face_morphs',
+            ),
+            SubrecordSpec(
+                sig='FMRN',
+                kind=FieldKind.PARSED,
+                display_label='Name',
+                codec='lstring',
+                fields=(
+                    FieldSpec(name='lstring_0', kind='lstring'),
+                ),
+                repeatable=True,
+                localized=True,
+                scope_id='female_face_morphs',
+            ),
+            SubrecordSpec(
                 sig='WMAP',
                 kind=FieldKind.PARSED,
                 display_label='Female Wrinkle Map Path',
@@ -120815,20 +120954,6 @@ def build_schema() -> GameSchema:
                 scope_id='bone_scale_data',
             ),
             SubrecordSpec(
-                sig='HEAD',
-                kind=FieldKind.PARSED,
-                display_label='Head',
-                codec='formid',
-                fields=(
-                    FieldSpec(
-                        name='head',
-                        kind='formid',
-                        authoring_label='Head',
-                    ),
-                ),
-                repeatable=True,
-            ),
-            SubrecordSpec(
                 sig='ICON',
                 kind=FieldKind.PARSED,
                 display_label='Icon FileName',
@@ -120842,35 +120967,6 @@ def build_schema() -> GameSchema:
                 ),
                 repeatable=True,
                 required=True,
-            ),
-            SubrecordSpec(
-                sig='FMRI',
-                kind=FieldKind.PARSED,
-                display_label='Index',
-                codec='uint32',
-                fields=(
-                    FieldSpec(
-                        name='index',
-                        kind='uint32',
-                        authoring_label='Index',
-                    ),
-                ),
-                repeatable=True,
-            ),
-            SubrecordSpec(
-                sig='FMRN',
-                kind=FieldKind.PARSED,
-                display_label='Name',
-                codec='lstring',
-                fields=(
-                    FieldSpec(
-                        name='name',
-                        kind='lstring',
-                        authoring_label='Name',
-                    ),
-                ),
-                repeatable=True,
-                localized=True,
             ),
         ),
         display_label='Race',
@@ -129009,13 +129105,13 @@ def build_schema() -> GameSchema:
                     FieldSpec(
                         name='flags',
                         kind='uint16',
-                        enum_ref='SCEN.FNAM.flags',
+                        enum_ref='SCEN.FNAM.flags@phases',
                         authoring_label='Flags',
                     ),
                 ),
                 repeatable=True,
                 required=True,
-                enum_ref='SCEN.FNAM.flags',
+                enum_ref='SCEN.FNAM.flags@phases',
                 scope_id='phases',
             ),
             SubrecordSpec(
@@ -129183,13 +129279,13 @@ def build_schema() -> GameSchema:
                     FieldSpec(
                         name='flags',
                         kind='uint32',
-                        enum_ref='SCEN.FNAM.flags',
+                        enum_ref='SCEN.FNAM.flags@actions',
                         authoring_label='Flags',
                     ),
                 ),
                 repeatable=True,
                 required=True,
-                enum_ref='SCEN.FNAM.flags',
+                enum_ref='SCEN.FNAM.flags@actions',
                 scope_id='actions',
             ),
             SubrecordSpec(
@@ -136851,8 +136947,6 @@ def build_schema() -> GameSchema:
                 repeatable=True,
                 scope_id='rates_of_fire',
             ),
-            SubrecordSpec(sig='MaxH', kind=FieldKind.RAW),
-            SubrecordSpec(sig='andD', kind=FieldKind.RAW),
         ),
         display_label='Sound Descriptor',
         record_flags=RecordFlagsSpec(valid_mask=4128),

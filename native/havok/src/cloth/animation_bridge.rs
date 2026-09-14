@@ -1,19 +1,9 @@
-// Animation bridge.
-//
-// Glue layer between an `hkaSkeleton`-shaped pose and an `hclTransformSet`.
-// Mirrors the SDK pattern from
-// `Cloth/AnimationBridge/Setup/TransformSet/hclSkeletonTransformSetSetupObject.h`
-// + `Cloth/Cloth/TransformSet/hclTransformSet.h`:
-//
-// 1. `SkeletonTransformSetSetup` declares the bind-time mapping between an
-//    authoring skeleton and a transform set definition (which bones, in what
-//    order, named by what string).
-// 2. `AnimationBridge::fill_transform_set` is the per-frame call: given a
-//    `SkeletonPose` (per-bone local transforms) + the skeleton's parent
-//    indices, it computes model-space matrices and writes them into a
-//    `TransformSetBuffer` (matching SDK `hclTransformSet::m_transforms`).
-// 3. `update_inverse_transposes_orthonormal` matches SDK
-//    `hclTransformSet::updateInverseTransposesOrthonormal()` for normals/planes.
+// Glue between an `hkaSkeleton` pose and an `hclTransformSet`, following SDK
+// `hclSkeletonTransformSetSetupObject.h` and `hclTransformSet.h`.
+// `SkeletonTransformSetSetup` is the bind-time bone mapping;
+// `AnimationBridge::fill_transform_set` writes per-frame model-space matrices
+// (SDK `hclTransformSet::m_transforms`); `update_inverse_transposes_orthonormal`
+// matches `hclTransformSet::updateInverseTransposesOrthonormal()`.
 
 use crate::cloth::setup::buffer_setup::TransformSetSetupObject;
 

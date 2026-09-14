@@ -2,7 +2,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use havok_native::hkx::descriptors::{ClassKind, DescriptorRegistry};
+use havok_native::hkx::descriptors::{ClassKind, DescriptorRegistry, StructureLayout};
 use havok_native::hkx::types::{HkxType, HkxTypeFamily, HkxValue, deserialize_member_value};
 
 fn member<'a>(
@@ -85,6 +85,44 @@ fn resolves_inherited_members_in_offset_order() {
             .position(|name| *name == "memSizeAndRefCount")
             .unwrap()
             < names.iter().position(|name| *name == "name").unwrap()
+    );
+}
+
+#[test]
+fn generic_layout_reuses_base_class_tail_padding() {
+    let mut registry = DescriptorRegistry::new();
+    registry.set_structure_layout(StructureLayout::Generic);
+
+    let animation = registry
+        .get_all_members("hkaSplineCompressedAnimation")
+        .expect("generic animation layout");
+    assert_eq!(
+        animation
+            .iter()
+            .find(|member| member.name == "type")
+            .unwrap()
+            .offset,
+        12
+    );
+    assert_eq!(
+        animation
+            .iter()
+            .find(|member| member.name == "extractedMotion")
+            .unwrap()
+            .offset,
+        32
+    );
+
+    let reference_frame = registry
+        .get_all_members("hkaDefaultAnimatedReferenceFrame")
+        .expect("generic reference-frame layout");
+    assert_eq!(
+        reference_frame
+            .iter()
+            .find(|member| member.name == "up")
+            .unwrap()
+            .offset,
+        16
     );
 }
 

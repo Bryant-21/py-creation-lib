@@ -89,23 +89,11 @@ def paint_weight(
     vertex_mask: np.ndarray | None = None,
     selection_mask: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Apply paint brush to vertices within radius.
+    """Paint ``bone_idx`` onto vertices within the brush; return new (weights, bone_indices).
 
-    Args:
-        weights: (N, max_bones) float32 weight values (modified in-place).
-        bone_indices: (N, max_bones) int32 bone indices (modified in-place).
-        bone_idx: Index of the bone to paint.
-        vertex_positions: (N, 3) float32 vertex positions.
-        brush_center: (3,) float32 center of the brush in world space.
-        brush_radius: Radius of the brush.
-        brush_strength: Strength of the brush [0, 1].
-        mode: "add", "subtract", or "set".
-        falloff: Falloff curve sharpness (0.01 = sharp, 1.0 = linear).
-        auto_normalize: Whether to normalize weights after painting.
-        vertex_mask: (N,) float32 mask (0.0=editable, 1.0=locked). None = no mask.
-
-    Returns:
-        New (weights, bone_indices) copies with modifications applied.
+    ``mode`` is "add", "subtract", or "set"; ``brush_strength`` is [0, 1].
+    ``falloff`` sets curve sharpness (0.01 = sharp, 1.0 = linear). ``vertex_mask``
+    is (N,) float32, 0.0 = editable, 1.0 = locked.
     """
     weights = np.array(weights, dtype=np.float32, copy=True)
     bone_indices = np.array(bone_indices, dtype=np.int32, copy=True)
@@ -153,22 +141,10 @@ def smooth_weights(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Smooth weights using topological neighbors within brush radius.
 
-    For each vertex in the brush, averages its weights with its mesh-connected
-    neighbors, blending by brush_strength.
-
-    Args:
-        weights: (N, max_bones) float32 (copied, not modified in-place).
-        bone_indices: (N, max_bones) int32 (copied, not modified in-place).
-        adjacency: Vertex adjacency list from build_adjacency().
-        vertex_positions: (N, 3) vertex positions.
-        brush_center: (3,) brush center.
-        brush_radius: Brush radius.
-        brush_strength: Blend factor [0, 1].
-        iterations: Number of smoothing iterations.
-        vertex_mask: (N,) float32 mask (0.0=editable, 1.0=locked). None = no mask.
-
-    Returns:
-        Modified (weights, bone_indices).
+    Each vertex in the brush blends toward the average of its mesh-connected
+    neighbors (``adjacency`` from build_adjacency()) by ``brush_strength``.
+    ``vertex_mask`` is (N,) float32, 0.0 = editable, 1.0 = locked. Inputs are
+    copied; returns the new (weights, bone_indices).
     """
     weights = np.array(weights, dtype=np.float32, copy=True)
     bone_indices = np.array(bone_indices, dtype=np.int32, copy=True)
@@ -245,20 +221,9 @@ def blur_weights(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Blur weights using spatial neighbors (all vertices in radius).
 
-    Unlike smooth_weights, this uses spatial proximity (all vertices within
-    brush radius) rather than topological connectivity.
-
-    Args:
-        weights: (N, max_bones) float32 (copied).
-        bone_indices: (N, max_bones) int32 (copied).
-        vertex_positions: (N, 3) vertex positions.
-        brush_center: (3,) brush center.
-        brush_radius: Brush radius.
-        brush_strength: Blend factor [0, 1].
-        vertex_mask: (N,) float32 mask (0.0=editable, 1.0=locked). None = no mask.
-
-    Returns:
-        Modified (weights, bone_indices).
+    Unlike smooth_weights, neighbors are spatial, not topological: each vertex
+    blends toward the inverse-distance-weighted average of the whole brush by
+    ``brush_strength``. Inputs are copied; returns the new (weights, bone_indices).
     """
     weights = np.array(weights, dtype=np.float32, copy=True)
     bone_indices = np.array(bone_indices, dtype=np.int32, copy=True)
@@ -330,20 +295,9 @@ def gradient_weights(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Apply linear gradient weight between two points.
 
-    Vertices at start_point get weight 1.0, vertices at end_point get weight 0.0,
-    with linear interpolation between. Vertices beyond the endpoints are clamped.
-
-    Args:
-        weights: (N, max_bones) float32 (copied).
-        bone_indices: (N, max_bones) int32 (copied).
-        bone_idx: Bone index to apply gradient to.
-        vertex_positions: (N, 3) vertex positions.
-        start_point: (3,) start of gradient (weight = 1.0).
-        end_point: (3,) end of gradient (weight = 0.0).
-        auto_normalize: Normalize after applying.
-
-    Returns:
-        Modified (weights, bone_indices).
+    Weight is 1.0 at start_point and 0.0 at end_point. Only vertices that project
+    inside the segment and lie within one segment length of the line change.
+    Inputs are copied; returns the new (weights, bone_indices).
     """
     weights = np.array(weights, dtype=np.float32, copy=True)
     bone_indices = np.array(bone_indices, dtype=np.int32, copy=True)
@@ -398,20 +352,10 @@ def mirror_weights(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Mirror weights across an axis, mapping L_ bones to R_ bones.
 
-    Finds mirror-matched vertex pairs (vertices whose position differs only
-    by sign on the mirror axis within tolerance), then copies weights from
-    +axis side to -axis side, remapping bone names with L/R swaps.
-
-    Args:
-        weights: (N, max_bones) float32 (copied).
-        bone_indices: (N, max_bones) int32 (copied).
-        bone_names: List of bone names for index resolution.
-        vertex_positions: (N, 3) vertex positions.
-        axis: Mirror axis (0=X, 1=Y, 2=Z).
-        tolerance: Spatial tolerance for matching mirror vertices.
-
-    Returns:
-        Modified (weights, bone_indices).
+    Vertex pairs match when their positions differ only in sign on ``axis``
+    (0=X, 1=Y, 2=Z) within ``tolerance``. Weights copy from ``source_side``
+    ("positive", "negative", or "both") with L/R bone names swapped. Inputs are
+    copied; returns the new (weights, bone_indices).
     """
     weights = np.array(weights, dtype=np.float32, copy=True)
     bone_indices = np.array(bone_indices, dtype=np.int32, copy=True)
@@ -516,23 +460,10 @@ def flood_fill_weight(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Flood fill weight from a starting vertex through connected region.
 
-    Spreads outward from start_vertex through connected vertices that already
-    have weight for the specified bone above threshold. Sets the weight to
-    weight_value for all reached vertices.
-
-    Args:
-        weights: (N, max_bones) float32 (copied).
-        bone_indices: (N, max_bones) int32 (copied).
-        bone_idx: Bone index to flood fill.
-        weight_value: Weight value to set on reached vertices.
-        start_vertex: Starting vertex index.
-        adjacency: Vertex adjacency list.
-        threshold: Minimum existing weight to allow flood expansion.
-        auto_normalize: Normalize after filling.
-        vertex_mask: (N,) float32 mask (0.0=editable, 1.0=locked). None = no mask.
-
-    Returns:
-        Modified (weights, bone_indices).
+    Spreads from ``start_vertex`` through connected vertices whose weight for
+    ``bone_idx`` exceeds ``threshold``, setting each to ``weight_value``.
+    ``vertex_mask`` is (N,) float32, 0.0 = editable, 1.0 = locked. Inputs are
+    copied; returns the new (weights, bone_indices).
     """
     weights = np.array(weights, dtype=np.float32, copy=True)
     bone_indices = np.array(bone_indices, dtype=np.int32, copy=True)

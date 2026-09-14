@@ -28,19 +28,9 @@ def unproject_ray(screen_x: float, screen_y: float,
                   viewport_width: float, viewport_height: float,
                   view_matrix: glm.mat4, proj_matrix: glm.mat4
                   ) -> tuple[np.ndarray, np.ndarray]:
-    """Convert screen coordinates to a world-space ray (origin, direction).
+    """Convert viewport-local pixels (0, 0 = top-left) to a world-space ray.
 
-    Args:
-        screen_x: Mouse X in viewport-local pixels (0 = left edge).
-        screen_y: Mouse Y in viewport-local pixels (0 = top edge).
-        viewport_width: Viewport width in pixels.
-        viewport_height: Viewport height in pixels.
-        view_matrix: Camera view matrix.
-        proj_matrix: Camera projection matrix.
-
-    Returns:
-        (ray_origin, ray_direction) as (3,) float64 numpy arrays.
-        Direction is normalized.
+    Returns ``(origin, direction)`` as (3,) float64 arrays; direction is normalized.
     """
     # Convert to NDC [-1, 1]
     ndc_x = (screen_x / max(viewport_width, 1)) * 2.0 - 1.0
@@ -70,20 +60,9 @@ def unproject_ray(screen_x: float, screen_y: float,
 def pick_vertex(ray_origin: np.ndarray, ray_direction: np.ndarray,
                 vertices: np.ndarray, radius: float = 0.5
                 ) -> int | None:
-    """Find the closest vertex to the ray within a screen-space radius.
+    """Return the in-front vertex nearest the camera within ``radius`` of the ray, or None.
 
-    Projects each vertex onto the ray and checks if its perpendicular
-    distance is within the given radius. Returns the index of the closest
-    vertex (smallest t along the ray), or None if no vertex is within range.
-
-    Args:
-        ray_origin: Ray origin, shape (3,).
-        ray_direction: Normalized ray direction, shape (3,).
-        vertices: Vertex positions, shape (N, 3).
-        radius: Maximum perpendicular distance from ray to consider a hit.
-
-    Returns:
-        Index of the closest hit vertex, or None.
+    ``radius`` is a world-space perpendicular distance from the ray, not pixels.
     """
     if vertices is None or len(vertices) == 0:
         return None
@@ -116,20 +95,9 @@ def pick_vertex(ray_origin: np.ndarray, ray_direction: np.ndarray,
 def pick_face(ray_origin: np.ndarray, ray_direction: np.ndarray,
               vertices: np.ndarray, triangles: np.ndarray
               ) -> tuple[int, np.ndarray] | None:
-    """Find the closest triangle hit and return (triangle_index, barycentric_coords).
+    """Return ``(triangle_index, [1-u-v, u, v])`` for the closest hit, or None.
 
-    Uses vectorized Moller-Trumbore intersection (same algorithm as
-    ui/editor/selection.py).
-
-    Args:
-        ray_origin: Ray origin, shape (3,).
-        ray_direction: Normalized ray direction, shape (3,).
-        vertices: Vertex positions, shape (N, 3).
-        triangles: Triangle indices, shape (M, 3) with dtype uint32.
-
-    Returns:
-        (triangle_index, barycentric_coords) where barycentric_coords is
-        a (3,) array [1-u-v, u, v], or None if no hit.
+    Vectorized Moller-Trumbore over (M, 3) uint32 ``triangles``.
     """
     if triangles is None or len(triangles) == 0:
         return None
@@ -191,19 +159,9 @@ def pick_face(ray_origin: np.ndarray, ray_direction: np.ndarray,
 def pick_surface_point(ray_origin: np.ndarray, ray_direction: np.ndarray,
                        vertices: np.ndarray, triangles: np.ndarray
                        ) -> tuple[np.ndarray, int] | None:
-    """Find the 3D point where the ray hits the mesh surface.
+    """Return ``(hit_point, triangle_index)`` where the ray hits the mesh, or None.
 
-    Returns (hit_point_3d, triangle_index) or None.
-    Used for brush center positioning in weight painting.
-
-    Args:
-        ray_origin: Ray origin, shape (3,).
-        ray_direction: Normalized ray direction, shape (3,).
-        vertices: Vertex positions, shape (N, 3).
-        triangles: Triangle indices, shape (M, 3) with dtype uint32.
-
-    Returns:
-        (hit_point, triangle_index) or None.
+    Positions the weight-painting brush center.
     """
     result = pick_face(ray_origin, ray_direction, vertices, triangles)
     if result is None:

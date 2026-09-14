@@ -1,17 +1,14 @@
 //! PyO3 surface for `papyrus_core`.
 //!
-//! GIL discipline:
-//! - Every entry point clones owned data out of GIL-bound arguments first,
-//!   then calls into pure-Rust code under `py.detach(...)` (PyO3 0.28's
-//!   renamed `allow_threads` — same semantics: GIL released for the duration).
-//! - Results are JSON strings produced inside `detach`. Python parses them
-//!   with `json.loads` after the call returns.
-//! - No `#[pyclass]` AST types, no Python callbacks, no GIL held during parse,
-//!   resolve, or DB work.
+//! Every entry point clones owned data out of GIL-bound arguments, then runs
+//! pure-Rust code under `py.detach(...)` (PyO3 0.28's name for `allow_threads`).
+//! Results are JSON strings built inside `detach` and parsed by Python with
+//! `json.loads`. No `#[pyclass]` AST types, no Python callbacks, no GIL held
+//! during parse, resolve, or DB work.
 //!
-//! Function naming convention mirrors `py_creation_lib/python/creation_lib/esp/native_runtime.py` so the
-//! Python facade in `py_creation_lib/python/creation_lib/papyrus_lsp/native_runtime.py` can dispatch
-//! uniformly.
+//! Function names mirror `py_creation_lib/python/creation_lib/esp/native_runtime.py`
+//! so the facade in `py_creation_lib/python/creation_lib/papyrus_lsp/native_runtime.py`
+//! can dispatch uniformly.
 
 use pyo3::prelude::*;
 use pyo3::types::PyModule;
@@ -114,10 +111,10 @@ fn write_pex_bytes(py: Python<'_>, payload_json: &str) -> PyResult<Vec<u8>> {
     })
 }
 
-/// Compile Papyrus source to neutralized `.pex` bytes (spec §5 identity fields
-/// zeroed). Returns `(meta_json, pex_bytes_or_none)` where `meta_json` carries
-/// `{"ok", "diagnostics"}`; raw bytes are returned out-of-band (no base64) to
-/// match the existing `write_pex_bytes` surface.
+/// Compile Papyrus source to `.pex` bytes with header identity fields zeroed.
+/// Returns `(meta_json, pex_bytes_or_none)` where `meta_json` carries
+/// `{"ok", "diagnostics"}`; raw bytes are returned out-of-band (no base64), as
+/// `write_pex_bytes` does.
 #[pyfunction]
 #[pyo3(signature = (text, imports, game, flags = None, source_path = None))]
 fn compile_source(

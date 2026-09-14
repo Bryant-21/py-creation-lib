@@ -5,13 +5,8 @@ Picks a handful of representative FO76 HKX files (weapon behaviors,
 weapon animations, behavior wrappers) and verifies that
 `creation_lib.havok_convert.HavokConverter` (Python) and
 `creation_lib._native.havok_native.havok_convert_bytes` (Rust) produce
-semantically equivalent FO4-compatible output.
-
-Phase 7C verifies the Rust port of `py_creation_lib/python/creation_lib/hkxpack/migration.py` and
-`py_creation_lib/python/creation_lib/havok_convert/converter.py` produces the same observable
-conversion results as the Python reference implementation. Strict
-byte-exact equality is not required — the existing FO76 byte-exact
-fixture suite covers the core packfile path.
+semantically equivalent FO4-compatible output. Byte-exact equality is not
+required; the FO76 byte-exact fixture suite covers the core packfile path.
 """
 
 from __future__ import annotations

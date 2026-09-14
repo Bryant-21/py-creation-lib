@@ -1,14 +1,11 @@
 //! Rust-side store for the conversion pipeline's translated record list.
 //!
 //! Holds `Vec<serde_json::Value>` (records) + `Vec<Vec<String>>` (per-record
-//! warnings) keyed by an opaque handle id. The Python conversion orchestrator
-//! used to keep all 371k records as Python objects, which dominated peak RSS
-//! (~10 GB on FO76→FO4 full plugin). Moving the storage here cuts the
-//! per-record overhead and frees the Python heap for fixup work.
+//! warnings) keyed by an opaque handle id. As Python objects, the ~371k records
+//! of a full FO76→FO4 plugin dominated peak RSS (~10 GB).
 //!
-//! Bulk ops (rewrite_formkeys, replace_formkeys, find_stale_formkeys) operate
-//! directly on the store without round-tripping through Python — see
-//! `formkey_ops` for the underlying walks.
+//! Bulk ops (rewrite_formkeys, replace_formkeys, find_stale_formkeys) run on
+//! the store without a Python round trip; see `formkey_ops` for the walks.
 
 use serde_json::Value as JsonValue;
 use std::collections::{HashMap, HashSet};

@@ -1,14 +1,16 @@
 use crate::{
     FileFormat, Reader as _, fo4,
+    incremental::DirectPackStats,
     pack::{self, PackEntrySpec},
     tes4,
 };
 use serde_json::Value;
 use std::{
     collections::{HashMap, HashSet},
+    fmt::Write as _,
     fs,
     path::{Path, PathBuf},
-    time::Instant,
+    time::{Duration, Instant},
 };
 use walkdir::WalkDir;
 
@@ -20,6 +22,11 @@ const COMPRESSIBLE_BA2_ESTIMATE_NUMERATOR: u64 = 2;
 const COMPRESSIBLE_BA2_ESTIMATE_DENOMINATOR: u64 = 3;
 const MAX_ARCHIVE_PACK_CONCURRENCY: usize = 2;
 const MAX_TEXTURE_ARCHIVE_CONCURRENCY: usize = 2;
+const MAX_TEXTURE_WORKERS_PER_ARCHIVE: usize = 16;
+#[cfg(not(test))]
+const ARCHIVE_PACK_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
+#[cfg(test)]
+const ARCHIVE_PACK_HEARTBEAT_INTERVAL: Duration = Duration::from_millis(25);
 const MAIN_FAMILY_ORDER: [ArchiveFamily; 10] = [
     ArchiveFamily::Lod,
     ArchiveFamily::Terrain,
@@ -116,6 +123,7 @@ pub(crate) struct ArchiveSummary {
     pub(crate) file_count: usize,
     pub(crate) bytes: u64,
     pub(crate) elapsed_secs: f64,
+    pub(crate) direct_pack_stats: Option<DirectPackStats>,
 }
 
 #[derive(Clone, Debug)]
@@ -139,6 +147,15 @@ struct ArchiveWorkerAllocation {
     archive_concurrency: usize,
     workers_per_archive: usize,
     extra_worker_archives: usize,
+}
+
+struct ActiveArchiveProgress {
+    plan_index: usize,
+    output_path: PathBuf,
+    started_at: Instant,
+    sampled_at: Instant,
+    output_bytes: u64,
+    previous_output_bytes: Option<u64>,
 }
 
 trait ScheduledArchivePlan {
@@ -210,12 +227,8 @@ fn consume_signed_int_then_dot(s: &str) -> Option<&str> {
 
 // Matches lodgen's terrain-LOD tile naming: `<world>.<level>.<x>.<y>` (signed
 // ints), then anything (an "_msn" normal-map suffix, a ".season" segment,
-// etc.), then ".dds". Per the verified audit
-// (docs/superpowers/specs/appalachia_family_map_verified.md §2c) this is
-// collision-free with convert_terrain output: convert_terrain runs its
-// texture-set name through safe_name, which replaces "." and "-" with "_",
-// so a convert_terrain filename can never contain this dot-separated
-// signed-integer triple.
+// etc.), then ".dds". Can't collide with convert_terrain output: its
+// texture-set names go through safe_name, which replaces "." and "-" with "_".
 fn is_lodgen_quad_tile(basename: &str) -> bool {
     let lower = basename.to_ascii_lowercase();
     if !lower.ends_with(".dds") {
@@ -252,30 +265,24 @@ fn classify_archive_family(relative_path: &str) -> ArchiveFamily {
         .map(|ext| format!(".{}", ext.to_string_lossy().to_ascii_lowercase()))
         .unwrap_or_default();
 
-    // Terrain (land) assets — kept separate so upgrade-gen can reuse/regenerate
-    // terrain independently of object textures/LOD. Predicate verified against
-    // the deployed Appalachia tree (appalachia_family_map_verified.md §2c):
-    // convert_terrain output -> Terrain; ALL lodgen output (terrain-LOD quad
-    // tiles + object atlas) -> LOD, since a Terrain-only rebuild skips lodgen
-    // and would otherwise ship a Terrain archive missing them.
-    if suffix == ".btd4" {
-        return ArchiveFamily::Terrain;
-    }
+    // LOD shares Textures/Terrain with full-resolution land textures. Keep only
+    // lodgen products in the LOD family; the remaining textures and materials
+    // belong in the ordinary Textures/Materials archives.
     if parts.first() == Some(&"textures") && parts.get(1) == Some(&"terrain") {
         let basename = parts.last().copied().unwrap_or("");
         if parts.contains(&"objects") {
             return ArchiveFamily::Lod;
         }
-        if parts.get(2) == Some(&"lodgen") {
+        if parts.contains(&"lodgen") {
             return ArchiveFamily::Lod;
         }
         if is_lodgen_quad_tile(basename) {
             return ArchiveFamily::Lod;
         }
-        return ArchiveFamily::Terrain;
+        return ArchiveFamily::Textures;
     }
     if parts.first() == Some(&"materials") && parts.get(1) == Some(&"terrain") {
-        return ArchiveFamily::Terrain;
+        return ArchiveFamily::Materials;
     }
 
     if parts.first() == Some(&"textures") {
@@ -607,13 +614,15 @@ fn plan_archive_outputs(
             .then_with(|| a.relative_path.cmp(&b.relative_path))
     });
     for entry in normalized {
-        let estimated_size =
-            estimate_planned_archive_size(std::slice::from_ref(&entry), archive_ext);
-        if estimated_size > cap {
-            return Err(format!(
-                "{} ({} bytes source, {} bytes estimated packed) exceeds archive cap, exceeding archive max size {} bytes",
-                entry.relative_path, entry.size, estimated_size, cap
-            ));
+        if expanded_archives {
+            let estimated_size =
+                estimate_planned_archive_size(std::slice::from_ref(&entry), archive_ext);
+            if estimated_size > cap {
+                return Err(format!(
+                    "{} ({} bytes source, {} bytes estimated packed) exceeds archive cap, exceeding archive max size {} bytes",
+                    entry.relative_path, entry.size, estimated_size, cap
+                ));
+            }
         }
         by_family.entry(entry.family).or_default().push(entry);
     }
@@ -663,15 +672,17 @@ fn plan_archive_outputs(
             ak.cmp(&bk)
                 .then_with(|| a.relative_path.cmp(&b.relative_path))
         });
-        planned.extend(plan_texture_archives(
-            mod_name,
-            ArchiveFamily::Textures,
-            "Textures",
-            texture_entries,
-            archive_ext,
-            platform_suffix,
-            cap,
-        )?);
+        if !texture_entries.is_empty() {
+            planned.push(make_archive(
+                mod_name,
+                ArchiveFamily::Textures,
+                "Textures",
+                texture_entries,
+                archive_ext,
+                platform_suffix,
+                true,
+            ));
+        }
     }
 
     if expanded_archives {
@@ -736,10 +747,7 @@ fn plan_archive_outputs(
         .iter()
         .flat_map(|family| by_family.get(family).cloned().unwrap_or_default())
         .collect();
-    if main_entries.is_empty() {
-        return Ok(planned);
-    }
-    if estimate_planned_archive_size(&main_entries, archive_ext) <= cap {
+    if !main_entries.is_empty() {
         planned.insert(
             0,
             make_archive(
@@ -752,50 +760,8 @@ fn plan_archive_outputs(
                 false,
             ),
         );
-        return Ok(planned);
     }
-
-    let strings_entries = by_family
-        .remove(&ArchiveFamily::Strings)
-        .unwrap_or_default();
-    if !strings_entries.is_empty() {
-        let main = by_family.entry(ArchiveFamily::Main).or_default();
-        let old_main = std::mem::take(main);
-        *main = strings_entries.into_iter().chain(old_main).collect();
-    }
-    let mut main_archives = Vec::new();
-    for family in MAIN_FAMILY_ORDER {
-        let family_entries = by_family.get(&family).cloned().unwrap_or_default();
-        if family_entries.is_empty() {
-            continue;
-        }
-        let label = family_label(family);
-        if estimate_planned_archive_size(&family_entries, archive_ext) <= cap {
-            main_archives.push(make_archive(
-                mod_name,
-                family,
-                label,
-                family_entries,
-                archive_ext,
-                platform_suffix,
-                false,
-            ));
-        } else {
-            main_archives.extend(shard_entries(
-                mod_name,
-                family,
-                label,
-                &family_entries,
-                archive_ext,
-                platform_suffix,
-                cap,
-                false,
-                None,
-            )?);
-        }
-    }
-    main_archives.extend(planned);
-    Ok(main_archives)
+    Ok(planned)
 }
 
 fn family_label(family: ArchiveFamily) -> &'static str {
@@ -875,14 +841,17 @@ fn inventory_mod_entries(
     Ok(entries)
 }
 
-fn native_archive_type(game: &str, texture_archive: bool, xbox: bool) -> PackResult<String> {
-    if xbox && game == "fo4" {
+fn native_archive_type(game: &str, texture_archive: bool, platform: &str) -> PackResult<String> {
+    if platform == "xbox" && game == "fo4" {
         return Ok(if texture_archive {
             "fo4xboxdds"
         } else {
             "fo4xbox"
         }
         .to_string());
+    }
+    if platform == "ps" && game == "fo4" {
+        return Ok(if texture_archive { "fo4psdds" } else { "fo4ps" }.to_string());
     }
     let suffix = if texture_archive { "dds" } else { "" };
     match game {
@@ -915,10 +884,7 @@ fn planned_entry_specs(plan: &PlannedArchive) -> Vec<PackEntrySpec> {
 }
 
 fn default_archive_worker_budget() -> usize {
-    std::thread::available_parallelism()
-        .map(|value| value.get())
-        .unwrap_or(1)
-        .max(1)
+    1
 }
 
 fn allocate_archive_workers(worker_budget: usize, archive_count: usize) -> ArchiveWorkerAllocation {
@@ -959,11 +925,17 @@ fn pack_group_policy<T: ScheduledArchivePlan>(
     } else {
         MAX_ARCHIVE_PACK_CONCURRENCY
     };
-    let active_worker_budget = worker_budget.max(1);
     let batch_len = group_len
         .min(concurrency_cap)
-        .min(active_worker_budget)
+        .min(worker_budget.max(1))
         .max(1);
+    let active_worker_budget = if texture_archive {
+        worker_budget
+            .min(batch_len.saturating_mul(MAX_TEXTURE_WORKERS_PER_ARCHIVE))
+            .max(1)
+    } else {
+        worker_budget.max(1)
+    };
     (batch_len, active_worker_budget)
 }
 
@@ -1027,8 +999,11 @@ fn is_generated_archive_name(path: &Path, prefix: &str) -> bool {
     let Some(mut label) = stem.strip_prefix(prefix) else {
         return false;
     };
-    if let Some(stripped) = label.strip_suffix("_xbox") {
-        label = stripped;
+    for suffix in ["_xbox", "_ps"] {
+        if let Some(stripped) = label.strip_suffix(suffix) {
+            label = stripped;
+            break;
+        }
     }
     let label_base = label.trim_end_matches(|ch: char| ch.is_ascii_digit());
     !label_base.is_empty() && GENERATED_LABEL_BASES.contains(&label_base)
@@ -1067,15 +1042,14 @@ fn cleanup_obsolete_archives(
         if !name.starts_with(&prefix) || !is_generated_archive_name(&path, &prefix) {
             continue;
         }
-        let platform_match = if platform_suffix == "_xbox" {
-            path.file_stem()
-                .and_then(|value| value.to_str())
-                .is_some_and(|stem| stem.ends_with("_xbox"))
-        } else {
-            path.file_stem()
-                .and_then(|value| value.to_str())
-                .is_some_and(|stem| !stem.ends_with("_xbox"))
-        };
+        let platform_match = path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .is_some_and(|stem| match platform_suffix {
+                "_xbox" => stem.ends_with("_xbox"),
+                "_ps" => stem.ends_with("_ps"),
+                _ => !stem.ends_with("_xbox") && !stem.ends_with("_ps"),
+            });
         if platform_match {
             fs::remove_file(path).map_err(|err| err.to_string())?;
         }
@@ -1092,7 +1066,7 @@ fn pack_planned_archive(
     let output_path = config.mod_dir.join(&plan.output_name);
     let started = Instant::now();
     let plan_bytes = plan.entries.iter().map(|entry| entry.size).sum::<u64>();
-    let archive_type = native_archive_type(&config.game, plan.texture_archive, false)?;
+    let archive_type = native_archive_type(&config.game, plan.texture_archive, "pc")?;
     let level = crate::pack::archive_type_default_level(&archive_type);
     let reference_manifest =
         write_reference_manifest(&output_path, temp_manifest_dir, &plan.label)?;
@@ -1100,7 +1074,7 @@ fn pack_planned_archive(
         .as_deref()
         .or(config.manifest_path.as_deref());
     let specs = planned_entry_specs(plan);
-    pack::pack_archive_entries(
+    let (_, direct_pack_stats) = pack::pack_archive_entries_with_stats(
         &specs,
         &output_path,
         &archive_type,
@@ -1116,6 +1090,7 @@ fn pack_planned_archive(
         file_count: plan.entries.len(),
         bytes: plan_bytes,
         elapsed_secs: started.elapsed().as_secs_f64(),
+        direct_pack_stats,
     })
 }
 
@@ -1125,7 +1100,7 @@ fn pack_archive_plan(
 ) -> PackResult<ArchiveSummary> {
     let started = Instant::now();
     let level = crate::pack::archive_type_default_level(&plan.archive_type);
-    pack::pack_archive_entries(
+    let (_, direct_pack_stats) = pack::pack_archive_entries_with_stats(
         &plan.entries,
         &plan.output_path,
         &plan.archive_type,
@@ -1141,6 +1116,7 @@ fn pack_archive_plan(
         file_count: plan.entries.len(),
         bytes: plan.input_bytes,
         elapsed_secs: started.elapsed().as_secs_f64(),
+        direct_pack_stats,
     })
 }
 
@@ -1162,11 +1138,12 @@ where
 {
     let archive_type = archive_type_for(plan)?;
     let level = crate::pack::archive_type_default_level(&archive_type);
+    let codec = crate::pack::archive_type_compression_codec(&archive_type);
     progress(PackProgress {
         phase: "pack",
         platform: "pc".to_string(),
         message: format!(
-            "Packing archive {} ({}/{}) files={} bytes={:.1} MB workers={}/{} archive_concurrency={} compression=zlib:{level}",
+            "Packing archive {} ({}/{}) files={} bytes={:.1} MB workers={}/{} archive_concurrency={} compression={codec}:{level}",
             plan.output_name(),
             plan_index + 1,
             plan_count,
@@ -1181,10 +1158,122 @@ where
     })
 }
 
+fn archive_pack_completion_message(summary: &ArchiveSummary) -> String {
+    let mut message = format!(
+        "Archive packed native: name={} files={} bytes={:.1} MB elapsed={:.3}s",
+        summary.name,
+        summary.file_count,
+        summary.bytes as f64 / (1024.0 * 1024.0),
+        summary.elapsed_secs
+    );
+    if let Some(stats) = summary.direct_pack_stats {
+        let writer_io_secs = stats.writer_write_secs + stats.writer_flush_secs;
+        let writer_rate = if writer_io_secs > 0.0 {
+            stats.payload_bytes as f64 / (1024.0 * 1024.0) / writer_io_secs
+        } else {
+            0.0
+        };
+        write!(
+            message,
+            " payloads={} payload_bytes={:.1} MB writer_io={writer_io_secs:.3}s writer_rate={writer_rate:.1} MB/s writer_idle={:.3}s prepare_worker={:.3}s source_read_worker={:.3}s compression_worker={:.3}s fallback_worker={:.3}s chunks={} fallbacks={} memory_budget={:.1} MB peak_in_flight={:.1} MB throttle_wait={:.3}s throttle_events={}",
+            stats.payload_write_calls,
+            stats.payload_bytes as f64 / (1024.0 * 1024.0),
+            stats.writer_idle_secs,
+            stats.prepare_worker_secs,
+            stats.source_read_worker_secs,
+            stats.compression_worker_secs,
+            stats.fallback_worker_secs,
+            stats.prepared_chunk_count,
+            stats.fallback_file_count,
+            stats.memory_budget_bytes as f64 / (1024.0 * 1024.0),
+            stats.peak_in_flight_bytes as f64 / (1024.0 * 1024.0),
+            stats.throttle_wait_secs,
+            stats.throttle_wait_count,
+        )
+        .expect("writing to String cannot fail");
+    }
+    message
+}
+
+fn archive_pack_progress_message(
+    name: &str,
+    elapsed: Duration,
+    output_bytes: Option<u64>,
+    interval_bytes: u64,
+    interval: Duration,
+    previous_output_bytes: Option<u64>,
+) -> String {
+    let Some(output_bytes) = output_bytes else {
+        return format!(
+            "Archive packing progress: name={name} elapsed={:.1}s output=pending",
+            elapsed.as_secs_f64()
+        );
+    };
+    let interval_rate = if interval.is_zero() {
+        0.0
+    } else {
+        interval_bytes as f64 / (1024.0 * 1024.0) / interval.as_secs_f64()
+    };
+    let output_mb = output_bytes as f64 / (1024.0 * 1024.0);
+    match previous_output_bytes.filter(|bytes| *bytes != 0) {
+        Some(previous_output_bytes) => format!(
+            "Archive packing progress: name={name} elapsed={:.1}s output={output_mb:.1}/{:.1} MB approx={:.1}% interval_rate={interval_rate:.1} MB/s",
+            elapsed.as_secs_f64(),
+            previous_output_bytes as f64 / (1024.0 * 1024.0),
+            output_bytes as f64 * 100.0 / previous_output_bytes as f64,
+        ),
+        None => format!(
+            "Archive packing progress: name={name} elapsed={:.1}s output={output_mb:.1} MB interval_rate={interval_rate:.1} MB/s",
+            elapsed.as_secs_f64(),
+        ),
+    }
+}
+
+impl ActiveArchiveProgress {
+    fn new(plan_index: usize, output_path: PathBuf) -> Self {
+        let previous_output_bytes = fs::metadata(&output_path)
+            .ok()
+            .map(|metadata| metadata.len())
+            .filter(|bytes| *bytes != 0);
+        let now = Instant::now();
+        Self {
+            plan_index,
+            output_path,
+            started_at: now,
+            sampled_at: now,
+            output_bytes: previous_output_bytes.unwrap_or(0),
+            previous_output_bytes,
+        }
+    }
+
+    fn sample(&mut self, name: &str, now: Instant) -> String {
+        let output_bytes = fs::metadata(&self.output_path)
+            .ok()
+            .map(|metadata| metadata.len());
+        let interval_bytes = output_bytes
+            .unwrap_or(self.output_bytes)
+            .saturating_sub(self.output_bytes);
+        let message = archive_pack_progress_message(
+            name,
+            now.duration_since(self.started_at),
+            output_bytes,
+            interval_bytes,
+            now.duration_since(self.sampled_at),
+            self.previous_output_bytes,
+        );
+        if let Some(output_bytes) = output_bytes {
+            self.output_bytes = output_bytes;
+        }
+        self.sampled_at = now;
+        message
+    }
+}
+
 fn pack_scheduled_archives<T: ScheduledArchivePlan + Sync>(
     plans: &[T],
     worker_budget: usize,
     archive_type_for: &(impl Fn(&T) -> PackResult<String> + Sync),
+    output_path_for: &(impl Fn(&T) -> PathBuf + Sync),
     pack_one: &(impl Fn(&T, usize) -> PackResult<ArchiveSummary> + Sync),
     progress: &mut impl FnMut(PackProgress) -> PackResult<()>,
 ) -> PackResult<Vec<ArchiveSummary>> {
@@ -1221,6 +1310,10 @@ fn pack_scheduled_archives<T: ScheduledArchivePlan + Sync>(
             let (sender, receiver) =
                 std::sync::mpsc::channel::<(usize, usize, PackResult<ArchiveSummary>)>();
             let mut free_slots: Vec<_> = (0..archive_concurrency).rev().collect();
+            let mut active_progress: Vec<Option<ActiveArchiveProgress>> =
+                std::iter::repeat_with(|| None)
+                    .take(archive_concurrency)
+                    .collect();
             let mut next_plan_index = group_start;
             let mut active = 0usize;
             let mut first_error = None;
@@ -1241,6 +1334,10 @@ fn pack_scheduled_archives<T: ScheduledArchivePlan + Sync>(
                 )?;
                 let plan_index = next_plan_index;
                 let plan = &plans[plan_index];
+                active_progress[slot] = Some(ActiveArchiveProgress::new(
+                    plan_index,
+                    output_path_for(plan),
+                ));
                 let sender = sender.clone();
                 scope.spawn(move || {
                     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1253,25 +1350,45 @@ fn pack_scheduled_archives<T: ScheduledArchivePlan + Sync>(
                 next_plan_index += 1;
             }
 
+            let mut next_heartbeat = Instant::now() + ARCHIVE_PACK_HEARTBEAT_INTERVAL;
             while active != 0 {
-                let (slot, plan_index, result) = receiver
-                    .recv()
-                    .map_err(|_| "archive pack worker stopped without a result".to_string())?;
+                let wait = next_heartbeat.saturating_duration_since(Instant::now());
+                let (slot, plan_index, result) = match receiver.recv_timeout(wait) {
+                    Ok(result) => result,
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        let now = Instant::now();
+                        if first_error.is_none() {
+                            for active_archive in active_progress.iter_mut().flatten() {
+                                let plan = &plans[active_archive.plan_index];
+                                if let Err(err) = progress(PackProgress {
+                                    phase: "pack",
+                                    platform: "pc".to_string(),
+                                    message: active_archive.sample(plan.output_name(), now),
+                                    completed,
+                                    total: plans.len(),
+                                }) {
+                                    first_error = Some(err);
+                                    break;
+                                }
+                            }
+                        }
+                        next_heartbeat = now + ARCHIVE_PACK_HEARTBEAT_INTERVAL;
+                        continue;
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                        return Err("archive pack worker stopped without a result".to_string());
+                    }
+                };
                 active -= 1;
                 free_slots.push(slot);
+                active_progress[slot] = None;
                 match result {
                     Ok(summary) => {
                         completed += 1;
                         let progress_result = progress(PackProgress {
                             phase: "pack",
                             platform: "pc".to_string(),
-                            message: format!(
-                                "Archive packed native: name={} files={} bytes={:.1} MB elapsed={:.3}s",
-                                summary.name,
-                                summary.file_count,
-                                summary.bytes as f64 / (1024.0 * 1024.0),
-                                summary.elapsed_secs
-                            ),
+                            message: archive_pack_completion_message(&summary),
                             completed,
                             total: plans.len(),
                         });
@@ -1304,6 +1421,10 @@ fn pack_scheduled_archives<T: ScheduledArchivePlan + Sync>(
                     }
                     let plan_index = next_plan_index;
                     let plan = &plans[plan_index];
+                    active_progress[slot] = Some(ActiveArchiveProgress::new(
+                        plan_index,
+                        output_path_for(plan),
+                    ));
                     let sender = sender.clone();
                     scope.spawn(move || {
                         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1345,6 +1466,7 @@ pub(crate) fn pack_archive_plans(
         plans,
         worker_budget,
         &|plan| Ok(plan.archive_type.clone()),
+        &|plan| plan.output_path.clone(),
         &pack_archive_plan,
         &mut progress,
     )
@@ -1431,6 +1553,7 @@ pub(crate) fn pack_mod_archives(
                 file_count: plan.entries.len(),
                 bytes: plan.entries.iter().map(|entry| entry.size).sum(),
                 elapsed_secs: 0.0,
+                direct_pack_stats: None,
             })
             .collect();
         return Ok(PackModResult {
@@ -1448,7 +1571,8 @@ pub(crate) fn pack_mod_archives(
     }
     .max(1);
     let archive_type_for =
-        |plan: &PlannedArchive| native_archive_type(&config.game, plan.texture_archive, false);
+        |plan: &PlannedArchive| native_archive_type(&config.game, plan.texture_archive, "pc");
+    let output_path_for = |plan: &PlannedArchive| config.mod_dir.join(&plan.output_name);
     let pack_one = |plan: &PlannedArchive, workers_for_archive| {
         pack_planned_archive(config, plan, &temp_manifest_dir, workers_for_archive)
     };
@@ -1456,6 +1580,7 @@ pub(crate) fn pack_mod_archives(
         &plans,
         worker_budget,
         &archive_type_for,
+        &output_path_for,
         &pack_one,
         &mut progress,
     )?;
@@ -1511,6 +1636,20 @@ mod tests {
         }
     }
 
+    #[test]
+    fn playstation_archive_types_use_gnrl_profiles() {
+        assert_eq!(native_archive_type("fo4", false, "ps").unwrap(), "fo4ps");
+        assert_eq!(native_archive_type("fo4", true, "ps").unwrap(), "fo4psdds");
+    }
+
+    #[test]
+    fn generated_archive_names_accept_playstation_suffix() {
+        assert!(is_generated_archive_name(
+            Path::new("B21_Test - Textures_ps.ba2"),
+            "B21_Test - "
+        ));
+    }
+
     fn entry(rel: &str, size: u64) -> ArchiveEntry {
         ArchiveEntry {
             relative_path: rel.to_string(),
@@ -1527,17 +1666,34 @@ mod tests {
             entry("Textures/a.dds", 4000),
             entry("Textures/b.dds", 4000),
         ];
-        let plans = plan_archive_outputs("B21_Test", &entries, "ba2", "", 9000, "fo4", false)
+        let plans = plan_archive_outputs("B21_Test", &entries, "ba2", "", 9000, "fo4", true)
             .expect("planning should succeed");
         let names: Vec<_> = plans.iter().map(|plan| plan.output_name.as_str()).collect();
 
         assert_eq!(
             names,
             vec![
-                "B21_Test - Main.ba2",
+                "B21_Test - Meshes.ba2",
                 "B21_Test - Textures1.ba2",
                 "B21_Test - Textures2.ba2",
             ]
+        );
+    }
+
+    #[test]
+    fn planner_compact_ignores_archive_cap() {
+        let entries = vec![
+            entry("Meshes/a.nif", 10),
+            entry("Scripts/a.pex", 10),
+            entry("Textures/a.dds", 10),
+        ];
+        let plans = plan_archive_outputs("B21_Test", &entries, "ba2", "", 1, "fo4", false)
+            .expect("planning should succeed");
+        let names: Vec<_> = plans.iter().map(|plan| plan.output_name.as_str()).collect();
+
+        assert_eq!(
+            names,
+            vec!["B21_Test - Main.ba2", "B21_Test - Textures.ba2"]
         );
     }
 
@@ -1683,6 +1839,7 @@ mod tests {
                 file_count: 1,
                 bytes: 1,
                 elapsed_secs: 0.0,
+                direct_pack_stats: None,
             })
         };
         let mut messages = Vec::new();
@@ -1691,6 +1848,7 @@ mod tests {
             &plans,
             4,
             &|_| Ok("fo4dds".to_string()),
+            &|plan| PathBuf::from(&plan.name),
             &pack_one,
             &mut |event| {
                 messages.push(event.message);
@@ -1714,6 +1872,77 @@ mod tests {
     }
 
     #[test]
+    fn archive_pack_progress_reports_growth_and_previous_size() {
+        let message = archive_pack_progress_message(
+            "Textures.ba2",
+            Duration::from_secs(65),
+            Some(256 * 1024 * 1024),
+            64 * 1024 * 1024,
+            Duration::from_secs(10),
+            Some(512 * 1024 * 1024),
+        );
+
+        assert!(message.contains("name=Textures.ba2"));
+        assert!(message.contains("elapsed=65.0s"));
+        assert!(message.contains("output=256.0/512.0 MB"));
+        assert!(message.contains("approx=50.0%"));
+        assert!(message.contains("interval_rate=6.4 MB/s"));
+    }
+
+    #[test]
+    fn scheduler_reports_progress_while_archive_is_active() {
+        let dir = TestDir::new();
+        let output_path = dir.path.join("Textures.ba2");
+        fs::write(&output_path, vec![0; 1024 * 1024]).unwrap();
+        let plans = vec![PlannedArchive {
+            label: "Textures".to_string(),
+            family: "Textures".to_string(),
+            output_name: "Textures.ba2".to_string(),
+            entries: Vec::new(),
+            texture_archive: true,
+        }];
+        let progress_output_path = output_path.clone();
+        let pack_output_path = output_path.clone();
+        let mut messages = Vec::new();
+
+        pack_scheduled_archives(
+            &plans,
+            1,
+            &|_| Ok("fo4dds".to_string()),
+            &|_| progress_output_path.clone(),
+            &|plan, _workers| {
+                fs::write(&pack_output_path, vec![0; 2 * 1024 * 1024]).unwrap();
+                std::thread::sleep(Duration::from_millis(75));
+                Ok(ArchiveSummary {
+                    platform: "pc".to_string(),
+                    name: plan.output_name.clone(),
+                    file_count: 0,
+                    bytes: 0,
+                    elapsed_secs: 0.075,
+                    direct_pack_stats: None,
+                })
+            },
+            &mut |event| {
+                messages.push(event.message);
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert!(messages.iter().any(|message| {
+            message.starts_with("Archive packing progress:")
+                && message.contains("name=Textures.ba2")
+                && message.contains("output=2.0/1.0 MB")
+                && message.contains("approx=200.0%")
+        }));
+    }
+
+    #[test]
+    fn omitted_archive_worker_budget_is_single_threaded() {
+        assert_eq!(default_archive_worker_budget(), 1);
+    }
+
+    #[test]
     fn texture_groups_cap_archive_concurrency_and_use_worker_budget() {
         let entries = vec![
             entry("Meshes/a.nif", 10),
@@ -1722,13 +1951,14 @@ mod tests {
             entry("Textures/c.dds", 4000),
             entry("Textures/d.dds", 4000),
         ];
-        let plans = plan_archive_outputs("B21_Test", &entries, "ba2", "", 8000, "fo4", false)
+        let plans = plan_archive_outputs("B21_Test", &entries, "ba2", "", 8000, "fo4", true)
             .expect("planning should succeed");
 
         assert!(!plans[0].texture_archive);
         assert_eq!(pack_group_policy(32, &plans, 0), (1, 32));
         assert!(plans[1].texture_archive);
         assert_eq!(pack_group_policy(32, &plans, 1), (2, 32));
+        assert_eq!(pack_group_policy(32, &plans[1..2], 0), (1, 16));
         assert_eq!(pack_group_policy(4, &plans, 1), (2, 4));
         assert_eq!(pack_group_policy(1, &plans, 1), (1, 1));
     }
@@ -1905,13 +2135,24 @@ mod tests {
         assert!(
             messages
                 .iter()
-                .any(|m| m.contains("Textures") && m.contains("compression=zlib:4"))
+                .any(|m| m.contains("Textures") && m.contains("compression=libdeflate:4"))
         );
         assert!(
             messages
                 .iter()
                 .any(|m| m.contains("Main") && m.contains("compression=zlib:6"))
         );
+        assert!(messages.iter().any(|m| {
+            m.contains("Archive packed native:")
+                && m.contains("Textures")
+                && m.contains("payloads=1")
+                && m.contains("writer_io=")
+                && m.contains("writer_idle=")
+                && m.contains("source_read_worker=")
+                && m.contains("compression_worker=")
+                && m.contains("memory_budget=")
+                && m.contains("throttle_wait=")
+        }));
     }
 
     #[test]
@@ -2030,17 +2271,17 @@ mod tests {
     }
 
     #[test]
-    fn terrain_family_splits_land_assets_from_lodgen_output() {
+    fn terrain_paths_route_land_assets_to_generic_families() {
         let f = classify_archive_family;
         assert_eq!(
             f("Textures/Terrain/Appalachia/lswamprocks01_g.dds"),
-            ArchiveFamily::Terrain
+            ArchiveFamily::Textures
         );
         assert_eq!(
             f("Materials/Terrain/Appalachia/blend.bgsm"),
-            ArchiveFamily::Terrain
+            ArchiveFamily::Materials
         );
-        assert_eq!(f("Terrain/Appalachia.btd4"), ArchiveFamily::Terrain);
+        assert_eq!(f("Terrain/Appalachia.btd4"), ArchiveFamily::Main);
         // lodgen terrain-LOD quad tiles stay LOD, not Terrain.
         assert_eq!(
             f("Textures/Terrain/Appalachia/appalachia.16.-110.-77.dds"),
@@ -2066,7 +2307,7 @@ mod tests {
     }
 
     #[test]
-    fn planner_splits_lod_and_terrain_dds_into_texture_archives() {
+    fn planner_routes_land_assets_to_generic_archives() {
         let entries = vec![
             entry("Meshes/Terrain/Appalachia/Objects/a.bto", 10),
             entry("Textures/Terrain/Appalachia/Appalachia.4.0.0.dds", 10),
@@ -2098,18 +2339,18 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["Textures/Terrain/Appalachia/Appalachia.4.0.0.dds"]
         );
-        assert!(!by_label["Terrain"].texture_archive);
+        assert!(!by_label["Materials"].texture_archive);
         assert_eq!(
-            by_label["Terrain"]
+            by_label["Materials"]
                 .entries
                 .iter()
                 .map(|entry| entry.relative_path.as_str())
                 .collect::<Vec<_>>(),
             vec!["Materials/Terrain/Appalachia/blend.bgsm"]
         );
-        assert!(by_label["TerrainTextures"].texture_archive);
+        assert!(by_label["Textures"].texture_archive);
         assert_eq!(
-            by_label["TerrainTextures"]
+            by_label["Textures"]
                 .entries
                 .iter()
                 .map(|entry| entry.relative_path.as_str())

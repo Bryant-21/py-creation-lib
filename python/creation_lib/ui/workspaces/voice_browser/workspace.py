@@ -7,14 +7,15 @@ import logging
 import queue
 import re
 import shutil
-import subprocess
 import tempfile
 import threading
 import time
 from pathlib import Path
 
 from imgui_bundle import imgui
+from creation_lib.ui.widgets.modern import loading_panel
 
+from creation_lib.audio.extract import decode_to_wav
 from creation_lib.audio.voice_reference import (
     VoiceLine,
     VoiceReferenceIndex,
@@ -45,8 +46,10 @@ Preview lines, inspect their archive members, and export audio from the results 
         *,
         on_select=None,
         extra_actions=None,
+        game_selector: bool = True,
     ):
         super().__init__(toolkit_settings)
+        self.game_selector = game_selector
         self._on_select = on_select
         self._extra_actions = extra_actions or []
         self._current_line: VoiceLine | None = None
@@ -116,6 +119,25 @@ Preview lines, inspect their archive members, and export audio from the results 
         except Exception:
             pass
 
+    def draw_inline(self) -> None:
+        from creation_lib.ui.widgets.modern import section, scaled
+        from .panels import draw_groups_content, draw_lines_content, draw_preview_content
+
+        height = max(scaled(240), imgui.get_content_region_avail().y - 2 * imgui.get_style().cell_padding.y)
+        if imgui.begin_table("##voice_browser_inline", 2, imgui.TableFlags_.resizable):
+            imgui.table_setup_column("Voices", imgui.TableColumnFlags_.width_stretch, 0.28)
+            imgui.table_setup_column("Lines and preview", imgui.TableColumnFlags_.width_stretch, 0.72)
+            imgui.table_next_column()
+            with section("##inline_voices", "Voices", height=height):
+                draw_groups_content(self)
+            imgui.table_next_column()
+            lines_height = max(scaled(180), height * 0.6)
+            with section("##inline_lines", "Voice lines", height=lines_height):
+                draw_lines_content(self)
+            with section("##inline_preview", "Preview", height=max(scaled(100), height - lines_height - imgui.get_style().item_spacing.y)):
+                draw_preview_content(self)
+            imgui.end_table()
+
     def get_settings_defaults(self) -> dict:
         return {
             "game": "fo4",
@@ -149,6 +171,28 @@ Preview lines, inspect their archive members, and export audio from the results 
         if not self._games:
             return "fo4"
         return self._games[max(0, min(self._game_idx, len(self._games) - 1))]
+
+    def set_game(self, game_id: str) -> None:
+        """Select `game_id` and drop the loaded index, as the combo would.
+
+        For hosts that own the game selection themselves.
+        """
+        if game_id not in self._games:
+            _log.warning("Ignoring unknown game for voice browser: %s", game_id)
+            return
+        if game_id == self._selected_game:
+            return
+        self._game_idx = self._games.index(game_id)
+        self._index = None
+        self._selected_group = ""
+        self._selected_plugin = ""
+        self._selected_line_idx = -1
+        self._dirty_filter = True
+        self._load_attempt_key = None
+        self._next_cache_load_time = 0.0
+        self._status_msg = "Loading cached voice reference..."
+        self._error_msg = ""
+        self._result_msg = ""
 
     @property
     def _selected_line(self) -> VoiceLine | None:
@@ -209,45 +253,7 @@ Preview lines, inspect their archive members, and export audio from the results 
         imgui.end()
 
     def _draw_loading_mask(self) -> None:
-        pos = imgui.get_window_pos()
-        size = imgui.get_window_size()
-        draw_list = imgui.get_foreground_draw_list()
-        min_pos = imgui.ImVec2(pos.x, pos.y)
-        max_pos = imgui.ImVec2(pos.x + size.x, pos.y + size.y)
-        draw_list.add_rect_filled(
-            min_pos,
-            max_pos,
-            imgui.color_convert_float4_to_u32(imgui.ImVec4(0.0, 0.0, 0.0, 0.55)),
-        )
-
-        spinner = "|/-\\"[int(imgui.get_time() * 8.0) % 4]
-        label = self._job_label or self._status_msg or "Working..."
-        percent = int(max(0.0, min(1.0, self._progress)) * 100.0)
-        text = f"{spinner}  {label} ({percent}%)"
-        text_size = imgui.calc_text_size(text)
-        pad_x = 18.0
-        pad_y = 14.0
-        panel_w = max(120.0, min(max(120.0, size.x - 24.0), max(260.0, text_size.x + pad_x * 2.0)))
-        panel_h = text_size.y + pad_y * 2.0
-        panel_min = imgui.ImVec2(pos.x + (size.x - panel_w) * 0.5, pos.y + (size.y - panel_h) * 0.5)
-        panel_max = imgui.ImVec2(panel_min.x + panel_w, panel_min.y + panel_h)
-        draw_list.add_rect_filled(
-            panel_min,
-            panel_max,
-            imgui.color_convert_float4_to_u32(imgui.ImVec4(0.10, 0.11, 0.12, 0.95)),
-            6.0,
-        )
-        draw_list.add_rect(
-            panel_min,
-            panel_max,
-            imgui.color_convert_float4_to_u32(imgui.ImVec4(0.35, 0.40, 0.48, 1.0)),
-            6.0,
-        )
-        draw_list.add_text(
-            imgui.ImVec2(panel_min.x + pad_x, panel_min.y + pad_y),
-            imgui.color_convert_float4_to_u32(imgui.ImVec4(0.92, 0.95, 1.0, 1.0)),
-            text,
-        )
+        loading_panel("Working", self._job_label or self._status_msg, self._progress if self._progress > 0 else None)
 
     def _ensure_filtered(self) -> None:
         if not self._dirty_filter:
@@ -492,67 +498,7 @@ Preview lines, inspect their archive members, and export audio from the results 
         return self._prepare_playable_audio(extracted, target_dir, keep_lip=False)
 
     def _prepare_playable_audio(self, path: Path, output_dir: Path, *, keep_lip: bool) -> Path:
-        suffix = path.suffix.lower()
-        if suffix == ".wav":
-            return path
-        if suffix == ".xwm":
-            return self._convert_xwm_to_wav(path, output_dir)
-        if suffix == ".fuz":
-            return self._extract_fuz_to_wav(path, output_dir, keep_lip=keep_lip)
-        if suffix in {".ogg", ".wem"}:
-            return self._convert_audio_to_wav(path, output_dir)
-        raise ValueError(f"Unsupported voice audio format: {path.suffix}")
-
-    def _convert_xwm_to_wav(self, xwm_path: Path, output_dir: Path) -> Path:
-        from creation_lib.paths import get_resource_dir as get_creation_lib_resource_dir
-
-        tool = get_creation_lib_resource_dir() / "xWMAEncode.exe"
-        if not tool.is_file():
-            raise FileNotFoundError(f"xWMAEncode.exe not found: {tool}")
-        wav_path = output_dir / f"{xwm_path.stem}.wav"
-        result = subprocess.run([str(tool), str(xwm_path), str(wav_path)], capture_output=True, text=True, check=False)
-        if result.returncode != 0 or not wav_path.is_file():
-            detail = result.stderr.strip() or "XWM decode failed"
-            raise RuntimeError(detail)
-        return wav_path
-
-    def _convert_audio_to_wav(self, audio_path: Path, output_dir: Path) -> Path:
-        ffmpeg_path = shutil.which("ffmpeg")
-        if not ffmpeg_path:
-            raise FileNotFoundError("ffmpeg not found on PATH")
-        wav_path = output_dir / f"{audio_path.stem}.wav"
-        result = subprocess.run(
-            [ffmpeg_path, "-y", "-i", str(audio_path), "-c:a", "pcm_s16le", str(wav_path)],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if result.returncode != 0 or not wav_path.is_file():
-            detail = result.stderr.strip() or f"Audio decode failed for {audio_path.name}"
-            raise RuntimeError(detail)
-        return wav_path
-
-    def _extract_fuz_to_wav(self, fuz_path: Path, output_dir: Path, *, keep_lip: bool) -> Path:
-        from creation_lib.paths import get_resource_dir
-        fuz_decode = Path(get_resource_dir()) / "BmlFuzDecode.exe"
-        if not fuz_decode.is_file():
-            raise FileNotFoundError(f"BmlFuzDecode.exe not found: {fuz_decode}")
-        with tempfile.TemporaryDirectory(prefix="modbox_voice_fuz_") as tmp:
-            tmp_dir = Path(tmp)
-            temp_fuz = tmp_dir / fuz_path.name
-            shutil.copy2(fuz_path, temp_fuz)
-            result = subprocess.run([str(fuz_decode), str(temp_fuz)], capture_output=True, text=True, check=False)
-            if result.returncode != 0:
-                detail = result.stderr.strip() or "FUZ decode failed"
-                raise RuntimeError(detail)
-            temp_xwm = tmp_dir / f"{fuz_path.stem}.xwm"
-            if not temp_xwm.is_file():
-                raise RuntimeError(f"FUZ decode did not produce XWM for {fuz_path.name}")
-            if keep_lip:
-                temp_lip = tmp_dir / f"{fuz_path.stem}.lip"
-                if temp_lip.is_file():
-                    shutil.copy2(temp_lip, output_dir / temp_lip.name)
-            return self._convert_xwm_to_wav(temp_xwm, output_dir)
+        return decode_to_wav(path, output_dir, keep_lip=keep_lip)
 
     def _load_preview(self, key: tuple[str, str], preview_path: Path) -> None:
         try:

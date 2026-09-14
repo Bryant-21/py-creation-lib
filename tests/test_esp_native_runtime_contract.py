@@ -133,6 +133,27 @@ def test_plugin_handle_from_bytes_forwards_to_function_entrypoint(
     assert calls == [(b"TES4", "Bytes.esp", "fo4", True, "Strings", "en", "Bytes.esp")]
 
 
+def test_plugin_handle_collect_cell_children_preserves_raw_form_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[object, ...]] = []
+
+    def plugin_handle_collect_cell_children(*args: object) -> list[dict[str, object]]:
+        calls.append(args)
+        return []
+
+    monkeypatch.setattr(
+        native_runtime,
+        "load_native_module",
+        lambda: SimpleNamespace(
+            plugin_handle_collect_cell_children=plugin_handle_collect_cell_children
+        ),
+    )
+
+    assert native_runtime.plugin_handle_collect_cell_children(7, 0x01000800) == []
+    assert calls == [(7, 0x01000800)]
+
+
 def test_plugin_handle_import_text_forwards_to_function_entrypoint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -174,6 +195,140 @@ def test_plugin_handle_close_forwards_to_function_entrypoint(
 
     assert result is True
     assert calls == [(99,)]
+
+
+def test_plugin_handle_collect_assets_reads_workshop_wire_point(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def plugin_handle_collect_assets(*_args: object) -> list[tuple[object, ...]]:
+        return [
+            (
+                "nif",
+                "Meshes/Workshop/Generator.nif",
+                "SeventySix.esm:76B545",
+                "ACTI",
+                "MODL",
+                (3.5, 15.0, 77.0),
+                [
+                    (
+                        "P-76-0A7382",
+                        (0.0, 128.0, -32.0),
+                        (1.0, 0.0, 0.0, 0.0),
+                        1.0,
+                    )
+                ],
+            )
+        ]
+
+    monkeypatch.setattr(
+        native_runtime,
+        "load_native_module",
+        lambda: SimpleNamespace(plugin_handle_collect_assets=plugin_handle_collect_assets),
+    )
+
+    assets = native_runtime.plugin_handle_collect_assets([1], [])
+
+    assert assets == [
+        {
+            "asset_type": "nif",
+            "source_path": "Meshes/Workshop/Generator.nif",
+            "source_form_key": "SeventySix.esm:76B545",
+            "source_record_signature": "ACTI",
+            "source_subrecord_sig": "MODL",
+            "workshop_wire_point": (3.5, 15.0, 77.0),
+            "workshop_snap_points": [
+                (
+                    "P-76-0A7382",
+                    (0.0, 128.0, -32.0),
+                    (1.0, 0.0, 0.0, 0.0),
+                    1.0,
+                )
+            ],
+            "owner_claims": [
+                {
+                    "source_form_key": "SeventySix.esm:76B545",
+                    "source_record_signature": "ACTI",
+                    "source_subrecord_sig": "MODL",
+                    "idle_topology": [],
+                }
+            ],
+        }
+    ]
+
+
+def test_plugin_handle_collect_assets_decodes_all_owner_claims_and_idle_topology(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def plugin_handle_collect_assets(*_args: object) -> list[tuple[object, ...]]:
+        return [
+            (
+                "kf_animation",
+                "creatures/NVGecko/IdleAnims/MT_SpecialIdle_EyeLickLeft.kf",
+                "FalloutNV.esm:11819B",
+                "IDLE",
+                "MODL",
+                None,
+                None,
+                [
+                    (
+                        "FalloutNV.esm:11819B",
+                        "IDLE",
+                        "MODL",
+                        [
+                            (
+                                "FalloutNV.esm:11819B",
+                                "creatures/NVGecko/IdleAnims/MT_SpecialIdle_EyeLickLeft.kf",
+                                "FalloutNV.esm:118199",
+                                None,
+                                [("CTDA", "00010203")],
+                            ),
+                            (
+                                "FalloutNV.esm:118199",
+                                "creatures/NVGecko/IdleAnims",
+                                None,
+                                "FalloutNV.esm:11D9E9",
+                                [],
+                            ),
+                        ],
+                    ),
+                    (
+                        "FalloutNV.esm:11829B",
+                        "IDLE",
+                        "MODL",
+                        [],
+                    ),
+                ],
+            )
+        ]
+
+    monkeypatch.setattr(
+        native_runtime,
+        "load_native_module",
+        lambda: SimpleNamespace(plugin_handle_collect_assets=plugin_handle_collect_assets),
+    )
+
+    asset = native_runtime.plugin_handle_collect_assets([1], [2])[0]
+
+    assert [claim["source_form_key"] for claim in asset["owner_claims"]] == [
+        "FalloutNV.esm:11819B",
+        "FalloutNV.esm:11829B",
+    ]
+    assert asset["owner_claims"][0]["idle_topology"] == [
+        {
+            "form_key": "FalloutNV.esm:11819B",
+            "model_path": "creatures/NVGecko/IdleAnims/MT_SpecialIdle_EyeLickLeft.kf",
+            "parent_form_key": "FalloutNV.esm:118199",
+            "previous_form_key": None,
+            "conditions": [{"signature": "CTDA", "raw_hex": "00010203"}],
+        },
+        {
+            "form_key": "FalloutNV.esm:118199",
+            "model_path": "creatures/NVGecko/IdleAnims",
+            "parent_form_key": None,
+            "previous_form_key": "FalloutNV.esm:11D9E9",
+            "conditions": [],
+        },
+    ]
 
 
 def test_plugin_handle_get_reads_metadata_for_handle_ids(

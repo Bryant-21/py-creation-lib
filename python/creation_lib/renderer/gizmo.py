@@ -101,16 +101,10 @@ class GizmoManager:
         self.mode = mode
 
     def draw(self, camera, viewport_pos, viewport_size, selected_node):
-        """Draw ImGuizmo overlays in the viewport.
+        """Draw ImGuizmo overlays; return the new glm.mat4 if manipulated, else None.
 
-        Args:
-            camera: OrbitCamera instance
-            viewport_pos: ImVec2 of viewport panel screen position
-            viewport_size: ImVec2 of viewport panel content size
-            selected_node: SceneNode or None
-
-        Returns:
-            New glm.mat4 transform if gizmo was manipulated, None otherwise.
+        ``viewport_pos`` and ``viewport_size`` are the panel's screen position and
+        content size (ImVec2).
         """
         if not self.enabled:
             return None

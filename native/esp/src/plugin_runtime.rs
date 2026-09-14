@@ -11,7 +11,8 @@ use serde::Deserialize;
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use sha2::{Digest, Sha256};
 use smol_str::SmolStr;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::borrow::Cow;
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::fs::File;
 use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
@@ -66,6 +67,8 @@ pub use asset_index::*;
 #[path = "plugin_index.rs"]
 mod plugin_index;
 pub use plugin_index::*;
+#[path = "master_edit.rs"]
+mod master_edit;
 #[path = "cell_slice.rs"]
 mod cell_slice;
 pub use cell_slice::*;
@@ -345,7 +348,54 @@ fn optional_string_owned(value: Bound<'_, PyAny>) -> PyResult<Option<String>> {
 pub struct LazyRecordStore {
     buffer: Bytes,
     header_size: usize,
-    offsets: rustc_hash::FxHashMap<u32, usize>,
+    /// Offset of the first record after the TES4 header.
+    root_start: usize,
+    /// Built on first use. A direct form-id read early-exits through
+    /// `RecordCursor` and never touches this; materializing it at load cost
+    /// 218 MB on SeventySix.esm for lookups that did not need it.
+    offsets: std::sync::OnceLock<rustc_hash::FxHashMap<u32, usize>>,
+    /// Lookups served before the map existed. See [`Self::offset_of`].
+    probes: std::sync::atomic::AtomicUsize,
+}
+
+impl LazyRecordStore {
+    fn cursor(&self) -> crate::record_cursor::RecordCursor<'_> {
+        crate::record_cursor::RecordCursor::new(&self.buffer, self.header_size, self.root_start)
+    }
+
+    /// Full `form_id -> offset` map, built on first call. Only callers that
+    /// genuinely need every record (an object-id search) should reach for this.
+    pub(crate) fn offsets(&self) -> &rustc_hash::FxHashMap<u32, usize> {
+        self.offsets.get_or_init(|| {
+            let mut map = rustc_hash::FxHashMap::default();
+            self.cursor().scan(&mut |view| {
+                map.insert(view.form_id, view.offset);
+                std::ops::ControlFlow::Continue(())
+            });
+            map
+        })
+    }
+
+    /// Offset of a single record, indexing the file only once it is clear the
+    /// caller wants more than one record.
+    ///
+    /// Scanning for a single form id beats indexing 5.6M records, but only for
+    /// the first lookup: each scan is O(records), so a caller that probes once
+    /// per record (BACUP on its lazy read-only masters) is O(records^2). The
+    /// second probe pays for the map and every later one is O(1).
+    pub(crate) fn offset_of(&self, form_id: u32) -> Option<usize> {
+        if let Some(map) = self.offsets.get() {
+            return map.get(&form_id).copied();
+        }
+        if self
+            .probes
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            == 0
+        {
+            return self.cursor().find_form_id(form_id);
+        }
+        self.offsets().get(&form_id).copied()
+    }
 }
 
 pub struct NativePluginSlot {
@@ -397,6 +447,73 @@ impl NativePluginSlot {
     /// refcount slices into the buffer — no per-byte copy.
     pub fn lazy_record(&self, raw_form_id: u32) -> Option<ParsedRecord> {
         lazy_materialize_record(self, raw_form_id)
+    }
+
+    /// Re-parse every record under the locally owned CELL's child group from
+    /// an index-only handle. The returned group type is the immediate group
+    /// containing each record (normally persistent=8 or temporary=9).
+    pub fn lazy_cell_children(
+        &self,
+        requested_cell_form_id: u32,
+    ) -> Result<Vec<(i32, ParsedRecord)>, String> {
+        let lazy = self.lazy.as_ref().ok_or_else(|| {
+            "lazy_cell_children requires an index-only (lazy) plugin handle".to_string()
+        })?;
+        let own_index = u32::try_from(self.parsed.header.masters.len())
+            .map_err(|_| "plugin has too many masters to encode a local FormID".to_string())?;
+        if own_index > u8::MAX as u32 {
+            return Err("plugin has too many masters to encode a local FormID".to_string());
+        }
+        let object_id = requested_cell_form_id & 0x00FF_FFFF;
+        let local_form_id = (own_index << 24) | object_id;
+        // Resolve through `offset_of` so a targeted CELL lookup can early-exit
+        // instead of indexing every record in the plugin.
+        let requested_offset = lazy.offset_of(requested_cell_form_id);
+        let (cell_form_id, cell_offset) = if requested_cell_form_id > 0x00FF_FFFF
+            || requested_offset.is_some()
+        {
+            match requested_offset {
+                Some(offset) => (requested_cell_form_id, offset),
+                None => return Ok(Vec::new()),
+            }
+        } else {
+            match lazy.offset_of(local_form_id) {
+                Some(offset) => (local_form_id, offset),
+                None => return Ok(Vec::new()),
+            }
+        };
+        let (cell, after_cell) =
+            parse_record(&lazy.buffer, cell_offset, lazy.header_size, false)
+                .map_err(|err| format!("re-parsing CELL {cell_form_id:08X}: {err}"))?;
+        if cell.signature.as_str() != "CELL" {
+            return Err(format!(
+                "indexed record {cell_form_id:08X} is {}, not CELL",
+                cell.signature
+            ));
+        }
+        let cell_label = cell_form_id.to_le_bytes();
+        let Some(children_offset) =
+            cell_children_group_offset(&lazy.buffer, after_cell, lazy.header_size, cell_label)?
+        else {
+            return Ok(Vec::new());
+        };
+        let (children_group, _) =
+            parse_group(&lazy.buffer, children_offset, lazy.header_size, true).map_err(|err| {
+                format!("parsing CELL {cell_form_id:08X} Cell-Children GRUP: {err}")
+            })?;
+
+        fn collect(group: &ParsedGroup, out: &mut Vec<(i32, ParsedRecord)>) {
+            for child in &group.children {
+                match child {
+                    ParsedItem::Record(record) => out.push((group.group_type, record.clone())),
+                    ParsedItem::Group(nested) => collect(nested, out),
+                }
+            }
+        }
+
+        let mut records = Vec::new();
+        collect(&children_group, &mut records);
+        Ok(records)
     }
 
     /// Read-only accessor for the slot's `LocalizedStringsState`.
@@ -569,13 +686,116 @@ impl NativePluginSlot {
 
 pub fn ensure_core_section(slot: &mut NativePluginSlot) -> Arc<CoreSection> {
     if slot.sections.core.is_none() {
-        slot.sections.core = Some(Arc::new(build_core_section(&slot.parsed)));
+        let built = if slot.lazy.is_some() {
+            build_core_section_streaming(slot)
+        } else {
+            build_core_section(&slot.parsed)
+        };
+        slot.sections.core = Some(Arc::new(built));
     }
     slot.sections
         .core
         .as_ref()
         .expect("core section populated above")
         .clone()
+}
+
+/// `build_core_section` for a lazy handle, whose `root_items` is empty.
+///
+/// Streams the source bytes and hands `record_index_entry_for_record` a stub
+/// carrying only the fields an index entry reads, so the output is identical to
+/// the tree-built section without ever materializing the tree. The stub is
+/// dropped each iteration; only the resulting entries persist.
+fn build_core_section_streaming(slot: &NativePluginSlot) -> CoreSection {
+    let Some(lazy) = slot.lazy.as_ref() else {
+        return CoreSection::default();
+    };
+    let own_plugin_name: Arc<str> = Arc::from(slot.parsed.plugin_name.as_str());
+    let masters = &slot.parsed.header.masters;
+    let mut core = CoreSection::default();
+
+    lazy.cursor().scan(&mut |view| {
+        let signature = SmolStr::new(String::from_utf8_lossy(view.signature).as_ref());
+        let stub = ParsedRecord {
+            signature: signature.clone(),
+            form_id: view.form_id,
+            flags: view.flags,
+            version_control: 0,
+            form_version: None,
+            version2: None,
+            subrecords: first_edid_subrecord(view.payload, view.flags)
+                .into_iter()
+                .collect(),
+            raw_payload: None,
+            parse_error: None,
+        };
+        let entry = record_index_entry_for_record(&stub, &own_plugin_name, masters);
+        let form_key = entry.form_key.clone();
+
+        core.form_ids_by_object_id
+            .entry(view.form_id & 0x00FF_FFFF)
+            .or_default()
+            .push(view.form_id);
+        core.form_ids_by_signature
+            .entry(signature.clone())
+            .or_default()
+            .push(view.form_id);
+        if !entry.eid.is_empty() {
+            core.by_eid_lower
+                .entry(entry.eid.to_ascii_lowercase())
+                .or_default()
+                .push(form_key.clone());
+        }
+        core.by_form_key.insert(form_key.clone(), entry);
+        core.by_signature_form_keys
+            .entry(signature)
+            .or_default()
+            .push(form_key);
+        std::ops::ControlFlow::Continue(())
+    });
+
+    core
+}
+
+/// The `EDID` subrecord of an encoded payload, if it has one.
+///
+/// Only 5.7% of records in SeventySix.esm carry an EditorID, so this gives up
+/// after a few subrecords instead of walking every subrecord of every record
+/// looking for one that usually is not there. COMPRESSED payloads are zlib
+/// framed, so `EDID` is invisible without inflating first - that is 1.3% of
+/// records and about 0.65 s across the whole plugin.
+fn first_edid_subrecord(payload: &[u8], flags: u32) -> Option<ParsedSubrecord> {
+    const MAX_SUBRECORDS_SCANNED: usize = 3;
+
+    if (flags & COMPRESSED_RECORD_FLAG) != 0 {
+        if payload.len() < 4 {
+            return None;
+        }
+        let mut inflated = Vec::new();
+        ZlibDecoder::new(&payload[4..])
+            .read_to_end(&mut inflated)
+            .ok()?;
+        return first_edid_subrecord(&inflated, 0);
+    }
+
+    let mut cursor = 0usize;
+    for _ in 0..MAX_SUBRECORDS_SCANNED {
+        if cursor + 6 > payload.len() {
+            return None;
+        }
+        let length = u16::from_le_bytes([payload[cursor + 4], payload[cursor + 5]]) as usize;
+        let start = cursor + 6;
+        let end = (start + length).min(payload.len());
+        if &payload[cursor..cursor + 4] == b"EDID" {
+            return Some(ParsedSubrecord {
+                signature: SmolStr::new_static("EDID"),
+                data: Bytes::copy_from_slice(&payload[start..end]),
+                semantic_type: None,
+            });
+        }
+        cursor = start + length;
+    }
+    None
 }
 
 pub fn ensure_records_section(slot: &mut NativePluginSlot) -> Arc<RecordsSection> {
@@ -708,21 +928,17 @@ fn insert_plugin_handle(parsed: ParsedPlugin, strings: LocalizedStringsState) ->
 fn insert_plugin_handle_lazy(
     parsed: ParsedPlugin,
     strings: LocalizedStringsState,
-    core: CoreSection,
     lazy: LazyRecordStore,
-    record_count: usize,
 ) -> u64 {
     let id = NEXT_PLUGIN_HANDLE_ID.fetch_add(1, Ordering::Relaxed);
-    let mut sections = PluginIndexSections::default();
-    sections.core = Some(Arc::new(core));
     plugin_handle_store().lock().unwrap().insert(
         id,
         NativePluginSlot {
             parsed,
             strings,
             localized_text_index: None,
-            record_count_cache: Some(record_count),
-            sections,
+            record_count_cache: None,
+            sections: PluginIndexSections::default(),
             lazy: Some(lazy),
         },
     );
@@ -737,10 +953,337 @@ pub(crate) fn lazy_materialize_record(
     raw_form_id: u32,
 ) -> Option<ParsedRecord> {
     let lazy = slot.lazy.as_ref()?;
-    let &offset = lazy.offsets.get(&raw_form_id)?;
+    let offset = lazy.offset_of(raw_form_id)?;
     parse_record(&lazy.buffer, offset, lazy.header_size, true)
         .ok()
         .map(|(record, _)| record)
+}
+
+fn cell_children_group_offset(
+    buffer: &Bytes,
+    offset: usize,
+    header_size: usize,
+    cell_label: [u8; 4],
+) -> Result<Option<usize>, String> {
+    if offset >= buffer.len() {
+        return Ok(None);
+    }
+    if offset + 4 > buffer.len() {
+        return Err(format!(
+            "malformed plugin: {} trailing byte(s) after CELL {:08X}",
+            buffer.len() - offset,
+            u32::from_le_bytes(cell_label)
+        ));
+    }
+    if &buffer[offset..offset + 4] != b"GRUP" {
+        return Ok(None);
+    }
+    if offset + header_size > buffer.len() {
+        return Err(format!(
+            "malformed plugin: truncated GRUP header after CELL {:08X}",
+            u32::from_le_bytes(cell_label)
+        ));
+    }
+    let group_type = read_i32(buffer, offset + 12).map_err(|err| err.to_string())?;
+    if group_type != CELL_CHILD_GROUP {
+        return Ok(None);
+    }
+    let mut label = [0u8; 4];
+    label.copy_from_slice(&buffer[offset + 8..offset + 12]);
+    if label != cell_label {
+        return Err(format!(
+            "malformed plugin: Cell-Children GRUP after CELL {:08X} is labelled {:08X}",
+            u32::from_le_bytes(cell_label),
+            u32::from_le_bytes(label)
+        ));
+    }
+    let group_size = read_u32(buffer, offset + 4).map_err(|err| err.to_string())? as usize;
+    let group_end = offset.checked_add(group_size).ok_or_else(|| {
+        format!(
+            "malformed plugin: Cell-Children GRUP size overflow for CELL {:08X}",
+            u32::from_le_bytes(cell_label)
+        )
+    })?;
+    if group_size < header_size || group_end > buffer.len() {
+        return Err(format!(
+            "malformed plugin: Cell-Children GRUP for CELL {:08X} is truncated \
+             (declared size {group_size}, {} byte(s) remain)",
+            u32::from_le_bytes(cell_label),
+            buffer.len() - offset
+        ));
+    }
+    Ok(Some(offset))
+}
+
+/// Byte-level plugin builders shared by the tests in this crate.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::*;
+
+    pub(crate) fn record(signature: &[u8; 4], form_id: u32, flags: u32, payload: &[u8]) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(MODERN_HEADER_SIZE + payload.len());
+        bytes.extend_from_slice(signature);
+        bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&flags.to_le_bytes());
+        bytes.extend_from_slice(&form_id.to_le_bytes());
+        bytes.extend_from_slice(&[0u8; 8]);
+        bytes.extend_from_slice(payload);
+        bytes
+    }
+
+    pub(crate) fn subrecord(signature: &[u8; 4], data: &[u8]) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(6 + data.len());
+        bytes.extend_from_slice(signature);
+        bytes.extend_from_slice(&(data.len() as u16).to_le_bytes());
+        bytes.extend_from_slice(data);
+        bytes
+    }
+
+    pub(crate) fn group(label: [u8; 4], group_type: i32, children: &[u8]) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(MODERN_HEADER_SIZE + children.len());
+        bytes.extend_from_slice(b"GRUP");
+        bytes.extend_from_slice(&((MODERN_HEADER_SIZE + children.len()) as u32).to_le_bytes());
+        bytes.extend_from_slice(&label);
+        bytes.extend_from_slice(&group_type.to_le_bytes());
+        bytes.extend_from_slice(&[0u8; 8]);
+        bytes.extend_from_slice(children);
+        bytes
+    }
+
+    pub(crate) fn compressed_record(signature: &[u8; 4], form_id: u32, payload: &[u8]) -> Vec<u8> {
+        let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(payload).unwrap();
+        let compressed = encoder.finish().unwrap();
+        let mut encoded = Vec::with_capacity(4 + compressed.len());
+        encoded.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        encoded.extend_from_slice(&compressed);
+        record(signature, form_id, COMPRESSED_RECORD_FLAG, &encoded)
+    }
+}
+
+#[cfg(test)]
+mod lazy_offset_probe_tests {
+    use super::test_support::{group, record, subrecord};
+    use super::{LazyRecordStore, MODERN_HEADER_SIZE};
+    use bytes::Bytes;
+
+    fn store(record_count: u32) -> LazyRecordStore {
+        let mut children = Vec::new();
+        for index in 0..record_count {
+            children.extend_from_slice(&record(
+                b"REFR",
+                0x0100_0000 + index,
+                0,
+                &subrecord(b"EDID", b"B21_Probe\0"),
+            ));
+        }
+        let mut data = Vec::new();
+        data.extend_from_slice(&record(b"TES4", 0, 0, &[]));
+        let root_start = data.len();
+        data.extend_from_slice(&group(*b"REFR", 0, &children));
+        LazyRecordStore {
+            buffer: Bytes::from(data),
+            header_size: MODERN_HEADER_SIZE,
+            root_start,
+            offsets: std::sync::OnceLock::new(),
+            probes: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    #[test]
+    fn one_lookup_does_not_index_the_file() {
+        let store = store(64);
+        assert!(store.offset_of(0x0100_0005).is_some());
+        assert!(
+            store.offsets.get().is_none(),
+            "a single form-id read must not build the offsets map"
+        );
+    }
+
+    #[test]
+    fn repeated_lookups_switch_to_the_index() {
+        // A caller that probes once per record - BACUP's conversion fixups scan
+        // their read-only masters that way - must not pay a full scan per probe.
+        let store = store(64);
+        assert!(store.offset_of(0x0100_0005).is_some());
+        assert!(store.offset_of(0x0100_0006).is_some());
+        assert!(
+            store.offsets.get().is_some(),
+            "the second lookup must build the offsets map, not scan again"
+        );
+        assert_eq!(store.offsets.get().unwrap().len(), 64);
+        for index in 0..64u32 {
+            assert!(store.offset_of(0x0100_0000 + index).is_some());
+        }
+        assert!(store.offset_of(0x0200_0000).is_none());
+    }
+}
+
+#[cfg(test)]
+mod lazy_cell_children_tests {
+    use super::*;
+    use crate::plugin_runtime::test_support::{compressed_record, group, record, subrecord};
+
+    fn lazy_slot(buffer: Vec<u8>, masters: Vec<String>) -> NativePluginSlot {
+        let buffer = Bytes::from(buffer);
+        let mut offsets = rustc_hash::FxHashMap::default();
+        scan_record_offsets(&buffer, 0, buffer.len(), MODERN_HEADER_SIZE, &mut offsets);
+        let mut header = ParsedPluginHeader::default_for_test();
+        header.masters = masters;
+        NativePluginSlot {
+            parsed: ParsedPlugin {
+                plugin_name: "Test.esp".to_string(),
+                file_path: String::new(),
+                header_size: MODERN_HEADER_SIZE,
+                header,
+                root_items: Vec::new(),
+                game: Some("fo4".to_string()),
+            },
+            strings: LocalizedStringsState::default(),
+            localized_text_index: None,
+            record_count_cache: Some(offsets.len()),
+            sections: PluginIndexSections::default(),
+            lazy: Some(LazyRecordStore {
+                buffer,
+                header_size: MODERN_HEADER_SIZE,
+                root_start: 0,
+                offsets: std::sync::OnceLock::from(offsets),
+                probes: std::sync::atomic::AtomicUsize::new(0),
+            }),
+        }
+    }
+
+    #[test]
+    fn reads_owned_cell_sections_from_plugin_with_master_and_inflates_records() {
+        let cell = 0x0100_0010u32;
+        let persistent = record(b"REFR", 0x0100_0011, 0, &subrecord(b"NAME", &[1, 0, 0, 0]));
+        let temporary = compressed_record(b"REFR", 0x0100_0012, &subrecord(b"NAME", &[2, 0, 0, 0]));
+        let direct = record(b"LAND", 0x0100_0013, 0, &[]);
+        let children = group(
+            cell.to_le_bytes(),
+            CELL_CHILD_GROUP,
+            &[
+                direct,
+                group(cell.to_le_bytes(), PERSISTENT_GROUP, &persistent),
+                group(cell.to_le_bytes(), TEMPORARY_GROUP, &temporary),
+            ]
+            .concat(),
+        );
+        let slot = lazy_slot(
+            [record(b"CELL", cell, 0, &[]), children].concat(),
+            vec!["Fallout4.esm".to_string()],
+        );
+
+        let got = slot.lazy_cell_children(0x000010).unwrap();
+
+        assert_eq!(
+            got.iter()
+                .map(|(group_type, record)| (
+                    *group_type,
+                    record.signature.as_str(),
+                    record.form_id
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                (CELL_CHILD_GROUP, "LAND", 0x0100_0013),
+                (PERSISTENT_GROUP, "REFR", 0x0100_0011),
+                (TEMPORARY_GROUP, "REFR", 0x0100_0012),
+            ]
+        );
+        assert!(got[2].1.subrecords.iter().any(|subrecord| {
+            subrecord.signature.as_str() == "NAME" && subrecord.data.as_ref() == [2, 0, 0, 0]
+        }));
+    }
+
+    #[test]
+    fn childless_cell_returns_empty_when_sibling_record_follows() {
+        let cell = 0x0000_0020u32;
+        let slot = lazy_slot(
+            [
+                record(b"CELL", cell, 0, &[]),
+                record(b"CELL", 0x0000_0021, 0, &[]),
+            ]
+            .concat(),
+            Vec::new(),
+        );
+
+        assert!(slot.lazy_cell_children(cell).unwrap().is_empty());
+    }
+
+    #[test]
+    fn raw_form_id_distinguishes_master_override_from_local_cell() {
+        let object_id = 0x0000_0020u32;
+        let local_cell = 0x0100_0020u32;
+        let base_children = group(
+            object_id.to_le_bytes(),
+            CELL_CHILD_GROUP,
+            &group(
+                object_id.to_le_bytes(),
+                TEMPORARY_GROUP,
+                &record(b"REFR", 0x0000_0021, 0, &[]),
+            ),
+        );
+        let local_children = group(
+            local_cell.to_le_bytes(),
+            CELL_CHILD_GROUP,
+            &group(
+                local_cell.to_le_bytes(),
+                TEMPORARY_GROUP,
+                &record(b"REFR", 0x0100_0021, 0, &[]),
+            ),
+        );
+        let slot = lazy_slot(
+            [
+                record(b"CELL", object_id, 0, &[]),
+                base_children,
+                record(b"CELL", local_cell, 0, &[]),
+                local_children,
+            ]
+            .concat(),
+            vec!["Fallout4.esm".to_string()],
+        );
+
+        assert_eq!(
+            slot.lazy_cell_children(object_id).unwrap()[0].1.form_id,
+            0x0000_0021
+        );
+        assert_eq!(
+            slot.lazy_cell_children(local_cell).unwrap()[0].1.form_id,
+            0x0100_0021
+        );
+    }
+
+    #[test]
+    fn mislabelled_cell_children_group_is_an_error() {
+        let cell = 0x0000_0030u32;
+        let children = group(
+            0x0000_0031u32.to_le_bytes(),
+            CELL_CHILD_GROUP,
+            &group(cell.to_le_bytes(), TEMPORARY_GROUP, &[]),
+        );
+        let slot = lazy_slot(
+            [record(b"CELL", cell, 0, &[]), children].concat(),
+            Vec::new(),
+        );
+
+        let Err(error) = slot.lazy_cell_children(cell) else {
+            panic!("mislabelled Cell-Children group must fail");
+        };
+
+        assert!(error.contains("labelled 00000031"), "got: {error}");
+    }
+
+    #[test]
+    fn eager_handle_is_rejected() {
+        let mut slot = lazy_slot(Vec::new(), Vec::new());
+        slot.lazy = None;
+
+        let Err(error) = slot.lazy_cell_children(0x10) else {
+            panic!("eager handle must fail");
+        };
+
+        assert!(error.contains("index-only"), "got: {error}");
+    }
 }
 
 pub fn clone_plugin_handle_state(
@@ -828,21 +1371,17 @@ pub fn plugin_handle_find_record_object_id_by_editor_id_no_py(
     signature: &str,
     editor_id: &str,
 ) -> Result<Option<u32>, String> {
-    let store = plugin_handle_store()
+    let mut store = plugin_handle_store()
         .lock()
         .map_err(|e| format!("plugin handle store lock poisoned: {e}"))?;
     let slot = store
-        .get(&handle_id)
+        .get_mut(&handle_id)
         .ok_or_else(|| format!("unknown plugin handle: {handle_id}"))?;
     if slot.lazy.is_some() {
-        // Lazy handle: the tree is dropped, so answer from the prebuilt core
-        // index (`by_eid_lower` keyed by ascii-lowercased editor_id, matching
-        // `build_core_section`).
-        let core = slot
-            .sections
-            .core
-            .as_ref()
-            .expect("lazy handle has a prebuilt core section");
+        // Lazy handle: the tree is dropped, so answer from the core index
+        // (`by_eid_lower` keyed by ascii-lowercased editor_id, matching
+        // `build_core_section`). Built on demand by streaming the source bytes.
+        let core = ensure_core_section(slot);
         let wanted = editor_id.to_ascii_lowercase();
         let sig = smol_str::SmolStr::new(signature);
         if let Some(form_keys) = core.by_eid_lower.get(&wanted) {
@@ -862,6 +1401,52 @@ pub fn plugin_handle_find_record_object_id_by_editor_id_no_py(
         signature,
         &wanted_editor_id,
     ))
+}
+
+/// Return authoring FormKeys for every record with `signature`.
+///
+/// This is the non-Python counterpart to `plugin_handle_record_form_ids` for
+/// native consumers that need to enumerate a small record family and then
+/// materialize individual records through the authoring JSON reader.
+pub fn plugin_handle_record_form_keys_by_signature_no_py(
+    handle_id: u64,
+    signature: &str,
+) -> Result<Vec<String>, String> {
+    let mut store = plugin_handle_store()
+        .lock()
+        .map_err(|e| format!("plugin handle store lock poisoned: {e}"))?;
+    let slot = store
+        .get_mut(&handle_id)
+        .ok_or_else(|| format!("unknown plugin handle: {handle_id}"))?;
+    let core = ensure_core_section(slot);
+    let signature = SmolStr::new(signature);
+    let mut form_keys = core
+        .by_signature_form_keys
+        .get(&signature)
+        .into_iter()
+        .flatten()
+        .map(FormKey::render)
+        .collect::<Vec<_>>();
+    form_keys.sort_unstable();
+    Ok(form_keys)
+}
+
+/// Resolve a plugin-local/raw FormID using the handle's own master table.
+pub fn plugin_handle_resolve_form_id_no_py(
+    handle_id: u64,
+    raw_form_id: u32,
+) -> Result<String, String> {
+    let store = plugin_handle_store()
+        .lock()
+        .map_err(|e| format!("plugin handle store lock poisoned: {e}"))?;
+    let slot = store
+        .get(&handle_id)
+        .ok_or_else(|| format!("unknown plugin handle: {handle_id}"))?;
+    let own_plugin_name: Arc<str> = Arc::from(slot.parsed.plugin_name.as_str());
+    Ok(
+        resolve_form_id_to_form_key(raw_form_id, &own_plugin_name, &slot.parsed.header.masters)
+            .render(),
+    )
 }
 
 fn max_record_object_id_in_items(items: &[ParsedItem]) -> Option<u32> {
@@ -943,6 +1528,7 @@ pub fn clone_plugin_handle_state_for_authoring(
         .get_mut(&handle_id)
         .ok_or_else(|| PyKeyError::new_err(format!("unknown plugin handle: {handle_id}")))?;
     rehydrate_filtered_strings_for_authoring(slot);
+    slot.strings.materialize_all();
     Ok((slot.parsed.clone(), slot.strings.clone()))
 }
 
@@ -957,6 +1543,7 @@ pub fn clone_plugin_handle_state_for_authoring_no_py(
         .get_mut(&handle_id)
         .ok_or_else(|| format!("unknown plugin handle: {handle_id}"))?;
     rehydrate_filtered_strings_for_authoring(slot);
+    slot.strings.materialize_all();
     Ok((slot.parsed.clone(), slot.strings.clone()))
 }
 
@@ -970,6 +1557,9 @@ pub fn rehydrate_filtered_strings_for_authoring(slot: &mut NativePluginSlot) {
         slot.parsed.plugin_name.as_str(),
         None,
     );
+    // rehydrate_all reads the same loose files and archives an index would,
+    // so the decoded tables now supersede it.
+    slot.strings.lazy_tables = None;
     slot.localized_text_index = None;
 }
 
@@ -980,6 +1570,7 @@ pub fn insert_authoring_record_value(handle_id: u64, value: &JsonValue) -> PyRes
         .ok_or_else(|| PyKeyError::new_err(format!("unknown plugin handle: {handle_id}")))?;
     let old_masters = slot.parsed.header.masters.clone();
     let old_own_index = old_masters.len() as u8;
+    slot.strings.materialize_all();
     let old_strings = slot.strings.clone();
     let mut context = NativeImportContext::new(
         slot.parsed.plugin_name.clone(),
@@ -1094,6 +1685,48 @@ pub fn plugin_handle_read_authoring_record_value_json(
     )))
 }
 
+/// Read exact subrecord payloads without schema decoding.
+///
+/// Native conversion code uses this for signatures that are overloaded by
+/// Starfield base-form component scopes, where authoring-key dispatch can be
+/// intentionally lossy even though the underlying plugin bytes are valid.
+pub fn plugin_handle_read_raw_subrecords_no_py(
+    handle_id: u64,
+    form_key: &str,
+    subrecord_signature: &str,
+) -> Result<Vec<Vec<u8>>, String> {
+    fn collect(record: &ParsedRecord, signature: &str) -> Vec<Vec<u8>> {
+        effective_subrecords_for_record(record)
+            .iter()
+            .filter(|subrecord| subrecord.signature == signature)
+            .map(|subrecord| subrecord.data.to_vec())
+            .collect()
+    }
+
+    let mut store = plugin_handle_store()
+        .lock()
+        .map_err(|error| format!("plugin handle store lock poisoned: {error}"))?;
+    let slot = store
+        .get_mut(&handle_id)
+        .ok_or_else(|| format!("unknown plugin handle: {handle_id}"))?;
+    let core = ensure_core_section(slot);
+    let Some(entry) = record_index_entry_by_form_key(&core, form_key) else {
+        return Ok(Vec::new());
+    };
+    let raw_form_id = entry.raw_form_id;
+    if slot.lazy.is_some() {
+        let Some(record) = lazy_materialize_record(slot, raw_form_id) else {
+            return Ok(Vec::new());
+        };
+        return Ok(collect(&record, subrecord_signature));
+    }
+    let records = ensure_records_section(slot);
+    let Some(record) = records.record(&slot.parsed, raw_form_id) else {
+        return Ok(Vec::new());
+    };
+    Ok(collect(record, subrecord_signature))
+}
+
 /// Look up a record by `(editor_id, signature)` and return `(form_key, authoring_dict_json)`.
 /// `editor_id` is matched case-insensitively; `signature` is matched exactly (e.g. `"TXST"`).
 /// Returns `None` if no matching record exists. Callable from non-Python Rust (no GIL needed).
@@ -1148,6 +1781,7 @@ pub fn plugin_handle_replace_authoring_record_value(
         .ok_or_else(|| PyKeyError::new_err(format!("unknown plugin handle: {handle_id}")))?;
     let old_masters = slot.parsed.header.masters.clone();
     let old_own_index = old_masters.len() as u8;
+    slot.strings.materialize_all();
     let old_strings = slot.strings.clone();
     let mut context = NativeImportContext::new(
         slot.parsed.plugin_name.clone(),
@@ -1215,6 +1849,97 @@ pub fn plugin_handle_replace_authoring_record_value(
     Ok(form_key)
 }
 
+pub fn plugin_handle_replace_authoring_record_values(
+    handle_id: u64,
+    values: &[JsonValue],
+) -> PyResult<Vec<String>> {
+    if values.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    fn parse_values(
+        values: &[JsonValue],
+        context: &mut NativeImportContext,
+    ) -> PyResult<Vec<ParsedRecord>> {
+        values
+            .iter()
+            .map(|value| authoring_value_to_record(value, context))
+            .collect()
+    }
+
+    let mut store = plugin_handle_store().lock().unwrap();
+    let slot = store
+        .get_mut(&handle_id)
+        .ok_or_else(|| PyKeyError::new_err(format!("unknown plugin handle: {handle_id}")))?;
+    let old_masters = slot.parsed.header.masters.clone();
+    let old_own_index = old_masters.len() as u8;
+    slot.strings.materialize_all();
+    let old_strings = slot.strings.clone();
+    let mut context = NativeImportContext::new(
+        slot.parsed.plugin_name.clone(),
+        slot.parsed.game.clone(),
+        slot.parsed.header_size,
+        slot.parsed.header.clone(),
+    );
+    context.strings = old_strings.clone();
+
+    let mut records = parse_values(values, &mut context)?;
+    if context.header.masters != old_masters {
+        let mut reparsed_context = NativeImportContext::new(
+            slot.parsed.plugin_name.clone(),
+            slot.parsed.game.clone(),
+            slot.parsed.header_size,
+            context.header.clone(),
+        );
+        reparsed_context.strings = old_strings;
+        records = parse_values(values, &mut reparsed_context)?;
+        context = reparsed_context;
+    }
+    if context.header.masters != old_masters {
+        let target_masters = context.header.masters.clone();
+        let target_own_index = target_masters.len() as u8;
+        remap_formids_in_items(
+            &mut slot.parsed.root_items,
+            &old_masters,
+            &target_masters,
+            old_own_index,
+            target_own_index,
+        );
+    }
+    let masters_changed = context.header.masters != old_masters;
+    slot.parsed.header = context.header;
+    slot.strings = context.strings;
+
+    for record in &mut records {
+        if record.form_id == 0 {
+            let object_id = slot.parsed.header.next_object_id & 0x00FF_FFFF;
+            record.form_id = ((slot.parsed.header.masters.len() as u32) << 24) | object_id;
+            slot.parsed.header.next_object_id = (object_id + 1) & 0x00FF_FFFF;
+        }
+    }
+
+    let own_plugin_name: Arc<str> = Arc::from(slot.parsed.plugin_name.as_str());
+    let form_keys = records
+        .iter()
+        .map(|record| {
+            resolve_form_id_to_form_key(
+                record.form_id,
+                &own_plugin_name,
+                &slot.parsed.header.masters,
+            )
+            .to_string()
+        })
+        .collect();
+    replace_parsed_records_in_slot_batch(slot, records);
+    slot.record_count_cache = None;
+    slot.sections.apply_effect(if masters_changed {
+        &WriteEffect::MastersChanged
+    } else {
+        &WriteEffect::RecordsAddedOrRemoved
+    });
+    Ok(form_keys)
+}
+
 pub fn plugin_handle_replace_projected_cell_authoring_record_value(
     handle_id: u64,
     value: &JsonValue,
@@ -1228,6 +1953,7 @@ pub fn plugin_handle_replace_projected_cell_authoring_record_value(
         .ok_or_else(|| PyKeyError::new_err(format!("unknown plugin handle: {handle_id}")))?;
     let old_masters = slot.parsed.header.masters.clone();
     let old_own_index = old_masters.len() as u8;
+    slot.strings.materialize_all();
     let old_strings = slot.strings.clone();
     let mut context = NativeImportContext::new(
         slot.parsed.plugin_name.clone(),
@@ -1363,6 +2089,7 @@ fn plugin_handle_import_projected_cell_authoring_payloads(
         .ok_or_else(|| PyKeyError::new_err(format!("unknown plugin handle: {handle_id}")))?;
     let old_masters = slot.parsed.header.masters.clone();
     let old_own_index = old_masters.len() as u8;
+    slot.strings.materialize_all();
     let old_strings = slot.strings.clone();
     let mut context = NativeImportContext::new(
         slot.parsed.plugin_name.clone(),
@@ -2065,14 +2792,12 @@ pub fn update_plugin_handle_saved_path(handle_id: u64, path: &str) {
 /// `py.allow_threads` has been entered, making the GIL unavailable.
 /// Maps internal `PyErr` failures to `String` errors so callers need
 /// not deal with PyO3 types.
-pub fn plugin_handle_save_no_py(handle_id: u64, output_path: &str) -> Result<(), String> {
-    // Save the slot's tree in place rather than cloning it first. The whole
-    // ParsedPlugin can be ~tens of GB on a full conversion, so the old clone
-    // was a multi-GB transient right at the Build-ESP peak. The write path
-    // mutates via `rewrite_semantic_formids_in_place` (idempotent: it only
-    // rewrites FF-prefixed FormIDs to the own-master index), never re-locks
-    // the handle store (so holding the lock here can't deadlock), and the sole
-    // production caller (`build_esp`) closes the handle immediately afterward.
+fn plugin_handle_write_no_py(handle_id: u64, output_path: &str) -> Result<(), String> {
+    // Save the slot's tree in place rather than cloning it: the ParsedPlugin can
+    // be tens of GB on a full conversion, and a clone lands on the Build-ESP
+    // peak. The write path mutates via `rewrite_semantic_formids_in_place`
+    // (idempotent: it only rewrites FF-prefixed FormIDs to the own-master index)
+    // and never re-locks the handle store, so holding the lock can't deadlock.
     {
         let mut store = plugin_handle_store()
             .lock()
@@ -2083,6 +2808,19 @@ pub fn plugin_handle_save_no_py(handle_id: u64, output_path: &str) -> Result<(),
         io::save_parsed_plugin_no_py(&mut slot.parsed, &slot.strings, output_path)
             .map_err(|e| e.to_string())?;
     }
+    Ok(())
+}
+
+/// Write a mid-run snapshot without changing the handle's plugin name or path.
+pub fn plugin_handle_save_preserving_identity_no_py(
+    handle_id: u64,
+    output_path: &str,
+) -> Result<(), String> {
+    plugin_handle_write_no_py(handle_id, output_path)
+}
+
+pub fn plugin_handle_save_no_py(handle_id: u64, output_path: &str) -> Result<(), String> {
+    plugin_handle_write_no_py(handle_id, output_path)?;
     update_plugin_handle_saved_path(handle_id, output_path);
     Ok(())
 }
@@ -2408,12 +3146,11 @@ pub fn plugin_handle_load_no_py(
     Ok(insert_plugin_handle(parsed, strings))
 }
 
-/// Lazy/index-only load for read-only handles (target masters). Parses the
-/// tree once to build the `CoreSection` (formid/eid/sig index) + a
-/// `form_id -> offset` map, then drops `root_items` and retains only the
-/// (mmap-backed) file buffer. Individual records are re-parsed on demand by the
-/// authoring-read paths. Saves the ~7+ GB resident master trees while keeping
-/// formid->sig / eid lookups and on-demand record reads byte-identical.
+/// Lazy/index-only load for read-only handles (target masters). Parses only the
+/// TES4 header and keeps the (mmap-backed) file buffer; the `CoreSection`
+/// (formid/eid/sig index) is built by streaming those bytes, and records are
+/// re-parsed on demand. Avoids the ~7+ GB resident master trees while keeping
+/// formid->sig / eid lookups and record reads byte-identical.
 #[pyfunction(name = "plugin_handle_load_index")]
 #[pyo3(signature = (plugin_path, game=None, strings_dir=None, language=None))]
 pub fn plugin_handle_load_index_native(
@@ -2453,39 +3190,44 @@ pub fn plugin_handle_load_index_no_py(
         .to_string();
     let file_path_str = file_path.to_string_lossy().into_owned();
     let data = read_plugin_source_bytes(file_path).map_err(|error| error.to_string())?;
-    let mut parsed = parse_plugin_bytes(
-        data.clone(),
-        plugin_name.clone(),
-        file_path_str,
-        game.map(str::to_string),
-    )
-    .map_err(|error| error.to_string())?;
-    let is_localized = (parsed.header.flags & TES4_FLAG_LOCALIZED) != 0;
+
+    // Parse the TES4 header and nothing else. Parsing the whole plugin to build
+    // an index and then dropping the tree peaks at 8.30 GB on SeventySix.esm,
+    // worse than a full load.
+    let header_size = detect_header_size(&data);
+    let (header_record, root_start) =
+        parse_record(&data, 0, header_size, false).map_err(|error| error.to_string())?;
+    if header_record.signature != "TES4" {
+        return Err(format!(
+            "expected TES4 header record, got {}",
+            header_record.signature
+        ));
+    }
+    let header = parse_plugin_header(&header_record);
+    let is_localized = (header.flags & TES4_FLAG_LOCALIZED) != 0;
+    // Index the tables rather than decoding them: 207 MB of loose tables across
+    // 13 languages on SeventySix.esm expand to roughly 1 GB once decoded.
     let strings = if is_localized {
-        strings::hydrate_strings_state(plugin_path, &plugin_name, strings_dir, language)
+        strings::index_strings_state(plugin_path, &plugin_name, strings_dir, language)
     } else {
         LocalizedStringsState::default()
     };
-    let core = build_core_section(&parsed);
-    let record_count = count_records(&parsed.root_items);
-    let header_size = parsed.header_size;
-    let (_tes4, root_start) =
-        parse_record(&data, 0, header_size, false).map_err(|error| error.to_string())?;
-    let mut offsets = rustc_hash::FxHashMap::default();
-    scan_record_offsets(&data, root_start, data.len(), header_size, &mut offsets);
-    parsed.root_items = Vec::new();
+    let parsed = ParsedPlugin {
+        plugin_name,
+        file_path: file_path_str,
+        header_size,
+        header,
+        root_items: Vec::new(),
+        game: game.map(str::to_string),
+    };
     let lazy = LazyRecordStore {
         buffer: data,
         header_size,
-        offsets,
+        root_start,
+        offsets: std::sync::OnceLock::new(),
+            probes: std::sync::atomic::AtomicUsize::new(0),
     };
-    Ok(insert_plugin_handle_lazy(
-        parsed,
-        strings,
-        core,
-        lazy,
-        record_count,
-    ))
+    Ok(insert_plugin_handle_lazy(parsed, strings, lazy))
 }
 
 #[pyfunction(name = "plugin_handle_from_bytes")]
@@ -2560,6 +3302,74 @@ pub fn plugin_handle_close_native(handle_id: u64) -> bool {
         .is_some()
 }
 
+/// Read a plugin handle's canonical master order without requiring the Python GIL.
+pub fn plugin_handle_master_names_no_py(handle_id: u64) -> Result<Vec<String>, String> {
+    let store = plugin_handle_store()
+        .lock()
+        .map_err(|error| format!("plugin handle store lock poisoned: {error}"))?;
+    let slot = store
+        .get(&handle_id)
+        .ok_or_else(|| format!("unknown plugin handle: {handle_id}"))?;
+    Ok(slot.parsed.header.masters.clone())
+}
+
+/// Read the game recorded on a plugin handle without requiring the Python GIL.
+pub fn plugin_handle_game_no_py(handle_id: u64) -> Result<Option<String>, String> {
+    let store = plugin_handle_store()
+        .lock()
+        .map_err(|error| format!("plugin handle store lock poisoned: {error}"))?;
+    let slot = store
+        .get(&handle_id)
+        .ok_or_else(|| format!("unknown plugin handle: {handle_id}"))?;
+    Ok(slot.parsed.game.clone())
+}
+
+/// Record count for a handle, whether or not it owns a tree.
+///
+/// A lazy handle's `root_items` is empty, so counting it returned 0 and
+/// `modkit esp count` reported an empty plugin.
+fn slot_record_count(slot: &mut NativePluginSlot) -> usize {
+    if let Some(value) = slot.record_count_cache {
+        return value;
+    }
+    let value = match slot.lazy.as_ref() {
+        // Reuse the offsets map when something already built it; otherwise walk
+        // headers only. Either way this is the one metadata field that costs a
+        // pass over the file, so `plugin_handle_get_meta` must not ask for it
+        // just to answer `plugin_name`.
+        Some(lazy) => match lazy.offsets.get() {
+            Some(offsets) => offsets.len(),
+            None => lazy.cursor().count_records(),
+        },
+        None => count_records(&slot.parsed.root_items),
+    };
+    slot.record_count_cache = Some(value);
+    value
+}
+
+/// Identity fields that cost nothing to read, for callers that only need to
+/// name a handle. `plugin_handle_get_meta` computes the record count, which on
+/// a lazy handle is a pass over the whole file - 2.25 s on SeventySix.esm just
+/// to learn the plugin is called "SeventySix.esm".
+#[pyfunction(name = "plugin_handle_identity")]
+pub fn plugin_handle_identity_native(
+    py: Python<'_>,
+    handle_id: u64,
+) -> PyResult<(String, String, Option<String>, String)> {
+    py.detach(move || {
+        let store = plugin_handle_store().lock().unwrap();
+        let slot = store
+            .get(&handle_id)
+            .ok_or_else(|| PyKeyError::new_err(format!("unknown plugin handle: {handle_id}")))?;
+        Ok((
+            slot.parsed.plugin_name.clone(),
+            slot.parsed.file_path.clone(),
+            slot.parsed.game.clone(),
+            slot.strings.default_language.clone(),
+        ))
+    })
+}
+
 #[pyfunction(name = "plugin_handle_get_meta")]
 pub fn plugin_handle_get_meta_native(py: Python<'_>, handle_id: u64) -> PyResult<Py<PyAny>> {
     let snapshot = py.detach(move || {
@@ -2567,14 +3377,7 @@ pub fn plugin_handle_get_meta_native(py: Python<'_>, handle_id: u64) -> PyResult
         let slot = store
             .get_mut(&handle_id)
             .ok_or_else(|| PyKeyError::new_err(format!("unknown plugin handle: {handle_id}")))?;
-        let record_count = match slot.record_count_cache {
-            Some(value) => value,
-            None => {
-                let value = count_records(&slot.parsed.root_items);
-                slot.record_count_cache = Some(value);
-                value
-            }
-        };
+        let record_count = slot_record_count(slot);
         Ok::<_, PyErr>(PluginMetadataSnapshot {
             plugin_name: slot.parsed.plugin_name.clone(),
             file_path: slot.parsed.file_path.clone(),
@@ -2595,14 +3398,8 @@ pub fn plugin_handle_metadata_native(py: Python<'_>, handle_id: u64) -> PyResult
         let slot = store
             .get_mut(&handle_id)
             .ok_or_else(|| PyKeyError::new_err(format!("unknown plugin handle: {handle_id}")))?;
-        let record_count = match slot.record_count_cache {
-            Some(value) => value,
-            None => {
-                let value = count_records(&slot.parsed.root_items);
-                slot.record_count_cache = Some(value);
-                value
-            }
-        };
+        let record_count = slot_record_count(slot);
+        slot.strings.materialize_all();
         Ok::<_, PyErr>((
             PluginMetadataSnapshot {
                 plugin_name: slot.parsed.plugin_name.clone(),
@@ -2631,10 +3428,11 @@ pub fn plugin_handle_get_strings_native(
 ) -> PyResult<PluginStringsPayload> {
     let language_owned = language.map(str::to_string);
     let strings_state = py.detach(move || {
-        let store = plugin_handle_store().lock().unwrap();
+        let mut store = plugin_handle_store().lock().unwrap();
         let slot = store
-            .get(&handle_id)
+            .get_mut(&handle_id)
             .ok_or_else(|| PyKeyError::new_err(format!("unknown plugin handle: {handle_id}")))?;
+        slot.strings.materialize_all();
         Ok::<_, PyErr>(slot.strings.clone())
     })?;
     Ok(plugin_strings_payload(
@@ -2849,12 +3647,18 @@ pub fn plugin_handle_group_signatures_native(
             .get(&handle_id)
             .ok_or_else(|| PyKeyError::new_err(format!("unknown plugin handle: {handle_id}")))?;
         let mut groups: Vec<(String, usize)> = Vec::new();
-        for item in &slot.parsed.root_items {
-            if let ParsedItem::Group(group) = item {
-                groups.push((
-                    String::from_utf8_lossy(&group.label).into_owned(),
-                    group.children.len(),
-                ));
+        if let Some(lazy) = slot.lazy.as_ref() {
+            for (label, count) in lazy.cursor().top_level_groups() {
+                groups.push((String::from_utf8_lossy(&label).into_owned(), count));
+            }
+        } else {
+            for item in &slot.parsed.root_items {
+                if let ParsedItem::Group(group) = item {
+                    groups.push((
+                        String::from_utf8_lossy(&group.label).into_owned(),
+                        group.children.len(),
+                    ));
+                }
             }
         }
         Ok::<_, PyErr>(groups)
@@ -2864,6 +3668,37 @@ pub fn plugin_handle_group_signatures_native(
         result.append(pair.into_pyobject(py)?)?;
     }
     Ok(result.into_any().unbind())
+}
+
+#[pyfunction(name = "plugin_handle_record_counts")]
+pub fn plugin_handle_record_counts_native(
+    py: Python<'_>, handle_id: u64,
+) -> PyResult<BTreeMap<String, usize>> {
+    fn count_items(items: &[ParsedItem], counts: &mut BTreeMap<String, usize>) {
+        for item in items {
+            match item {
+                ParsedItem::Group(group) => count_items(&group.children, counts),
+                ParsedItem::Record(record) => {
+                    *counts.entry(record.signature.to_string()).or_default() += 1;
+                }
+            }
+        }
+    }
+    py.detach(move || {
+        let store = plugin_handle_store().lock().unwrap();
+        let slot = store.get(&handle_id)
+            .ok_or_else(|| PyKeyError::new_err(format!("unknown plugin handle: {handle_id}")))?;
+        let mut counts = BTreeMap::new();
+        if let Some(lazy) = slot.lazy.as_ref() {
+            lazy.cursor().scan(&mut |view| {
+                *counts.entry(String::from_utf8_lossy(view.signature).into_owned()).or_default() += 1;
+                std::ops::ControlFlow::Continue(())
+            });
+        } else {
+            count_items(&slot.parsed.root_items, &mut counts);
+        }
+        Ok(counts)
+    })
 }
 
 #[pyfunction(name = "plugin_handle_group_record_summaries")]
@@ -2958,10 +3793,11 @@ pub fn plugin_handle_add_master_no_py(
         .any(|m| m.eq_ignore_ascii_case(master_name))
     {
         let old_masters = slot.parsed.header.masters.clone();
-        slot.parsed.header.masters.push(master_name.to_string());
+        let mut new_masters = old_masters.clone();
+        new_masters.push(master_name.to_string());
+        remap_slot_formids_for_masters(slot, &old_masters, &new_masters)?;
+        slot.parsed.header.masters = new_masters;
         slot.parsed.header.master_sizes.push(size.unwrap_or(0));
-        let new_masters = slot.parsed.header.masters.clone();
-        remap_slot_formids_for_masters(slot, &old_masters, &new_masters);
         slot.sections.apply_effect(&WriteEffect::MastersChanged);
     }
     Ok(())
@@ -2992,15 +3828,10 @@ pub fn plugin_handle_ensure_source_masters_native(
         }
     }
     let old_masters = slot.parsed.header.masters.clone();
-    let mut appended = false;
-    for name in required.into_iter().skip(slot.parsed.header.masters.len()) {
-        slot.parsed.header.masters.push(name);
-        slot.parsed.header.master_sizes.push(0);
-        appended = true;
-    }
-    if appended {
-        let new_masters = slot.parsed.header.masters.clone();
-        remap_slot_formids_for_masters(slot, &old_masters, &new_masters);
+    if required.len() > old_masters.len() {
+        remap_slot_formids_for_masters(slot, &old_masters, &required).map_err(PyValueError::new_err)?;
+        slot.parsed.header.master_sizes.resize(required.len(), 0);
+        slot.parsed.header.masters = required;
         slot.sections.apply_effect(&WriteEffect::MastersChanged);
     }
     Ok(())
@@ -3010,34 +3841,16 @@ fn remap_slot_formids_for_masters(
     slot: &mut NativePluginSlot,
     old_masters: &[String],
     new_masters: &[String],
-) {
+) -> Result<(), String> {
     if old_masters == new_masters {
-        return;
+        return Ok(());
     }
     // The TES4 header keeps a verbatim copy of its on-disk subrecords
     // (`raw_subrecords`) that the serializer writes in preference to the parsed
     // master list. Once masters change that cache is stale, so drop it and let
     // the save regenerate MAST/DATA from `header.masters` (every header field is
     // losslessly captured at load, so regeneration is equivalent).
-    slot.parsed.header.raw_subrecords.clear();
-    let old_own_index = old_masters.len() as u8;
-    let new_own_index = new_masters.len() as u8;
-    remap_formids_in_items(
-        &mut slot.parsed.root_items,
-        old_masters,
-        new_masters,
-        old_own_index,
-        new_own_index,
-    );
-    for form_id in slot.parsed.header.overridden_forms.iter_mut() {
-        *form_id = remap_formid_index(
-            *form_id,
-            old_masters,
-            new_masters,
-            old_own_index,
-            new_own_index,
-        );
-    }
+    master_edit::remap(slot, old_masters, new_masters)
 }
 
 #[pyfunction(name = "plugin_handle_set_masters")]
@@ -3053,9 +3866,9 @@ pub fn plugin_handle_set_masters_native(
     let old_masters = slot.parsed.header.masters.clone();
     let new_masters: Vec<String> = masters.iter().map(|(name, _)| name.clone()).collect();
     let new_sizes: Vec<u64> = masters.iter().map(|(_, size)| *size).collect();
-    slot.parsed.header.masters = new_masters.clone();
+    remap_slot_formids_for_masters(slot, &old_masters, &new_masters).map_err(PyValueError::new_err)?;
+    slot.parsed.header.masters = new_masters;
     slot.parsed.header.master_sizes = new_sizes;
-    remap_slot_formids_for_masters(slot, &old_masters, &new_masters);
     slot.sections.apply_effect(&WriteEffect::MastersChanged);
     Ok(())
 }
@@ -3350,6 +4163,47 @@ pub fn plugin_handle_read_authoring_record_native(
     serde_json::to_string(&value)
         .map(Some)
         .map_err(|e| value_error(format!("serialize record: {e}")))
+}
+
+#[pyfunction(name = "plugin_handle_inspect_record")]
+pub fn plugin_handle_inspect_record_native(
+    py: Python<'_>,
+    handle_id: u64,
+    raw_form_id: u32,
+) -> PyResult<Option<String>> {
+    py.detach(move || {
+        let mut store = plugin_handle_store().lock().unwrap();
+        let slot = store
+            .get_mut(&handle_id)
+            .ok_or_else(|| PyKeyError::new_err(format!("unknown plugin handle: {handle_id}")))?;
+        rehydrate_filtered_strings_for_authoring(slot);
+        let Some(record) = resolve_record_indexed(slot, raw_form_id).map(|record| record.into_owned()) else {
+            return Ok(None);
+        };
+        if record.form_id != raw_form_id {
+            return Ok(None);
+        }
+        let assets = asset_index::extract_asset_paths(&record)
+            .into_iter()
+            .map(|asset| serde_json::json!({
+                "kind": asset.kind.as_str(),
+                "path": asset.path,
+                "field": asset.source_subrecord_sig.as_str(),
+            }))
+            .collect::<Vec<_>>();
+        let value = serde_json::json!({
+            "signature": record.signature.as_str(),
+            "raw_form_id": record.form_id,
+            "base_form_id": effective_subrecords_for_record(&record).iter()
+                .find(|subrecord| subrecord.signature == "NAME" && subrecord.data.len() == 4)
+                .map(|subrecord| u32::from_le_bytes(subrecord.data.as_ref().try_into().unwrap())),
+            "record": serialize_record_payload_to_json(&record, &slot.parsed, &slot.strings),
+            "assets": assets,
+        });
+        serde_json::to_string(&value)
+            .map(Some)
+            .map_err(|error| value_error(format!("serialize inspection: {error}")))
+    })
 }
 
 #[pyfunction(name = "plugin_handle_apply_placed_record_position_offset")]
@@ -3724,9 +4578,9 @@ pub fn plugin_handle_record_form_ids_native(
     signatures: Option<Vec<String>>,
 ) -> PyResult<Vec<u32>> {
     py.detach(move || {
-        let store = plugin_handle_store().lock().unwrap();
+        let mut store = plugin_handle_store().lock().unwrap();
         let slot = store
-            .get(&handle_id)
+            .get_mut(&handle_id)
             .ok_or_else(|| PyKeyError::new_err(format!("unknown plugin handle: {handle_id}")))?;
         let wanted = signatures.map(|values| {
             values
@@ -3734,6 +4588,27 @@ pub fn plugin_handle_record_form_ids_native(
                 .map(|value| SmolStr::new(value.as_str()))
                 .collect::<HashSet<_>>()
         });
+        if slot.lazy.is_some() {
+            let core = ensure_core_section(slot);
+            let lazy = slot.lazy.as_ref().expect("checked above");
+            let mut indexed = core
+                .by_form_key
+                .values()
+                .filter(|entry| {
+                    wanted
+                        .as_ref()
+                        .map(|set| set.contains(&entry.signature))
+                        .unwrap_or(true)
+                })
+                .filter_map(|entry| {
+                    lazy.offsets()
+                        .get(&entry.raw_form_id)
+                        .map(|offset| (*offset, entry.raw_form_id))
+                })
+                .collect::<Vec<_>>();
+            indexed.sort_unstable_by_key(|(offset, _)| *offset);
+            return Ok(indexed.into_iter().map(|(_, form_id)| form_id).collect());
+        }
         let mut records = Vec::new();
         let mut predicate = |record: &ParsedRecord| {
             wanted
@@ -3744,6 +4619,93 @@ pub fn plugin_handle_record_form_ids_native(
         collect_records(&slot.parsed.root_items, &mut predicate, &mut records);
         Ok(records.into_iter().map(|record| record.form_id).collect())
     })
+}
+
+type InspectionRecordPayload = (String, u32, Option<u16>, Vec<(String, Bytes)>);
+
+#[pyfunction(name = "plugin_handle_inspection_records")]
+#[pyo3(signature = (handle_id, signatures, subrecord_signatures))]
+pub fn plugin_handle_inspection_records_native<'py>(
+    py: Python<'py>,
+    handle_id: u64,
+    signatures: Vec<String>,
+    subrecord_signatures: Vec<String>,
+) -> PyResult<Bound<'py, PyList>> {
+    let records = py.detach(move || -> PyResult<Vec<InspectionRecordPayload>> {
+        let wanted: HashSet<SmolStr> = signatures.into_iter().map(SmolStr::new).collect();
+        let wanted_subrecords: HashSet<SmolStr> =
+            subrecord_signatures.into_iter().map(SmolStr::new).collect();
+        let store = plugin_handle_store().lock().unwrap();
+        let slot = store
+            .get(&handle_id)
+            .ok_or_else(|| PyKeyError::new_err(format!("unknown plugin handle: {handle_id}")))?;
+        let mut rows = Vec::new();
+        let mut inspect = |record: &ParsedRecord| {
+            if !wanted.contains(&record.signature) && wanted_subrecords.is_empty() {
+                return;
+            }
+            let subrecords = effective_subrecords_for_record(record);
+            if !wanted.contains(&record.signature)
+                && !subrecords
+                    .iter()
+                    .any(|subrecord| wanted_subrecords.contains(&subrecord.signature))
+            {
+                return;
+            }
+            rows.push((
+                record.signature.to_string(),
+                record.form_id,
+                record.form_version,
+                subrecords
+                    .iter()
+                    .map(|subrecord| (subrecord.signature.to_string(), subrecord.data.clone()))
+                    .collect(),
+            ));
+        };
+        if let Some(lazy) = slot.lazy.as_ref() {
+            let cursor = lazy.cursor();
+            let mut parse_error = None;
+            let outcome = cursor.scan(&mut |view| {
+                if wanted_subrecords.is_empty()
+                    && !wanted.iter().any(|sig| sig.as_bytes() == view.signature)
+                {
+                    return std::ops::ControlFlow::Continue(());
+                }
+                match cursor.parse_at(view.offset) {
+                    Ok(record) => inspect(&record),
+                    Err(error) => {
+                        parse_error = Some(error);
+                        return std::ops::ControlFlow::Break(());
+                    }
+                }
+                std::ops::ControlFlow::Continue(())
+            });
+            if let Some(error) = parse_error {
+                return Err(error);
+            }
+            if let crate::record_cursor::ScanOutcome::Truncated { offset } = outcome {
+                return Err(value_error(format!(
+                    "truncated plugin during record inspection at byte {offset}"
+                )));
+            }
+        } else {
+            let mut records = Vec::new();
+            collect_records(&slot.parsed.root_items, &mut |_| true, &mut records);
+            for record in records {
+                inspect(record);
+            }
+        }
+        Ok(rows)
+    })?;
+    let rows = PyList::empty(py);
+    for (signature, form_id, form_version, subrecords) in records {
+        let payloads = PyList::empty(py);
+        for (subrecord_signature, data) in subrecords {
+            payloads.append((subrecord_signature, PyBytes::new(py, &data)))?;
+        }
+        rows.append((signature, form_id, form_version, payloads))?;
+    }
+    Ok(rows)
 }
 
 type ValidationRecordPayload = (String, u32, Vec<(String, Vec<u8>)>);
@@ -3925,9 +4887,53 @@ pub fn plugin_handle_search_records_native(
                 .map(|value| SmolStr::new(value.as_str()))
                 .collect::<HashSet<_>>()
         });
+        let want_full = match_full || read_full;
+
+        // A lazy handle has no tree to collect from. Stream instead, parsing
+        // each record only long enough to test it and dropping it again, so the
+        // scan stays flat in memory.
+        if let Some(lazy) = slot.lazy.as_ref() {
+            let cursor = lazy.cursor();
+            let mut matches = Vec::new();
+            cursor.scan(&mut |view| {
+                if let Some(wanted) = wanted.as_ref() {
+                    let signature = SmolStr::new(String::from_utf8_lossy(view.signature).as_ref());
+                    if !wanted.contains(&signature) {
+                        return std::ops::ControlFlow::Continue(());
+                    }
+                }
+                let Ok(record) = cursor.parse_at(view.offset) else {
+                    return std::ops::ControlFlow::Continue(());
+                };
+                let editor_id = record_editor_id_value(&record);
+                let full_name = want_full.then(|| full_name_from_parsed(&record)).flatten();
+                let matched = editor_id
+                    .as_deref()
+                    .is_some_and(|value| matcher.is_match(value))
+                    || (match_full
+                        && full_name
+                            .as_deref()
+                            .is_some_and(|value| matcher.is_match(value)));
+                if matched {
+                    matches.push((
+                        record.form_id,
+                        record.signature.to_string(),
+                        editor_id,
+                        full_name,
+                    ));
+                    // Both paths walk in file order, so stopping here yields the
+                    // same first N the eager path's trailing truncate would.
+                    if limit.is_some_and(|limit| matches.len() >= limit) {
+                        return std::ops::ControlFlow::Break(());
+                    }
+                }
+                std::ops::ControlFlow::Continue(())
+            });
+            return Ok(matches);
+        }
+
         let mut records = Vec::new();
         collect_records(&slot.parsed.root_items, &mut |_| true, &mut records);
-        let want_full = match_full || read_full;
         let mut matches: Vec<_> = records
             .par_iter()
             .filter_map(|record| {
@@ -3981,6 +4987,23 @@ pub fn plugin_handle_record_form_ids_with_subrecords_native(
         let slot = store
             .get(&handle_id)
             .ok_or_else(|| PyKeyError::new_err(format!("unknown plugin handle: {handle_id}")))?;
+        if let Some(lazy) = slot.lazy.as_ref() {
+            let cursor = lazy.cursor();
+            let mut form_ids = Vec::new();
+            cursor.scan(&mut |view| {
+                if let Ok(record) = cursor.parse_at(view.offset) {
+                    if record
+                        .subrecords
+                        .iter()
+                        .any(|subrecord| wanted.contains(&subrecord.signature))
+                    {
+                        form_ids.push(record.form_id);
+                    }
+                }
+                std::ops::ControlFlow::Continue(())
+            });
+            return Ok(form_ids);
+        }
         let mut records = Vec::new();
         let mut predicate = |record: &ParsedRecord| {
             record
@@ -4226,15 +5249,15 @@ fn repair_term_marker_parameters_in_items(
                 else {
                     continue;
                 };
-                let Some(marker_anchor) = record
-                    .subrecords
+                let was_compressed = record.raw_payload.is_some();
+                let effective_subrecords = effective_subrecords_for_record(record);
+                let Some(marker_anchor) = effective_subrecords
                     .iter()
                     .rposition(|subrecord| subrecord.signature.as_str() == "XMRK")
                 else {
                     continue;
                 };
-                let existing_markers = record
-                    .subrecords
+                let existing_markers = effective_subrecords
                     .iter()
                     .skip(marker_anchor + 1)
                     .filter(|subrecord| subrecord.signature.as_str() == "SNAM")
@@ -4251,7 +5274,14 @@ fn repair_term_marker_parameters_in_items(
 
                 let editor_id = record_editor_id_value(record);
                 let removed = existing_markers.len();
+                drop(existing_markers);
                 if !dry_run {
+                    if was_compressed {
+                        record.subrecords = effective_subrecords.into_owned();
+                        record.raw_payload = None;
+                    } else {
+                        drop(effective_subrecords);
+                    }
                     let old_subrecords = std::mem::take(&mut record.subrecords);
                     let mut rebuilt = Vec::with_capacity(
                         old_subrecords.len() + source_markers.len().saturating_sub(removed),
@@ -4296,55 +5326,77 @@ pub fn plugin_handle_repair_term_marker_parameters_from_source_native(
     source_handle_id: u64,
     dry_run: bool,
 ) -> PyResult<Vec<(u32, Option<String>, usize, usize)>> {
-    py.detach(move || {
-        if target_handle_id == source_handle_id {
-            return Err(PyValueError::new_err(
-                "target and source plugin handles must be different",
-            ));
-        }
-        let mut store = plugin_handle_store().lock().unwrap();
-        let markers_by_object_id = {
-            let source = store.get(&source_handle_id).ok_or_else(|| {
-                PyKeyError::new_err(format!("unknown source plugin handle: {source_handle_id}"))
-            })?;
-            if source.lazy.is_some() {
-                return Err(PyRuntimeError::new_err(
-                    "repair-term-marker-parameters requires an eager source plugin handle",
-                ));
-            }
-            let source_own_index = (source.parsed.header.masters.len() & 0xFF) as u8;
-            let mut markers = HashMap::new();
-            collect_owned_term_marker_parameters(
-                &source.parsed.root_items,
-                source_own_index,
-                &mut markers,
-            );
-            markers
-        };
-        let target = store.get_mut(&target_handle_id).ok_or_else(|| {
-            PyKeyError::new_err(format!("unknown target plugin handle: {target_handle_id}"))
-        })?;
-        if target.lazy.is_some() {
-            return Err(PyRuntimeError::new_err(
-                "repair-term-marker-parameters requires an editable eager target plugin handle",
-            ));
-        }
-        let target_own_index = (target.parsed.header.masters.len() & 0xFF) as u8;
-        let mut changes = Vec::new();
-        repair_term_marker_parameters_in_items(
-            &mut target.parsed.root_items,
-            target_own_index,
-            &markers_by_object_id,
+    let result = py.detach(move || {
+        plugin_handle_repair_term_marker_parameters_from_source_no_py(
+            target_handle_id,
+            source_handle_id,
             dry_run,
-            &mut changes,
-        );
-        if !dry_run && !changes.is_empty() {
-            target.sections.apply_effect(&WriteEffect::RecordContents {
-                form_ids: changes.iter().map(|(form_id, _, _, _)| *form_id).collect(),
-            });
+        )
+    });
+    result.map_err(|error| {
+        if error == "target and source plugin handles must be different" {
+            PyValueError::new_err(error)
+        } else if error.starts_with("unknown source plugin handle:")
+            || error.starts_with("unknown target plugin handle:")
+        {
+            PyKeyError::new_err(error)
+        } else {
+            PyRuntimeError::new_err(error)
         }
-        Ok(changes)
     })
+}
+
+pub fn plugin_handle_repair_term_marker_parameters_from_source_no_py(
+    target_handle_id: u64,
+    source_handle_id: u64,
+    dry_run: bool,
+) -> Result<Vec<(u32, Option<String>, usize, usize)>, String> {
+    if target_handle_id == source_handle_id {
+        return Err("target and source plugin handles must be different".to_string());
+    }
+    let mut store = plugin_handle_store().lock().unwrap();
+    let markers_by_object_id = {
+        let source = store
+            .get(&source_handle_id)
+            .ok_or_else(|| format!("unknown source plugin handle: {source_handle_id}"))?;
+        if source.lazy.is_some() {
+            return Err(
+                "repair-term-marker-parameters requires an eager source plugin handle".to_string(),
+            );
+        }
+        let source_own_index = (source.parsed.header.masters.len() & 0xFF) as u8;
+        let mut markers = HashMap::new();
+        collect_owned_term_marker_parameters(
+            &source.parsed.root_items,
+            source_own_index,
+            &mut markers,
+        );
+        markers
+    };
+    let target = store
+        .get_mut(&target_handle_id)
+        .ok_or_else(|| format!("unknown target plugin handle: {target_handle_id}"))?;
+    if target.lazy.is_some() {
+        return Err(
+            "repair-term-marker-parameters requires an editable eager target plugin handle"
+                .to_string(),
+        );
+    }
+    let target_own_index = (target.parsed.header.masters.len() & 0xFF) as u8;
+    let mut changes = Vec::new();
+    repair_term_marker_parameters_in_items(
+        &mut target.parsed.root_items,
+        target_own_index,
+        &markers_by_object_id,
+        dry_run,
+        &mut changes,
+    );
+    if !dry_run && !changes.is_empty() {
+        target.sections.apply_effect(&WriteEffect::RecordContents {
+            form_ids: changes.iter().map(|(form_id, _, _, _)| *form_id).collect(),
+        });
+    }
+    Ok(changes)
 }
 
 #[pyfunction(name = "plugin_handle_record_flags")]
@@ -4412,10 +5464,7 @@ pub fn plugin_handle_used_master_indices_native(
         let slot = store
             .get(&handle_id)
             .ok_or_else(|| PyKeyError::new_err(format!("unknown plugin handle: {handle_id}")))?;
-        let own_index = (slot.parsed.header.masters.len() & 0xFF) as u8;
-        let mut used = BTreeSet::new();
-        collect_used_master_indices(&slot.parsed.root_items, own_index, &mut used);
-        Ok(used.into_iter().collect())
+        master_edit::used_indices(slot).map_err(PyValueError::new_err)
     })
 }
 
@@ -4464,45 +5513,6 @@ pub fn plugin_handle_apply_object_id_mapping_native(
     })
 }
 
-fn null_subrecord_refs_to_master_in_items(items: &mut [ParsedItem], index: u8) -> usize {
-    let mut nulled = 0usize;
-    for item in items {
-        match item {
-            ParsedItem::Group(group) => {
-                nulled += null_subrecord_refs_to_master_in_items(&mut group.children, index);
-            }
-            ParsedItem::Record(record) => {
-                for sub in record.subrecords.iter_mut() {
-                    match sub.semantic_type.as_deref() {
-                        Some("formid") if sub.data.len() >= 4 => {
-                            if sub.data[3] == index {
-                                let mut buf = sub.data.to_vec();
-                                buf[0..4].copy_from_slice(&0u32.to_le_bytes());
-                                sub.data = Bytes::from(buf);
-                                nulled += 1;
-                            }
-                        }
-                        Some("formid_array") if sub.data.len() >= 4 && sub.data.len() % 4 == 0 => {
-                            if sub.data.chunks_exact(4).any(|chunk| chunk[3] == index) {
-                                let mut buf = sub.data.to_vec();
-                                for chunk in buf.chunks_exact_mut(4) {
-                                    if chunk[3] == index {
-                                        chunk.copy_from_slice(&0u32.to_le_bytes());
-                                        nulled += 1;
-                                    }
-                                }
-                                sub.data = Bytes::from(buf);
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        }
-    }
-    nulled
-}
-
 /// Null every formid/formid_array subrecord value whose master high byte equals
 /// `index`. Used by `esp masters remove --force` to scrub references to a master
 /// being dropped (record-level overrides of that master are removed separately
@@ -4518,7 +5528,7 @@ pub fn plugin_handle_null_refs_to_master_native(
         let slot = store
             .get_mut(&handle_id)
             .ok_or_else(|| PyKeyError::new_err(format!("unknown plugin handle: {handle_id}")))?;
-        let nulled = null_subrecord_refs_to_master_in_items(&mut slot.parsed.root_items, index);
+        let nulled = master_edit::null_refs(slot, index).map_err(PyValueError::new_err)?;
         if nulled > 0 {
             slot.sections
                 .apply_effect(&WriteEffect::RecordsAddedOrRemoved);
@@ -4537,7 +5547,7 @@ pub fn plugin_handle_copy_record_native(
 ) -> PyResult<Option<u32>> {
     py.detach(move || {
         let mut store = plugin_handle_store().lock().unwrap();
-        let (mut record, source_masters, source_plugin_name, source_own_index) = {
+        let (mut record, source_masters, source_plugin_name, source_own_index, source_game) = {
             let source_slot = store.get_mut(&source_handle_id).ok_or_else(|| {
                 PyKeyError::new_err(format!("unknown plugin handle: {source_handle_id}"))
             })?;
@@ -4549,19 +5559,22 @@ pub fn plugin_handle_copy_record_native(
                 source_slot.parsed.header.masters.clone(),
                 source_slot.parsed.plugin_name.clone(),
                 (source_slot.parsed.header.masters.len() & 0xFF) as u8,
+                source_slot.parsed.game.clone(),
             )
         };
         let target_slot = store.get_mut(&target_handle_id).ok_or_else(|| {
             PyKeyError::new_err(format!("unknown plugin handle: {target_handle_id}"))
         })?;
         let target_masters = target_slot.parsed.header.masters.clone();
-        remap_formids_for_copy_in_record(
+        let schema = source_game.as_deref().map(compiled_schema_for_game).transpose()?;
+        master_edit::copy_record(
             &mut record,
             &source_masters,
             &source_plugin_name,
             &target_masters,
             source_own_index,
-        );
+            schema.as_deref(),
+        ).map_err(value_error)?;
         record.raw_payload = None;
         if as_new {
             let object_id = target_slot.parsed.header.next_object_id & 0x00FF_FFFF;
@@ -4735,6 +5748,7 @@ pub fn plugin_handle_set_localized_strings_native(
         .get_mut(&handle_id)
         .ok_or_else(|| PyKeyError::new_err(format!("unknown plugin handle: {handle_id}")))?;
     rehydrate_filtered_strings_for_authoring(slot);
+    slot.strings.materialize_all();
     let language = strings::language_code(language);
     slot.strings.default_language = language.clone();
     slot.strings.by_language.insert(language, values);
@@ -4764,6 +5778,8 @@ pub fn plugin_handle_set_localized_strings_by_language_native(
         .get_mut(&handle_id)
         .ok_or_else(|| PyKeyError::new_err(format!("unknown plugin handle: {handle_id}")))?;
     rehydrate_filtered_strings_for_authoring(slot);
+    // The caller supplies the whole corpus, so the index has nothing to add.
+    slot.strings.lazy_tables = None;
     slot.strings.by_language = tables;
     if let Some(table_types) = table_types {
         slot.strings.table_types = table_types;
@@ -4804,6 +5820,7 @@ pub fn plugin_handle_set_localized_field_values_native(
         .get_mut(&handle_id)
         .ok_or_else(|| PyKeyError::new_err(format!("unknown plugin handle: {handle_id}")))?;
     rehydrate_filtered_strings_for_authoring(slot);
+    slot.strings.materialize_all();
     for (language, text) in values_by_language {
         let language = strings::language_code(Some(language.as_str()));
         slot.strings
@@ -4886,37 +5903,132 @@ fn save_localized_strings_snapshot(
     })
 }
 
+/// [`resolve_record`] with the form-id index materialized first.
+///
+/// A full handle already holds the entire record tree, so an index beside it is
+/// cheap and turns every read from a linear walk of the whole plugin into a hash
+/// lookup — without it a single read of SeventySix.esm costs ~200 ms. Lazy
+/// handles skip it: they have no tree to index, and their own offset store
+/// already answers by form id.
+pub(crate) fn resolve_record_indexed(
+    slot: &mut NativePluginSlot,
+    raw_form_id: u32,
+) -> Option<Cow<'_, ParsedRecord>> {
+    if slot.lazy.is_none() {
+        ensure_records_section(slot);
+    }
+    resolve_record(slot, raw_form_id)
+}
+
+/// Resolve a record by raw form id for read-only paths.
+///
+/// Tries, in order: an already-built index section, the lazy record store, then
+/// a tree walk. A lazy handle's `root_items` is empty, so only the store can
+/// serve it.
+/// Never forces an index section to be built; callers that want one go through
+/// [`resolve_record_indexed`].
+pub(crate) fn resolve_record(
+    slot: &NativePluginSlot,
+    raw_form_id: u32,
+) -> Option<Cow<'_, ParsedRecord>> {
+    if let Some(records) = slot.sections.records.as_ref() {
+        if let Some(record) = records.record(&slot.parsed, raw_form_id) {
+            return Some(Cow::Borrowed(record));
+        }
+    }
+    if let Some(record) = slot.lazy_record(raw_form_id) {
+        return Some(Cow::Owned(record));
+    }
+    let mut exact = |record: &ParsedRecord| record.form_id == raw_form_id;
+    if let Some(record) = find_first_record(&slot.parsed.root_items, &mut exact) {
+        return Some(Cow::Borrowed(record));
+    }
+    resolve_record_by_object_id(slot, raw_form_id)
+}
+
+/// Fallback used when an exact form id misses: match on the low 24 bits and
+/// prefer a candidate owned by this plugin.
+///
+/// The lazy branch ties on lowest file offset so it selects the same record the
+/// tree walk would. `offsets` is a hash map, so without that tie-break the two
+/// handle kinds would disagree whenever two masters share an object id.
+fn resolve_record_by_object_id(
+    slot: &NativePluginSlot,
+    raw_form_id: u32,
+) -> Option<Cow<'_, ParsedRecord>> {
+    let object_id = raw_form_id & 0x00FF_FFFF;
+    let own_index = (slot.parsed.header.masters.len() & 0xFF) as u8;
+
+    if let Some(lazy) = slot.lazy.as_ref() {
+        // A plugin-local id (`000800`) is written with this plugin's own master
+        // index, so the exact-match attempt above always misses it. Try that one
+        // id by early-exit before resorting to indexing every record.
+        let local_form_id = ((own_index as u32) << 24) | object_id;
+        if local_form_id != raw_form_id {
+            if let Some(record) = slot.lazy_record(local_form_id) {
+                return Some(Cow::Owned(record));
+            }
+        }
+        let mut selected: Option<(u32, usize)> = None;
+        for (&form_id, &offset) in lazy.offsets() {
+            if form_id & 0x00FF_FFFF != object_id {
+                continue;
+            }
+            selected = Some(match selected {
+                None => (form_id, offset),
+                Some((existing_id, existing_offset)) => {
+                    if prefer_object_id_lookup_form_id(form_id, existing_id, own_index) {
+                        (form_id, offset)
+                    } else if prefer_object_id_lookup_form_id(existing_id, form_id, own_index) {
+                        (existing_id, existing_offset)
+                    } else if offset < existing_offset {
+                        (form_id, offset)
+                    } else {
+                        (existing_id, existing_offset)
+                    }
+                }
+            });
+        }
+        return slot.lazy_record(selected?.0).map(Cow::Owned);
+    }
+
+    let mut matches = Vec::new();
+    let mut predicate = |record: &ParsedRecord| (record.form_id & 0x00FF_FFFF) == object_id;
+    collect_records(&slot.parsed.root_items, &mut predicate, &mut matches);
+    let mut selected: Option<&ParsedRecord> = None;
+    for candidate in matches {
+        match selected {
+            None => selected = Some(candidate),
+            Some(existing) if prefer_object_id_lookup_candidate(candidate, existing, own_index) => {
+                selected = Some(candidate)
+            }
+            _ => {}
+        }
+    }
+    selected.map(Cow::Borrowed)
+}
+
+/// Form-id-only form of [`prefer_object_id_lookup_candidate`], for the lazy
+/// branch where no `ParsedRecord` has been materialized yet.
+fn prefer_object_id_lookup_form_id(candidate: u32, existing: u32, own_index: u8) -> bool {
+    let candidate_index = ((candidate >> 24) & 0xFF) as u8;
+    let existing_index = ((existing >> 24) & 0xFF) as u8;
+    let candidate_is_own = candidate_index == LOCAL_FORM_INDEX || candidate_index == own_index;
+    let existing_is_own = existing_index == LOCAL_FORM_INDEX || existing_index == own_index;
+    candidate_is_own && !existing_is_own
+}
+
 #[pyfunction(name = "plugin_handle_record_context_for_form_id")]
 pub fn plugin_handle_record_context_for_form_id_native(
     _py: Python<'_>,
     handle_id: u64,
     form_id: u32,
 ) -> PyResult<Option<RecordContextPayload>> {
-    let store = plugin_handle_store().lock().unwrap();
+    let mut store = plugin_handle_store().lock().unwrap();
     let slot = store
-        .get(&handle_id)
+        .get_mut(&handle_id)
         .ok_or_else(|| PyKeyError::new_err(format!("unknown plugin handle: {handle_id}")))?;
-    let raw_form_id = form_id & 0xFFFF_FFFF;
-    let mut exact = |record: &ParsedRecord| record.form_id == raw_form_id;
-    if let Some(record) = find_first_record(&slot.parsed.root_items, &mut exact) {
-        return Ok(Some(record_context_from_parsed(record)));
-    }
-    let object_id = raw_form_id & 0x00FF_FFFF;
-    let own_index = (slot.parsed.header.masters.len() & 0xFF) as u8;
-    let mut matches = Vec::new();
-    let mut predicate = |record: &ParsedRecord| (record.form_id & 0x00FF_FFFF) == object_id;
-    collect_records(&slot.parsed.root_items, &mut predicate, &mut matches);
-    let mut selected: Option<&ParsedRecord> = None;
-    for record in matches {
-        match selected {
-            None => selected = Some(record),
-            Some(existing) if prefer_object_id_lookup_candidate(record, existing, own_index) => {
-                selected = Some(record)
-            }
-            _ => {}
-        }
-    }
-    Ok(selected.map(record_context_from_parsed))
+    Ok(resolve_record_indexed(slot, form_id).map(|record| record_context_from_parsed(record.as_ref())))
 }
 
 #[pyfunction(name = "plugin_handle_addon_node_summaries_by_index_id")]
@@ -5197,38 +6309,31 @@ pub fn plugin_handle_export_record_text_native(
     form_id: u32,
     format: &str,
 ) -> PyResult<String> {
-    let (parsed, strings) =
-        py.detach(move || clone_plugin_handle_state_for_authoring(handle_id))?;
     let format = format.to_string();
+    // Resolve and serialize under one lock, borrowing the slot rather than
+    // copying it. Cloning the plugin cost seconds per read; cloning just the
+    // localized string table still cost ~200 ms on a localized master, because
+    // SeventySix.esm's tables hold roughly a million entries.
     py.detach(move || {
         let raw_form_id = form_id & 0xFFFF_FFFF;
-        let mut exact = |record: &ParsedRecord| record.form_id == raw_form_id;
-        let record = if let Some(record) = find_first_record(&parsed.root_items, &mut exact) {
-            record
-        } else {
-            let object_id = raw_form_id & 0x00FF_FFFF;
-            let own_index = (parsed.header.masters.len() & 0xFF) as u8;
-            let mut matches = Vec::new();
-            let mut predicate = |record: &ParsedRecord| (record.form_id & 0x00FF_FFFF) == object_id;
-            collect_records(&parsed.root_items, &mut predicate, &mut matches);
-            let mut selected: Option<&ParsedRecord> = None;
-            for candidate in matches {
-                match selected {
-                    None => selected = Some(candidate),
-                    Some(existing)
-                        if prefer_object_id_lookup_candidate(candidate, existing, own_index) =>
-                    {
-                        selected = Some(candidate)
-                    }
-                    _ => {}
-                }
-            }
-            selected.ok_or_else(|| {
+        let mut store = plugin_handle_store().lock().unwrap();
+        let slot = store
+            .get_mut(&handle_id)
+            .ok_or_else(|| PyKeyError::new_err(format!("unknown plugin handle: {handle_id}")))?;
+        rehydrate_filtered_strings_for_authoring(slot);
+        let record = resolve_record_indexed(slot, raw_form_id)
+            .map(|record| record.into_owned())
+            .ok_or_else(|| {
                 PyKeyError::new_err(format!("unknown record form_id: {raw_form_id:08X}"))
-            })?
-        };
+            })?;
         dump_text_payload_value(
-            serialize_record_payload_text_value(&parsed, &strings, record, "authoring", false)?,
+            serialize_record_payload_text_value(
+                &slot.parsed,
+                &slot.strings,
+                &record,
+                "authoring",
+                false,
+            )?,
             format.as_str(),
         )
     })
@@ -5269,6 +6374,7 @@ pub fn plugin_handle_export_authoring_dir_native(
         .get_mut(&handle_id)
         .ok_or_else(|| PyKeyError::new_err(format!("unknown plugin handle: {handle_id}")))?;
     rehydrate_filtered_strings_for_authoring(slot);
+    slot.strings.materialize_all();
     let record_count = match slot.record_count_cache {
         Some(value) => value,
         None => {
@@ -5400,20 +6506,14 @@ fn find_record_mut(items: &mut Vec<ParsedItem>, form_id: u32) -> Option<&mut Par
     None
 }
 
-/// In-place subrecord byte patch — locate `form_key_str` in `handle_id`,
-/// find the first subrecord with signature `sig`, and call `f` with a
-/// mutable slice over its bytes. If `f` returns true the bytes are written
-/// back; if false the subrecord is left untouched.
+/// In-place subrecord byte patch: locate `form_key_str` in `handle_id`, find
+/// the first subrecord with signature `sig`, and call `f` with a mutable copy
+/// of its bytes (`Bytes` is refcounted, so it can't be mutated in place). If
+/// `f` returns true the bytes are written back.
 ///
-/// Bypasses the schema decode/encode round-trip in `read_record` +
-/// `replace_record_native`. The only allocations are the temporary `Vec<u8>`
-/// copy of the subrecord's bytes (the underlying `Bytes` is refcounted so
-/// it can't be mutated in place) and, when `f` writes, a single
-/// `Bytes::from(vec)` to install the new data.
-///
-/// Returns `Ok(true)` when `f` returned true, `Ok(false)` when it returned
-/// false. Returns `Err(String)` with a human-readable message when the
-/// handle, record, or subrecord can't be located.
+/// Skips the schema decode/encode round trip of `read_record` +
+/// `replace_record_native`. Returns `f`'s result, or `Err` when the handle,
+/// record, or subrecord can't be located.
 pub fn patch_record_subrecord_bytes<F>(
     handle_id: u64,
     form_key_str: &str,
@@ -6807,8 +7907,8 @@ pub fn insert_placed_child_into_cell_group(
 /// Cell-Children(6) subtree and attaches it without any whole-tree search.
 ///
 /// Unlike [`ensure_interior_cell_and_child_group`] this does NOT dedup a
-/// pre-existing stub for the same FormID — that O(tree) per-cell walk is the
-/// reason bulk interior conversion was quadratic. Callers strip stubs once up
+/// pre-existing stub for the same FormID; that O(tree) per-cell walk makes bulk
+/// interior conversion quadratic. Callers strip stubs once up
 /// front via [`remove_cell_records_by_object_id`] before the insert loop.
 pub fn insert_interior_cell_with_children(
     handle_id: u64,
@@ -7072,6 +8172,386 @@ pub fn insert_topic_child_record_in_slot(
     Ok(true)
 }
 
+#[derive(Clone, Copy)]
+struct QuestChildParentIndex {
+    quest_record_index: usize,
+    child_group_index: Option<usize>,
+}
+
+pub struct QuestChildInsertIndex {
+    top_group_index: Option<usize>,
+    record_form_ids: HashSet<u32>,
+    parents: HashMap<u32, QuestChildParentIndex>,
+    fast_inserts: usize,
+    serial_fallbacks: usize,
+}
+
+pub struct TopicChildInsertIndex {
+    top_group_index: Option<usize>,
+    record_form_ids: HashSet<u32>,
+    dialogues: HashMap<u32, (usize, u32)>,
+    fast_inserts: usize,
+    serial_fallbacks: usize,
+}
+
+fn collect_child_insert_record_form_ids(
+    items: &[ParsedItem],
+    record_form_ids: &mut HashSet<u32>,
+) {
+    for item in items {
+        match item {
+            ParsedItem::Record(record) => {
+                record_form_ids.insert(record.form_id);
+            }
+            ParsedItem::Group(group) => {
+                collect_child_insert_record_form_ids(&group.children, record_form_ids);
+            }
+        }
+    }
+}
+
+pub fn build_quest_child_insert_index(slot: &NativePluginSlot) -> QuestChildInsertIndex {
+    let mut record_form_ids = HashSet::new();
+    collect_child_insert_record_form_ids(&slot.parsed.root_items, &mut record_form_ids);
+    let top_group_index = slot.parsed.root_items.iter().position(|item| {
+        matches!(
+            item,
+            ParsedItem::Group(group) if group.group_type == 0 && group.label == *b"QUST"
+        )
+    });
+    let mut parents = HashMap::new();
+    let mut ambiguous_parents = HashSet::new();
+    if let Some(top_group_index) = top_group_index
+        && let ParsedItem::Group(group) = &slot.parsed.root_items[top_group_index]
+    {
+        for (index, item) in group.children.iter().enumerate() {
+            if let ParsedItem::Record(record) = item
+                && record.signature.as_str() == "QUST"
+            {
+                if parents
+                    .insert(
+                        record.form_id,
+                        QuestChildParentIndex {
+                            quest_record_index: index,
+                            child_group_index: None,
+                        },
+                    )
+                    .is_some()
+                {
+                    ambiguous_parents.insert(record.form_id);
+                }
+            }
+        }
+        for (index, item) in group.children.iter().enumerate() {
+            if let ParsedItem::Group(child) = item
+                && child.group_type == QUEST_CHILD_GROUP
+                && let Some(parent) = parents.get_mut(&u32::from_le_bytes(child.label))
+            {
+                if parent.child_group_index.replace(index).is_some() {
+                    ambiguous_parents.insert(u32::from_le_bytes(child.label));
+                }
+            }
+        }
+    }
+    for parent in ambiguous_parents {
+        parents.remove(&parent);
+    }
+    QuestChildInsertIndex {
+        top_group_index,
+        record_form_ids,
+        parents,
+        fast_inserts: 0,
+        serial_fallbacks: 0,
+    }
+}
+
+fn collect_serial_topic_dialogue_matches(
+    items: &[ParsedItem],
+    inside_quest_child: bool,
+    matches: &mut HashMap<u32, (u32, usize)>,
+) {
+    for item in items {
+        match item {
+            ParsedItem::Record(record)
+                if inside_quest_child && record.signature.as_str() == "DIAL" =>
+            {
+                let object_id = record.form_id & 0x00FF_FFFF;
+                let entry = matches.entry(object_id).or_insert((record.form_id, 0));
+                entry.1 += 1;
+            }
+            ParsedItem::Group(group) => collect_serial_topic_dialogue_matches(
+                &group.children,
+                inside_quest_child || group.group_type == QUEST_CHILD_GROUP,
+                matches,
+            ),
+            _ => {}
+        }
+    }
+}
+
+pub fn build_topic_child_insert_index(slot: &NativePluginSlot) -> TopicChildInsertIndex {
+    let mut record_form_ids = HashSet::new();
+    collect_child_insert_record_form_ids(&slot.parsed.root_items, &mut record_form_ids);
+    let top_group_index = slot.parsed.root_items.iter().position(|item| {
+        matches!(
+            item,
+            ParsedItem::Group(group) if group.group_type == 0 && group.label == *b"QUST"
+        )
+    });
+    let mut dialogues = HashMap::new();
+    let mut ambiguous_direct_dialogues = HashSet::new();
+    if let Some(top_group_index) = top_group_index
+        && let ParsedItem::Group(group) = &slot.parsed.root_items[top_group_index]
+    {
+        for (quest_child_index, item) in group.children.iter().enumerate() {
+            let ParsedItem::Group(quest_child) = item else {
+                continue;
+            };
+            if quest_child.group_type != QUEST_CHILD_GROUP {
+                continue;
+            }
+            for child in &quest_child.children {
+                if let ParsedItem::Record(record) = child
+                    && record.signature.as_str() == "DIAL"
+                {
+                    let object_id = record.form_id & 0x00FF_FFFF;
+                    if dialogues
+                        .insert(object_id, (quest_child_index, record.form_id))
+                        .is_some()
+                    {
+                        ambiguous_direct_dialogues.insert(object_id);
+                    }
+                }
+            }
+        }
+    }
+    let mut serial_matches = HashMap::new();
+    collect_serial_topic_dialogue_matches(
+        &slot.parsed.root_items,
+        false,
+        &mut serial_matches,
+    );
+    dialogues.retain(|object_id, (_, full_form_id)| {
+        !ambiguous_direct_dialogues.contains(object_id)
+            && serial_matches
+                .get(object_id)
+                .is_some_and(|(serial_full_form_id, count)| {
+                    *count == 1 && serial_full_form_id == full_form_id
+                })
+    });
+    TopicChildInsertIndex {
+        top_group_index,
+        record_form_ids,
+        dialogues,
+        fast_inserts: 0,
+        serial_fallbacks: 0,
+    }
+}
+
+impl QuestChildInsertIndex {
+    pub fn fast_inserts(&self) -> usize {
+        self.fast_inserts
+    }
+
+    pub fn serial_fallbacks(&self) -> usize {
+        self.serial_fallbacks
+    }
+}
+
+impl TopicChildInsertIndex {
+    pub fn fast_inserts(&self) -> usize {
+        self.fast_inserts
+    }
+
+    pub fn serial_fallbacks(&self) -> usize {
+        self.serial_fallbacks
+    }
+}
+
+fn rebuild_quest_child_insert_index(
+    slot: &NativePluginSlot,
+    index: &mut QuestChildInsertIndex,
+) {
+    let fast_inserts = index.fast_inserts;
+    let serial_fallbacks = index.serial_fallbacks;
+    *index = build_quest_child_insert_index(slot);
+    index.fast_inserts = fast_inserts;
+    index.serial_fallbacks = serial_fallbacks;
+}
+
+fn rebuild_topic_child_insert_index(
+    slot: &NativePluginSlot,
+    index: &mut TopicChildInsertIndex,
+) {
+    let fast_inserts = index.fast_inserts;
+    let serial_fallbacks = index.serial_fallbacks;
+    *index = build_topic_child_insert_index(slot);
+    index.fast_inserts = fast_inserts;
+    index.serial_fallbacks = serial_fallbacks;
+}
+
+pub fn insert_quest_child_record_indexed_in_slot(
+    slot: &mut NativePluginSlot,
+    index: &mut QuestChildInsertIndex,
+    parent_quest_form_id: u32,
+    record: ParsedRecord,
+) -> Result<bool, String> {
+    let placement = index.parents.get(&parent_quest_form_id).copied();
+    let fast_path = parent_quest_form_id != 0
+        && !index.record_form_ids.contains(&record.form_id)
+        && index.top_group_index.is_some()
+        && placement.is_some();
+    if !fast_path {
+        index.serial_fallbacks += 1;
+        let result = insert_quest_child_record_in_slot(slot, parent_quest_form_id, record);
+        rebuild_quest_child_insert_index(slot, index);
+        return result;
+    }
+
+    let top_group_index = index.top_group_index.unwrap();
+    let placement = placement.unwrap();
+    let valid_placement = matches!(
+        slot.parsed.root_items.get(top_group_index),
+        Some(ParsedItem::Group(group))
+            if group.group_type == 0
+                && group.label == *b"QUST"
+                && matches!(
+                    group.children.get(placement.quest_record_index),
+                    Some(ParsedItem::Record(parent))
+                        if parent.signature.as_str() == "QUST"
+                            && parent.form_id == parent_quest_form_id
+                )
+                && placement.child_group_index.is_none_or(|child_index| matches!(
+                    group.children.get(child_index),
+                    Some(ParsedItem::Group(child))
+                        if child.group_type == QUEST_CHILD_GROUP
+                            && child.label == parent_quest_form_id.to_le_bytes()
+                ))
+    );
+    if !valid_placement {
+        index.serial_fallbacks += 1;
+        let result = insert_quest_child_record_in_slot(slot, parent_quest_form_id, record);
+        rebuild_quest_child_insert_index(slot, index);
+        return result;
+    }
+
+    let object_id = record.form_id & 0x00FF_FFFF;
+    let next_object_id = slot.parsed.header.next_object_id & 0x00FF_FFFF;
+    if object_id != 0 && object_id >= next_object_id {
+        slot.parsed.header.next_object_id = (object_id + 1) & 0x00FF_FFFF;
+    }
+    let record_form_id = record.form_id;
+    let header_size = slot.parsed.header_size;
+    let ParsedItem::Group(top_group) = &mut slot.parsed.root_items[top_group_index] else {
+        unreachable!();
+    };
+    if let Some(child_group_index) = placement.child_group_index {
+        let ParsedItem::Group(child_group) = &mut top_group.children[child_group_index] else {
+            unreachable!();
+        };
+        child_group.children.push(ParsedItem::Record(record));
+    } else {
+        let child_group_index = placement.quest_record_index + 1;
+        top_group.children.insert(
+            child_group_index,
+            ParsedItem::Group(ParsedGroup {
+                label: parent_quest_form_id.to_le_bytes(),
+                group_type: QUEST_CHILD_GROUP,
+                tail: Bytes::from(vec![0u8; header_size.saturating_sub(16)]),
+                children: vec![ParsedItem::Record(record)],
+            }),
+        );
+        for parent in index.parents.values_mut() {
+            if parent.quest_record_index >= child_group_index {
+                parent.quest_record_index += 1;
+            }
+            if let Some(existing_child_index) = parent.child_group_index
+                && existing_child_index >= child_group_index
+            {
+                parent.child_group_index = Some(existing_child_index + 1);
+            }
+        }
+        index
+            .parents
+            .get_mut(&parent_quest_form_id)
+            .unwrap()
+            .child_group_index = Some(child_group_index);
+    }
+    index.record_form_ids.insert(record_form_id);
+    index.fast_inserts += 1;
+    slot.clear_record_count_cache();
+    Ok(true)
+}
+
+pub fn insert_topic_child_record_indexed_in_slot(
+    slot: &mut NativePluginSlot,
+    index: &mut TopicChildInsertIndex,
+    parent_dialogue_form_id: u32,
+    record: ParsedRecord,
+) -> Result<bool, String> {
+    let parent_object_id = parent_dialogue_form_id & 0x00FF_FFFF;
+    let placement = index.dialogues.get(&parent_object_id).copied();
+    let fast_path = record.signature.as_str() == "INFO"
+        && !index.record_form_ids.contains(&record.form_id)
+        && index.top_group_index.is_some()
+        && placement.is_some();
+    if !fast_path {
+        index.serial_fallbacks += 1;
+        let result = insert_topic_child_record_in_slot(slot, parent_dialogue_form_id, record);
+        rebuild_topic_child_insert_index(slot, index);
+        return result;
+    }
+
+    let top_group_index = index.top_group_index.unwrap();
+    let (quest_child_index, dialogue_full_form_id) = placement.unwrap();
+    let valid_placement = matches!(
+        slot.parsed.root_items.get(top_group_index),
+        Some(ParsedItem::Group(group))
+            if group.group_type == 0
+                && group.label == *b"QUST"
+                && matches!(
+                    group.children.get(quest_child_index),
+                    Some(ParsedItem::Group(quest_child))
+                        if quest_child.group_type == QUEST_CHILD_GROUP
+                            && find_record_full_form_id_by_object_id(
+                                &quest_child.children,
+                                "DIAL",
+                                parent_object_id,
+                            ) == Some(dialogue_full_form_id)
+                )
+    );
+    if !valid_placement {
+        index.serial_fallbacks += 1;
+        let result = insert_topic_child_record_in_slot(slot, parent_dialogue_form_id, record);
+        rebuild_topic_child_insert_index(slot, index);
+        return result;
+    }
+
+    let object_id = record.form_id & 0x00FF_FFFF;
+    let next_object_id = slot.parsed.header.next_object_id & 0x00FF_FFFF;
+    if object_id != 0 && object_id >= next_object_id {
+        slot.parsed.header.next_object_id = (object_id + 1) & 0x00FF_FFFF;
+    }
+    let record_form_id = record.form_id;
+    let header_size = slot.parsed.header_size;
+    let ParsedItem::Group(top_group) = &mut slot.parsed.root_items[top_group_index] else {
+        unreachable!();
+    };
+    let ParsedItem::Group(quest_child) = &mut top_group.children[quest_child_index] else {
+        unreachable!();
+    };
+    let topic_group = ensure_topic_child_group_mut(
+        quest_child,
+        dialogue_full_form_id,
+        header_size,
+    );
+    topic_group.children.push(ParsedItem::Record(record));
+    index.record_form_ids.insert(record_form_id);
+    index.fast_inserts += 1;
+    slot.clear_record_count_cache();
+    Ok(true)
+}
+
 fn insert_info_under_dialogue(
     items: &mut [ParsedItem],
     dialogue_form_id: u32,
@@ -7105,9 +8585,6 @@ fn insert_info_under_dialogue(
     false
 }
 
-/// Insert an encoded NAVM into the cell child group described by its NVNM
-/// parent fields. Returns `Ok(false)` when the parent cell/world is not present
-/// in the target plugin yet.
 // ── TEMP NAVDIAG (remove after navmesh=0 root-cause) ───────────────────
 // Gated on MODBOX_NAVDIAG=1. Reports which precondition of the exterior
 // projected-navmesh insert fails (world-children-group lookup vs cell-grid
@@ -7197,6 +8674,9 @@ fn navdiag_cell_fail(
     }
 }
 
+/// Insert an encoded NAVM into the cell child group described by its NVNM
+/// parent fields. Returns `Ok(false)` when the parent cell/world is not present
+/// in the target plugin yet.
 pub fn insert_projected_navmesh_record_in_slot(
     slot: &mut NativePluginSlot,
     record: ParsedRecord,
@@ -9228,43 +10708,6 @@ fn collect_record_summaries(
     }
 }
 
-fn collect_used_master_indices(items: &[ParsedItem], own_index: u8, used: &mut BTreeSet<u8>) {
-    for item in items {
-        match item {
-            ParsedItem::Group(group) => {
-                collect_used_master_indices(&group.children, own_index, used);
-            }
-            ParsedItem::Record(record) => {
-                let high = ((record.form_id >> 24) & 0xFF) as u8;
-                if high != own_index {
-                    used.insert(high);
-                }
-                for subrecord in &record.subrecords {
-                    match subrecord.semantic_type.as_deref() {
-                        Some("formid") if subrecord.data.len() >= 4 => {
-                            let high = subrecord.data[3];
-                            if high != own_index {
-                                used.insert(high);
-                            }
-                        }
-                        Some("formid_array")
-                            if subrecord.data.len() >= 4 && subrecord.data.len() % 4 == 0 =>
-                        {
-                            for chunk in subrecord.data.chunks_exact(4) {
-                                let high = chunk[3];
-                                if high != own_index {
-                                    used.insert(high);
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        }
-    }
-}
-
 fn apply_object_id_mapping_in_items(
     items: &mut [ParsedItem],
     old_high: u8,
@@ -10834,14 +12277,13 @@ fn lookup_subrecord_spec_for_parsed<'a>(
 /// otherwise only carries the field names emitted by each subrecord's spec
 /// (``type`` for EPFT, ``descriptor_type`` for SNDR.CNAM, etc.), so union
 /// conditions referencing ``epft`` / ``knam_edit_value`` / ``cnam_edit_value``
-/// can never match. This helper bridges the gap by inserting the decoded
-/// sibling value under the alias key the union conditions reference.
+/// would never match. This inserts the decoded sibling value under the alias
+/// key the union conditions reference.
 ///
-/// The source subrecords here are all single-field ``parsed`` specs whose
-/// post-compact ``field_payload`` is a bare scalar (Number for EPFT uint8,
-/// String for AECH.KNAM / SNDR.CNAM uint32-with-enum). We accept either a
-/// bare scalar or an Object containing the source field — Object form is
-/// kept for forward-compat in case the decode path ever wraps these.
+/// The sources are single-field ``parsed`` specs whose post-compact
+/// ``field_payload`` is a bare scalar (Number for EPFT uint8, String for
+/// AECH.KNAM / SNDR.CNAM uint32-with-enum); an Object containing the source
+/// field is accepted too.
 fn publish_sibling_decider_context_aliases(
     record_sig: &str,
     subrecord_sig: &str,
@@ -11007,7 +12449,7 @@ fn unique_spec_accepting_length<'a>(
 ///    declaration order, deduplicated) — the first one with an unconsumed
 ///    spec wins.
 /// 3. Otherwise, return ``None`` so the caller can fall back to the
-///    legacy occurrence-based lookup.
+///    occurrence-based lookup.
 ///
 /// The returned scope id is what the caller should bump in
 /// ``occurrence_counts`` and adopt as ``current_scope`` for the next sig.
@@ -11064,14 +12506,10 @@ fn record_context_from_parsed(record: &ParsedRecord) -> RecordContextPayload {
 }
 
 /// Pure-Rust, GIL-free serialization of a single ESP record to `serde_json::Value`.
+/// Decoding, FormID resolution, enum lookup, and localized-string resolution all
+/// run in Rust, so it can run inside the rayon export.
 ///
-/// Serializes a record payload while holding the GIL for zero time:
-/// all decoding, FormID resolution, enum lookup, and localized-string resolution
-/// are done entirely in Rust.  The result is ready for `serde_json::to_string`
-/// or further parallel processing (rayon export wiring).
-///
-/// The output shape matches the compact-for-authoring-dir mode of
-/// the compact authoring-dir record shape:
+/// Output is the compact authoring-dir record shape:
 ///   * `form_id` — "XXXXXX" or "XXXXXX:Plugin.esm"
 ///   * `flags`, `version_control`, `form_version`, `version2` — omitted when zero
 ///   * `raw_payload_hex` — present only for compressed/undecodable records
@@ -11184,7 +12622,7 @@ pub fn serialize_record_payload_to_json(
     // Style FormID at top-level vs Value union inside Package Data, etc.).
     // ``occurrence_counts_by_scope`` is keyed on (scope_id, sig). Records
     // without a schema, or sigs absent from the schema, fall back to the
-    // legacy global counter via ``occurrence_counts``.
+    // global counter in ``occurrence_counts``.
     let mut occurrence_counts: HashMap<&str, usize> = HashMap::new();
     let mut occurrence_counts_by_scope: HashMap<(Option<String>, String), usize> = HashMap::new();
     let mut current_scope: Option<String> = None;
@@ -11397,7 +12835,20 @@ fn compact_field_payload_json(
     let has_wrapper = m.contains_key("raw_hex") && (m.contains_key("value") || m.len() <= 3);
     if has_wrapper {
         if let Some(value) = m.get("value") {
-            return value.clone();
+            // A decode that produced no members describes none of the payload,
+            // and re-encoding that empty mapping yields a zero-length
+            // subrecord — FO4 `MODT` (codec `model_info`) degrades this way and
+            // a zero-length MODT faults TESRace::Load. Keep the bytes instead.
+            if !value.as_object().is_some_and(serde_json::Map::is_empty) {
+                return value.clone();
+            }
+            let mut raw_only = serde_json::Map::new();
+            for key in ["raw_hex", "semantic_type", "display_value"] {
+                if let Some(kept) = m.get(key) {
+                    raw_only.insert(key.to_string(), kept.clone());
+                }
+            }
+            return serde_json::Value::Object(raw_only);
         }
         // raw_only shape: {raw_hex, semantic_type?, display_value?} — keep as-is.
     }
@@ -11879,21 +13330,6 @@ fn group_starfield_component_fields_json(fields: Vec<serde_json::Value>) -> Vec<
 // Header manifest + write helpers, Rust-native twins.
 // ---------------------------------------------------------------------------
 
-/// Rust-native twin of `compact_record_payload_base` — strips all keys except
-/// the authoring-compact subset.
-// ---------------------------------------------------------------------------
-// Group exporters, Rust-native twins.
-// Byte-exact note: uses BTreeMap for signature/group dedup dirs so iteration
-// order is deterministic — HashMap ordering would break byte-exact
-// authoring-dir output.
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// Top-level Rust-native authoring dir exporter.
-// Uses BTreeMap for root-level signature/group dedup dirs (byte-exact
-// determinism).
-// ---------------------------------------------------------------------------
-
 const HEADER_FLAG_DEFINITIONS: [(&str, u32, &str); 3] = [
     ("master", 0x0000_0001, "Master File"),
     ("localized", 0x0000_0080, "Localized"),
@@ -12370,8 +13806,11 @@ fn field_is_present_for_record_form_version(
     field: &SchemaFieldJson,
     record_form_version: Option<u16>,
 ) -> bool {
-    field.presence_conditions.is_empty()
-        || field.presence_conditions.iter().all(|condition| {
+    field
+        .presence_conditions
+        .iter()
+        .filter(|condition| condition.field == "record_form_version")
+        .all(|condition| {
             schema_condition_matches_record_form_version(condition, record_form_version)
         })
 }
@@ -12382,8 +13821,18 @@ fn fill_missing_mapping_fields_from_schema_json(
     record_form_version: Option<u16>,
 ) -> JsonMap<String, JsonValue> {
     let mut normalized = mapping.clone();
-    for field in fields {
+    for (index, field) in fields.iter().enumerate() {
         if !field_is_present_for_record_form_version(field, record_form_version) {
+            continue;
+        }
+        let has_runtime_presence_condition = field
+            .presence_conditions
+            .iter()
+            .any(|condition| condition.field != "record_form_version");
+        let later_field_is_explicit = fields[index + 1..]
+            .iter()
+            .any(|later| schema_mapping_value_json(mapping, later).is_some());
+        if has_runtime_presence_condition && !later_field_is_explicit {
             continue;
         }
         if schema_mapping_value_json(&normalized, field).is_none() {
@@ -12650,12 +14099,12 @@ fn expand_compact_field_payload_from_schema_json(
         let only_raw_payload = mapping
             .keys()
             .all(|key| matches!(key.as_str(), "raw_hex" | "semantic_type" | "display_value"));
-        let is_fixed_struct_spec = spec
-            .and_then(|spec| spec.codec.as_ref())
-            .map(|codec| codec.starts_with("struct:"))
-            .unwrap_or(false);
+        // An all-default structured payload compacts to `{}`; without this
+        // fall-through it exits here with no `fields` and writes a zero-length
+        // subrecord. FO4 `MODT` (codec `model_info`) still owes a 20-byte
+        // header in that state, and a zero-length one faults TESRace::Load.
         let fall_through_for_structured_defaults =
-            mapping.is_empty() && is_fixed_struct_spec && !mapping.contains_key("raw_hex");
+            mapping.is_empty() && is_structured_spec && !mapping.contains_key("raw_hex");
         if only_raw_payload && !fall_through_for_structured_defaults {
             if let Some(raw_hex) = mapping.get("raw_hex") {
                 expanded.insert(
@@ -13379,8 +14828,7 @@ fn encode_array_struct_value_json(
 ///   * `include_count` rows of `<IBBB` (7 bytes each).
 ///   * `property_count` rows of `<B3xB3xH2xIIf` (24 bytes each, explicit pad).
 ///
-/// `include_count` and `property_count` are derived from the array lengths
-/// (matching the former Python encoder's behavior).
+/// `include_count` and `property_count` are derived from the array lengths.
 fn encode_omod_data_json(
     spec: &SchemaSubrecordJson,
     mapping: &JsonMap<String, JsonValue>,
@@ -14826,12 +16274,10 @@ fn build_subrecord_from_authoring_field_json_native(
         .and_then(|s| try_encode_custom_codec_subrecord(payload, s))
     {
         // `custom_codec` subrecords (NVNM, LAND VHGT/VNML) ship structured
-        // fields alongside `raw_hex`. Without this branch the structured
-        // payload is silently dropped because preservation_mode defaults to
-        // raw_only for kind=custom_codec, so any user edit to the fields in
-        // the authoring-dir YAML never reaches the bytes. Falls through to
-        // the raw_only path below if the codec is unrecognised or fails to
-        // re-encode — preserves resilience against malformed structured data.
+        // fields alongside `raw_hex`. preservation_mode defaults to raw_only
+        // for kind=custom_codec, so without this branch edits to those fields
+        // in the authoring-dir YAML never reach the bytes. An unrecognised
+        // codec or failed re-encode falls through to the raw_only path below.
         bytes
     } else if spec.is_none() || preservation_mode == "raw_only" || !has_typed_payload {
         if let Some(text) = compact_value_text_candidate(payload) {
@@ -14866,11 +16312,16 @@ fn build_subrecord_from_authoring_field_json_native(
                             _ => context.allocate_localized_string_id(1),
                         };
                         if string_id != 0 {
+                            let record_signature = context.current_record_signature.clone();
+                            let table_type = io::localized_table_type_for_signature(
+                                record_signature.as_deref(),
+                                signature,
+                            );
                             context.set_localized_field_values(
                                 string_id,
                                 &values_by_language,
                                 Some(target_language.as_str()),
-                                None,
+                                table_type,
                             );
                         }
                         string_id.to_le_bytes().to_vec()
@@ -14915,11 +16366,83 @@ fn build_subrecord_from_authoring_field_json_native(
     })
 }
 
+#[derive(Default)]
+struct CompactAuthoringDispatchState {
+    occurrence_counts: HashMap<String, usize>,
+    occurrence_counts_by_scope: HashMap<(Option<String>, String), usize>,
+    current_scope: Option<String>,
+}
+
+fn select_compact_authoring_subrecord_spec<'a>(
+    record_spec: &'a SchemaRecordJson,
+    raw_key: &str,
+    signature: &str,
+    state: &CompactAuthoringDispatchState,
+) -> Option<&'a SchemaSubrecordJson> {
+    if raw_key != signature {
+        if let Some(matched) = find_unique_label_spec(record_spec, raw_key, signature) {
+            return Some(matched);
+        }
+    }
+
+    let current_scope = state.current_scope.as_deref();
+    if schema_has_subrecord_in_scope(record_spec, signature, current_scope) {
+        let key = (current_scope.map(str::to_string), signature.to_string());
+        let occurrence = *state.occurrence_counts_by_scope.get(&key).unwrap_or(&0);
+        if let Some(spec) =
+            schema_subrecord_spec_in_scope(record_spec, signature, current_scope, occurrence)
+        {
+            return Some(spec);
+        }
+    }
+
+    let mut tried: HashSet<Option<&str>> = HashSet::new();
+    tried.insert(current_scope);
+    for spec in &record_spec.subrecords {
+        if spec.id != signature {
+            continue;
+        }
+        let scope = spec.scope_id.as_deref();
+        if !tried.insert(scope) {
+            continue;
+        }
+        let key = (scope.map(str::to_string), signature.to_string());
+        let occurrence = *state.occurrence_counts_by_scope.get(&key).unwrap_or(&0);
+        if let Some(found) =
+            schema_subrecord_spec_in_scope(record_spec, signature, scope, occurrence)
+        {
+            return Some(found);
+        }
+    }
+
+    let occurrence = *state.occurrence_counts.get(signature).unwrap_or(&0);
+    schema_subrecord_spec(record_spec, signature, occurrence)
+}
+
+fn advance_compact_authoring_dispatch_state(
+    state: &mut CompactAuthoringDispatchState,
+    signature: &str,
+    spec: Option<&SchemaSubrecordJson>,
+) {
+    *state
+        .occurrence_counts
+        .entry(signature.to_string())
+        .or_insert(0) += 1;
+    if let Some(spec) = spec {
+        let scope = spec.scope_id.clone();
+        *state
+            .occurrence_counts_by_scope
+            .entry((scope.clone(), signature.to_string()))
+            .or_insert(0) += 1;
+        state.current_scope = scope;
+    }
+}
+
 fn append_compact_authoring_subrecord_json_native(
     raw_key: &str,
     compact_payload: &JsonValue,
     record_spec: Option<&SchemaRecordJson>,
-    occurrence_counts: &mut HashMap<String, usize>,
+    dispatch_state: &mut CompactAuthoringDispatchState,
     localized_label_counts: &mut HashMap<String, usize>,
     subrecords: &mut Vec<ParsedSubrecord>,
     context: &mut NativeImportContext,
@@ -14928,23 +16451,13 @@ fn append_compact_authoring_subrecord_json_native(
 ) -> PyResult<()> {
     let resolved_signature =
         resolve_compact_signature_from_schema(record_spec, raw_key, localized_label_counts)?;
-    let occurrence = *occurrence_counts
-        .get(resolved_signature.as_str())
-        .unwrap_or(&0);
-    // Prefer a unique label-matched spec over the positional occurrence lookup:
-    // when the YAML uses a distinctive authoring label (e.g. "MarkerParameters"
-    // → SNAM), the writer didn't necessarily emit earlier same-signature
-    // subrecords, so `occurrence` may not align with the spec list. The unique
-    // label tells us which spec the value belongs to regardless of position.
     let spec = record_spec.and_then(|record_spec| {
-        if raw_key != resolved_signature.as_str() {
-            if let Some(matched) =
-                find_unique_label_spec(record_spec, raw_key, resolved_signature.as_str())
-            {
-                return Some(matched);
-            }
-        }
-        schema_subrecord_spec(record_spec, resolved_signature.as_str(), occurrence)
+        select_compact_authoring_subrecord_spec(
+            record_spec,
+            raw_key,
+            resolved_signature.as_str(),
+            dispatch_state,
+        )
     });
     let expanded = expand_compact_field_payload_from_schema_json(
         resolved_signature.as_str(),
@@ -14959,14 +16472,14 @@ fn append_compact_authoring_subrecord_json_native(
         context,
         localized,
     )?);
-    occurrence_counts.insert(resolved_signature, occurrence + 1);
+    advance_compact_authoring_dispatch_state(dispatch_state, resolved_signature.as_str(), spec);
     Ok(())
 }
 
 fn append_top_level_eid_subrecord_json_native(
     eid: &str,
     record_spec: Option<&SchemaRecordJson>,
-    occurrence_counts: &mut HashMap<String, usize>,
+    dispatch_state: &mut CompactAuthoringDispatchState,
     localized_label_counts: &mut HashMap<String, usize>,
     subrecords: &mut Vec<ParsedSubrecord>,
     context: &mut NativeImportContext,
@@ -14976,7 +16489,7 @@ fn append_top_level_eid_subrecord_json_native(
         "EDID",
         &JsonValue::String(eid.to_string()),
         record_spec,
-        occurrence_counts,
+        dispatch_state,
         localized_label_counts,
         subrecords,
         context,
@@ -14988,7 +16501,7 @@ fn append_top_level_eid_subrecord_json_native(
 fn append_starfield_component_subrecords_json_native(
     components_value: &JsonValue,
     record_spec: Option<&SchemaRecordJson>,
-    occurrence_counts: &mut HashMap<String, usize>,
+    dispatch_state: &mut CompactAuthoringDispatchState,
     localized_label_counts: &mut HashMap<String, usize>,
     subrecords: &mut Vec<ParsedSubrecord>,
     context: &mut NativeImportContext,
@@ -15023,7 +16536,7 @@ fn append_starfield_component_subrecords_json_native(
             "BFCB",
             &JsonValue::String(component_type),
             record_spec,
-            occurrence_counts,
+            dispatch_state,
             localized_label_counts,
             subrecords,
             context,
@@ -15051,7 +16564,7 @@ fn append_starfield_component_subrecords_json_native(
                     raw_key.as_str(),
                     &compact_payload,
                     record_spec,
-                    occurrence_counts,
+                    dispatch_state,
                     localized_label_counts,
                     subrecords,
                     context,
@@ -15068,7 +16581,7 @@ fn append_starfield_component_subrecords_json_native(
                     raw_key.as_str(),
                     compact_payload,
                     record_spec,
-                    occurrence_counts,
+                    dispatch_state,
                     localized_label_counts,
                     subrecords,
                     context,
@@ -15082,7 +16595,7 @@ fn append_starfield_component_subrecords_json_native(
             "BFCE",
             &JsonValue::Bool(true),
             record_spec,
-            occurrence_counts,
+            dispatch_state,
             localized_label_counts,
             subrecords,
             context,
@@ -15096,7 +16609,7 @@ fn append_starfield_component_subrecords_json_native(
 fn append_object_template_subrecords_json_native(
     templates_value: &JsonValue,
     record_spec: Option<&SchemaRecordJson>,
-    occurrence_counts: &mut HashMap<String, usize>,
+    dispatch_state: &mut CompactAuthoringDispatchState,
     label_counts: &mut HashMap<String, usize>,
     subrecords: &mut Vec<ParsedSubrecord>,
     context: &mut NativeImportContext,
@@ -15108,7 +16621,7 @@ fn append_object_template_subrecords_json_native(
         "OBTE",
         &JsonValue::Number((templates.len() as u64).into()),
         record_spec,
-        occurrence_counts,
+        dispatch_state,
         label_counts,
         subrecords,
         context,
@@ -15128,7 +16641,7 @@ fn append_object_template_subrecords_json_native(
                 "OBTF",
                 &JsonValue::Bool(true),
                 record_spec,
-                occurrence_counts,
+                dispatch_state,
                 label_counts,
                 subrecords,
                 context,
@@ -15141,7 +16654,7 @@ fn append_object_template_subrecords_json_native(
                 "Name",
                 name_value,
                 record_spec,
-                occurrence_counts,
+                dispatch_state,
                 label_counts,
                 subrecords,
                 context,
@@ -15185,7 +16698,7 @@ fn append_object_template_subrecords_json_native(
             "OBTS",
             &JsonValue::Object(obts),
             record_spec,
-            occurrence_counts,
+            dispatch_state,
             label_counts,
             subrecords,
             context,
@@ -15201,7 +16714,7 @@ fn append_object_template_subrecords_json_native(
                 "STOP",
                 &JsonValue::Bool(true),
                 record_spec,
-                occurrence_counts,
+                dispatch_state,
                 label_counts,
                 subrecords,
                 context,
@@ -15240,7 +16753,7 @@ fn append_schema_row_group_subrecords_json_native(
     group_key: &str,
     rows_value: &JsonValue,
     record_spec: Option<&SchemaRecordJson>,
-    occurrence_counts: &mut HashMap<String, usize>,
+    dispatch_state: &mut CompactAuthoringDispatchState,
     label_counts: &mut HashMap<String, usize>,
     subrecords: &mut Vec<ParsedSubrecord>,
     context: &mut NativeImportContext,
@@ -15262,22 +16775,35 @@ fn append_schema_row_group_subrecords_json_native(
         .collect();
     for (row_index, row_value) in json_array(rows_value, group_key)?.iter().enumerate() {
         let row = json_object(row_value, &format!("{group_key}[{row_index}]"))?;
+        // Every entry in a row belongs to exactly one subrecord. Sibling specs
+        // can collapse onto one authoring key when they share a signature and
+        // label — RACE splits BodyData into male and female halves that both
+        // expose INDX/MODL/MODT — and claiming an entry once per spec doubled
+        // the block on every re-encode.
+        let mut consumed_keys: HashSet<&str> = HashSet::new();
         for spec in &specs {
             let field_key = schema_subrecord_authoring_key(record_spec, spec);
             let preferred_key = schema_subrecord_key(record_spec.id.as_str(), spec);
-            let compact_payload = row
-                .get(field_key.as_str())
-                .or_else(|| row.get(preferred_key.as_str()))
-                .or_else(|| schema_subrecord_legacy_key(spec).and_then(|label| row.get(label)))
-                .or_else(|| row.get(spec.id.as_str()));
-            let Some(compact_payload) = compact_payload else {
+            let candidate_keys = [
+                field_key.as_str(),
+                preferred_key.as_str(),
+                schema_subrecord_legacy_key(spec).unwrap_or_default(),
+                spec.id.as_str(),
+            ];
+            let matched = candidate_keys
+                .into_iter()
+                .find_map(|key| (!key.is_empty()).then(|| row.get_key_value(key)).flatten());
+            let Some((matched_key, compact_payload)) = matched else {
                 continue;
             };
+            if !consumed_keys.insert(matched_key.as_str()) {
+                continue;
+            }
             append_compact_authoring_subrecord_json_native(
                 spec.id.as_str(),
                 compact_payload,
                 Some(record_spec),
-                occurrence_counts,
+                dispatch_state,
                 label_counts,
                 subrecords,
                 context,
@@ -15304,6 +16830,10 @@ fn parse_record_from_json_compact_native(
             "invalid record signature: {signature:?}"
         )));
     }
+    // Localized fields are filed under a table type chosen from (record, subrecord).
+    // Cleared below so a record built through another path falls back to the
+    // signature-only rule rather than inheriting this record's type.
+    context.current_record_signature = Some(signature.to_string());
     let form_version = match payload.get("form_version") {
         Some(value) if !value.is_null() => {
             Some(json_parse_int_authoring(value, &format!("{signature}.form_version"), 0)? as u16)
@@ -15388,14 +16918,14 @@ fn parse_record_from_json_compact_native(
         let record_spec = schema
             .as_ref()
             .and_then(|schema| schema_record_spec(schema.as_ref(), signature.as_str()));
-        let mut occurrence_counts: HashMap<String, usize> = HashMap::new();
+        let mut dispatch_state = CompactAuthoringDispatchState::default();
         let mut localized_label_counts: HashMap<String, usize> = HashMap::new();
         let localized = (context.header.flags & TES4_FLAG_LOCALIZED) != 0;
         if let Some(eid) = top_level_eid.as_deref() {
             append_top_level_eid_subrecord_json_native(
                 eid,
                 record_spec,
-                &mut occurrence_counts,
+                &mut dispatch_state,
                 &mut localized_label_counts,
                 &mut subrecords,
                 context,
@@ -15409,7 +16939,7 @@ fn parse_record_from_json_compact_native(
                         append_starfield_component_subrecords_json_native(
                             components_value,
                             record_spec,
-                            &mut occurrence_counts,
+                            &mut dispatch_state,
                             &mut localized_label_counts,
                             &mut subrecords,
                             context,
@@ -15423,7 +16953,7 @@ fn parse_record_from_json_compact_native(
                     append_object_template_subrecords_json_native(
                         templates_value,
                         record_spec,
-                        &mut occurrence_counts,
+                        &mut dispatch_state,
                         &mut localized_label_counts,
                         &mut subrecords,
                         context,
@@ -15442,7 +16972,7 @@ fn parse_record_from_json_compact_native(
                         group_key.as_str(),
                         rows_value,
                         record_spec,
-                        &mut occurrence_counts,
+                        &mut dispatch_state,
                         &mut localized_label_counts,
                         &mut subrecords,
                         context,
@@ -15461,7 +16991,7 @@ fn parse_record_from_json_compact_native(
                         raw_key.as_str(),
                         &compact_payload,
                         record_spec,
-                        &mut occurrence_counts,
+                        &mut dispatch_state,
                         &mut localized_label_counts,
                         &mut subrecords,
                         context,
@@ -15491,11 +17021,13 @@ fn parse_record_from_json_compact_native(
             if top_level_eid.is_some() && field_signature == "EDID" {
                 continue;
             }
-            let occurrence = *occurrence_counts
-                .get(field_signature.as_str())
-                .unwrap_or(&0);
             let spec = record_spec.and_then(|record_spec| {
-                schema_subrecord_spec(record_spec, field_signature.as_str(), occurrence)
+                select_compact_authoring_subrecord_spec(
+                    record_spec,
+                    field_signature.as_str(),
+                    field_signature.as_str(),
+                    &dispatch_state,
+                )
             });
             subrecords.push(build_subrecord_from_authoring_field_json_native(
                 field_signature.as_str(),
@@ -15504,7 +17036,11 @@ fn parse_record_from_json_compact_native(
                 context,
                 localized,
             )?);
-            occurrence_counts.insert(field_signature, occurrence + 1);
+            advance_compact_authoring_dispatch_state(
+                &mut dispatch_state,
+                field_signature.as_str(),
+                spec,
+            );
         }
     } else if let Some(raw_subrecords) = payload.get("subrecords") {
         for subrecord in json_array(raw_subrecords, &format!("{signature}.subrecords"))? {
@@ -15515,7 +17051,7 @@ fn parse_record_from_json_compact_native(
         }
     }
 
-    Ok(ParsedRecord {
+    let record = ParsedRecord {
         signature: SmolStr::new(signature.clone()),
         form_id: match payload.get("form_id") {
             Some(value) => parse_record_form_id_value_native(value, context, "record.form_id")?,
@@ -15542,7 +17078,9 @@ fn parse_record_from_json_compact_native(
             _ => None,
         },
         parse_error: json_optional_string(payload.get("parse_error"))?,
-    })
+    };
+    context.current_record_signature = None;
+    Ok(record)
 }
 
 fn parse_group_from_json_compact_native(
@@ -16184,6 +17722,25 @@ fn detect_special_layout(directory: &Path, signature: &str) -> PyResult<&'static
 mod tests {
     use super::*;
 
+    #[test]
+    fn source_context_no_py_preserves_game_and_master_order_and_rejects_closed_handle() {
+        let handle = plugin_handle_new_no_py("Source.esp", Some("fnv"));
+        plugin_handle_add_master_no_py(handle, "FalloutNV.esm", None).expect("first master");
+        plugin_handle_add_master_no_py(handle, "DeadMoney.esm", None).expect("second master");
+
+        assert_eq!(
+            plugin_handle_master_names_no_py(handle).expect("master names"),
+            ["FalloutNV.esm", "DeadMoney.esm"]
+        );
+        assert_eq!(
+            plugin_handle_game_no_py(handle).expect("game").as_deref(),
+            Some("fnv")
+        );
+        assert!(plugin_handle_close_native(handle));
+        assert!(plugin_handle_master_names_no_py(handle).is_err());
+        assert!(plugin_handle_game_no_py(handle).is_err());
+    }
+
     fn make_record(signature: &str, form_id: u32, editor_id: Option<&str>) -> ParsedRecord {
         let mut subrecords = Vec::new();
         if let Some(eid) = editor_id {
@@ -16447,6 +18004,56 @@ mod tests {
         let mut plugin = empty_plugin(game);
         plugin.plugin_name = plugin_name.to_string();
         insert_plugin_handle(plugin, LocalizedStringsState::default())
+    }
+
+    #[test]
+    fn authoring_record_batch_matches_sequential_replacement() {
+        let sequential_handle = create_empty_plugin_handle("Test.esp", Some("fo4"));
+        let batch_handle = create_empty_plugin_handle("Test.esp", Some("fo4"));
+        let values = vec![
+            serde_json::json!({
+                "signature": "WRLD",
+                "form_id": "000800:Test.esp",
+                "eid": "TestWorld",
+                "subrecords": [
+                    { "signature": "EDID", "data_hex": "54657374576F726C6400" }
+                ]
+            }),
+            serde_json::json!({
+                "signature": "LTEX",
+                "form_id": "000801:Test.esp",
+                "eid": "TestLandTexture",
+                "subrecords": [
+                    { "signature": "EDID", "data_hex": "546573744C616E645465787475726500" }
+                ]
+            }),
+        ];
+
+        let sequential_form_keys = values
+            .iter()
+            .map(|value| {
+                plugin_handle_replace_authoring_record_value(sequential_handle, value)
+                    .expect("sequential replacement")
+            })
+            .collect::<Vec<_>>();
+        let batch_form_keys = plugin_handle_replace_authoring_record_values(batch_handle, &values)
+            .expect("batch replacement");
+
+        assert_eq!(batch_form_keys, sequential_form_keys);
+        let store = plugin_handle_store_ref().lock().unwrap();
+        let mut sequential_fingerprint = String::new();
+        tree_fingerprint(
+            &store.get(&sequential_handle).unwrap().parsed.root_items,
+            0,
+            &mut sequential_fingerprint,
+        );
+        let mut batch_fingerprint = String::new();
+        tree_fingerprint(
+            &store.get(&batch_handle).unwrap().parsed.root_items,
+            0,
+            &mut batch_fingerprint,
+        );
+        assert_eq!(batch_fingerprint, sequential_fingerprint);
     }
 
     fn populate_all_sections(handle_id: u64) {
@@ -18207,8 +19814,8 @@ mod tests {
             assert_eq!(stats.edge_links, 1);
             // The 0x000B99 in NAVM 0x000A00's NVNM is filtered as stale
             // (not in emitted_navmesh_ids). The source NVMI's 0x000999 is
-            // discarded outright (no longer iterated), so stale_edge_links_dropped
-            // counts only the NVNM-derived stale filter.
+            // never iterated, so stale_edge_links_dropped counts only the
+            // NVNM-derived stale filter.
             assert_eq!(stats.stale_edge_links_dropped, 1);
         }
 
@@ -19367,6 +20974,25 @@ mod tests {
         }
 
         #[test]
+        fn snapshot_save_preserves_plugin_identity() {
+            let handle_id = create_empty_plugin_handle("Test.esp", Some("fo4"));
+            let temp = tempfile::tempdir().unwrap();
+            let snapshot_path = temp.path().join("Snapshot.esp.tmp");
+
+            plugin_handle_save_preserving_identity_no_py(
+                handle_id,
+                snapshot_path.to_str().unwrap(),
+            )
+            .unwrap();
+
+            let store = plugin_handle_store_ref().lock().unwrap();
+            let slot = store.get(&handle_id).unwrap();
+            assert_eq!(slot.parsed.plugin_name, "Test.esp");
+            assert_eq!(slot.parsed.file_path, "");
+            assert!(snapshot_path.is_file());
+        }
+
+        #[test]
         fn patch_subrecord_bytes_preserves_form_id_index() {
             let mut record = make_record("WEAP", 0xFF000800, Some("PatchedWeap"));
             record.subrecords.push(ParsedSubrecord {
@@ -20277,6 +21903,112 @@ mod tests {
     }
 
     #[test]
+    fn authoring_import_uses_alias_flags_for_qust_fnam_inside_alias_block() {
+        let mut context = NativeImportContext::new(
+            "Test.esp".to_string(),
+            Some("fo4".to_string()),
+            MODERN_HEADER_SIZE,
+            empty_header(),
+        );
+        let payload = serde_json::json!({
+            "signature": "QUST",
+            "form_id": "000123",
+            "eid": "TestQuest",
+            "fields": [
+                {"ANAM": 1},
+                {"ALST": 0},
+                {"ALID": "TestAlias"},
+                {"FNAM": ["Optional", "Allow Dead"]},
+                {"ALED": true}
+            ]
+        });
+
+        let record = parse_record_from_json_compact_native(
+            payload.as_object().expect("record payload"),
+            &mut context,
+        )
+        .unwrap();
+        let flags = record
+            .subrecords
+            .iter()
+            .find(|subrecord| subrecord.signature.as_str() == "FNAM")
+            .expect("alias FNAM");
+
+        assert_eq!(
+            u32::from_le_bytes(flags.data[..4].try_into().unwrap()),
+            0x12
+        );
+    }
+
+    #[test]
+    fn authoring_import_uses_action_flags_for_scoped_scen_fnam() {
+        let mut context = NativeImportContext::new(
+            "Test.esp".to_string(),
+            Some("fo4".to_string()),
+            MODERN_HEADER_SIZE,
+            empty_header(),
+        );
+        let payload = serde_json::json!({
+            "signature": "SCEN",
+            "form_id": "000123",
+            "eid": "TestScene",
+            "fields": [
+                {"FNAM": ["Show All Text"]},
+                {"ALID": 0},
+                {"INAM": 1},
+                {"FNAM": ["Face Target"]}
+            ]
+        });
+
+        let record = parse_record_from_json_compact_native(
+            payload.as_object().expect("record payload"),
+            &mut context,
+        )
+        .unwrap();
+        let flags = record
+            .subrecords
+            .iter()
+            .filter(|subrecord| subrecord.signature.as_str() == "FNAM")
+            .nth(1)
+            .expect("action FNAM");
+
+        assert_eq!(
+            u32::from_le_bytes(flags.data[..4].try_into().unwrap()),
+            0x8000
+        );
+    }
+
+    #[test]
+    fn authoring_import_fills_presence_gated_gap_before_explicit_trailing_field() {
+        let mut context = NativeImportContext::new(
+            "Test.esp".to_string(),
+            Some("fo4".to_string()),
+            MODERN_HEADER_SIZE,
+            empty_header(),
+        );
+        let payload = serde_json::json!({
+            "signature": "PERK",
+            "form_id": "000123",
+            "fields": [
+                {"DATA": {"NumRanks": 1, "Hidden": true}}
+            ]
+        });
+
+        let record = parse_record_from_json_compact_native(
+            payload.as_object().expect("record payload"),
+            &mut context,
+        )
+        .unwrap();
+        let data = record
+            .subrecords
+            .iter()
+            .find(|subrecord| subrecord.signature.as_str() == "DATA")
+            .expect("PERK DATA");
+
+        assert_eq!(&data.data[..], &[0, 0, 1, 0, 1]);
+    }
+
+    #[test]
     fn authoring_import_fills_race_data_fields_for_matching_form_version() {
         let mut context = NativeImportContext::new(
             "Test.esp".to_string(),
@@ -20577,6 +22309,71 @@ mod tests {
         assert_eq!(row0_keys, vec!["Base Effect", "EFIT", "CTDA"]);
         assert_eq!(row1_keys, vec!["CTDA"]);
         assert_eq!(row2_keys, vec!["Base Effect", "EFIT", "CTDA"]);
+    }
+
+    /// RACE's BodyData group repeats INDX/MODL/MODT across a male and a female
+    /// half, and both halves resolve to one authoring key. Each row entry must
+    /// still produce exactly one subrecord.
+    fn race_body_data_record_spec() -> SchemaRecordJson {
+        let half = |marker: &str| {
+            serde_json::json!([
+                {"id": marker, "kind": "parsed", "codec": "empty", "fields": [],
+                 "authoring_layout": "row_group", "authoring_key": "group_body_data",
+                 "scope_id": "body_data"},
+                {"id": "INDX", "kind": "raw", "fields": [],
+                 "authoring_layout": "row_group", "authoring_key": "group_body_data",
+                 "scope_id": "body_data"},
+                {"id": "MODL", "kind": "parsed", "display_label": "Model FileName",
+                 "codec": "zstring", "fields": [],
+                 "authoring_layout": "row_group", "authoring_key": "group_body_data",
+                 "scope_id": "body_data"},
+            ])
+        };
+        let mut subrecords = half("MNAM").as_array().unwrap().clone();
+        subrecords.extend(half("FNAM").as_array().unwrap().clone());
+        serde_json::from_value(serde_json::json!({
+            "id": "RACE",
+            "subrecords": subrecords,
+        }))
+        .expect("race body data fixture")
+    }
+
+    #[test]
+    fn row_group_import_emits_one_subrecord_per_row_entry() {
+        let record_spec = race_body_data_record_spec();
+        let rows = serde_json::json!([
+            {"MNAM": true, "INDX": "00000000", "FNAM": true},
+            {"INDX": "00000000", "MODL": "Actors\\Character\\Body.egt"},
+        ]);
+        let mut subrecords = Vec::new();
+        let mut dispatch_state = CompactAuthoringDispatchState::default();
+        let mut label_counts = HashMap::new();
+        let mut context = NativeImportContext::new(
+            "Test.esp".to_string(),
+            Some("fo4".to_string()),
+            24,
+            ParsedPluginHeader::default_for_test(),
+        );
+
+        append_schema_row_group_subrecords_json_native(
+            "group_body_data",
+            &rows,
+            Some(&record_spec),
+            &mut dispatch_state,
+            &mut label_counts,
+            &mut subrecords,
+            &mut context,
+            false,
+            None,
+        )
+        .expect("row group import");
+
+        let emitted: Vec<&str> = subrecords.iter().map(|s| s.signature.as_str()).collect();
+        assert_eq!(
+            emitted,
+            vec!["MNAM", "INDX", "FNAM", "INDX", "MODL"],
+            "each row entry must map to exactly one subrecord"
+        );
     }
 
     fn make_record_with_formid_ref(
@@ -21109,6 +22906,423 @@ mod tests {
             ParsedItem::Record(record)
                 if record.signature.as_str() == "INFO" && record.form_id == info_full
         )));
+    }
+
+    fn child_insert_fixture() -> ParsedPlugin {
+        const QUEST_A: u32 = 0x0100_1000;
+        const QUEST_B: u32 = 0x0100_1001;
+        const EXISTING_DIAL: u32 = 0x0100_2000;
+        let mut plugin = empty_plugin(Some("fo4"));
+        plugin.header.next_object_id = 0x3000;
+        plugin.root_items.push(group(
+            0,
+            *b"QUST",
+            vec![
+                ParsedItem::Record(make_record("QUST", QUEST_A, Some("QuestA"))),
+                group(
+                    QUEST_CHILD_GROUP,
+                    QUEST_A.to_le_bytes(),
+                    vec![ParsedItem::Record(make_record(
+                        "DIAL",
+                        EXISTING_DIAL,
+                        Some("ExistingDial"),
+                    ))],
+                ),
+                ParsedItem::Record(make_record("QUST", QUEST_B, Some("QuestB"))),
+            ],
+        ));
+        plugin
+    }
+
+    fn child_insert_bytes(handle_id: u64) -> Vec<u8> {
+        let store = plugin_handle_store_ref().lock().unwrap();
+        let mut parsed = store.get(&handle_id).unwrap().parsed.clone();
+        build_plugin_bytes(&mut parsed).expect("serialize child-insert fixture")
+    }
+
+    #[test]
+    fn indexed_child_inserts_match_serial_bytes_for_interleaved_parents() {
+        const QUEST_A: u32 = 0x0100_1000;
+        const QUEST_B: u32 = 0x0100_1001;
+        const DIAL_A: u32 = 0x0100_2100;
+        const DIAL_B: u32 = 0x0100_2101;
+        const DIAL_C: u32 = 0x0100_2102;
+        let serial_handle = insert_plugin_handle(
+            child_insert_fixture(),
+            LocalizedStringsState::default(),
+        );
+        let indexed_handle = insert_plugin_handle(
+            child_insert_fixture(),
+            LocalizedStringsState::default(),
+        );
+        let quest_records = [
+            (QUEST_B, make_record("DIAL", DIAL_A, Some("DialA"))),
+            (QUEST_A, make_record("SCEN", 0x0100_2200, Some("SceneA"))),
+            (QUEST_B, make_record("DIAL", DIAL_B, Some("DialB"))),
+            (QUEST_A, make_record("DIAL", DIAL_C, Some("DialC"))),
+        ];
+        let mut serial_outcomes = Vec::new();
+        let mut indexed_outcomes = Vec::new();
+        {
+            let mut store = plugin_handle_store_ref().lock().unwrap();
+            let serial = store.get_mut(&serial_handle).unwrap();
+            for (parent, record) in quest_records.iter().cloned() {
+                serial_outcomes.push(
+                    insert_quest_child_record_in_slot(serial, parent, record).expect("serial quest"),
+                );
+            }
+            let indexed = store.get_mut(&indexed_handle).unwrap();
+            let mut index = build_quest_child_insert_index(indexed);
+            for (parent, record) in quest_records.iter().cloned() {
+                indexed_outcomes.push(
+                    insert_quest_child_record_indexed_in_slot(
+                        indexed,
+                        &mut index,
+                        parent,
+                        record,
+                    )
+                    .expect("indexed quest"),
+                );
+            }
+            assert_eq!(index.fast_inserts(), quest_records.len());
+            assert_eq!(index.serial_fallbacks(), 0);
+        }
+        assert_eq!(indexed_outcomes, serial_outcomes);
+
+        let info_records = [
+            (DIAL_B & 0x00FF_FFFF, make_record("INFO", 0x0100_3100, None)),
+            (DIAL_A & 0x00FF_FFFF, make_record("INFO", 0x0100_3101, None)),
+            (DIAL_B & 0x00FF_FFFF, make_record("INFO", 0x0100_3102, None)),
+            (DIAL_C & 0x00FF_FFFF, make_record("INFO", 0x0100_3103, None)),
+        ];
+        serial_outcomes.clear();
+        indexed_outcomes.clear();
+        {
+            let mut store = plugin_handle_store_ref().lock().unwrap();
+            let serial = store.get_mut(&serial_handle).unwrap();
+            for (parent, record) in info_records.iter().cloned() {
+                serial_outcomes.push(
+                    insert_topic_child_record_in_slot(serial, parent, record).expect("serial topic"),
+                );
+            }
+            let indexed = store.get_mut(&indexed_handle).unwrap();
+            let mut index = build_topic_child_insert_index(indexed);
+            for (parent, record) in info_records.iter().cloned() {
+                indexed_outcomes.push(
+                    insert_topic_child_record_indexed_in_slot(
+                        indexed,
+                        &mut index,
+                        parent,
+                        record,
+                    )
+                    .expect("indexed topic"),
+                );
+            }
+            assert_eq!(index.fast_inserts(), info_records.len());
+            assert_eq!(index.serial_fallbacks(), 0);
+        }
+        assert_eq!(indexed_outcomes, serial_outcomes);
+        assert_eq!(child_insert_bytes(indexed_handle), child_insert_bytes(serial_handle));
+        plugin_handle_close_native(serial_handle);
+        plugin_handle_close_native(indexed_handle);
+    }
+
+    #[test]
+    fn indexed_child_insert_fallbacks_match_serial_side_effects() {
+        const QUEST_A: u32 = 0x0100_1000;
+        const DIAL_A: u32 = 0x0100_2000;
+        const REPLACED: u32 = 0x0100_3200;
+        const MISSING_PARENT: u32 = 0x0000_DEAD;
+        let mut fixture = child_insert_fixture();
+        let ParsedItem::Group(top_quest_group) = &mut fixture.root_items[0] else {
+            panic!("expected top QUST group");
+        };
+        top_quest_group
+            .children
+            .push(ParsedItem::Record(make_record("QUST", 0, Some("MalformedZeroQuest"))));
+        fixture.root_items.insert(
+            0,
+            group(
+                QUEST_CHILD_GROUP,
+                0x0200_1000u32.to_le_bytes(),
+                vec![ParsedItem::Record(make_record(
+                    "DIAL",
+                    0x0200_2000,
+                    Some("EarlierDuplicateDial"),
+                ))],
+            ),
+        );
+        fixture.root_items.push(group(
+            0,
+            *b"INFO",
+            vec![ParsedItem::Record(make_record("INFO", REPLACED, Some("OldInfo")))],
+        ));
+        let serial_handle = insert_plugin_handle(fixture.clone(), LocalizedStringsState::default());
+        let indexed_handle = insert_plugin_handle(fixture, LocalizedStringsState::default());
+        let operations = [
+            (DIAL_A, make_record("INFO", 0x0100_3100, Some("FreshAmbiguousParent"))),
+            (DIAL_A, make_record("INFO", REPLACED, Some("Replacement"))),
+            (DIAL_A, make_record("INFO", REPLACED, Some("LastReplacement"))),
+            (
+                MISSING_PARENT,
+                make_record("INFO", 0x0100_FFFF, Some("MissingParent")),
+            ),
+            (DIAL_A, make_record("DIAL", 0x0100_3300, Some("WrongType"))),
+        ];
+        let mut serial_outcomes = Vec::new();
+        let mut indexed_outcomes = Vec::new();
+        {
+            let mut store = plugin_handle_store_ref().lock().unwrap();
+            let serial = store.get_mut(&serial_handle).unwrap();
+            for (parent, record) in operations.iter().cloned() {
+                serial_outcomes.push(
+                    insert_topic_child_record_in_slot(serial, parent, record).expect("serial topic"),
+                );
+            }
+            let indexed = store.get_mut(&indexed_handle).unwrap();
+            let mut index = build_topic_child_insert_index(indexed);
+            for (parent, record) in operations.iter().cloned() {
+                indexed_outcomes.push(
+                    insert_topic_child_record_indexed_in_slot(
+                        indexed,
+                        &mut index,
+                        parent,
+                        record,
+                    )
+                    .expect("indexed topic"),
+                );
+            }
+            assert_eq!(index.fast_inserts(), 0);
+            assert_eq!(index.serial_fallbacks(), operations.len());
+        }
+        assert_eq!(indexed_outcomes, serial_outcomes);
+
+        let quest_operations = [
+            (QUEST_A, make_record("SCEN", 0x0100_3400, Some("Scene"))),
+            (QUEST_A, make_record("SCEN", 0x0100_3400, Some("SceneReplacement"))),
+            (
+                MISSING_PARENT,
+                make_record("DIAL", 0x0100_3401, Some("MissingQuest")),
+            ),
+            (0, make_record("DIAL", 0x0100_3402, Some("ZeroQuest"))),
+        ];
+        {
+            let mut store = plugin_handle_store_ref().lock().unwrap();
+            let serial = store.get_mut(&serial_handle).unwrap();
+            for (parent, record) in quest_operations.iter().cloned() {
+                serial_outcomes.push(
+                    insert_quest_child_record_in_slot(serial, parent, record).expect("serial quest"),
+                );
+            }
+            let indexed = store.get_mut(&indexed_handle).unwrap();
+            let mut index = build_quest_child_insert_index(indexed);
+            for (parent, record) in quest_operations.iter().cloned() {
+                indexed_outcomes.push(
+                    insert_quest_child_record_indexed_in_slot(
+                        indexed,
+                        &mut index,
+                        parent,
+                        record,
+                    )
+                    .expect("indexed quest"),
+                );
+            }
+            assert_eq!(index.fast_inserts(), 1);
+            assert_eq!(index.serial_fallbacks(), 3);
+        }
+        assert_eq!(indexed_outcomes, serial_outcomes);
+        assert_eq!(child_insert_bytes(indexed_handle), child_insert_bytes(serial_handle));
+        plugin_handle_close_native(serial_handle);
+        plugin_handle_close_native(indexed_handle);
+    }
+
+    #[test]
+    fn indexed_quest_child_insert_falls_back_for_ambiguous_parent_topology() {
+        const QUEST_A: u32 = 0x0100_1000;
+        const QUEST_B: u32 = 0x0100_1001;
+        let mut fixture = child_insert_fixture();
+        let ParsedItem::Group(top_quest_group) = &mut fixture.root_items[0] else {
+            panic!("expected top QUST group");
+        };
+        top_quest_group.children.extend([
+            ParsedItem::Record(make_record("QUST", QUEST_B, Some("DuplicateQuestB"))),
+            group(
+                QUEST_CHILD_GROUP,
+                QUEST_A.to_le_bytes(),
+                vec![ParsedItem::Record(make_record(
+                    "DIAL",
+                    0x0100_2001,
+                    Some("DuplicateQuestAChildGroup"),
+                ))],
+            ),
+        ]);
+        let serial_handle = insert_plugin_handle(fixture.clone(), LocalizedStringsState::default());
+        let indexed_handle = insert_plugin_handle(fixture, LocalizedStringsState::default());
+        let operations = [
+            (QUEST_A, make_record("SCEN", 0x0100_3500, Some("AmbiguousGroup"))),
+            (QUEST_B, make_record("DIAL", 0x0100_3501, Some("AmbiguousQuest"))),
+        ];
+
+        let mut serial_outcomes = Vec::new();
+        let mut indexed_outcomes = Vec::new();
+        {
+            let mut store = plugin_handle_store_ref().lock().unwrap();
+            let serial = store.get_mut(&serial_handle).unwrap();
+            for (parent, record) in operations.iter().cloned() {
+                serial_outcomes.push(
+                    insert_quest_child_record_in_slot(serial, parent, record).expect("serial quest"),
+                );
+            }
+            let indexed = store.get_mut(&indexed_handle).unwrap();
+            let mut index = build_quest_child_insert_index(indexed);
+            for (parent, record) in operations.iter().cloned() {
+                indexed_outcomes.push(
+                    insert_quest_child_record_indexed_in_slot(
+                        indexed,
+                        &mut index,
+                        parent,
+                        record,
+                    )
+                    .expect("indexed quest"),
+                );
+            }
+            assert_eq!(index.fast_inserts(), 0);
+            assert_eq!(index.serial_fallbacks(), operations.len());
+        }
+
+        assert_eq!(indexed_outcomes, serial_outcomes);
+        assert_eq!(child_insert_bytes(indexed_handle), child_insert_bytes(serial_handle));
+        plugin_handle_close_native(serial_handle);
+        plugin_handle_close_native(indexed_handle);
+    }
+
+    fn child_insert_scaling_fixture(filler_records: u32, quest_count: u32) -> ParsedPlugin {
+        let mut plugin = empty_plugin(Some("fo4"));
+        plugin.root_items.push(group(
+            0,
+            *b"WRLD",
+            (0..filler_records)
+                .map(|index| {
+                    ParsedItem::Record(make_record("REFR", 0x0200_0000 + index, None))
+                })
+                .collect(),
+        ));
+        let mut quest_items = Vec::with_capacity((quest_count * 2) as usize);
+        for index in 0..quest_count {
+            let quest = 0x0101_0000 + index;
+            let dialogue = 0x0102_0000 + index;
+            quest_items.push(ParsedItem::Record(make_record("QUST", quest, None)));
+            quest_items.push(group(
+                QUEST_CHILD_GROUP,
+                quest.to_le_bytes(),
+                vec![ParsedItem::Record(make_record("DIAL", dialogue, None))],
+            ));
+        }
+        plugin.root_items.push(group(0, *b"QUST", quest_items));
+        plugin
+    }
+
+    #[test]
+    #[ignore = "release scaling benchmark"]
+    fn indexed_child_insert_scaling() {
+        use std::time::Instant;
+
+        const QUEST_COUNT: u32 = 32;
+        const DIALOGUE_INSERTS: u32 = 256;
+        const INFO_INSERTS: u32 = 512;
+        for filler_records in [5_000, 20_000] {
+            let fixture = child_insert_scaling_fixture(filler_records, QUEST_COUNT);
+            let serial_handle =
+                insert_plugin_handle(fixture.clone(), LocalizedStringsState::default());
+            let indexed_handle = insert_plugin_handle(fixture, LocalizedStringsState::default());
+            let quest_operations = (0..DIALOGUE_INSERTS)
+                .map(|index| {
+                    (
+                        0x0101_0000 + index % QUEST_COUNT,
+                        make_record("DIAL", 0x0103_0000 + index, None),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let topic_operations = (0..INFO_INSERTS)
+                .map(|index| {
+                    (
+                        (0x0103_0000 + index % DIALOGUE_INSERTS) & 0x00FF_FFFF,
+                        make_record("INFO", 0x0104_0000 + index, None),
+                    )
+                })
+                .collect::<Vec<_>>();
+
+            let (serial_quest, indexed_quest, indexed_quest_records) = {
+                let mut store = plugin_handle_store_ref().lock().unwrap();
+                let serial_started = Instant::now();
+                let serial = store.get_mut(&serial_handle).unwrap();
+                for (parent, record) in quest_operations.iter().cloned() {
+                    assert!(insert_quest_child_record_in_slot(serial, parent, record).unwrap());
+                }
+                let serial_elapsed = serial_started.elapsed();
+
+                let indexed_started = Instant::now();
+                let indexed = store.get_mut(&indexed_handle).unwrap();
+                let mut index = build_quest_child_insert_index(indexed);
+                let indexed_record_count = index.record_form_ids.len();
+                for (parent, record) in quest_operations.iter().cloned() {
+                    assert!(
+                        insert_quest_child_record_indexed_in_slot(
+                            indexed,
+                            &mut index,
+                            parent,
+                            record,
+                        )
+                        .unwrap()
+                    );
+                }
+                assert_eq!(index.fast_inserts(), quest_operations.len());
+                assert_eq!(index.serial_fallbacks(), 0);
+                (serial_elapsed, indexed_started.elapsed(), indexed_record_count)
+            };
+
+            let (serial_topic, indexed_topic, indexed_topic_records) = {
+                let mut store = plugin_handle_store_ref().lock().unwrap();
+                let serial_started = Instant::now();
+                let serial = store.get_mut(&serial_handle).unwrap();
+                for (parent, record) in topic_operations.iter().cloned() {
+                    assert!(insert_topic_child_record_in_slot(serial, parent, record).unwrap());
+                }
+                let serial_elapsed = serial_started.elapsed();
+
+                let indexed_started = Instant::now();
+                let indexed = store.get_mut(&indexed_handle).unwrap();
+                let mut index = build_topic_child_insert_index(indexed);
+                let indexed_record_count = index.record_form_ids.len();
+                for (parent, record) in topic_operations.iter().cloned() {
+                    assert!(
+                        insert_topic_child_record_indexed_in_slot(
+                            indexed,
+                            &mut index,
+                            parent,
+                            record,
+                        )
+                        .unwrap()
+                    );
+                }
+                assert_eq!(index.fast_inserts(), topic_operations.len());
+                assert_eq!(index.serial_fallbacks(), 0);
+                (serial_elapsed, indexed_started.elapsed(), indexed_record_count)
+            };
+
+            assert_eq!(child_insert_bytes(indexed_handle), child_insert_bytes(serial_handle));
+            eprintln!(
+                "child_insert_scaling filler_records={filler_records} dialogues={} infos={} quest_index_records={indexed_quest_records} topic_index_records={indexed_topic_records} serial_quest_ms={:.3} indexed_quest_ms={:.3} serial_topic_ms={:.3} indexed_topic_ms={:.3}",
+                quest_operations.len(),
+                topic_operations.len(),
+                serial_quest.as_secs_f64() * 1000.0,
+                indexed_quest.as_secs_f64() * 1000.0,
+                serial_topic.as_secs_f64() * 1000.0,
+                indexed_topic.as_secs_f64() * 1000.0,
+            );
+            plugin_handle_close_native(serial_handle);
+            plugin_handle_close_native(indexed_handle);
+        }
     }
 
     // ── Single-pass batch content-replace (perf + correctness) ─────────────────

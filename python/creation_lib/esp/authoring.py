@@ -1,14 +1,9 @@
-"""ESP↔YAML serialization wrapper.
+"""ESP↔YAML serialization over the in-process Rust ESP pipeline (``creation_lib.esp.api``).
 
-Thin Python wrapper around the in-process Rust ESP pipeline (``creation_lib.esp.api``
-backed by ``creation_lib._native``). The public function names are kept stable
-for the existing call sites in ``cli/`` and ``py_creation_lib/python/creation_lib/mod/``.
-
-Authoring directories use the standard layout: ``plugin.yaml`` at the root,
-per-record YAML under ``records/<SIG>/``, and ``Strings/`` sidecars next to
-``plugin.yaml``. Old-format sentinels such as ``spriggit-meta.json`` or
-top-level ``RecordData.yaml`` are rejected with a clear error pointing at
-``modkit mod import``.
+Authoring directories: ``plugin.yaml`` at the root, per-record YAML under
+``records/<SIG>/``, and ``Strings/`` sidecars next to ``plugin.yaml``. Old-format
+sentinels (``spriggit-meta.json``, top-level ``RecordData.yaml``) are rejected with
+an error pointing at ``modkit mod import``.
 """
 from __future__ import annotations
 
@@ -134,20 +129,10 @@ def serialize(
     error_on_unknown: bool = True,
     on_progress: Callable[[str], None] | None = None,
 ) -> Path:
-    """Serialize an ``.esp/.esm/.esl`` to YAML.
+    """Serialize an ``.esp/.esm/.esl`` to ``<output_dir>/yaml/`` and return that path.
 
-    Args:
-        esp_path: Path to the plugin file.
-        output_dir: Directory where ``yaml/`` will be created.
-        game: Game ID (fo4, skyrimse, starfield, fo76, fo3, fnv).
-        data_folder: Game ``Data/`` folder for master/strings resolution.
-            Currently unused by the in-process exporter (it locates strings
-            relative to the source plugin) — accepted for API compatibility.
-        error_on_unknown: Accepted for API compatibility.
-        on_progress: Optional callback for status messages.
-
-    Returns:
-        Path to the created ``yaml/`` directory.
+    ``data_folder`` and ``error_on_unknown`` are ignored; the exporter locates
+    strings relative to the source plugin.
     """
     del data_folder, error_on_unknown  # accepted for back-compat
 
@@ -188,31 +173,39 @@ def deserialize(
     data_folder: Path | None = None,
     on_progress: Callable[[str], None] | None = None,
 ) -> Path:
-    """Build a plugin file from a YAML authoring dir.
+    """Build a plugin from an authoring directory or whole-plugin YAML/JSON file.
 
-    Args:
-        yaml_dir: Path to the ``yaml/`` directory containing ``plugin.yaml``
-            and ``records/<SIG>/`` subdirs.
-        output_path: Path for the output ``.esp/.esm/.esl`` file.
-        game: Game ID.
-        data_folder: Game data directory. When provided, the build resolves
-            master ESM names from ``plugin.yaml`` against this folder so the
-            codec can scan the live master for the canonical top-level GRUP
-            order — keeps KYWD before COBJ etc. across Bethesda content
-            updates without code changes. Falls back to a hardcoded baseline
-            when ``data_folder`` is ``None`` or a master file isn't present.
-        on_progress: Optional callback for status messages.
-
-    Returns:
-        Path to the built plugin file.
-
-    Raises:
-        RuntimeError: if ``yaml_dir`` uses a legacy authoring format.
+    With ``data_folder``, master names from ``plugin.yaml`` resolve against it and
+    the live master supplies the canonical top-level GRUP order (KYWD before COBJ).
+    Without it, or when a master is missing, a hardcoded baseline order is used.
+    Raises RuntimeError for a legacy authoring format.
     """
     from creation_lib.esp.api import build_authoring_dir
 
     yaml_dir = Path(yaml_dir)
     output_path = Path(output_path)
+
+    if yaml_dir.is_file():
+        from creation_lib.esp.api import import_json, import_yaml
+        import tempfile
+
+        get_profile(game)
+        if yaml_dir.suffix.lower() not in {".yaml", ".yml", ".json"}:
+            raise ValueError(f"Expected whole-plugin YAML or JSON: {yaml_dir}")
+        importer = import_json if yaml_dir.suffix.lower() == ".json" else import_yaml
+        with importer(yaml_dir.read_text(encoding="utf-8-sig")) as plugin:
+            plugin.game = game
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(dir=output_path.parent, suffix=output_path.suffix, delete=False) as temporary:
+                staged = Path(temporary.name)
+            try:
+                plugin.save(staged)
+                staged.replace(output_path)
+            finally:
+                staged.unlink(missing_ok=True)
+        if on_progress:
+            on_progress(f"Built {output_path.name} from {yaml_dir.name}")
+        return output_path
 
     if _is_legacy_authoring_dir(yaml_dir):
         raise _legacy_authoring_format_error(yaml_dir)
@@ -257,17 +250,9 @@ def new_mod_yaml(
     plugin_ext: str = "esl",
     mod_prefix: str = "",
 ) -> Path:
-    """Create a YAML scaffold for a new mod.
+    """Create ``<mod_dir>/yaml/`` for a new mod and return its path.
 
-    Args:
-        mod_name: Mod name (e.g. ``"B21_MyMod"``).
-        mod_dir: Root mod directory (``mods/<ModName>/``).
-        game: Game ID.
-        plugin_ext: Plugin extension — ``"esl"``, ``"esp"``, or ``"esm"``.
-        mod_prefix: Author prefix string for the plugin header.
-
-    Returns:
-        Path to the created ``yaml/`` directory.
+    ``mod_prefix`` becomes the plugin header's author.
     """
     from creation_lib.esp.api import export_authoring_dir
     from creation_lib.esp.plugin import Plugin
@@ -344,13 +329,11 @@ def new_plugin_file(
 ) -> dict:
     """Create an empty plugin binary at ``output_path`` and return a summary dict.
 
-    ``extension`` (``"esp"``/``"esm"``/``"esl"``) is auto-coupled to its canonical
-    header bit (esm→Master, esl→Light). The ``set_*`` overrides are applied after
-    the auto-couple — ``set_master``/``set_light`` of ``None`` leave the
-    auto-coupled value untouched, while ``True``/``False`` force the bit on/off.
-    The game profile's base ESM is seeded as the first master unless
-    ``include_base_master`` is False; ``masters`` are appended and the whole list
-    is de-duplicated case-insensitively.
+    ``extension`` sets its canonical header bit (esm→Master, esl→Light).
+    ``set_master``/``set_light`` then override it: ``None`` keeps the extension's
+    bit, ``True``/``False`` force it. The game's base ESM is the first master unless
+    ``include_base_master`` is False; ``masters`` follow, de-duplicated
+    case-insensitively.
     """
     from creation_lib.esp.editor import header_flags
     from creation_lib.esp.plugin import Plugin

@@ -66,6 +66,11 @@ pub struct ConvertMaterialsRequest {
     /// it. Populated by the conversion crate from its embedded override table.
     pub source_path_overrides: HashMap<String, String>,
     pub target_asset_paths: HashSet<String>,
+    /// Data-relative path prefixes whose materials are allowed to overwrite a
+    /// same-path target-game asset instead of being skipped as base-owned. The
+    /// caller decides which kits are worth overriding; this crate stays
+    /// game-agnostic and only honours the prefixes it is handed.
+    pub base_overwrite_prefixes: Vec<String>,
 }
 
 fn normalize_target_asset_key(value: &str) -> String {
@@ -73,6 +78,28 @@ fn normalize_target_asset_key(value: &str) -> String {
     let trimmed = normalized.trim().trim_matches('/');
     let lower = trimmed.to_ascii_lowercase();
     lower.strip_prefix("data/").unwrap_or(&lower).to_string()
+}
+
+/// Normalizes an overwrite prefix to a directory-scoped key. The trailing slash
+/// is what keeps `materials/weapons/handmade/` from also matching the unrelated
+/// `materials/weapons/handmade_hotrod/`.
+pub fn normalize_base_overwrite_prefix(value: &str) -> String {
+    let key = normalize_target_asset_key(value);
+    if key.is_empty() {
+        key
+    } else {
+        format!("{key}/")
+    }
+}
+
+pub fn path_is_base_overwrite_allowed(subpath: &str, prefixes: &[String]) -> bool {
+    if prefixes.is_empty() {
+        return false;
+    }
+    let key = normalize_target_asset_key(subpath);
+    prefixes
+        .iter()
+        .any(|prefix| !prefix.is_empty() && key.starts_with(prefix.as_str()))
 }
 
 impl ConvertMaterialsRequest {
@@ -138,6 +165,15 @@ impl ConvertMaterialsRequest {
                 .flatten()
                 .filter_map(JsonValue::as_str)
                 .map(normalize_target_asset_key)
+                .collect(),
+            base_overwrite_prefixes: v
+                .get("base_overwrite_prefixes")
+                .and_then(JsonValue::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(JsonValue::as_str)
+                .map(normalize_base_overwrite_prefix)
+                .filter(|prefix| !prefix.is_empty())
                 .collect(),
         })
     }
@@ -364,9 +400,12 @@ fn existing_output_matches_signature(
         let Ok(bgsm) = crate::bgsm::parse(&bytes) else {
             return false;
         };
-        if source_path_has_named_glow_material(source_path) {
+        if source_path_preserves_fo76_emittance(source_path)
+            || source_path_has_named_glow_material(source_path)
+        {
             return bgsm.EmitEnabled
                 && bgsm.Glowmap
+                && bgsm.EmittanceColor.is_some()
                 && bgsm
                     .GlowTexture
                     .as_deref()
@@ -796,11 +835,10 @@ fn select_ore_cubemap(path: &str) -> Option<&'static str> {
     Some(ORE_STEEL)
 }
 
-// Cubemap selection for BGSM (lit) materials. Environment mapping is OPT-IN:
-// only metal-bearing surfaces get a cubemap. Everything else — rock, concrete,
-// wood, plastic, ceramic, cloth, toys — returns None so it is not forced to
-// reflect the sky (which reads as chrome). FO4 vanilla likewise leaves the vast
-// majority of world/structural/dielectric materials with env mapping off.
+// Environment mapping is opt-in: only metal-bearing surfaces get a cubemap.
+// Rock, concrete, wood, plastic, ceramic and cloth return None so they don't
+// reflect the sky like chrome. FO4 vanilla leaves env mapping off for most
+// dielectric materials too.
 /// Public entry to the FO4 cubemap heuristic for callers outside this module.
 /// Returns `(cubemap_path, env_mapping_mask_scale)`, or `None` for material
 /// categories that should have no cubemap at all.
@@ -1084,6 +1122,13 @@ fn apply_vegetation_material_defaults(bgsm: &mut crate::bgsm::BgsmData) {
 const BGSM_VERSION_FO4: u32 = 2;
 const BGEM_VERSION_FO4: u32 = 2;
 
+/// Vanilla FO4 creature glow materials sit at 0.5-0.52 against a full-range `_g`
+/// (deathclawglowing_g peaks at 255, p99 142). The `_g` synthesized from FO76's
+/// `_l` alpha is a low-amplitude mask (p99 42) because FO76 scales it by
+/// LumEmittance, which FO4 has no slot for, so the mult carries that gain:
+/// 0.165 * 2.0 lands on vanilla's effective 0.29, where 0.5 is 3.4x too dim.
+const FO4_GLOW_MAP_EMITTANCE_MULT: f32 = 2.0;
+
 pub fn downgrade_bgsm(
     mut bgsm: crate::bgsm::BgsmData,
     source_path: &str,
@@ -1137,9 +1182,32 @@ pub fn downgrade_bgsm(
                 bgsm.EmittanceColor = Some([1.0, 1.0, 1.0]);
             }
         }
+        // Emittance only survives once a glow map exists to mask it — FO76
+        // emittance without one makes FO4 emit across the whole surface. With
+        // one, vanilla FO4 glow materials (deathclawglowing.bgsm and every other
+        // *glowing* creature material) pair Glowmap with EmitEnabled and a white
+        // EmittanceColor; the tint lives in the _g map.
+        if source_game == Game::Fo76
+            && target_game == Game::Fo4
+            && source_path_has_named_glow_material(source_path)
+            && !clean_opt(bgsm.GlowTexture.as_deref()).is_empty()
+        {
+            bgsm.Glowmap = true;
+            bgsm.EmitEnabled = true;
+            bgsm.EmittanceColor = Some([1.0, 1.0, 1.0]);
+            bgsm.EmittanceMult = FO4_GLOW_MAP_EMITTANCE_MULT;
+        }
 
-        // Inject cubemap heuristic (FO76 has no EnvmapTexture slot).
-        let cubemap = select_cubemap(source_path);
+        // Inject cubemap heuristic (FO76 has no EnvmapTexture slot). Emissive
+        // glow materials stay matte: vanilla FO4 leaves env-mapping off on 209
+        // of its 219 Glowmap+EmitEnabled materials and on every glowing creature
+        // skin. Their albedo is near-black, so a cubemap reflection would be the
+        // brightest remaining term and the creature reads as grey chrome.
+        let cubemap = if bgsm.Glowmap && bgsm.EmitEnabled {
+            None
+        } else {
+            select_cubemap(source_path)
+        };
         bgsm.EnvmapTexture = Some(cubemap.map(|(c, _)| c.to_owned()).unwrap_or_default());
         bgsm.header.env_mapping = Some(cubemap.is_some());
         bgsm.header.env_mapping_mask_scale = Some(cubemap.map(|(_, scale)| scale).unwrap_or(1.0));
@@ -1279,8 +1347,29 @@ fn source_path_has_named_glow_material(source_path: &str) -> bool {
     })
 }
 
+fn source_path_preserves_fo76_emittance(source_path: &str) -> bool {
+    let path = source_path
+        .replace('\\', "/")
+        .trim_start_matches('/')
+        .to_ascii_lowercase();
+    let relative = path.strip_prefix("materials/").unwrap_or(&path);
+    // These Mothman skins tint an eye mask; suppressing emittance loses each variant's eye color.
+    matches!(
+        relative,
+        "landscape/plants/mineral_ultracite01.bgsm"
+            | "actors/mothman/mothman.bgsm"
+            | "actors/mothman/mothman01.bgsm"
+            | "actors/mothman/mothman02.bgsm"
+            | "actors/mothman/mothmanwise.bgsm"
+            | "actors/mothman/mothmanultracite.bgsm"
+    )
+}
+
 fn suppress_fo76_bgsm_emittance(source_path: &str, source_version: u32) -> bool {
-    if source_version <= BGSM_VERSION_FO4 || source_path_has_named_glow_material(source_path) {
+    if source_version <= BGSM_VERSION_FO4
+        || source_path_has_named_glow_material(source_path)
+        || source_path_preserves_fo76_emittance(source_path)
+    {
         return false;
     }
     let path = source_path
@@ -1692,6 +1781,11 @@ fn apply_bgsm_overrides(bgsm: &mut crate::bgsm::BgsmData, overrides: &[(String, 
                     bgsm.EnvmapTexture = Some(value.to_owned());
                 }
             }
+            "sSmoothSpecTexture" | "SmoothSpecTexture" => {
+                if let Some(value) = val.as_str() {
+                    bgsm.SmoothSpecTexture = value.to_owned();
+                }
+            }
             "bEnvironmentMapping" | "EnvironmentMapping" | "env_mapping" => {
                 if let Some(value) = val.as_bool() {
                     bgsm.header.env_mapping = Some(value);
@@ -1715,13 +1809,11 @@ fn apply_bgsm_overrides(bgsm: &mut crate::bgsm::BgsmData, overrides: &[(String, 
 
 /// Try to translate a .mat / CDB-ref asset into BGSM bytes via the CDB file.
 ///
-/// The full CE2-material → BGSM pipeline is implemented in Python
-/// (`creation_lib.material_tools.materials_cdb` + `cdb_to_bgsm`).
-/// This stub returns `None` so callers fall back to copy-as-is.
-///
-/// TODO: port `cdb_to_bgsm` translation to Rust for native execution.
-fn cdb_to_bgsm_bytes(_cdb_path: &Path, _source_path: &str) -> Option<Vec<u8>> {
-    None
+/// Delegates to `crate::cdb_to_bgsm::cdb_to_bgsm`; a lookup miss or
+/// unsupported CDB projection returns `None` so callers fall back to
+/// copy-as-is.
+fn cdb_to_bgsm_bytes(cdb_path: &Path, source_path: &str) -> Option<Vec<u8>> {
+    crate::cdb_to_bgsm::cdb_to_bgsm(cdb_path, source_path).ok()
 }
 
 // ---------------------------------------------------------------------------
@@ -1889,6 +1981,7 @@ fn convert_one(
     bgsm_default_overrides: &[(String, JsonValue)],
     target_dirs: &[PathBuf],
     target_asset_paths: &HashSet<String>,
+    base_overwrite_prefixes: &[String],
 ) -> ConvertResult {
     // Validate resolved path.
     if entry.resolved_path.is_empty() || !Path::new(&entry.resolved_path).is_file() {
@@ -1909,9 +2002,9 @@ fn convert_one(
     );
     let out_path = mod_path.join("data").join(&subpath);
 
-    if target_asset_paths.contains(&normalize_target_asset_key(&subpath))
-        || (!target_dirs.is_empty() && target_dirs.iter().any(|t| t.join(&subpath).is_file()))
-    {
+    let base_owned = target_asset_paths.contains(&normalize_target_asset_key(&subpath))
+        || (!target_dirs.is_empty() && target_dirs.iter().any(|t| t.join(&subpath).is_file()));
+    if base_owned && !path_is_base_overwrite_allowed(&subpath, base_overwrite_prefixes) {
         return ConvertResult {
             outcome: MatOutcome::Skipped,
             log: None,
@@ -2231,6 +2324,28 @@ pub fn run_convert_materials(
     target_extracted_dir: Option<&Path>,
     target_data_dir: Option<&Path>,
 ) -> ConvertMaterialsReport {
+    run_convert_materials_with_inventory(
+        mod_path,
+        params,
+        default_source_game,
+        default_target_game,
+        source_extracted,
+        target_extracted_dir,
+        target_data_dir,
+        None,
+    )
+}
+
+pub fn run_convert_materials_with_inventory(
+    mod_path: &Path,
+    params: &ConvertMaterialsRequest,
+    default_source_game: Game,
+    default_target_game: Game,
+    source_extracted: &Path,
+    target_extracted_dir: Option<&Path>,
+    target_data_dir: Option<&Path>,
+    enumerated_source_materials: Option<Vec<MaterialEntry>>,
+) -> ConvertMaterialsReport {
     let source_game = params.source_game.unwrap_or(default_source_game);
     let target_game = params.target_game.unwrap_or(default_target_game);
     let cdb_path = params.source_materialsdb.as_deref();
@@ -2242,7 +2357,8 @@ pub fn run_convert_materials(
             .filter(|entry| has_explicit_output_subpath(entry))
             .filter_map(|entry| normalize_material_source_key(&entry.source_path))
             .collect();
-        let mut m = enumerate_source_materials(source_extracted);
+        let mut m = enumerated_source_materials
+            .unwrap_or_else(|| enumerate_source_materials(source_extracted));
         if !explicit_output_keys.is_empty() {
             m.retain(|entry| {
                 normalize_material_source_key(&entry.source_path)
@@ -2304,6 +2420,7 @@ pub fn run_convert_materials(
                     &overrides,
                     &target_dirs,
                     &params.target_asset_paths,
+                    &params.base_overwrite_prefixes,
                 )
             })
             .collect()
@@ -2322,6 +2439,7 @@ pub fn run_convert_materials(
                     &overrides,
                     &target_dirs,
                     &params.target_asset_paths,
+                    &params.base_overwrite_prefixes,
                 )
             })
             .collect()
@@ -2648,7 +2766,148 @@ mod tests {
     }
 
     #[test]
-    fn bgsm_named_glow_texture_uses_fo4_colored_glow_map() {
+    fn bgsm_ultracite_crystal_lighting_emittance_is_preserved() {
+        let mut bgsm = make_test_bgsm_v20();
+        bgsm.LightingTexture = Some("Landscape/Plants/Mineral_Ultracite01_l.dds".to_owned());
+        bgsm.GlowTexture = None;
+        bgsm.EmitEnabled = true;
+        bgsm.EmittanceColor = Some([0.8196079, 0.854902, 0.17254902]);
+        bgsm.EmittanceMult = 3.0;
+
+        let result = downgrade_bgsm(
+            bgsm,
+            "Materials/Landscape/Plants/Mineral_Ultracite01.bgsm",
+            Game::Fo76,
+            Game::Fo4,
+        );
+
+        assert_eq!(
+            result.GlowTexture.as_deref(),
+            Some("Landscape/Plants/Mineral_Ultracite01_g.dds")
+        );
+        assert!(result.Glowmap);
+        assert!(result.EmitEnabled);
+        assert_eq!(
+            result.EmittanceColor,
+            Some([0.8196079, 0.854902, 0.17254902])
+        );
+        assert_eq!(result.EmittanceMult, 1.0);
+    }
+
+    #[test]
+    fn mothman_eye_materials_keep_variant_emittance_and_glow_binding() {
+        let output_path = std::env::temp_dir().join(format!(
+            "mothman_eye_material_{}.bgsm",
+            std::process::id()
+        ));
+        for (name, color) in [
+            ("Mothman", [0.73333335, 0.0, 0.0]),
+            ("Mothman01", [0.9686275, 0.6039216, 0.24313727]),
+            ("Mothman02", [0.882353, 0.8941177, 0.454902]),
+            ("MothmanWise", [0.9176471, 0.5176471, 0.97647065]),
+            ("MothmanUltracite", [0.5882353, 0.86666673, 0.33333334]),
+        ] {
+            let source_path = format!("Materials\\Actors\\Mothman\\{name}.BGSM");
+            let mut bgsm = make_test_bgsm_v20();
+            bgsm.EmitEnabled = true;
+            bgsm.EmittanceColor = Some(color);
+            bgsm.EmittanceMult = 1.0;
+            bgsm.Glowmap = false;
+            bgsm.GlowTexture = Some("\0".into());
+            bgsm.LightingTexture = Some(format!("Actors/Mothman/{name}_l.dds\0"));
+
+            assert!(
+                source_bgsm_enables_fo4_glowmap(&bgsm, &source_path),
+                "{name}"
+            );
+            let converted = downgrade_bgsm(bgsm, &source_path, Game::Fo76, Game::Fo4);
+            let result = crate::bgsm::parse(&crate::bgsm::write(&converted)).unwrap();
+            assert!(result.EmitEnabled && result.Glowmap, "{name}");
+            assert_eq!(result.EmittanceColor, Some(color), "{name}");
+            assert_eq!(result.EmittanceMult, 1.0, "{name}");
+            assert_eq!(
+                result.GlowTexture.unwrap().trim_end_matches('\0'),
+                format!("Actors/Mothman/{name}_g.dds")
+            );
+
+            fs::write(&output_path, crate::bgsm::write(&converted)).unwrap();
+            assert!(existing_output_matches_signature(
+                &output_path,
+                &source_path,
+                Game::Fo76,
+                Game::Fo4
+            ));
+            fs::write(&output_path, crate::bgsm::write(&make_test_bgsm_v2())).unwrap();
+            assert!(!existing_output_matches_signature(
+                &output_path,
+                &source_path,
+                Game::Fo76,
+                Game::Fo4
+            ));
+        }
+        fs::remove_file(output_path).unwrap();
+    }
+
+    #[test]
+    fn mothman_glowing_variant_keeps_existing_conversion() {
+        for name in ["MothmanGlow", "MothmanWingGlow"] {
+            let source_path = format!("Materials/Actors/Mothman/{name}.bgsm");
+            let mut bgsm = make_test_bgsm_v20();
+            bgsm.EmitEnabled = true;
+            bgsm.EmittanceColor = Some([0.4156863, 0.8862746, 0.21176472]);
+            bgsm.LightingTexture = Some(format!("Actors/Mothman/{name}_l.dds"));
+            bgsm.GlowTexture = None;
+
+            assert!(source_bgsm_enables_fo4_glowmap(&bgsm, &source_path));
+            let result = downgrade_bgsm(bgsm, &source_path, Game::Fo76, Game::Fo4);
+            assert!(result.EmitEnabled && result.Glowmap);
+            assert_eq!(result.EmittanceColor, Some([1.0; 3]));
+            assert_eq!(result.EmittanceMult, FO4_GLOW_MAP_EMITTANCE_MULT);
+            assert_eq!(
+                result.GlowTexture.unwrap(),
+                format!("Actors/Mothman/{name}_g.dds")
+            );
+        }
+    }
+
+    #[test]
+    fn mothman_non_emitting_materials_stay_non_emitting() {
+        for name in ["MothmanNoEmit", "MothmanWing", "MothmanWingWise"] {
+            let source_path = format!("Materials/Actors/Mothman/{name}.bgsm");
+            let mut bgsm = make_test_bgsm_v20();
+            bgsm.EmitEnabled = false;
+            bgsm.LightingTexture = Some("Actors/Mothman/Mothman_l.dds".into());
+            assert!(!source_bgsm_enables_fo4_glowmap(&bgsm, &source_path));
+            let result = downgrade_bgsm(bgsm, &source_path, Game::Fo76, Game::Fo4);
+            assert!(!result.EmitEnabled && !result.Glowmap);
+            assert!(result.GlowTexture.is_none());
+        }
+    }
+
+    #[test]
+    fn bgsm_ultracite_wall_lighting_emittance_is_suppressed() {
+        let mut bgsm = make_test_bgsm_v20();
+        bgsm.LightingTexture = Some("Landscape/Plants/MineralWall_Ultracite01_l.dds".to_owned());
+        bgsm.EmitEnabled = true;
+        bgsm.EmittanceColor = Some([0.8196079, 0.854902, 0.17254902]);
+        bgsm.EmittanceMult = 3.0;
+
+        let result = downgrade_bgsm(
+            bgsm,
+            "Materials/Landscape/Plants/MineralWall_Ultracite01.bgsm",
+            Game::Fo76,
+            Game::Fo4,
+        );
+
+        assert!(result.GlowTexture.is_none());
+        assert!(!result.Glowmap);
+        assert!(!result.EmitEnabled);
+        assert!(result.EmittanceColor.is_none());
+        assert_eq!(result.EmittanceMult, 1.0);
+    }
+
+    #[test]
+    fn bgsm_named_glow_texture_uses_fo4_glow_map_with_masked_emittance() {
         let mut bgsm = make_test_bgsm_v20();
         bgsm.LightingTexture = Some("Actors/Wendigo/wendigo_glow_l.dds".to_owned());
         bgsm.GlowTexture = None;
@@ -2670,10 +2929,11 @@ mod tests {
         assert!(result.Glowmap);
         assert!(result.EmitEnabled);
         assert_eq!(result.EmittanceColor, Some([1.0, 1.0, 1.0]));
+        assert_eq!(result.EmittanceMult, FO4_GLOW_MAP_EMITTANCE_MULT);
     }
 
     #[test]
-    fn bgsm_named_glow_material_preserves_lighting_mask_emittance() {
+    fn bgsm_named_glow_material_uses_lighting_mask_with_masked_emittance() {
         let mut bgsm = make_test_bgsm_v20();
         bgsm.LightingTexture = Some("SetDressing/AutoDispenser/AutoDispenserAmmo_l.dds".to_owned());
         bgsm.GlowTexture = None;
@@ -2695,8 +2955,31 @@ mod tests {
         );
         assert!(result.Glowmap);
         assert!(result.EmitEnabled);
-        assert_eq!(result.EmittanceColor, Some([1.0, 0.9568628, 0.43529415]));
-        assert_eq!(result.EmittanceMult, 1.0);
+        assert_eq!(result.EmittanceColor, Some([1.0, 1.0, 1.0]));
+        assert_eq!(result.EmittanceMult, FO4_GLOW_MAP_EMITTANCE_MULT);
+    }
+
+    #[test]
+    fn bgsm_named_glow_material_keeps_existing_glow_texture_with_masked_emittance() {
+        let mut bgsm = make_test_bgsm_v20();
+        bgsm.GlowTexture = Some("SetDressing/AutoDispenser/AutoDispenserAmmo_g.dds".to_owned());
+        bgsm.Glowmap = false;
+        bgsm.EmitEnabled = true;
+
+        let result = downgrade_bgsm(
+            bgsm,
+            "Materials/SetDressing/AutoDispenser/AutoDispenserAmmo_Glow.bgsm",
+            Game::Fo76,
+            Game::Fo4,
+        );
+
+        assert_eq!(
+            result.GlowTexture.as_deref(),
+            Some("SetDressing/AutoDispenser/AutoDispenserAmmo_g.dds")
+        );
+        assert!(result.Glowmap);
+        assert!(result.EmitEnabled);
+        assert_eq!(result.EmittanceColor, Some([1.0, 1.0, 1.0]));
     }
 
     #[test]
@@ -2904,6 +3187,24 @@ mod tests {
     }
 
     #[test]
+    fn chargen_trophy_material_overrides_use_gold_cubemap() {
+        for source_path in [
+            "Materials/SetDressing/CharGen/CharGenTrophy01.bgsm",
+            "Materials/SetDressing/CharGen/CharGenTrophy03.bgsm",
+            "Materials/SetDressing/CharGen/CharGenTrophy04.bgsm",
+        ] {
+            let result = downgrade_bgsm(make_test_bgsm_v20(), source_path, Game::Fo76, Game::Fo4);
+
+            assert_eq!(
+                result.EnvmapTexture.as_deref(),
+                Some("Shared/Cubemaps/MetalBrushedGold_e.dds")
+            );
+            assert_eq!(result.header.env_mapping, Some(true));
+            assert_eq!(result.header.env_mapping_mask_scale, Some(1.0));
+        }
+    }
+
+    #[test]
     fn bgsm_landscape_mineral_path_keeps_ore_cubemap() {
         let mut bgsm = make_test_bgsm_v20();
         bgsm.RootMaterialPath = String::new();
@@ -2997,6 +3298,21 @@ mod tests {
     }
 
     #[test]
+    fn rockcliff76_chunky_uses_the_capped_rockcliff_smoothspec() {
+        let result = downgrade_bgsm(
+            make_test_bgsm_v20(),
+            "Materials/Landscape/Rocks/RockCliff76Chunky.bgsm",
+            Game::Fo76,
+            Game::Fo4,
+        );
+
+        assert_eq!(
+            result.SmoothSpecTexture,
+            "Landscape/Rocks/RockCliff76_s.dds"
+        );
+    }
+
+    #[test]
     fn json_bgsm_material_converts_to_binary_v2() {
         let data = br##"{
             "bCastShadows": true,
@@ -3080,6 +3396,41 @@ mod tests {
     }
 
     #[test]
+    fn pre_enumerated_source_materials_avoid_a_second_tree_scan() {
+        let temp = std::env::temp_dir().join("pre_enumerated_source_materials");
+        let _ = fs::remove_dir_all(&temp);
+        let source = temp.join("source");
+        fs::create_dir_all(source.join("Materials/Nested")).unwrap();
+        fs::write(
+            source.join("Materials/Nested/not-a-material.bgsm"),
+            b"invalid",
+        )
+        .unwrap();
+        let request = ConvertMaterialsRequest::from_json(&serde_json::json!({
+            "materials": [],
+            "convert_all": true,
+            "overwrite_existing": true,
+        }))
+        .unwrap();
+
+        let report = run_convert_materials_with_inventory(
+            &temp.join("mod"),
+            &request,
+            Game::Fo76,
+            Game::Fo4,
+            &source,
+            None,
+            None,
+            Some(Vec::new()),
+        );
+
+        assert_eq!(report.assets_written, 0);
+        assert_eq!(report.warnings, 0);
+        assert!(report.logs.is_empty());
+        let _ = fs::remove_dir_all(&temp);
+    }
+
+    #[test]
     fn from_json_parses_convert_all_flag() {
         let v = serde_json::json!({ "materials": [], "convert_all": true });
         let req = ConvertMaterialsRequest::from_json(&v).unwrap();
@@ -3156,6 +3507,13 @@ mod tests {
         assert!(
             source_bgsm_enables_fo4_glowmap(&bgsm, "Materials/Effects/Test.bgsm"),
             "effect materials preserve synthesized lighting-mask emission"
+        );
+        assert!(
+            source_bgsm_enables_fo4_glowmap(
+                &bgsm,
+                "Materials/Landscape/Plants/Mineral_Ultracite01.bgsm"
+            ),
+            "ultracite mineral preserves its green-yellow lighting-mask emission"
         );
         assert!(
             source_bgsm_enables_fo4_glowmap(
@@ -3249,13 +3607,37 @@ mod tests {
             ),
             "after regeneration the output can be skipped normally"
         );
+
+        bgsm.EmitEnabled = true;
+        bgsm.Glowmap = true;
+        bgsm.EmittanceColor = Some([0.8196079, 0.854902, 0.17254902]);
+        bgsm.GlowTexture = Some("Landscape/Plants/Mineral_Ultracite01_g.dds".to_owned());
+        std::fs::write(&path, crate::bgsm::write(&bgsm)).unwrap();
+        assert!(existing_output_matches_signature(
+            &path,
+            "Materials/Landscape/Plants/Mineral_Ultracite01.bgsm",
+            Game::Fo76,
+            Game::Fo4
+        ));
+
+        bgsm.GlowTexture = None;
+        std::fs::write(&path, crate::bgsm::write(&bgsm)).unwrap();
+        assert!(
+            !existing_output_matches_signature(
+                &path,
+                "Materials/Landscape/Plants/Mineral_Ultracite01.bgsm",
+                Game::Fo76,
+                Game::Fo4
+            ),
+            "ultracite output without its glow binding must be regenerated"
+        );
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
-    fn existing_named_glow_fo76_bgsm_without_masked_emittance_is_stale() {
+    fn existing_named_glow_fo76_bgsm_without_emittance_is_stale() {
         let tmp = std::env::temp_dir().join(format!(
-            "existing_named_glow_fo76_bgsm_without_masked_emittance_is_stale_{}",
+            "existing_named_glow_fo76_bgsm_without_emittance_is_stale_{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&tmp);
@@ -3265,6 +3647,8 @@ mod tests {
 
         let mut bgsm = make_test_bgsm_v2();
         bgsm.EmitEnabled = false;
+        bgsm.Glowmap = true;
+        bgsm.GlowTexture = Some("SetDressing/AutoDispenser/AutoDispenserAmmo_g.dds".to_owned());
         std::fs::write(&path, crate::bgsm::write(&bgsm)).unwrap();
         assert!(!existing_output_matches_signature(
             &path,
@@ -3274,8 +3658,7 @@ mod tests {
         ));
 
         bgsm.EmitEnabled = true;
-        bgsm.Glowmap = true;
-        bgsm.GlowTexture = Some("SetDressing/AutoDispenser/AutoDispenserAmmo_g.dds".to_owned());
+        bgsm.EmittanceColor = Some([1.0, 1.0, 1.0]);
         std::fs::write(&path, crate::bgsm::write(&bgsm)).unwrap();
         assert!(existing_output_matches_signature(
             &path,
@@ -3283,6 +3666,85 @@ mod tests {
             Game::Fo76,
             Game::Fo4
         ));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn base_overwrite_prefixes_let_a_colliding_material_through() {
+        // The FO76 pipe-weapon (handmade) kit deliberately overwrites FO4's at
+        // the shared path; the sibling handmade_hotrod kit must stay skipped.
+        let tmp = std::env::temp_dir().join("materials_base_overwrite_prefix");
+        let source = tmp.join("source");
+        let out = tmp.join("mod");
+        let target = tmp.join("target");
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        for kit in ["handmade", "handmade_hotrod"] {
+            let src_kit = source.join("Materials").join("Weapons").join(kit);
+            let tgt_kit = target.join("Materials").join("Weapons").join(kit);
+            std::fs::create_dir_all(&src_kit).unwrap();
+            std::fs::create_dir_all(&tgt_kit).unwrap();
+            let mat = make_test_bgsm(20);
+            std::fs::write(src_kit.join("piperifle.bgsm"), crate::bgsm::write(&mat)).unwrap();
+            std::fs::write(tgt_kit.join("piperifle.bgsm"), b"fo4-base").unwrap();
+        }
+
+        let output_for = |kit: &str| {
+            out.join("data")
+                .join("Materials")
+                .join("Weapons")
+                .join(kit)
+                .join("piperifle.bgsm")
+        };
+        let request = |prefixes: Vec<String>| ConvertMaterialsRequest {
+            materials: vec![],
+            source_game: Some(Game::Fo76),
+            target_game: Some(Game::Fo4),
+            asset_prefix: String::new(),
+            source_materialsdb: None,
+            overwrite_existing: true,
+            bgsm_default_overrides: vec![],
+            convert_all: true,
+            pbr_carry: false,
+            source_path_overrides: HashMap::new(),
+            target_asset_paths: HashSet::new(),
+            base_overwrite_prefixes: prefixes,
+        };
+
+        run_convert_materials(
+            &out,
+            &request(Vec::new()),
+            Game::Fo76,
+            Game::Fo4,
+            &source,
+            Some(&target),
+            None,
+        );
+        assert!(
+            !output_for("handmade").is_file(),
+            "colliding material must be skipped without an allowlist"
+        );
+
+        run_convert_materials(
+            &out,
+            &request(vec![normalize_base_overwrite_prefix(
+                "materials/weapons/handmade/",
+            )]),
+            Game::Fo76,
+            Game::Fo4,
+            &source,
+            Some(&target),
+            None,
+        );
+        assert!(
+            output_for("handmade").is_file(),
+            "allowlisted material must overwrite the base-owned path"
+        );
+        assert!(
+            !output_for("handmade_hotrod").is_file(),
+            "sibling kit must not be swept in by the prefix"
+        );
+
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -3335,6 +3797,7 @@ mod tests {
             pbr_carry: false,
             source_path_overrides: overrides,
             target_asset_paths: HashSet::new(),
+            base_overwrite_prefixes: Vec::new(),
         };
 
         run_convert_materials(&out, &request, Game::Fo76, Game::Fo4, &source, None, None);
@@ -3408,6 +3871,7 @@ mod tests {
             pbr_carry: false,
             source_path_overrides: HashMap::new(),
             target_asset_paths: HashSet::new(),
+            base_overwrite_prefixes: Vec::new(),
         };
 
         run_convert_materials(&out, &request, Game::Fo76, Game::Fo4, &source, None, None);
@@ -3512,6 +3976,7 @@ mod tests {
             pbr_carry: false,
             source_path_overrides: HashMap::new(),
             target_asset_paths: HashSet::new(),
+            base_overwrite_prefixes: Vec::new(),
         };
 
         run_convert_materials(&out, &request, Game::Fo76, Game::Fo4, &source, None, None);

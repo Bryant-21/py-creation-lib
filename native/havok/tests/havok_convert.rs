@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use havok_native::api;
 use havok_native::convert::{
     ClassVersion, ConversionContext, CustomHookRegistry, HavokVersion, Patch, PatchDirection,
-    PatchManager, PatchOperation, PatchValue, all_versions, get_version, get_version_by_name,
-    get_version_chain, native_patch_corpus_manifest, parse_target_version,
+    PatchManager, PatchOperation, PatchValue, all_versions, detect_version_id, get_version,
+    get_version_by_name, get_version_chain, native_patch_corpus_manifest, parse_target_version,
 };
 use havok_native::error::HavokError;
 use havok_native::hkx::descriptors::DescriptorRegistry;
@@ -119,7 +119,11 @@ fn target_version_parser_accepts_ids_names_and_game_aliases() {
     assert_eq!(parse_target_version("hk_2014.1.0-r1").unwrap().id, 53);
     assert_eq!(parse_target_version("fo4").unwrap().id, 53);
     assert_eq!(parse_target_version("FO76").unwrap().id, 56);
-    assert_eq!(parse_target_version("skyrim_se").unwrap().id, 46);
+    assert_eq!(parse_target_version("skyrim_se").unwrap().id, 40);
+    assert_eq!(
+        detect_version_id("hk_2010.2.0-r1").unwrap(),
+        parse_target_version("skyrimse").unwrap().id
+    );
 }
 
 #[test]
@@ -1322,17 +1326,65 @@ fn fo76_migration_full_transform_pipeline_produces_valid_output() {
     assert!(!parsed.objects().is_empty(), "output must contain objects");
 }
 
-// Regression: FO76 stores multi-shape ragdoll bodies as a *static*
-// `hknpCompoundShape` (isMutable=0) with an EMPTY `instances` array — children
-// + per-child transforms are baked into the boundingVolumeData BVH tree. The
-// converter renames it to a *dynamic* `hknpDynamicCompoundShape` (correct FO4
-// target) but historically left `instances` empty, producing a degenerate
-// compound that crashes the CK on load (reads element[0] of a 0-len array) and
-// the game on the physics-settle worker (null hknpBody, +18C4195). The fix
-// repopulates `instances`, recovering each child's translation from the baked
-// tree leaf AABBs. The AntiAirTurret ragdoll body[1] is a capsule + two side
-// polytopes sitting at ±~1.714 on X — identity transforms would collapse both
-// panels to center, so the recovered translations must be present.
+#[test]
+fn fo76_ultracite_titan_ragdoll_strips_unmapped_controller_bodies() {
+    let source_path = repo_path(
+        "../extracted/fo76/Meshes/actors/ultraciteabomination/characterassets/skeleton.hkx",
+    );
+    if !source_path.exists() {
+        eprintln!("FO76 Ultracite Titan skeleton is not extracted; skipping corpus regression");
+        return;
+    }
+
+    let source = std::fs::read(&source_path).expect("read Ultracite Titan skeleton");
+    let converted =
+        api::havok_convert_bytes(&source, "fo4").expect("convert Ultracite Titan skeleton");
+    let parsed = havok_native::hkx::read_packfile(&converted).expect("parse converted skeleton");
+    let ragdoll = parsed
+        .objects()
+        .iter()
+        .find(|object| object.class_name == "hknpRagdollData")
+        .expect("Titan ragdoll data");
+
+    let array = |name: &str| {
+        let member = ragdoll
+            .members
+            .iter()
+            .find(|member| member.name == name)
+            .unwrap_or_else(|| panic!("{name} member"));
+        let HkxValue::Array(values) = &member.value else {
+            panic!("{name} must be an array");
+        };
+        values
+    };
+
+    let bodies = array("bodyCinfos");
+    assert_eq!(bodies.len(), 20);
+    assert_eq!(array("motionCinfos").len(), 20);
+    assert_eq!(array("boneToBodyMap").len(), 20);
+    assert_eq!(array("constraintCinfos").len(), 19);
+    assert!(bodies.iter().all(|body| {
+        body.as_object_members()
+            .and_then(|members| members.iter().find(|member| member.name == "name"))
+            .is_none_or(|member| {
+                !matches!(
+                    &member.value,
+                    HkxValue::String { value, .. }
+                        if value == "CharacterBumper" || value == "CharacterController"
+                )
+            })
+    }));
+}
+
+// FO76 stores multi-shape ragdoll bodies as a *static* `hknpCompoundShape`
+// (isMutable=0) with an EMPTY `instances` array — children + per-child
+// transforms are baked into the boundingVolumeData BVH tree. The FO4 target,
+// `hknpDynamicCompoundShape`, reads `instances`; left empty it crashes the CK on
+// load (reads element[0] of a 0-len array) and the game on the physics-settle
+// worker (null hknpBody, +18C4195). Each child's translation is recovered from
+// the baked tree leaf AABBs. The AntiAirTurret ragdoll body[1] is a capsule +
+// two side polytopes at ±~1.714 on X, so identity transforms would collapse
+// both panels to center.
 #[test]
 fn fo76_static_ragdoll_compound_instances_are_repopulated() {
     let data = fixture_bytes("native/havok/tests/fixtures/fo76_antiairturret_ragdoll.hkx");
@@ -3857,10 +3909,8 @@ fn tag0_nested_object_materialization_rejects_long_acyclic_type_chain() {
 fn tag0_nested_object_skips_scalar_field_beyond_nested_type_extent() {
     // FO76 ragdoll fixtures (e.g. snallygaster hknpRagdollData) declare nested
     // typedef'd fields whose materialized size occasionally overruns the
-    // parent struct's declared size. Python's tagfile_reader silently skips
-    // such fields (no error) and Rust must match — otherwise FO76 -> FO4
-    // conversion of those ragdolls fails outright. See py_creation_lib/python/creation_lib/hkxpack/
-    // tagfile_reader.py:_read_field which returns None on these cases.
+    // parent struct's declared size. Such fields are skipped without error;
+    // otherwise FO76 -> FO4 conversion of those ragdolls fails outright.
     use havok_native::hkx::tagfile::{
         TagField, TagType, TagTypeRegistry, Tagfile, TagfileItem, TagfileSection,
     };

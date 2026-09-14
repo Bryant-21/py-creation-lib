@@ -1,4 +1,4 @@
-//! Worldspace/cell input model (Task-7 deliverable).
+//! Worldspace/cell input model.
 //!
 //! The data structures here are complete; only `enumerate_worldspace` (real ESP
 //! LAND/VTXT/ATXT extraction) is deferred — it currently `bail!`s and
@@ -317,7 +317,7 @@ impl WorldspaceInput {
 }
 
 /// Decode hidden-quadrant bit flags to `[SW, SE, NW, NE]` bool array.
-/// Bit layout per R1 §7 (InQuadrant, TerrainLOD.cs:140-163):
+/// Bit layout (InQuadrant, TerrainLOD.cs:140-163):
 ///   bit 1 = SW (index 0), bit 2 = SE (index 1), bit 4 = NW (index 2), bit 8 = NE (index 3).
 pub fn decode_hidden_quadrants(land_flags: i32) -> [bool; 4] {
     [
@@ -344,8 +344,52 @@ mod esp_enum {
         decode_hidden_quadrants, synthesize_grass_refs_for_cell,
     };
     use esp_authoring_core::plugin_runtime::{
-        ParsedGroup, ParsedItem, ParsedPlugin, ParsedRecord, parse_plugin_file,
+        ParsedGroup, ParsedItem, ParsedPlugin, ParsedRecord, RecordsSection, build_records_section,
+        parse_plugin_file,
     };
+    use std::cell::RefCell;
+    use std::collections::{BTreeMap, HashMap};
+
+    struct IndexedPlugin {
+        parsed: ParsedPlugin,
+        records: RecordsSection,
+    }
+
+    impl From<ParsedPlugin> for IndexedPlugin {
+        fn from(parsed: ParsedPlugin) -> Self {
+            let records = build_records_section(&parsed);
+            Self { parsed, records }
+        }
+    }
+
+    impl std::ops::Deref for IndexedPlugin {
+        type Target = ParsedPlugin;
+
+        fn deref(&self) -> &Self::Target {
+            &self.parsed
+        }
+    }
+
+    #[derive(Default)]
+    struct ResolvedInputs {
+        bases: RefCell<HashMap<u32, Option<ResolvedBase>>>,
+        textures: RefCell<HashMap<u32, (String, String)>>,
+        grasses: RefCell<HashMap<u32, Vec<GrassModelInput>>>,
+        material_swaps: RefCell<HashMap<u32, BTreeMap<String, String>>>,
+    }
+
+    fn cached_input<T: Clone>(
+        cache: &RefCell<HashMap<u32, T>>,
+        form_id: u32,
+        resolve: impl FnOnce() -> T,
+    ) -> T {
+        if let Some(value) = cache.borrow().get(&form_id) {
+            return value.clone();
+        }
+        let value = resolve();
+        cache.borrow_mut().insert(form_id, value.clone());
+        value
+    }
 
     /// A parsed plugin plus its parsed masters, in load order.
     ///
@@ -354,9 +398,10 @@ mod esp_enum {
     /// the same order they appear in `plugin.header.masters`, used to resolve LTEX /
     /// TXST records the worldspace references from a master.
     pub struct EspHandle {
-        plugin: Option<ParsedPlugin>,
-        masters: Vec<ParsedPlugin>,
+        plugin: Option<IndexedPlugin>,
+        masters: Vec<IndexedPlugin>,
         object_lod_overlay: Option<ObjectLodOverlay>,
+        resolved_inputs: ResolvedInputs,
     }
 
     impl EspHandle {
@@ -365,6 +410,7 @@ mod esp_enum {
                 plugin: None,
                 masters: Vec::new(),
                 object_lod_overlay: None,
+                resolved_inputs: ResolvedInputs::default(),
             }
         }
 
@@ -397,17 +443,18 @@ mod esp_enum {
                             Some(game.to_string()),
                             true,
                         ) {
-                            masters.push(m);
+                            masters.push(m.into());
                         }
                     }
                 }
             }
             Ok(EspHandle {
-                plugin: Some(plugin),
+                plugin: Some(plugin.into()),
                 masters,
                 object_lod_overlay: overlay_path
                     .map(|path| ObjectLodOverlay::load(path, plugin_path))
                     .transpose()?,
+                resolved_inputs: ResolvedInputs::default(),
             })
         }
     }
@@ -536,6 +583,7 @@ mod esp_enum {
     const RECORD_FLAG_DELETED: u32 = 0x0000_0020;
     const VISIBLE_WHEN_DISTANT_FLAG: u32 = 0x0000_8000;
     const MULTIREF_LOD_KEYWORD_OBJECT_ID: u32 = 0x0019_5411;
+    const WRLD_FLAG_NO_LOD_WATER: u8 = 0x08;
 
     pub(super) fn ref_can_emit_object_lod(
         ref_flags: u32,
@@ -561,6 +609,12 @@ mod esp_enum {
             .iter()
             .find(|s| s.signature.as_str() == sig)
             .map(|s| s.data.as_ref())
+    }
+
+    fn worldspace_no_lod_water(wrld: &ParsedRecord) -> bool {
+        subrecord(wrld, "DATA")
+            .and_then(|data| data.first())
+            .is_some_and(|flags| flags & WRLD_FLAG_NO_LOD_WATER != 0)
     }
 
     fn placed_ref_has_multiref_lod_link(record: &ParsedRecord) -> bool {
@@ -722,6 +776,17 @@ mod esp_enum {
             ParsedItem::Record(record("WRLD", form_id, vec![subrecord("EDID", edid)]))
         }
 
+        #[test]
+        fn worldspace_no_lod_water_reads_wrld_data_flag() {
+            let enabled = record("WRLD", 1, vec![subrecord("DATA", vec![0x09])]);
+            let disabled = record("WRLD", 2, vec![subrecord("DATA", vec![0x01])]);
+            let missing = record("WRLD", 3, Vec::new());
+
+            assert!(worldspace_no_lod_water(&enabled));
+            assert!(!worldspace_no_lod_water(&disabled));
+            assert!(!worldspace_no_lod_water(&missing));
+        }
+
         fn exterior_cell_with_land(form_id: u32, x: i32, y: i32) -> Vec<ParsedItem> {
             let mut grid = x.to_le_bytes().to_vec();
             grid.extend_from_slice(&y.to_le_bytes());
@@ -870,33 +935,14 @@ mod esp_enum {
     // ---------------------------------------------------------------------------
 
     fn find_record_by_form_id<'a>(
-        plugin: &'a ParsedPlugin,
+        plugin: &'a IndexedPlugin,
         sig: &str,
         form_id: u32,
     ) -> Option<&'a ParsedRecord> {
-        let group = top_group(plugin, sig)?;
-        let mut found = None;
-        fn walk<'a>(
-            g: &'a ParsedGroup,
-            sig: &str,
-            form_id: u32,
-            found: &mut Option<&'a ParsedRecord>,
-        ) {
-            for item in &g.children {
-                match item {
-                    ParsedItem::Record(r)
-                        if r.signature.as_str() == sig && r.form_id == form_id =>
-                    {
-                        *found = Some(r);
-                        return;
-                    }
-                    ParsedItem::Group(child) => walk(child, sig, form_id, found),
-                    _ => {}
-                }
-            }
-        }
-        walk(group, sig, form_id, &mut found);
-        found
+        plugin
+            .records
+            .record(&plugin.parsed, form_id)
+            .filter(|record| record.signature.as_str() == sig)
     }
 
     fn zstring(data: &[u8]) -> String {
@@ -908,6 +954,12 @@ mod esp_enum {
     /// LTEX.TNAM -> TXST; TXST.TX00 = diffuse, TX01 = normal (FO4 schema). Searches
     /// the WRLD plugin first, then masters. Returns empty strings if unresolved.
     fn resolve_ltex_textures(handle: &EspHandle, ltex_form_id: u32) -> (String, String) {
+        cached_input(&handle.resolved_inputs.textures, ltex_form_id, || {
+            decode_ltex_textures(handle, ltex_form_id)
+        })
+    }
+
+    fn decode_ltex_textures(handle: &EspHandle, ltex_form_id: u32) -> (String, String) {
         let plugins = std::iter::once(handle.plugin.as_ref())
             .flatten()
             .chain(handle.masters.iter());
@@ -947,6 +999,12 @@ mod esp_enum {
     }
 
     fn resolve_ltex_grasses(handle: &EspHandle, ltex_form_id: u32) -> Vec<GrassModelInput> {
+        cached_input(&handle.resolved_inputs.grasses, ltex_form_id, || {
+            decode_ltex_grasses(handle, ltex_form_id)
+        })
+    }
+
+    fn decode_ltex_grasses(handle: &EspHandle, ltex_form_id: u32) -> Vec<GrassModelInput> {
         let plugins = std::iter::once(handle.plugin.as_ref())
             .flatten()
             .chain(handle.masters.iter());
@@ -1066,11 +1124,10 @@ mod esp_enum {
     // ---------------------------------------------------------------------------
     // REFR placed-object enumeration.
     //
-    // Port: xLODGen's xEdit-side reference walk that fills `StaticDesc` (the
-    // LODGenerator C# `StaticDesc` struct, StaticDesc.cs) + the FO4 object path of
-    // LODApp.ParseNif (LODApp.cs:1369-1391). The decompiled `LODGenerator` consumes
-    // a pre-built `staticModels[4]`; we reproduce that array here from the base
-    // record's DistantLOD (STAT/SCOL/MSTT/... MNAM) subrecord.
+    // Port of xLODGen's xEdit-side reference walk that fills `StaticDesc`
+    // (StaticDesc.cs) plus the FO4 object path of LODApp.ParseNif
+    // (LODApp.cs:1369-1391). `LODGenerator` consumes a pre-built `staticModels[4]`,
+    // rebuilt here from the base record's DistantLOD (STAT/SCOL/MSTT/... MNAM).
     //
     // FO4 binary layouts (verified against esp generated/fo4.rs):
     //   REFR.NAME = formid (4 bytes LE) — the base form id.
@@ -1240,6 +1297,12 @@ mod esp_enum {
     /// WRLD plugin first, then masters. Returns None if the base record is absent.
     /// Only base record types that can carry DistantLOD LOD models are resolved.
     fn resolve_base_record(handle: &EspHandle, base_form_id: u32) -> Option<ResolvedBase> {
+        cached_input(&handle.resolved_inputs.bases, base_form_id, || {
+            decode_base_record(handle, base_form_id)
+        })
+    }
+
+    fn decode_base_record(handle: &EspHandle, base_form_id: u32) -> Option<ResolvedBase> {
         // Object base record signatures that can have a DistantLOD (MNAM) in FO4.
         // port: the xEdit reference walk only fetches LOD for these LOD-capable bases.
         const LOD_BASE_SIGS: [&str; 6] = ["STAT", "SCOL", "MSTT", "TREE", "FLOR", "ACTI"];
@@ -1405,6 +1468,12 @@ mod esp_enum {
             return std::collections::BTreeMap::new();
         };
         let mswp_form_id = u32::from_le_bytes([xmsp[0], xmsp[1], xmsp[2], xmsp[3]]);
+        cached_input(&handle.resolved_inputs.material_swaps, mswp_form_id, || {
+            resolve_material_swap(handle, mswp_form_id)
+        })
+    }
+
+    fn resolve_material_swap(handle: &EspHandle, mswp_form_id: u32) -> BTreeMap<String, String> {
         let plugins = std::iter::once(handle.plugin.as_ref())
             .flatten()
             .chain(handle.masters.iter());
@@ -1446,7 +1515,7 @@ mod esp_enum {
             pos,
             rot,
             scale,
-            // color (XCLP) / per-vertex tint is a Phase-3 grass/tree concern; default 1.0.
+            // color (XCLP) / per-vertex tint is a grass/tree concern; default 1.0.
             color: 1.0,
             // alpha threshold comes from the shape's NiAlphaProperty/material at parse time.
             alpha_threshold: 128,
@@ -1613,36 +1682,40 @@ mod esp_enum {
                 force_visible,
             };
             let handle = EspHandle {
-                plugin: Some(ParsedPlugin {
-                    plugin_name: "Output.esm".to_string(),
-                    file_path: String::new(),
-                    header_size: 0,
-                    header: esp_authoring_core::plugin_runtime::ParsedPluginHeader {
-                        version: 1.0,
-                        num_records: 0,
-                        next_object_id: 0x800,
-                        author: String::new(),
-                        description: String::new(),
-                        masters: Vec::new(),
-                        master_sizes: Vec::new(),
-                        overridden_forms: Vec::new(),
-                        flags: 0,
-                        extra_subrecords: Vec::new(),
-                        version_control: 0,
-                        form_version: None,
-                        version2: None,
-                        hedr_raw: None,
-                        raw_subrecords: Vec::new(),
-                    },
-                    root_items: vec![ParsedItem::Group(ParsedGroup {
-                        label: *b"SCOL",
-                        group_type: 0,
-                        tail: bytes::Bytes::new(),
-                        children: vec![ParsedItem::Record(base)],
-                    })],
-                    game: Some("fo4".to_string()),
-                }),
+                plugin: Some(
+                    ParsedPlugin {
+                        plugin_name: "Output.esm".to_string(),
+                        file_path: String::new(),
+                        header_size: 0,
+                        header: esp_authoring_core::plugin_runtime::ParsedPluginHeader {
+                            version: 1.0,
+                            num_records: 0,
+                            next_object_id: 0x800,
+                            author: String::new(),
+                            description: String::new(),
+                            masters: Vec::new(),
+                            master_sizes: Vec::new(),
+                            overridden_forms: Vec::new(),
+                            flags: 0,
+                            extra_subrecords: Vec::new(),
+                            version_control: 0,
+                            form_version: None,
+                            version2: None,
+                            hedr_raw: None,
+                            raw_subrecords: Vec::new(),
+                        },
+                        root_items: vec![ParsedItem::Group(ParsedGroup {
+                            label: *b"SCOL",
+                            group_type: 0,
+                            tail: bytes::Bytes::new(),
+                            children: vec![ParsedItem::Record(base)],
+                        })],
+                        game: Some("fo4".to_string()),
+                    }
+                    .into(),
+                ),
                 masters: Vec::new(),
+                resolved_inputs: ResolvedInputs::default(),
                 object_lod_overlay: Some(ObjectLodOverlay::from_entries_for_test(vec![
                     overlay_entry(hidden_ref_id, false),
                     overlay_entry(visible_ref_id, true),
@@ -1728,50 +1801,54 @@ mod esp_enum {
                 vec![subrecord("NAME", scol_form_id.to_le_bytes().to_vec())],
             );
             let handle = EspHandle {
-                plugin: Some(ParsedPlugin {
-                    plugin_name: "Output.esm".to_string(),
-                    file_path: String::new(),
-                    header_size: 0,
-                    header: esp_authoring_core::plugin_runtime::ParsedPluginHeader {
-                        version: 1.0,
-                        num_records: 0,
-                        next_object_id: 0x800,
-                        author: String::new(),
-                        description: String::new(),
-                        masters: Vec::new(),
-                        master_sizes: Vec::new(),
-                        overridden_forms: Vec::new(),
-                        flags: 0,
-                        extra_subrecords: Vec::new(),
-                        version_control: 0,
-                        form_version: None,
-                        version2: None,
-                        hedr_raw: None,
-                        raw_subrecords: Vec::new(),
-                    },
-                    root_items: vec![
-                        ParsedItem::Group(ParsedGroup {
-                            label: *b"SCOL",
-                            group_type: 0,
-                            tail: bytes::Bytes::new(),
-                            children: vec![ParsedItem::Record(scol)],
-                        }),
-                        ParsedItem::Group(ParsedGroup {
-                            label: *b"MSTT",
-                            group_type: 0,
-                            tail: bytes::Bytes::new(),
-                            children: vec![ParsedItem::Record(component)],
-                        }),
-                        ParsedItem::Group(ParsedGroup {
-                            label: *b"STAT",
-                            group_type: 0,
-                            tail: bytes::Bytes::new(),
-                            children: vec![ParsedItem::Record(stat_component)],
-                        }),
-                    ],
-                    game: Some("fo4".to_string()),
-                }),
+                plugin: Some(
+                    ParsedPlugin {
+                        plugin_name: "Output.esm".to_string(),
+                        file_path: String::new(),
+                        header_size: 0,
+                        header: esp_authoring_core::plugin_runtime::ParsedPluginHeader {
+                            version: 1.0,
+                            num_records: 0,
+                            next_object_id: 0x800,
+                            author: String::new(),
+                            description: String::new(),
+                            masters: Vec::new(),
+                            master_sizes: Vec::new(),
+                            overridden_forms: Vec::new(),
+                            flags: 0,
+                            extra_subrecords: Vec::new(),
+                            version_control: 0,
+                            form_version: None,
+                            version2: None,
+                            hedr_raw: None,
+                            raw_subrecords: Vec::new(),
+                        },
+                        root_items: vec![
+                            ParsedItem::Group(ParsedGroup {
+                                label: *b"SCOL",
+                                group_type: 0,
+                                tail: bytes::Bytes::new(),
+                                children: vec![ParsedItem::Record(scol)],
+                            }),
+                            ParsedItem::Group(ParsedGroup {
+                                label: *b"MSTT",
+                                group_type: 0,
+                                tail: bytes::Bytes::new(),
+                                children: vec![ParsedItem::Record(component)],
+                            }),
+                            ParsedItem::Group(ParsedGroup {
+                                label: *b"STAT",
+                                group_type: 0,
+                                tail: bytes::Bytes::new(),
+                                children: vec![ParsedItem::Record(stat_component)],
+                            }),
+                        ],
+                        game: Some("fo4".to_string()),
+                    }
+                    .into(),
+                ),
                 masters: Vec::new(),
+                resolved_inputs: ResolvedInputs::default(),
                 object_lod_overlay: Some(ObjectLodOverlay::from_entries_for_test(vec![
                     OverlayEntry {
                         reference_form_id,
@@ -1961,21 +2038,14 @@ mod esp_enum {
         find_world(plugin, editor_id).is_some()
     }
 
-    /// Scan every `.esm` and `.esp` in `dir` (sorted lexicographically for
-    /// determinism) and return the path of the last plugin that contains a WRLD
-    /// record whose editor id == `world_id`.
+    /// Scan every `.esm` and `.esp` in `dir` (sorted lexicographically) and return
+    /// the last plugin containing a WRLD whose editor id == `world_id`. `None` if
+    /// none does or the dir cannot be read.
     ///
-    /// **Tie-break caveat**: "alphabetically last in sorted order" is a
-    /// simplification — it does NOT reflect real FO4 Plugins.txt load order.
-    /// When multiple plugins define the same worldspace, the true load-order
-    /// winner is determined by the player's Plugins.txt, which is not consulted
-    /// here. In the common single-owner case (one plugin per WRLD) the distinction
-    /// is irrelevant; for the FO76→FO4 converted-mod case (APPALACHIA in
-    /// SeventySix.esm) the fast-path in `run` hits SeventySix.esm directly and
-    /// this scan is never reached.
-    ///
-    /// Returns `None` if no plugin in the dir contains the worldspace, or if the
-    /// dir cannot be read.
+    /// "Alphabetically last" is not FO4 load order; the real winner depends on the
+    /// player's Plugins.txt, which is not consulted. That only matters when several
+    /// plugins define the worldspace; the converted FO76→FO4 case (APPALACHIA in
+    /// SeventySix.esm) takes the fast path in `run` instead.
     pub fn scan_for_wrld_plugin(
         dir: &std::path::Path,
         world_id: &str,
@@ -2075,7 +2145,7 @@ mod esp_enum {
     /// Read the worldspace HD-LOD default land textures: WRLD.TNAM = "HD LOD
     /// Diffuse Texture", WRLD.UNAM = "HD LOD Normal Texture" (both zstrings,
     /// Data-relative). These are xLODGen's default land diffuse/normal used to fill
-    /// cells that carry no usable layer (R3 §3). Returns empty strings when absent
+    /// cells that carry no usable layer. Returns empty strings when absent
     /// (converted FO76→FO4 worldspaces typically drop them).
     fn worldspace_default_textures(wrld: &ParsedRecord) -> (String, String) {
         let diffuse = subrecord(wrld, "TNAM").map(zstring).unwrap_or_default();
@@ -2114,12 +2184,10 @@ mod esp_enum {
     /// to the worldspace `default_water` when the cell has no XCLW.
     ///
     /// xLODGen's terrain `.dat` carries a per-cell `waterHeight` (TerrainData.cs:184)
-    /// — the value the water-emit rule (`GenerateWater`, TerrainLOD.cs:984-995) tests
-    /// against the cell's terrain floor. The decompiled source reads it from the
-    /// `.dat`; the equivalent ESP-side field is CELL.XCLW, which most exterior cells
-    /// carry (FarHarbor cells set XCLW even where the worldspace DNAM is 0). Reading
-    /// it here lets the water block emit for the real-LAND cells that sit below their
-    /// own water level. The sentinel ">2^24 = no water" rule applies identically.
+    /// that the water-emit rule (`GenerateWater`, TerrainLOD.cs:984-995) tests against
+    /// the cell's terrain floor. CELL.XCLW is the ESP-side equivalent, and most exterior
+    /// cells carry it (FarHarbor cells set XCLW even where the worldspace DNAM is 0).
+    /// The ">2^24 = no water" sentinel applies here too.
     fn cell_water_height(cell: &ParsedRecord, default_water: f32) -> f32 {
         if let Some(xclw) = subrecord(cell, "XCLW") {
             if xclw.len() >= 4 {
@@ -2142,8 +2210,8 @@ mod esp_enum {
     ///
     /// Reads the named WRLD's exterior cells and their LAND records into per-cell
     /// `CellInput`s (heights from VHGT, vertex colors from VCLR, LTEX layers from
-    /// BTXT/ATXT base+alpha, hidden quadrants from LAND DATA flags). `refs` is left
-    /// EMPTY — object enumeration is not implemented here.
+    /// BTXT/ATXT base+alpha, hidden quadrants from LAND DATA flags), plus the
+    /// placed-object `refs` for object LOD.
     pub fn enumerate_worldspace(
         handle: &EspHandle,
         world_editor_id: &str,
@@ -2158,6 +2226,7 @@ mod esp_enum {
             .ok_or_else(|| anyhow::anyhow!("worldspace '{world_editor_id}' not found in plugin"))?;
         let world_form_id = wrld.form_id;
         let water_height = worldspace_water_height(wrld);
+        let no_lod_water = worldspace_no_lod_water(wrld);
 
         let children = find_world_children_group(plugin, world_form_id).ok_or_else(|| {
             anyhow::anyhow!("worldspace '{world_editor_id}' has no World Children group")
@@ -2258,7 +2327,7 @@ mod esp_enum {
             sw_cell: sw,
             ne_cell: ne,
             water_height,
-            no_lod_water: false,
+            no_lod_water,
             default_diffuse,
             default_normal,
             cells,
@@ -2362,7 +2431,7 @@ mod tests {
 
     #[test]
     fn hidden_quadrant_bits_decode() {
-        // landFlags bit1=SW, bit2=SE, bit4=NW, bit8=NE (R1 §7)
+        // landFlags bit1=SW, bit2=SE, bit4=NW, bit8=NE
         let q = decode_hidden_quadrants(0b1011); // SW + SE + NE
         assert_eq!(q, [true, true, false, true]);
         let none = decode_hidden_quadrants(0);

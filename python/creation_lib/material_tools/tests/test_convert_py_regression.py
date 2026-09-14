@@ -1,14 +1,7 @@
-"""Regression tests for ``creation_lib.material_tools.convert`` ground-truth downgrade.
+"""Regression tests for the FO76 -> FO4 downgrade in ``creation_lib.material_tools.convert``.
 
-``convert.downgrade_bgsm`` / ``convert.downgrade_bgem`` are the
-battle-tested FO76 -> FO4 material downgrade implementations used by
-production BACUP callers,
-``ui/tools/conversion/nif_converter.py``). The bugs below are real
-incidents that the inline comments in ``convert.py`` document; the tests
-here lock the fixes in so a future refactor cannot silently regress them.
-
-The tests mutate a real FO76 v22 BGSM / BGEM fixture so we don't have to
-construct a valid dataclass from scratch — the fixtures live at
+Each test pins an incident documented in ``convert.py``'s inline comments. The
+tests mutate real FO76 v22 BGSM/BGEM fixtures, which live at
 ``bacup/py_bacup_lib/python/bacup_lib/tests/fixtures/fo76/materials/``.
 """
 from __future__ import annotations
@@ -79,9 +72,8 @@ def test_mirror_shiny_weapon_bug_specular_promoted_to_smoothspec():
     render path samples those as a cubemap and produces mirror-shiny
     weapons. The _s.dds must instead be promoted into SmoothSpecTexture.
 
-    EnvmapTexture is now populated with a heuristic FO4 cubemap (not the
-    _s.dds) — the cubemap injection lives in select_cubemap, exercised
-    separately in test_cubemap_heuristics.
+    EnvmapTexture gets a heuristic FO4 cubemap instead; select_cubemap is
+    covered by test_cubemap_heuristics.
     """
     data = _load_bgsm_v20()
     data.SpecularTexture = "weapons/gaussrifle/foo_s.dds"

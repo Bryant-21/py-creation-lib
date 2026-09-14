@@ -30,16 +30,7 @@ def export_nif_to_fbx(
     output_path: str,
     options: FbxExportOptions | None = None,
 ) -> str | None:
-    """Export a loaded NIF to FBX.
-
-    Args:
-        nif: NifFile instance with loaded data.
-        output_path: Output .fbx file path.
-        options: Export options.
-
-    Returns:
-        The output file path on success, or None on failure.
-    """
+    """Export a loaded NifFile to FBX. Returns the output path, or None on failure."""
     if not HAS_FBX:
         _log.error("Autodesk FBX SDK is not installed")
         return None

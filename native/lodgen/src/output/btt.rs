@@ -1,7 +1,7 @@
 /// Tree LOD block (`.btt`) and list (`.lst`) writers.
 ///
-/// NOTE: FO4 has no native `.btt` consumer — these writers exist for billboard-mode output
-/// (trees_3d=false) and cross-game readiness. FO4 3D-default folds trees into `.bto`.
+/// FO4 has no native `.btt` consumer; these writers serve billboard-mode output
+/// (trees_3d=false) and other games. FO4's default 3D tree LOD folds trees into `.bto`.
 ///
 /// Port sources:
 /// - `encode_tree_block` → TwbLodTES5TreeBlock.SaveToFile (wbLOD.pas:939-961)
@@ -11,16 +11,16 @@
 use std::path::Path;
 
 // ---------------------------------------------------------------------------
-// TreeRef — one billboard reference (plan contract field order)
+// TreeRef — one billboard reference
 // ---------------------------------------------------------------------------
 
 /// One billboard tree reference for the `.btt` block.
 ///
-/// The on-wire form is the Pascal `packed record TwbLodTES5TreeRef` (wbLOD.pas:125-131),
+/// On disk this is the Pascal `packed record TwbLodTES5TreeRef` (wbLOD.pas:125-131),
 /// blitted in declaration order by `SaveToFile` (`Write(Refs[i][0], SizeOf(...)*Count)` :950):
 ///   X(f32), Y(f32), Z(f32), Rotation(f32), Scale(f32), RefFormID(u32), Unknown1(i32)=0, Unknown2(i32)=0
-/// = 32 bytes. This Rust struct keeps the same 6 meaningful fields (the two `Unknown`
-/// slots are always zero) but `encode_tree_block` emits the full 32-byte packed layout.
+/// = 32 bytes. The two `Unknown` slots are always zero and not stored here;
+/// `encode_tree_block` emits the full 32-byte packed layout.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TreeRef {
     pub form_id: u32,

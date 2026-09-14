@@ -14,24 +14,11 @@ _log = logging.getLogger("skinning.importers")
 
 
 def import_obj(path: str | Path) -> SkinData:
-    """Import an OBJ file into SkinData (geometry only, no weights).
+    """Import an OBJ file into SkinData (geometry only, empty weight arrays).
 
-    Handles:
-        - v (vertex positions)
-        - vn (vertex normals)
-        - vt (texture coordinates)
-        - f (faces — triangles and quads, auto-triangulated)
-        - Face format: v, v/vt, v/vt/vn, v//vn
-
-    Args:
-        path: Path to the OBJ file.
-
-    Returns:
-        SkinData with geometry populated and empty weight arrays.
-
-    Raises:
-        FileNotFoundError: If the OBJ file does not exist.
-        ValueError: If no geometry is found.
+    Reads v, vn, vt, and f (triangles and quads, auto-triangulated; face formats
+    v, v/vt, v/vt/vn, v//vn). Raises FileNotFoundError for a missing file and
+    ValueError when no geometry is found.
     """
     path = Path(path)
     if not path.exists():

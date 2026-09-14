@@ -195,13 +195,12 @@ where
 /// Return mimalloc's cached free pages to the OS at LOD pass/level boundaries.
 ///
 /// `generate_lod` runs terrain → atlas → every object level in one GIL-released
-/// Rust call. Each level frees gigabytes (atlas tile loads, per-quad geometry
-/// merges, the per-level rayon pool's abandoned thread heaps), but mimalloc keeps
-/// those pages in its segment cache, so process-private memory only ratchets UP —
-/// the multi-GiB "already resident before LOD16" high-water mark. `mi_collect`
-/// (via esp's `trim_allocator`, the same hook the conversion phase boundaries use)
-/// decommits them so each level's frees actually land. Wired only in the umbrella
-/// build (`real-esp` links esp); a no-op in the default test build.
+/// call. Each level frees gigabytes (atlas tiles, per-quad geometry merges, the
+/// per-level rayon pool's abandoned thread heaps), but mimalloc caches those pages,
+/// so process-private memory only ratchets up. `mi_collect` (via esp's
+/// `trim_allocator`, also used at conversion phase boundaries) decommits them.
+/// Only in the umbrella build (`real-esp` links esp); a no-op in the default test
+/// build.
 #[cfg(feature = "real-esp")]
 fn trim_allocator() {
     esp_authoring_core::trim_allocator();
@@ -548,6 +547,15 @@ fn choose_fixed_stride_axis(min: i32, max: i32, stride: i32, align: i32) -> i32 
     }
 }
 
+/// FO4 builds its terrain node tree down from the stride by halving and queues only
+/// the nodes at `lod_max` for partial updates. Any other stride leaves that queue
+/// empty, and `BGSTerrainManager::Update` dereferences null on entering the world.
+fn fo4_terrain_root_stride(stride: i32, lod_max: i32) -> i32 {
+    (stride.max(1) as u32)
+        .next_power_of_two()
+        .max(lod_max as u32) as i32
+}
+
 pub(crate) fn lod_settings_window(
     world: &crate::input::WorldspaceInput,
     settings: &LodSettings,
@@ -562,9 +570,13 @@ pub(crate) fn lod_settings_window(
     let Some(stride) = settings.global.stride.filter(|s| *s > 0) else {
         return (
             fallback_sw,
-            lodsettings::next_stride(fallback_sw, bounds_ne),
+            fo4_terrain_root_stride(
+                lodsettings::next_stride(fallback_sw, bounds_ne),
+                settings.global.lod_max,
+            ),
         );
     };
+    let stride = fo4_terrain_root_stride(stride, settings.global.lod_max);
 
     if settings.global.southwest_cell.is_some() || settings.global.bounds.is_some() {
         return (fallback_sw, stride);
@@ -853,14 +865,9 @@ fn read_btt_type_indices(path: &std::path::Path) -> Vec<i32> {
 /// `billboard_place::generate_quad`. After all levels, writes the world-level `.lst`
 /// listing only the species actually placed into `.btt` blocks.
 ///
-/// This function is the Task-9 tree-accounting driver. Full driver integration
-/// (terrain + objects + trees in one pass).
-///
-/// The REAL object `AtlasResult` is threaded in (built once by
-/// `run_objects`/`build_object_lod` and passed here), so 3D-tree quad UVs ARE
-/// atlas-remapped onto the shared object atlas (closing the prior "stub empty
-/// atlas" gap). Billboard mode is unaffected: its UVs come from the
-/// `BillboardManifest`, not the object atlas.
+/// The object `AtlasResult` (built once by `run_objects`/`build_object_lod`) is
+/// threaded in, so 3D-tree quad UVs are remapped onto the shared object atlas.
+/// Billboard UVs come from the `BillboardManifest` instead.
 pub fn run_trees(
     world: &crate::input::WorldspaceInput,
     settings: &LodSettings,
@@ -1038,9 +1045,8 @@ pub fn run_trees(
 /// `[lod_min..=lod_max]`, distributing `world.refs` into per-quad statics buckets
 /// and writing one `.bto` per non-empty quad via `objects::generate_quad`.
 ///
-/// The REAL object `AtlasResult` is threaded in (built once by
-/// `build_object_lod`), so object-LOD UVs ARE atlas-remapped — closing the prior
-/// "stub empty atlas" gap. port: DoLOD FO4 object path outer loop (LODApp.cs).
+/// Object-LOD UVs are remapped through the `AtlasResult` built once by
+/// `build_object_lod`. port: DoLOD FO4 object path outer loop (LODApp.cs).
 pub fn run_objects(
     world: &crate::input::WorldspaceInput,
     settings: &LodSettings,
@@ -1308,6 +1314,8 @@ mod tests {
             )),
             bto_bytes: 2 * 1024 * 1024,
             output_shape_count: 2,
+            shape_build_secs: 0.,
+            write_report: Default::default(),
             simplify: ObjectSimplifyStats {
                 shapes_considered: 3,
                 shapes_skipped: 1,
@@ -1738,6 +1746,22 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&out);
         let _ = std::fs::remove_dir_all(&out2);
+    }
+
+    #[test]
+    fn lod_settings_stride_is_a_power_of_two_no_smaller_than_lod_max() {
+        let world = flat_world();
+        let settings = LodSettings::fo4_default();
+        assert_eq!(lod_settings_window(&world, &settings), ((0, 0), 32));
+
+        let mut configured = LodSettings::fo4_default();
+        configured.global.southwest_cell = Some([0, 0]);
+        configured.global.stride = Some(160);
+        assert_eq!(lod_settings_window(&world, &configured), ((0, 0), 256));
+
+        configured.global.lod_max = 8;
+        configured.global.stride = Some(4);
+        assert_eq!(lod_settings_window(&world, &configured), ((0, 0), 8));
     }
 
     /// When atlas DDS encode fails (atlas_size > 0 but dds_written < 3),

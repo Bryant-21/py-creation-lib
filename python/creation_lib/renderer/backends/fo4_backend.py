@@ -1,14 +1,11 @@
 """Fallout 4 scene backend.
 
-Holds a back-reference to the host ``SceneRenderer`` and implements the
-FO4 draw helpers — ``_draw_node``, ``_draw_shadow_node``,
-``_setup_fo4_uniforms`` — reading renderer-owned state via ``self._r.*``.
-``SceneRenderer`` still owns the FO4 scene graph (``scene_root``), the
-shader programs, and the top-level draw loop.
-
-Some ``SceneBackend`` protocol methods (e.g. ``attach_nif``,
-``draw_selection_outline``) still raise ``NotImplementedError``; the host
-renderer drives those paths directly.
+Implements the FO4 draw helpers (``_draw_node``, ``_draw_shadow_node``,
+``_setup_fo4_uniforms``) against renderer-owned state via ``self._r.*``.
+``SceneRenderer`` owns the FO4 scene graph (``scene_root``), the shader programs,
+and the top-level draw loop. Some ``SceneBackend`` methods (e.g. ``attach_nif``,
+``draw_selection_outline``) raise ``NotImplementedError``; the host renderer
+drives those paths directly.
 """
 
 from __future__ import annotations
@@ -26,29 +23,21 @@ _PHASE2 = "fo4_backend: not implemented until Phase 2 (see handoff)"
 
 
 class Fo4Backend:
-    """Delegating stub for FO4 rendering.
+    """FO4 draw backend.
 
-    Holds a back-reference to the owning ``SceneRenderer``. During the
-    transitional phases this gives moved methods access to FBOs, shader
-    programs, default textures, and the GL context without having to
-    duplicate that state.
+    The back-reference to the owning ``SceneRenderer`` provides FBOs, shader
+    programs, default textures, and the GL context without duplicating that state.
     """
 
     def __init__(self, renderer: "SceneRenderer") -> None:
         self._r = renderer
-        # _current_effect_prog is per-frame draw-loop state — set by
-        # SceneRenderer.render() before each draw and read by _draw_node.
-        # Lives on the backend because it's strictly an FO4 concern.
-        # SceneRenderer exposes it via a @property shim for external
-        # readers (none today, but the SF bypass historically poked it).
+        # Per-frame FO4 draw-loop state: set by SceneRenderer.render() before
+        # each draw and read by _draw_node. SceneRenderer forwards it through
+        # a @property.
         #
-        # NOTE: scene_root is intentionally NOT moved here. It's set by
-        # app.py:785 *before* render() runs _ensure_backend(), which means
-        # the assignment can land on a backend that's about to be swapped
-        # out on a game change. Keeping scene_root on SceneRenderer avoids
-        # the cross-backend transfer headache and matches its actual role
-        # (shared infra used by picking, animation, and bounds — not
-        # exclusively a draw-loop concern).
+        # scene_root stays on SceneRenderer: app.py sets it before render()
+        # runs _ensure_backend(), so it could land on a backend about to be
+        # swapped on a game change, and picking, animation, and bounds share it.
         self._current_effect_prog: Any = None
 
     # ----- Lifecycle -----------------------------------------------------

@@ -33,6 +33,9 @@ dependencies = [
     "pyghidra>=3.0.2",
 ]
 
+[project.optional-dependencies]
+ui = ["imgui-bundle>=1.92.801"]
+
 [tool.maturin]
 manifest-path = "native/creation_lib_native/Cargo.toml"
 module-name = "creation_lib._native"
@@ -45,6 +48,7 @@ python-source = "python"
 profile = "release"
 include = [
     { path = "python/creation_lib/resources/**", format = "wheel" },
+    { path = "python/creation_lib/pex/data/**", format = "wheel" },
     { path = "python/creation_lib/nif/nif_xml/**", format = "wheel" },
     { path = "python/creation_lib/renderer/shaders/**", format = "wheel" },
     { path = "python/creation_lib/renderer/assets/**", format = "wheel" },

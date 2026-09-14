@@ -122,15 +122,8 @@ def assign_partitions_from_reference(
 ) -> np.ndarray:
     """Assign partition IDs by matching target triangles to nearest reference triangles.
 
-    For each target triangle, finds the closest reference triangle (by centroid)
-    and copies its partition ID.
-
-    Args:
-        target: Target SkinData (partitions will be computed).
-        reference: Reference SkinData with known partition assignments.
-
-    Returns:
-        partitions: (M,) int32 array of partition IDs for target triangles.
+    Each target triangle copies the partition ID of the reference triangle with
+    the nearest centroid. Returns (M,) int32 IDs, -1 where none applies.
     """
     n_target_tris = target.num_triangles
     partitions = np.full(n_target_tris, -1, dtype=np.int32)
@@ -172,14 +165,8 @@ def assign_partitions_from_bones(
 ) -> np.ndarray:
     """Assign partition IDs based on dominant bone per triangle.
 
-    For each triangle, finds the bone with the highest total weight across
-    all three corners, then maps that bone name to a body part ID.
-
-    Args:
-        skin_data: SkinData with populated weights and bone_names.
-
-    Returns:
-        partitions: (M,) int32 array of partition IDs.
+    The bone with the highest total weight over a triangle's three corners maps
+    to a body part ID; the default is 30 (Body). Returns (M,) int32 IDs.
     """
     n_tris = skin_data.num_triangles
     partitions = np.full(n_tris, 30, dtype=np.int32)  # Default to Body
@@ -204,15 +191,8 @@ def rebuild_fo4_segments(
 ) -> list["SegmentInfo"]:
     """Rebuild FO4 SegmentInfo hierarchy from flat segment_ids array.
 
-    Groups contiguous triangles by segment ID, then creates one sub-segment
-    per unique body part within each segment.  The segment_ids values are
-    treated as body part IDs (user_index).
-
-    Args:
-        skin_data: SkinData with populated segment_ids.
-
-    Returns:
-        List of SegmentInfo objects ready for NIF export.
+    ``segment_ids`` values are treated as body part IDs (user_index). Each
+    contiguous run of one ID becomes a segment with a single sub-segment.
     """
     segments, _ = rebuild_fo4_segments_from_body_parts(
         skin_data, skin_data.segment_ids,
@@ -358,18 +338,13 @@ def sync_fo4_segments_from_ids(skin_data: "SkinData") -> list["SegmentInfo"]:
 def generate_ssf_path(nif_path: str) -> str:
     """Generate an SSF file path from a NIF file path.
 
-    Follows Bethesda convention: the SSF path mirrors the NIF path with
-    a .ssf extension, rooted under ``meshes\\``.
+    Bethesda convention: the SSF path mirrors the NIF path with a .ssf
+    extension, backslash-delimited and rooted at ``meshes\\``. A path with no
+    ``meshes`` component puts the file name directly under ``meshes\\``.
 
     Examples:
         ``meshes\\Clothes\\Bathrobe\\OutfitM.nif`` → ``meshes\\Clothes\\Bathrobe\\OutfitM.ssf``
         ``C:\\Data\\meshes\\Armor\\MyArmor.nif`` → ``meshes\\Armor\\MyArmor.ssf``
-
-    Args:
-        nif_path: Absolute or relative path to the NIF file.
-
-    Returns:
-        Backslash-delimited relative SSF path starting with ``meshes\\``.
     """
     p = PureWindowsPath(nif_path)
 
@@ -392,20 +367,9 @@ def generate_skin_partition_blocks(
     """Generate NiSkinPartition-compatible partition block data.
 
     Groups triangles by partition ID, then splits groups that exceed
-    *max_bones_per_partition* bones.
-
-    Args:
-        skin_data: SkinData with populated partitions, weights, bone_indices.
-        max_bones_per_partition: Maximum bones allowed in a single partition.
-
-    Returns:
-        List of partition dicts, each containing:
-            - "body_part": int (partition / body part ID)
-            - "bones": list[int] (bone indices used)
-            - "triangles": list of (v0, v1, v2) tuples
-            - "vertex_map": list[int] (global vertex indices used)
-            - "num_vertices": int
-            - "num_triangles": int
+    *max_bones_per_partition* bones. Each dict has "body_part", "bones" (bone
+    indices), "triangles" ((v0, v1, v2) tuples), "vertex_map" (global vertex
+    indices), "num_vertices", and "num_triangles".
     """
     if skin_data.num_triangles == 0:
         return []

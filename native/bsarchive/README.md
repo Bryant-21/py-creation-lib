@@ -33,6 +33,5 @@ Validation lives in two places:
 
 # Ownership
 
-This directory is maintained as a project fork inside ModBox21. Upstream repo
-branding has been removed so the crate can evolve as a first-party component of
-the toolkit.
+This directory is a project fork maintained inside ModBox21 as a first-party
+component, with upstream branding removed.

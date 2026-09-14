@@ -55,15 +55,8 @@ def dilation_fill(rgba_img: Image.Image, out_path: str | Path | None = None,
     """Apply dilation fill to transparent regions of an RGBA image.
 
     Expands opaque pixel colors into adjacent transparent pixels using
-    8-directional non-wrapping shifts.
-
-    Args:
-        rgba_img: Input RGBA PIL Image.
-        out_path: Optional path to save the result as PNG.
-        max_iters: Maximum number of dilation iterations.
-
-    Returns:
-        (result_image, filled_any) -- the processed image and whether any fill occurred.
+    8-directional non-wrapping shifts, up to ``max_iters`` passes. Saves a PNG
+    to ``out_path`` when given. Returns ``(result_image, filled_any)``.
     """
     if rgba_img.mode != 'RGBA':
         rgba_img = rgba_img.convert('RGBA')
@@ -235,13 +228,8 @@ def run_chainner(input_png: str, model_path: str, out_dir: str,
                  chainner_path: str, chain_path: str) -> bool:
     """Invoke ChaiNNer CLI for single-image upscale. Returns True on success.
 
-    Args:
-        input_png: Path to input PNG image.
-        model_path: Path to the model file.
-        out_dir: Output directory.
-        expected_output_png: Expected output filename for verification.
-        chainner_path: Path to ChaiNNer.exe.
-        chain_path: Path to the .chn chain file.
+    ``expected_output_png`` is the output filename checked afterwards;
+    ``chain_path`` is the .chn chain file.
     """
     if not os.path.exists(chain_path):
         raise FileNotFoundError(f"ChaiNNer chain not found: {chain_path}")

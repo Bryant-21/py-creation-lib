@@ -1,9 +1,11 @@
 mod corpus;
 mod corpus_generated;
+pub mod creature_ragdoll;
 pub mod fo76;
 pub mod hooks;
 pub mod manager;
 pub mod ops;
+pub mod skyrim_animation;
 pub mod templates;
 pub mod version;
 
@@ -13,6 +15,7 @@ pub use corpus::{NativePatchCorpusManifest, native_patch_corpus_manifest};
 pub use hooks::{ConversionContext, CustomHookRegistry};
 pub use manager::{PatchDirection, PatchManager, PatchRoute, PatchStep};
 pub use ops::{ClassVersion, Patch, PatchOperation, PatchValue};
+pub use skyrim_animation::reemit_skyrim_2010_animation_asset_to_fo4;
 pub use templates::fo4_weapon_psd_object_template;
 pub use version::{
     HavokVersion, all_versions, detect_version_id, get_version, get_version_by_name,

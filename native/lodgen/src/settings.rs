@@ -402,7 +402,7 @@ fn terrain_level(quality: f32, diffuse_mipmap: bool) -> TerrainLevel {
     // Native terrain LOD tiles are 256x256 BC1 at every level (xLODGen golden
     // corpus; 128x128 only for default/empty cells, see default_*_size). Mips
     // are written ONLY on L4 diffuse; L8/L16/L32 diffuse and all _msn are
-    // single-mip (verified against tmp/xlodgen/Textures/Terrain/DLC03FarHarbor).
+    // single-mip (verified against the golden xLODGen DLC03FarHarbor terrain textures).
     TerrainLevel {
         quality,
         max_vertices: 32767,
@@ -419,17 +419,16 @@ fn terrain_level(quality: f32, diffuse_mipmap: bool) -> TerrainLevel {
 
 /// Returns a compact JSON string of the default FO4 LOD settings.
 ///
-/// Consumed by Python callers via `lodgen_native.default_settings_json()` and
-/// passed back into `generate_lod` as the `settings_json` argument. Using this
-/// function instead of hand-rolling JSON ensures Python and Rust always agree on
-/// the schema, and is the round-trip anchor for the cross-language snapshot test.
+/// Python callers get it via `lodgen_native.default_settings_json()` and pass it
+/// back into `generate_lod` as `settings_json`, so both sides share one schema. The
+/// cross-language snapshot test round-trips it.
 pub fn default_settings_json() -> String {
     serde_json::to_string(&LodSettings::fo4_default())
         .expect("LodSettings serialization must not fail")
 }
 
 impl LodSettings {
-    /// xLODGen default profile for FO4 (Program.cs:205-206, R1 §4, R3 appendix)
+    /// xLODGen default profile for FO4 (Program.cs:205-206)
     pub fn fo4_default() -> Self {
         LodSettings {
             global: GlobalSettings {
@@ -547,7 +546,7 @@ mod tests {
         assert_eq!(s.global.bounds, None);
         assert!(s.global.use_source_lodsettings);
         assert!(s.global.write_lodsettings);
-        // Terrain per-level quality defaults 10/15/20/25 (R1 §4, Program.cs:205)
+        // Terrain per-level quality defaults 10/15/20/25 (Program.cs:205)
         assert_eq!(s.terrain.levels[0].quality, 10.0); // LOD4
         assert_eq!(s.terrain.levels[1].quality, 15.0); // LOD8
         assert_eq!(s.terrain.levels[2].quality, 20.0); // LOD16
@@ -569,9 +568,9 @@ mod tests {
         assert!(!s.terrain.levels[3].diffuse_mipmap); // L32
         assert!(s.terrain.levels.iter().all(|l| !l.normal_mipmap)); // _msn never
         // Terrain globals
-        assert!(s.terrain.protect_cell_borders); // default true (R1 §6)
-        assert!(!s.terrain.hide_quads); // default false (R1 §7)
-        assert_eq!(s.terrain.skirts, 256); // default 256 (R1 §8)
+        assert!(s.terrain.protect_cell_borders);
+        assert!(!s.terrain.hide_quads);
+        assert_eq!(s.terrain.skirts, 256);
         assert_eq!(s.terrain.vertex_color_intensity, 1.0);
         // Object defaults
         assert_eq!(s.objects.source, ObjectSource::Records);
@@ -579,7 +578,7 @@ mod tests {
         assert_eq!(s.objects.atlas_size, 4096);
         assert!(!s.objects.atlas_mip_flooding);
         assert_eq!(s.objects.uv_range, 1.5);
-        assert_eq!(s.objects.alpha_threshold, 128); // R3 appendix
+        assert_eq!(s.objects.alpha_threshold, 128);
         assert!(!s.objects.qem_decimate_full_model_lod);
         assert_eq!(s.objects.qem_lod4_ratio, 0.35);
         assert_eq!(s.objects.qem_lod8_ratio, 0.18);

@@ -89,6 +89,20 @@ def texdiag_info(path: str) -> dict[str, Any] | None:
     return native_fn(path)
 
 
+def validate_dds_file_raw(
+    path: str,
+    *,
+    include_optional: bool = False,
+) -> dict[str, Any]:
+    module = load_native_module()
+    if module is None:
+        raise RuntimeError("directxtex_native is not available")
+    native_fn = getattr(module, "validate_dds_file", None)
+    if native_fn is None:
+        raise RuntimeError("directxtex_native.validate_dds_file is not available")
+    return native_fn(path, include_optional)
+
+
 def remix_fo76_texture_to_fo4(
     src_path: str,
     dst_path: str,

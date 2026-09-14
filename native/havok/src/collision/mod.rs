@@ -5,6 +5,9 @@ pub mod compressed_mesh;
 pub mod constants;
 pub mod constraints;
 pub mod convex;
+mod direct_fo76;
+pub mod direct_starfield;
+mod fo76_material;
 pub mod hull;
 pub mod mass_properties;
 pub mod multi_body;
@@ -35,6 +38,10 @@ pub use compressed_mesh::{
 };
 pub use constraints::{GraftCinfo, GraftedConstraints, extract_grafted_constraints};
 pub use convex::{SourceConvexShape, build_fo4_source_convex_collision};
+pub use direct_fo76::convert_fo76_embedded_static_collision_direct;
+pub use fo76_material::{
+    is_supported_fo4_collision_material, remap_fo76_collision_material_for_fo4,
+};
 pub use mass_properties::{SourceMassDistribution, mass_properties_from_source};
 pub use multi_body::{MultiBodyShape, build_fo4_multi_body_collision};
 pub use payload::{
@@ -45,8 +52,8 @@ pub use polytope::{
     SourcePolytopeShape, build_fo4_polytope_collision, build_fo4_source_polytope_collision,
 };
 pub use preview::{
-    PreviewMesh, SourceBodyTransform, SourcePrimitiveShape, collision_preview_json,
-    decode_source_body_transforms, decode_source_mass_distributions,
+    PreviewMesh, SourceBodyTransform, SourcePhysicsSystemContext, SourcePrimitiveShape,
+    collision_preview_json, decode_source_body_transforms, decode_source_mass_distributions,
     extract_direct_raw_compressed_mesh_from_blob, extract_direct_source_primitive_from_blob,
     extract_preview_meshes_from_blob, extract_preview_meshes_from_hkx,
     extract_raw_compressed_meshes_from_blob, extract_raw_compressed_meshes_from_hkx,

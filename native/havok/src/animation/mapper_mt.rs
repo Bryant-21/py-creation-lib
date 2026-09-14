@@ -1,22 +1,12 @@
 use crate::animation::clip::AnimationClip;
-/// Multithreaded skeleton-mapper job queue.
-///
-/// Wraps a per-clip mapper function in `rayon::par_iter` to retarget 1000s
-/// of clips in parallel. Each clip is independent; trivially data-parallel.
-///
-/// The `RetargetFn` type alias accepts any `Fn(&AnimationClip) -> AnimationClip`,
-/// so the module is agnostic to the concrete mapper implementation.
+/// Parallel (rayon) batch retargeting with any per-clip mapper function.
 use rayon::prelude::*;
 
 /// A retarget function: maps one clip to another skeleton.
 pub type RetargetFn = Box<dyn Fn(&AnimationClip) -> AnimationClip + Send + Sync>;
 
-/// Retarget a batch of clips in parallel using the given mapper function.
-///
-/// Returns a `Vec<AnimationClip>` in the same order as `clips`. Each clip is
-/// processed independently; errors are surfaced by panicking (the mapper
-/// function should return a clip with a warning rather than panicking on
-/// soft errors).
+/// Retarget clips in parallel, preserving input order. A panicking mapper
+/// panics the batch, so mappers should report soft errors as clip warnings.
 pub fn retarget_batch(clips: &[AnimationClip], mapper: &RetargetFn) -> Vec<AnimationClip> {
     clips.par_iter().map(|c| mapper(c)).collect()
 }

@@ -9,8 +9,11 @@ use havok_native::collision::multi_body::{
 use crate::model::{NifBlock, NifFile, NifValue};
 
 const FO4_STATIC_LAYER: u8 = 1;
+const FO4_ANIMSTATIC_LAYER: u8 = 2;
+const SOURCE_BOX_MOTION: u64 = 4;
 const SOURCE_FIXED_MOTION: u64 = 7;
 const SOURCE_BOX_STABILIZED_MOTION: u64 = 5;
+const SOURCE_KEYFRAMED_MOTION: u64 = 6;
 const DEFAULT_COLLISION_RADIUS: f32 = 0.01;
 
 #[derive(Debug, Default)]
@@ -24,6 +27,8 @@ struct CollisionPlan {
     parent_id: usize,
     source_collision_id: usize,
     shape: MultiBodyShape,
+    layer: u8,
+    motion_type: BodyMotionType,
 }
 
 pub(crate) fn bridge_static_collision(nif: &mut NifFile) -> SkyrimCollisionReport {
@@ -74,14 +79,17 @@ pub(crate) fn bridge_static_collision(nif: &mut NifFile) -> SkyrimCollisionRepor
             report.stripped += 1;
             continue;
         };
-        if let Err(reason) = validate_static_body(body) {
-            report.warnings.push(format!(
-                "Skyrim collision block {collision_id}: {reason}; stripped"
-            ));
-            collect_collision_subtree(nif, collision_id, &mut remove);
-            report.stripped += 1;
-            continue;
-        }
+        let (layer, motion_type) = match collision_policy(body) {
+            Ok(policy) => policy,
+            Err(reason) => {
+                report.warnings.push(format!(
+                    "Skyrim collision block {collision_id}: {reason}; stripped"
+                ));
+                collect_collision_subtree(nif, collision_id, &mut remove);
+                report.stripped += 1;
+                continue;
+            }
+        };
         let Some(shape_id) = ref_field(body, "Shape") else {
             report.warnings.push(format!(
                 "Skyrim collision block {collision_id}: rigid body has no shape; stripped"
@@ -90,11 +98,18 @@ pub(crate) fn bridge_static_collision(nif: &mut NifFile) -> SkyrimCollisionRepor
             report.stripped += 1;
             continue;
         };
-        match decode_static_shape(nif, shape_id) {
+        let transform = if body.type_name == "bhkRigidBodyT" {
+            legacy_body_transform(body)
+        } else {
+            identity_matrix()
+        };
+        match decode_static_shape(nif, shape_id, transform) {
             Ok(shape) => plans.push(CollisionPlan {
                 parent_id,
                 source_collision_id: collision_id,
                 shape,
+                layer,
+                motion_type,
             }),
             Err(reason) => {
                 report.warnings.push(format!(
@@ -119,11 +134,11 @@ pub(crate) fn bridge_static_collision(nif: &mut NifFile) -> SkyrimCollisionRepor
     nif.remove_blocks(&removed_ids);
 
     for (plan, parent_id) in plans.into_iter().zip(remapped_parents) {
-        match install_static_collision(nif, parent_id, plan.shape) {
+        match install_collision(nif, parent_id, plan.shape, plan.layer, plan.motion_type) {
             Ok(()) => report.converted += 1,
             Err(reason) => {
                 report.warnings.push(format!(
-                    "Skyrim collision block {}: FO4 static build failed ({reason}); stripped",
+                    "Skyrim collision block {}: FO4 build failed ({reason}); stripped",
                     plan.source_collision_id
                 ));
                 report.stripped += 1;
@@ -133,8 +148,8 @@ pub(crate) fn bridge_static_collision(nif: &mut NifFile) -> SkyrimCollisionRepor
     report
 }
 
-fn validate_static_body(body: &NifBlock) -> Result<(), String> {
-    if body.type_name != "bhkRigidBody" {
+fn collision_policy(body: &NifBlock) -> Result<(u8, BodyMotionType), String> {
+    if !matches!(body.type_name.as_str(), "bhkRigidBody" | "bhkRigidBodyT") {
         return Err(format!(
             "unsupported animated/dynamic body type {}",
             body.type_name
@@ -152,6 +167,18 @@ fn validate_static_body(body: &NifBlock) -> Result<(), String> {
     .ok_or_else(|| "missing Skyrim rigid-body info".to_string())?;
     let motion = numeric(info.get("Motion System")).unwrap_or(u64::MAX);
     let mass = float(info.get("Mass")).unwrap_or(1.0);
+    if source_collision_layer(body) == Some(FO4_ANIMSTATIC_LAYER)
+        && matches!(
+            motion,
+            SOURCE_BOX_MOTION
+                | SOURCE_BOX_STABILIZED_MOTION
+                | SOURCE_KEYFRAMED_MOTION
+                | SOURCE_FIXED_MOTION
+        )
+        && mass.abs() <= f32::EPSILON
+    {
+        return Ok((FO4_ANIMSTATIC_LAYER, BodyMotionType::Keyframed));
+    }
     if !matches!(motion, SOURCE_FIXED_MOTION | SOURCE_BOX_STABILIZED_MOTION)
         || mass.abs() > f32::EPSILON
     {
@@ -159,17 +186,98 @@ fn validate_static_body(body: &NifBlock) -> Result<(), String> {
             "non-static rigid body (motion={motion}, mass={mass}) is outside the static bridge"
         ));
     }
-    Ok(())
+    Ok((FO4_STATIC_LAYER, BodyMotionType::Static))
 }
 
-fn decode_static_shape(nif: &NifFile, shape_id: usize) -> Result<MultiBodyShape, String> {
-    let children = decode_children(nif, shape_id, identity_matrix(), &mut HashSet::new())?;
+fn source_collision_layer(body: &NifBlock) -> Option<u8> {
+    let filter = struct_field(body.get_field("Havok Filter"))?;
+    ["Layer:SK", "Layer"]
+        .into_iter()
+        .find_map(|name| numeric(filter.get(name)))
+        .and_then(|layer| u8::try_from(layer).ok())
+}
+
+fn decode_static_shape(
+    nif: &NifFile,
+    shape_id: usize,
+    transform: [[f32; 4]; 4],
+) -> Result<MultiBodyShape, String> {
+    let children = decode_children(nif, shape_id, transform, &mut HashSet::new())?;
     if children.is_empty() {
         return Err("collision shape decoded to no geometry".to_string());
     }
+    Ok(shape_from_children(children))
+}
+
+/// Decode a Gamebryo-era (FO3/FNV/Oblivion) rigid body into an FO4 shape.
+///
+/// `unit_scale` converts the source's Havok units into FO4's. Because the walker
+/// transforms every vertex before this point, scaling the finished geometry by a
+/// uniform factor is equivalent to scaling every source length and transform
+/// translation individually — so the shared Skyrim decode needs no unit plumbing.
+pub(crate) fn decode_legacy_static_shape(
+    nif: &NifFile,
+    body_id: usize,
+    unit_scale: f32,
+    visible: &VisibleFacets,
+) -> Result<MultiBodyShape, String> {
+    let body = nif
+        .get_block(body_id)
+        .ok_or_else(|| format!("rigid body block {body_id} is missing"))?;
+    let shape_id =
+        ref_field(body, "Shape").ok_or_else(|| format!("rigid body {body_id} has no shape"))?;
+    // Only `bhkRigidBodyT` bakes its own translation/rotation into the shape;
+    // plain `bhkRigidBody` leaves the shape in parent space.
+    let transform = if body.type_name == "bhkRigidBodyT" {
+        legacy_body_transform(body)
+    } else {
+        identity_matrix()
+    };
+    let children = decode_children(nif, shape_id, transform, &mut HashSet::new())?;
+    if children.is_empty() {
+        return Err("collision shape decoded to no geometry".to_string());
+    }
+    Ok(orient_mesh_shape(
+        scale_shape(shape_from_children(children), unit_scale),
+        visible,
+    ))
+}
+
+fn legacy_body_transform(body: &NifBlock) -> [[f32; 4]; 4] {
+    let Some(info) = struct_field(
+        body.fields
+            .get("Rigid Body Info:2010")
+            .or_else(|| body.fields.get("Rigid Body Info:550_660"))
+            .or_else(|| body.get_field("Rigid Body Info")),
+    ) else {
+        return identity_matrix();
+    };
+    let rotation = quaternion(info.get("Rotation"))
+        .and_then(normalize_quaternion)
+        .unwrap_or([0.0, 0.0, 0.0, 1.0]);
+    let translation = vec3(info.get("Translation"))
+        .filter(|value| value.iter().all(|component| component.is_finite()))
+        .unwrap_or([0.0; 3]);
+    let mut matrix = identity_matrix();
+    for (column, axis) in [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+        .into_iter()
+        .enumerate()
+    {
+        let rotated = rotate_quaternion(axis, rotation);
+        for row in 0..3 {
+            matrix[row][column] = rotated[row];
+        }
+    }
+    for row in 0..3 {
+        matrix[row][3] = translation[row];
+    }
+    matrix
+}
+
+fn shape_from_children(children: Vec<CompoundChild>) -> MultiBodyShape {
     if children.len() == 1 {
         let child = children.into_iter().next().expect("single child");
-        return Ok(match child.kind {
+        return match child.kind {
             CompoundChildKind::Polytope { vertices } => MultiBodyShape::Polytope { vertices },
             CompoundChildKind::SourcePolytope { shape } => MultiBodyShape::SourcePolytope { shape },
             CompoundChildKind::CompressedMesh {
@@ -179,9 +287,366 @@ fn decode_static_shape(nif: &NifFile, shape_id: usize) -> Result<MultiBodyShape,
                 vertices,
                 triangles,
             },
-        });
+        };
     }
-    Ok(MultiBodyShape::Compound { children })
+    MultiBodyShape::Compound { children }
+}
+
+/// A render-mesh triangle used to decide which way collision should face.
+#[derive(Clone, Copy)]
+pub(crate) struct VisibleFacet {
+    pub centroid: [f32; 3],
+    pub normal: [f32; 3],
+}
+
+/// Coarse uniform grid over the render mesh, so orienting a collision shape does
+/// not degrade into a brute-force nearest-facet scan on large assets.
+pub(crate) struct VisibleFacets {
+    cells: std::collections::HashMap<[i32; 3], Vec<VisibleFacet>>,
+    cell_size: f32,
+}
+
+impl VisibleFacets {
+    pub(crate) fn new(facets: Vec<VisibleFacet>) -> Self {
+        // ~1 world metre in FO4 Havok units; large enough that a populated cell
+        // is usually found on the first ring.
+        let cell_size = 1.0f32;
+        let mut cells: std::collections::HashMap<[i32; 3], Vec<VisibleFacet>> = Default::default();
+        for facet in facets {
+            cells
+                .entry(Self::cell_of(facet.centroid, cell_size))
+                .or_default()
+                .push(facet);
+        }
+        Self { cells, cell_size }
+    }
+
+    fn cell_of(point: [f32; 3], size: f32) -> [i32; 3] {
+        point.map(|value| (value / size).floor() as i32)
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.cells.is_empty()
+    }
+
+    /// Nearest render facet to `point`, searching outward a few rings.
+    fn nearest(&self, point: [f32; 3]) -> Option<VisibleFacet> {
+        let origin = Self::cell_of(point, self.cell_size);
+        let mut best: Option<(f32, VisibleFacet)> = None;
+        for radius in 0i32..4 {
+            for dx in -radius..=radius {
+                for dy in -radius..=radius {
+                    for dz in -radius..=radius {
+                        // Only the newly added shell each round.
+                        if radius > 0
+                            && dx.abs() != radius
+                            && dy.abs() != radius
+                            && dz.abs() != radius
+                        {
+                            continue;
+                        }
+                        let cell = [origin[0] + dx, origin[1] + dy, origin[2] + dz];
+                        for facet in self.cells.get(&cell).into_iter().flatten() {
+                            let delta = subtract(facet.centroid, point);
+                            let distance =
+                                delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2];
+                            if best.is_none_or(|(current, _)| distance < current) {
+                                best = Some((distance, *facet));
+                            }
+                        }
+                    }
+                }
+            }
+            if best.is_some() {
+                return best.map(|(_, facet)| facet);
+            }
+        }
+        best.map(|(_, facet)| facet)
+    }
+}
+
+/// Give a decoded collision mesh a consistent, outward-facing winding.
+///
+/// Gamebryo-era mesh collision (`hkpMoppBvTreeShape` over packed tri-strips)
+/// collides on **both** faces, so FO3/FNV content was authored with no
+/// consistent winding — across the FNV corpus, 95% of collision meshes disagree
+/// on the orientation of most shared edges. FO4's hknp instead rejects back-face
+/// contacts (`hknpTriangleWeldingModifier::m_rejectBackSideTriangles` defaults to
+/// true), so a wrongly-wound triangle is a hole the player walks through.
+///
+/// Emitting both windings fixes the holes but makes every surface two coincident
+/// opposing faces, which fight each other and make the player sink and bounce on
+/// anything walkable. So instead: flood-fill each connected component to a
+/// self-consistent winding, then pick the component's global sign by majority
+/// vote against the nearest render-mesh facet — the render mesh is authored with
+/// correct outward normals because backface culling depends on it.
+fn orient_mesh_triangles(
+    vertices: &[[f32; 3]],
+    triangles: Vec<[u32; 3]>,
+    visible: &VisibleFacets,
+) -> Vec<[u32; 3]> {
+    use std::collections::HashMap;
+
+    // Weld coincident vertices so shared edges are detectable at all.
+    let mut welded: HashMap<[i64; 3], u32> = HashMap::new();
+    let mut canonical = Vec::with_capacity(vertices.len());
+    for vertex in vertices {
+        let key = vertex.map(|value| (value * 1000.0).round() as i64);
+        let next = welded.len() as u32;
+        canonical.push(*welded.entry(key).or_insert(next));
+    }
+
+    let kept: Vec<[u32; 3]> = triangles
+        .into_iter()
+        .filter(|t| {
+            let [a, b, c] = [
+                canonical[t[0] as usize],
+                canonical[t[1] as usize],
+                canonical[t[2] as usize],
+            ];
+            a != b && b != c && a != c
+        })
+        .collect();
+    if kept.is_empty() {
+        return kept;
+    }
+
+    let welded_of = |t: &[u32; 3]| {
+        [
+            canonical[t[0] as usize],
+            canonical[t[1] as usize],
+            canonical[t[2] as usize],
+        ]
+    };
+    let mut edge_owners: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
+    for (index, triangle) in kept.iter().enumerate() {
+        let [a, b, c] = welded_of(triangle);
+        for (u, v) in [(a, b), (b, c), (c, a)] {
+            edge_owners
+                .entry((u.min(v), u.max(v)))
+                .or_default()
+                .push(index);
+        }
+    }
+
+    // Flood-fill: a shared edge must be traversed in opposite directions by its
+    // two triangles, otherwise the neighbour is flipped.
+    let mut flipped = vec![false; kept.len()];
+    let mut assigned = vec![false; kept.len()];
+    let mut components: Vec<Vec<usize>> = Vec::new();
+    for seed in 0..kept.len() {
+        if assigned[seed] {
+            continue;
+        }
+        assigned[seed] = true;
+        let mut component = vec![seed];
+        let mut queue = std::collections::VecDeque::from([seed]);
+        while let Some(index) = queue.pop_front() {
+            let [a, b, c] = welded_of(&kept[index]);
+            let directed = if flipped[index] {
+                [(a, c), (c, b), (b, a)]
+            } else {
+                [(a, b), (b, c), (c, a)]
+            };
+            for (u, v) in directed {
+                let key = (u.min(v), u.max(v));
+                let Some(owners) = edge_owners.get(&key) else {
+                    continue;
+                };
+                if owners.len() != 2 {
+                    continue; // boundary or non-manifold: no orientation constraint
+                }
+                let other = if owners[0] == index {
+                    owners[1]
+                } else {
+                    owners[0]
+                };
+                if assigned[other] {
+                    continue;
+                }
+                let [oa, ob, oc] = welded_of(&kept[other]);
+                // Same direction across the shared edge means the neighbour disagrees.
+                let same_direction = [(oa, ob), (ob, oc), (oc, oa)].contains(&(u, v));
+                flipped[other] = same_direction;
+                assigned[other] = true;
+                component.push(other);
+                queue.push_back(other);
+            }
+        }
+        components.push(component);
+    }
+
+    let oriented = |index: usize| -> [u32; 3] {
+        let t = kept[index];
+        if flipped[index] {
+            [t[0], t[2], t[1]]
+        } else {
+            t
+        }
+    };
+
+    let mut result = Vec::with_capacity(kept.len());
+    for component in components {
+        let mut agree = 0i32;
+        let mut disagree = 0i32;
+        // A sample is enough; components are internally consistent by now.
+        let stride = (component.len() / 64).max(1);
+        for index in component.iter().copied().step_by(stride) {
+            let t = oriented(index);
+            let (a, b, c) = (
+                vertices[t[0] as usize],
+                vertices[t[1] as usize],
+                vertices[t[2] as usize],
+            );
+            let normal = cross(subtract(b, a), subtract(c, a));
+            let centroid = [
+                (a[0] + b[0] + c[0]) / 3.0,
+                (a[1] + b[1] + c[1]) / 3.0,
+                (a[2] + b[2] + c[2]) / 3.0,
+            ];
+            let Some(facet) = visible.nearest(centroid) else {
+                continue;
+            };
+            let alignment = normal[0] * facet.normal[0]
+                + normal[1] * facet.normal[1]
+                + normal[2] * facet.normal[2];
+            if alignment > 0.0 {
+                agree += 1;
+            } else if alignment < 0.0 {
+                disagree += 1;
+            }
+        }
+        // Without render-mesh evidence, fall back to enclosing the component's
+        // own volume (correct for the closed shells this leaves).
+        let flip_component = if agree == 0 && disagree == 0 {
+            component
+                .iter()
+                .map(|index| {
+                    let t = oriented(*index);
+                    let (a, b, c) = (
+                        vertices[t[0] as usize],
+                        vertices[t[1] as usize],
+                        vertices[t[2] as usize],
+                    );
+                    (a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0])
+                        + a[2] * (b[0] * c[1] - b[1] * c[0])) as f64
+                })
+                .sum::<f64>()
+                < 0.0
+        } else {
+            disagree > agree
+        };
+        for index in component {
+            let t = oriented(index);
+            result.push(if flip_component {
+                [t[0], t[2], t[1]]
+            } else {
+                t
+            });
+        }
+    }
+    result
+}
+
+/// Apply [`orient_mesh_triangles`] to every mesh in a shape, and drop triangles
+/// the FO4 compressed-mesh builder would reject. A single degenerate sliver used
+/// to fail the whole build, which silently dropped an asset's entire collision.
+pub(crate) fn orient_mesh_shape(shape: MultiBodyShape, visible: &VisibleFacets) -> MultiBodyShape {
+    fn clean(
+        vertices: &[[f32; 3]],
+        triangles: Vec<[u32; 3]>,
+        visible: &VisibleFacets,
+    ) -> Vec<[u32; 3]> {
+        let usable = triangles
+            .into_iter()
+            .filter(|triangle| {
+                havok_native::collision::compressed_mesh::compressed_triangle_is_safe(
+                    vertices, triangle,
+                )
+            })
+            .collect();
+        orient_mesh_triangles(vertices, usable, visible)
+    }
+    match shape {
+        MultiBodyShape::CompressedMesh {
+            vertices,
+            triangles,
+        } => {
+            let triangles = clean(&vertices, triangles, visible);
+            MultiBodyShape::CompressedMesh {
+                vertices,
+                triangles,
+            }
+        }
+        MultiBodyShape::Compound { children } => MultiBodyShape::Compound {
+            children: children
+                .into_iter()
+                .map(|child| CompoundChild {
+                    transform: child.transform,
+                    kind: match child.kind {
+                        CompoundChildKind::CompressedMesh {
+                            vertices,
+                            triangles,
+                        } => {
+                            let triangles = clean(&vertices, triangles, visible);
+                            CompoundChildKind::CompressedMesh {
+                                vertices,
+                                triangles,
+                            }
+                        }
+                        other => other,
+                    },
+                })
+                .collect(),
+        },
+        other => other,
+    }
+}
+
+fn scale_shape(shape: MultiBodyShape, factor: f32) -> MultiBodyShape {
+    if (factor - 1.0).abs() < f32::EPSILON {
+        return shape;
+    }
+    let apply = |vertices: Vec<[f32; 3]>| -> Vec<[f32; 3]> {
+        vertices
+            .into_iter()
+            .map(|vertex| vertex.map(|value| value * factor))
+            .collect()
+    };
+    match shape {
+        MultiBodyShape::Polytope { vertices } => MultiBodyShape::Polytope {
+            vertices: apply(vertices),
+        },
+        MultiBodyShape::CompressedMesh {
+            vertices,
+            triangles,
+        } => MultiBodyShape::CompressedMesh {
+            vertices: apply(vertices),
+            triangles,
+        },
+        MultiBodyShape::Compound { children } => MultiBodyShape::Compound {
+            children: children
+                .into_iter()
+                .map(|child| CompoundChild {
+                    transform: child.transform,
+                    kind: match child.kind {
+                        CompoundChildKind::Polytope { vertices } => CompoundChildKind::Polytope {
+                            vertices: apply(vertices),
+                        },
+                        CompoundChildKind::CompressedMesh {
+                            vertices,
+                            triangles,
+                        } => CompoundChildKind::CompressedMesh {
+                            vertices: apply(vertices),
+                            triangles,
+                        },
+                        other => other,
+                    },
+                })
+                .collect(),
+        },
+        other => other,
+    }
 }
 
 fn decode_children(
@@ -231,10 +696,10 @@ fn decode_children(
             }
             polytope_child(capsule_vertices(a, b, radius), transform, shape_id)
         }
-        "bhkListShape" => {
+        "bhkListShape" | "bhkConvexListShape" => {
             let refs = ref_array(shape.get_field("Sub Shapes"));
             if refs.is_empty() {
-                return Err(format!("bhkListShape {shape_id} is empty"));
+                return Err(format!("{} {shape_id} is empty", shape.type_name));
             }
             let mut children = Vec::new();
             for child_id in refs {
@@ -254,7 +719,16 @@ fn decode_children(
             let child = nif
                 .get_block(child_id)
                 .ok_or_else(|| format!("MOPP child block {child_id} is missing"))?;
-            if child.type_name != "bhkCompressedMeshShape" {
+            // FO4's hknp format has no MOPP equivalent: the BV tree is rebuilt by
+            // the hknpCompressedMeshShape cooker, so the source MOPP code is
+            // discarded and only the wrapped triangle geometry is carried over.
+            if !matches!(
+                child.type_name.as_str(),
+                "bhkCompressedMeshShape"
+                    | "bhkPackedNiTriStripsShape"
+                    | "bhkNiTriStripsShape"
+                    | "bhkListShape"
+            ) {
                 return Err(format!(
                     "unsupported Skyrim MOPP child {} at block {child_id}",
                     child.type_name
@@ -263,6 +737,8 @@ fn decode_children(
             decode_children(nif, child_id, transform, visited)
         }
         "bhkCompressedMeshShape" => compressed_mesh_child(nif, shape, transform, shape_id),
+        "bhkPackedNiTriStripsShape" => packed_tri_strips_child(nif, shape, transform, shape_id),
+        "bhkNiTriStripsShape" => ni_tri_strips_child(nif, shape, transform, shape_id),
         unsupported => Err(format!(
             "unsupported Skyrim static collision shape {unsupported} at block {shape_id}"
         )),
@@ -306,7 +782,208 @@ fn compressed_mesh_child(
     }])
 }
 
-fn decode_compressed_mesh_data(data: &NifBlock) -> Result<(Vec<[f32; 3]>, Vec<[u32; 3]>), String> {
+/// Decode a Gamebryo-era `bhkPackedNiTriStripsShape` (FO3/FNV/Oblivion) into the
+/// same triangle-soup representation the Skyrim compressed-mesh path produces.
+/// Vertices stay in the source's Havok units; callers rescale the finished shape.
+fn packed_tri_strips_child(
+    nif: &NifFile,
+    shape: &NifBlock,
+    transform: [[f32; 4]; 4],
+    shape_id: usize,
+) -> Result<Vec<CompoundChild>, String> {
+    let data_id = ref_field(shape, "Data")
+        .ok_or_else(|| format!("bhkPackedNiTriStripsShape {shape_id} has no data"))?;
+    let data = nif
+        .get_block(data_id)
+        .filter(|block| block.type_name == "hkPackedNiTriStripsData")
+        .ok_or_else(|| format!("packed tri strips data block {data_id} is missing or invalid"))?;
+    if numeric(data.get_field("Compressed")).unwrap_or(0) != 0 {
+        return Err(format!(
+            "packed tri strips data block {data_id} uses compressed vertices"
+        ));
+    }
+    // `Scale` is a Vec4; a zero or non-finite component means "unscaled" rather
+    // than "collapse the mesh", which is how the legacy runtime treats it.
+    let shape_scale = vec3(shape.get_field("Scale"))
+        .unwrap_or([1.0; 3])
+        .map(|value| {
+            if value.is_finite() && value.abs() > f32::EPSILON {
+                value
+            } else {
+                1.0
+            }
+        });
+
+    let raw_vertices = compressed_array(data.get_field("Vertices"), "Vertices")?;
+    let mut vertices = Vec::with_capacity(raw_vertices.len());
+    for (index, value) in raw_vertices.iter().enumerate() {
+        let vertex = finite_vec3(value)
+            .ok_or_else(|| format!("packed tri strips vertex {index} is invalid"))?;
+        vertices.push(transform_point(
+            transform,
+            [
+                vertex[0] * shape_scale[0],
+                vertex[1] * shape_scale[1],
+                vertex[2] * shape_scale[2],
+            ],
+        ));
+    }
+
+    let raw_triangles = compressed_array(data.get_field("Triangles"), "Triangles")?;
+    let mut triangles = Vec::with_capacity(raw_triangles.len());
+    for (index, value) in raw_triangles.iter().enumerate() {
+        let fields = struct_value(value)
+            .ok_or_else(|| format!("packed tri strips triangle {index} is invalid"))?;
+        let triangle = strict_triangle(fields.get("Triangle").unwrap_or(value), "Triangles")?;
+        validate_local_triangle(triangle, vertices.len(), "Triangles")?;
+        triangles.push(triangle);
+    }
+
+    if vertices.len() < 3 || triangles.is_empty() {
+        return Err(format!(
+            "bhkPackedNiTriStripsShape {shape_id} decoded to no triangle geometry"
+        ));
+    }
+    Ok(vec![CompoundChild {
+        transform: identity_matrix(),
+        kind: CompoundChildKind::CompressedMesh {
+            vertices,
+            triangles,
+        },
+    }])
+}
+
+/// Decode a Gamebryo-era `bhkNiTriStripsShape`, which references one or more
+/// ordinary `NiTriStripsData` blocks instead of carrying packed geometry.
+fn ni_tri_strips_child(
+    nif: &NifFile,
+    shape: &NifBlock,
+    transform: [[f32; 4]; 4],
+    shape_id: usize,
+) -> Result<Vec<CompoundChild>, String> {
+    let data_ids = ref_array(shape.get_field("Strips Data"));
+    if data_ids.is_empty() {
+        return Err(format!("bhkNiTriStripsShape {shape_id} has no strips data"));
+    }
+    let shape_scale = vec3(shape.get_field("Scale"))
+        .unwrap_or([1.0; 3])
+        .map(|value| {
+            if value.is_finite() && value.abs() > f32::EPSILON {
+                value
+            } else {
+                1.0
+            }
+        });
+
+    let mut vertices: Vec<[f32; 3]> = Vec::new();
+    let mut triangles: Vec<[u32; 3]> = Vec::new();
+    for data_id in data_ids {
+        let Some(data) = nif
+            .get_block(data_id)
+            .filter(|block| block.type_name == "NiTriStripsData")
+        else {
+            continue;
+        };
+        let base = u32::try_from(vertices.len())
+            .map_err(|_| "bhkNiTriStripsShape has too many vertices".to_string())?;
+        let raw_vertices = compressed_array(data.get_field("Vertices"), "Vertices")?;
+        for value in raw_vertices {
+            let vertex = finite_vec3(value)
+                .ok_or_else(|| format!("bhkNiTriStripsShape {shape_id} has an invalid vertex"))?;
+            vertices.push(transform_point(
+                transform,
+                [
+                    vertex[0] * shape_scale[0],
+                    vertex[1] * shape_scale[1],
+                    vertex[2] * shape_scale[2],
+                ],
+            ));
+        }
+
+        let local_count = raw_vertices.len();
+        for strip in strip_point_lists(data) {
+            for index in 0..strip.len().saturating_sub(2) {
+                let triangle = if index % 2 == 0 {
+                    [strip[index], strip[index + 1], strip[index + 2]]
+                } else {
+                    [strip[index], strip[index + 2], strip[index + 1]]
+                };
+                // Strips use degenerate triangles to stitch runs together.
+                if triangle[0] == triangle[1]
+                    || triangle[1] == triangle[2]
+                    || triangle[0] == triangle[2]
+                {
+                    continue;
+                }
+                if triangle.iter().any(|index| *index as usize >= local_count) {
+                    return Err(format!(
+                        "bhkNiTriStripsShape {shape_id} has an out-of-range strip index"
+                    ));
+                }
+                triangles.push(offset_triangle(base, triangle, shape_id)?);
+            }
+        }
+    }
+
+    if vertices.len() < 3 || triangles.is_empty() {
+        return Err(format!(
+            "bhkNiTriStripsShape {shape_id} decoded to no triangle geometry"
+        ));
+    }
+    Ok(vec![CompoundChild {
+        transform: identity_matrix(),
+        kind: CompoundChildKind::CompressedMesh {
+            vertices,
+            triangles,
+        },
+    }])
+}
+
+/// `Points` is either an array-of-arrays or one flat run sliced by `Strip Lengths`.
+fn strip_point_lists(data: &NifBlock) -> Vec<Vec<u32>> {
+    let Some(NifValue::Array(items)) = data.get_field("Points") else {
+        return Vec::new();
+    };
+    if items.iter().all(|item| matches!(item, NifValue::Array(_))) {
+        return items
+            .iter()
+            .map(|item| match item {
+                NifValue::Array(points) => points
+                    .iter()
+                    .filter_map(|point| {
+                        numeric(Some(point)).and_then(|value| u32::try_from(value).ok())
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            })
+            .collect();
+    }
+    let flat: Vec<u32> = items
+        .iter()
+        .filter_map(|point| numeric(Some(point)).and_then(|value| u32::try_from(value).ok()))
+        .collect();
+    let lengths = match data.get_field("Strip Lengths") {
+        Some(NifValue::Array(values)) => values
+            .iter()
+            .filter_map(|value| numeric(Some(value)).map(|value| value as usize))
+            .collect::<Vec<_>>(),
+        _ => vec![flat.len()],
+    };
+    let mut offset = 0usize;
+    lengths
+        .into_iter()
+        .map(|length| {
+            let end = offset.saturating_add(length).min(flat.len());
+            let strip = flat[offset..end].to_vec();
+            offset = end;
+            strip
+        })
+        .collect()
+}
+
+pub(crate) fn decode_compressed_mesh_data(
+    data: &NifBlock,
+) -> Result<(Vec<[f32; 3]>, Vec<[u32; 3]>), String> {
     let big_vert_values = compressed_array(data.get_field("Big Verts"), "Big Verts")?;
     let mut vertices = Vec::with_capacity(big_vert_values.len());
     for (index, value) in big_vert_values.iter().enumerate() {
@@ -562,10 +1239,26 @@ fn polytope_child(
     }])
 }
 
-fn install_static_collision(
+pub(crate) fn install_static_collision(
     nif: &mut NifFile,
     parent_id: usize,
     shape: MultiBodyShape,
+) -> Result<(), String> {
+    install_collision(
+        nif,
+        parent_id,
+        shape,
+        FO4_STATIC_LAYER,
+        BodyMotionType::Static,
+    )
+}
+
+fn install_collision(
+    nif: &mut NifFile,
+    parent_id: usize,
+    shape: MultiBodyShape,
+    layer: u8,
+    motion_type: BodyMotionType,
 ) -> Result<(), String> {
     if nif.get_block(parent_id).is_none() {
         return Err(format!("parent block {parent_id} is missing"));
@@ -573,7 +1266,7 @@ fn install_static_collision(
     let options = BuildOptions {
         friction: 0.5,
         restitution: 0.4,
-        layer: FO4_STATIC_LAYER,
+        layer,
         mass: 0.0,
         convex_radius: DEFAULT_COLLISION_RADIUS,
         materials: Vec::new(),
@@ -582,8 +1275,8 @@ fn install_static_collision(
         mass_distribution: None,
     };
     let metadata = [BodyMeta {
-        layer: FO4_STATIC_LAYER,
-        motion_type: BodyMotionType::Static,
+        layer,
+        motion_type,
         ..BodyMeta::default()
     }];
     let blob = build_fo4_multi_body_collision(&[shape], &options, None, Some(&metadata))
@@ -902,7 +1595,7 @@ mod tests {
 
     fn attach_fixed_collision(nif: &mut NifFile, shape_id: usize) {
         let body_id = nif.add_block(
-            "bhkRigidBody",
+            "bhkRigidBodyT",
             Some(IndexMap::from([
                 ("Shape".to_string(), NifValue::Ref(shape_id as i32)),
                 ("Rigid Body Info:2010".to_string(), fixed_body_info()),
@@ -1036,6 +1729,77 @@ mod tests {
     }
 
     #[test]
+    fn animstatic_transformed_rigid_body_t_bridge_builds_keyframed_fo4_collision() {
+        let mut nif = NifFile::new("skyrimse");
+        let shape_id = nif.add_block(
+            "bhkBoxShape",
+            Some(IndexMap::from([(
+                "Dimensions".to_string(),
+                NifValue::Vec3([1.0, 2.0, 3.0]),
+            )])),
+        );
+        let mut info = match fixed_body_info() {
+            NifValue::Struct(fields) => fields,
+            _ => unreachable!(),
+        };
+        info.insert(
+            "Translation".to_string(),
+            NifValue::Vec4([4.0, 5.0, 6.0, 0.0]),
+        );
+        info.insert(
+            "Rotation".to_string(),
+            NifValue::Quaternion([0.0, 0.0, 0.0, 1.0]),
+        );
+        info.insert(
+            "Motion System".to_string(),
+            NifValue::UInt(SOURCE_BOX_MOTION),
+        );
+        let body_id = nif.add_block(
+            "bhkRigidBodyT",
+            Some(IndexMap::from([
+                ("Shape".to_string(), NifValue::Ref(shape_id as i32)),
+                (
+                    "Havok Filter".to_string(),
+                    NifValue::Struct(IndexMap::from([(
+                        "Layer:SK".to_string(),
+                        NifValue::UInt(FO4_ANIMSTATIC_LAYER.into()),
+                    )])),
+                ),
+                ("Rigid Body Info:2010".to_string(), NifValue::Struct(info)),
+                ("Num Constraints".to_string(), NifValue::UInt(0)),
+            ])),
+        );
+        let collision_id = nif.add_block(
+            "bhkCollisionObject",
+            Some(IndexMap::from([
+                ("Target".to_string(), NifValue::Ref(0)),
+                ("Body".to_string(), NifValue::Ref(body_id as i32)),
+            ])),
+        );
+        nif.blocks[0].set_field("Collision Object", NifValue::Ref(collision_id as i32));
+
+        assert_eq!(
+            transform_point(legacy_body_transform(&nif.blocks[body_id]), [0.0; 3]),
+            [4.0, 5.0, 6.0]
+        );
+        let report = bridge_static_collision(&mut nif);
+
+        assert_eq!(report.converted, 1, "{:?}", report.warnings);
+        assert_eq!(report.stripped, 0, "{:?}", report.warnings);
+        assert!(
+            nif.blocks
+                .iter()
+                .any(|block| block.type_name == "bhkNPCollisionObject")
+        );
+        let summary: serde_json::Value = serde_json::from_str(
+            &havok_native::api::havok_collision_summary(&physics_blob(&nif)).expect("summary"),
+        )
+        .expect("summary JSON");
+        assert_eq!(summary["bodies"][0]["layer"], FO4_ANIMSTATIC_LAYER);
+        assert_eq!(summary["bodies"][0]["motion_id"], 0);
+    }
+
+    #[test]
     fn dynamic_body_is_stripped_not_reinterpreted_as_static() {
         let mut nif = NifFile::new("skyrimse");
         let shape_id = nif.add_block("bhkSphereShape", None);
@@ -1047,7 +1811,7 @@ mod tests {
         info.insert("Motion System".to_string(), NifValue::UInt(1));
         info.insert("Mass".to_string(), NifValue::Float(2.0));
         let body_id = nif.add_block(
-            "bhkRigidBody",
+            "bhkRigidBodyT",
             Some(IndexMap::from([
                 ("Shape".to_string(), NifValue::Ref(shape_id as i32)),
                 ("Rigid Body Info:2010".to_string(), NifValue::Struct(info)),
@@ -1085,7 +1849,8 @@ mod tests {
                 NifValue::Ref(box_id as i32),
             )])),
         );
-        let error = decode_static_shape(&nif, shape_id).expect_err("must reject MOPP");
+        let error =
+            decode_static_shape(&nif, shape_id, identity_matrix()).expect_err("must reject MOPP");
         assert!(error.contains("unsupported Skyrim MOPP child"));
     }
 
@@ -1335,6 +2100,132 @@ mod tests {
             decode_compressed_mesh_data(&missing_transform)
                 .expect_err("missing transform must be rejected")
                 .contains("references missing transform 1")
+        );
+    }
+
+    /// Fraction of shared edges traversed in opposite directions by their two
+    /// adjacent triangles. A consistently wound mesh scores 100.
+    fn orientation_consistency(vertices: &[[f32; 3]], triangles: &[[u32; 3]]) -> (usize, usize) {
+        use std::collections::HashMap;
+        let mut welded = HashMap::new();
+        let mut remap = Vec::with_capacity(vertices.len());
+        for vertex in vertices {
+            let key = vertex.map(|value| (value * 1000.0).round() as i64);
+            let next = welded.len() as u32;
+            remap.push(*welded.entry(key).or_insert(next));
+        }
+        let mut directed: HashMap<(u32, u32), usize> = HashMap::new();
+        for triangle in triangles {
+            let [a, b, c] = [
+                remap[triangle[0] as usize],
+                remap[triangle[1] as usize],
+                remap[triangle[2] as usize],
+            ];
+            if a == b || b == c || a == c {
+                continue;
+            }
+            for edge in [(a, b), (b, c), (c, a)] {
+                *directed.entry(edge).or_default() += 1;
+            }
+        }
+        let mut shared = 0usize;
+        let mut consistent = 0usize;
+        for (&(u, v), &count) in &directed {
+            if u > v {
+                continue;
+            }
+            let reverse = directed.get(&(v, u)).copied().unwrap_or(0);
+            if count > 0 && reverse > 0 {
+                shared += 1;
+                consistent += 1;
+            } else if count > 1 {
+                shared += 1;
+            }
+        }
+        (consistent, shared)
+    }
+
+    #[test]
+    fn real_skyrim_collision_corpus_winding_consistency() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../extracted/skyrimse/Meshes");
+        if !root.is_dir() {
+            println!("skyrim corpus unavailable");
+            return;
+        }
+        let mut queue = vec![root];
+        let mut paths = Vec::new();
+        while let Some(dir) = queue.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    queue.push(path);
+                } else if path
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("nif"))
+                {
+                    paths.push(path);
+                }
+            }
+            if paths.len() >= 600 {
+                break;
+            }
+        }
+        paths.sort();
+
+        let mut sampled = 0usize;
+        let mut mostly_consistent = 0usize;
+        for path in &paths {
+            let Ok(nif) = NifFile::load(path) else {
+                continue;
+            };
+            for collision in nif
+                .blocks
+                .iter()
+                .filter(|block| block.type_name == "bhkCollisionObject")
+            {
+                let Some(shape_id) = ref_field(collision, "Body")
+                    .and_then(|body_id| nif.get_block(body_id))
+                    .and_then(|body| ref_field(body, "Shape"))
+                else {
+                    continue;
+                };
+                let Ok(MultiBodyShape::CompressedMesh {
+                    vertices,
+                    triangles,
+                }) = decode_static_shape(&nif, shape_id, identity_matrix())
+                else {
+                    continue;
+                };
+                if triangles.len() < 8 {
+                    continue;
+                }
+                let (consistent, shared) = orientation_consistency(&vertices, &triangles);
+                if shared == 0 {
+                    continue;
+                }
+                sampled += 1;
+                if consistent * 100 / shared >= 90 {
+                    mostly_consistent += 1;
+                }
+                break;
+            }
+        }
+        if sampled == 0 {
+            println!("no Skyrim compressed-mesh collision sampled");
+            return;
+        }
+        // Unlike FO3/FNV packed tri-strips (95% inconsistent, see
+        // `double_side_mesh_shape`), Skyrim authored its compressed meshes with a
+        // consistent winding, so the Skyrim bridge does NOT double-side and pays
+        // no triangle-count penalty. If this ever drops, revisit that decision.
+        assert!(
+            mostly_consistent * 100 / sampled >= 95,
+            "Skyrim source winding is no longer consistent ({mostly_consistent}/{sampled}); the \
+             Skyrim bridge may now need the same double-siding as FO3/FNV"
         );
     }
 

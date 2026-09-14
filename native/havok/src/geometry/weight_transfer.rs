@@ -155,12 +155,8 @@ fn k_nearest_impl(
 // Weight transfer
 // ---------------------------------------------------------------------------
 
-/// Transfer skinning weights from a source mesh to a target mesh.
-///
-/// For each target vertex, finds the nearest source vertex and copies its
-/// weights.  Weights are copied as-is (already normalized on the source).
-///
-/// Returns one `Vec<SkinWeight>` per target vertex.
+/// Copy each target vertex's skin weights from its nearest source vertex
+/// (source weights are already normalized).
 pub fn transfer_weights(
     source_verts: &[[f32; 3]],
     source_weights: &[Vec<SkinWeight>],

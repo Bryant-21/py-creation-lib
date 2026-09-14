@@ -12,12 +12,8 @@ import numpy as np
 from ..actions import OperationResult
 from .collision_materials import resolve_collision_material
 
-# Havok scale factor — NIF units / Havok units
-# This value (69.99125) is used by all Bethesda Creation Engine games
-# (Skyrim SE, Fallout 4, Fallout 76) for bhk collision blocks.
-# Confirmed in NifSkope (gl/gltools.cpp:643) and PyNifly (nifconstants.py:11).
-# The scale is a NIF-level constant for converting between NIF world units
-# and Havok physics units, and does NOT vary between game versions.
+# NIF units per Havok unit for bhk collision in Skyrim SE, FO4, and FO76; it does
+# not vary by game version (NifSkope gl/gltools.cpp:643, PyNifly nifconstants.py:11).
 HAVOK_SCALE = 69.99125
 
 # Backward compat alias
@@ -1474,17 +1470,15 @@ def _coerce_static_convex_to_compressed_mesh(
     hull.
 
     A convex polytope on the STATIC layer inside a multi-body safe/door system
-    reproduces the workshop-placement sweep CTD at ``Fallout4.exe+13E82D0``
-    (B21_TheBank CONT): the static base must look
-    like vanilla's compressed-mesh base. The Max-plugin export defaults
-    ``shape_type`` to ``convex_hull`` (see ``bridge._apply_collision_geometry``),
-    so a STATIC base authored without an explicit shape lands as a polytope.
+    causes the workshop-placement sweep CTD at ``Fallout4.exe+13E82D0``. The
+    Max-plugin export defaults ``shape_type`` to ``convex_hull``
+    (``bridge._apply_collision_geometry``), so a STATIC base authored without an
+    explicit shape would land as a polytope.
 
-    ``eligible`` gates the coercion to the single-body case where source
-    triangles are available: a multi-component request keeps its compound /
-    one-hull-per-component path, and a triangle-less request stays convex (the
-    native builder still emits ``motionId=HK_INVALID`` for static bodies, which
-    removes the bad motion linkage on its own).
+    ``eligible`` limits the coercion to single-body requests with source
+    triangles. Multi-component requests keep their compound path; triangle-less
+    ones stay convex, and the native builder's ``motionId=HK_INVALID`` for static
+    bodies removes the bad motion linkage anyway.
     """
     if (
         shape_type in {"convex_hull", "convex_fit"}
@@ -2137,24 +2131,13 @@ def generate_collision(
     profile=None,
     include_child_nodes: bool = True,
 ) -> OperationResult:
-    """Generate full collision hierarchy on a node.
+    """Generate a full collision hierarchy on a node (e.g. root BSFadeNode, block 0).
 
-    Args:
-        nif: NifFile instance
-        node_block_id: Parent node (e.g. root BSFadeNode, block 0)
-        shape_type: "convex_hull", "box", "capsule", "cylinder", "sphere", "auto", or "list"
-        source_block_ids: BSTriShape block IDs to generate from (auto-discovers if None)
-        include_child_nodes: If auto-discovering from a node, include shapes under child NiNodes.
-        layer: Havok collision layer name
-        material: Bethesda Havok material name or numeric CRC for FO4/FO76 packfiles
-        mass: Object mass (0 = static/fixed)
-        friction: Surface friction coefficient
-        restitution: Bounciness coefficient
-        radius: Convex radius / shell thickness
-        replace: If True, remove existing collision first. If False, merge into bhkListShape.
-
-    Returns:
-        OperationResult with modified block IDs
+    ``shape_type``: "convex_hull", "box", "capsule", "cylinder", "sphere", "auto",
+    or "list". ``source_block_ids=None`` auto-discovers BSTriShapes. ``material`` is
+    a Bethesda Havok material name or numeric CRC (FO4/FO76 packfiles). ``mass=0``
+    is static. ``radius`` is the convex radius / shell thickness. ``replace=False``
+    merges into a bhkListShape instead of removing existing collision.
     """
     node = nif.get_block(node_block_id)
     if not node:
@@ -2424,19 +2407,8 @@ def create_convex_hull(nif, shape_block_id: int) -> OperationResult:
 
 def convert_collision_shape(nif, block_id: int, target_type: str,
                             profile=None) -> OperationResult:
-    """Convert between collision shape types by extracting and regenerating geometry.
-
-    Extracts vertices (and triangles where available) from the source shape,
-    then creates a new shape of the target type.
-
-    Args:
-        nif: NifFile instance.
-        block_id: Source collision shape block ID.
-        target_type: "convex_hull", "mopp", or "compressed_mesh".
-        profile: Optional game profile for scale/radius defaults.
-
-    Returns:
-        OperationResult with created block IDs.
+    """Rebuild a collision shape as ``target_type`` ("convex_hull", "mopp", or
+    "compressed_mesh") from its vertices, and triangles where available.
     """
     block = nif.get_block(block_id)
     if not block:

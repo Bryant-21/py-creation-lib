@@ -7,6 +7,17 @@ import time
 import pytest
 
 
+def test_archive_entry_count_uses_native_header_reader(monkeypatch):
+    import creation_lib.ba2.native_runtime as runtime
+
+    calls = []
+    native = SimpleNamespace(archive_entry_count=lambda path: calls.append(path) or 42)
+    monkeypatch.setattr(runtime, "_NATIVE_MODULE", native)
+    monkeypatch.setattr(runtime, "_NATIVE_IMPORT_ATTEMPTED", True)
+    assert runtime.archive_entry_count("Main.ba2") == 42
+    assert calls == ["Main.ba2"]
+
+
 def test_pack_archive_entries_forwards_options(monkeypatch):
     import creation_lib.ba2.native_runtime as runtime
 
@@ -66,6 +77,27 @@ def test_pack_archive_entries_rejects_texture_flag_for_general_archive(monkeypat
         )
 
     assert calls == []
+
+
+def test_pack_archive_entries_accepts_playstation_texture_type(monkeypatch):
+    import creation_lib.ba2.native_runtime as runtime
+
+    calls = []
+    fake_native = SimpleNamespace(
+        pack_archive_entries=lambda *args, **kwargs: calls.append((args, kwargs)) or 1
+    )
+    monkeypatch.setattr(runtime, "_NATIVE_MODULE", fake_native)
+    monkeypatch.setattr(runtime, "_NATIVE_IMPORT_ATTEMPTED", True)
+
+    result = runtime.pack_archive_entries(
+        [("source.dds", "Textures/source.dds")],
+        "Textures_ps.ba2",
+        "fo4psdds",
+        texture_archive=True,
+    )
+
+    assert result == 1
+    assert calls[0][0][2] == "fo4psdds"
 
 
 def test_pack_archive_entries_refreshes_stale_native_module(monkeypatch):

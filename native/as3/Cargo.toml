@@ -1,0 +1,12 @@
+[package]
+name = "as3_native"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "as3_native"
+crate-type = ["rlib"]
+
+# No dependencies on purpose: the compiler is self-contained so `cargo test -p
+# as3_native` runs without a Python toolchain or a native rebuild.
+[dependencies]

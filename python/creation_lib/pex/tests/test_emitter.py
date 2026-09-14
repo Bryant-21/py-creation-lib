@@ -231,3 +231,74 @@ def test_emit_script():
     assert "Int Property MyProp Auto" in result
     assert "Int Function Add" in result
     assert "Event OnInit()" in result
+
+
+# --- Cast operand parenthesisation ---
+#
+# `.`, `[]` and `as` bind more tightly than the decompiler's AST implies, and a
+# cast atom accepts exactly one `as`. Bare operands produce
+# `x as Actor.EquipItem(...)`, which PapyrusCompiler rejects with
+# "unexpected token Dot in statement".
+
+import pytest
+
+
+def _emitter_has_operand_parens() -> bool:
+    return "(ref as Actor).Do()" in emit_script(
+        _wrap_expr(DotCallExpr(CastExpr(NameExpr("ref", P), "Actor", P), "Do", [], P))
+    )
+
+
+requires_fixed_emitter = pytest.mark.skipif(
+    not _emitter_has_operand_parens(),
+    reason="loaded papyrus_core emitter predates SH-03a; "
+           "run scripts/ensure_native.py --package creation",
+)
+
+
+@requires_fixed_emitter
+def test_emit_cast_receiver_of_call_is_parenthesised():
+    expr = DotCallExpr(
+        CastExpr(NameExpr("akActionRef", P), "Actor", P),
+        "EquipItem",
+        [NameExpr("PipboyCharGen", P)],
+        P,
+    )
+    assert "(akActionRef as Actor).EquipItem(PipboyCharGen)" in emit_script(
+        _wrap_expr(expr)
+    )
+
+
+@requires_fixed_emitter
+def test_emit_chained_cast_spells_out_the_inner_cast():
+    expr = DotCallExpr(
+        CastExpr(CastExpr(NameExpr("Self", P), "Perk", P), "MyPerkScript", P),
+        "Collect",
+        [NameExpr("akActor", P)],
+        P,
+    )
+    assert "((Self as Perk) as MyPerkScript).Collect(akActor)" in emit_script(
+        _wrap_expr(expr)
+    )
+
+
+@requires_fixed_emitter
+def test_emit_cast_receiver_of_member_and_index_is_parenthesised():
+    member = DotExpr(CastExpr(NameExpr("akTargetRef", P), "Actor", P), "MyProp", P)
+    assert "(akTargetRef as Actor).MyProp" in emit_script(_wrap_expr(member))
+
+    index = ArrayAccessExpr(
+        CastExpr(NameExpr("items", P), "Form[]", P), LiteralExpr(0, "int", P), P
+    )
+    assert "(items as Form[])[0]" in emit_script(_wrap_expr(index))
+
+
+@requires_fixed_emitter
+def test_emit_cast_argument_keeps_no_parens():
+    expr = DotCallExpr(
+        NameExpr("akActor", P),
+        "Revive",
+        [CastExpr(NameExpr("akTargetRef", P), "Actor", P)],
+        P,
+    )
+    assert "akActor.Revive(akTargetRef as Actor)" in emit_script(_wrap_expr(expr))

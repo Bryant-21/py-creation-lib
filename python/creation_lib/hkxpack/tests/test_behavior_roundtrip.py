@@ -1,18 +1,16 @@
 """Byte-exact roundtrip tests for FO4 behavior-graph packfiles.
 
-Behavior graphs (files containing `hkbBehaviorGraph` + derived classes) exercise
-code paths that pure animation packfiles don't — most notably `hkbBindable`-derived
-classes with `SERIALIZE_IGNORED` array members (`cachedBindables`, `uniqueIdPool`,
-etc.). Vanilla FO4 packs those ignored arrays with `capacity = 0x80000000` (the
-"owns memory" flag at the high byte) so the runtime allocator treats them as
-heap-owned empty arrays. The writer must reproduce that exactly, otherwise CK
-crashes when it tries to reconcile the bindable table on load.
+Behavior graphs (`hkbBehaviorGraph` + derived classes) exercise what animation
+packfiles don't: `hkbBindable`-derived classes with `SERIALIZE_IGNORED` array
+members (`cachedBindables`, `uniqueIdPool`, etc.). Vanilla FO4 packs those arrays
+with `capacity = 0x80000000` (the "owns memory" flag at the high byte) so the
+runtime allocator treats them as heap-owned empty arrays. The writer must match,
+or CK crashes reconciling the bindable table on load.
 
 Anchors:
-- `DeathclawRootBehavior.hkx` (51920 bytes) — contains `hkbFootIkControlsModifier`,
-  the class that triggered the Ogua T-pose bug.
-- `BehemothRootBehavior.hkx` (57056 bytes) — second `hkbFootIkControlsModifier`
-  file, guards against single-fixture regressions.
+- `DeathclawRootBehavior.hkx` (51920 bytes): contains `hkbFootIkControlsModifier`.
+- `BehemothRootBehavior.hkx` (57056 bytes): a second `hkbFootIkControlsModifier`
+  file, so coverage doesn't hinge on one fixture.
 """
 from __future__ import annotations
 

@@ -2,9 +2,8 @@
 
 xEdit equivalents: `mniNavAddMasters`, `mniNavSortMasters`, `mniNavCleanMasters`.
 
-The native helper `plugin_handle_set_masters` swaps the masters list and
-remaps every record's FormID high byte atomically (via the crate-private
-`remap_formids_in_items`). Python just decides what the new list looks like.
+Native `plugin_handle_set_masters` swaps the list and remaps every record's FormID
+high byte atomically; this module only decides the new list.
 
 Invariants (matching xEdit):
 - Game master is never removed by Clean Masters

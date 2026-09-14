@@ -10,11 +10,9 @@
 //   +0x28..0x2C   mass:   hkReal (f32)
 //   +0x2C..0x30   volume: hkReal (f32)
 //
-// The packed encoding uses the SDK's hkPackedVector3 / hkPackedUnitVector
-// primitives.  See refs/hk2018_1_0_r1/Source/Common/Base/Math/Vector/hkPackedVector3.h.
-// Inertia tensor here is the AABB approximation (I = (1/12) m * (b² + c²) per
-// principal axis); exact polytope/mesh inertia via Mirtich tetrahedral
-// integration is a follow-up if precise dynamics are required.
+// Packing follows refs/hk2018_1_0_r1/Source/Common/Base/Math/Vector/hkPackedVector3.h.
+// Without a source mass distribution, inertia is the AABB approximation
+// (I = (1/12) m * (b² + c²) per principal axis).
 
 /// Mass properties in real (uncompressed) units, ready for packing.
 #[derive(Debug, Clone, PartialEq)]
@@ -66,8 +64,7 @@ pub struct SourceMassDistribution {
 /// (FO4 clutter convention: shape mass == volume). COM, volume, and
 /// majorAxisSpace are carried verbatim; forward inertia = `unit_inertia * mass`.
 /// Falls back to zeroed (static) properties when the source volume is
-/// non-positive or non-finite. This is the faithful counterpart to the AABB
-/// [`polytope_mass_properties`] — same struct, real distribution.
+/// non-positive or non-finite.
 pub fn mass_properties_from_source(dist: &SourceMassDistribution) -> MassProperties {
     let mass = dist.volume;
     if mass <= 0.0 || !mass.is_finite() {
@@ -107,15 +104,9 @@ pub fn mass_properties_from_source(dist: &SourceMassDistribution) -> MassPropert
     }
 }
 
-/// AABB-approximated mass properties for a convex polytope from its hull
-/// vertices and total mass.
-///
-/// For mass <= 0, returns zeroed properties (static body).  Otherwise:
-/// - `inverse_mass = 1/mass`
-/// - inertia diagonal uses the AABB box approximation
-///   `I_x = (1/12) * mass * (extents_y^2 + extents_z^2)` (and cyclic).
-/// - center_of_mass is the AABB centroid.
-/// - major_axis_space is the identity quaternion (axis-aligned approx).
+/// AABB-approximated mass properties for a convex polytope: COM at the AABB
+/// centroid, box inertia `I_x = (1/12) * mass * (extents_y^2 + extents_z^2)`
+/// (and cyclic), identity major axes. Zeroed (static) for mass <= 0.
 pub fn polytope_mass_properties(verts: &[[f32; 3]], mass: f32) -> MassProperties {
     if mass <= 0.0 || verts.is_empty() {
         return MassProperties::zero();
@@ -154,22 +145,15 @@ pub fn polytope_mass_properties(verts: &[[f32; 3]], mass: f32) -> MassProperties
     }
 }
 
-/// AABB-approximated mass properties for a triangle mesh.
-///
-/// Mesh shapes are typically static (mass=0).  When mass > 0 we fall back to
-/// the same AABB approximation as polytope.  Triangles are accepted to keep
-/// the signature uniform with builders that may want true mesh integration
-/// later.
+/// AABB-approximated mass properties for a triangle mesh (usually static);
+/// same as `polytope_mass_properties`, `_tris` is unused.
 pub fn mesh_mass_properties(verts: &[[f32; 3]], _tris: &[[u32; 3]], mass: f32) -> MassProperties {
     polytope_mass_properties(verts, mass)
 }
 
-/// AABB-approximated aggregate mass properties for a compound shape.
-///
-/// Each child contributes vertex bounds (used to derive an AABB) plus a
-/// per-child mass.  The parent-axis-theorem aggregation is approximated by
-/// using the union AABB and the total mass — sufficient for the static and
-/// kinematic cases that dominate FO4 vanilla content.
+/// Compound mass properties from the union AABB of all children and the total
+/// mass (per-child masses are ignored). Adequate for the static and kinematic
+/// bodies that dominate FO4 vanilla content.
 pub fn compound_mass_properties(
     children: &[(&[[f32; 3]], f32)],
     total_mass: f32,
@@ -224,20 +208,12 @@ pub fn compound_mass_properties(
 // Inertia tensor diagonalization (Jacobi eigen-decomposition)
 // ---------------------------------------------------------------------------
 
-/// Diagonalize a symmetric 3×3 inertia tensor into principal-axis form.
+/// Diagonalize a symmetric 3×3 inertia tensor (row-major
+/// `[Ixx, Ixy, Ixz, Ixy, Iyy, Iyz, Ixz, Iyz, Izz]`) with Jacobi rotations.
 ///
-/// Returns `(eigenvalues, quaternion_xyzw)` where:
-/// - `eigenvalues[i]` are the diagonal entries of the inertia in major-axis space.
-/// - The unit quaternion rotates from major-axis space *into* the original
-///   body-local frame (matches `hknpMassDistribution::m_majorAxisSpace`
-///   semantics: rotation from inertia major-axis space to body space).
-///
-/// Implementation: classical Jacobi rotations on a 3×3 symmetric matrix.
-/// Converges in <10 sweeps for any physically realistic inertia tensor.
-/// For an already-diagonal input, returns the identity quaternion `(0,0,0,1)`.
-///
-/// Input is the symmetric tensor in row-major order:
-///   `[Ixx, Ixy, Ixz, Ixy, Iyy, Iyz, Ixz, Iyz, Izz]`.
+/// Returns `(eigenvalues, quaternion_xyzw)`; the quaternion rotates from
+/// major-axis space into the body frame (`hknpMassDistribution::m_majorAxisSpace`).
+/// Diagonal input yields the identity quaternion.
 pub fn diagonalize_inertia(inertia_3x3: [f32; 9]) -> ([f32; 3], [f32; 4]) {
     // Working copies: a = symmetric matrix, v = accumulated rotation.
     let mut a: [[f64; 3]; 3] = [

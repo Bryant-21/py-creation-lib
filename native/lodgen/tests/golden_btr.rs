@@ -28,9 +28,8 @@ fn golden_btr_structural_invariants() {
         return;
     };
     let nif = nif_core_native::model::NifFile::load(&path).expect("parse golden btr");
-    // R2 §1: bs_version 130, version 20.2.0.7
+    // bs_version 130, version 20.2.0.7
     assert_eq!(nif.header.bs_version, 130);
-    // R2 §1/§2: must have the required block types
     assert!(nif.blocks.iter().any(|b| b.type_name == "BSMultiBoundNode"));
     assert!(nif.blocks.iter().any(|b| b.type_name == "BSTriShape"));
     assert!(

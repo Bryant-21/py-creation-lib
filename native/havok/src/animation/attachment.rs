@@ -1,17 +1,7 @@
-/// Bone-attachment math primitive.
+/// Bone-attachment math with `hkaBoneAttachment` semantics.
 ///
-/// Provides `BoneAttachment` (the binding from a skeleton bone to an attached
-/// object) and `compose_world_transform`, which computes the world-space
-/// transform of the attached object given the skeleton's current model-space
-/// bone transform.
-///
-/// Mirrors `hkaBoneAttachment` semantics: an attachment records the
-/// bone-relative offset in `bone_from_attachment` (the transform that maps
-/// from the attachment's local frame into the bone's local frame, i.e.
-/// T_bone_from_attachment = inv(T_world_from_bone) * T_world_from_attachment).
-///
-/// To recover the attachment's world transform:
-///   T_world_from_attachment = T_world_from_bone * T_bone_from_attachment
+/// T_bone_from_attachment = inv(T_world_from_bone) * T_world_from_attachment
+/// T_world_from_attachment = T_world_from_bone * T_bone_from_attachment
 use crate::animation::pose::{
     QsTransform, quat_mul, quat_normalize, quat_rotate, vec3_add, vec3_scale,
 };
@@ -30,12 +20,8 @@ pub struct BoneAttachment {
     pub bone_from_attachment: QsTransform,
 }
 
-/// Compute the world-space transform of an attached object.
-///
-/// `bone_world` — model-space transform of the driving bone (from `Pose::model_at`).
-/// `attachment` — the attachment descriptor.
-///
-/// Returns the world-space `QsTransform` of the attached object.
+/// World-space transform of an attached object. `bone_world` is the driving
+/// bone's model-space transform (from `Pose::model_at`).
 pub fn compose_world_transform(
     bone_world: &QsTransform,
     attachment: &BoneAttachment,

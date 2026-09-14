@@ -19,7 +19,8 @@ from creation_lib.esp.validate import validate_authoring
 from creation_lib.mod.patches import list_patches, get_patch_yaml_dir, get_patch_plugin_name
 from creation_lib.build.archive_plan import discover_mod_archives
 from creation_lib.build.packer import pack_mod
-from creation_lib.esp.authoring import deserialize, get_plugin_ext
+from creation_lib.esp.authoring import deserialize
+from creation_lib.build.plugin_source import resolve_plugin_source
 
 _log = logging.getLogger(__name__)
 
@@ -49,12 +50,13 @@ def xse_plugin_dir_for(game: str) -> str:
 
 # Auxiliary loose-asset root dirs an XSE/UI mod may ship alongside its <XSE>/ tree,
 # mirrored straight into Data/ on deploy.
-_AUX_LOOSE_DIRS: tuple[str, ...] = ("PrismaUI_F4", "F4FX")
+_AUX_LOOSE_DIRS: tuple[str, ...] = ("PrismaUI_F4", "FO4CS")
 
 # Standard loose Data asset trees that ship alongside an XSE-plugin-only (no-esp)
 # mod. The esp deploy path already handles Meshes/ (and packs Textures/ into BA2s),
-# so these are mirrored only on the no-esp path.
-_XSE_LOOSE_DATA_DIRS: tuple[str, ...] = ("Meshes", "Textures")
+# so these are mirrored only on the no-esp path. Materials/ covers renderer mods
+# that ship .bgsm/.bgem next to their DLL.
+_XSE_LOOSE_DATA_DIRS: tuple[str, ...] = ("Meshes", "Textures", "Materials", "MCM")
 
 
 def _file_sha256(path: Path) -> str:
@@ -200,6 +202,7 @@ def _remove_loose_string_sidecars(
     emit: Callable[[str], None],
     *,
     stale: bool = False,
+    dry_run: bool = False,
 ) -> list[str]:
     strings_dir = game_data_dir / "Strings"
     if not strings_dir.is_dir():
@@ -218,7 +221,8 @@ def _remove_loose_string_sidecars(
             )
         ):
             continue
-        strfile.unlink()
+        if not dry_run:
+            strfile.unlink()
         removed.append(f"Strings/{strfile.name}")
         if stale:
             emit(f"  Removed stale loose string: Strings/{strfile.name}")
@@ -235,6 +239,7 @@ class DeployResult:
     strings_deployed: int = 0
     loose_files_deployed: int = 0
     patches_deployed: list[str] = field(default_factory=list)
+    preserved_xse_inis: list[str] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -261,6 +266,7 @@ def compile_papyrus(
     game: str,
     game_data_dir: Path,
     on_progress: Callable[[str], None] | None = None,
+    *, verify_stock: bool = False,
 ) -> int:
     """Compile .psc sources in Scripts/Source/User/ -> data/Scripts/."""
     def _emit(msg: str) -> None:
@@ -277,27 +283,72 @@ def compile_papyrus(
     from creation_lib.pex.native_runtime import compile_psc
 
     output_dir = mod_dir / "data" / "Scripts"
-    output_dir.mkdir(parents=True, exist_ok=True)
 
     # Import search path (first match wins):
     #   1. This mod's own Source/User     — the scripts being compiled + their siblings
     #   2. Game's Source/User             — any deployed scripts from other mods
     #   3. Game's Source/Base             — vanilla base game scripts
     game_user_dir = game_data_dir / "Scripts" / "Source" / "User"
-    scripts_base = game_data_dir / "Scripts" / "Source" / "Base"
+    # Fallout 4 keeps vanilla sources under Scripts/Source/Base; Skyrim reverses
+    # the two path components and drops the Base level entirely.
+    base_candidates = (
+        game_data_dir / "Scripts" / "Source" / "Base",
+        game_data_dir / "Source" / "Scripts",
+        game_data_dir / "Scripts" / "Source",
+    )
+    scripts_base = next(
+        (path for path in base_candidates if next(path.glob("*.psc"), None)),
+        base_candidates[0],
+    )
     import_parts = [str(source_dir)]
     if game_user_dir.is_dir():
         import_parts.append(str(game_user_dir))
     if scripts_base.is_dir():
         import_parts.append(str(scripts_base))
 
+    # An empty Source/Base satisfies is_dir() and then resolves nothing, so every
+    # base-game call types as None and the errors land on the mod's own lines
+    # ("cannot assign None to Bool") as though the mod were at fault. A game
+    # install without Creation Kit sources looks exactly like broken source.
+    have_base_sources = scripts_base.is_dir() and next(
+        scripts_base.glob("*.psc"), None
+    ) is not None
+    if not have_base_sources:
+        # No game install, or one the Creation Kit never wrote sources into. The
+        # bundled corpus carries the same type surface, synthesized from the
+        # game's own .pex, so compiling does not require the game at all.
+        from creation_lib.pex.corpus import bundled_corpus_root
+
+        bundled = bundled_corpus_root(game)
+        if bundled is not None:
+            import_parts.append(str(bundled))
+            have_base_sources = True
+            _emit(f"  [compile] using the bundled {game} type universe ({bundled})")
+        else:
+            _emit(
+                f"  [compile] WARNING: no vanilla Papyrus sources under "
+                f"{scripts_base}, and no bundled {game} corpus — base-game types "
+                "will not resolve"
+            )
+
     flags_arg = None
     if profile.papyrus_flags:
         flags_arg = profile.papyrus_flags
-        flags_path = scripts_base / profile.papyrus_flags
-        if flags_path.is_file():
-            flags_arg = str(flags_path)
+        for candidate in (
+            scripts_base / profile.papyrus_flags,
+            *(Path(part) / profile.papyrus_flags for part in import_parts),
+        ):
+            if candidate.is_file():
+                flags_arg = str(candidate)
+                break
 
+    if verify_stock:
+        from creation_lib.build.papyrus_verification import verify_stock_sources
+        if not profile.papyrus_compiler_dir:
+            raise ValueError(f"No stock Papyrus compiler is configured for {game}")
+        verify_stock_sources(psc_files, compiler=game_data_dir.parent / profile.papyrus_compiler_dir / "PapyrusCompiler.exe",
+                             game_root=game_data_dir.parent, imports=import_parts, flags=flags_arg, on_progress=_emit)
+    output_dir.mkdir(parents=True, exist_ok=True)
     _emit(f"  [compile] native-compiling {len(psc_files)} script(s)")
     failures: list[str] = []
     for psc_path in psc_files:
@@ -329,7 +380,14 @@ def compile_papyrus(
             _emit(f"  [compile] FAILED {failure}")
         if len(failures) > 20:
             _emit(f"  [compile] ... {len(failures) - 20} more failure(s)")
-        raise RuntimeError("Papyrus compile failed — see output above")
+        message = "Papyrus compile failed — see output above"
+        if not have_base_sources:
+            message = (
+                f"{message}. No vanilla Papyrus sources under {scripts_base}; "
+                f"the selected {game} install has no Creation Kit sources, so "
+                "base-game types cannot resolve."
+            )
+        raise RuntimeError(message)
 
     return len(psc_files)
 
@@ -343,51 +401,59 @@ def deploy_mod(
     *,
     game: str,
     game_data_dir: Path,
+    plugin_base_name: str | None = None,
     deploy_data_dir: Path | None = None,
     skip_build: bool = False,
     skip_pack: bool = False,
     esp_only: bool = False,
     no_esp: bool = False,
+    preserve_xse_inis: bool = False,
+    source: Path | str | None = None,
     xbox: bool = False,
+    ps: bool = False,
     skip_papyrus_compile: bool = False,
     skip_validation: bool = False,
     pc_max_res: int = 0,
     pc_effects_max_res: int | None = None,
-    xbox_max_res: int = 1024,
+    xbox_max_res: int = 0,
     xbox_effects_max_res: int | None = None,
+    ps_max_res: int = 0,
+    ps_effects_max_res: int | None = None,
     patches: list[str] | None = None,
     project_root: Path | str | None = None,
     resource_dir: Path | str | None = None,
     archive_max_bytes: int | None = None,
     expanded_archives: bool = False,
     archive_workers: int = 0,
+    fo4_ba2_target: str = "auto",
     archive_transfer_mode: str = "copy",
+    pack_archives_to_deploy_target: bool = False,
     deploy_archives: bool = True,
     on_progress: Callable[[str], None] | None = None,
 ) -> DeployResult:
     """Full deploy pipeline: build esp, pack behaviors, pack BA2, copy to game.
 
     Args:
-        mod_name: Mod name (e.g. "B21_MyMod").
         game: Game ID (fo4, skyrimse, starfield).
-        game_data_dir: Game's Data/ folder to deploy into.
-        skip_build: Skip .esp build (use existing).
-        skip_pack: Skip BA2 packing.
+        plugin_base_name: Base name the game keys BA2s and loose string tables
+            by — it mounts "<PluginStem> - Main.ba2", not "<ModName> - Main.ba2".
+            Defaults to the selected plugin stem.
+        source: Plugin binary, whole-plugin YAML/JSON, or authoring directory
+            inside the mod folder. Relative paths resolve from that folder.
+        preserve_xse_inis: Keep existing destination XSE .ini files; install missing ones.
         esp_only: Deploy only the .esp (no archives or loose files).
         no_esp: Mod has no .esp (e.g. XSE-plugin-only). Skips the build/pack
             pipeline and just copies whatever is under ``mods/<name>/<XSE>/``,
             where ``<XSE>`` is one of F4SE/SKSE/SFSE/NVSE/FOSE per the mod's game.
-        xbox: Also create Xbox-format archives.
         pc_max_res: Max texture resolution for PC archives (0 = unlimited).
         xbox_max_res: Max texture resolution for Xbox archives.
+        ps_max_res: Max texture resolution for PlayStation archives (0 = unlimited).
         archive_transfer_mode: "copy" keeps BA2/BSA files in the mod folder;
             "move" cuts them into the deploy target after packing.
+        pack_archives_to_deploy_target: Pack archives directly into the resolved
+            deploy target and skip the later archive transfer.
         deploy_archives: False skips the archive deploy/stale-cleanup loop. Use
             only when archives were packed directly into the deploy target.
-        on_progress: Optional progress callback.
-
-    Returns:
-        DeployResult with summary of deployed files.
     """
     if project_root is None:
         raise ValueError("project_root is required")
@@ -429,8 +495,13 @@ def deploy_mod(
                 continue
             relpath = srcfile.relative_to(xse_dir)
             destdir = target_data_dir / ext_dir / relpath.parent
+            destination = destdir / srcfile.name
+            if preserve_xse_inis and srcfile.suffix.casefold() == ".ini" and destination.is_file():
+                result.preserved_xse_inis.append(f"{ext_dir}/{relpath.as_posix()}")
+                _emit(f"  Preserved existing INI: {ext_dir}/{relpath}")
+                continue
             destdir.mkdir(parents=True, exist_ok=True)
-            _copy2_fast(srcfile, destdir / srcfile.name)
+            _copy2_fast(srcfile, destination)
             result.loose_files_deployed += 1
             copied += 1
             _emit(f"  Copied: {ext_dir}/{relpath}")
@@ -462,21 +533,21 @@ def deploy_mod(
             copied += _deploy_loose_dir(aux)
         for data_tree in _XSE_LOOSE_DATA_DIRS:
             copied += _deploy_loose_dir(data_tree)
-        if copied == 0:
+        if copied == 0 and not result.preserved_xse_inis:
             _emit(f"  WARNING: No files found under mods/{mod_name}/{xse_plugin_dir_for(game)}/")
         _emit(f"=== Deploy complete === ({copied} file(s))")
         return result
 
-    plugin_ext = get_plugin_ext(mod_dir)
-    esp = mod_dir / f"{mod_name}.{plugin_ext}"
+    authoring_source, esp = resolve_plugin_source(mod_dir, source)
+    archive_base = plugin_base_name or esp.stem
     data_dir = mod_dir / "data"
     meshes_dir = mod_dir / "Meshes"
 
     # ── Step 1: Build .esp ──────────────────────────────────────────
-    if not skip_build and (mod_dir / "yaml").is_dir():
-        if not skip_validation:
+    if not skip_build and authoring_source is not None:
+        if not skip_validation and authoring_source.is_dir():
             _emit("[1/5] Validating authoring dir...")
-            errors, _ = validate_authoring(mod_dir / "yaml")
+            errors, _ = validate_authoring(authoring_source)
             if errors:
                 _emit(f"WARNING: Validation found {len(errors)} error(s)")
                 for err in errors:
@@ -484,7 +555,7 @@ def deploy_mod(
         _emit("[1/5] Building .esp...")
 
         deserialize(
-            mod_dir / "yaml",
+            authoring_source,
             esp,
             game=game,
             data_folder=game_data_dir,
@@ -536,28 +607,43 @@ def deploy_mod(
             _emit("[3/5] No .psc files found — skipping")
 
     # ── Step 4: Pack BA2 archives ───────────────────────────────────
+    archives_packed_in_target = False
     if esp_only or skip_pack:
         _emit("[4/5] Skipping BA2 packing")
     elif not data_dir.is_dir():
         _emit("[4/5] No data/ directory — skipping BA2 packing")
     else:
         _emit("[4/5] Packing BA2 archives...")
+        archive_output_dir = None
+        if pack_archives_to_deploy_target:
+            target_data_dir.mkdir(parents=True, exist_ok=True)
+            for existing_archive in discover_mod_archives(target_data_dir, archive_base):
+                existing_archive.unlink()
+                _emit(f"  Removed existing archive: {existing_archive.name}")
+            archive_output_dir = target_data_dir
         pack_mod(
             mod_name,
             pc=True,
             xbox=xbox,
+            ps=ps,
             pc_max_res=pc_max_res,
             pc_effects_max_res=pc_effects_max_res,
             xbox_max_res=xbox_max_res,
             xbox_effects_max_res=xbox_effects_max_res,
+            ps_max_res=ps_max_res,
+            ps_effects_max_res=ps_effects_max_res,
             game=game,
-            game_dir=str(game_data_dir.parent),
+            game_dir=str(target_data_dir.parent),
             project_root=project_root,
             resource_dir=resource_dir,
             archive_max_bytes=archive_max_bytes,
             expanded_archives=expanded_archives,
             archive_workers=archive_workers,
+            fo4_ba2_target=fo4_ba2_target,
+            archive_output_dir=archive_output_dir,
+            plugin_base_name=archive_base,
         )
+        archives_packed_in_target = archive_output_dir is not None
 
     # ── Step 5: Deploy to game Data ─────────────────────────────────
     _emit(f"[5/5] Deploying to {target_data_dir}...")
@@ -568,17 +654,26 @@ def deploy_mod(
     # other mid-copy interference produces a deployed file that differs
     # from the source. Without this check, a corrupted deploy is invisible
     # until you load in CK and see "Unable to find keyword" errors.)
-    dest_esp = target_data_dir / f"{mod_name}.{plugin_ext}"
+    dest_esp = target_data_dir / esp.name
     _verified_copy(esp, dest_esp, _emit)
-    result.plugin_deployed = f"{mod_name}.{plugin_ext}"
-    _emit(f"  Copied: {mod_name}.{plugin_ext}")
+    result.plugin_deployed = esp.name
+    _emit(f"  Copied: {esp.name}")
 
     if not esp_only:
-        if deploy_archives:
+        if archives_packed_in_target:
+            packed_archives = discover_mod_archives(target_data_dir, archive_base)
+            result.archives_deployed.extend(archive.name for archive in packed_archives)
+            for archive in packed_archives:
+                _emit(f"  Packed directly: {archive.name}")
+            if mod_dir.resolve() != target_data_dir.resolve():
+                for local_archive in discover_mod_archives(mod_dir, archive_base):
+                    local_archive.unlink()
+                    _emit(f"  Removed local archive: {local_archive.name}")
+        elif deploy_archives:
             # Deploy BA2s
-            current_archives = discover_mod_archives(mod_dir, mod_name)
+            current_archives = discover_mod_archives(mod_dir, archive_base)
             current_archive_names = {archive.name for archive in current_archives}
-            for stale_archive in discover_mod_archives(target_data_dir, mod_name):
+            for stale_archive in discover_mod_archives(target_data_dir, archive_base):
                 if stale_archive.name in current_archive_names:
                     continue
                 stale_archive.unlink()
@@ -591,7 +686,7 @@ def deploy_mod(
         else:
             _emit("  Skipping BA2 deploy; archives already in deploy target")
 
-        _remove_loose_string_sidecars(target_data_dir, mod_name, _emit, stale=True)
+        _remove_loose_string_sidecars(target_data_dir, archive_base, _emit, stale=True)
 
         # Deploy loose Meshes/ files (everything except .xml source files)
         if meshes_dir.is_dir():
@@ -686,6 +781,8 @@ def undeploy_mod(
     game: str,
     game_data_dir: Path,
     no_esp: bool = False,
+    dry_run: bool = False,
+    source: Path | str | None = None,
     patches: list[str] | None = None,
     project_root: Path | str | None = None,
     on_progress: Callable[[str], None] | None = None,
@@ -717,7 +814,8 @@ def undeploy_mod(
             relpath = srcfile.relative_to(xse_dir)
             deployed = game_data_dir / ext_dir / relpath
             if deployed.is_file():
-                deployed.unlink()
+                if not dry_run:
+                    deployed.unlink()
                 removed.append(f"{ext_dir}/{relpath}")
                 _emit(f"Removed: {ext_dir}/{relpath}")
 
@@ -737,9 +835,12 @@ def undeploy_mod(
             relpath = srcfile.relative_to(src_root)
             deployed = game_data_dir / subdir / relpath
             if deployed.is_file():
-                deployed.unlink()
+                if not dry_run:
+                    deployed.unlink()
                 removed.append(f"{subdir}/{relpath}")
                 _emit(f"Removed: {subdir}/{relpath}")
+        if dry_run:
+            return
         # Prune the dirs we own, deepest first, plus the aux root. rmdir only deletes
         # empty dirs, so a shared parent still holding another mod's views is left intact.
         src_dirs = sorted(
@@ -773,22 +874,32 @@ def undeploy_mod(
             _emit(f"No deployed {ext_dir} files found for {mod_name} in {game_data_dir}")
         return removed
 
+    plugin_base = mod_name
+    if mod_dir.is_dir():
+        try:
+            _, plugin = resolve_plugin_source(mod_dir, source)
+            plugin_base = plugin.stem
+        except FileNotFoundError:
+            if source is not None:
+                raise
     # Plugin files
     for ext in ["esp", "esl", "esm"]:
-        f = game_data_dir / f"{mod_name}.{ext}"
+        f = game_data_dir / f"{plugin_base}.{ext}"
         if f.is_file():
-            f.unlink()
+            if not dry_run:
+                f.unlink()
             removed.append(f.name)
             _emit(f"Removed: {f.name}")
 
     # Archive files
-    for archive in discover_mod_archives(game_data_dir, mod_name):
-        archive.unlink()
+    for archive in discover_mod_archives(game_data_dir, plugin_base):
+        if not dry_run:
+            archive.unlink()
         removed.append(archive.name)
         _emit(f"Removed: {archive.name}")
 
     # String files
-    removed.extend(_remove_loose_string_sidecars(game_data_dir, mod_name, _emit))
+    removed.extend(_remove_loose_string_sidecars(game_data_dir, plugin_base, _emit, dry_run=dry_run))
 
     # XSE plugin tree (DLL/INI/etc.) — combined mods only ship these
     _undeploy_xse_tree()
@@ -807,7 +918,8 @@ def undeploy_mod(
             plugin_file = get_patch_plugin_name(mod_dir, pname)
             f = game_data_dir / plugin_file
             if f.is_file():
-                f.unlink()
+                if not dry_run:
+                    f.unlink()
                 removed.append(plugin_file)
                 _emit(f"Removed patch: {plugin_file}")
 

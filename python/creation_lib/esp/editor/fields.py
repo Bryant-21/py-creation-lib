@@ -1,10 +1,8 @@
 """Schema-driven field model for the ESP editor UI.
 
-Decodes subrecord bytes into typed `Field` objects the UI can render with
-appropriate widgets. Falls back to a raw hex view for unknown signatures
-or codec failures.
-
-The decoder consumes the rich auto-generated schema (`py_creation_lib/python/creation_lib/esp/schema/games/<game>`):
+Decodes subrecord bytes into typed `Field` objects using the generated schema
+(`creation_lib/esp/schema/games/<game>`), falling back to raw hex for unknown
+signatures or codec failures:
 
 - ``codec='struct:i,B,B,B,B'``  → labelled per-member struct
 - ``codec='array_struct:I,I'``  → list of labelled element rows
@@ -13,9 +11,8 @@ The decoder consumes the rich auto-generated schema (`py_creation_lib/python/cre
 - ``codec='formid'``              → FORMID widget
 - ``enum_ref`` / ``formlink_target`` on Subrecord OR FieldSpec → resolved at decode time
 
-Each Field carries its own ``components`` (for STRUCT) or ``rows`` (for ARRAY) so
-the renderer never falls back to "[0] [1] [2]" generic widgets when the schema
-provides structured field names.
+STRUCT fields carry ``components`` and ARRAY fields carry ``rows``, so named
+schema members render with their names instead of "[0] [1] [2]".
 """
 
 from __future__ import annotations

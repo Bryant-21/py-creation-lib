@@ -1,20 +1,18 @@
 /// S-hull flip-based Delaunay triangulator.
 ///
-/// Faithful port of `DelaunayTriangulator/Triangulator.cs` (the `Triangulation` method and
+/// Port of `DelaunayTriangulator/Triangulator.cs` (the `Triangulation` method and
 /// all its dependencies: `Triad`, `Hull`/`HullVertex`, `Vertex`, `Set`).
 ///
 /// **Usage:** call [`triangulate`] with a slice of [`Vertex`] points (≥ 3).  The function
 /// returns a `Vec<Triad>` where each triad holds 3 vertex indices into the input slice.
 ///
-/// **Scope (R1 §3):** this triangulator is used *only* for the `specialWater` surface
-/// (`Geometry.CreateTriangles`). Ordinary water is a trivial 2-triangle quad per cell.
-/// The default (`special_water=false`) does NOT need special water — this module
-/// exists so the water path is complete in the contract.  `terrain::generate_quad`
-/// emits only ordinary flat-quad water; `specialWater` is gated behind a `// TODO specialWater`
-/// comment there.
+/// **Scope:** the object-LOD fan collapse in `objects::geometry`
+/// (`Geometry.CreateTriangles`) calls [`convex_hull_len`] and
+/// [`triangulate_reject_dups`]. Terrain water is a plain 2-triangle quad per cell and
+/// does not use this; xLODGen's `specialWater` surface is not ported.
 ///
 /// **Determinism:** the C# `Set<int>` uses a `SortedList` (keys sorted by default integer
-/// comparator), which gives a deterministic iteration order.  We replicate this with a
+/// comparator), which gives a deterministic iteration order, replicated here with a
 /// `BTreeSet<usize>`.  No random seeding in this algorithm.
 
 // ---------------------------------------------------------------------------
@@ -839,9 +837,8 @@ fn float_ord(f: f32) -> FloatOrd {
 /// Returns a `Vec<Triad>` with indices into `points`.
 ///
 /// Panics on degenerate input (fewer than 3 points, or no seed circumcircle).
-/// Only called from tests, which always supply a valid convex polygon (≥ 3
-/// non-collinear points). The fan-collapse caller in `objects::geometry` uses
-/// the fallible [`triangulate_reject_dups`] instead.
+/// Only tests call it, always with ≥ 3 non-collinear points; the fan collapse in
+/// `objects::geometry` uses the fallible [`triangulate_reject_dups`].
 pub fn triangulate(points: &[Vertex]) -> Vec<Triad> {
     Triangulator::new(points)
         .triangulation(false)
@@ -849,13 +846,12 @@ pub fn triangulate(points: &[Vertex]) -> Vec<Triad> {
 }
 
 /// Triangulate with the `rejectDuplicatePoints` flag, mirroring
-/// `Triangulator.Triangulation(points, true)` (Triangulator.cs:266). Used by
-/// `Geometry.CreateTriangles` which always passes `rejectDuplicatePoints: true`.
+/// `Triangulator.Triangulation(points, true)` (Triangulator.cs:266), as
+/// `Geometry.CreateTriangles` always passes `rejectDuplicatePoints: true`.
 ///
-/// Returns `None` (instead of panicking) on degenerate input the S-hull
-/// algorithm cannot triangulate — fewer than 3 unique points or an all-collinear
-/// fan with no initial circumcircle. The caller treats `None` as a rejected
-/// collapse.
+/// Returns `None` on degenerate input (fewer than 3 unique points, or an
+/// all-collinear fan with no initial circumcircle); the caller treats it as a
+/// rejected collapse.
 pub fn triangulate_reject_dups(points: &[Vertex]) -> Option<Vec<Triad>> {
     Triangulator::new(points).triangulation(true)
 }
@@ -863,13 +859,12 @@ pub fn triangulate_reject_dups(points: &[Vertex]) -> Option<Vec<Triad>> {
 /// Number of points on the convex hull of `points`.
 ///
 /// Mirrors `Triangulator.ConvexHull(points, rejectDuplicatePoints: true).Count`
-/// (Triangulator.cs:249). `Geometry.CreateTriangles` uses this to reject any fan
-/// where some point is interior (hull count != point count) — Geometry.cs:1549.
+/// (Triangulator.cs:249). `Geometry.CreateTriangles` uses it to reject any fan
+/// with an interior point (hull count != point count, Geometry.cs:1549).
 ///
 /// Returns `0` on degenerate input the triangulator cannot seed. A valid hull
-/// always has ≥ 3 points, so `0` can never equal a real point count: the
-/// caller's `convex_hull_len(..) == points.len()` convexity check fails cleanly
-/// and the fan is rejected.
+/// always has ≥ 3 points, so `0` never equals a real point count and the caller's
+/// `convex_hull_len(..) == points.len()` convexity check rejects the fan.
 pub fn convex_hull_len(points: &[Vertex], reject_duplicates: bool) -> usize {
     let tri = Triangulator::new(points);
     let mut triads: Vec<Triad> = Vec::new();

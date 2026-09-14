@@ -334,6 +334,7 @@ def test_pack_mod_prefers_native_mod_archive_packer(tmp_path, monkeypatch):
     monkeypatch.setattr(packer.native_runtime, "pack_mod_archives", fake_pack_mod_archives)
     monkeypatch.setattr(packer._log, "info", lambda msg, *args: progress_messages.append(msg % args if args else msg))
 
+    archive_output_dir = tmp_path / "export"
     result = packer.pack_mod(
         mod_name,
         pc=True,
@@ -342,6 +343,7 @@ def test_pack_mod_prefers_native_mod_archive_packer(tmp_path, monkeypatch):
         pc_effects_max_res=0,
         game="fo4",
         project_root=tmp_path,
+        archive_output_dir=archive_output_dir,
     )
 
     assert calls[0]["mod_name"] == mod_name
@@ -349,6 +351,9 @@ def test_pack_mod_prefers_native_mod_archive_packer(tmp_path, monkeypatch):
     assert calls[0]["pc"] is True
     assert calls[0]["xbox"] is False
     assert calls[0]["archive_workers"] == 8
+    assert calls[0]["mod_dir"] == str(archive_output_dir)
+    assert (archive_output_dir / "B21_Test - Main.ba2").is_file()
+    assert not (tmp_path / "mods" / mod_name / "B21_Test - Main.ba2").exists()
     assert result is None
     assert "native inventory progress" in progress_messages
 
@@ -772,12 +777,13 @@ def test_pack_mod_splits_oversized_main_into_category_archives(tmp_path, monkeyp
         game="fo4",
         project_root=tmp_path,
         archive_max_bytes=9000,
+        expanded_archives=True,
     )
 
     assert [call[0] for call in calls] == [
         "B21_Test - Meshes.ba2",
         "B21_Test - Sounds.ba2",
-        "B21_Test - Scripts.ba2",
+        "B21_Test - Misc.ba2",
     ]
     assert calls[0][1] == [("Meshes/a.nif", "a.nif")]
     assert calls[1][1] == [("Sound/a.xwm", "a.xwm")]
@@ -824,6 +830,7 @@ def test_pack_mod_shards_oversized_textures(tmp_path, monkeypatch):
         game="fo4",
         project_root=tmp_path,
         archive_max_bytes=9000,
+        expanded_archives=True,
     )
 
     assert [call[0] for call in calls] == [
@@ -875,6 +882,7 @@ def test_pack_mod_splits_root_strings_into_main_archive(tmp_path, monkeypatch):
         game="fo4",
         project_root=tmp_path,
         archive_max_bytes=9000,
+        expanded_archives=True,
     )
 
     assert [call[0] for call in calls] == [
@@ -911,7 +919,43 @@ def test_pack_mod_validates_final_packed_size(tmp_path, monkeypatch):
             game="fo4",
             project_root=tmp_path,
             archive_max_bytes=9000,
+            expanded_archives=True,
         )
+
+
+def test_pack_mod_ignores_archive_max_for_compact_archives(tmp_path, monkeypatch):
+    mod_name = "B21_Test"
+    _write_mod_file(tmp_path, mod_name, "Meshes/a.nif", b"m")
+
+    monkeypatch.setattr(
+        packer, "get_profile", lambda game: SimpleNamespace(archive_format="ba2")
+    )
+    monkeypatch.setattr(
+        packer.native_runtime,
+        "native_function_available",
+        lambda name: name == "pack_archive",
+    )
+
+    def fake_run_native_pack(entries, output_path, game, **kwargs):
+        Path(output_path).write_bytes(b"x" * 9001)
+
+    monkeypatch.setattr(packer, "_run_native_pack", fake_run_native_pack)
+    monkeypatch.setattr(packer, "_run_native_pack_entries", fake_run_native_pack)
+
+    packer.pack_mod(
+        mod_name,
+        pc=True,
+        xbox=False,
+        pc_max_res=0,
+        pc_effects_max_res=0,
+        game="fo4",
+        project_root=tmp_path,
+        archive_max_bytes=1,
+        expanded_archives=False,
+    )
+
+    output_path = tmp_path / "mods" / mod_name / "B21_Test - Main.ba2"
+    assert output_path.stat().st_size == 9001
 
 
 def test_inventory_root_strings_skips_dotfile_temp_orphans(tmp_path):
@@ -926,3 +970,262 @@ def test_inventory_root_strings_skips_dotfile_temp_orphans(tmp_path):
     assert [entry.relative_path for entry in entries] == [
         "Strings/B21_Test_en.STRINGS"
     ]
+
+
+def test_pack_mod_playstation_uses_ps_suffix_and_gnrl_profile(tmp_path, monkeypatch):
+    mod_name = "B21_Test"
+    _write_mod_file(tmp_path, mod_name, "Meshes/test.nif")
+    _write_mod_file(tmp_path, mod_name, "Textures/test.dds")
+    calls = []
+
+    monkeypatch.setattr(packer, "get_profile", lambda game: SimpleNamespace(archive_format="ba2"))
+    monkeypatch.setattr(
+        packer.native_runtime,
+        "native_function_available",
+        lambda name: name == "pack_archive",
+    )
+
+    def fail_stage_archive_entries(entries, dest_root):
+        raise AssertionError("uncapped PlayStation archive packing should not stage files")
+
+    def fake_run_native_pack(source_dir, output_path, game, **kwargs):
+        calls.append((Path(output_path).name, kwargs))
+        Path(output_path).write_bytes(b"BA2")
+
+    monkeypatch.setattr(packer, "_stage_archive_entries", fail_stage_archive_entries)
+    monkeypatch.setattr(packer, "_run_native_pack", fake_run_native_pack)
+
+    packer.pack_mod(
+        mod_name,
+        pc=False,
+        ps=True,
+        game="fo4",
+        project_root=tmp_path,
+    )
+
+    assert calls == [
+        (
+            "B21_Test - Main_ps.ba2",
+            {"ps": True, "manifest_path": None, "include_prefixes": ["Meshes/"]},
+        ),
+        (
+            "B21_Test - Textures_ps.ba2",
+            {
+                "texture_archive": True,
+                "ps": True,
+                "manifest_path": None,
+                "include_prefixes": ["Textures/"],
+            },
+        ),
+    ]
+
+
+def test_prepare_playstation_audio_omits_xwm_and_repacks_fuz_with_wav(tmp_path):
+    sound_dir = tmp_path / "Sound" / "Voice"
+    sound_dir.mkdir(parents=True)
+    fuz_path = sound_dir / "line.fuz"
+    xwm_path = sound_dir / "line.xwm"
+    wav_path = sound_dir / "line.wav"
+    mesh_path = tmp_path / "Meshes" / "test.nif"
+    mesh_path.parent.mkdir()
+
+    lip_bytes = b"LIP"
+    xwm_bytes = b"RIFF\x04\x00\x00\x00XWMA"
+    wave_fmt = b"\x01\x00\x01\x00\x44\xac\x00\x00\x88\x58\x01\x00\x02\x00\x10\x00"
+    wave_chunks = b"fmt " + len(wave_fmt).to_bytes(4, "little") + wave_fmt
+    wav_bytes = b"RIFF" + (len(wave_chunks) + 4).to_bytes(4, "little") + b"WAVE" + wave_chunks
+    fuz_path.write_bytes(
+        b"FUZE\x01\x00\x00\x00"
+        + len(lip_bytes).to_bytes(4, "little")
+        + lip_bytes
+        + xwm_bytes
+    )
+    xwm_path.write_bytes(xwm_bytes)
+    wav_path.write_bytes(wav_bytes)
+    mesh_path.write_bytes(b"mesh")
+
+    entries = [
+        ArchiveEntry("Sound/Voice/line.fuz", fuz_path, fuz_path.stat().st_size),
+        ArchiveEntry("Sound/Voice/line.xwm", xwm_path, xwm_path.stat().st_size),
+        ArchiveEntry("Sound/Voice/line.wav", wav_path, wav_path.stat().st_size),
+        ArchiveEntry("Meshes/test.nif", mesh_path, mesh_path.stat().st_size),
+    ]
+
+    prepared, adjusted = packer._prepare_playstation_audio_entries(
+        entries, tmp_path / "stage"
+    )
+
+    assert adjusted is True
+    assert [entry.relative_path for entry in prepared] == [
+        "Sound/Voice/line.fuz",
+        "Sound/Voice/line.wav",
+        "Meshes/test.nif",
+    ]
+    ps_fuz = prepared[0].source_path.read_bytes()
+    assert ps_fuz[: 12 + len(lip_bytes)] == fuz_path.read_bytes()[: 12 + len(lip_bytes)]
+    assert ps_fuz[12 + len(lip_bytes) :] == wav_bytes
+
+
+def test_prepare_playstation_audio_requires_companion_wav(tmp_path):
+    xwm_path = tmp_path / "Sound" / "missing.xwm"
+    xwm_path.parent.mkdir()
+    xwm_path.write_bytes(b"xwm")
+
+    with pytest.raises(ValueError, match="companion WAV"):
+        packer._prepare_playstation_audio_entries(
+            [ArchiveEntry("Sound/missing.xwm", xwm_path, 3)],
+            tmp_path / "stage",
+        )
+
+
+def test_prepare_playstation_audio_encodes_at9_and_embeds_it_in_fuz(
+    tmp_path, monkeypatch
+):
+    sound_dir = tmp_path / "Sound" / "Voice"
+    sound_dir.mkdir(parents=True)
+    fuz_path = sound_dir / "line.fuz"
+    xwm_path = sound_dir / "line.xwm"
+    wav_path = sound_dir / "line.wav"
+    lip_bytes = b"LIP"
+    xwm_bytes = b"RIFF\x04\x00\x00\x00XWMA"
+    wav_path.write_bytes(b"RIFF\x04\x00\x00\x00WAVE")
+    xwm_path.write_bytes(xwm_bytes)
+    fuz_path.write_bytes(
+        b"FUZE\x01\x00\x00\x00"
+        + len(lip_bytes).to_bytes(4, "little")
+        + lip_bytes
+        + xwm_bytes
+    )
+    at9_fmt = (
+        b"\xfe\xff"
+        + bytes(22)
+        + bytes.fromhex("d242e147ba368d4d88fc61654f8c836c")
+    )
+    at9_bytes = (
+        b"RIFF"
+        + (len(at9_fmt) + 12).to_bytes(4, "little")
+        + b"WAVEfmt "
+        + len(at9_fmt).to_bytes(4, "little")
+        + at9_fmt
+    )
+    calls = []
+
+    def encode_at9(source, output):
+        calls.append(Path(source).name)
+        output_path = Path(output)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(at9_bytes)
+
+    monkeypatch.setattr(packer.audio_native_runtime, "encode_at9", encode_at9)
+    entries = [
+        ArchiveEntry("Sound/Voice/line.fuz", fuz_path, fuz_path.stat().st_size),
+        ArchiveEntry("Sound/Voice/line.xwm", xwm_path, xwm_path.stat().st_size),
+        ArchiveEntry("Sound/Voice/line.wav", wav_path, wav_path.stat().st_size),
+    ]
+
+    prepared, adjusted = packer._prepare_playstation_audio_entries(
+        entries,
+        tmp_path / "stage",
+        convert_to_at9=True,
+    )
+
+    assert adjusted is True
+    assert [entry.relative_path for entry in prepared] == [
+        "Sound/Voice/line.fuz",
+        "Sound/Voice/line.at9",
+    ]
+    assert calls == ["line.wav"]
+    assert prepared[0].source_path.read_bytes()[12 + len(lip_bytes) :] == at9_bytes
+    assert prepared[1].source_path.read_bytes() == at9_bytes
+
+
+def test_prepare_playstation_audio_preserves_at9_backed_fuz_without_wav(tmp_path):
+    at9_fmt = (
+        b"\xfe\xff"
+        + bytes(22)
+        + bytes.fromhex("d242e147ba368d4d88fc61654f8c836c")
+    )
+    at9_bytes = (
+        b"RIFF"
+        + (len(at9_fmt) + 12).to_bytes(4, "little")
+        + b"WAVEfmt "
+        + len(at9_fmt).to_bytes(4, "little")
+        + at9_fmt
+    )
+    fuz_path = tmp_path / "line.fuz"
+    fuz_path.write_bytes(b"FUZE\x01\0\0\0\0\0\0\0" + at9_bytes)
+
+    prepared, adjusted = packer._prepare_playstation_audio_entries(
+        [ArchiveEntry("Sound/line.fuz", fuz_path, fuz_path.stat().st_size)],
+        tmp_path / "stage",
+        convert_to_at9=True,
+    )
+
+    assert adjusted is False
+    assert prepared == [ArchiveEntry("Sound/line.fuz", fuz_path, fuz_path.stat().st_size)]
+
+
+def test_pack_mod_playstation_rewrites_audio_entries_before_native_pack(tmp_path, monkeypatch):
+    mod_name = "B21_Test"
+    voice_root = "Sound/Voice/B21_Test.esp/MaleTest/00000001_1"
+    lip_bytes = b"LIP"
+    xwm_bytes = b"RIFF\x04\x00\x00\x00XWMA"
+    wave_fmt = b"\x01\x00\x01\x00\x44\xac\x00\x00\x88\x58\x01\x00\x02\x00\x10\x00"
+    wave_chunks = b"fmt " + len(wave_fmt).to_bytes(4, "little") + wave_fmt
+    wav_bytes = b"RIFF" + (len(wave_chunks) + 4).to_bytes(4, "little") + b"WAVE" + wave_chunks
+    fuz_bytes = (
+        b"FUZE\x01\x00\x00\x00"
+        + len(lip_bytes).to_bytes(4, "little")
+        + lip_bytes
+        + xwm_bytes
+    )
+    _write_mod_file(tmp_path, mod_name, voice_root + ".fuz", fuz_bytes)
+    _write_mod_file(tmp_path, mod_name, voice_root + ".xwm", xwm_bytes)
+    _write_mod_file(tmp_path, mod_name, voice_root + ".wav", wav_bytes)
+    calls = []
+
+    monkeypatch.setattr(
+        packer, "get_profile", lambda game: SimpleNamespace(archive_format="ba2")
+    )
+    monkeypatch.setattr(
+        packer.native_runtime,
+        "native_function_available",
+        lambda name: name == "pack_archive",
+    )
+    monkeypatch.setattr(
+        packer,
+        "_run_native_pack",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("adjusted PlayStation audio must use planned entries")
+        ),
+    )
+
+    def fake_run_native_pack_entries(entries, output_path, game, **kwargs):
+        calls.append(
+            (
+                [entry.relative_path for entry in entries],
+                entries[0].source_path.read_bytes(),
+                Path(output_path).name,
+                kwargs,
+            )
+        )
+        Path(output_path).write_bytes(b"BA2")
+
+    monkeypatch.setattr(packer, "_run_native_pack_entries", fake_run_native_pack_entries)
+
+    packer.pack_mod(
+        mod_name,
+        pc=False,
+        ps=True,
+        game="fo4",
+        project_root=tmp_path,
+    )
+
+    entry_paths, rewritten_fuz, output_name, kwargs = calls[0]
+    assert output_name == "B21_Test - Main_ps.ba2"
+    assert kwargs["ps"] is True
+    assert entry_paths == [
+        voice_root + ".fuz",
+        voice_root + ".wav",
+    ]
+    assert rewritten_fuz[12 + len(lip_bytes) :] == wav_bytes

@@ -17,3 +17,8 @@ def test_og_flag_ignored_for_non_fo4():
 
 def test_xbox_precedence_over_og():
     assert _native_archive_type("fo4", True, xbox=True, og=True) == "fo4xboxdds"
+
+
+def test_playstation_uses_gnrl_tokens_for_both_archive_classes():
+    assert _native_archive_type("fo4", False, ps=True) == "fo4ps"
+    assert _native_archive_type("fo4", True, ps=True) == "fo4psdds"

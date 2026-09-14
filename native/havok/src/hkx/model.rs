@@ -1,6 +1,6 @@
 use crate::error::HavokResult;
 
-use super::descriptors::DescriptorRegistry;
+use super::descriptors::{DescriptorRegistry, StructureLayout};
 use super::packfile::{PackfileHeader, SectionHeader};
 use super::packfile::{ParsedPackfile, parse_packfile};
 use super::patcher::{PatchRange, apply_patch_range};
@@ -88,6 +88,9 @@ impl HkxFile {
 
     fn from_packfile(data: &[u8], packfile: ParsedPackfile) -> HavokResult<Self> {
         let mut registry = DescriptorRegistry::for_contents_version(&packfile.header.version_name);
+        if packfile.header.reuse_padding_optimization != 0 {
+            registry.set_structure_layout(StructureLayout::Generic);
+        }
         let ReadOutcome {
             objects,
             array_sources,
@@ -252,7 +255,7 @@ impl HkxFile {
 
     /// Serialize this HkxFile back to packfile bytes.
     ///
-    /// Three branches mirror Python `py_creation_lib/python/creation_lib/hkxpack.save_hkx`:
+    /// Three branches:
     ///   1. No source bytes (e.g. from_tagxml) → run the writer.
     ///   2. Model is unchanged → return source bytes verbatim.
     ///      `apply_patch` falls in this bucket: it byte-overlays
@@ -326,6 +329,9 @@ fn empty_packfile(class_version: u32, contents_version: String) -> ParsedPackfil
             version_name: contents_version,
             padding_size: 0,
             pointer_size: 8,
+            little_endian: 1,
+            reuse_padding_optimization: 0,
+            empty_base_class_optimization: 1,
             section_header_size: 0,
             contents_section_index: 0,
             contents_section_offset: 0,

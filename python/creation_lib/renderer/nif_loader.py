@@ -70,6 +70,22 @@ class _PrepareContext:
 
 
 @dataclass
+class PreparedTextureSlice:
+    """One triangle group from a FO76 shader texture array."""
+
+    slice_index: int
+    verts: "np.ndarray"
+    normals: "np.ndarray"
+    uvs: "np.ndarray"
+    tris: "np.ndarray"
+    colors: "np.ndarray | None"
+    tangents: "np.ndarray | None"
+    bitangents: "np.ndarray | None"
+    texture_paths: dict[str, str]
+    uv2: "np.ndarray | None" = None
+
+
+@dataclass
 class PreparedShape:
     """Vertex data extracted from one BSTriShape — no GL objects."""
 
@@ -90,6 +106,7 @@ class PreparedShape:
     uv2: "np.ndarray | None" = (
         None  # Starfield second UV channel (None for non-Starfield meshes)
     )
+    texture_slices: "list[PreparedTextureSlice] | None" = None
 
 
 @dataclass
@@ -605,6 +622,77 @@ def _convex_shape_mesh(block, havok_scale: float) -> dict | None:
     }
 
 
+def _packed_tri_strips_mesh(nif, block, havok_scale: float) -> dict | None:
+    """Triangle soup from a Gamebryo-era bhkPackedNiTriStripsShape (FO3/FNV/Oblivion)."""
+    data_id = block.get_field("Data")
+    if not isinstance(data_id, int) or data_id < 0:
+        return None
+    data = nif.get_block(data_id)
+    if data is None or data.type_name != "hkPackedNiTriStripsData":
+        return None
+    if data.get_field("Compressed"):
+        return None
+
+    shape_scale = block.get_field("Scale") or {}
+    axis_scale = [
+        float(shape_scale.get(axis, 1.0) or 1.0) if isinstance(shape_scale, dict) else 1.0
+        for axis in ("x", "y", "z")
+    ]
+    vertices = [
+        {
+            "x": float(vertex.get("x", 0.0)) * axis_scale[0] * havok_scale,
+            "y": float(vertex.get("y", 0.0)) * axis_scale[1] * havok_scale,
+            "z": float(vertex.get("z", 0.0)) * axis_scale[2] * havok_scale,
+        }
+        for vertex in (data.get_field("Vertices") or [])
+    ]
+    triangles = []
+    for entry in data.get_field("Triangles") or []:
+        triangle = entry.get("Triangle", entry) if isinstance(entry, dict) else None
+        if not isinstance(triangle, dict):
+            continue
+        indices = [int(triangle.get(key, 0)) for key in ("v1", "v2", "v3")]
+        if any(index >= len(vertices) for index in indices):
+            continue
+        triangles.append({"v1": indices[0], "v2": indices[1], "v3": indices[2]})
+    if len(vertices) < 3 or not triangles:
+        return None
+    return {"vertices": vertices, "triangles": triangles}
+
+
+def _legacy_body_transform(nif, body_block, havok_scale: float) -> np.ndarray:
+    """bhkRigidBodyT bakes its own translation/rotation into the shape; bhkRigidBody does not."""
+    transform = np.eye(4, dtype=np.float32)
+    if body_block is None or body_block.type_name != "bhkRigidBodyT":
+        return transform
+    info = (
+        body_block.get_field("Rigid Body Info:550_660")
+        or body_block.get_field("Rigid Body Info:2010")
+        or body_block.get_field("Rigid Body Info")
+    )
+    if not isinstance(info, dict):
+        return transform
+    rotation = info.get("Rotation")
+    if isinstance(rotation, dict):
+        x, y, z, w = (float(rotation.get(key, 0.0)) for key in ("x", "y", "z", "w"))
+        norm = (x * x + y * y + z * z + w * w) ** 0.5
+        if norm > 1e-6:
+            x, y, z, w = x / norm, y / norm, z / norm, w / norm
+            transform[:3, :3] = np.array(
+                [
+                    [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+                    [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+                    [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+                ],
+                dtype=np.float32,
+            )
+    translation = info.get("Translation")
+    if isinstance(translation, dict):
+        for row, axis in enumerate(("x", "y", "z")):
+            transform[row, 3] = float(translation.get(axis, 0.0)) * havok_scale
+    return transform
+
+
 def _extract_legacy_collision_shapes(
     nif,
     coll_block,
@@ -653,7 +741,9 @@ def _extract_legacy_collision_shapes(
             return []
 
         mesh = None
-        if type_name == "bhkConvexVerticesShape":
+        if type_name == "bhkPackedNiTriStripsShape":
+            mesh = _packed_tri_strips_mesh(nif, block, scale)
+        elif type_name == "bhkConvexVerticesShape":
             mesh = _convex_shape_mesh(block, scale)
         elif type_name == "bhkBoxShape":
             dimensions = block.get_field("Dimensions") or {}
@@ -693,7 +783,7 @@ def _extract_legacy_collision_shapes(
         )
         return [overlay] if overlay is not None else []
 
-    return _walk(shape_id, np.eye(4, dtype=np.float32), set())
+    return _walk(shape_id, _legacy_body_transform(nif, body, scale), set())
 
 
 def _shapes_to_wireframe_lines(all_shapes: list) -> list | None:
@@ -1396,6 +1486,19 @@ def _convert_shape(
     if ps is None:
         return None
 
+    if ps.texture_slices:
+        return _build_texture_slice_node(
+            ps,
+            nif,
+            block,
+            ctx,
+            program,
+            texture_dirs,
+            ba2_mgr,
+            nif_id,
+            game_id,
+        )
+
     # Build mesh
     mesh = _build_mesh(
         ctx,
@@ -1423,6 +1526,55 @@ def _convert_shape(
     )
 
     return node
+
+
+def _build_texture_slice_node(
+    ps: PreparedShape,
+    nif,
+    block,
+    ctx,
+    program,
+    texture_dirs,
+    ba2_mgr,
+    nif_id: str,
+    game_id: str,
+) -> SceneNode | None:
+    from .material_pipeline import build_material
+
+    parent = SceneNode(name=ps.name, block_id=ps.block_id, nif_id=nif_id)
+    parent.transform = ps.transform
+    for part in ps.texture_slices or []:
+        mesh = _build_mesh(
+            ctx,
+            program,
+            part.verts,
+            part.normals,
+            part.uvs,
+            part.tris,
+            colors=part.colors,
+            tangents=part.tangents,
+            bitangents=part.bitangents,
+            uv2=part.uv2,
+        )
+        mesh.material = build_material(
+            ctx,
+            nif,
+            block,
+            texture_dirs,
+            ba2_mgr,
+            game_id=game_id,
+            texture_paths_override=part.texture_paths,
+        )
+        child = SceneNode(
+            name=f"{ps.name} [texture {part.slice_index}]",
+            block_id=ps.block_id,
+            nif_id=nif_id,
+            mesh=mesh,
+        )
+        child._local_verts = part.verts
+        child._local_tris = part.tris
+        parent.children.append(child)
+    return parent if parent.children else None
 
 
 def _build_mesh(
@@ -2011,7 +2163,7 @@ def _extract_modern_shape_data(
     if not has_normals:
         normals = compute_normals(verts, tris)
 
-    return _prepared_shape_from_arrays(
+    prepared = _prepared_shape_from_arrays(
         nif,
         block,
         verts,
@@ -2022,6 +2174,84 @@ def _extract_modern_shape_data(
         tangents=tangents_arr if has_tangents else None,
         bitangents=bitangents_arr if has_tangents else None,
     )
+    prepared.texture_slices = _split_fo76_texture_array_shape(nif, block, prepared)
+    return prepared
+
+
+def _split_fo76_texture_array_shape(
+    nif, block, prepared: PreparedShape
+) -> list[PreparedTextureSlice] | None:
+    if prepared.bitangents is None or len(prepared.tris) == 0:
+        return None
+
+    from .material_pipeline import (
+        _get_fo76_texture_array_paths,
+        _get_fo76_texture_arrays,
+        _get_shape_property_block,
+    )
+
+    shader_prop = _get_shape_property_block(
+        nif, block, "Shader Property", "BSShaderProperty"
+    )
+    if shader_prop is None or not _get_fo76_texture_arrays(shader_prop):
+        return None
+
+    encoded_bitangents = prepared.bitangents
+    vertex_slices = encoded_bitangents[:, 0]
+    triangle_slices = np.rint(vertex_slices[prepared.tris].mean(axis=1)).astype(
+        np.int64
+    )
+    reconstructed_bitangents = None
+    if prepared.tangents is not None:
+        reconstructed_bitangents = np.cross(prepared.normals, prepared.tangents)
+        orientation = np.einsum(
+            "ij,ij->i",
+            reconstructed_bitangents[:, 1:],
+            encoded_bitangents[:, 1:],
+        )
+        reconstructed_bitangents[orientation < 0.0] *= -1.0
+        lengths = np.linalg.norm(reconstructed_bitangents, axis=1)
+        valid = lengths > 1e-8
+        reconstructed_bitangents[valid] /= lengths[valid, None]
+
+    parts = []
+    for slice_index in np.unique(triangle_slices):
+        texture_paths = _get_fo76_texture_array_paths(
+            shader_prop, int(slice_index)
+        )
+        if not texture_paths.get("diffuse"):
+            continue
+        slice_tris = prepared.tris[triangle_slices == slice_index]
+        vertex_ids, remapped = np.unique(
+            slice_tris.reshape(-1), return_inverse=True
+        )
+        parts.append(
+            PreparedTextureSlice(
+                slice_index=int(slice_index),
+                verts=prepared.verts[vertex_ids],
+                normals=prepared.normals[vertex_ids],
+                uvs=prepared.uvs[vertex_ids],
+                tris=remapped.reshape(-1, 3).astype(np.uint32),
+                colors=(
+                    prepared.colors[vertex_ids]
+                    if prepared.colors is not None
+                    else None
+                ),
+                tangents=(
+                    prepared.tangents[vertex_ids]
+                    if prepared.tangents is not None
+                    else None
+                ),
+                bitangents=(
+                    reconstructed_bitangents[vertex_ids]
+                    if reconstructed_bitangents is not None
+                    else None
+                ),
+                texture_paths=texture_paths,
+                uv2=prepared.uv2[vertex_ids] if prepared.uv2 is not None else None,
+            )
+        )
+    return parts or None
 
 
 def _extract_shape_data(nif, block, nif_id: str = "main") -> "PreparedShape | None":
@@ -2062,7 +2292,11 @@ _LOD_BATCH_SHAPE_THRESHOLD = 512
 
 
 def _should_prepare_lod_batches(filepath: str, shapes: dict[int, PreparedShape]) -> bool:
-    return Path(filepath).suffix.lower() == ".bto" and len(shapes) >= _LOD_BATCH_SHAPE_THRESHOLD
+    return (
+        Path(filepath).suffix.lower() == ".bto"
+        and len(shapes) >= _LOD_BATCH_SHAPE_THRESHOLD
+        and not any(shape.texture_slices for shape in shapes.values())
+    )
 
 
 def _freeze_signature_value(value):
@@ -2259,7 +2493,17 @@ def prepare_nif_data(
 
     # Pre-scan all texture paths (loose + BA2) and decode them in parallel.
     # Skip textures already in the cross-NIF decode cache.
-    all_textures = collect_nif_texture_paths(nif, texture_dirs, ba2_mgr)
+    extra_texture_paths = [
+        part.texture_paths
+        for shape in shapes.values()
+        for part in shape.texture_slices or []
+    ]
+    all_textures = collect_nif_texture_paths(
+        nif,
+        texture_dirs,
+        ba2_mgr,
+        extra_texture_paths=extra_texture_paths,
+    )
     t = time.perf_counter(); _log.debug("[nif-timing] tex_path_collect: %.1f ms (found %d)", (t - t_prev) * 1000, len(all_textures)); t_prev = t
     decoded_textures: dict[str, object] = {}
 
@@ -2511,6 +2755,19 @@ def _upload_shape(
     ps = prepared.shapes.get(block.block_id)
     if ps is None:
         return None  # was empty during prepare phase
+
+    if ps.texture_slices:
+        return _build_texture_slice_node(
+            ps,
+            nif,
+            block,
+            ctx,
+            program,
+            prepared.texture_dirs,
+            prepared.ba2_mgr,
+            prepared.nif_id,
+            prepared.game_profile.id if prepared.game_profile else "fo4",
+        )
 
     mesh = _build_mesh(
         ctx,

@@ -1,15 +1,7 @@
-// In-place runtime mutation for cloth parameter tweaking.
-//
-// `ClothEditor` borrows `&mut HkxFile` for the duration of edits.
-// It locates the root `hclClothData` object on construction and walks
-// the graph directly via object indices (the Rust equivalent of Python's
-// '#NNNN' ref strings).
-//
-// Design decisions:
-// - Mutable access is done by finding objects by index in `file.objects_mut()`.
-//   Pointer values are `HkxValue::Pointer(Some(index))` in the packfile reader.
-// - `remove_capsule` reuses `HkxFile::retain_objects_remap_pointers` to drop
-//   the collidable + shape and rewrite every pointer in the graph in one pass.
+// In-place cloth parameter edits. `ClothEditor` borrows `&mut HkxFile`, finds
+// the root `hclClothData` on construction and walks the graph by object index
+// (`HkxValue::Pointer(Some(index))`). `remove_capsule` drops the collidable and
+// shape via `HkxFile::retain_objects_remap_pointers`, rewriting all pointers in one pass.
 
 use crate::error::{HavokError, HavokResult};
 use crate::hkx::types::HkxValue;
@@ -1197,15 +1189,7 @@ impl<'a> ClothEditor<'a> {
 // ---------------------------------------------------------------------------
 
 /// Return `true` if `class_name` matches `filter`, which may be a full class
-/// name or a short alias.
-///
-/// Short aliases:
-/// - `"standard"` → `hclStandardLinkConstraintSet`
-/// - `"stretch"`  → `hclStretchLinkConstraintSet`
-/// - `"bend"`     → `hclBendStiffnessConstraintSet`
-/// - `"localrange"` → `hclLocalRangeConstraintSet`
-/// - `"boneplanes"` → `hclBonePlanesConstraintSet`
-/// - `"volume"`   → `hclVolumeConstraint`
+/// name or a case-insensitive short alias (`"standard"`, `"bend"`, `"volume"`, ...).
 pub(crate) fn matches_constraint(class_name: &str, filter: &str) -> bool {
     if class_name == filter {
         return true;

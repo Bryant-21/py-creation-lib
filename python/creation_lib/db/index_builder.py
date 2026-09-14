@@ -221,6 +221,7 @@ def regenerate_esm_yaml_cache(
     db_dir: Path | str,
     plugins: list[str] | None = None,
     fresh: bool = False,
+    workers: int = 1,
     on_progress: Callable[[str], None] | None = None,
 ) -> dict[str, str]:
     """Re-export the game's master plugins into ``data/<game>_esm_yaml/``.
@@ -242,6 +243,8 @@ def regenerate_esm_yaml_cache(
         Dict mapping plugin file name → ``"exported"`` or ``"skipped (...)"``.
     """
     root = _required_path(project_root, "project_root")
+    if workers < 1:
+        raise ValueError("workers must be at least 1")
     data_root = _required_path(db_dir, "db_dir")
     cache_subdir = GAME_ESM_YAML_DIR.get(game) or f"{game}_esm_yaml"
     cache_root = data_root / cache_subdir
@@ -264,21 +267,27 @@ def regenerate_esm_yaml_cache(
     if not plugin_paths:
         _emit(f"No master plugins found in {data_dir}")
         return {}
+    stems = [path.stem.casefold() for path in plugin_paths]
+    if len(set(stems)) != len(stems):
+        raise ValueError("Selected plugins share a cache directory; export them separately")
 
-    from creation_lib.esp.native_runtime import export_authoring_dir_native
+    from creation_lib.esp.native_runtime import export_authoring_dir_native, load_native_module
 
-    results: dict[str, str] = {}
+    # The lazy native loader must finish initialization before worker threads use it.
+    load_native_module()
+
     _emit(f"Regenerating native YAML cache for {game} ({len(plugin_paths)} plugin(s))")
     _emit(f"  Source: {data_dir}")
     _emit(f"  Cache: {cache_root}")
 
-    for plugin_path in plugin_paths:
+    def export_one(plugin_path):
         if not plugin_path.is_file():
             _emit(f"  - {plugin_path.name}: skipped (file missing)")
-            results[plugin_path.name] = "skipped (file missing)"
-            continue
+            return "skipped (file missing)"
 
         target = cache_root / plugin_path.stem
+        if target.resolve() == cache_root.resolve() or not target.resolve().is_relative_to(cache_root.resolve()):
+            raise ValueError(f"Cache target escapes the cache directory: {target}")
         if fresh and target.is_dir():
             shutil.rmtree(target)
         target.mkdir(parents=True, exist_ok=True)
@@ -295,11 +304,15 @@ def regenerate_esm_yaml_cache(
                 game=game,
                 format="yaml",
             )
-            results[plugin_path.name] = "exported"
+            return "exported"
         except Exception as exc:  # surface but continue with other plugins
             _log.exception("Native export failed for %s", plugin_path)
             _emit(f"      ERROR: {exc}")
-            results[plugin_path.name] = f"error: {exc}"
+            return f"error: {exc}"
+
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        results = dict(zip((path.name for path in plugin_paths), executor.map(export_one, plugin_paths)))
 
     exported = sum(1 for v in results.values() if v == "exported")
     _emit(f"Done: {exported}/{len(plugin_paths)} plugin(s) exported")

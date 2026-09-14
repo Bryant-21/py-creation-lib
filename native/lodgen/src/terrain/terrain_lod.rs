@@ -14,7 +14,7 @@ pub(crate) fn half_bits_to_f32(b: u16) -> f32 {
 
 // ---------------------------------------------------------------------------
 // TerrainMesh — output of the block assembly + Terra decimation pipeline.
-// Produced by `build_terrain_mesh`; written to disk by `output::btr::write_btr`.
+// Produced by `build_terrain_mesh`; serialized by `output::btr::build_btr_nif`.
 // Positions are in 0..4096 local-block space (un-scaled); the NIF node gets
 // `scale = lodLevel` at write time (TerrainLOD.cs:1433).
 // ---------------------------------------------------------------------------
@@ -143,7 +143,7 @@ fn assemble_block_with_water(
 /// Decimate a block into a `TerrainMesh`.
 ///
 /// Positions are in local block space (0..4096 x/y); z is the raw height divided by lodLevel.
-/// The caller (generate_quad / write_btr) applies `scale = lodLevel` and `z_translation`.
+/// `terrain::generate_quad` applies `scale = lodLevel` and `z_translation` via `build_btr_nif`.
 ///
 /// Port of `TerrainLOD.CreateGeometry` + outer block-assembly call
 /// (`TerrainLOD.cs:266-303`, `TerrainLOD.cs:389-395`).
@@ -169,30 +169,30 @@ pub fn build_terrain_mesh(
 
     let lvl = &settings.terrain.levels[lod_index];
     let error_threshold = lvl.quality;
-    // Cap vertex budget: min(max_vertices, 65535) (R1 §4, Game.cs:48).
-    // Subtract skirt reservation if skirts enabled (R1 §4): skirts != 0 -> reserve 2000.
+    // Cap vertex budget: min(max_vertices, 65535) (Game.cs:48).
+    // Reserve 2000 verts for skirts when skirts != 0.
     let mut max_verts = lvl.max_vertices.min(65535) as i64;
     if settings.terrain.skirts != 0 {
         max_verts = (max_verts - 2000).max(512);
     }
 
-    // DEFERRED (perf-only, low fidelity impact): optimize_unseen
+    // Not ported (perf-only, low fidelity impact): optimize_unseen
     // (ScriptedPreInsertion of below-water posts, TerrainLOD.cs:392-455) and
-    // hide_quads (RemoveUnseenTerrain, TerrainLOD.cs:526-551) are not ported.
-    // They remove faces; their absence only over-keeps geometry, never breaks it.
-    // The driver emits a one-time stats.warnings entry while they are unported.
+    // hide_quads (RemoveUnseenTerrain, TerrainLOD.cs:526-551). They remove faces, so
+    // their absence only over-keeps geometry. The driver warns once when either is
+    // enabled.
 
     let mut terra = super::terra::Terra::new(error_threshold, max_verts, size, size, &heights);
 
-    // Forced cell-border + grid skeleton (protect_cell_borders, gap 2/3).
+    // Forced cell-border + grid skeleton (protect_cell_borders).
     // Port of GenerateQuad's coarse pre-insertion (TerrainLOD.cs:497-512):
     //   for y in (0..size step level*2): for x in (0..size step level*2):
     //     if x % (size-1) == 0 || y % (size-1) == 0 -> ScriptedPreInsertion(state=1)
     // Force-inserting the border posts preserves cell-border vertices through
-    // decimation (no cracks between adjacent quads) AND guarantees a tessellated
+    // decimation (no cracks between adjacent quads) and guarantees a tessellated
     // skeleton so flat / landless blocks don't collapse to 2 triangles.
-    // (The optimize-unseen `heightValues < waterheight` term of list4 is deferred
-    // with the rest of optimize_unseen.)
+    // (The optimize-unseen `heightValues < waterheight` term of list4 is not ported,
+    // like the rest of optimize_unseen.)
     if settings.terrain.protect_cell_borders && size > 1 {
         let stride = (level * 2).max(1);
         let edge = size - 1;
@@ -203,6 +203,7 @@ pub fn build_terrain_mesh(
             while xx < size {
                 let idx = xx + yy * size;
                 let under_water = settings.terrain.emit_water
+                    && !world.no_lod_water
                     && level != 4
                     && water_heights[idx] < 16_777_216.0
                     && heights[idx] < water_heights[idx];
@@ -267,7 +268,7 @@ pub fn build_terrain_mesh(
         tris.push([a, b, c]);
     }
 
-    // Skirt ring (gap 1). port: TerrainLOD.AddSkirts (TerrainLOD.cs:569-624).
+    // Skirt ring. port: TerrainLOD.AddSkirts (TerrainLOD.cs:569-624).
     // Adds a downward edge-skirt around the quad border to hide LOD seams.
     if settings.terrain.skirts != 0 {
         add_skirts(
@@ -289,9 +290,9 @@ pub fn build_terrain_mesh(
     })
 }
 
-/// Add a border skirt ring to a terrain mesh (gap 1).
+/// Add a border skirt ring to a terrain mesh.
 ///
-/// Faithful port of `TerrainLOD.AddSkirts` (TerrainLOD.cs:569-624). For every
+/// Port of `TerrainLOD.AddSkirts` (TerrainLOD.cs:569-624). For every
 /// triangle EDGE that lies on a quad boundary (x==0, x==4096, y==0 or y==4096 on
 /// both endpoints), two skirt vertices are appended (the edge endpoints dropped
 /// in Z by `depth`) and two skirt triangles are added, wound to face outward.
@@ -671,8 +672,8 @@ mod tests {
     #[test]
     fn flat_block_uv_and_scale() {
         let w = flat_world(4);
-        // protect_cell_borders forces a grid skeleton (gap 2/3) and skirts add a
-        // border ring (gap 1); disable both so the flat block decimates to the
+        // protect_cell_borders forces a grid skeleton and skirts add a
+        // border ring; disable both so the flat block decimates to the
         // 4-corner case this UV/scale test asserts.
         let mut s = LodSettings::fo4_default();
         s.terrain.protect_cell_borders = false;

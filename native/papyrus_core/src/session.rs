@@ -1,14 +1,12 @@
 //! Session store — handle-based document state for the LSP.
 //!
-//! Mirrors the pattern in `py_creation_lib/native/esp/src/plugin_runtime.rs:331-378`: a static
+//! Same pattern as `py_creation_lib/native/esp/src/plugin_runtime.rs`: a static
 //! `OnceLock<Mutex<HashMap<u64, Session>>>` plus an atomic id allocator. Each
-//! session owns its document text (as a `ropey::Rope` for cheap edits) and
-//! caches the parsed AST + diagnostics so repeated queries on an unchanged
-//! buffer don't re-parse.
+//! session owns its document text (a `ropey::Rope` for cheap edits) and caches
+//! the parsed AST + diagnostics so an unchanged buffer isn't re-parsed.
 //!
-//! All public methods operate on `&self` / `&Self::Pool` — concurrent calls
-//! from different LSP requests (or different threads under `py.detach`) are
-//! safe.
+//! All public methods take `&self` / `&Self::Pool`, so concurrent calls from
+//! different LSP requests (or threads under `py.detach`) are safe.
 
 use crate::ast::ScriptNode;
 use crate::parser::{ParseError, parse_script};

@@ -228,6 +228,26 @@ fn descriptor_backed_parser_uses_declared_scalar_types() {
 }
 
 #[test]
+fn descriptor_backed_parser_resolves_non_positional_object_names() {
+    let dir = temp_classxml_dir("non_positional_pointer");
+    write_temp_classxml(
+        &dir,
+        "PointerOwner_0.xml",
+        "<class name='PointerOwner' version='0' signature='0x12345678'><members><member name='target' offset='0' vtype='TYPE_POINTER' vsubtype='TYPE_STRUCT' ctype='PointerTarget'/></members></class>",
+    );
+    let mut registry = DescriptorRegistry::from_dir(&dir).expect("temp descriptors");
+    let xml = r##"<hkpackfile classversion="11" contentsversion="hk_2014.1.0-r1"><hksection name="__data__"><hkobject name="#0090" class="PointerOwner" signature="0x12345678"><hkparam name="target">#0100</hkparam></hkobject><hkobject name="#0100" class="PointerTarget" signature="0x00000000"/></hksection></hkpackfile>"##;
+
+    let hkx = havok_native::hkx::tagxml::read_tagxml_string_with_registry(xml, &mut registry)
+        .expect("parse non-positional object labels");
+
+    assert_eq!(
+        hkx.objects()[0].members[0].value,
+        HkxValue::Pointer(Some(1))
+    );
+}
+
+#[test]
 fn rejects_mixed_object_and_scalar_arrays() {
     let hkx = HkxFile::from_tagxml(
         11,

@@ -26,15 +26,7 @@ def trace_image(
     image: np.ndarray,
     settings: TraceSettings | None = None,
 ) -> list[ShapeDef]:
-    """Trace a raster image to SWF shapes.
-
-    Args:
-        image: RGBA uint8 numpy array (H, W, 4)
-        settings: Tracing parameters
-
-    Returns:
-        List of ShapeDefs extracted from traced paths.
-    """
+    """Trace an RGBA uint8 (H, W, 4) image to SWF shapes."""
     import io
     import vtracer
     from PIL import Image

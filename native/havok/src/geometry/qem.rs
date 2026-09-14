@@ -1,13 +1,7 @@
 use std::cmp::Reverse;
-/// Quadric Error Metric (QEM) mesh decimation — Garland & Heckbert 1997.
-///
-/// Decimates a triangle mesh by iteratively collapsing the half-edge with
-/// the lowest quadric error until the target triangle count is reached (or no
-/// more collapses are possible without flipping faces).
-///
-/// The implementation is self-contained (no external crates).  It uses a
-/// symmetric 4×4 quadric matrix per vertex and a min-heap of candidate
-/// collapses.
+/// Quadric Error Metric (QEM) mesh decimation (Garland & Heckbert 1997): collapse
+/// the lowest-error half-edge until the target triangle count is reached or every
+/// collapse would flip a face. Symmetric 4×4 quadric per vertex, min-heap of candidates.
 use std::collections::{BinaryHeap, HashMap, HashSet};
 
 // ---------------------------------------------------------------------------
@@ -128,12 +122,9 @@ pub struct DecimatedMesh {
 // Public API
 // ---------------------------------------------------------------------------
 
-/// Decimate `vertices`/`triangles` to at most `target_tri_count` triangles.
-///
-/// Uses QEM edge collapses.  Returns a new mesh with at most `target_tri_count`
-/// triangles; may return more if no valid collapses remain before the target.
-///
-/// Returns the mesh unchanged if `target_tri_count` >= current triangle count.
+/// Decimate `vertices`/`triangles` to at most `target_tri_count` triangles with
+/// QEM edge collapses. May return more if no valid collapses remain; unchanged
+/// if the target is >= the current triangle count.
 pub fn decimate(
     vertices: &[[f32; 3]],
     triangles: &[[u32; 3]],

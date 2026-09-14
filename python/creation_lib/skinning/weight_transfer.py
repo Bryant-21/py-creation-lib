@@ -230,20 +230,11 @@ def transfer_weights(
 ) -> tuple[np.ndarray, np.ndarray, dict]:
     """Transfer bone weights from source to target mesh.
 
-    Args:
-        source: SkinData with populated weights and bone_indices.
-        target_vertices: (N, 3) float32 target vertex positions.
-        target_triangles: (M, 3) uint32 target triangle indices.
-        method: "barycentric", "proximity", or "hybrid".
-        search_radius: Max distance for proximity fallback (world units).
-        fallback_threshold: For hybrid mode, distance beyond which proximity
-            is used instead of barycentric.  If 0, auto-computed as median
-            edge length of source mesh.
-
-    Returns:
-        weights: (N, 4) float32 weight values.
-        bone_indices: (N, 4) int32 bone indices.
-        stats: dict with quality metrics.
+    ``method`` is "barycentric", "proximity", or "hybrid". ``search_radius`` caps
+    the proximity fallback distance (world units). In hybrid mode, targets
+    farther than ``fallback_threshold`` use proximity; 0 auto-computes it as the
+    source mesh's median edge length. Returns ``(weights, bone_indices, stats)``:
+    (N, 4) float32 weights, (N, 4) int32 indices, and a dict of quality metrics.
     """
     target_vertices = np.asarray(target_vertices, dtype=np.float32).reshape(-1, 3)
     target_triangles = np.asarray(target_triangles, dtype=np.uint32).reshape(-1, 3)

@@ -9,25 +9,28 @@ const VF_NORMALS: i64 = 0x0008;
 const VF_TANGENTS: i64 = 0x0010;
 const VF_VERTEX_COLORS: i64 = 0x0020;
 const VF_SKINNED: i64 = 0x0040;
-const VF_FULLPRECISION: i64 = 0x4000;
 
 pub fn vertex_desc_skinned(has_vertex_colors: bool) -> i64 {
-    let mut stride = 7i64;
-    let mut flags = VF_VERTEX | VF_UVS | VF_NORMALS | VF_TANGENTS | VF_SKINNED | VF_FULLPRECISION;
+    // Stride must count every byte `pack_skinned_vertex_data` writes: half3 position
+    // + bitangentX (8), UV (4), normal + bitangentY (4), tangent + bitangentZ (4),
+    // optional colors (4), bone weights (8) and bone indices (4). The engine reads
+    // vertices at this stride, so undercounting it desyncs the rest of the file.
+    let mut stride = 8i64;
+    let mut flags = VF_VERTEX | VF_UVS | VF_NORMALS | VF_TANGENTS | VF_SKINNED;
     let mut color_offset = 0i64;
+    let mut skin_offset = 5i64;
     if has_vertex_colors {
         stride += 1;
         flags |= VF_VERTEX_COLORS;
-        color_offset = 7;
+        color_offset = 5;
+        skin_offset = 6;
     }
-    let normal_offset = 3i64;
-    let tangent_offset = 4i64;
-    let skin_offset = 5i64;
     stride
-        | (normal_offset << 8)
-        | (tangent_offset << 16)
-        | (skin_offset << 20)
+        | (2 << 8)
+        | (3 << 16)
+        | (4 << 20)
         | (color_offset << 24)
+        | (skin_offset << 28)
         | (flags << 44)
 }
 

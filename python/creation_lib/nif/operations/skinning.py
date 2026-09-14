@@ -1,12 +1,9 @@
 """Promote plain BSTriShape meshes to skinned meshes.
 
-The existing `creation_lib.skinning` package can paint, transfer, and export weights on
-shapes that already have `BSSkin::Instance` + `BSSkin::BoneData`. It can't
-create those blocks from nothing.
-
-This module fills that gap: given an unskinned BSTriShape, it creates the
-bone node, skin instance, bone data, updates the vertex descriptor to enable
-skinning, and rewrites each vertex entry with bone weight/index fields.
+`creation_lib.skinning` edits weights only on shapes that already have
+`BSSkin::Instance` + `BSSkin::BoneData`. This module creates the bone node, skin
+instance, and bone data, enables skinning in the vertex descriptor, and adds bone
+weight/index fields to each vertex.
 
 Typical call order for the weight painter's "promote to skinned" flow:
 
@@ -120,26 +117,13 @@ def make_shape_skinned(
     skeleton_root_id: int = 0,
     inv_bind_transforms: Sequence[np.ndarray] | None = None,
 ) -> int:
-    """Promote a plain BSTriShape into a skinned shape.
+    """Promote a plain BSTriShape into a skinned shape; return the new BSSkin::Instance id.
 
-    Creates `BSSkin::BoneData` + `BSSkin::Instance`, links them to the shape,
-    updates the vertex descriptor to enable VF_Skinned, and rewrites each
-    vertex entry with zero-initialized `Bone Weights` / `Bone Indices` fields.
-    Weights should be filled in by a subsequent call (e.g. `set_rigid_weights`
-    or the painter export path).
-
-    Args:
-        nif:                  NifFile instance (mutated in place).
-        shape_id:             Block id of the BSTriShape to skin.
-        bone_ids:             NiNode block ids, in the order the shape will
-                              index them. At least one required.
-        skeleton_root_id:     Block id of the root NiNode (defaults to 0).
-        inv_bind_transforms:  Optional per-bone 4x4 inverse bind matrices.
-                              Defaults to identity, which is correct when the
-                              bones live at the mesh origin in world space.
-
-    Returns:
-        Block id of the new BSSkin::Instance.
+    Creates and links `BSSkin::BoneData` + `BSSkin::Instance`, sets VF_Skinned in
+    the vertex descriptor, and zero-fills each vertex's `Bone Weights` / `Bone
+    Indices` for `set_rigid_weights` or the painter export to fill. `bone_ids` (at
+    least one) are NiNodes in shape-local index order. `inv_bind_transforms`
+    default to identity, which is correct when the bones sit at the mesh origin.
     """
     if not bone_ids:
         raise ValueError("make_shape_skinned requires at least one bone")

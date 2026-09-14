@@ -160,7 +160,7 @@ def test_plan_archive_outputs_uses_ba2_estimate_for_texture_archives(
     assert [len(plan.entries) for plan in plans] == [2]
 
 
-def test_plan_archive_outputs_splits_lod_and_terrain_by_archive_type(tmp_path: Path):
+def test_plan_archive_outputs_routes_land_assets_to_generic_archives(tmp_path: Path):
     plans = plan_archive_outputs(
         "B21_Test",
         [
@@ -185,14 +185,14 @@ def test_plan_archive_outputs_splits_lod_and_terrain_by_archive_type(tmp_path: P
         "Textures/Terrain/Appalachia/Appalachia.4.0.0.dds"
     ]
     assert by_label["LODTextures"].texture_archive is True
-    assert [entry.relative_path for entry in by_label["Terrain"].entries] == [
+    assert [entry.relative_path for entry in by_label["Materials"].entries] == [
         "Materials/Terrain/Appalachia/blend.bgsm"
     ]
-    assert by_label["Terrain"].texture_archive is False
-    assert [entry.relative_path for entry in by_label["TerrainTextures"].entries] == [
+    assert by_label["Materials"].texture_archive is False
+    assert [entry.relative_path for entry in by_label["Textures"].entries] == [
         "Textures/Terrain/Appalachia/lswamprocks01_d.dds"
     ]
-    assert by_label["TerrainTextures"].texture_archive is True
+    assert by_label["Textures"].texture_archive is True
 
 
 def test_plan_archive_outputs_compacts_lod_and_terrain_dds_into_textures(
@@ -271,6 +271,26 @@ def test_plan_archive_outputs_defaults_fo4_to_compact_labels(tmp_path: Path):
     assert [entry.relative_path for entry in plans[0].entries] == [
         "Meshes/test.nif",
         "Scripts/test.pex",
+    ]
+
+
+def test_plan_archive_outputs_compact_ignores_archive_cap(tmp_path: Path):
+    plans = plan_archive_outputs(
+        "B21_Test",
+        [
+            _entry("Meshes/test.nif", 10, tmp_path),
+            _entry("Scripts/test.pex", 10, tmp_path),
+            _entry("Textures/test.dds", 10, tmp_path),
+        ],
+        "ba2",
+        "",
+        1,
+        expanded_archives=False,
+    )
+
+    assert [plan.output_name for plan in plans] == [
+        "B21_Test - Main.ba2",
+        "B21_Test - Textures.ba2",
     ]
 
 
@@ -426,6 +446,7 @@ def test_plan_archive_outputs_splits_oversized_main_by_category(tmp_path: Path):
         "ba2",
         "",
         9000,
+        expanded_archives=True,
     )
 
     assert [plan.output_name for plan in plans] == [
@@ -445,6 +466,7 @@ def test_plan_archive_outputs_splits_lod_when_main_oversized(tmp_path: Path):
         "ba2",
         "",
         9000,
+        expanded_archives=True,
     )
 
     assert [plan.output_name for plan in plans] == [
@@ -464,6 +486,7 @@ def test_plan_archive_outputs_shards_oversized_lod(tmp_path: Path):
         "ba2",
         "",
         9000,
+        expanded_archives=True,
     )
 
     assert [plan.output_name for plan in plans] == [
@@ -483,6 +506,7 @@ def test_plan_archive_outputs_shards_oversized_scripts(tmp_path: Path):
         "ba2",
         "",
         9000,
+        expanded_archives=True,
     )
 
     assert [plan.output_name for plan in plans] == [
@@ -502,6 +526,7 @@ def test_plan_archive_outputs_keeps_split_strings_in_main_archive(tmp_path: Path
         "ba2",
         "",
         9000,
+        expanded_archives=True,
     )
 
     assert [plan.output_name for plan in plans] == [
@@ -524,6 +549,7 @@ def test_plan_archive_outputs_shards_textures(tmp_path: Path):
         "ba2",
         "",
         9000,
+        expanded_archives=True,
     )
 
     assert [plan.output_name for plan in plans] == [
@@ -543,6 +569,7 @@ def test_plan_archive_outputs_shards_oversized_category(tmp_path: Path):
         "ba2",
         "",
         9000,
+        expanded_archives=True,
     )
 
     assert [plan.output_name for plan in plans] == [
@@ -563,10 +590,24 @@ def test_plan_archive_outputs_puts_xbox_suffix_after_label(tmp_path: Path):
     assert [plan.output_name for plan in plans] == ["B21_Test - Textures_xbox.ba2"]
 
 
+def test_plan_archive_outputs_puts_playstation_suffix_after_label(tmp_path: Path):
+    plans = plan_archive_outputs(
+        "B21_Test",
+        [_entry("Textures/a.dds", 10, tmp_path)],
+        ".ba2",
+        "_ps",
+        1024 * 1024,
+    )
+
+    assert [plan.output_name for plan in plans] == ["B21_Test - Textures_ps.ba2"]
+
+
 def test_plan_archive_outputs_rejects_single_file_over_cap(tmp_path: Path):
     entry = _entry("Meshes/a.nif", 7000, tmp_path)
     with pytest.raises(ValueError, match="exceeding archive max size"):
-        plan_archive_outputs("B21_Test", [entry], "ba2", "", 9000)
+        plan_archive_outputs(
+            "B21_Test", [entry], "ba2", "", 9000, expanded_archives=True
+        )
 
 
 def test_discover_mod_archives_matches_mod_prefix_and_extensions(tmp_path: Path):
@@ -578,6 +619,7 @@ def test_discover_mod_archives_matches_mod_prefix_and_extensions(tmp_path: Path)
         tmp_path / "B21_Test - Misc.ba2",
         tmp_path / "B21_Test - Misc2.ba2",
         tmp_path / "B21_Test - Textures.bsa",
+        tmp_path / "B21_Test - Textures_ps.ba2",
     ]
     for path in expected:
         path.write_bytes(b"archive")

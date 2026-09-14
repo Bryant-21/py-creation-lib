@@ -1,5 +1,6 @@
 use crate::btd::{BtdError, BtdFile, CellTextureSet};
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::time::Instant;
 
 pub const SOURCE_CELL_SAMPLES: usize = 128;
 pub const SOURCE_QUADRANT_SAMPLES: usize = 64;
@@ -7,13 +8,10 @@ pub const LAND_CELL_INTERVALS: usize = 32;
 pub const LAND_QUADRANT_INTERVALS: usize = 16;
 pub const LAND_QUADRANT_VERTICES: usize = 17;
 pub const LAND_ALPHA_DOWNSAMPLE_WIDTH: i32 = 4;
-/// FO4's land renderer packs base + 5 blend weights per vertex; quads carrying more
-/// textures render black wherever an over-budget layer locally dominates (the engine
-/// drops the overflow without renormalizing — CK-confirmed: removing any two textures
-/// from a 7+-texture quad clears the black). Vanilla records ship up to 10/quad but
-/// only with near-zero tail weights; FO76 source quads never exceed base+5, so anything
-/// above 6 here is downsample bleed, not content.
+/// FO4's landscape renderer consumes one BTXT plus ATXT slots 0 through 4.
 pub const MAX_TEXTURES_PER_QUADRANT: usize = 6;
+const FIRST_ATXT_SLOT_REQUIRING_HEADROOM: usize = 3;
+const MAX_LATE_ATXT_ALPHA_WITH_BASE_HEADROOM: u8 = 254;
 
 type QuadrantKey = (i32, i32, u8);
 
@@ -30,6 +28,29 @@ pub struct GlobalLandscapeBlend {
     vertices: Vec<HashMap<u32, f32>>,
     quadrant_base_source_ltex_object_ids: HashMap<QuadrantKey, u32>,
     edge_retained_source_ltex_object_ids: HashMap<QuadrantKey, HashSet<u32>>,
+    /// Starfield only: count of FO4 quadrants whose BTXT-base area vote had a
+    /// runner-up within 10% of the winner (0 for FO76 identity).
+    quadrant_base_split_count: u32,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct GlobalBlendBuildProfile {
+    pub sample_and_materialize_seconds: f64,
+    pub quadrant_bases_seconds: f64,
+    pub edge_retention_seconds: f64,
+    pub global_vertex_count: u64,
+    pub source_sample_selection_count: u64,
+    pub quadrant_count: u64,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RequiredLtexCollectProfile {
+    pub sample_and_summarize_seconds: f64,
+    pub quadrant_bases_seconds: f64,
+    pub retention_and_selection_seconds: f64,
+    pub global_vertex_count: u64,
+    pub source_sample_selection_count: u64,
+    pub quadrant_count: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -49,9 +70,37 @@ impl GlobalLandscapeBlend {
         cells_y: usize,
         alpha_lookup: &impl SourceAlphaLookup,
     ) -> Result<Self, BtdError> {
+        Self::build_profiled(btd, min_cell_x, min_cell_y, cells_x, cells_y, alpha_lookup)
+            .map(|(blend, _)| blend)
+    }
+
+    pub fn build_profiled(
+        btd: &mut BtdFile,
+        min_cell_x: i32,
+        min_cell_y: i32,
+        cells_x: usize,
+        cells_y: usize,
+        alpha_lookup: &impl SourceAlphaLookup,
+    ) -> Result<(Self, GlobalBlendBuildProfile), BtdError> {
         let width = cells_x * LAND_CELL_INTERVALS + 1;
         let height = cells_y * LAND_CELL_INTERVALS + 1;
+        let sample_axis_width = if btd.header().is_starfield_layout {
+            SF_LAND_ALPHA_DOWNSAMPLE_WIDTH as u64
+        } else {
+            LAND_ALPHA_DOWNSAMPLE_WIDTH as u64
+        };
+        let global_vertex_count = (width as u64).saturating_mul(height as u64);
+        let mut profile = GlobalBlendBuildProfile {
+            global_vertex_count,
+            source_sample_selection_count: global_vertex_count
+                .saturating_mul(sample_axis_width.saturating_mul(sample_axis_width)),
+            quadrant_count: (cells_x as u64)
+                .saturating_mul(cells_y as u64)
+                .saturating_mul(4),
+            ..GlobalBlendBuildProfile::default()
+        };
         let mut vertices = Vec::with_capacity(width * height);
+        let sample_and_materialize_started = Instant::now();
         for_each_global_blend_vertex(
             btd,
             min_cell_x,
@@ -61,29 +110,38 @@ impl GlobalLandscapeBlend {
             alpha_lookup,
             |_, _, weights| vertices.push(weights.clone()),
         )?;
+        profile.sample_and_materialize_seconds = elapsed_seconds(sample_and_materialize_started);
 
-        let quadrant_base_source_ltex_object_ids =
+        let quadrant_bases_started = Instant::now();
+        let (quadrant_base_source_ltex_object_ids, quadrant_base_split_count) =
             quadrant_base_source_ltex_object_ids(btd, min_cell_x, min_cell_y, cells_x, cells_y)?;
+        profile.quadrant_bases_seconds = elapsed_seconds(quadrant_bases_started);
 
-        let edge_retained_source_ltex_object_ids = compute_edge_retention_plan(
-            min_cell_x,
-            min_cell_y,
-            cells_x,
-            cells_y,
-            width,
-            &vertices,
-            &quadrant_base_source_ltex_object_ids,
-        );
+        let edge_retention_started = Instant::now();
+        let edge_retained_source_ltex_object_ids =
+            compute_edge_retention_plan(min_cell_x, min_cell_y, cells_x, cells_y, width, &vertices);
+        profile.edge_retention_seconds = elapsed_seconds(edge_retention_started);
 
-        Ok(Self {
-            min_cell_x,
-            min_cell_y,
-            width,
-            height,
-            vertices,
-            quadrant_base_source_ltex_object_ids,
-            edge_retained_source_ltex_object_ids,
-        })
+        Ok((
+            Self {
+                min_cell_x,
+                min_cell_y,
+                width,
+                height,
+                vertices,
+                quadrant_base_source_ltex_object_ids,
+                edge_retained_source_ltex_object_ids,
+                quadrant_base_split_count,
+            },
+            profile,
+        ))
+    }
+
+    /// Starfield BTXT-base area-vote ambiguity counter (see
+    /// `starfield_quadrant_base_source_ltex_object_ids`); always 0 for FO76
+    /// identity.
+    pub fn quadrant_base_split_count(&self) -> u32 {
+        self.quadrant_base_split_count
     }
 
     #[cfg(test)]
@@ -98,15 +156,8 @@ impl GlobalLandscapeBlend {
         let height = cells_y * LAND_CELL_INTERVALS + 1;
         assert_eq!(vertices.len(), width * height);
         let quadrant_base_source_ltex_object_ids = HashMap::new();
-        let edge_retained_source_ltex_object_ids = compute_edge_retention_plan(
-            min_cell_x,
-            min_cell_y,
-            cells_x,
-            cells_y,
-            width,
-            &vertices,
-            &quadrant_base_source_ltex_object_ids,
-        );
+        let edge_retained_source_ltex_object_ids =
+            compute_edge_retention_plan(min_cell_x, min_cell_y, cells_x, cells_y, width, &vertices);
         Self {
             min_cell_x,
             min_cell_y,
@@ -115,6 +166,7 @@ impl GlobalLandscapeBlend {
             vertices,
             quadrant_base_source_ltex_object_ids,
             edge_retained_source_ltex_object_ids,
+            quadrant_base_split_count: 0,
         }
     }
 
@@ -130,15 +182,8 @@ impl GlobalLandscapeBlend {
         let width = cells_x * LAND_CELL_INTERVALS + 1;
         let height = cells_y * LAND_CELL_INTERVALS + 1;
         assert_eq!(vertices.len(), width * height);
-        let edge_retained_source_ltex_object_ids = compute_edge_retention_plan(
-            min_cell_x,
-            min_cell_y,
-            cells_x,
-            cells_y,
-            width,
-            &vertices,
-            &quadrant_base_source_ltex_object_ids,
-        );
+        let edge_retained_source_ltex_object_ids =
+            compute_edge_retention_plan(min_cell_x, min_cell_y, cells_x, cells_y, width, &vertices);
         Self {
             min_cell_x,
             min_cell_y,
@@ -147,6 +192,7 @@ impl GlobalLandscapeBlend {
             vertices,
             quadrant_base_source_ltex_object_ids,
             edge_retained_source_ltex_object_ids,
+            quadrant_base_split_count: 0,
         }
     }
 
@@ -166,21 +212,33 @@ impl GlobalLandscapeBlend {
     ) -> Result<Option<QuadrantBlend>, String> {
         let mut totals = HashMap::<u32, u32>::new();
         let mut edge_ids = HashSet::<u32>::new();
-        let mut has_empty_edge_vertex = false;
         let mut quadrant_weights =
             Vec::with_capacity(LAND_QUADRANT_VERTICES * LAND_QUADRANT_VERTICES);
+        let mut shared_edge_vertices =
+            Vec::with_capacity(LAND_QUADRANT_VERTICES * LAND_QUADRANT_VERTICES);
+        let cell_offset_x = usize::try_from(cell_x - self.min_cell_x)
+            .map_err(|_| format!("cell x {cell_x} is outside global blend"))?;
+        let cell_offset_y = usize::try_from(cell_y - self.min_cell_y)
+            .map_err(|_| format!("cell y {cell_y} is outside global blend"))?;
+        let quadrant_origin_x = cell_offset_x * LAND_CELL_INTERVALS
+            + usize::from(quadrant & 1) * LAND_QUADRANT_INTERVALS;
+        let quadrant_origin_y = cell_offset_y * LAND_CELL_INTERVALS
+            + usize::from((quadrant >> 1) & 1) * LAND_QUADRANT_INTERVALS;
+        let mut quantized_values = Vec::new();
         for row in 0..LAND_QUADRANT_VERTICES {
             for column in 0..LAND_QUADRANT_VERTICES {
-                let quantized = quantize_vertex_weights_to_bytes(
+                quantize_vertex_weights(
                     self.quadrant_vertex_weights(cell_x, cell_y, quadrant, row, column)?,
+                    &mut quantized_values,
                 );
+                let quantized: HashMap<_, _> = quantized_values
+                    .iter()
+                    .map(|&(id, byte, _fraction)| (id, byte))
+                    .collect();
                 let is_edge = row == 0
                     || row == LAND_QUADRANT_VERTICES - 1
                     || column == 0
                     || column == LAND_QUADRANT_VERTICES - 1;
-                if is_edge && quantized.is_empty() {
-                    has_empty_edge_vertex = true;
-                }
                 for (&id, &byte) in &quantized {
                     *totals.entry(id).or_insert(0) += u32::from(byte);
                     if is_edge {
@@ -188,6 +246,14 @@ impl GlobalLandscapeBlend {
                     }
                 }
                 quadrant_weights.push(quantized);
+                let global_x = quadrant_origin_x + column;
+                let global_y = quadrant_origin_y + row;
+                shared_edge_vertices.push(
+                    (column == 0 && global_x > 0)
+                        || (column == LAND_QUADRANT_VERTICES - 1 && global_x + 1 < self.width)
+                        || (row == 0 && global_y > 0)
+                        || (row == LAND_QUADRANT_VERTICES - 1 && global_y + 1 < self.height),
+                );
             }
         }
 
@@ -203,18 +269,50 @@ impl GlobalLandscapeBlend {
         let Some(retained) = retained_quadrant_textures(
             &totals,
             &edge_ids,
-            has_empty_edge_vertex,
             preferred_base_source_ltex_object_id,
             &retained_edge_ids,
         ) else {
             return Ok(None);
         };
-        let alpha_source_ltex_object_ids = retained
+        let mut shared_edge_saturated_vertex_counts = HashMap::<u32, u16>::new();
+        for (weights, is_shared_edge) in quadrant_weights.iter().zip(shared_edge_vertices) {
+            if !is_shared_edge {
+                continue;
+            }
+            let retained_weight_total = retained
+                .source_ltex_object_ids
+                .iter()
+                .map(|id| u16::from(*weights.get(id).unwrap_or(&0)))
+                .sum::<u16>();
+            if retained_weight_total == 0 {
+                continue;
+            }
+            for id in &retained.source_ltex_object_ids {
+                if u16::from(*weights.get(id).unwrap_or(&0)) == retained_weight_total {
+                    *shared_edge_saturated_vertex_counts.entry(*id).or_insert(0) += 1;
+                    break;
+                }
+            }
+        }
+        let mut alpha_source_ltex_object_ids = retained
             .source_ltex_object_ids
             .iter()
             .copied()
             .filter(|id| *id != retained.base_source_ltex_object_id)
             .collect::<Vec<_>>();
+        alpha_source_ltex_object_ids.sort_by(|left, right| {
+            shared_edge_saturated_vertex_counts
+                .get(right)
+                .unwrap_or(&0)
+                .cmp(shared_edge_saturated_vertex_counts.get(left).unwrap_or(&0))
+                .then_with(|| {
+                    totals
+                        .get(right)
+                        .unwrap_or(&0)
+                        .cmp(totals.get(left).unwrap_or(&0))
+                })
+                .then_with(|| left.cmp(right))
+        });
         let alpha_vtxt = encode_alpha_vtxt(
             &quadrant_weights,
             retained.base_source_ltex_object_id,
@@ -266,7 +364,6 @@ struct RetainedQuadrantTextures {
 fn retained_quadrant_textures(
     totals: &HashMap<u32, u32>,
     edge_ids: &HashSet<u32>,
-    has_empty_edge_vertex: bool,
     preferred_base_source_ltex_object_id: Option<u32>,
     retained_edge_ids: &HashSet<u32>,
 ) -> Option<RetainedQuadrantTextures> {
@@ -277,14 +374,7 @@ fn retained_quadrant_textures(
         .difference(retained_edge_ids)
         .copied()
         .collect::<HashSet<_>>();
-    let preferred_base_required = preferred_base_source_ltex_object_id
-        .is_some_and(|id| !edge_ids.contains(&id) && has_empty_edge_vertex);
     let mut retained = Vec::new();
-    if let Some(id) = preferred_base_source_ltex_object_id {
-        if preferred_base_required {
-            retained.push(id);
-        }
-    }
 
     let mut edge_candidates: Vec<u32> = retained_edge_ids.iter().copied().collect();
     edge_candidates.sort_by(|left, right| {
@@ -311,15 +401,6 @@ fn retained_quadrant_textures(
             .cmp(totals.get(left).unwrap_or(&0))
             .then_with(|| left.cmp(right))
     });
-    if let Some(id) = preferred_base_source_ltex_object_id {
-        if !retained.contains(&id)
-            && retained.len() < MAX_TEXTURES_PER_QUADRANT
-            && !blocked_edge_ids.contains(&id)
-            && (totals.contains_key(&id) || has_empty_edge_vertex)
-        {
-            retained.push(id);
-        }
-    }
 
     let mut interior: Vec<u32> = totals
         .keys()
@@ -337,6 +418,13 @@ fn retained_quadrant_textures(
         }
         retained.push(id);
     }
+    retained.sort_by(|left, right| {
+        totals
+            .get(right)
+            .unwrap_or(&0)
+            .cmp(totals.get(left).unwrap_or(&0))
+            .then_with(|| left.cmp(right))
+    });
 
     if retained.is_empty() {
         if let Some(id) = totals
@@ -356,20 +444,13 @@ fn retained_quadrant_textures(
     dropped_source_ltex_object_ids.sort_unstable();
 
     let base_source_ltex_object_id = preferred_base_source_ltex_object_id
-        .filter(|id| retained.contains(id))
-        .unwrap_or_else(|| {
-            retained
-                .iter()
-                .copied()
-                .max_by(|left, right| {
-                    totals
-                        .get(left)
-                        .unwrap_or(&0)
-                        .cmp(totals.get(right).unwrap_or(&0))
-                        .then_with(|| right.cmp(left))
-                })
-                .expect("retained has at least one texture")
-        });
+        .filter(|preferred| {
+            retained.contains(preferred)
+                && retained
+                    .iter()
+                    .all(|id| totals.get(preferred).unwrap_or(&0) >= totals.get(id).unwrap_or(&0))
+        })
+        .unwrap_or(retained[0]);
 
     Some(RetainedQuadrantTextures {
         source_ltex_object_ids: retained,
@@ -382,7 +463,6 @@ fn retained_quadrant_textures(
 struct QuadrantTextureUsageSummary {
     totals: HashMap<u32, u32>,
     edge_weights: HashMap<u32, u32>,
-    has_empty_edge_vertex: bool,
 }
 
 #[derive(Default)]
@@ -486,9 +566,43 @@ pub fn collect_required_source_ltex_object_ids(
     cells_y: usize,
     alpha_lookup: &impl SourceAlphaLookup,
 ) -> Result<BTreeSet<u32>, BtdError> {
+    collect_required_source_ltex_object_ids_profiled(
+        btd,
+        min_cell_x,
+        min_cell_y,
+        cells_x,
+        cells_y,
+        alpha_lookup,
+    )
+    .map(|(required, _)| required)
+}
+
+pub fn collect_required_source_ltex_object_ids_profiled(
+    btd: &mut BtdFile,
+    min_cell_x: i32,
+    min_cell_y: i32,
+    cells_x: usize,
+    cells_y: usize,
+    alpha_lookup: &impl SourceAlphaLookup,
+) -> Result<(BTreeSet<u32>, RequiredLtexCollectProfile), BtdError> {
     let quadrant_grid_width = cells_x * 2;
     let quadrant_grid_height = cells_y * 2;
     let quadrant_count = quadrant_grid_width * quadrant_grid_height;
+    let width = cells_x * LAND_CELL_INTERVALS + 1;
+    let height = cells_y * LAND_CELL_INTERVALS + 1;
+    let sample_axis_width = if btd.header().is_starfield_layout {
+        SF_LAND_ALPHA_DOWNSAMPLE_WIDTH as u64
+    } else {
+        LAND_ALPHA_DOWNSAMPLE_WIDTH as u64
+    };
+    let global_vertex_count = (width as u64).saturating_mul(height as u64);
+    let mut profile = RequiredLtexCollectProfile {
+        global_vertex_count,
+        source_sample_selection_count: global_vertex_count
+            .saturating_mul(sample_axis_width.saturating_mul(sample_axis_width)),
+        quadrant_count: quadrant_count as u64,
+        ..RequiredLtexCollectProfile::default()
+    };
     let mut summaries = (0..quadrant_count)
         .map(|_| QuadrantTextureUsageSummary::default())
         .collect::<Vec<_>>();
@@ -502,6 +616,7 @@ pub fn collect_required_source_ltex_object_ids(
     let mut connectivity = EdgeConnectivity::default();
     let mut quantized = Vec::new();
 
+    let sample_and_summarize_started = Instant::now();
     for_each_global_blend_vertex(
         btd,
         min_cell_x,
@@ -529,9 +644,6 @@ pub fn collect_required_source_ltex_object_ids(
 
             for &(quadrant_index, _, _) in &covered[..covered_count] {
                 let summary = &mut summaries[quadrant_index];
-                if is_edge && quantized.is_empty() {
-                    summary.has_empty_edge_vertex = true;
-                }
                 for &(source_ltex_object_id, byte, _) in &quantized {
                     *summary.totals.entry(source_ltex_object_id).or_insert(0) += u32::from(byte);
                     if is_edge {
@@ -560,27 +672,21 @@ pub fn collect_required_source_ltex_object_ids(
             }
         },
     )?;
+    profile.sample_and_summarize_seconds = elapsed_seconds(sample_and_summarize_started);
 
-    let quadrant_bases =
+    let quadrant_bases_started = Instant::now();
+    let (quadrant_bases, _) =
         quadrant_base_source_ltex_object_ids(btd, min_cell_x, min_cell_y, cells_x, cells_y)?;
+    profile.quadrant_bases_seconds = elapsed_seconds(quadrant_bases_started);
+    let retention_and_selection_started = Instant::now();
     let quadrants = all_quadrant_keys(min_cell_x, min_cell_y, cells_x, cells_y);
     let mut retained = HashMap::with_capacity(quadrant_count);
-    let mut empty_edge_vertices = HashSet::new();
     for (quadrant_index, summary) in summaries.iter().enumerate() {
         let key = quadrant_keys[quadrant_index];
         retained.insert(key, summary.edge_weights.keys().copied().collect());
-        if summary.has_empty_edge_vertex {
-            empty_edge_vertices.insert(key);
-        }
     }
     let components = connectivity.into_components(&summaries, &quadrant_keys);
-    let retained = trim_edge_retention(
-        &quadrants,
-        retained,
-        &empty_edge_vertices,
-        &quadrant_bases,
-        &components,
-    );
+    let retained = trim_edge_retention(&quadrants, retained, &components);
 
     let mut required = BTreeSet::new();
     for key in quadrants {
@@ -594,14 +700,18 @@ pub fn collect_required_source_ltex_object_ids(
         if let Some(retained) = retained_quadrant_textures(
             &summary.totals,
             &edge_ids,
-            summary.has_empty_edge_vertex,
             quadrant_bases.get(&key).copied(),
             &retained_edge_ids,
         ) {
             required.extend(retained.source_ltex_object_ids);
         }
     }
-    Ok(required)
+    profile.retention_and_selection_seconds = elapsed_seconds(retention_and_selection_started);
+    Ok((required, profile))
+}
+
+fn elapsed_seconds(started: Instant) -> f64 {
+    (started.elapsed().as_secs_f64() * 1_000_000.0).round() / 1_000_000.0
 }
 
 fn covering_quadrant_axis(vertex: usize, quadrant_count: usize) -> ([usize; 2], usize) {
@@ -660,20 +770,15 @@ fn compute_edge_retention_plan(
     cells_y: usize,
     width: usize,
     vertices: &[HashMap<u32, f32>],
-    quadrant_base_source_ltex_object_ids: &HashMap<QuadrantKey, u32>,
 ) -> HashMap<QuadrantKey, HashSet<u32>> {
     let mut retained = HashMap::<QuadrantKey, HashSet<u32>>::new();
     let mut edge_weights = HashMap::<(QuadrantKey, u32), u32>::new();
-    let mut empty_edge_vertices = HashSet::<QuadrantKey>::new();
     let quadrants = all_quadrant_keys(min_cell_x, min_cell_y, cells_x, cells_y);
 
     for key in &quadrants {
         let mut ids = HashSet::<u32>::new();
         for (global_x, global_y) in quadrant_edge_global_vertices(min_cell_x, min_cell_y, *key) {
             let quantized = quantized_global_vertex(vertices, width, global_x, global_y);
-            if quantized.is_empty() {
-                empty_edge_vertices.insert(*key);
-            }
             for (id, byte) in quantized {
                 ids.insert(id);
                 *edge_weights.entry((*key, id)).or_insert(0) += u32::from(byte);
@@ -692,20 +797,12 @@ fn compute_edge_retention_plan(
         &retained,
         &edge_weights,
     );
-    trim_edge_retention(
-        &quadrants,
-        retained,
-        &empty_edge_vertices,
-        quadrant_base_source_ltex_object_ids,
-        &components,
-    )
+    trim_edge_retention(&quadrants, retained, &components)
 }
 
 fn trim_edge_retention(
     quadrants: &[QuadrantKey],
     mut retained: HashMap<QuadrantKey, HashSet<u32>>,
-    empty_edge_vertices: &HashSet<QuadrantKey>,
-    quadrant_base_source_ltex_object_ids: &HashMap<QuadrantKey, u32>,
     components: &[EdgeComponent],
 ) -> HashMap<QuadrantKey, HashSet<u32>> {
     let mut component_by_quadrant_id = HashMap::<(QuadrantKey, u32), usize>::new();
@@ -722,22 +819,8 @@ fn trim_edge_retention(
         let Some(overfull_key) = quadrants
             .iter()
             .copied()
-            .filter(|key| {
-                retained_texture_count(
-                    *key,
-                    &retained,
-                    &empty_edge_vertices,
-                    quadrant_base_source_ltex_object_ids,
-                ) > MAX_TEXTURES_PER_QUADRANT
-            })
-            .max_by_key(|key| {
-                retained_texture_count(
-                    *key,
-                    &retained,
-                    &empty_edge_vertices,
-                    quadrant_base_source_ltex_object_ids,
-                )
-            })
+            .filter(|key| retained_texture_count(*key, &retained) > MAX_TEXTURES_PER_QUADRANT)
+            .max_by_key(|key| retained_texture_count(*key, &retained))
         else {
             break;
         };
@@ -794,19 +877,8 @@ fn trim_edge_retention(
 fn retained_texture_count(
     key: QuadrantKey,
     retained: &HashMap<QuadrantKey, HashSet<u32>>,
-    empty_edge_vertices: &HashSet<QuadrantKey>,
-    quadrant_base_source_ltex_object_ids: &HashMap<QuadrantKey, u32>,
 ) -> usize {
-    let edge_count = retained.get(&key).map(|ids| ids.len()).unwrap_or(0);
-    let source_base_required = quadrant_base_source_ltex_object_ids
-        .get(&key)
-        .is_some_and(|id| {
-            empty_edge_vertices.contains(&key)
-                && !retained
-                    .get(&key)
-                    .is_some_and(|edge_ids| edge_ids.contains(id))
-        });
-    edge_count + usize::from(source_base_required)
+    retained.get(&key).map(|ids| ids.len()).unwrap_or(0)
 }
 
 fn edge_components(
@@ -1003,6 +1075,8 @@ fn encode_alpha_vtxt(
         Vec::with_capacity(alpha_source_ltex_object_ids.len() + 1);
     retained_source_ltex_object_ids.push(base_source_ltex_object_id);
     retained_source_ltex_object_ids.extend_from_slice(alpha_source_ltex_object_ids);
+    let mut values = Vec::with_capacity(retained_source_ltex_object_ids.len());
+    let mut normalized_weights = vec![0u8; retained_source_ltex_object_ids.len()];
 
     for row in 0..LAND_QUADRANT_VERTICES {
         for column in 0..LAND_QUADRANT_VERTICES {
@@ -1016,19 +1090,21 @@ fn encode_alpha_vtxt(
                 continue;
             }
 
-            let mut values = retained_source_ltex_object_ids
-                .iter()
-                .enumerate()
-                .filter_map(|(retained_index, id)| {
-                    let byte = *weights.get(id).unwrap_or(&0);
-                    (byte > 0).then(|| {
-                        let numerator = u16::from(byte) * 255;
-                        let floor = (numerator / retained_weight_total) as u8;
-                        let remainder = numerator % retained_weight_total;
-                        (retained_index, *id, floor, remainder)
-                    })
-                })
-                .collect::<Vec<_>>();
+            values.clear();
+            values.extend(
+                retained_source_ltex_object_ids
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(retained_index, id)| {
+                        let byte = *weights.get(id).unwrap_or(&0);
+                        (byte > 0).then(|| {
+                            let numerator = u16::from(byte) * 255;
+                            let floor = (numerator / retained_weight_total) as u8;
+                            let remainder = numerator % retained_weight_total;
+                            (retained_index, *id, floor, remainder)
+                        })
+                    }),
+            );
             if values.is_empty() {
                 continue;
             }
@@ -1048,21 +1124,32 @@ fn encode_alpha_vtxt(
                     remaining -= 1;
                 }
             }
-            values.sort_by_key(|(retained_index, _, _, _)| *retained_index);
+            normalized_weights.fill(0);
+            for &(retained_index, _id, byte, _frac) in &values {
+                normalized_weights[retained_index] = byte;
+            }
 
             let position = position as u16;
-            for (retained_index, _id, byte, _frac) in values {
-                if retained_index == 0 {
-                    continue;
-                }
-                if byte == 0 {
+            let mut prefix_weight = u16::from(normalized_weights[0]);
+            for (retained_index, &weight) in normalized_weights.iter().enumerate().skip(1) {
+                prefix_weight += u16::from(weight);
+                if weight == 0 {
                     continue;
                 }
                 let slot = retained_index - 1;
+                let numerator = u32::from(weight) * 255;
+                let mut alpha_byte =
+                    ((numerator + u32::from(prefix_weight) / 2) / u32::from(prefix_weight)) as u8;
+                if slot >= FIRST_ATXT_SLOT_REQUIRING_HEADROOM {
+                    alpha_byte = alpha_byte.min(MAX_LATE_ATXT_ALPHA_WITH_BASE_HEADROOM);
+                }
+                if alpha_byte == 0 {
+                    continue;
+                }
                 per_slot[slot].extend_from_slice(&position.to_le_bytes());
                 per_slot[slot].push(0);
                 per_slot[slot].push(0);
-                per_slot[slot].extend_from_slice(&(f32::from(byte) / 255.0).to_le_bytes());
+                per_slot[slot].extend_from_slice(&(f32::from(alpha_byte) / 255.0).to_le_bytes());
             }
         }
     }
@@ -1141,17 +1228,29 @@ fn for_each_global_blend_vertex(
     let width = cells_x * LAND_CELL_INTERVALS + 1;
     let height = cells_y * LAND_CELL_INTERVALS + 1;
     let header = btd.header();
-    let source_columns = blend_sample_axis(min_cell_x, width, header.cell_min_x, header.cell_max_x);
-    let source_rows = blend_sample_axis(min_cell_y, height, header.cell_min_y, header.cell_max_y);
+    let is_starfield = header.is_starfield_layout;
+    let (source_columns, count_x) = blend_sample_axis(
+        min_cell_x,
+        width,
+        header.cell_min_x,
+        header.cell_max_x,
+        is_starfield,
+    );
+    let (source_rows, count_y) = blend_sample_axis(
+        min_cell_y,
+        height,
+        header.cell_min_y,
+        header.cell_max_y,
+        is_starfield,
+    );
     let first_source_cell_x = source_columns[0][0].cell;
-    let last_source_cell_x =
-        source_columns[width - 1][LAND_ALPHA_DOWNSAMPLE_WIDTH as usize - 1].cell;
+    let last_source_cell_x = source_columns[width - 1][count_x - 1].cell;
     let mut loaded_rows: Vec<(i32, Vec<SourceCellBlendData>)> = Vec::with_capacity(2);
     let mut weights = HashMap::<u32, f32>::new();
-    let sample_weight = 1.0 / (LAND_ALPHA_DOWNSAMPLE_WIDTH * LAND_ALPHA_DOWNSAMPLE_WIDTH) as f32;
+    let sample_weight = 1.0 / (count_x * count_y) as f32;
 
     for vertex_y in 0..height {
-        let row_coordinates = &source_rows[vertex_y];
+        let row_coordinates = &source_rows[vertex_y][..count_y];
         loaded_rows.retain(|(cell_y, _)| {
             row_coordinates
                 .iter()
@@ -1184,7 +1283,7 @@ fn for_each_global_blend_vertex(
                     .find(|(cell_y, _)| *cell_y == source_y.cell)
                     .map(|(_, cells)| cells)
                     .expect("source row loaded");
-                for source_x in &source_columns[vertex_x] {
+                for source_x in &source_columns[vertex_x][..count_x] {
                     let source_cell = &source_cell_row
                         [usize::try_from(source_x.cell - first_source_cell_x).unwrap()];
                     let Some(source_ltex_object_id) = source_sample_texture_object_id(
@@ -1205,30 +1304,63 @@ fn for_each_global_blend_vertex(
     Ok(())
 }
 
+/// Starfield's alpha-blend footprint width (item B2-a2/8): keeping the FO76
+/// identity width of 4 would over-blur the coverage vote ~33% given
+/// Starfield's much finer 0.78125m native sample spacing.
+const SF_LAND_ALPHA_DOWNSAMPLE_WIDTH: i32 = 3;
+const MAX_ALPHA_DOWNSAMPLE_WIDTH: usize = LAND_ALPHA_DOWNSAMPLE_WIDTH as usize;
+
+/// Per-vertex alpha-sample footprint along one axis, plus how many of each
+/// array's `MAX_ALPHA_DOWNSAMPLE_WIDTH` slots are valid (uniform across the
+/// whole axis: 4 for FO76 identity, 3 for Starfield — see
+/// `SF_LAND_ALPHA_DOWNSAMPLE_WIDTH`).
 fn blend_sample_axis(
     min_cell: i32,
     vertex_count: usize,
     header_min_cell: i32,
     header_max_cell: i32,
-) -> Vec<[SourceSampleCoordinate; LAND_ALPHA_DOWNSAMPLE_WIDTH as usize]> {
+    is_starfield: bool,
+) -> (
+    Vec<[SourceSampleCoordinate; MAX_ALPHA_DOWNSAMPLE_WIDTH]>,
+    usize,
+) {
     let min_sample = header_min_cell * SOURCE_CELL_SAMPLES as i32;
     let max_sample = (header_max_cell + 1) * SOURCE_CELL_SAMPLES as i32 - 1;
-    (0..vertex_count)
+    let width = if is_starfield {
+        SF_LAND_ALPHA_DOWNSAMPLE_WIDTH
+    } else {
+        LAND_ALPHA_DOWNSAMPLE_WIDTH
+    };
+    let axis = (0..vertex_count)
         .map(|vertex| {
-            let center = min_cell * SOURCE_CELL_SAMPLES as i32
-                + (SOURCE_CELL_SAMPLES / 2) as i32
-                + (vertex * 4) as i32;
-            std::array::from_fn(|offset| {
-                let world = (center - LAND_ALPHA_DOWNSAMPLE_WIDTH / 2 + offset as i32)
-                    .clamp(min_sample, max_sample);
-                SourceSampleCoordinate {
+            let center = if is_starfield {
+                // `header_min_cell` doubles as the Starfield `sf_frame`
+                // btd_cell_min anchor (the caller passes the BTD header's SF
+                // cell-min either way).
+                let units = crate::sf_frame::fo4_land_vertex_units(min_cell, vertex);
+                crate::sf_frame::fo4_units_to_btd_sample(units, header_min_cell).round() as i32
+            } else {
+                min_cell * SOURCE_CELL_SAMPLES as i32
+                    + (SOURCE_CELL_SAMPLES / 2) as i32
+                    + (vertex * 4) as i32
+            };
+            let mut coordinates = [SourceSampleCoordinate {
+                cell: 0,
+                local: 0,
+                world: 0,
+            }; MAX_ALPHA_DOWNSAMPLE_WIDTH];
+            for offset in 0..width {
+                let world = (center - width / 2 + offset).clamp(min_sample, max_sample);
+                coordinates[offset as usize] = SourceSampleCoordinate {
                     cell: world.div_euclid(SOURCE_CELL_SAMPLES as i32),
                     local: world.rem_euclid(SOURCE_CELL_SAMPLES as i32) as usize,
                     world,
-                }
-            })
+                };
+            }
+            coordinates
         })
-        .collect()
+        .collect();
+    (axis, width as usize)
 }
 
 fn quadrant_base_source_ltex_object_ids(
@@ -1237,7 +1369,12 @@ fn quadrant_base_source_ltex_object_ids(
     min_cell_y: i32,
     cells_x: usize,
     cells_y: usize,
-) -> Result<HashMap<QuadrantKey, u32>, BtdError> {
+) -> Result<(HashMap<QuadrantKey, u32>, u32), BtdError> {
+    if btd.header().is_starfield_layout {
+        return starfield_quadrant_base_source_ltex_object_ids(
+            btd, min_cell_x, min_cell_y, cells_x, cells_y,
+        );
+    }
     let mut bases = HashMap::new();
     for cell_y_offset in 0..cells_y {
         for cell_x_offset in 0..cells_x {
@@ -1258,7 +1395,107 @@ fn quadrant_base_source_ltex_object_ids(
             }
         }
     }
-    Ok(bases)
+    Ok((bases, 0))
+}
+
+/// Starfield BTXT base: an FO4 quadrant overlaps up to 4 SF (cell, quadrant)
+/// fragments (per-axis spans from `sf_frame::sf_quadrant_spans_for_fo4_quadrant`,
+/// crossed here). The base is the area-weighted majority; exact ties go to the
+/// texture of the fragment containing the quadrant centre. Also returns the split
+/// count: FO4 quadrants whose runner-up is within 10% of the winner's area.
+fn starfield_quadrant_base_source_ltex_object_ids(
+    btd: &BtdFile,
+    min_cell_x: i32,
+    min_cell_y: i32,
+    cells_x: usize,
+    cells_y: usize,
+) -> Result<(HashMap<QuadrantKey, u32>, u32), BtdError> {
+    let header = btd.header();
+    let (min_x, min_y, max_x, max_y) = (
+        header.cell_min_x,
+        header.cell_min_y,
+        header.cell_max_x,
+        header.cell_max_y,
+    );
+    let mut bases = HashMap::new();
+    let mut split_count = 0u32;
+    for cell_y_offset in 0..cells_y {
+        for cell_x_offset in 0..cells_x {
+            let cell_x = min_cell_x + cell_x_offset as i32;
+            let cell_y = min_cell_y + cell_y_offset as i32;
+            for quadrant in 0..4u8 {
+                let qx = usize::from(quadrant & 1);
+                let qy = usize::from((quadrant >> 1) & 1);
+                let x_spans = crate::sf_frame::sf_quadrant_spans_for_fo4_quadrant(cell_x, qx);
+                let y_spans = crate::sf_frame::sf_quadrant_spans_for_fo4_quadrant(cell_y, qy);
+
+                let mut votes = HashMap::<u32, f64>::new();
+                let mut combo_ids = HashMap::<(i32, i32, u8), Option<u32>>::new();
+                for x_span in x_spans.iter().flatten() {
+                    for y_span in y_spans.iter().flatten() {
+                        // The FO4 window covering the BTD's SF extent
+                        // (sf_frame::fo4_cell_range) can overshoot at the
+                        // worldspace edge, so a span may name an SF cell just
+                        // outside the real file — clamp to the in-range cell,
+                        // matching assemble_cell_texture_set's edge handling.
+                        let sf_cell_x = x_span.sf_cell.clamp(min_x, max_x);
+                        let sf_cell_y = y_span.sf_cell.clamp(min_y, max_y);
+                        let area = x_span.meters * y_span.meters;
+                        let sf_quadrant = (y_span.sf_quadrant_axis << 1) | x_span.sf_quadrant_axis;
+                        let set = btd.cell_texture_set(sf_cell_x, sf_cell_y)?;
+                        let id = set
+                            .quadrants
+                            .get(sf_quadrant as usize)
+                            .and_then(|quad| quad.base)
+                            .and_then(|texture_index| {
+                                btd.land_texture_form_id(texture_index as usize)
+                                    .map(|form_id| form_id & 0x00FF_FFFF)
+                            });
+                        combo_ids.insert((sf_cell_x, sf_cell_y, sf_quadrant), id);
+                        if let Some(id) = id {
+                            *votes.entry(id).or_insert(0.0) += area;
+                        }
+                    }
+                }
+                if votes.is_empty() {
+                    continue;
+                }
+
+                let centre_x_units = crate::sf_frame::fo4_land_vertex_units(cell_x, qx * 16 + 8);
+                let centre_y_units = crate::sf_frame::fo4_land_vertex_units(cell_y, qy * 16 + 8);
+                let (centre_sf_cell_x, centre_half_x) =
+                    crate::fo4_frame::sf_cell_and_half_for_units(centre_x_units);
+                let (centre_sf_cell_y, centre_half_y) =
+                    crate::fo4_frame::sf_cell_and_half_for_units(centre_y_units);
+                let centre_combo = (
+                    centre_sf_cell_x.clamp(min_x, max_x),
+                    centre_sf_cell_y.clamp(min_y, max_y),
+                    (centre_half_y << 1) | centre_half_x,
+                );
+                let centre_id = combo_ids.get(&centre_combo).copied().flatten();
+
+                let mut ranked: Vec<(u32, f64)> = votes.into_iter().collect();
+                ranked.sort_by(|left, right| {
+                    right
+                        .1
+                        .partial_cmp(&left.1)
+                        .unwrap()
+                        .then_with(|| {
+                            let left_is_centre = centre_id == Some(left.0);
+                            let right_is_centre = centre_id == Some(right.0);
+                            right_is_centre.cmp(&left_is_centre)
+                        })
+                        .then_with(|| left.0.cmp(&right.0))
+                });
+                let (winner_id, winner_area) = ranked[0];
+                bases.insert((cell_x, cell_y, quadrant), winner_id);
+                if ranked.len() > 1 && ranked[1].1 >= winner_area * 0.90 {
+                    split_count += 1;
+                }
+            }
+        }
+    }
+    Ok((bases, split_count))
 }
 
 fn source_sample_texture_object_id(
@@ -1304,13 +1541,16 @@ fn source_sample_texture_object_id(
         .map(|form_id| form_id & 0x00FF_FFFF)
 }
 
-fn fo76_layer_alpha_passes(layer_value: u8, source_alpha: u8) -> bool {
+pub(crate) fn fo76_layer_alpha_passes(layer_value: u8, source_alpha: u8) -> bool {
     if layer_value == 0 {
         return false;
     }
     let threshold = f32::from(7 - layer_value.min(7)) * (255.5 / 7.0);
     f32::from(source_alpha) >= threshold
 }
+
+#[cfg(test)]
+mod scratch_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1321,17 +1561,43 @@ mod tests {
     }
 
     #[test]
-    fn retained_quadrant_textures_applies_layer_cap_and_reports_drop() {
-        let totals = HashMap::from([(1, 7), (2, 6), (3, 5), (4, 4), (5, 3), (6, 2), (7, 1)]);
+    fn retained_quadrant_textures_respects_runtime_capacity_and_reports_overflow() {
+        let totals = (1..=10u32)
+            .map(|id| (id, 11 - id))
+            .collect::<HashMap<_, _>>();
         let edge_ids = totals.keys().copied().collect::<HashSet<_>>();
-        let retained =
-            retained_quadrant_textures(&totals, &edge_ids, false, None, &edge_ids).unwrap();
+        let retained = retained_quadrant_textures(&totals, &edge_ids, None, &edge_ids).unwrap();
 
-        assert_eq!(
-            retained.source_ltex_object_ids.len(),
-            MAX_TEXTURES_PER_QUADRANT
-        );
-        assert_eq!(retained.dropped_source_ltex_object_ids, [7]);
+        assert_eq!(retained.source_ltex_object_ids.len(), 6);
+        assert_eq!(retained.dropped_source_ltex_object_ids, [7, 8, 9, 10]);
+    }
+
+    #[test]
+    fn quadrant_serialization_emits_five_alpha_layers() {
+        let width = LAND_CELL_INTERVALS + 1;
+        let height = LAND_CELL_INTERVALS + 1;
+        let mut vertices = vec![HashMap::new(); width * height];
+        vertices[0] = (1..=6u32).map(|id| (id, 1.0)).collect();
+        let expected = quantize_vertex_weights_to_bytes(&vertices[0]);
+        let blend = GlobalLandscapeBlend::from_vertices(0, 0, 1, 1, vertices);
+
+        let quad = blend.serialize_quadrant(0, 0, 0).unwrap().unwrap();
+
+        assert_eq!(quad.alpha_source_ltex_object_ids.len(), 5);
+        assert!(quad.alpha_vtxt.iter().all(|vtxt| !vtxt.is_empty()));
+        assert!(quad.dropped_source_ltex_object_ids.is_empty());
+        let actual = effective_bytes(&quad, 0);
+        for (id, expected_byte) in expected {
+            assert!(
+                actual
+                    .get(&id)
+                    .copied()
+                    .unwrap_or(0)
+                    .abs_diff(expected_byte)
+                    <= 1,
+                "texture {id}: expected {expected_byte}, got {actual:?}"
+            );
+        }
     }
 
     #[test]
@@ -1361,25 +1627,29 @@ mod tests {
     }
 
     fn effective_bytes(quad: &QuadrantBlend, position: usize) -> HashMap<u32, u8> {
-        let mut result = HashMap::<u32, u8>::new();
-        let mut alpha_sum = 0u16;
+        let mut result = HashMap::<u32, f32>::from([(quad.base_source_ltex_object_id, 1.0)]);
         for (source_id, vtxt) in quad
             .alpha_source_ltex_object_ids
             .iter()
             .copied()
             .zip(quad.alpha_vtxt.iter())
         {
-            let byte = vtxt_alpha_byte(vtxt, position);
-            if byte > 0 {
-                result.insert(source_id, byte);
-                alpha_sum += u16::from(byte);
+            let alpha = f32::from(vtxt_alpha_byte(vtxt, position)) / 255.0;
+            if alpha <= 0.0 {
+                continue;
             }
-        }
-        let base = 255u16.saturating_sub(alpha_sum).min(255) as u8;
-        if base > 0 {
-            result.insert(quad.base_source_ltex_object_id, base);
+            for weight in result.values_mut() {
+                *weight *= 1.0 - alpha;
+            }
+            result.insert(source_id, alpha);
         }
         result
+            .into_iter()
+            .filter_map(|(id, weight)| {
+                let byte = (weight * 255.0).round().clamp(0.0, 255.0) as u8;
+                (byte > 0).then_some((id, byte))
+            })
+            .collect()
     }
 
     fn vtxt_alpha_byte(vtxt: &[u8], position: usize) -> u8 {
@@ -1424,7 +1694,7 @@ mod tests {
     }
 
     #[test]
-    fn quadrant_serialization_prefers_source_base_over_dominant_texture() {
+    fn quadrant_serialization_reroots_source_base_to_dominant_texture() {
         let width = LAND_CELL_INTERVALS + 1;
         let height = LAND_CELL_INTERVALS + 1;
         let mut vertices = vec![HashMap::new(); width * height];
@@ -1440,8 +1710,8 @@ mod tests {
 
         let quad = blend.serialize_quadrant(0, 0, 0).unwrap().unwrap();
 
-        assert_eq!(quad.base_source_ltex_object_id, 0x111111);
-        assert!(quad.alpha_source_ltex_object_ids.contains(&0x222222));
+        assert_eq!(quad.base_source_ltex_object_id, 0x222222);
+        assert!(quad.alpha_source_ltex_object_ids.contains(&0x111111));
     }
 
     #[test]
@@ -1471,8 +1741,8 @@ mod tests {
         let width = LAND_CELL_INTERVALS + 1;
         let height = LAND_CELL_INTERVALS + 1;
         let mut vertices = vec![HashMap::new(); width * height];
-        // Overfull BL quadrant: seven strong single-quad edge textures...
-        for id in 1..=7u32 {
+        // Overfull BL quadrant: six strong single-quad edge textures...
+        for id in 1..=MAX_TEXTURES_PER_QUADRANT as u32 {
             vertices[id as usize] = weights(&[(id, 1.0)]);
         }
         // ...plus a weak texture on the BL/BR shared edge that is the BR quadrant's
@@ -1520,7 +1790,7 @@ mod tests {
         let width = LAND_CELL_INTERVALS + 1;
         let height = LAND_CELL_INTERVALS + 1;
         let mut vertices = vec![HashMap::new(); width * height];
-        for id in 1..=9u32 {
+        for id in 1..=MAX_TEXTURES_PER_QUADRANT as u32 {
             vertices[LAND_CELL_INTERVALS * width + id as usize] = weights(&[(id, 1.0)]);
         }
         vertices[LAND_QUADRANT_INTERVALS * width] = weights(&[(10, 1.0), (11, 0.10)]);
@@ -1544,7 +1814,7 @@ mod tests {
         let width = LAND_CELL_INTERVALS + 1;
         let height = LAND_CELL_INTERVALS + 1;
         let mut vertices = vec![HashMap::new(); width * height];
-        for id in 1..=10u32 {
+        for id in 1..=MAX_TEXTURES_PER_QUADRANT as u32 {
             vertices[id as usize] = weights(&[(id, 1.0)]);
         }
         vertices[0] = weights(&[(1, 1.0), (11, 0.001)]);
@@ -1560,11 +1830,11 @@ mod tests {
     }
 
     #[test]
-    fn capacity_keeps_required_source_base_by_trimming_edge_texture() {
+    fn empty_source_base_does_not_displace_a_used_texture() {
         let width = LAND_CELL_INTERVALS + 1;
         let height = LAND_CELL_INTERVALS + 1;
         let mut vertices = vec![HashMap::new(); width * height];
-        for id in 1..=10u32 {
+        for id in 1..=MAX_TEXTURES_PER_QUADRANT as u32 {
             vertices[id as usize] = weights(&[(id, 1.0)]);
         }
         let blend = GlobalLandscapeBlend::from_vertices_with_bases(
@@ -1578,15 +1848,13 @@ mod tests {
 
         let quad = blend.serialize_quadrant(0, 0, 0).unwrap().unwrap();
 
-        assert_eq!(quad.base_source_ltex_object_id, 99);
+        assert_ne!(quad.base_source_ltex_object_id, 99);
+        assert!(!quad.alpha_source_ltex_object_ids.contains(&99));
         assert_eq!(
-            quad.alpha_source_ltex_object_ids.len(),
-            MAX_TEXTURES_PER_QUADRANT - 1
+            1 + quad.alpha_source_ltex_object_ids.len(),
+            MAX_TEXTURES_PER_QUADRANT
         );
-        assert_eq!(
-            quad.dropped_source_ltex_object_ids.len(),
-            11 - MAX_TEXTURES_PER_QUADRANT
-        );
+        assert!(quad.dropped_source_ltex_object_ids.is_empty());
     }
 
     #[test]
@@ -1605,22 +1873,104 @@ mod tests {
     }
 
     #[test]
-    fn quantized_alpha_bytes_form_valid_partition() {
+    fn sequential_alpha_bytes_reconstruct_desired_partition() {
         let width = LAND_CELL_INTERVALS + 1;
         let height = LAND_CELL_INTERVALS + 1;
         let mut vertices = vec![HashMap::new(); width * height];
-        vertices[0] = weights(&[(1, 0.20), (2, 0.30), (3, 0.50)]);
+        vertices[0] = weights(&[(1, 0.25), (2, 0.25), (3, 0.25), (4, 0.25)]);
+        let expected = quantize_vertex_weights_to_bytes(&vertices[0]);
         let blend = GlobalLandscapeBlend::from_vertices(0, 0, 1, 1, vertices);
 
         let quad = blend.serialize_quadrant(0, 0, 0).unwrap().unwrap();
-        let mut sum = 0u16;
+        let actual = effective_bytes(&quad, 0);
+        for (id, expected_byte) in expected {
+            assert!(
+                actual
+                    .get(&id)
+                    .copied()
+                    .unwrap_or(0)
+                    .abs_diff(expected_byte)
+                    <= 1,
+                "texture {id}: expected {expected_byte}, got {actual:?}"
+            );
+        }
+
+        let mut raw_alpha_sum = 0u16;
         for bytes in &quad.alpha_vtxt {
             if bytes.is_empty() {
                 continue;
             }
             let opacity = f32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
-            sum += (opacity * 255.0).round() as u16;
+            raw_alpha_sum += (opacity * 255.0).round() as u16;
         }
-        assert!(sum <= 255);
+        assert!(raw_alpha_sum > 255);
+    }
+
+    #[test]
+    fn saturated_late_overlay_retains_base_headroom() {
+        let width = LAND_CELL_INTERVALS + 1;
+        let height = LAND_CELL_INTERVALS + 1;
+        let mut vertices = vec![HashMap::new(); width * height];
+        for position in 1..=5 {
+            vertices[position] = weights(&[(1, 1.0)]);
+        }
+        for position in 6..=9 {
+            vertices[position] = weights(&[(2, 1.0)]);
+        }
+        for position in 10..=12 {
+            vertices[position] = weights(&[(3, 1.0)]);
+        }
+        for position in 13..=14 {
+            vertices[position] = weights(&[(4, 1.0)]);
+        }
+        vertices[0] = weights(&[(5, 1.0)]);
+        let blend = GlobalLandscapeBlend::from_vertices(0, 0, 1, 1, vertices);
+
+        let quad = blend.serialize_quadrant(0, 0, 0).unwrap().unwrap();
+
+        assert_eq!(quad.base_source_ltex_object_id, 1);
+        assert_eq!(quad.alpha_source_ltex_object_ids, [2, 3, 4, 5]);
+        assert_eq!(vtxt_alpha_byte(&quad.alpha_vtxt[0], 6), 255);
+        assert_eq!(vtxt_alpha_byte(&quad.alpha_vtxt[3], 0), 254);
+    }
+
+    #[test]
+    fn shared_edge_saturated_texture_uses_safe_early_slot() {
+        let width = LAND_CELL_INTERVALS + 1;
+        let height = LAND_CELL_INTERVALS + 1;
+        let mut vertices = vec![HashMap::new(); width * height];
+        for x in 1..=5 {
+            vertices[width + x] = weights(&[(1, 1.0)]);
+        }
+        for x in 6..=9 {
+            vertices[width + x] = weights(&[(2, 1.0)]);
+        }
+        for x in 10..=12 {
+            vertices[width + x] = weights(&[(3, 1.0)]);
+        }
+        for x in 13..=14 {
+            vertices[width + x] = weights(&[(4, 1.0)]);
+        }
+        vertices[8 * width + LAND_QUADRANT_INTERVALS] = weights(&[(5, 1.0)]);
+        for x in LAND_QUADRANT_INTERVALS + 1..=LAND_QUADRANT_INTERVALS + 5 {
+            vertices[8 * width + x] = weights(&[(5, 1.0)]);
+        }
+        let blend = GlobalLandscapeBlend::from_vertices(0, 0, 1, 1, vertices);
+
+        let left = blend.serialize_quadrant(0, 0, 0).unwrap().unwrap();
+        let right = blend.serialize_quadrant(0, 0, 1).unwrap().unwrap();
+        let left_edge_position = 8 * LAND_QUADRANT_VERTICES + LAND_QUADRANT_INTERVALS;
+        let right_edge_position = 8 * LAND_QUADRANT_VERTICES;
+
+        assert_eq!(left.base_source_ltex_object_id, 1);
+        assert_eq!(left.alpha_source_ltex_object_ids, [5, 2, 3, 4]);
+        assert_eq!(
+            vtxt_alpha_byte(&left.alpha_vtxt[0], left_edge_position),
+            255
+        );
+        assert_eq!(
+            effective_bytes(&left, left_edge_position),
+            effective_bytes(&right, right_edge_position)
+        );
     }
 }

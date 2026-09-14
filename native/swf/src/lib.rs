@@ -1,21 +1,57 @@
 //! Byte-exact SWF tooling for marker-icon injection (FO76 → FO4).
 //!
 //! Rust owns the binary-exact work (container (de)compression, tag-stream
-//! splice, SymbolClass parse, and — later — char-ID remap and ABC editing);
-//! Python orchestrates. The existing pure-Python `creation_lib.swf` codec is
-//! byte-lossy and must not be used to edit real menu SWFs.
+//! splice, SymbolClass parse, char-ID remap, ABC synthesis); Python
+//! orchestrates. The pure-Python `creation_lib.swf` codec is byte-lossy and
+//! must not be used to edit real menu SWFs.
 
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 
 pub mod abc;
+pub mod class_abc;
 pub mod container;
 pub mod inject;
 pub mod symbolclass;
 
 use container::{Signature, assemble, decompress, split_tags};
 use symbolclass::parse_symbol_table;
+
+/// Every class name defined by a DoABC in this movie body, and every name a
+/// SymbolClass entry binds to — the two halves the validator compares.
+pub fn class_and_symbol_names(body: &[u8]) -> Result<(Vec<String>, Vec<String>), String> {
+    let spans = split_tags(body)?;
+    let mut defined = Vec::new();
+    let mut bound = Vec::new();
+    for span in &spans {
+        if span.code == abc::DO_ABC_DEFINE || span.code == abc::DO_ABC {
+            defined.extend(abc::parse_abc_class_names(
+                span.code,
+                &body[span.body_range()],
+            )?);
+        } else if span.code == 76 {
+            for e in parse_symbol_table(&body[span.body_range()])? {
+                bound.push(e.name);
+            }
+        }
+    }
+    Ok((defined, bound))
+}
+
+/// SymbolClass export names in this movie body that no DoABC defines, in file
+/// order and de-duplicated. Empty means every binding resolves.
+pub fn unbacked_symbol_class_names(body: &[u8]) -> Result<Vec<String>, String> {
+    let (defined, bound) = class_and_symbol_names(body)?;
+    let defined: std::collections::HashSet<&str> = defined.iter().map(String::as_str).collect();
+    let mut out: Vec<String> = Vec::new();
+    for name in bound {
+        if !defined.contains(name.as_str()) && !out.contains(&name) {
+            out.push(name);
+        }
+    }
+    Ok(out)
+}
 
 fn sig_str(s: Signature) -> &'static str {
     match s {
@@ -107,6 +143,64 @@ fn abc_string_pools(data: &[u8]) -> PyResult<Vec<(u16, u16, u16, u32, u32, u32, 
     Ok(out)
 }
 
+/// Fully-qualified names (`package.Class`, or bare `Class` in the unnamed
+/// package) of every class *defined* by a DoABC tag in this SWF, in file order.
+#[pyfunction]
+fn abc_class_names(data: &[u8]) -> PyResult<Vec<String>> {
+    let movie = decompress(data).map_err(PyValueError::new_err)?;
+    let (defined, _) = class_and_symbol_names(&movie.body).map_err(PyValueError::new_err)?;
+    Ok(defined)
+}
+
+/// SymbolClass export names that no DoABC in the same SWF defines, in file
+/// order and de-duplicated. A non-empty result means the file ships a dangling
+/// binding: the engine has a character id pointing at a class that does not
+/// exist, so construction of that symbol fails.
+#[pyfunction]
+fn unbacked_symbol_classes(data: &[u8]) -> PyResult<Vec<String>> {
+    let movie = decompress(data).map_err(PyValueError::new_err)?;
+    unbacked_symbol_class_names(&movie.body).map_err(PyValueError::new_err)
+}
+
+/// Build a `DoABCDefine` (tag 82) *body* defining one `flash.display.MovieClip`
+/// subclass with an empty constructor per name. The caller writes the tag header
+/// and must place the tag before the SymbolClass that binds these names.
+#[pyfunction]
+fn build_movieclip_class_doabc<'py>(
+    py: Python<'py>,
+    names: Vec<String>,
+) -> PyResult<Bound<'py, PyBytes>> {
+    let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    let abc = class_abc::build_movieclip_class_abc(&refs).map_err(PyValueError::new_err)?;
+    Ok(PyBytes::new(py, &class_abc::do_abc_define_body(&abc)))
+}
+
+/// Compile ActionScript 3 source files to a `DoABCDefine` (tag 82) tag *body*.
+///
+/// Each element of `sources` is the full text of one `.as` file; AS3 allows a
+/// single package per file, so a widget's document class and the interface it
+/// implements arrive as separate entries. Order does not matter — types are
+/// sorted so a base class or interface is defined before whatever depends on
+/// it. The caller writes the tag header and must place the tag ahead of the
+/// `SymbolClass` that binds these classes.
+#[pyfunction]
+fn compile_as3_do_abc<'py>(py: Python<'py>, sources: Vec<String>) -> PyResult<Bound<'py, PyBytes>> {
+    let refs: Vec<&str> = sources.iter().map(String::as_str).collect();
+    let body = class_abc::compile_sources_to_do_abc(&refs).map_err(PyValueError::new_err)?;
+    Ok(PyBytes::new(py, &body))
+}
+
+/// Fully-qualified names of every class an ActionScript source set defines.
+///
+/// A packer needs this to check that each `SymbolClass` export it is about to
+/// write is actually backed by a compiled class, before the SWF ships.
+#[pyfunction]
+fn compile_as3_class_names(sources: Vec<String>) -> PyResult<Vec<String>> {
+    let refs: Vec<&str> = sources.iter().map(String::as_str).collect();
+    let body = class_abc::compile_sources_to_do_abc(&refs).map_err(PyValueError::new_err)?;
+    abc::parse_abc_class_names(abc::DO_ABC_DEFINE, &body).map_err(PyValueError::new_err)
+}
+
 /// Inject the named SymbolClass symbols (with their full character closures)
 /// from `src` into `dst`, returning the re-assembled destination SWF bytes.
 #[pyfunction]
@@ -153,6 +247,11 @@ pub fn register_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(tag_histogram, m)?)?;
     m.add_function(wrap_pyfunction!(roundtrip_ok, m)?)?;
     m.add_function(wrap_pyfunction!(abc_string_pools, m)?)?;
+    m.add_function(wrap_pyfunction!(abc_class_names, m)?)?;
+    m.add_function(wrap_pyfunction!(unbacked_symbol_classes, m)?)?;
+    m.add_function(wrap_pyfunction!(build_movieclip_class_doabc, m)?)?;
+    m.add_function(wrap_pyfunction!(compile_as3_do_abc, m)?)?;
+    m.add_function(wrap_pyfunction!(compile_as3_class_names, m)?)?;
     m.add_function(wrap_pyfunction!(inject_symbols_into, m)?)?;
     m.add_function(wrap_pyfunction!(inject_symbols_renamed_into, m)?)?;
     Ok(())

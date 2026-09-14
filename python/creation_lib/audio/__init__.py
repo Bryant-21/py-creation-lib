@@ -65,17 +65,7 @@ except ImportError:
 
 def load_audio(file: str, sampling_rate: int, ffmpeg_path: str,
                channels: int = 1) -> np.ndarray:
-    """Load audio file via ffmpeg, return as float32 numpy array.
-
-    Args:
-        file: Path to audio file.
-        sampling_rate: Target sample rate.
-        ffmpeg_path: Path to ffmpeg executable.
-        channels: Number of output channels.
-
-    Returns:
-        float32 numpy array of audio samples.
-    """
+    """Load audio file via ffmpeg, return as float32 numpy array."""
     cmd = [
         ffmpeg_path, "-y", "-i", file, "-f", "f32le", "-acodec", "pcm_f32le",
         "-af", "aresample=resampler=soxr", "-ac", str(channels),
@@ -379,28 +369,18 @@ def generate_gun_fire(source_wav: str, output_dir: str,
                       tone_color_enabled: bool = False,
                       progress_callback: Callable[[int, int, str], None] | None = None,
                       cancel_check: Callable[[], bool] | None = None) -> dict:
-    """Generate gun firing sound variations at different RPMs.
+    """Generate gun firing sound variations at different RPMs from a single-shot WAV.
 
-    Args:
-        source_wav: Path to single-shot WAV file.
-        output_dir: Directory to save generated files.
-        rpms: List of RPM values to generate.
-        shot_count: Number of shots in the sequence.
-        tail_threshold: Threshold in dB for tail trimming.
-        pitch_variation: Pitch variation in semitones.
-        gain_variation: Gain variation in dB.
-        jitter_ms: Timing jitter in milliseconds.
-        highpass_enabled: Apply random highpass filter for realism.
-        tilt_amount: Tilt EQ amount.
-        base_reinforcement: Add low-passed version for punch.
-        shot_variant_count: Number of prebuilt shot variants to rotate through. 0 disables the pool.
-        early_reflections_enabled: Add short random delay taps per shot for space.
-        tone_color_enabled: Apply subtle per-shot tonal color changes.
-        progress_callback: Called with (current, total, message).
-        cancel_check: Returns True to cancel.
+    Units: ``tail_threshold`` and ``gain_variation`` in dB, ``pitch_variation``
+    in semitones, ``jitter_ms`` in milliseconds. ``highpass_enabled`` applies a
+    random highpass, ``base_reinforcement`` layers a low-passed copy for punch,
+    ``early_reflections_enabled`` adds short random delay taps, and
+    ``tone_color_enabled`` varies per-shot tone. ``shot_variant_count`` prebuilt
+    variants rotate through the sequence; 0 disables the pool.
+    ``progress_callback`` gets ``(current, total, message)``; ``cancel_check``
+    returns True to cancel.
 
-    Returns:
-        dict with keys: files (list of output paths), errors (list of error messages).
+    Returns ``{"files": [output paths], "errors": [messages]}``.
     """
     result: dict = {"files": [], "errors": []}
     total = len(rpms)
@@ -550,23 +530,13 @@ def generate_laser_beam(source_wav: str, output_dir: str,
                         tilt_amount: float = 0.0,
                         progress_callback: Callable[[int, int, str], None] | None = None,
                         cancel_check: Callable[[], bool] | None = None) -> dict:
-    """Generate laser weapon sound effect with loop points.
+    """Generate a laser weapon sound effect with loop points from a single-shot WAV.
 
-    Args:
-        source_wav: Path to single-shot WAV file.
-        output_dir: Directory to save generated file.
-        loop_duration: Duration of the loop section in seconds.
-        pitch_variation: Pitch variation in semitones.
-        gain_variation: Gain variation in dB.
-        tail_threshold: Threshold in dB for tail trimming.
-        highpass_enabled: Apply highpass filter.
-        highpass_cutoff: Highpass cutoff frequency.
-        tilt_amount: Tilt EQ amount.
-        progress_callback: Called with (current, total, message).
-        cancel_check: Returns True to cancel.
+    ``loop_duration`` is in seconds, ``pitch_variation`` in semitones,
+    ``gain_variation`` and ``tail_threshold`` in dB. ``progress_callback`` gets
+    ``(current, total, message)``; ``cancel_check`` returns True to cancel.
 
-    Returns:
-        dict with keys: files (list of output paths), errors (list of error messages).
+    Returns ``{"files": [output paths], "errors": [messages]}``.
     """
     result: dict = {"files": [], "errors": []}
 
@@ -654,7 +624,7 @@ def generate_laser_beam(source_wav: str, output_dir: str,
         if loop_rms > 0:
             loop_section = loop_section * (0.12 / loop_rms)
 
-        # Make seamlessly loopable
+        # Crossfade the tail into the head so the loop point doesn't click
         fade_len = int(0.05 * sr)
         if len(loop_section) > fade_len * 2:
             fade_out = np.cos(np.linspace(0, np.pi / 2, fade_len)) ** 2

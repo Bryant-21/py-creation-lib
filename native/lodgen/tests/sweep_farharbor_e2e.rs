@@ -1,17 +1,13 @@
 //! Full-corpus FarHarbor LOD generation harness (real-esp).
 //!
-//! Drives the crate's `run()` entry for the entire `DLC03FarHarbor` worldspace
-//! against the real FO4 install, writing ALL LOD output (terrain `.btr` for every
-//! level + objects `.bto` + textures `.dds`) into `tmp/lodgen_sweep/`. The output
-//! is then diffed (outside this test) against the xLODGen golden corpus under
-//! `tmp/xlodgen/`.
+//! `generate_full_farharbor_lod_corpus` runs `run()` over all of `DLC03FarHarbor`
+//! against the real FO4 install and writes every LOD output (terrain `.btr` per level,
+//! object `.bto`, `.dds`) to `tmp/lodgen_sweep/`; it fails only if `run()` errors or
+//! writes no terrain meshes. `diff_sweep_vs_golden` then diffs that output against
+//! the xLODGen corpus under `tmp/xlodgen/` as a regression gate.
 //!
-//! The generation step fails only if `run()` errors or produces no terrain
-//! meshes. The diff step is a regression gate for the Far Harbor golden corpus.
-//! Requires the `real-esp` feature so `run()` can read DLCCoast.esm via the ESP
-//! reader (the fix for the DLC-worldspace discovery gate is in `src/lib.rs`).
-//!
-//! Skips cleanly when the FO4 install is absent.
+//! Requires `real-esp` so `run()` can read DLCCoast.esm. Skips when the FO4 install
+//! is absent.
 #![cfg(feature = "real-esp")]
 
 use std::path::PathBuf;

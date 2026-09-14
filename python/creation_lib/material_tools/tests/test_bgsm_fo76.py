@@ -1,12 +1,8 @@
 """FO76 BGSM round-trip and downgrade tests.
 
-The fo76texconv reference C++ source (refs/fo76texconv/.../src/bgsm.cpp)
-tops out at version 17 fields. Inspecting the real Fallout 76 v22 sample
-copied into ``fixtures/fo76/materials/sample_v22.bgsm`` shows the existing
-reader already consumes the file in full and round-trips byte-identical —
-no new v18-v22 BGSM-level fields are present in the fixture. This test
-locks in that round-trip and exercises the ground-truth downgrade helper
-in :mod:`creation_lib.material_tools.convert`.
+fo76texconv's ``bgsm.cpp`` stops at version 17 fields, yet the reader consumes the
+real FO76 v22 sample (``fixtures/fo76/materials/sample_v22.bgsm``) in full and
+round-trips it byte-identical: the file has no v18-v22 BGSM-level fields.
 """
 
 from __future__ import annotations

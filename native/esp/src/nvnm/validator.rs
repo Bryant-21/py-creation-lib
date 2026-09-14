@@ -1,35 +1,24 @@
-//! Structural validator for NVNM payloads — the automated gate that
-//! replaces "open CK and count PATHFINDING warnings" in the FO76→FO4
-//! conversion harness.
+//! Structural validator for NVNM payloads: the automated stand-in for counting
+//! CK PATHFINDING warnings on FO76→FO4 conversion output.
 //!
-//! Three invariants are checked over a *set* of navmeshes that load
-//! together (typically every NAVM in a plugin):
+//! Checks a *set* of navmeshes that load together (typically every NAVM in a
+//! plugin):
 //!
-//! 1. **No downfacing normals** — every triangle, viewed from above
-//!    (worldspace XY plane), must be wound counter-clockwise. CK
-//!    rejects clockwise triangles with "downfacing normal" and flips
-//!    them at Finalize time; we want byte-stable output, so we flag
-//!    instead of auto-fixing.
+//! 1. **No downfacing normals.** Every triangle must wind counter-clockwise
+//!    viewed from above (worldspace XY). CK reports "downfacing normal" and
+//!    flips them at Finalize; they are flagged, not fixed, to keep output
+//!    byte-stable.
+//! 2. **Cross-mesh edge connectivity.** When triangles in different meshes
+//!    share a worldspace edge (quantized as in `target_write::quantized_edge_point`),
+//!    some participating mesh needs an `edge_links` row targeting another
+//!    participating mesh's object_id (low 24 bits; the master byte is ignored
+//!    so cross-master refs still count). Avoids CK's "edge in common but not
+//!    connected".
+//! 3. **Navmesh grid coverage.** The union of all `navmesh_grid` cell triangle
+//!    indices (`-1` = no triangle) must cover `0..triangles.len()`.
 //!
-//! 2. **Cross-mesh edge connectivity** — when two triangles in DIFFERENT
-//!    meshes share a worldspace edge (after quantization using the same
-//!    scheme as `target_write::quantized_edge_point`), at least one
-//!    participating mesh must carry an `edge_links` row whose target
-//!    form_id's low 24 bits (object_id) match the object_id of another
-//!    participating mesh. The CK warning being avoided is "edge in common
-//!    but not connected". We match on object_id only — ignoring the master
-//!    index byte — so cross-master refs that may need rewriting still
-//!    register as connected.
-//!
-//! 3. **Navmesh grid coverage** — every triangle index in the mesh's
-//!    triangle array must appear in at least one cell of the mesh's
-//!    `navmesh_grid`. The `-1` sentinel in cells means "no triangle"
-//!    and is ignored; empty cells are fine; only the *union* of all
-//!    cell triangle indices must cover `0..triangles.len()`.
-//!
-//! A potential fourth check, "Island marker reciprocity", is skipped:
-//! `NvnmWaypoint` as we've modelled it carries no cross-cell reference
-//! — see comment below.
+//! Island-marker reciprocity is not checked: `NvnmWaypoint` carries no
+//! cross-cell reference.
 
 use super::parser::parse_nvnm;
 use super::types::{NvnmParent, NvnmPayload, NvnmVertex};
@@ -58,10 +47,10 @@ pub enum ValidationErrorKind {
     /// A grid cell does not list every triangle whose XY-AABB overlaps the
     /// cell's XY-AABB. FO4 CK's runtime expects each cell to enumerate every
     /// triangle whose AABB touches the cell so spatial queries don't miss
-    /// triangles straddling cell borders. FO76's source navmesh_grid uses a
-    /// single-cell bucket and was the source of the PATHFINDING "edge in
-    /// common but not connected" warnings until `rebuild_nvnm_grid_fo4` in
-    /// the conversion crate switched to the inclusive-AABB rule.
+    /// triangles straddling cell borders. FO76's single-cell-bucket
+    /// navmesh_grid triggers PATHFINDING "edge in common but not connected"
+    /// warnings; `rebuild_nvnm_grid_fo4` in the conversion crate uses the
+    /// inclusive-AABB rule.
     GridCellMissingTriangle,
     /// Raised by `validate_plugin_navmeshes` when an NVNM payload fails to parse
     /// — not a structural finding, but surfaced as an error so callers don't
@@ -263,12 +252,10 @@ fn check_grid_coverage(form_key: &str, payload: &NvnmPayload, report: &mut Valid
 /// For every grid cell `c`, verify that every triangle whose XY-AABB overlaps
 /// `c`'s XY-AABB (inclusive on cell boundaries) is present in
 /// `c.triangle_indices`. FO4 CK rejects sparse grids (FO76's single-cell
-/// bucket rule) at Finalize and re-buckets — leaving the original NAVM with
-/// the PATHFINDING "edge in common but not connected" warning. This check is
-/// the validator-side gate that prevents `rebuild_nvnm_grid_fo4` from
-/// silently regressing.
+/// bucket rule) at Finalize and re-buckets, leaving the original NAVM with
+/// the PATHFINDING "edge in common but not connected" warning.
 ///
-/// Mirrors the rebuild rule in `conversion::target_write::rebuild_nvnm_grid_fo4`:
+/// Uses the rebuild rule in `conversion::target_write::rebuild_nvnm_grid_fo4`:
 /// f32-precision floor, inclusive `..=cmax`. Skips when divisor==0 or
 /// grid_size_x/y are non-positive (degenerate grid — CK would rebuild itself).
 fn check_grid_cell_completeness(

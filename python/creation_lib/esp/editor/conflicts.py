@@ -1,15 +1,9 @@
 """Cross-plugin conflict detection for compatibility-patch authoring.
 
-This module is a thin Python adapter over the Rust scanner in
-`creation_lib._native.esp_authoring_core.scan_conflicts_native`. The Rust side
-walks every loaded handle's parsed record graph, hashes records, buckets
-by FormID, classifies status, and emits one report per FormID overridden
-by ≥2 plugins — all without marshalling records into Python.
-
-The Python layer keeps lightweight `OverrideEntry` / `ConflictReport` /
-`ConflictScan` dataclasses that the UI consumes. Conflict entries carry only
-metadata; patch copy operations call Rust directly when they need to clone a
-winner into a target plugin.
+Adapter over the Rust scanner `esp_authoring_core.scan_conflicts_native`, which
+hashes records, buckets them by FormID, and reports each FormID overridden by ≥2
+plugins without marshalling records into Python. The dataclasses here carry only
+metadata for the UI; patch copy operations call Rust directly.
 """
 
 from __future__ import annotations

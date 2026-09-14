@@ -5,7 +5,7 @@ use std::path::Path;
 
 use crate::{
     dds_base_rgba, remix_fo76_bundle_bytes, remix_fo76_texture_bytes, texdiag_info_bytes,
-    write_dds_rgba_image_gpu,
+    validate_dds_file as validate_dds, write_dds_rgba_image_gpu,
 };
 
 #[pyfunction]
@@ -77,10 +77,50 @@ fn texdiag_info(py: Python<'_>, path: &str) -> PyResult<Py<PyAny>> {
     out.set_item("alpha_mode", info.alpha_mode)?;
     out.set_item("is_cubemap", info.is_cubemap)?;
     out.set_item("is_compressed", info.is_compressed)?;
+    out.set_item("has_alpha", info.has_alpha)?;
+    out.set_item("is_dx10", info.is_dx10)?;
+    out.set_item("is_xbox", info.is_xbox)?;
+    out.set_item("is_power_of_two", info.is_power_of_two)?;
     out.set_item("bits_per_pixel", info.bits_per_pixel)?;
     out.set_item("bits_per_color", info.bits_per_color)?;
     out.set_item("image_count", info.image_count)?;
     out.set_item("file_size", info.file_size)?;
+    Ok(out.into_any().unbind())
+}
+
+#[pyfunction(signature = (path, include_optional=false))]
+fn validate_dds_file(py: Python<'_>, path: &str, include_optional: bool) -> PyResult<Py<PyAny>> {
+    let path = path.to_owned();
+    let report = py
+        .detach(|| validate_dds(Path::new(&path), include_optional))
+        .map_err(PyRuntimeError::new_err)?;
+    let out = PyDict::new(py);
+    out.set_item("game", "dds")?;
+    out.set_item("changed", false)?;
+    out.set_item("changes", Vec::<String>::new())?;
+    out.set_item("warnings", Vec::<String>::new())?;
+    out.set_item("width", report.width)?;
+    out.set_item("height", report.height)?;
+    let findings = pyo3::types::PyList::empty(py);
+    for finding in report.findings {
+        let item = PyDict::new(py);
+        item.set_item("severity", finding.severity)?;
+        item.set_item("rule", finding.rule)?;
+        item.set_item(
+            "check",
+            if finding.rule == "sse-unsupported-texture-format" {
+                "sse-unsupported-dds"
+            } else {
+                "invalid-texture-size-format"
+            },
+        )?;
+        item.set_item("block_id", py.None())?;
+        item.set_item("block_type", py.None())?;
+        item.set_item("field", py.None())?;
+        item.set_item("message", finding.message)?;
+        findings.append(item)?;
+    }
+    out.set_item("findings", findings)?;
     Ok(out.into_any().unbind())
 }
 
@@ -188,6 +228,7 @@ pub fn register_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(read_dds_rgba, m)?)?;
     m.add_function(wrap_pyfunction!(write_dds_rgba, m)?)?;
     m.add_function(wrap_pyfunction!(texdiag_info, m)?)?;
+    m.add_function(wrap_pyfunction!(validate_dds_file, m)?)?;
     m.add_function(wrap_pyfunction!(remix_fo76_texture_to_fo4, m)?)?;
     m.add_function(wrap_pyfunction!(remix_fo76_bundle_to_fo4, m)?)?;
     Ok(())

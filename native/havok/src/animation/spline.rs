@@ -391,6 +391,16 @@ fn read_knots(
     let p = r.u8()? as usize;
     let m = n + p + 1;
     let knot_base = r.pos;
+    let knot_end = knot_base
+        .checked_add(m + 1)
+        .ok_or_else(|| HavokError::InvalidInput("spline knot range overflow".into()))?;
+    if p > n || knot_end > r.buf.len() {
+        return Err(HavokError::InvalidInput(format!(
+            "spline knot payload is truncated or invalid (n={n}, degree={p}, bytes={}..{knot_end}, data_len={})",
+            knot_base,
+            r.buf.len()
+        )));
+    }
 
     let span = find_span(n as u32, p as u32, quantized_time, r.buf, knot_base);
 
@@ -400,7 +410,7 @@ fn read_knots(
         cap_u[j] = r.buf[idx] as f32 * frame_duration;
     }
 
-    r.pos = knot_base + m + 1;
+    r.pos = knot_end;
     Ok((n, p, span, cap_u))
 }
 
@@ -455,10 +465,27 @@ fn sample_scalar_track(
     }
 
     let num_dyn = popcount_3(mask >> 4);
-    let bpc = SCALAR_SIZE[scalar_q];
+    let bpc = *SCALAR_SIZE.get(scalar_q).ok_or_else(|| {
+        HavokError::InvalidInput(format!(
+            "unknown spline scalar quantization type {scalar_q}"
+        ))
+    })?;
 
     r.align(2);
     let cp_start = r.pos;
+    let cp_bytes = (n + 1)
+        .checked_mul(num_dyn)
+        .and_then(|count| count.checked_mul(bpc))
+        .ok_or_else(|| HavokError::InvalidInput("spline scalar payload size overflow".into()))?;
+    let cp_end = cp_start
+        .checked_add(cp_bytes)
+        .ok_or_else(|| HavokError::InvalidInput("spline scalar payload range overflow".into()))?;
+    if cp_end > r.buf.len() {
+        return Err(HavokError::InvalidInput(format!(
+            "spline scalar control-point payload is truncated (bytes={cp_start}..{cp_end}, data_len={})",
+            r.buf.len()
+        )));
+    }
 
     let mut points: Vec<[f32; 4]> = Vec::with_capacity(p + 1);
     for i in 0..=p {
@@ -484,7 +511,7 @@ fn sample_scalar_track(
         points.push(point);
     }
 
-    r.pos = cp_start + (n + 1) * num_dyn * bpc;
+    r.pos = cp_end;
     r.align(4);
 
     let result4 = evaluate_bspline(p, u, &cap_u, &points);
@@ -503,6 +530,11 @@ fn sample_rotation_track(
     u: f32,
     mask: u8,
 ) -> HavokResult<[f32; 4]> {
+    if rot_q >= ROTATION_SIZE.len() {
+        return Err(HavokError::InvalidInput(format!(
+            "unknown rotation quantization type {rot_q}"
+        )));
+    }
     let has_dynamic = (mask & 0xF0) != 0;
     let has_static = (mask & 0x0F) != 0;
 
@@ -520,7 +552,20 @@ fn sample_rotation_track(
             points.push(q);
         }
 
-        r.pos = cp_start + (n + 1) * bpq;
+        let cp_end = cp_start
+            .checked_add((n + 1).checked_mul(bpq).ok_or_else(|| {
+                HavokError::InvalidInput("spline rotation payload size overflow".into())
+            })?)
+            .ok_or_else(|| {
+                HavokError::InvalidInput("spline rotation payload range overflow".into())
+            })?;
+        if cp_end > r.buf.len() {
+            return Err(HavokError::InvalidInput(format!(
+                "spline rotation control-point payload is truncated (bytes={cp_start}..{cp_end}, data_len={})",
+                r.buf.len()
+            )));
+        }
+        r.pos = cp_end;
 
         let raw = evaluate_bspline(p, u, &cap_u, &points);
         let norm: f32 = raw.iter().map(|c| c * c).sum::<f32>().sqrt();
@@ -646,7 +691,7 @@ pub fn decompress_spline_full(
     max_frames_per_block: u32,
     num_blocks: u32,
     block_offsets: &[u32],
-    _float_block_offsets: &[u32],
+    float_block_offsets: &[u32],
     mask_and_quant_size: u32,
     _block_duration: f32,
     block_inverse_duration: f32,
@@ -674,17 +719,26 @@ pub fn decompress_spline_full(
         let qt_f = block_time * block_inverse_duration * (max_frames_per_block as f32 - 1.0);
         let quantized_time = (qt_f as u32).min(255);
 
-        let block_base = block_offsets.get(block).copied().unwrap_or(0) as usize;
+        let block_base = block_offsets.get(block).copied().ok_or_else(|| {
+            HavokError::InvalidInput(format!(
+                "missing spline block offset {block} of {num_blocks}"
+            ))
+        })? as usize;
+        let track_base = block_base
+            .checked_add(mask_and_quant_size as usize)
+            .ok_or_else(|| HavokError::InvalidInput("spline track offset overflow".into()))?;
+        if block_base > data.len() || track_base > data.len() {
+            return Err(HavokError::InvalidInput(format!(
+                "spline block {block} is outside data (block={block_base}, tracks={track_base}, data_len={})",
+                data.len()
+            )));
+        }
 
         let mut mask_r = Reader::new(data, block_base);
-        let mut track_r = Reader::new(data, block_base + mask_and_quant_size as usize);
-
-        // Track 0's translation scalar type also governs float-track payloads
-        // (mirrors the writer in compress_spline_with_params).
-        let mut float_scalar_q: usize = 0;
+        let mut track_r = Reader::new(data, track_base);
 
         let mut transforms = Vec::with_capacity(num_tracks as usize);
-        for ti in 0..num_tracks as usize {
+        for _ti in 0..num_tracks as usize {
             let packed_q = mask_r.u8()?;
             let trans_mask = mask_r.u8()?;
             let rot_mask = mask_r.u8()?;
@@ -693,10 +747,6 @@ pub fn decompress_spline_full(
             let trans_q = (packed_q & 0x03) as usize;
             let rot_q = ((packed_q >> 2) & 0x0F) as usize;
             let scale_q = ((packed_q >> 6) & 0x03) as usize;
-            if ti == 0 {
-                float_scalar_q = trans_q;
-            }
-
             let translation = sample_scalar_track(
                 &mut track_r,
                 trans_q,
@@ -739,26 +789,42 @@ pub fn decompress_spline_full(
         // the per-track mask quartets (within mask_and_quant_size); payloads
         // immediately after the transform-track payloads in the same block.
         if num_floats > 0 {
+            let float_payload_offset = float_block_offsets.get(block).copied().ok_or_else(|| {
+                HavokError::InvalidInput(format!(
+                    "missing float spline block offset {block} of {num_blocks}"
+                ))
+            })? as usize;
+            let float_payload_base =
+                block_base
+                    .checked_add(float_payload_offset)
+                    .ok_or_else(|| {
+                        HavokError::InvalidInput("float spline payload offset overflow".into())
+                    })?;
+            if float_payload_base > data.len() {
+                return Err(HavokError::InvalidInput(format!(
+                    "float spline block {block} is outside data (payload={float_payload_base}, data_len={})",
+                    data.len()
+                )));
+            }
+            let mut float_r = Reader::new(data, float_payload_base);
+
             // Read float-track masks for this block.
             let mut float_masks: Vec<u8> = Vec::with_capacity(num_floats as usize);
             for _ in 0..num_floats {
                 float_masks.push(mask_r.u8()?);
             }
-            // Replay float-track payloads for every frame in this block, but only
-            // record the value for the current frame_idx. (sample_scalar_track is
-            // stateful — it advances track_r past the track payload.) The simpler
-            // alternative is to walk this block's payloads exactly once and pin
-            // every frame in the block at the same time as we read the rest of
-            // the block — but our outer loop is per-frame, so we keep the per-
-            // frame sampling and just remember the result at frame_idx.
-            for (fi, mask) in float_masks.iter().copied().enumerate() {
+            // sample_scalar_track advances float_r past each track's payload, so
+            // every track is replayed and only this frame's value is kept.
+            for (fi, raw_mask) in float_masks.iter().copied().enumerate() {
+                let scalar_q = usize::from((raw_mask >> 1) & 1);
+                let component_mask = raw_mask & 0b0001_0001;
                 let v3 = sample_scalar_track(
-                    &mut track_r,
-                    float_scalar_q,
+                    &mut float_r,
+                    scalar_q,
                     quantized_time,
                     frame_duration,
                     block_time,
-                    mask,
+                    component_mask,
                     [0.0, 0.0, 0.0],
                 )?;
                 if fi < float_tracks.len() {
@@ -778,13 +844,8 @@ pub fn decompress_spline_full(
 // Spline compression
 // ---------------------------------------------------------------------------
 
-/// Compression knobs that mirror `py_creation_lib/python/creation_lib/hkxpack/spline_compress.py`'s
-/// `SplineCompressionParams` dataclass.
-///
-/// Callers that don't care can keep using `compress_spline(...)` which
-/// substitutes `SplineCompressionParams::default()`. Callers that need a
-/// different rotation quantization (e.g. POLAR32 over the default
-/// THREECOMP40) call `compress_spline_with_params`.
+/// Spline compression knobs. `compress_spline` uses the defaults; call
+/// `compress_spline_with_params` for e.g. POLAR32 rotations instead of THREECOMP40.
 #[derive(Debug, Clone, Copy)]
 pub struct SplineCompressionParams {
     pub rotation_type: RotationQuantization,
@@ -835,14 +896,9 @@ pub struct CompressedSplineBlob {
     pub float_block_offsets: Vec<u32>,
 }
 
-/// Compress per-frame transforms into a spline-compressed binary blob.
-///
-/// `frames` is indexed as `frames[frame_idx].transforms[track_idx]`.
-/// Returns a `CompressedSplineBlob` that can be round-tripped through
-/// `decompress_spline`.
-///
-/// If `frames` has fewer than 2 entries the function returns the first frame
-/// repeated (static) so callers always get a valid blob.
+/// Compress `frames[frame_idx].transforms[track_idx]` into a spline blob that
+/// round-trips through `decompress_spline`. Fewer than 2 frames yields a static
+/// blob of the first frame.
 pub fn compress_spline(
     frames: &[SplineFrame],
     duration: f32,
@@ -857,13 +913,9 @@ pub fn compress_spline(
     )
 }
 
-/// Like `compress_spline` but takes custom `SplineCompressionParams` and an
-/// optional set of float-track samples. `float_tracks[track_idx][frame_idx]`
-/// gives the float value for that track at that frame; pass `&[]` if there
-/// are no float tracks.
-///
-/// Float tracks are laid down in the same per-block format Python's
-/// `compress_to_spline` produces, so float-track-bearing animations round-trip.
+/// Like `compress_spline`, with custom params and optional float tracks
+/// (`float_tracks[track_idx][frame_idx]`; pass `&[]` for none). Float tracks use
+/// the vanilla per-block layout, so they round-trip through `decompress_spline_full`.
 pub fn compress_spline_with_params(
     frames: &[SplineFrame],
     float_tracks: &[Vec<f32>],
@@ -1003,8 +1055,7 @@ pub fn compress_spline_with_params(
         // array deserializes to a null base in FO4 → null deref crash.
         float_block_offsets.push(mask_and_quant_size + track_buf.len() as u32);
 
-        // Float-track masks: one byte per float track. Mirrors Python's
-        // _compute_mask but for the 1-component case. Vanilla Havok stores
+        // Float-track masks: one byte per float track. Vanilla Havok stores
         // these immediately after the transform-track masks, before the
         // 4-byte alignment that introduces the per-track payload region.
         let mut float_masks: Vec<u8> = Vec::with_capacity(float_tracks.len());
@@ -1020,7 +1071,7 @@ pub fn compress_spline_with_params(
             float_masks.push(mask & 0b0001_0001);
         }
         for (i, fm) in float_masks.iter().enumerate() {
-            data_buf[mask_offset + i] = *fm;
+            data_buf[mask_offset + i] = *fm | ((trans_scalar_type as u8 & 1) << 1);
         }
 
         // Float-track payloads. Each track is a 1-component scalar track,
@@ -1451,12 +1502,8 @@ fn write_vec3_track(
             }
         }
 
-        // Write quantized control points
-        // The decompressor aligns to 2 before reading control points
-        // (but we need to write them right after bounds, then decompressor aligns).
-        // The decompressor does: r.align(2) then reads cp_start = r.pos.
-        // Since bounds are f32 (4-byte aligned), pos after bounds is always 2-aligned.
-        // So we don't need explicit align(2) here.
+        // Quantized control points follow the f32 bounds directly. That position is
+        // already 2-aligned, which is what the decompressor's align(2) expects.
 
         for cp in samples {
             for i in 0..3 {
@@ -1708,14 +1755,10 @@ mod tests {
             .collect()
     }
 
-    /// FO4's `hkaSplineCompressedAnimation::samplePartialTracks` reads
-    /// `m_floatBlockOffsets[block]` UNCONDITIONALLY (SDK
-    /// hkaSplineCompressedAnimation.cpp:411), and `getDataChunks` does
-    /// `&m_floatBlockOffsets[block]` (cpp:273) — both regardless of float-track
-    /// count. An empty `floatBlockOffsets` deserializes to a null array base, so
-    /// that read is a null deref (the FO76→FO4 spline-recompress crash). The
-    /// array must therefore carry one block-relative offset per block even when
-    /// there are zero float tracks.
+    /// FO4's `samplePartialTracks` (hkaSplineCompressedAnimation.cpp:411) and
+    /// `getDataChunks` (cpp:273) index `m_floatBlockOffsets[block]` regardless of
+    /// float-track count. An empty array deserializes to a null base and crashes,
+    /// so there must be one offset per block even with zero float tracks.
     #[test]
     fn compress_spline_emits_one_float_block_offset_per_block_with_zero_floats() {
         let frames = ramp_frames(95, 4);

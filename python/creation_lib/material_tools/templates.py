@@ -1,22 +1,10 @@
 """FO4 BGSM root-material-template lookup.
 
-FO76 stripped the root-template inheritance system — 99% of FO76 BGSMs ship
-with ``RootMaterialPath`` empty, with the per-material file storing all shader
-fields inline. FO4 on the other hand still uses the template chain: almost
-every vanilla weapon/armor/clothes BGSM sets ``RootMaterialPath`` to something
-under ``template/`` and inherits base shader params from there.
-
-When downgrading a FO76 BGSM to FO4, leaving ``RootMaterialPath`` empty is
-legal but produces subtly wrong visuals — the engine falls back to default
-shader params instead of the per-category template's spec/metallic tuning.
-This module provides a heuristic lookup that picks a sensible FO4 root
-template from the source file path + the BGSM's own shader flags, so the
-downgrade pass can synthesize a non-empty ``RootMaterialPath`` that points at
-a known-real FO4 vanilla template.
-
-Public API:
-  resolve_root_material_path(source_path, bgsm) -> str | None
-  KNOWN_FO4_TEMPLATES  (frozenset of canonical template names for validation)
+99% of FO76 BGSMs ship with ``RootMaterialPath`` empty and every shader field
+inline. Almost every FO4 vanilla weapon/armor/clothes BGSM instead inherits base
+shader params from a ``template/`` root. An empty root is legal in FO4 but falls
+back to default shader params instead of the category's spec/metallic tuning, so
+the downgrade picks an FO4 template from the source path and shader flags.
 
 Heuristic ordering (first match wins):
   1. Source BGSM already has a non-empty RootMaterialPath that names an
@@ -32,12 +20,10 @@ Heuristic ordering (first match wins):
      paths get category-appropriate templates (metal, wood, default, etc).
   8. Catch-all fallback -> ``template/defaultTemplate_wet.bgsm``.
 
-All synthesized paths use the canonical casing that appears in the FO4
-``Data/Materials/template/`` directory on disk. A missing or invalid
-RootMaterialPath causes the engine to load the material with default shader
-params (the previous behavior); a BAD RootMaterialPath causes the material
-to fail to load entirely, so the lookup MUST only return template names
-that exist in vanilla FO4.
+Synthesized paths use the on-disk casing of FO4 ``Data/Materials/template/``. A
+missing RootMaterialPath loads with default shader params, but one naming a
+nonexistent file fails to load the material, so only vanilla FO4 templates may be
+returned.
 """
 from __future__ import annotations
 
@@ -224,19 +210,11 @@ def resolve_root_material_path(
     source_path: str,
     bgsm: BGSMData,
 ) -> Optional[str]:
-    """Return a canonical FO4 root template path for the given BGSM.
+    """Return a vanilla FO4 ``template/`` path for the given BGSM, or ``None``.
 
-    Args:
-        source_path: Game-relative source path of the BGSM, e.g.
-            ``"materials/weapons/gausspistol/gausspistol.bgsm"``. Used for
-            category detection via path segments. May be empty.
-        bgsm: The BGSMData being downgraded. Shader flags (Hair, Tree,
-            SkinTint) are consulted ahead of the path heuristic.
-
-    Returns:
-        A template path under ``template/`` that exists in vanilla FO4, or
-        ``None`` if no plausible category was found (in which case the
-        caller should leave ``RootMaterialPath`` empty — the old behavior).
+    ``source_path`` is game-relative (``materials/weapons/...``) and may be empty.
+    Shader flags (Hair, Tree, SkinTint) win over path segments. On ``None`` the
+    caller leaves ``RootMaterialPath`` empty.
     """
     # 1. If the source BGSM already names a valid FO4 template, keep it.
     existing = getattr(bgsm, "RootMaterialPath", None)

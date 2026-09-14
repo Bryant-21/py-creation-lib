@@ -14,7 +14,6 @@ use crate::terrain::water::build_water_mesh;
 
 /// Generate one terrain LOD quad: mesh + textures.
 ///
-/// Contract §Per-type generators: `terrain::generate_quad(quad, ctx) -> QuadOutputs`.
 /// Port of `TerrainLOD.GenerateBTR` (TerrainLOD.cs:1319-1500).
 pub fn generate_quad(quad: &QuadDesc, ctx: &QuadCtx) -> anyhow::Result<QuadOutputs> {
     let level = quad.quad_level;
@@ -33,10 +32,8 @@ pub fn generate_quad(quad: &QuadDesc, ctx: &QuadCtx) -> anyhow::Result<QuadOutpu
         })
         .unwrap_or_default();
 
-    // TODO(P1-FIDELITY): per-quad fidelity passes (protect_cell_borders / skirts
-    // geometry / optimize_unseen / hide_quads) are not run here — see the marker
-    // in terrain_lod.rs and the one-time stats.warnings entry in driver.rs.
-    // Build terrain mesh.
+    // TODO(P1-FIDELITY): optimize_unseen and hide_quads are not ported; see
+    // build_terrain_mesh in terrain_lod.rs and the one-time warning in driver.rs.
     let mesh = build_terrain_mesh(ctx.world, quad, ctx.settings)?;
 
     // Early-return if no geometry (TerrainLOD.cs:1322-1325).
@@ -54,20 +51,17 @@ pub fn generate_quad(quad: &QuadDesc, ctx: &QuadCtx) -> anyhow::Result<QuadOutpu
     let msn_path = ctx.paths.output_dir.join(msn_rel.replace('\\', "/"));
 
     // Write .btr mesh (scale = lodLevel per TerrainLOD.cs:1433). The ShiftZ term
-    // (lodLevel * bbox z-center) is applied inside build_btr_nif; we pass the
-    // per-level zShift, which is 0.0 by default (Phase-1: ZSHIFTLOD* unsupported,
-    // see TODO(P1-FIDELITY) in terrain_lod.rs).
+    // (lodLevel * bbox z-center) is applied inside build_btr_nif; the per-level
+    // zShift is 0.0 (ZSHIFTLOD* settings are not supported).
     let z_shift = 0.0f32;
     // Landless/ocean water sheet (TerrainLOD.cs GenerateWater): emit a 2nd
     // BSTriShape water block in the same .btr when any cell in the quad sits
     // below water. Shares the terrain block's scale/zShift so the shapes register.
     //
-    // Gated behind `terrain.emit_water` (default OFF): the WATER block is
-    // byte-faithful to the golden LODGen .btr, but FO4 resolves the water-LOD
-    // surface shader from the worldspace water type, which a raw FO76→FO4
-    // converted worldspace does not synthesize — so emitting it crashes the
-    // BSBatchRenderer (null-deref walking the "WATER" node). See settings.rs.
-    let water = if ctx.settings.terrain.emit_water {
+    // WRLD.DATA.NoLODWater overrides the global terrain setting. Emitting a WATER
+    // subtree for such a world makes FO4 resolve a surface the WRLD explicitly
+    // declares absent, which can crash background terrain loading.
+    let water = if ctx.settings.terrain.emit_water && !ctx.world.no_lod_water {
         build_water_mesh(ctx.world, quad)
     } else {
         None
@@ -122,7 +116,7 @@ mod tests {
 
     #[test]
     fn generate_quad_emits_btr_and_dds() {
-        let w = crate::input::WorldspaceInput::from_cells(
+        let mut w = crate::input::WorldspaceInput::from_cells(
             "W",
             (0..4)
                 .flat_map(|y| (0..4).map(move |x| (x, y)))
@@ -133,10 +127,11 @@ mod tests {
                     vertex_colors: vec![[255, 255, 255]; 33 * 33],
                     layers: Vec::new(),
                     hidden_quadrants: [false; 4],
-                    water_height: f32::MIN,
+                    water_height: 100.0,
                 })
                 .collect(),
         );
+        w.no_lod_water = true;
         let s = LodSettings::fo4_default();
         let g = Game::fo4();
         let out_dir = std::env::temp_dir().join("lodgen_genquad_test");
@@ -164,5 +159,9 @@ mod tests {
         assert!(outputs.meshes[0].exists());
         assert!(outputs.meshes[0].to_string_lossy().ends_with("W.4.0.0.btr"));
         assert!(outputs.textures.iter().all(|t| t.exists()));
+        let btr = nif_core_native::model::NifFile::load(&outputs.meshes[0]).unwrap();
+        assert!(btr.blocks.iter().all(|block| {
+            !matches!(block.fields.get("Name"), Some(nif_core_native::model::NifValue::String(name)) if name == "WATER")
+        }));
     }
 }

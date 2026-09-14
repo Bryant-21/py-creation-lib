@@ -345,7 +345,7 @@ fn write_object(
     Ok(())
 }
 
-/// Zero the five PC-identifying / wall-clock fields (spec §5) so the emitted
+/// Zero the five PC-identifying / wall-clock fields so the emitted
 /// `.pex` carries no building-machine identity. Applied by `compile_source`
 /// before `write_pex_bytes`; the faithful round-trip path never calls
 /// this (it must reproduce stock bytes exactly).
@@ -359,8 +359,8 @@ pub fn neutralize_identity_fields(payload: &mut PexFilePayload) {
     }
 }
 
-/// Last path component, splitting on both separators (PCompiler emits Windows
-/// paths; be robust to either).
+/// Last path component, splitting on both `/` and `\` (PCompiler emits Windows
+/// paths).
 fn basename(path: &str) -> String {
     path.rsplit(['/', '\\']).next().unwrap_or(path).to_string()
 }

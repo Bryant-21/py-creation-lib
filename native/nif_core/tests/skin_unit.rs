@@ -14,12 +14,13 @@ use nif_core_native::skin::source::{
 };
 use nif_core_native::skin::weight_transfer::{MorphTransferConfig, transfer_morph_weights};
 use nif_core_native::skin::{
-    convert_legacy_skin, first_person::extract_arm_subset, restructure_bone_tree,
+    LegacySkinPolicy, convert_legacy_skin, first_person::extract_arm_subset, restructure_bone_tree,
 };
 use std::path::PathBuf;
 
 fn translation_maps_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../conversion/src/embedded/translation_maps")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../bacup/py_bacup_lib/native/conversion/src/embedded/translation_maps")
 }
 
 #[test]
@@ -35,6 +36,7 @@ fn options_have_skin_fields() {
 
     assert!(!opts.emit_first_person);
     assert!((opts.morph_weight_cap - 0.5).abs() < f32::EPSILON);
+    assert_eq!(opts.skin_policy, LegacySkinPolicy::TranslateSkeleton);
 }
 
 #[test]
@@ -461,11 +463,28 @@ fn skin_partition_id(nif: &NifFile, shape_id: usize) -> usize {
 }
 
 fn skin_transform_value(translation: [f32; 3]) -> NifValue {
+    skin_transform_value_with_rotation(
+        translation,
+        [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+    )
+}
+
+fn skin_transform_value_with_rotation(translation: [f32; 3], rotation: [[f32; 3]; 3]) -> NifValue {
     NifValue::Struct(fields([
         ("Translation", NifValue::Vec3(translation)),
         (
             "Rotation",
-            NifValue::Matrix33([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]),
+            NifValue::Struct(fields([
+                ("m11", NifValue::Float(rotation[0][0] as f64)),
+                ("m21", NifValue::Float(rotation[0][1] as f64)),
+                ("m31", NifValue::Float(rotation[0][2] as f64)),
+                ("m12", NifValue::Float(rotation[1][0] as f64)),
+                ("m22", NifValue::Float(rotation[1][1] as f64)),
+                ("m32", NifValue::Float(rotation[1][2] as f64)),
+                ("m13", NifValue::Float(rotation[2][0] as f64)),
+                ("m23", NifValue::Float(rotation[2][1] as f64)),
+                ("m33", NifValue::Float(rotation[2][2] as f64)),
+            ])),
         ),
         ("Scale", NifValue::Float(1.0)),
     ]))
@@ -667,13 +686,29 @@ fn fold_clamps_to_four_influences_keeping_top_weights() {
 }
 
 #[test]
-fn vertex_desc_skinned_sets_skinned_and_fullprecision_bits() {
-    let desc = vertex_desc_skinned(false);
-    let stride = (desc & 0xF) as u32;
-    assert_eq!(stride, 7);
-    let flags = (desc >> 44) as u32;
-    assert!(flags & 0x40 != 0);
-    assert!(flags & 0x4000 != 0);
+fn vertex_desc_skinned_matches_vanilla_fo4_layout() {
+    // Values taken from vanilla FO4 skinned meshes, which are uniform across
+    // meshes/armor: flags 0x5b at 32 bytes/vertex, 0x7b at 36 with colors at 20.
+    for (has_colors, want_flags, want_stride, want_color_offset, want_skin_offset) in
+        [(false, 0x5b, 32, 0, 20), (true, 0x7b, 36, 20, 24)]
+    {
+        let desc = vertex_desc_skinned(has_colors);
+        assert_eq!((desc & 0xF) as u32 * 4, want_stride, "stride");
+        assert_eq!(((desc >> 44) & 0xFFFFF) as u32, want_flags, "flags");
+        assert_eq!(((desc >> 8) & 0xF) as u32 * 4, 8, "uv offset");
+        assert_eq!(((desc >> 16) & 0xF) as u32 * 4, 12, "normal offset");
+        assert_eq!(((desc >> 20) & 0xF) as u32 * 4, 16, "tangent offset");
+        assert_eq!(
+            ((desc >> 24) & 0xF) as u32 * 4,
+            want_color_offset,
+            "color offset"
+        );
+        assert_eq!(
+            ((desc >> 28) & 0xF) as u32 * 4,
+            want_skin_offset,
+            "skin offset"
+        );
+    }
 }
 
 #[test]
@@ -927,6 +962,42 @@ fn convert_legacy_skin_all_unmapped_static_fallback_uses_static_vertex_layout() 
     };
     assert!(!first.contains_key("Bone Indices"));
     assert!(!first.contains_key("Bone Weights"));
+    assert_fo4_segment_invariant(shape);
+}
+
+/// FO4 reads `Total Segments` as `Num Segments + sum(Num Sub Segments)` and only
+/// reads the shared `Segment Data` block when `Num Segments < Total Segments`.
+/// An inflated total desyncs the engine inside the shape block, so the following
+/// block's string index is read from mesh bytes — an access violation in
+/// `NiStringExtraData::LoadBinary`.
+fn assert_fo4_segment_invariant(shape: &nif_core_native::model::NifBlock) {
+    let segments = match shape.get_field("Segment") {
+        Some(NifValue::Array(segments)) => segments,
+        other => panic!("expected segment array, got {other:?}"),
+    };
+    let sub_segments: i64 = segments
+        .iter()
+        .map(|value| match value {
+            NifValue::Struct(fields) => fields
+                .get("Num Sub Segments")
+                .map(NifValue::as_i64)
+                .unwrap_or(0),
+            _ => 0,
+        })
+        .sum();
+    let num = shape
+        .get_field("Num Segments")
+        .map(NifValue::as_i64)
+        .expect("num segments");
+    let total = shape
+        .get_field("Total Segments")
+        .map(NifValue::as_i64)
+        .expect("total segments");
+    assert_eq!(num, segments.len() as i64);
+    assert_eq!(total, num + sub_segments);
+    if num == total {
+        assert!(shape.get_field("Segment Data").is_none());
+    }
 }
 
 #[test]
@@ -1089,6 +1160,24 @@ fn convert_legacy_skin_preserves_partition_segments() {
         })
         .collect::<Vec<_>>();
     assert_eq!(user_indices, vec![32, 34]);
+    assert_fo4_segment_invariant(shape);
+
+    // FO4 has no BSDismemberSkinInstance RTTI entry; an armor-kind source must
+    // still land on BSSkin::Instance, with dismemberment carried by the segments
+    // asserted above. Leaving the Skyrim block type in place fails the whole NIF
+    // load in-game and draws the red "!" marker.
+    assert!(
+        nif.blocks
+            .iter()
+            .all(|block| block.type_name != "BSDismemberSkinInstance"),
+        "armor skin left a BSDismemberSkinInstance in FO4 output"
+    );
+    assert!(
+        nif.blocks
+            .iter()
+            .any(|block| block.type_name == "BSSkin::Instance"),
+        "armor skin did not emit a BSSkin::Instance"
+    );
 }
 
 #[test]
@@ -1113,14 +1202,21 @@ fn convert_legacy_skin_uses_skin_data_fallback_and_bind_transforms() {
     let skin_data_id = skin_data_id(&nif, shape_id);
     let skin_data = nif.blocks.get_mut(skin_data_id).expect("skin data");
     skin_data.set_field("Skin Transform", skin_transform_value([10.0, 0.0, 0.0]));
+    let second_rotation = [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]];
     skin_data.set_field(
         "Bone List",
         NifValue::Array(vec![
             bone_data_value([0.0, 0.0, 0.0], vec![bone_weight_value(0, 1.0)]),
-            bone_data_value(
-                [0.0, 5.0, 0.0],
-                vec![bone_weight_value(1, 1.0), bone_weight_value(2, 1.0)],
-            ),
+            NifValue::Struct(fields([
+                (
+                    "Skin Transform",
+                    skin_transform_value_with_rotation([0.0, 5.0, 0.0], second_rotation),
+                ),
+                (
+                    "Vertex Weights",
+                    NifValue::Array(vec![bone_weight_value(1, 1.0), bone_weight_value(2, 1.0)]),
+                ),
+            ])),
         ]),
     );
 
@@ -1183,6 +1279,10 @@ fn convert_legacy_skin_uses_skin_data_fallback_and_bind_transforms() {
                 _ => None,
             }),
         Some([0.0, 5.0, 0.0])
+    );
+    assert_eq!(
+        second_bone.get("Rotation"),
+        Some(&NifValue::Matrix33(second_rotation))
     );
 }
 

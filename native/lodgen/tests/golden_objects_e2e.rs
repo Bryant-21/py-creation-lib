@@ -1,16 +1,10 @@
-//! End-to-end OBJECT golden gate.
+//! End-to-end object golden gate: enumerates FarHarbor REFRs from the FO4 install,
+//! builds the object atlas + object LOD for representative quads, and checks the
+//! `.bto` / atlas `.dds` against the xLODGen corpus under `tmp/xlodgen/`.
+//! Requires `real-esp`; skips when the install or corpus is absent.
 //!
-//! Enumerates the real FarHarbor worldspace (REFR placed objects) from the FO4
-//! install, builds the object atlas + object LOD for a representative quad, and
-//! validates the produced `.bto` / atlas `.dds` against the xLODGen golden corpus
-//! under `tmp/xlodgen/`.
-//!
-//! Requires the `real-esp` feature (links the ESP reader). Skips cleanly when the
-//! FO4 install or the golden corpus is absent.
-//!
-//! Data dirs: the FO4 install Data (to enumerate the ESM) PLUS the repo's
-//! `extracted/fo4/` loose corpus (for the LOD model NIFs + materials; the install
-//! ships them inside BA2s which the loose-file loader cannot read).
+//! Data dirs: FO4 Data (to enumerate the ESM) plus the loose `extracted/fo4/` corpus
+//! (LOD model NIFs and materials ship in BA2s, which the loose-file loader can't read).
 #![cfg(feature = "real-esp")]
 
 use std::collections::BTreeSet;
@@ -164,7 +158,7 @@ fn object_quad_for(world: &WorldspaceInput, level: i32, x: i32, y: i32) -> QuadD
     }
 }
 
-/// Enumerate FarHarbor and report ref accounting (the P4-A2 evidence numbers).
+/// Enumerate FarHarbor and report ref accounting.
 #[test]
 fn enumerate_farharbor_refs_smoke() {
     let Some(data) = fo4_data_dir() else { return };
@@ -302,8 +296,8 @@ fn object_bto_matches_golden_l16() {
     let _ = std::fs::remove_dir_all(&out_dir);
     std::fs::create_dir_all(&out_dir).unwrap();
 
-    // Build the REAL object atlas once from all enumerated refs (closes the
-    // "stub empty atlas" gap). This is what the driver threads into generate_quad.
+    // Build the real object atlas once from all enumerated refs; the driver threads
+    // the same atlas into generate_quad.
     let game = Game::fo4();
     let atlas = {
         let paths = LodPaths {
@@ -388,34 +382,26 @@ fn object_bto_matches_golden_l16() {
         );
         assert!(golden_tris > 0, "{level}.{x}.{y}: golden has no triangles");
         assert!(our_tris > 0, "{level}.{x}.{y}: ours has no triangles");
-        // POST-SIMPLIFY GATE. Our object LOD now runs xLODGen's ReUV per-triangle
-        // break + loose re-weld + Geometry.Simplify (Geometry.cs:1122/1999) on
-        // atlassed shapes (object_lod.rs transform_shape). This is a FAITHFUL port of
-        // Geometry.Simplify: a coplanar-fan collapse that welds the per-triangle-broken
-        // mesh and removes interior vertices of flat regions. It firmly reduces the
-        // tri counts (these L16 quads dropped from pre-Simplify 2.71/1.64/2.84/5.13×
-        // to 2.38/1.41/2.57/4.73×) and never explodes.
+        // Object LOD runs xLODGen's ReUV per-triangle break + loose re-weld +
+        // Geometry.Simplify (Geometry.cs:1122/1999) on atlassed shapes (object_lod.rs
+        // transform_shape). Simplify is a coplanar-fan collapse that welds the broken
+        // mesh and removes interior vertices of flat regions. Measured L16 ratios:
+        // 2.38/1.41/2.57/4.73× (2.71/1.64/2.84/5.13× without Simplify).
         //
-        // REMAINING DIVERGENCE (root-caused, not masked): the faithful Simplify
-        // converges ABOVE golden for these quads (e.g. BoatFishingWhite07_LOD.nif:
-        // 483 src tris → ours 424, golden 178). The boat's source LOD has genuine UV
-        // seams at coincident positions (634 verts / 364 unique positions, UVs all
-        // within [0,1] so xLODGen's UV-tile-split `flag` path never fires). The weld
-        // (uv threshold 0.005) correctly preserves those seams, so Simplify cannot
-        // form flat fans across them — and neither would the C# Simplify on this mesh
-        // (the algorithm was matched line-for-line; even ignoring normals the weld
-        // only reaches 577 verts). xLODGen's golden reduction to 178 therefore comes
-        // from a mechanism BEYOND Geometry.Simplify (it crosses UV seams) that is not
-        // present in the provided Geometry.cs ReUV/Simplify source. Closing the last
-        // ~2× is a separate object-fidelity task; what we ship here is the faithful
-        // Simplify and a measured improvement.
+        // Known divergence: Simplify converges above golden here
+        // (BoatFishingWhite07_LOD.nif: 483 src tris, ours 424, golden 178). The boat's
+        // source LOD has real UV seams at coincident positions (634 verts / 364 unique
+        // positions, UVs within [0,1] so the UV-tile-split `flag` path never fires).
+        // The weld (uv threshold 0.005) keeps those seams, so Simplify cannot form flat
+        // fans across them; the C# Simplify behaves the same (even ignoring normals the
+        // weld only reaches 577 verts). xLODGen's reduction to 178 crosses UV seams via
+        // a mechanism not in Geometry.cs ReUV/Simplify.
         assert!(
             our_tris >= golden_tris,
             "{level}.{x}.{y}: ours {our_tris} < golden {golden_tris} — we DROPPED geometry \
              (enumeration or model-resolution defect)"
         );
-        // Tightened from the pre-Simplify 8× explosion gate to 6× (all measured
-        // post-Simplify ratios are ≤ 4.73× with margin); still catches a true blow-up.
+        // 6× leaves margin over the measured max (4.73×) and still catches a blow-up.
         assert!(
             ratio <= 6.0,
             "{level}.{x}.{y}: object tris {our_tris} vs golden {golden_tris} EXPLODED \

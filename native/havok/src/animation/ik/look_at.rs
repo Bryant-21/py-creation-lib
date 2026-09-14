@@ -1,10 +1,5 @@
-/// Look-at IK solver.
-///
-/// Analytic single-bone solver: rotates a head/eye bone so that its forward
-/// axis points toward a world-space target, constrained to keep the up axis
-/// reasonably upright.
-///
-/// Mirrors `hkaLookAtIkSolver` semantics from the SDK.
+/// Analytic single-bone look-at IK (`hkaLookAtIkSolver` semantics): turns a
+/// head/eye bone's forward axis toward a world-space target, keeping the up axis upright.
 use crate::animation::pose::{
     QsTransform, quat_conjugate, quat_from_axis_angle, quat_mul, quat_normalize, quat_rotate,
     vec3_cross, vec3_dot, vec3_len, vec3_normalize, vec3_sub,

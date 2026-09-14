@@ -1,15 +1,12 @@
-// .btr block-graph writer via nif_core (R2 §1/§2/§5/§6).
+// .btr block-graph writer via nif_core.
 //
 // build_btr_nif assembles the NIF block graph in memory (useful for unit testing
 // without disk). write_btr = build_btr_nif(...).save(Some(path)).
 //
-// Scale/translation note:
-// write_btr writes scale=1.0, z_shift=0.0 as per the contract signature.
-// terrain_lod calls build_btr_nif with the real lodLevel and the
-// per-level zShift. build_btr_nif accepts `scale: f32` (= lodLevel) and
-// `z_translation: f32` (= zShift); the ShiftZ component (lodLevel * bbox
-// z-center) and the vert recentering are computed internally (Geometry.cs
-// ShiftZ / TerrainLOD.cs:1432,1438-1448).
+// write_btr writes scale=1.0, z_shift=0.0. terrain_lod calls build_btr_nif with the
+// real lodLevel (`scale`) and per-level zShift (`z_translation`); the ShiftZ term
+// (lodLevel * bbox z-center) and the vert recentering are computed internally
+// (Geometry.cs ShiftZ / TerrainLOD.cs:1432,1438-1448).
 
 use indexmap::IndexMap;
 use nif_core_native::io::BTO_NUM_PRIMITIVES_OVERRIDE_FIELD;
@@ -19,13 +16,12 @@ use crate::descriptors::BBox;
 use crate::terrain::water::{WaterMesh, WaterSegment};
 
 /// Build a BSMultiBoundNode "chunk" → BSTriShape "Land" → BSLightingShaderProperty →
-/// BSShaderTextureSet NIF in memory. Constants from R2 §1/§2/§5/§6.
+/// BSShaderTextureSet NIF in memory.
 ///
-/// `scale` sets the BSTriShape Scale field (R2 §2: scale = lodLevel in xLODGen).
-/// `z_translation` is the per-level zShift; the ShiftZ term (`scale * bbox
-/// z-center`) is added internally and the vert z values are recentered, so the
-/// final BSTriShape Translation.z = `z_translation + scale * z_center`
-/// (R2 §9 / TerrainLOD.cs:1432,1438-1441).
+/// `scale` sets the BSTriShape Scale field (lodLevel in xLODGen). `z_translation` is
+/// the per-level zShift; the ShiftZ term (`scale * bbox z-center`) is added internally
+/// and the vert z values are recentered, so the final BSTriShape Translation.z =
+/// `z_translation + scale * z_center` (TerrainLOD.cs:1432,1438-1441).
 pub fn build_btr_nif(
     verts: &[[f32; 3]],
     uvs: &[[f32; 2]],
@@ -106,7 +102,7 @@ fn build_btr_nif_inner(
     nif.header.block_sizes.clear();
 
     // --- Block 3: BSShaderTextureSet (added first so refs point forward) ---
-    // slot0 = diffuse, slot1 = msn (R2 §5).
+    // slot0 = diffuse, slot1 = msn.
     // Vanilla CK pads NumTextures to 10; LODGen writes 2. We match LODGen.
     let tex_id = {
         let mut fields = IndexMap::new();
@@ -120,36 +116,32 @@ fn build_btr_nif_inner(
         nif.add_block("BSShaderTextureSet", Some(fields))
     };
 
-    // --- Block 2: BSLightingShaderProperty (R2 §5) ---
+    // --- Block 2: BSLightingShaderProperty ---
     // shaderType 18 = "LOD Landscape Noise"
-    // shaderFlags1 = 0x80400800 = 2151682048
+    // shaderFlags1 = 0x80401000 = 2151682048
     // shaderFlags2 = 3 (ZBuffer_Write | LOD_Landscape)
     // textureClampMode = 0 (CLAMP_S_CLAMP_T), glossiness=0.0, specularStrength=1.0
     // FO4 PBR/wetness tail: rootMaterial="", subsurfaceRolloff=0, rimlightPower=f32::MAX,
     //   backlightPower=0, grayscaleToPaletteScale=1, fresnelPower=5, wetness all -1.
     let lsp_id = {
         let mut fields = IndexMap::new();
-        // Shader Type 18 = "LOD Landscape Noise". Store the NUMERIC enum value, not
-        // the name string. The schema gates the shader-type-specific tail fields on
-        // `cond="Shader Type == N"`; nif_core's condition evaluator coerces a
-        // String-valued enum to a truthy bool (== 1 spuriously matches), which would
-        // emit the `Shader Type == 1` tail (Environment Map Scale + 2 SSR bools = 6
-        // extra bytes), inflating this block past the engine-expected size and
-        // desyncing FO4's BTR parser into a BSFixedString AV. UInt(18) evaluates
-        // `18 == 1` correctly (false) and serializes byte-identically to the golden
-        // LODGen .btr (which stores Shader Type as uint 18).
+        // Shader Type 18 = "LOD Landscape Noise", stored as the numeric enum value. The
+        // schema gates shader-type-specific tail fields on `cond="Shader Type == N"`,
+        // and nif_core coerces a String-valued enum to true (so `== 1` matches), which
+        // would emit the 6-byte `Shader Type == 1` tail (Environment Map Scale + 2 SSR
+        // bools), oversizing the block and desyncing FO4's BTR parser into a
+        // BSFixedString AV. UInt(18) serializes byte-identically to the golden LODGen
+        // .btr (which stores Shader Type as uint 18).
         fields.insert("Shader Type".to_string(), NifValue::UInt(18));
         fields.insert("Name".to_string(), NifValue::String(String::new()));
         fields.insert("Num Extra Data List".to_string(), NifValue::UInt(0));
         fields.insert("Extra Data List".to_string(), NifValue::Array(Vec::new()));
         fields.insert("Controller".to_string(), NifValue::Ref(-1));
-        // Shader Flags 1/2 are versioned bitflag fields with a "FO4" suffix in
-        // nif_core's schema (BS Version == 130), so they are keyed
-        // "Shader Flags 1:FO4" / "Shader Flags 2:FO4" — the same keys the reader
-        // assigns and the golden DLC03FarHarbor.*.btr carries. Inserting under the
-        // bare name is silently lost on write (schema default wins → flags drop).
-        // Values are raw FO4 masks, verified against the golden
-        // DLC03FarHarbor.*.btr (nif.xml bit indices, not the R2 §5 0x800 typo):
+        // Shader Flags 1/2 are versioned bitflag fields keyed "Shader Flags 1:FO4" /
+        // "Shader Flags 2:FO4" in nif_core's schema (BS Version == 130), the same keys
+        // the reader assigns and the golden DLC03FarHarbor.*.btr carries. A bare-name
+        // key is silently lost on write (schema default wins). Values are raw FO4
+        // masks, verified against the golden .btr (nif.xml bit indices):
         //   flags1 0x80401000 = Model_Space_Normals(bit12) | Own_Emit(bit22)
         //                       | ZBuffer_Test(bit31) = 2151682048
         //   flags2 0x3        = ZBuffer_Write(bit0) | LOD_Landscape(bit1)
@@ -190,14 +182,14 @@ fn build_btr_nif_inner(
         );
         fields.insert("Alpha".to_string(), NifValue::Float(1.0));
         fields.insert("Refraction Strength".to_string(), NifValue::Float(0.0));
-        // Smoothness (= glossiness = 0.0 for FO4 terrain, R2 §5)
+        // Smoothness (= glossiness = 0.0 for FO4 terrain)
         fields.insert("Smoothness".to_string(), NifValue::Float(0.0));
         fields.insert(
             "Specular Color".to_string(),
             NifValue::Color3([1.0, 1.0, 1.0]),
         );
         fields.insert("Specular Strength".to_string(), NifValue::Float(1.0));
-        // FO4 PBR tail (R2 §5, BSLightingShaderProperty.cs:153-179)
+        // FO4 PBR tail (BSLightingShaderProperty.cs:153-179)
         fields.insert("Subsurface Rolloff".to_string(), NifValue::Float(0.0));
         fields.insert(
             "Rimlight Power".to_string(),
@@ -209,7 +201,7 @@ fn build_btr_nif_inner(
             NifValue::Float(1.0),
         );
         fields.insert("Fresnel Power".to_string(), NifValue::Float(5.0));
-        // Wetness: all -1.0 (R2 §5)
+        // Wetness: all -1.0
         fields.insert(
             "Wetness".to_string(),
             NifValue::Struct({
@@ -226,8 +218,8 @@ fn build_btr_nif_inner(
         nif.add_block("BSLightingShaderProperty", Some(fields))
     };
 
-    // --- Block 1: BSTriShape "Land" (R2 §2/§3) ---
-    // Vertex Desc = 52776558133763 (VERTEX|UV half-float, vertexSize=3, stride 12 bytes, R2 §3).
+    // --- Block 1: BSTriShape "Land" ---
+    // Vertex Desc = 52776558133763 (VERTEX|UV half-float, vertexSize=3, stride 12 bytes).
     // The writer uses (attributes & 0x401 == 0x1) branch: half-float pos + unused-W + UV.
     // nif_core vertex struct needs "Vertex" (Vec3), "Unused W" (UInt=0), "UV" (Struct{u,v}).
     let shape_id = {
@@ -265,16 +257,7 @@ fn build_btr_nif_inner(
             })
             .collect();
 
-        let triangle_data: Vec<NifValue> = tris
-            .iter()
-            .map(|t| {
-                let mut data = IndexMap::new();
-                data.insert("v1".to_string(), NifValue::Int(t[0] as i64));
-                data.insert("v2".to_string(), NifValue::Int(t[1] as i64));
-                data.insert("v3".to_string(), NifValue::Int(t[2] as i64));
-                NifValue::Struct(data)
-            })
-            .collect();
+        let triangle_data = super::triangle_values(tris);
 
         let mut fields = IndexMap::new();
         fields.insert("Name".to_string(), NifValue::String("Land".to_string()));
@@ -293,7 +276,7 @@ fn build_btr_nif_inner(
         );
         fields.insert("Scale".to_string(), NifValue::Float(scale as f64));
         fields.insert("Collision Object".to_string(), NifValue::Ref(-1));
-        // Bounding sphere (BSTriShape center/radius, R2 §6)
+        // Bounding sphere (BSTriShape center/radius)
         fields.insert(
             "Bounding Sphere".to_string(),
             NifValue::Struct({
@@ -332,7 +315,7 @@ fn build_btr_nif_inner(
         nif.add_block("BSTriShape", Some(fields))
     };
 
-    // --- Block 4: BSMultiBoundAABB for root bound (R2 §6) ---
+    // --- Root BSMultiBoundAABB (block 5, or 10 with WATER) ---
     let aabb_id = {
         let c = bounds.center(true);
         let e = bounds.extent(true);
@@ -344,7 +327,7 @@ fn build_btr_nif_inner(
         nif.add_block("BSMultiBoundAABB", Some(fields))
     };
 
-    // --- Block 3: BSMultiBound → BSMultiBoundAABB (R2 §6) ---
+    // --- Root BSMultiBound → BSMultiBoundAABB (block 4, or 9 with WATER) ---
     let mb_id = {
         let mut fields = IndexMap::new();
         fields.insert("Data".to_string(), NifValue::Ref(aabb_id as i32));
@@ -358,7 +341,7 @@ fn build_btr_nif_inner(
     // has no water cells.
     let water_node_id = water.map(|w| build_water_node(&mut nif, w, scale, z_translation));
 
-    // --- Block 0: BSMultiBoundNode "chunk" (root, R2 §1) ---
+    // --- Block 0: BSMultiBoundNode "chunk" (root) ---
     // cullMode=1 (CULL_ALLPASS), children=[Land BSTriShape (+ WATER node)],
     // multiBound→root BSMultiBound. Replace the cleared root slot by inserting at 0.
     {
@@ -477,18 +460,18 @@ fn expand_water_segments(water: &WaterMesh, count: i32) -> Vec<WaterSegment> {
 }
 
 /// Append the WATER block graph to `nif` and return the `BSMultiBoundNode "WATER"`
-/// block id. Adds (in order) the water `BSEffectShaderProperty`, the water
-/// `BSTriShape`, a `BSMultiBoundAABB`, a `BSMultiBound`, and the WATER node.
+/// block id. Adds, in order, the water `BSEffectShaderProperty`, the water
+/// `BSTriShape`, a `BSMultiBoundAABB`, a `BSMultiBound` and the WATER node.
 ///
-/// The water `BSTriShape` reuses the SAME z math as the terrain block via the
-/// shared `scale` (= lodLevel) and `z_translation` (= zShift[lodIndex]):
+/// The water `BSTriShape` uses the same z math as the terrain block via the shared
+/// `scale` (= lodLevel) and `z_translation` (= zShift[lodIndex]):
 /// `Translation.z = z_translation + scale * z_center`, verts recentered by
 /// `z_center` (`Geometry.ShiftZ`, Geometry.cs:2165-2175 / ToBSTriShape:339-345).
 /// For a flat water sheet z_center == water/level and z_extent == 0, so all verts
 /// recenter to 0 and `Translation.z == z_translation + scale*(water/level) == water`.
 ///
-/// The water shape has NO UVs (the golden vertex desc is VERTEX-only) and a
-/// `BSEffectShaderProperty` (NOT BSLightingShaderProperty). Field values match the
+/// The water shape has no UVs (the golden vertex desc is VERTEX-only) and uses a
+/// `BSEffectShaderProperty`, not a BSLightingShaderProperty. Field values match the
 /// golden `DLC03FarHarbor.32.-41.-27.btr` block 5/6 and xLODGen
 /// (TerrainLOD.cs:1570-1580).
 fn build_water_node(nif: &mut NifFile, water: &WaterMesh, scale: f32, z_translation: f32) -> usize {
@@ -496,7 +479,7 @@ fn build_water_node(nif: &mut NifFile, water: &WaterMesh, scale: f32, z_translat
     // C# (TerrainLOD.cs:1570-1580): flags1=0x80000000, flags2=1, clampMode=65283,
     // falloffStart/StopOpacity=0, emissive(BaseColor)=(1,1,1,1), softFalloff=100,
     // envMapScale=1. Shader Flags use version-suffixed keys "Shader Flags 1:FO4"
-    // (BS Version 130) — a bare key is SILENTLY DROPPED on write (schema default
+    // (BS Version 130); a bare key is silently dropped on write (schema default
     // wins). Texture Clamp Mode is an enum; a raw UInt(65283) passes through.
     let esp_id = {
         let mut fields = IndexMap::new();
@@ -605,17 +588,7 @@ fn build_water_node(nif: &mut NifFile, water: &WaterMesh, scale: f32, z_translat
         })
         .collect();
 
-    let triangle_data: Vec<NifValue> = water
-        .tris
-        .iter()
-        .map(|t| {
-            let mut data = IndexMap::new();
-            data.insert("v1".to_string(), NifValue::Int(t[0] as i64));
-            data.insert("v2".to_string(), NifValue::Int(t[1] as i64));
-            data.insert("v3".to_string(), NifValue::Int(t[2] as i64));
-            NifValue::Struct(data)
-        })
-        .collect();
+    let triangle_data = super::triangle_values(&water.tris);
 
     let shape_id = {
         let segment_count = scale.round() as i32;
@@ -923,6 +896,39 @@ mod tests {
         }
     }
 
+    #[test]
+    fn terrain_and_water_triangles_match_legacy_bytes_at_every_level() {
+        let water = flat_water_sheet();
+        let uvs = vec![[0., 1.]; water.verts.len()];
+        for level in [4., 8., 16., 32.] {
+            let mut land = build_btr_nif(
+                &water.verts,
+                &uvs,
+                &water.tris,
+                "land_d.dds",
+                "land_n.dds",
+                &water.bbox,
+                level,
+                -17.5,
+            )
+            .unwrap();
+            super::super::assert_triangle_bytes_match_legacy(&mut land);
+            let mut combined = build_btr_nif_with_water(
+                &water.verts,
+                &uvs,
+                &water.tris,
+                "land_d.dds",
+                "land_n.dds",
+                &water.bbox,
+                level,
+                -17.5,
+                &water,
+            )
+            .unwrap();
+            super::super::assert_triangle_bytes_match_legacy(&mut combined);
+        }
+    }
+
     /// build_btr_nif_with_water emits a water BSTriShape with a
     /// BSEffectShaderProperty under a "WATER" BSMultiBoundNode, and a chunk root
     /// with TWO children — matching the golden landless `.btr` graph.
@@ -1109,13 +1115,11 @@ mod tests {
     }
 
     /// Regression: the terrain `BSLightingShaderProperty` must serialize to the
-    /// golden 140-byte size with NO trailing remainder. Storing `Shader Type` as
-    /// the name string ("LOD Landscape Noise") instead of the numeric enum (18)
-    /// made nif_core's `cond="Shader Type == 1"` evaluator coerce the truthy
-    /// string to bool→1 and spuriously emit the `Shader Type == 1` tail
-    /// (Environment Map Scale + 2 SSR bools = 6 extra bytes → 146-byte block),
-    /// desyncing FO4's BTR parser into a BSFixedString access violation. The
-    /// golden LODGen `.btr` LSP is 140 bytes; ours must match.
+    /// golden LODGen 140 bytes with no trailing remainder. A name-string
+    /// `Shader Type` ("LOD Landscape Noise") instead of the numeric enum (18) makes
+    /// nif_core's `cond="Shader Type == 1"` evaluate true and emit the 6-byte tail
+    /// (Environment Map Scale + 2 SSR bools, a 146-byte block), desyncing FO4's BTR
+    /// parser into a BSFixedString access violation.
     #[test]
     fn lsp_block_is_golden_140_bytes_no_phantom_tail() {
         let verts = [[0.0, 0.0, 0.0], [4096.0, 0.0, 0.0], [0.0, 4096.0, 0.0]];
@@ -1156,26 +1160,23 @@ mod tests {
         assert!(lsp.fields.get("Wetness Control: Use SSR").is_none());
     }
 
-    /// Regression: the water `BSEffectShaderProperty` and water `BSTriShape`
-    /// must serialize to the xLODGen/FO4 structure with NO
-    /// phantom-tail inflation.
+    /// Regression: the water `BSEffectShaderProperty` and water `BSTriShape` must
+    /// serialize to the xLODGen/FO4 structure with no phantom-tail inflation.
     ///
-    /// Golden recorded sizes (from `DLC03FarHarbor.32.-41.-27.btr`, block 6/5, and
-    /// the vanilla same-level `Commonwealth.16.*.BTR`):
+    /// Golden sizes (`DLC03FarHarbor.32.-41.-27.btr` block 6/5, and the vanilla
+    /// same-level `Commonwealth.16.*.BTR`):
     ///   - `BSEffectShaderProperty` = **104 bytes**, no remainder (geometry-
     ///     independent). The only cond-gated tail field is `Material`
-    ///     (`cond="$Name"`); we set `Name=""`, which `nif_to_eval` coerces to
-    ///     `false`, so no `.bgem` material ref leaks in. A non-empty Name (or any
-    ///     String enum that a `cond=` references) would inflate the block and the
-    ///     engine would parse the WATER subtree at the wrong offsets → render-time
-    ///     null deref.
-    ///   - coarse water shape is a plain `BSTriShape`; shipped FO4 and xLODGen
-    ///     coarse BTR water do not use a subindex segment table. `Data Size == verts*8 +
+    ///     (`cond="$Name"`); `Name=""` coerces to `false` in `nif_to_eval`, so no
+    ///     `.bgem` material ref leaks in. A non-empty Name (or any String enum a
+    ///     `cond=` references) would inflate the block and the engine would parse
+    ///     the WATER subtree at the wrong offsets (render-time null deref).
+    ///   - The coarse water shape is a plain `BSTriShape`; shipped FO4 and xLODGen
+    ///     coarse BTR water use no subindex segment table. `Data Size == verts*8 +
     ///     tris*6` (VERTEX-only, half-float stride 8; 3×u16 triangles).
     ///
-    /// Round-trip alone does NOT catch inflation (it is self-consistent); this
-    /// test asserts the WRITER-EMITTED `header.block_sizes` against the golden
-    /// recorded constants.
+    /// Round-trip alone does not catch inflation (it is self-consistent), so this
+    /// asserts the writer-emitted `header.block_sizes` against the golden constants.
     #[test]
     fn water_blocks_are_golden_byte_sizes_no_phantom_tail() {
         let verts = [[0.0, 0.0, 0.0], [4096.0, 0.0, 0.0], [0.0, 4096.0, 0.0]];

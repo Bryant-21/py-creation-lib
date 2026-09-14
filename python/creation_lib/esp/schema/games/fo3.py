@@ -1,7 +1,7 @@
 """Auto-generated detector schema for fo3.
 
 # @schema_forge:generated
-# regen_at: 2026-07-10T04:43:34Z
+# regen_at: 2026-08-07T13:56:20Z
 # esm_corpus: Fallout3.esm @ sha256:d9fb0a33af495ddb...
 # source_hash: 6e7fac5d8f5ed4eb728e203fac79c8bc85e5ca4031e3ad45d342c850fdd1f0c2
 """

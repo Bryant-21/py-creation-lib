@@ -276,6 +276,47 @@ fn parse_descriptor_value(
     owner_class: &str,
     object_names: &HashMap<String, usize>,
 ) -> HavokResult<HkxValue> {
+    if template.arrsize > 0 && is_complex_type(template.vtype) {
+        let values = if text.contains('(') {
+            parse_complex_array(text, template.vtype)?
+        } else {
+            Vec::new()
+        };
+        if values.len() != template.arrsize {
+            return Err(HavokError::InvalidInput(format!(
+                "fixed array {} expected {} values, got {}",
+                template.name,
+                template.arrsize,
+                values.len()
+            )));
+        }
+        return Ok(HkxValue::Array(values));
+    }
+    if template.arrsize > 0 && is_scalar_type(template.vtype) {
+        let items: Vec<_> = text.split_whitespace().collect();
+        if items.len() != template.arrsize {
+            return Err(HavokError::InvalidInput(format!(
+                "fixed array {} expected {} values, got {}",
+                template.name,
+                template.arrsize,
+                items.len()
+            )));
+        }
+        return items
+            .into_iter()
+            .map(|item| {
+                parse_typed_scalar(
+                    registry,
+                    item,
+                    template.vtype,
+                    template,
+                    owner_class,
+                    object_names,
+                )
+            })
+            .collect::<HavokResult<Vec<_>>>()
+            .map(HkxValue::Array);
+    }
     if is_array {
         let subtype = if template.vsubtype == HkxType::Void {
             template.vtype
@@ -334,11 +375,32 @@ fn parse_descriptor_value(
     )
 }
 
+fn is_scalar_type(hkx_type: HkxType) -> bool {
+    matches!(
+        hkx_type,
+        HkxType::Bool
+            | HkxType::Int8
+            | HkxType::Uint8
+            | HkxType::Int16
+            | HkxType::Uint16
+            | HkxType::Half
+            | HkxType::Int32
+            | HkxType::Uint32
+            | HkxType::Real
+            | HkxType::Int64
+            | HkxType::Uint64
+            | HkxType::Ulong
+            | HkxType::Enum
+            | HkxType::Flags
+            | HkxType::Pointer
+    )
+}
+
 fn complex_group_size(hkx_type: HkxType) -> usize {
     match hkx_type {
         HkxType::Vector4 | HkxType::Quaternion => 4,
-        HkxType::QsTransform | HkxType::Transform | HkxType::Matrix3 => 12,
-        HkxType::Matrix4 => 16,
+        HkxType::QsTransform | HkxType::Matrix3 => 12,
+        HkxType::Transform | HkxType::Matrix4 => 16,
         _ => 0,
     }
 }
@@ -355,6 +417,31 @@ fn parse_float_run(text: &str) -> HavokResult<Vec<f32>> {
 }
 
 fn parse_complex_single(text: &str, hkx_type: HkxType) -> HavokResult<Vec<f32>> {
+    if hkx_type == HkxType::QsTransform {
+        let chunks = parse_parenthesized_chunks(text, hkx_type)?;
+        if matches!(chunks.as_slice(), [translation, rotation, scale]
+            if translation.len() == 3 && rotation.len() == 4 && scale.len() == 3)
+        {
+            let mut values = Vec::with_capacity(12);
+            values.extend_from_slice(&chunks[0]);
+            values.push(0.0);
+            values.extend_from_slice(&chunks[1]);
+            values.extend_from_slice(&chunks[2]);
+            values.push(0.0);
+            return Ok(values);
+        }
+    }
+    if hkx_type == HkxType::Transform {
+        let chunks = parse_parenthesized_chunks(text, hkx_type)?;
+        if chunks.len() == 4 && chunks.iter().all(|group| group.len() == 3) {
+            let mut values = Vec::with_capacity(16);
+            for group in chunks {
+                values.extend_from_slice(&group);
+                values.push(0.0);
+            }
+            return Ok(values);
+        }
+    }
     // Strip parens — Python's tagreader._parse_complex_text does the same via
     // a `[-\d.eE+]+` regex; we use a cheaper sanitize since we already know
     // the format. Both `(a b c d)` and `(a b c d)(e f g h)...` collapse to
@@ -383,8 +470,8 @@ fn parse_complex_array(text: &str, subtype: HkxType) -> HavokResult<Vec<HkxValue
     }
 
     // Two parenthesized layouts in the wild:
-    //   1. Python's `py_creation_lib/python/creation_lib/hkxpack/tagwriter.py:164-169` — one `(...)` per
-    //      element, each group holding the full `group_size` floats.
+    //   1. This writer's form — one `(...)` per element, each group holding
+    //      the full `group_size` floats.
     //   2. Java hkxpack-cli — vector-aligned: one `(a b c d)` per 4 floats,
     //      so a 12-float QsTransform is `(t)(r)(s)`. The reference fixture
     //      `resource/skeleton.xml` is in this form.
@@ -415,6 +502,72 @@ fn parse_complex_array(text: &str, subtype: HkxType) -> HavokResult<Vec<HkxValue
     if chunks.iter().all(|chunk| chunk.len() == group_size) {
         return Ok(chunks.into_iter().map(HkxValue::F32List).collect());
     }
+    // Havok Content Tools emits hkQsTransform as three semantic groups with
+    // SIMD padding omitted: `(translation.xyz)(rotation.xyzw)(scale.xyz)`.
+    // The binary packfile layout is three vec4s, so restore the translation
+    // and scale padding lanes for each repeated 3/4/3 tuple.
+    if subtype == HkxType::QsTransform
+        && chunks.len().is_multiple_of(3)
+        && chunks.chunks_exact(3).all(|groups| {
+            matches!(groups, [translation, rotation, scale]
+                if translation.len() == 3 && rotation.len() == 4 && scale.len() == 3)
+        })
+    {
+        return Ok(chunks
+            .chunks_exact(3)
+            .map(|groups| {
+                let mut values = Vec::with_capacity(12);
+                values.extend_from_slice(&groups[0]);
+                values.push(0.0);
+                values.extend_from_slice(&groups[1]);
+                values.extend_from_slice(&groups[2]);
+                values.push(0.0);
+                HkxValue::F32List(values)
+            })
+            .collect());
+    }
+    // Content Tools writes hkTransform as four compact xyz groups (three
+    // rotation axes plus translation), omitting each vec4 padding lane. The
+    // packfile representation is four full vec4s.
+    if subtype == HkxType::Transform
+        && chunks.len().is_multiple_of(4)
+        && chunks
+            .chunks_exact(4)
+            .all(|groups| groups.iter().all(|group| group.len() == 3))
+    {
+        return Ok(chunks
+            .chunks_exact(4)
+            .map(|groups| {
+                let mut values = Vec::with_capacity(16);
+                for group in groups {
+                    values.extend_from_slice(group);
+                    values.push(0.0);
+                }
+                HkxValue::F32List(values)
+            })
+            .collect());
+    }
+    // hkpConvexVerticesShape stores rotated vertices as hkMatrix3 values,
+    // while Content Tools omits the SIMD padding lane from each of the three
+    // matrix rows. Only accept complete repeated 3x3 groups.
+    if subtype == HkxType::Matrix3
+        && chunks.len().is_multiple_of(3)
+        && chunks
+            .chunks_exact(3)
+            .all(|groups| groups.iter().all(|group| group.len() == 3))
+    {
+        return Ok(chunks
+            .chunks_exact(3)
+            .map(|groups| {
+                let mut values = Vec::with_capacity(12);
+                for group in groups {
+                    values.extend_from_slice(group);
+                    values.push(0.0);
+                }
+                HkxValue::F32List(values)
+            })
+            .collect());
+    }
     // Layout 2: every chunk is exactly 4 floats and the total float count is
     // a multiple of `group_size`. Concat and re-chunk by `group_size`.
     if chunks.iter().all(|chunk| chunk.len() == 4) {
@@ -435,6 +588,27 @@ fn parse_complex_array(text: &str, subtype: HkxType) -> HavokResult<Vec<HkxValue
         "complex array {subtype:?}: cannot reconcile parenthesized chunk shape with group size {group_size} (chunks: {:?})",
         chunks.iter().map(|c| c.len()).collect::<Vec<_>>()
     )))
+}
+
+fn parse_parenthesized_chunks(text: &str, hkx_type: HkxType) -> HavokResult<Vec<Vec<f32>>> {
+    let mut chunks = Vec::new();
+    let mut cursor = 0;
+    let bytes = text.as_bytes();
+    while cursor < bytes.len() {
+        match memchr_byte(bytes, b'(', cursor) {
+            Some(open) => {
+                let close = memchr_byte(bytes, b')', open + 1).ok_or_else(|| {
+                    HavokError::InvalidInput(format!(
+                        "complex {hkx_type:?}: unclosed '(' at byte {open}",
+                    ))
+                })?;
+                chunks.push(parse_float_run(&text[open + 1..close])?);
+                cursor = close + 1;
+            }
+            None => break,
+        }
+    }
+    Ok(chunks)
 }
 
 fn memchr_byte(haystack: &[u8], needle: u8, start: usize) -> Option<usize> {
@@ -497,7 +671,7 @@ fn lookup_enum_int(
         }
         current = parent.filter(|p| !p.is_empty());
     }
-    None
+    registry.get_external_enum_int(enum_name, str_value)
 }
 
 fn try_parse_packed_hex(
@@ -742,22 +916,15 @@ fn write_member(
         }
         HkxValue::Array(values) => {
             // Arrays of COMPLEX subtypes (Vector4/Quaternion/QsTransform/...)
-            // emit each element wrapped in a single parenthesized group,
-            // joined by newlines. Mirrors `py_creation_lib/python/creation_lib/hkxpack/tagwriter.py` lines
-            // 164-169: an N-element QsTransform array writes N lines of
-            // `(f1 f2 ... f12)`, NOT `(f1 f2 f3 f4)(f5 f6 f7 f8)(f9 f10 f11
-            // f12)`. The 3-paren form is reserved for *single* QsTransform
-            // fields outside an array. Python's tagreader regex
-            // `\(([^)]+)\)` matches each parenthesized group as one element,
-            // so the per-element single-paren wrapping is required for the
-            // array reader to recover the right element count.
+            // emit each element as one parenthesized group per line: an
+            // N-element QsTransform array writes N lines of `(f1 f2 ... f12)`,
+            // NOT `(f1 f2 f3 f4)(f5 f6 f7 f8)(f9 f10 f11 f12)`, which is reserved
+            // for a single QsTransform field. Readers that match each `(...)`
+            // group as one element need this to recover the element count.
             let subtype = template.map(|t| t.vsubtype).unwrap_or(HkxType::Void);
             // String arrays (hkArray<hkStringPtr> / hkArray<const char*>) emit
-            // each element as a `<hkcstring>` child, matching the canonical
-            // hkxpack-cli format that `py_creation_lib/python/creation_lib/hkxpack/tagwriter.py` produces
-            // (see lines 172-175 there). Joining with spaces would corrupt
-            // strings that contain whitespace and confuses the Python
-            // tagreader, which expects child elements for STRING arrays.
+            // each element as a `<hkcstring>` child (the hkxpack-cli format);
+            // joining with spaces would corrupt strings containing whitespace.
             if matches!(subtype, HkxType::CString | HkxType::StringPtr) {
                 push_indent(xml, indent);
                 xml.push_str(&format!(
@@ -853,30 +1020,30 @@ fn write_member(
     Ok(())
 }
 
-/// Like `value_to_text`, but converts int values to their enum name when the
-/// member template marks the field as TYPE_ENUM/TYPE_FLAGS and the registry
-/// has a name for the value. Mirrors Python's `HKXEnumMember.value` semantics.
-/// Also routes F32List values through `format_complex_f32list` when the
-/// effective type is COMPLEX, so vector/quaternion/qstransform fields emit
-/// in Python-compatible parenthesized form: `(x y z w)` for Vector4 and
-/// Quaternion, `(x y z w)(...)(...)` for QsTransform/Transform/Matrix3,
-/// and four groups for Matrix4. Matches `py_creation_lib/python/creation_lib/hkxpack/tagwriter.py:_write_member`.
+/// Like `value_to_text`, but writes enum names for TYPE_ENUM/TYPE_FLAGS members
+/// the registry can name, and routes COMPLEX F32List values through
+/// `format_complex_f32list`: `(x y z w)` for Vector4 and Quaternion,
+/// `(x y z w)(...)(...)` for QsTransform/Transform/Matrix3, four groups for Matrix4.
 fn value_to_text_typed(
     value: &HkxValue,
     registry: &mut DescriptorRegistry,
     owner_class: &str,
     template: Option<&MemberTemplate>,
 ) -> String {
-    if let (Some(template), HkxValue::I32(int_value)) = (template, value) {
+    if let Some(template) = template {
         if matches!(template.vtype, HkxType::Enum | HkxType::Flags)
             && !template.etype.is_empty()
             && !owner_class.is_empty()
+            && let Some(int_value) = enum_storage_as_i32(value)
         {
-            let name = registry.get_enum_value(owner_class, &template.etype, *int_value);
+            let name = registry.get_enum_value(owner_class, &template.etype, int_value);
             // get_enum_value returns the integer-as-string when the enum
             // doesn't carry a name for the value. Detect that by trying to
             // parse it back; if it parses, fall through to the standard path.
             if name.parse::<i32>().is_err() {
+                return escape_text(&name);
+            }
+            if let Some(name) = registry.get_external_enum_name(&template.etype, int_value) {
                 return escape_text(&name);
             }
         }
@@ -887,6 +1054,20 @@ fn value_to_text_typed(
         }
     }
     value_to_text(value)
+}
+
+fn enum_storage_as_i32(value: &HkxValue) -> Option<i32> {
+    match value {
+        HkxValue::I8(value) => Some(*value as i32),
+        HkxValue::U8(value) => Some(*value as i32),
+        HkxValue::I16(value) => Some(*value as i32),
+        HkxValue::U16(value) => Some(*value as i32),
+        HkxValue::I32(value) => Some(*value),
+        HkxValue::U32(value) => i32::try_from(*value).ok(),
+        HkxValue::I64(value) => i32::try_from(*value).ok(),
+        HkxValue::U64(value) => i32::try_from(*value).ok(),
+        _ => None,
+    }
 }
 
 fn is_complex_type(hkx_type: HkxType) -> bool {
@@ -916,11 +1097,11 @@ fn format_complex_f32list(values: &[f32], hkx_type: HkxType) -> Option<String> {
                 values[0], values[1], values[2], values[3]
             ))
         }
-        HkxType::QsTransform | HkxType::Transform | HkxType::Matrix3 => {
+        HkxType::QsTransform | HkxType::Matrix3 => {
             // 3 groups of 4. Python emits `(a b c d)(e f g h)(i j k l)`.
             Some(chunked_complex_text(values, 3))
         }
-        HkxType::Matrix4 => {
+        HkxType::Transform | HkxType::Matrix4 => {
             // 4 groups of 4.
             Some(chunked_complex_text(values, 4))
         }
@@ -1008,10 +1189,10 @@ fn parse_signature(signature: Option<&str>) -> HavokResult<u32> {
 fn parse_pointer(text: &str, object_names: &HashMap<String, usize>) -> HavokResult<HkxValue> {
     if text == "null" || text == "#null" {
         Ok(HkxValue::Pointer(None))
-    } else if let Some(index) = parse_pointer_index(text) {
-        Ok(HkxValue::Pointer(Some(index)))
     } else if let Some(index) = object_names.get(text) {
         Ok(HkxValue::Pointer(Some(*index)))
+    } else if let Some(index) = parse_pointer_index(text) {
+        Ok(HkxValue::Pointer(Some(index)))
     } else {
         Err(HavokError::InvalidInput(format!("invalid pointer {text}")))
     }

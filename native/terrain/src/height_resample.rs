@@ -316,3 +316,180 @@ fn clamp_floor(value: f32, extent: usize) -> usize {
 fn clamp_ceil(value: f32, extent: usize) -> usize {
     value.ceil().clamp(0.0, (extent - 1) as f32) as usize
 }
+
+pub const SF_LANCZOS2_MAX_TAPS: usize = 12;
+
+#[derive(Clone, Debug)]
+pub struct AxisTap {
+    pub first: i32,
+    pub count: u8,
+    pub weights: [f32; SF_LANCZOS2_MAX_TAPS],
+}
+
+/// Lanczos-2 taps around a fractional `center` (source samples 1 apart), support
+/// widened by `ratio` for downsampling: index `d` is included iff
+/// `|d - center| < 2.0 * ratio`. The strict `<` drops the exact-zero boundary
+/// taps, as `lanczos2_kernel()` does at its fixed ratio of 4. Weights sum to 1.0.
+///
+/// No reference kernel exists at the production ratio
+/// (`SF_SAMPLES_PER_FO4_INTERVAL` ≈ 2.3409). The only external check is the
+/// `starfield_heights_land_in_fo4_units` test in `authoring_emit.rs` (Akila peak
+/// and span vs the BTD's per-cell min/max table); don't loosen it without
+/// another way to verify this function.
+fn lanczos2_taps_unbounded(center: f64, ratio: f64) -> (i32, Vec<f64>) {
+    let radius = 2.0 * ratio;
+    let first = (center - radius).floor() as i32 + 1;
+    let last = (center + radius).ceil() as i32 - 1;
+    let raw: Vec<f64> = (first..=last)
+        .map(|d| lanczos2((d as f64 - center) / ratio))
+        .collect();
+    let total: f64 = raw.iter().sum();
+    (first, raw.into_iter().map(|w| w / total).collect())
+}
+
+/// `lanczos2_taps_unbounded` capped to `SF_LANCZOS2_MAX_TAPS` slots; the
+/// production ratio (`SF_SAMPLES_PER_FO4_INTERVAL`) needs at most 10. Needing
+/// more panics instead of truncating: dropping even the smallest tap and
+/// renormalizing shifts every weight far past any resample tolerance.
+///
+/// `assert!` is safe only because production always passes that constant ratio.
+/// This runs under `convert_btd_to_authoring` across PyO3, where a panic aborts
+/// the whole regen run instead of the pipeline's per-record fail-soft, so a
+/// runtime-variable ratio needs a new `Result`-returning wrapper.
+pub fn lanczos2_taps_at(center: f64, ratio: f64) -> AxisTap {
+    let (first, normalized) = lanczos2_taps_unbounded(center, ratio);
+    let count = normalized.len();
+    assert!(
+        count <= SF_LANCZOS2_MAX_TAPS,
+        "lanczos2_taps_at: center {center} ratio {ratio} needs {count} taps, exceeding \
+         SF_LANCZOS2_MAX_TAPS ({SF_LANCZOS2_MAX_TAPS})"
+    );
+    let mut weights = [0.0f32; SF_LANCZOS2_MAX_TAPS];
+    for (slot, w) in weights.iter_mut().zip(&normalized) {
+        *slot = *w as f32;
+    }
+    AxisTap {
+        first,
+        count: count as u8,
+        weights,
+    }
+}
+
+pub struct AxisTaps {
+    pub taps: Vec<AxisTap>,
+}
+
+/// One `AxisTap` per target LAND vertex `0..vertex_count`, addressing BTD
+/// source samples via `sf_frame::fo4_land_vertex_units` /
+/// `sf_frame::fo4_units_to_btd_sample`.
+pub fn build_axis_taps(
+    vertex_count: usize,
+    target_cell_min: i32,
+    btd_cell_min: i32,
+    ratio: f64,
+) -> AxisTaps {
+    let taps = (0..vertex_count)
+        .map(|v| {
+            let units = crate::sf_frame::fo4_land_vertex_units(target_cell_min, v);
+            let center = crate::sf_frame::fo4_units_to_btd_sample(units, btd_cell_min);
+            lanczos2_taps_at(center, ratio)
+        })
+        .collect();
+    AxisTaps { taps }
+}
+
+#[cfg(test)]
+mod sf_lanczos_tests {
+    use super::*;
+
+    #[test]
+    fn lanczos2_taps_at_sums_to_one_and_fits_cap() {
+        for i in 0..200 {
+            let center = i as f64 * 0.037 - 3.0;
+            let tap = lanczos2_taps_at(center, crate::sf_frame::SF_SAMPLES_PER_FO4_INTERVAL);
+            assert!(tap.count as usize <= SF_LANCZOS2_MAX_TAPS);
+            let sum: f32 = tap.weights[..tap.count as usize].iter().sum();
+            assert!((sum - 1.0).abs() < 1e-6, "center {center} sum {sum}");
+        }
+    }
+
+    /// Checked on the uncapped function: ratio 4.0 needs 15 taps, more than
+    /// `SF_LANCZOS2_MAX_TAPS` (12) holds, and dropping even the smallest tap
+    /// shifts the other weights by ~2e-3.
+    #[test]
+    fn lanczos2_taps_unbounded_reproduces_shipped_fo76_kernel_at_ratio_four() {
+        let kernel = lanczos2_kernel();
+        for &center in &[0.0, 5.0, -3.0] {
+            let (first, weights) = lanczos2_taps_unbounded(center, 4.0);
+            assert_eq!(weights.len(), LANCZOS2_TAPS);
+            assert_eq!(first, center as i32 - LANCZOS2_REACH as i32);
+            for (i, w) in weights.iter().enumerate() {
+                assert!(
+                    (*w as f32 - kernel[i]).abs() < 1e-6,
+                    "tap {i}: unbounded {w} vs shipped {}",
+                    kernel[i]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn lanczos2_taps_at_matches_unbounded_reference_in_production_range() {
+        // Over a 40k-phase sweep, ratio 3.0 needs up to 12 taps (exactly
+        // SF_LANCZOS2_MAX_TAPS) and 3.25 needs 13. It sits on that boundary on
+        // purpose: if the support test in `lanczos2_taps_unbounded` changes from
+        // `<` to `<=`, the cap assert in `lanczos2_taps_at` fails this test.
+        let ratios = [
+            crate::sf_frame::SF_SAMPLES_PER_FO4_INTERVAL,
+            1.5,
+            2.0,
+            2.5,
+            3.0,
+        ];
+        for &ratio in &ratios {
+            for i in 0..200 {
+                let center = i as f64 * 0.031 - 3.0;
+                let capped = lanczos2_taps_at(center, ratio);
+                let (first, weights) = lanczos2_taps_unbounded(center, ratio);
+                assert_eq!(capped.first, first);
+                assert_eq!(capped.count as usize, weights.len());
+                for (i, w) in weights.iter().enumerate() {
+                    assert!((capped.weights[i] - *w as f32).abs() < 1e-6);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn twelve_taps_suffice_for_every_reachable_ratio() {
+        let mut ratio = 1.0f64;
+        while ratio <= 3.0 {
+            for i in 0..100 {
+                let center = i as f64 * 0.071 - 5.0;
+                let (_, weights) = lanczos2_taps_unbounded(center, ratio);
+                assert!(
+                    weights.len() <= SF_LANCZOS2_MAX_TAPS,
+                    "ratio {ratio} center {center} count {}",
+                    weights.len()
+                );
+            }
+            ratio += 0.01;
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "exceeding SF_LANCZOS2_MAX_TAPS")]
+    fn lanczos2_taps_at_panics_rather_than_truncates() {
+        let _ = lanczos2_taps_at(0.0, 4.0);
+    }
+
+    #[test]
+    fn build_axis_taps_produces_one_tap_per_vertex() {
+        let taps = build_axis_taps(33, 0, 0, crate::sf_frame::SF_SAMPLES_PER_FO4_INTERVAL);
+        assert_eq!(taps.taps.len(), 33);
+        for tap in &taps.taps {
+            let sum: f32 = tap.weights[..tap.count as usize].iter().sum();
+            assert!((sum - 1.0).abs() < 1e-6);
+        }
+    }
+}

@@ -96,7 +96,7 @@ class TestSvgRendering:
         assert 'fill="none"' not in svg
 
     def test_fill0_only_was_previously_broken(self):
-        """Regression: fill0-only shapes used to render with fill='none'."""
+        """fill0-only shapes must not render with fill='none'."""
         shape = self._make_shape(fill0=1, fill1=None)
         svg = shape_to_svg(shape, background=None)
         # Must NOT have fill="none" on the path
@@ -415,7 +415,7 @@ class TestPngExport:
         print(f"\nExported {exported} PNGs to {_PNG_OUT_DIR}")
 
     def test_export_previously_broken_fill0_shapes(self, shape_db):
-        """Export shapes that previously had fill0-only (were invisible)."""
+        """Export fill0-only shapes, which render invisible if fill0 is ignored."""
         _PNG_OUT_DIR.mkdir(parents=True, exist_ok=True)
 
         rows = shape_db.execute(

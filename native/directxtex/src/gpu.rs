@@ -71,6 +71,7 @@ pub fn compress_bc7_gpu(
     if rgba.len() != expected {
         return Err(format!("rgba len {} != expected {expected}", rgba.len()));
     }
+    let _wait = crate::profiling::Timer::new(crate::profiling::Stage::GpuWait);
     let guard = gpu_state()
         .lock()
         .map_err(|_| "gpu mutex poisoned".to_string())?;
@@ -128,6 +129,7 @@ pub fn compress_bc7_gpu_batch(
     let out_ptrs: Vec<*mut u8> = outs.iter_mut().map(|v| v.as_mut_ptr()).collect();
     let out_lens: Vec<usize> = outs.iter().map(Vec::len).collect();
 
+    let _wait = crate::profiling::Timer::new(crate::profiling::Stage::GpuWait);
     let guard = gpu_state()
         .lock()
         .map_err(|_| "gpu mutex poisoned".to_string())?;

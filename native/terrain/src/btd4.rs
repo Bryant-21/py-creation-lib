@@ -5,6 +5,8 @@ use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::path::Path;
 
+pub const BTD4_VERSION: u32 = 2;
+
 // ---------------------------------------------------------------------------
 // Public data types
 // ---------------------------------------------------------------------------
@@ -30,30 +32,26 @@ pub struct LayerRef {
     pub kind: u8,
 }
 
-/// GCVR on-disk forms are (u8 plugin_index, u32 object_id) — 5 bytes, no kind byte.
-/// The `kind` field here is only used for in-memory round-trips; it is NOT written.
 #[derive(Debug, Clone, PartialEq)]
-pub struct GcvrForm {
+pub struct GcvrEntry {
     pub plugin_index: u8,
     pub object_id: u32,
+    pub mask: Vec<u8>, // exactly 128*128
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct GcvrChunk {
-    pub mask: Vec<u8>, // exactly 128*128
-    pub forms: Vec<GcvrForm>,
+    pub entries: Vec<GcvrEntry>,
 }
 
-/// Dense ALPH layout: per cell, exactly `ALPH_PLANE_COUNT` planes =
-/// 4 quadrants × 5 FO4 percentArrays slots. Plane index = `quadrant * 5 + slot`
-/// (quadrant 0..3, slot 0..4). Each plane is a 65×65 (`kQuadVerts`²) row-major
-/// grid of normalized layer opacity (0..255), indexed `j*65 + i` (i = X / gi,
-/// j = Y / gj). Empty slots are all-zero. The base-layer weight is NOT stored —
-/// the consumer derives it as `base = 1 - sum(slots)`. These planes mirror the
-/// converted LAND's per-quadrant ATXT/VTXT `Layer` ordering exactly, so the
-/// dense terrain — which reuses the vanilla land material — blends textures in
-/// the right proportions, just at 65×65 instead of the LAND's 17×17. Absent
-/// (None) when the cell has no alpha.
+/// Dense ALPH layout: per cell, `ALPH_PLANE_COUNT` planes = 4 quadrants × 5 FO4
+/// percentArrays slots, plane index `quadrant * 5 + slot`. Each plane is a 65×65
+/// (`kQuadVerts`²) row-major grid of layer opacity (0..255), indexed `j*65 + i`
+/// (i = X / gi, j = Y / gj). Empty slots are all-zero. The base weight is not
+/// stored; the consumer derives `base = 1 - sum(slots)`. Slot order matches the
+/// LAND's per-quadrant ATXT/VTXT `Layer` order because the dense terrain reuses
+/// the vanilla land material (65×65 here vs the LAND's 17×17). `None` when the
+/// cell has no alpha.
 pub const ALPH_PLANE_VERTS: usize = 65;
 pub const ALPH_PLANE_LEN: usize = ALPH_PLANE_VERTS * ALPH_PLANE_VERTS; // 4225
 pub const ALPH_PLANE_COUNT: usize = 20; // 4 quadrants × 5 slots
@@ -78,6 +76,10 @@ pub struct Btd4Writer {
 
 impl Btd4Writer {
     pub fn new(header: Btd4Header) -> Self {
+        assert_eq!(
+            header.version, BTD4_VERSION,
+            "Btd4Writer only emits the v2 contract"
+        );
         Self {
             header,
             cells: Vec::new(),
@@ -223,7 +225,7 @@ impl Btd4Reader {
         }
 
         let version = read_u32_le(buf, &mut pos)?;
-        if version != 1 {
+        if version != BTD4_VERSION {
             return Err(format!("btd4: unsupported version {version}"));
         }
 
@@ -231,11 +233,26 @@ impl Btd4Reader {
         let height_min = read_f32_le(buf, &mut pos)?;
         let height_scale = read_f32_le(buf, &mut pos)?;
         let worldspace_editor_id = read_string(buf, &mut pos)?;
+        if density != 128
+            || !height_min.is_finite()
+            || !height_scale.is_finite()
+            || height_scale <= 0.0
+            || worldspace_editor_id.is_empty()
+        {
+            return Err("btd4: invalid v2 header".into());
+        }
 
         let plugin_count = read_u16_le(buf, &mut pos)? as usize;
+        if plugin_count == 0 {
+            return Err("btd4: empty plugin table".into());
+        }
         let mut plugin_names = Vec::with_capacity(plugin_count);
         for _ in 0..plugin_count {
-            plugin_names.push(read_string(buf, &mut pos)?);
+            let name = read_string(buf, &mut pos)?;
+            if name.is_empty() {
+                return Err("btd4: empty plugin name".into());
+            }
+            plugin_names.push(name);
         }
 
         let cell_min_x = read_i32_le(buf, &mut pos)?;
@@ -243,11 +260,17 @@ impl Btd4Reader {
         let cell_max_x = read_i32_le(buf, &mut pos)?;
         let cell_max_y = read_i32_le(buf, &mut pos)?;
         let cell_count = read_u32_le(buf, &mut pos)? as usize;
+        if cell_min_x > cell_max_x || cell_min_y > cell_max_y || cell_count > 1_000_000 {
+            return Err("btd4: invalid cell bounds or count".into());
+        }
 
         let mut cells: BTreeMap<(i32, i32), CellIndex> = BTreeMap::new();
         for _ in 0..cell_count {
             let cx = read_i32_le(buf, &mut pos)?;
             let cy = read_i32_le(buf, &mut pos)?;
+            if cx < cell_min_x || cx > cell_max_x || cy < cell_min_y || cy > cell_max_y {
+                return Err("btd4: indexed cell outside header bounds".into());
+            }
             let mut channels: [ChannelEntry; 5] =
                 std::array::from_fn(|_| ChannelEntry { offset: 0, len: 0 });
             for ch in channels.iter_mut() {
@@ -263,10 +286,12 @@ impl Btd4Reader {
                     }
                 }
             }
-            cells.insert((cx, cy), CellIndex { channels });
+            if channels[0].len == 0 || cells.insert((cx, cy), CellIndex { channels }).is_some() {
+                return Err("btd4: missing HGTS or duplicate cell".into());
+            }
         }
 
-        Ok(Self {
+        let reader = Self {
             header: Btd4Header {
                 version,
                 density,
@@ -281,7 +306,19 @@ impl Btd4Reader {
             },
             cells,
             data,
-        })
+        };
+        for (&(x, y), cell) in &reader.cells {
+            if reader.decode_hgts(&cell.channels[0]).is_none()
+                || (cell.channels[1].len != 0 && reader.decode_alph(&cell.channels[1]).is_none())
+                || (cell.channels[2].len != 0 && reader.decode_layr(&cell.channels[2]).is_none())
+                || (cell.channels[3].len != 0 && reader.decode_gcvr(&cell.channels[3]).is_none())
+                || (cell.channels[4].len != 0 && reader.decode_clrs(&cell.channels[4]).is_none())
+                || (cell.channels[1].len != 0 && cell.channels[2].len == 0)
+            {
+                return Err(format!("btd4: corrupt channel in cell ({x},{y})"));
+            }
+        }
+        Ok(reader)
     }
 
     pub fn header(&self) -> &Btd4Header {
@@ -339,7 +376,7 @@ impl Btd4Reader {
         }
         let plane_count = raw[0] as usize;
         let expected = 1 + plane_count * ALPH_PLANE_LEN;
-        if raw.len() != expected {
+        if plane_count != ALPH_PLANE_COUNT || raw.len() != expected {
             return None;
         }
         let alphas = (0..plane_count)
@@ -362,10 +399,10 @@ impl Btd4Reader {
         let row_count = raw[0] as usize;
         const ROW_SIZE: usize = 6;
         let expected = 1 + row_count * ROW_SIZE;
-        if raw.len() != expected {
+        if row_count != 24 || raw.len() != expected {
             return None;
         }
-        let layers = (0..row_count)
+        let layers: Vec<_> = (0..row_count)
             .map(|i| {
                 let base = 1 + i * ROW_SIZE;
                 LayerRef {
@@ -380,6 +417,15 @@ impl Btd4Reader {
                 }
             })
             .collect();
+        if layers.iter().any(|layer| {
+            let empty = layer.plugin_index == u8::MAX && layer.object_id == 0;
+            !empty
+                && (layer.plugin_index as usize >= self.header.plugin_names.len()
+                    || layer.object_id == 0
+                    || layer.kind != 0)
+        }) {
+            return None;
+        }
         Some(layers)
     }
 
@@ -389,20 +435,19 @@ impl Btd4Reader {
         }
         let raw = self.decompress(ch)?;
         const MASK_SIZE: usize = 128 * 128;
-        const FORM_ROW_SIZE: usize = 5; // plugin_index(1) + object_id(4)
-        if raw.len() < MASK_SIZE + 1 {
+        const ENTRY_SIZE: usize = 5 + MASK_SIZE;
+        if raw.is_empty() {
             return None;
         }
-        let mask = raw[..MASK_SIZE].to_vec();
-        let form_count = raw[MASK_SIZE] as usize;
-        let expected = MASK_SIZE + 1 + form_count * FORM_ROW_SIZE;
+        let form_count = raw[0] as usize;
+        let expected = 1 + form_count * ENTRY_SIZE;
         if raw.len() != expected {
             return None;
         }
-        let forms = (0..form_count)
+        let entries: Vec<_> = (0..form_count)
             .map(|i| {
-                let base = MASK_SIZE + 1 + i * FORM_ROW_SIZE;
-                GcvrForm {
+                let base = 1 + i * ENTRY_SIZE;
+                GcvrEntry {
                     plugin_index: raw[base],
                     object_id: u32::from_le_bytes([
                         raw[base + 1],
@@ -410,10 +455,16 @@ impl Btd4Reader {
                         raw[base + 3],
                         raw[base + 4],
                     ]),
+                    mask: raw[base + 5..base + ENTRY_SIZE].to_vec(),
                 }
             })
             .collect();
-        Some(GcvrChunk { mask, forms })
+        if entries.iter().any(|entry| {
+            entry.plugin_index as usize >= self.header.plugin_names.len() || entry.object_id == 0
+        }) {
+            return None;
+        }
+        Some(GcvrChunk { entries })
     }
 
     fn decode_clrs(&self, ch: &ChannelEntry) -> Option<Vec<u8>> {
@@ -464,13 +515,13 @@ fn encode_layr(layers: &[LayerRef]) -> Vec<u8> {
 }
 
 fn encode_gcvr(gcvr: &GcvrChunk) -> Vec<u8> {
-    let form_count = gcvr.forms.len() as u8;
-    let mut out = Vec::with_capacity(128 * 128 + 1 + gcvr.forms.len() * 5);
-    out.extend_from_slice(&gcvr.mask);
+    let form_count = gcvr.entries.len() as u8;
+    let mut out = Vec::with_capacity(1 + gcvr.entries.len() * (5 + 128 * 128));
     out.push(form_count);
-    for form in &gcvr.forms {
-        out.push(form.plugin_index);
-        out.extend_from_slice(&form.object_id.to_le_bytes());
+    for entry in &gcvr.entries {
+        out.push(entry.plugin_index);
+        out.extend_from_slice(&entry.object_id.to_le_bytes());
+        out.extend_from_slice(&entry.mask);
     }
     out
 }
@@ -506,20 +557,28 @@ fn validate_channels(ch: &CellChannels) -> Result<(), String> {
         }
     }
     if let Some(layers) = &ch.layers {
-        if layers.len() > 255 {
-            return Err(format!("layer row count {} exceeds 255", layers.len()));
+        if layers.len() != 24 {
+            return Err(format!(
+                "LAYR must contain exactly 24 ordered refs (4 quadrants × 6 slots), got {}",
+                layers.len()
+            ));
         }
     }
     if let Some(gcvr) = &ch.gcvr {
-        if gcvr.mask.len() != 128 * 128 {
+        if gcvr.entries.len() > 255 {
             return Err(format!(
-                "gcvr mask must be 128*128={} u8, got {}",
-                128 * 128,
-                gcvr.mask.len()
+                "gcvr form count {} exceeds 255",
+                gcvr.entries.len()
             ));
         }
-        if gcvr.forms.len() > 255 {
-            return Err(format!("gcvr form count {} exceeds 255", gcvr.forms.len()));
+        for (index, entry) in gcvr.entries.iter().enumerate() {
+            if entry.mask.len() != 128 * 128 {
+                return Err(format!(
+                    "gcvr entry {index} mask must be 128*128={} u8, got {}",
+                    128 * 128,
+                    entry.mask.len()
+                ));
+            }
         }
     }
     if let Some(colors) = &ch.colors {
@@ -646,7 +705,7 @@ mod tests {
 
     fn make_header() -> Btd4Header {
         Btd4Header {
-            version: 1,
+            version: BTD4_VERSION,
             density: 128,
             height_min: -2048.0,
             height_scale: 0.125,
@@ -672,26 +731,33 @@ mod tests {
     }
 
     fn full_channels() -> CellChannels {
+        let mut layers = vec![
+            LayerRef {
+                plugin_index: u8::MAX,
+                object_id: 0,
+                kind: 0,
+            };
+            24
+        ];
+        layers[0] = LayerRef {
+            plugin_index: 0,
+            object_id: 0x000800,
+            kind: 0,
+        };
+        layers[1] = LayerRef {
+            plugin_index: 1,
+            object_id: 0x0001A7,
+            kind: 0,
+        };
         CellChannels {
             heights: Some((0u32..16641u32).map(|i| (i % 1000) as u16).collect()),
             alphas: Some(synthetic_alpha_planes()),
-            layers: Some(vec![
-                LayerRef {
-                    plugin_index: 0,
-                    object_id: 0x000800,
-                    kind: 0,
-                },
-                LayerRef {
-                    plugin_index: 1,
-                    object_id: 0x0001A7,
-                    kind: 5,
-                },
-            ]),
+            layers: Some(layers),
             gcvr: Some(GcvrChunk {
-                mask: (0u32..16384u32).map(|i| (i % 251) as u8).collect(),
-                forms: vec![GcvrForm {
+                entries: vec![GcvrEntry {
                     plugin_index: 0,
                     object_id: 0x000810,
+                    mask: (0u32..16384u32).map(|i| (i % 251) as u8).collect(),
                 }],
             }),
             colors: Some((0u32..49923u32).map(|i| (i % 256) as u8).collect()),
@@ -725,7 +791,7 @@ mod tests {
         let reader = Btd4Reader::open(path).unwrap();
 
         let h = reader.header();
-        assert_eq!(h.version, 1);
+        assert_eq!(h.version, BTD4_VERSION);
         assert_eq!(h.density, 128);
         assert_eq!(h.height_min, -2048.0f32);
         assert_eq!(h.height_scale, 0.125f32);
@@ -759,11 +825,11 @@ mod tests {
 
         let expected_gcvr = full.gcvr.as_ref().unwrap();
         let got_gcvr = cell00.gcvr.as_ref().unwrap();
-        assert_eq!(got_gcvr.mask, expected_gcvr.mask);
-        assert_eq!(got_gcvr.forms.len(), expected_gcvr.forms.len());
-        for (g, e) in got_gcvr.forms.iter().zip(expected_gcvr.forms.iter()) {
+        assert_eq!(got_gcvr.entries.len(), expected_gcvr.entries.len());
+        for (g, e) in got_gcvr.entries.iter().zip(expected_gcvr.entries.iter()) {
             assert_eq!(g.plugin_index, e.plugin_index);
             assert_eq!(g.object_id, e.object_id);
+            assert_eq!(g.mask, e.mask);
         }
 
         assert_eq!(
@@ -825,6 +891,58 @@ mod tests {
     }
 
     #[test]
+    fn reader_rejects_v1_and_truncated_files() {
+        let tmp = NamedTempFile::new().unwrap();
+        let mut writer = Btd4Writer::new(make_header());
+        writer.add_cell(0, 0, hgts_only_channels()).unwrap();
+        writer.finish(tmp.path()).unwrap();
+
+        let valid = std::fs::read(tmp.path()).unwrap();
+        let mut v1 = valid.clone();
+        v1[4..8].copy_from_slice(&1u32.to_le_bytes());
+        std::fs::write(tmp.path(), v1).unwrap();
+        assert!(Btd4Reader::open(tmp.path()).is_err());
+
+        std::fs::write(tmp.path(), &valid[..64]).unwrap();
+        assert!(Btd4Reader::open(tmp.path()).is_err());
+    }
+
+    #[test]
+    fn gcvr_preserves_each_form_mask() {
+        let tmp = NamedTempFile::new().unwrap();
+        let mut first = vec![0u8; 128 * 128];
+        first[17] = u8::MAX;
+        let mut second = vec![0u8; 128 * 128];
+        second[8192] = 73;
+        let mut channels = hgts_only_channels();
+        channels.gcvr = Some(GcvrChunk {
+            entries: vec![
+                GcvrEntry {
+                    plugin_index: 0,
+                    object_id: 0x810,
+                    mask: first.clone(),
+                },
+                GcvrEntry {
+                    plugin_index: 1,
+                    object_id: 0x1A7,
+                    mask: second.clone(),
+                },
+            ],
+        });
+        let mut writer = Btd4Writer::new(make_header());
+        writer.add_cell(0, 0, channels).unwrap();
+        writer.finish(tmp.path()).unwrap();
+
+        let reader = Btd4Reader::open(tmp.path()).unwrap();
+        let entries = reader.cell(0, 0).unwrap().gcvr.unwrap().entries;
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].object_id, 0x810);
+        assert_eq!(entries[0].mask, first);
+        assert_eq!(entries[1].object_id, 0x1A7);
+        assert_eq!(entries[1].mask, second);
+    }
+
+    #[test]
     fn determinism() {
         let tmp1 = NamedTempFile::new().unwrap();
         let tmp2 = NamedTempFile::new().unwrap();
@@ -852,7 +970,7 @@ mod tests {
     /// # Exact documented values (the C++ host test must mirror these constants)
     ///
     /// Header:
-    ///   version = 1, density = 128
+    ///   version = 2, density = 128
     ///   height_min = 0.0_f32, height_scale = 0.5_f32
     ///   worldspace_editor_id = "B21TestWorld"
     ///   plugin_names = ["B21_Test.esp", "Fallout4.esm"]   (index 0 = producer)
@@ -863,11 +981,11 @@ mod tests {
     ///   HGTS: heights[i] = (i % 1000) as u16  for i in 0..16641
     ///   ALPH: ALPH_PLANE_COUNT (20) planes of ALPH_PLANE_LEN (4225) u8
     ///     plane p, texel k: ((p*31 + k) % 256) as u8   (p in 0..20, k in 0..4225)
-    ///   LAYR: 2 rows
+    ///   LAYR: 24 ordered rows (4 quadrants × base+5 alpha); first two populated
     ///     row 0: plugin_index=0, object_id=0x000800, kind=0
-    ///     row 1: plugin_index=1, object_id=0x0001A7, kind=5
-    ///   GCVR: mask[i] = (i % 251) as u8  for i in 0..16384
-    ///         forms: 1 entry: plugin_index=0, object_id=0x000810
+    ///     row 1: plugin_index=1, object_id=0x0001A7, kind=0
+    ///   GCVR: one entry: plugin_index=0, object_id=0x000810,
+    ///         mask[i] = (i % 251) as u8  for i in 0..16384
     ///   CLRS: colors[i] = (i % 256) as u8  for i in 0..49923
     ///
     /// Cell (1, 1) — HGTS only:
@@ -875,7 +993,7 @@ mod tests {
     #[cfg(test)]
     fn write_synthetic_two_cell_file(path: &Path) {
         let header = Btd4Header {
-            version: 1,
+            version: BTD4_VERSION,
             density: 128,
             height_min: 0.0,
             height_scale: 0.5,
@@ -887,26 +1005,33 @@ mod tests {
             cell_max_y: 1,
         };
 
+        let mut layers = vec![
+            LayerRef {
+                plugin_index: u8::MAX,
+                object_id: 0,
+                kind: 0,
+            };
+            24
+        ];
+        layers[0] = LayerRef {
+            plugin_index: 0,
+            object_id: 0x000800,
+            kind: 0,
+        };
+        layers[1] = LayerRef {
+            plugin_index: 1,
+            object_id: 0x0001A7,
+            kind: 0,
+        };
         let cell00 = CellChannels {
             heights: Some((0u32..16641u32).map(|i| (i % 1000) as u16).collect()),
             alphas: Some(synthetic_alpha_planes()),
-            layers: Some(vec![
-                LayerRef {
-                    plugin_index: 0,
-                    object_id: 0x000800,
-                    kind: 0,
-                },
-                LayerRef {
-                    plugin_index: 1,
-                    object_id: 0x0001A7,
-                    kind: 5,
-                },
-            ]),
+            layers: Some(layers),
             gcvr: Some(GcvrChunk {
-                mask: (0u32..16384u32).map(|i| (i % 251) as u8).collect(),
-                forms: vec![GcvrForm {
+                entries: vec![GcvrEntry {
                     plugin_index: 0,
                     object_id: 0x000810,
+                    mask: (0u32..16384u32).map(|i| (i % 251) as u8).collect(),
                 }],
             }),
             colors: Some((0u32..49923u32).map(|i| (i % 256) as u8).collect()),
@@ -927,10 +1052,10 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "writes the cross-language fixture for mods/B21_BTD host tests"]
+    #[ignore = "writes the cross-language fixture for B21_SmoothTerrain host tests"]
     fn write_cpp_fixture() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../mods/B21_BTD/tests/fixtures/mini.btd4");
+            .join("../../../mods/B21_SmoothTerrain/tests/fixtures/mini_v2.btd4");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         write_synthetic_two_cell_file(&path);
     }

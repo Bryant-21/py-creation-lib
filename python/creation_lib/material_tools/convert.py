@@ -7,11 +7,6 @@ BGSM versions:
 BGEM versions:
   FO4 = 2   — minimal effect shader; no PBR/Glass fields
   FO76 ≈ 22 — adds GlassRoughnessScratch, GlassDirtOverlay, Glass* floats
-
-Public API:
-  BGSM_VERSION_FO4, BGEM_VERSION_FO4
-  downgrade_bgsm(bgsm, target_version) -> BGSMData
-  downgrade_bgem(bgem, target_version) -> BGEMData
 """
 from __future__ import annotations
 
@@ -70,13 +65,13 @@ def downgrade_bgsm(
     """Convert a BGSMData to a lower version format.
 
     FO76 (v>2) → FO4 (v2) changes:
-    - Texture layout: FO76 drops EnvmapTexture/InnerLayerTexture/DisplacementTexture
-      and adds SpecularTexture/LightingTexture/FlowTexture.  We map them back.
+    - Texture layout: FO76 replaces EnvmapTexture/InnerLayerTexture/DisplacementTexture
+      with SpecularTexture/LightingTexture/FlowTexture; see the slot comments below.
     - Lighting block: FO76 v>=8 replaces RimLighting/Subsurface with Translucency.
-      We restore the older fields with neutral defaults.
-    - WetnessControlEnvMapScale: removed in FO76 (v>=10). Restore with 0.0.
-    - Version-gated fields (PBR, LumEmittance, AdaptativeEmissive, etc.) are
-      stripped automatically because BGSMData.write() is version-conditional.
+      The older fields get neutral defaults; Translucency becomes SubsurfaceLighting.
+    - WetnessControlEnvMapScale: removed in FO76 (v>=10). Restored as 0.0.
+    - Version-gated fields (PBR, LumEmittance, AdaptativeEmissive, etc.) drop out
+      because BGSMData.write() is version-conditional.
     """
     if bgsm.header.version <= target_version:
         return bgsm  # nothing to do
@@ -92,18 +87,9 @@ def downgrade_bgsm(
     #                     Envmap, Glow, InnerLayer, Wrinkles, Displacement
     #
     # FO76 PBR slots (Specular = roughness/reflectivity, Lighting = emissive
-    # rolloff, Flow = anisotropic flow map) have NO semantic equivalent in
-    # FO4's spec-gloss model. The previous attempt to "preserve" them by
-    # writing into Envmap/InnerLayer/Displacement caused the FO76 _s.dds
-    # roughness texture to be sampled as a cubemap reflection on FO4's
-    # render path — visibly wrong (mirror-shiny weapons everywhere).
-    #
-    # Correct approach: only promote SpecularTexture into SmoothSpecTexture
-    # when the source has no SmoothSpec (FO76 PBR materials sometimes leave
-    # the gloss map slot empty and put the data in Specular). Leave Envmap,
-    # InnerLayer, Displacement EMPTY — the engine falls back to the cubemap
-    # referenced by the BGSM's RootMaterialPath template (or to the default
-    # gray cubemap if there is no template).
+    # rolloff, Flow = anisotropic flow map) have no FO4 spec-gloss equivalent.
+    # Never copy them into Envmap/InnerLayer/Displacement: FO4 then samples the
+    # _s.dds roughness map as a cubemap reflection (mirror-shiny weapons).
     if src_v > 2:
         # Helper: BGSM string fields can hold a literal NUL byte (``'\x00'``)
         # for "empty" instead of an empty Python string. Strip nulls and
@@ -125,12 +111,9 @@ def downgrade_bgsm(
             result.SmoothSpecTexture = _rewrite_fo76_reflectivity_suffix(specular_clean)
         else:
             result.SmoothSpecTexture = _rewrite_fo76_reflectivity_suffix(smoothspec_clean)
-        # FO4-only texture slots — InnerLayer/Displacement are vestigial
-        # (FO4 vanilla never populates them) so always clear. EnvmapTexture
-        # gets injected from a heuristic because FO4 vanilla weapon BGSMs
-        # almost always set a Shared/Cubemaps/* reflection cubemap and the
-        # downgrade path strips it (FO76 PBR has no equivalent slot).
-        # Without the cubemap, FO4 metal renders flat-grey.
+        # InnerLayer/Displacement are vestigial in FO4 (vanilla never sets them).
+        # FO76 has no Envmap slot, but FO4 vanilla weapon BGSMs almost always set
+        # a Shared/Cubemaps/* cubemap; without one FO4 metal renders flat grey.
         from .cubemap_heuristics import select_cubemap
         cubemap, scale = select_cubemap(source_path or "", bgsm)
         result.EnvmapTexture = cubemap or ""
@@ -204,13 +187,10 @@ def downgrade_bgem(
 ) -> BGEMData:
     """Convert a BGEMData to a lower version format.
 
-    FO76 (v>=21) adds Glass* fields not present in FO4.  Setting the version
-    to target_version causes BGEMData.write() to skip those fields automatically.
-
-    Heuristically populates ``EnvmapTexture`` + ``EnvironmentMapping`` +
-    ``EnvironmentMappingMaskScale`` from ``source_path`` when the source did
-    not set them — symmetric to the BGSM downgrade. Effect-shader paths
-    (effects/, decals/, sky/, UI) are correctly skipped by the heuristic.
+    BGEMData.write() skips the FO76 (v>=21) Glass* fields at the lower version.
+    Unset ``EnvmapTexture``/``EnvironmentMapping``/``EnvironmentMappingMaskScale``
+    are filled by the cubemap heuristic, which skips effect-shader paths
+    (effects/, decals/, sky/, UI).
     """
     if bgem.header.version <= target_version:
         return bgem  # nothing to do

@@ -1,18 +1,9 @@
-"""Rule-expressible drop/keep policy for FO76 -> FO4 material downgrades.
+"""Declarative field-clear rules for FO76 -> FO4 material downgrades.
 
-This module holds ONLY the mechanical field-clear rules that are safe to
-express declaratively. Non-rule-expressible logic (texture slot remapping,
-static/object BGSM ``EmitEnabled`` suppression,
-``Translucency`` -> ``SubsurfaceLighting`` value preservation, and
-``RootMaterialPath`` synthesis) stays in :mod:`creation_lib.material_tools.convert`
-where the surrounding bug-fix comments provide institutional memory for real
-incidents (mirror-shiny weapons, whole-object emittance, template inheritance).
-
-Public API:
-    FO76_ONLY_BGSM_FIELDS
-    FO76_ONLY_BGEM_FIELDS
-    clear_fo76_only_bgsm_fields(data, target_version)
-    clear_fo76_only_bgem_fields(data, target_version)
+Only mechanical clears live here. Texture-slot remapping, static/object BGSM
+``EmitEnabled`` suppression, ``Translucency`` -> ``SubsurfaceLighting`` value
+preservation, and ``RootMaterialPath`` synthesis stay in
+:mod:`creation_lib.material_tools.convert`.
 """
 from __future__ import annotations
 
@@ -60,17 +51,11 @@ FO76_ONLY_BGSM_FIELDS: tuple[str, ...] = (
 
 
 def clear_fo76_only_bgsm_fields(data: "BGSMData", target_version: int) -> None:
-    """Null out rule-expressible FO76-only BGSM fields in place.
+    """Null out rule-expressible FO76-only BGSM fields in place; callers deep-copy first.
 
-    This operates on ``data`` directly — callers are expected to have already
-    made a deep copy (see :func:`creation_lib.material_tools.convert.downgrade_bgsm`).
-
-    Version gating:
-      * PBR texture slots (SpecularTexture / LightingTexture / FlowTexture /
-        DistanceFieldAlphaTexture) are cleared when ``target_version <= 2``
-        because the FO4 BGSM layout doesn't have them.
-      * Translucency block (Translucency* fields) is cleared when
-        ``target_version < 8`` because FO4 uses the older RimLighting block.
+    PBR texture slots are cleared at ``target_version <= 2`` (absent from the FO4
+    layout); the Translucency* block at ``target_version < 8`` (FO4 uses the older
+    RimLighting block).
     """
     if target_version <= 2:
         for name in _FO76_BGSM_PBR_TEXTURE_FIELDS:
@@ -85,12 +70,8 @@ def clear_fo76_only_bgsm_fields(data: "BGSMData", target_version: int) -> None:
 # ---------------------------------------------------------------------------
 
 # FO76 v21+ glass refraction block. FO4 v20 BGEM has none of these.
-#
-# Note: ``EffectPbrSpecular`` is intentionally NOT in this list. It was
-# added at BGEM v20 and is a valid field on an FO4 v20 BGEM — the writer
-# emits it at ``version >= 20``. The old ``BGEMData._FO76_ONLY_FIELDS``
-# class var (now deleted) incorrectly included it; the ground-truth
-# ``convert.downgrade_bgem`` did not clear it, which is what we preserve.
+# ``EffectPbrSpecular`` is not listed: it appears at BGEM v20, is valid on an
+# FO4 v20 BGEM, and the writer emits it at ``version >= 20``.
 _FO76_BGEM_GLASS_FIELDS: tuple[str, ...] = (
     "GlassRoughnessScratch",
     "GlassDirtOverlay",

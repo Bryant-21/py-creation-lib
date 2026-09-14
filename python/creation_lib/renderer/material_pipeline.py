@@ -282,6 +282,52 @@ SLOT_CUBEMAP = 4
 SLOT_ENVMASK = 5
 SLOT_SUBSURFACE = 6
 SLOT_SPECULAR = 7  # smooth-spec
+SLOT_REFLECTIVITY = 9  # FO76 _r
+SLOT_LIGHTING = 10  # FO76 _l
+
+_FO76_TEXTURE_ARRAY_SLOTS = {
+    SLOT_DIFFUSE: "diffuse",
+    SLOT_NORMAL: "normal",
+    SLOT_REFLECTIVITY: "reflectivity",
+    SLOT_LIGHTING: "lighting",
+}
+
+
+def _get_shader_field(shader_prop, field_name: str):
+    value = shader_prop.get_field(field_name)
+    if value is not None:
+        return value
+    data = shader_prop.get_field("Shader Property Data")
+    if not isinstance(data, dict):
+        return None
+    nested_name = {
+        "Shader Flags 1": "SF1",
+        "Shader Flags 2": "SF2",
+    }.get(field_name, field_name)
+    return data.get(nested_name)
+
+
+def _get_fo76_texture_arrays(shader_prop) -> list[list[str]]:
+    data = shader_prop.get_field("Shader Property Data")
+    if not isinstance(data, dict) or not data.get("Has Texture Arrays"):
+        return []
+    arrays = []
+    for entry in data.get("Texture Arrays") or []:
+        values = entry.get("Texture Array") if isinstance(entry, dict) else None
+        arrays.append(list(values) if isinstance(values, list) else [])
+    return arrays
+
+
+def _get_fo76_texture_array_paths(shader_prop, slice_index: int) -> dict[str, str]:
+    arrays = _get_fo76_texture_arrays(shader_prop)
+    paths = {}
+    for slot, semantic in _FO76_TEXTURE_ARRAY_SLOTS.items():
+        if slot >= len(arrays) or slice_index >= len(arrays[slot]):
+            continue
+        path = arrays[slot][slice_index]
+        if isinstance(path, str) and path:
+            paths[semantic] = path
+    return paths
 
 
 def _texture_path_candidates(tex_path: str) -> list[str]:
@@ -305,15 +351,9 @@ def _texture_path_candidates(tex_path: str) -> list[str]:
 
 def _resolve_texture_path(tex_path: str, texture_dirs: list[Path],
                           ba2_mgr=None) -> Path | bytes | None:
-    """Resolve a NIF texture path to an absolute file path or BA2 bytes.
+    """Resolve a NIF texture path to a loose-file Path, else BA2 bytes, else None.
 
-    Search order: loose files on disk first (case-insensitive walk through
-    texture_dirs), then BA2 archives as fallback.
-
-    Returns:
-      - Path for loose files
-      - bytes for BA2-extracted data
-      - None if not found
+    Loose files are found by a case-insensitive walk through ``texture_dirs``.
     """
     if not tex_path:
         return None
@@ -599,7 +639,7 @@ def _extract_alpha_flags(nif, shape_block) -> tuple[int, float, int, int]:
 
 def _extract_shader_params(shader_prop) -> dict:
     """Extract material uniforms from BSLightingShaderProperty."""
-    spec_color_val = shader_prop.get_field("Specular Color")
+    spec_color_val = _get_shader_field(shader_prop, "Specular Color")
     if hasattr(spec_color_val, "r"):
         sc = [float(spec_color_val.r), float(spec_color_val.g), float(spec_color_val.b)]
     elif isinstance(spec_color_val, dict):
@@ -611,16 +651,18 @@ def _extract_shader_params(shader_prop) -> dict:
     else:
         sc = [1.0, 1.0, 1.0]
 
-    uv_scale = shader_prop.get_field("UV Scale") or {}
-    uv_offset = shader_prop.get_field("UV Offset") or {}
+    uv_scale = _get_shader_field(shader_prop, "UV Scale") or {}
+    uv_offset = _get_shader_field(shader_prop, "UV Offset") or {}
 
     # Check shader flags — older games store these as lists of flag-name
     # strings; FO4 stores a packed integer (bit 22 = Own_Emit, bit 4 =
     # GreyscaleToPalette_Color).  BGSM overrides these below when present.
-    sf1 = shader_prop.get_field("Shader Flags 1") or []
+    sf1 = _get_shader_field(shader_prop, "Shader Flags 1") or []
     if isinstance(sf1, list):
-        greyscale_color = "GreyscaleToPalette_Color" in sf1
-        has_emit = "Own_Emit" in sf1
+        greyscale_color = (
+            "GreyscaleToPalette_Color" in sf1 or 442246519 in sf1
+        )
+        has_emit = "Own_Emit" in sf1 or 2262553490 in sf1
     else:
         sf1_int = int(sf1) if sf1 else 0
         greyscale_color = bool(sf1_int & (1 << 4))
@@ -628,10 +670,12 @@ def _extract_shader_params(shader_prop) -> dict:
     _log.debug("Shader Flags 1: type=%s, value=%s, greyscale=%s, emit=%s",
                type(sf1).__name__, sf1, greyscale_color, has_emit)
 
-    palette_scale = float(shader_prop.get_field("Grayscale to Palette Scale") or 1.0)
+    palette_scale = float(
+        _get_shader_field(shader_prop, "Grayscale to Palette Scale") or 1.0
+    )
 
     # Emissive color
-    emit_color_val = shader_prop.get_field("Emissive Color")
+    emit_color_val = _get_shader_field(shader_prop, "Emissive Color")
     if hasattr(emit_color_val, "r"):
         ec = [float(emit_color_val.r), float(emit_color_val.g), float(emit_color_val.b)]
     elif isinstance(emit_color_val, dict):
@@ -643,22 +687,40 @@ def _extract_shader_params(shader_prop) -> dict:
     else:
         ec = [0.0, 0.0, 0.0]
 
+    glossiness = _get_shader_field(shader_prop, "Glossiness")
+    if glossiness is None:
+        smoothness = _get_shader_field(shader_prop, "Smoothness")
+        spec_glossiness = float(smoothness) if smoothness is not None else 0.8
+    else:
+        spec_glossiness = float(glossiness) / 100.0
+
+    def _uv_component(value, name, default):
+        if not isinstance(value, dict):
+            return default
+        return float(value.get(name, value.get(name.lower(), default)))
+
     return {
         "spec_color": glm.vec3(*sc),
-        "spec_strength": float(shader_prop.get_field("Specular Strength") or 1.0),
-        "spec_glossiness": float(shader_prop.get_field("Glossiness") or 80.0) / 100.0,
-        "fresnel_power": float(shader_prop.get_field("Fresnel Power") or 5.0),
+        "spec_strength": float(
+            _get_shader_field(shader_prop, "Specular Strength") or 1.0
+        ),
+        "spec_glossiness": spec_glossiness,
+        "fresnel_power": float(
+            _get_shader_field(shader_prop, "Fresnel Power") or 5.0
+        ),
         "uv_scale_offset": glm.vec4(
-            float(uv_scale.get("U", 1.0)) if isinstance(uv_scale, dict) else 1.0,
-            float(uv_scale.get("V", 1.0)) if isinstance(uv_scale, dict) else 1.0,
-            float(uv_offset.get("U", 0.0)) if isinstance(uv_offset, dict) else 0.0,
-            float(uv_offset.get("V", 0.0)) if isinstance(uv_offset, dict) else 0.0,
+            _uv_component(uv_scale, "U", 1.0),
+            _uv_component(uv_scale, "V", 1.0),
+            _uv_component(uv_offset, "U", 0.0),
+            _uv_component(uv_offset, "V", 0.0),
         ),
         "greyscale_color": greyscale_color,
         "palette_scale": palette_scale,
         "has_emit": has_emit,
         "glow_color": glm.vec3(*ec),
-        "glow_mult": float(shader_prop.get_field("Emissive Multiple") or 1.0),
+        "glow_mult": float(
+            _get_shader_field(shader_prop, "Emissive Multiple") or 1.0
+        ),
     }
 
 
@@ -881,7 +943,7 @@ def _get_texture_paths(nif, shader_prop, block_type: str,
         return paths
 
     # Fall back to BSShaderTextureSet
-    tex_set_ref = shader_prop.get_field("Texture Set")
+    tex_set_ref = _get_shader_field(shader_prop, "Texture Set")
     ref_id = _get_ref_id(tex_set_ref) if tex_set_ref is not None else -1
     if ref_id >= 0:
         tex_set = nif.get_block(ref_id)
@@ -901,6 +963,10 @@ def _get_texture_paths(nif, shader_prop, block_type: str,
                 paths["envmask"] = textures[SLOT_ENVMASK] or ""
             if len(textures) > SLOT_SPECULAR:
                 paths["specular"] = textures[SLOT_SPECULAR] or ""
+            if len(textures) > SLOT_REFLECTIVITY:
+                paths["reflectivity"] = textures[SLOT_REFLECTIVITY] or ""
+            if len(textures) > SLOT_LIGHTING:
+                paths["lighting"] = textures[SLOT_LIGHTING] or ""
 
     return paths
 
@@ -954,7 +1020,8 @@ def _bake_opacity_into_diffuse(
 def build_material(ctx: moderngl.Context, nif, shape_block,
                    texture_dirs: list[Path], ba2_mgr=None,
                    game_id: str = "fo4",
-                   brdf_lut: "moderngl.Texture | None" = None) -> Material:
+                   brdf_lut: "moderngl.Texture | None" = None,
+                   texture_paths_override: dict[str, str] | None = None) -> Material:
     """Build a Material by dispatching to the appropriate game backend."""
     if game_id == "starfield":
         # Auto-generate BRDF LUT if caller didn't provide one. The shader_pipeline
@@ -969,6 +1036,15 @@ def build_material(ctx: moderngl.Context, nif, shape_block,
     else:
         from .fo4_material import FO4MaterialBackend
         backend = FO4MaterialBackend()
+    if texture_paths_override is not None and game_id != "starfield":
+        return backend.build_material(
+            ctx,
+            nif,
+            shape_block,
+            texture_dirs,
+            ba2_mgr,
+            texture_paths_override=texture_paths_override,
+        )
     return backend.build_material(ctx, nif, shape_block, texture_dirs, ba2_mgr)
 
 
@@ -981,7 +1057,10 @@ def _is_texture_collectable_shape(schema, type_name: str) -> bool:
 
 
 def collect_nif_texture_paths(
-    nif, texture_dirs: list[Path], ba2_mgr=None,
+    nif,
+    texture_dirs: list[Path],
+    ba2_mgr=None,
+    extra_texture_paths: list[dict[str, str]] | None = None,
 ) -> dict[str, "Path | bytes"]:
     """Walk all BSTriShape blocks and return resolved textures for pre-decode.
 
@@ -991,6 +1070,21 @@ def collect_nif_texture_paths(
     Used by nif_loader for parallel pre-decode before scene build.
     """
     result: dict[str, Path | bytes] = {}
+
+    def collect_paths(tex_paths):
+        for key, path_str in tex_paths.items():
+            if key.startswith("_") or not path_str or not isinstance(path_str, str):
+                continue
+            resolved = _resolve_texture_path(path_str, texture_dirs, ba2_mgr)
+            if resolved is None:
+                continue
+            if isinstance(resolved, bytes):
+                cache_key = f"ba2:{path_str.lower().replace(chr(92), '/')}"
+            else:
+                cache_key = str(resolved)
+            if cache_key not in result:
+                result[cache_key] = resolved
+
     schema = nif.schema
     for block in nif.blocks:
         if not _is_texture_collectable_shape(schema, block.type_name):
@@ -1002,20 +1096,9 @@ def collect_nif_texture_paths(
             continue
         tex_paths = _get_texture_paths(nif, shader_prop, shader_prop.type_name,
                                        texture_dirs, ba2_mgr)
-        for key, path_str in tex_paths.items():
-            if key.startswith("_") or not path_str or not isinstance(path_str, str):
-                continue
-            resolved = _resolve_texture_path(path_str, texture_dirs, ba2_mgr)
-            if resolved is None:
-                continue
-            if isinstance(resolved, bytes):
-                cache_key = f"ba2:{path_str.lower().replace(chr(92), '/')}"
-                if cache_key not in result:
-                    result[cache_key] = resolved
-            else:
-                cache_key = str(resolved)
-                if cache_key not in result:
-                    result[cache_key] = resolved
+        collect_paths(tex_paths)
+    for tex_paths in extra_texture_paths or []:
+        collect_paths(tex_paths)
     return result
 
 

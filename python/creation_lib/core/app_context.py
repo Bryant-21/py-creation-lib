@@ -1,14 +1,12 @@
 """Game execution context for py_creation_lib/python/creation_lib/ consumers.
 
-This module is the single place py_creation_lib/python/creation_lib/ looks for per-game paths and knobs.
-It is pure data — no .env parsing, no I/O, no defaults beyond explicit
-dataclass field defaults. Callers (CLI workflow commands, UI, tests,
-tools/reconvert scripts) are responsible for constructing a GameContext
-from whatever source makes sense (env, ToolkitSettings, pytest fixture).
+The single place creation_lib looks for per-game paths and knobs. Pure data:
+no .env parsing, no I/O, no defaults beyond the dataclass field defaults.
+Callers (CLI workflow commands, UI, tests, tools/reconvert scripts) build a
+GameContext from env, ToolkitSettings, or a pytest fixture.
 
-py_creation_lib/python/creation_lib/ code that needs game context should accept a ``GameContext`` param
-(or the individual fields) explicitly. It must NEVER read os.environ
-directly to construct one itself.
+creation_lib code that needs game context accepts a ``GameContext`` (or its
+fields) explicitly. It must NEVER read os.environ to construct one.
 """
 from __future__ import annotations
 

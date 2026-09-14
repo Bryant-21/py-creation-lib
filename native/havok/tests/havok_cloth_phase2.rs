@@ -1,7 +1,4 @@
-// Phase 2 — Cloth HIGH severity fixes (audit ref: docs/audits/havok/2026-05-02-cloth.md).
-// One test per Task; each test asserts the SDK-correct shape of the relevant
-// member set so regressions get caught even when the vanilla cape roundtrip
-// hasn't yet landed.
+// Cloth bake/reverse tests, each asserting the SDK-correct shape of one member set.
 
 use std::collections::HashSet;
 
@@ -68,7 +65,7 @@ fn cape_with_capsule(capsule: CapsuleShapeSetup) -> ClothSetupObject {
 }
 
 // ---------------------------------------------------------------------------
-// Task 2.1 — capsule emits only SDK members (radius + capLenSqrdInv, no smallRadius)
+// Capsule emits only SDK members (radius + capLenSqrdInv, no smallRadius)
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -115,7 +112,7 @@ fn capsule_emits_only_sdk_fields() {
 }
 
 // ---------------------------------------------------------------------------
-// Task 2.2 — hclTaperedCapsuleShape support
+// hclTaperedCapsuleShape support
 // ---------------------------------------------------------------------------
 
 fn cape_with_tapered_capsule(tc: TaperedCapsuleShapeSetup) -> ClothSetupObject {
@@ -211,7 +208,7 @@ fn tapered_capsule_emits_with_required_sdk_fields() {
 }
 
 // ---------------------------------------------------------------------------
-// Task 2.3 — sim cloth emits m_triangleFlips parallel to triangleIndices
+// Sim cloth emits m_triangleFlips parallel to triangleIndices
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -266,7 +263,7 @@ fn sim_cloth_emits_triangle_flips_default_zero() {
 }
 
 // ---------------------------------------------------------------------------
-// Task 2.4 — collidableTransformMap emits offsets and respects transformSetIndex
+// collidableTransformMap emits offsets and respects transformSetIndex
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -352,7 +349,7 @@ fn collidable_transform_map_carries_offsets_and_set_index() {
 }
 
 // ---------------------------------------------------------------------------
-// Task 2.5 — passthrough_members on SimClothSetupObject re-emit verbatim
+// passthrough_members on SimClothSetupObject re-emit verbatim
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -444,7 +441,7 @@ fn passthrough_members_preserved_through_bake() {
 }
 
 // ---------------------------------------------------------------------------
-// Task 2.6 — strict reverse refuses unknown operator/constraint classes
+// Strict reverse refuses unknown operator/constraint classes
 // ---------------------------------------------------------------------------
 
 fn synth_hkx_with_unknown_operator() -> HkxFile {
@@ -528,7 +525,7 @@ fn reverse_strict_refuses_unknown_operator() {
 }
 
 // ---------------------------------------------------------------------------
-// Task 2.7 — gravity reconciled to Z-up m/s² across solver, setup, bake
+// Gravity reconciled to Z-up m/s² across solver, setup, bake
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -604,8 +601,7 @@ fn reverse_lossy_tolerates_unknown_operator() {
     let file = synth_hkx_with_unknown_operator();
     let cloth = ClothData::from_hkx_file(&file).expect("from_hkx_file must find hclClothData");
 
-    // Lossy mode keeps the historical stub-degradation behaviour — used by
-    // the inspector path. Audit ref: cloth §3.2 HIGH (Task 2.6).
+    // Lossy mode stubs unknown classes for the inspector path.
     let setup = reverse_cloth_data_lossy(&cloth);
     assert_eq!(
         setup.operator_setups.len(),

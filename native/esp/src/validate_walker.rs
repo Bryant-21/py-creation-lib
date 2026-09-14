@@ -298,9 +298,22 @@ pub(crate) fn walk_and_check(
     schema: &CompiledSchema,
     out: &mut Vec<WalkerIssue>,
 ) {
+    let mut seen = std::collections::HashMap::new();
     let mut visitor =
         |path: &PathBuilder, kind: VisitedKind, ctx: WalkContext<'_>| match (kind, ctx) {
             (VisitedKind::Record, WalkContext::Record(r)) => {
+                if let Some(first_path) = seen.insert(r.form_id, path.render()) {
+                    out.push(WalkerIssue {
+                        severity: "error",
+                        category: "duplicate_form_id",
+                        plugin_handle,
+                        plugin_name: plugin.plugin_name.clone(),
+                        message: format!("Duplicate FormID {:08X}; earlier record at {first_path}", r.form_id),
+                        form_id: Some(r.form_id),
+                        path: Some(path.render()),
+                        signature: Some(r.signature.to_string()),
+                    });
+                }
                 let record_spec = schema.records.get(r.signature.as_str());
                 if let Some(spec) = record_spec {
                     for msg in subrecord_order_errors(r, &spec.subrecords) {
@@ -337,6 +350,25 @@ pub(crate) fn walk_and_check(
                 }
             }
             (VisitedKind::Subrecord, WalkContext::Subrecord { record, sub, .. }) => {
+                if record.signature == "CELL" && sub.signature == "XCRI"
+                    && matches!(plugin.game.as_deref(), Some("fo4" | "fo76"))
+                {
+                    let decoded = if plugin.game.as_deref() == Some("fo76") {
+                        crate::xcri::decode_fo76(&sub.data)
+                    } else {
+                        crate::xcri::decode_fo4(&sub.data)
+                    };
+                    if decoded.is_none() {
+                        out.push(WalkerIssue {
+                            severity: "error", category: "data_size", plugin_handle,
+                            plugin_name: plugin.plugin_name.clone(),
+                            message: "Invalid XCRI counts or payload length".to_string(),
+                            form_id: Some(record.form_id), path: Some(path.render()),
+                            signature: Some(record.signature.to_string()),
+                        });
+                    }
+                    return;
+                }
                 let record_spec = schema.records.get(record.signature.as_str());
                 let sub_spec = record_spec.and_then(|rs| {
                     rs.subrecords
@@ -628,7 +660,8 @@ fn forward_starting_spec_position(
             return true;
         }
         let (start, _) = scope_segment_bounds(record_sig, specs, pos);
-        pos == start
+        pos == start || (record_sig == "RACE" && spec.scope_id.as_deref() == Some("subgraph_data")
+            && matches!(sub_sig, "SGNM" | "STKD"))
     })
 }
 
@@ -696,6 +729,12 @@ fn scope_repeating_element_anchor(
             .map(|offset| scope_start + offset)
     };
     match scope_id {
+        Some("subgraph_data") if record_sig == "RACE" => match sig {
+            "SGNM" | "STKD" => true,
+            "SAPT" => position("SGNM").is_some_and(|anchor| next > anchor)
+                && position("SRAF").is_some_and(|end| next <= end),
+            _ => false,
+        },
         // LAND layers: array of BTXT | (ATXT + VTXT). Both BTXT and ATXT start
         // an element; VTXT is the ATXT alpha-data child.
         Some("layers") => record_sig == "LAND" && matches!(sig, "BTXT" | "ATXT"),
@@ -876,9 +915,9 @@ pub(crate) struct MemberIssue {
 /// - scalar enum → A2 unknown value (`TwbEnumDef.ToString` → `<Unknown: N $H>`);
 /// - D (short): the member's `offset+width` exceeds the payload, i.e. the field
 ///   xEdit reports "Expected {width} bytes of data, found {available}". This is
-///   the per-MEMBER check (SNDR.BNAM "Static Attenuation" u16, RACE.HCLF member)
-///   xEdit does — NOT the whole-subrecord codec-size check that produced the
-///   PACK.CNAM/FURN.WBDT false positives.
+///   xEdit's per-MEMBER check (SNDR.BNAM "Static Attenuation" u16, RACE.HCLF
+///   member); a whole-subrecord codec-size check false-positives on
+///   PACK.CNAM/FURN.WBDT.
 ///
 /// `form_version` (from `ParsedRecord`) selects the active union variant.
 pub(crate) fn struct_member_errors(
@@ -897,11 +936,8 @@ pub(crate) fn struct_member_errors(
         }
         let available = data.len().saturating_sub(member.offset);
         // D — member runs past the payload. xEdit only size-checks fixed numeric
-        // members; the layout's width is that fixed size. Skip if the member
-        // starts beyond the payload AND it's the trailing optional tail (xEdit
-        // tolerates a wholly-absent trailing field only when the def marks it
-        // optional — but the FO76 truncation cases (BNAM, HCLF member) are an
-        // expected fixed member short, which is exactly available < width here).
+        // members; the layout's width is that fixed size. The FO76 truncation
+        // cases (BNAM, HCLF member) are fixed members that come up short.
         if available < member.width {
             out.push(MemberIssue {
                 severity: "error",
@@ -917,14 +953,34 @@ pub(crate) fn struct_member_errors(
         let Some(eref) = member.enum_ref else {
             continue;
         };
-        let Some(enum_def) = schema.enums.get(eref) else {
+        if schema.enums.get(eref).is_none() {
             continue;
-        };
+        }
         let Some(value) = read_enum_value(&data[member.offset..], member.width) else {
             continue;
         };
-        if enum_def.is_flags() {
-            let known = known_flag_bits(enum_def);
+        // The layout is resolved by subrecord SIG, which is scope-blind: a
+        // scope-overloaded subrecord (QUST.FNAM = objective flags under
+        // scope_id="objectives", a 25-bit alias flag set under "aliases")
+        // arrives here bound to whichever spec came first. This check is
+        // warn-only and must never flag a legitimate value, so accept anything
+        // valid under ANY scope's enum for this path. (A masking consumer needs
+        // the real scope — see `enum_ref_at_in_scope`.)
+        let defs: Vec<&crate::plugin_runtime::SchemaEnumJson> = schema
+            .enum_refs_at_all_scopes(record_sig, &member.field_path)
+            .into_iter()
+            .filter_map(|r| schema.enums.get(r))
+            .collect();
+        let defs = if defs.is_empty() {
+            match schema.enums.get(eref) {
+                Some(d) => vec![d],
+                None => continue,
+            }
+        } else {
+            defs
+        };
+        if defs.iter().all(|d| d.is_flags()) {
+            let known = defs.iter().fold(0u128, |acc, d| acc | known_flag_bits(d));
             let bit_count = (member.width * 8).min(128);
             if let Some(msg) = unknown_bits_message((value as u128) & !known, bit_count) {
                 out.push(MemberIssue {
@@ -933,7 +989,7 @@ pub(crate) fn struct_member_errors(
                     message: msg,
                 });
             }
-        } else if enum_def.token_for_value(value).is_none() {
+        } else if defs.iter().all(|d| d.token_for_value(value).is_none()) {
             out.push(MemberIssue {
                 severity: "warning",
                 category: "unknown_enum",
@@ -2100,7 +2156,7 @@ mod tests {
         assert!(msg.contains("XPDD"));
     }
 
-    // ----- D / A2 / A1 parity helpers + byte-exact cases (task #7 step 1+2) -----
+    // ----- D / A2 / A1 parity helpers + byte-exact cases -----
 
     use crate::plugin_runtime::{SchemaEnumJson, SchemaEnumValueJson, SchemaFieldJson};
     use std::collections::HashMap;
@@ -2230,6 +2286,35 @@ mod tests {
             msgs,
             vec![("unknown_enum", "<Unknown: 24 $18>".to_string())]
         );
+    }
+
+    /// QUST.FNAM is scope-overloaded. The layout is resolved by SIG, so an
+    /// alias FNAM arrives bound to the 2-bit OBJECTIVE flag enum and every real
+    /// alias flag above bit 1 was reported as unknown. Ground-truthed on
+    /// mods/B21_MusicPlayer/B21_MusicPlayer.esp, whose one alias FNAM is
+    /// 0x4000 (`matching_ref_closest`) and produced "<Unknown: 14 $E>".
+    #[test]
+    fn qust_alias_fnam_flags_are_not_reported_unknown() {
+        let schema =
+            crate::plugin_runtime::compiled_schema_for_game_str("fo4").expect("fo4 schema");
+        for raw in [0x4000_u32, 0x4, 0x10, 0x40, 0x80_0000, 0x0100_0000] {
+            let sub = subrec_with_data("FNAM", raw.to_le_bytes().to_vec());
+            let msgs: Vec<_> = struct_member_errors("QUST", &sub, Some(131), &schema)
+                .into_iter()
+                .map(|m| m.message)
+                .collect();
+            assert!(
+                msgs.is_empty(),
+                "alias flag {raw:#x} falsely reported unknown: {msgs:?}"
+            );
+        }
+        // A bit valid under NEITHER scope is still reported.
+        let sub = subrec_with_data("FNAM", 0x8000_0000_u32.to_le_bytes().to_vec());
+        let msgs: Vec<_> = struct_member_errors("QUST", &sub, Some(131), &schema)
+            .into_iter()
+            .map(|m| m.category)
+            .collect();
+        assert_eq!(msgs, vec!["unknown_flag"]);
     }
 
     #[test]

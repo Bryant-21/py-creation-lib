@@ -227,6 +227,99 @@ pub fn decode_source_body_transforms(blob: &[u8]) -> Vec<Option<SourceBodyTransf
         .collect()
 }
 
+/// Parsed, NIF-local view of one embedded source physics system.
+///
+/// Collision conversion binds many NIF collision objects to the same blob. Keep
+/// the materialized HKX model and the cheap body-wide decodes for that system so
+/// each binding does not parse the blob again. Blob-specific fallbacks remain in
+/// the existing wrapper functions and are used when no shared model is available.
+pub struct SourcePhysicsSystemContext<'a> {
+    blob: &'a [u8],
+    hkx: Option<HkxFile>,
+    body_transforms: std::sync::OnceLock<Vec<Option<SourceBodyTransform>>>,
+    mass_distributions: std::sync::OnceLock<Vec<Option<SourceMassDistribution>>>,
+    collision_summary: std::sync::OnceLock<Result<String, String>>,
+}
+
+impl<'a> SourcePhysicsSystemContext<'a> {
+    pub fn new(blob: &'a [u8]) -> Self {
+        let hkx = HkxFile::read(blob).ok().or_else(|| {
+            crate::hkx::parse_tagfile(blob)
+                .ok()
+                .and_then(|tagfile| tagfile.materialize_hkx().ok())
+        });
+        Self {
+            blob,
+            hkx,
+            body_transforms: std::sync::OnceLock::new(),
+            mass_distributions: std::sync::OnceLock::new(),
+            collision_summary: std::sync::OnceLock::new(),
+        }
+    }
+
+    pub fn body_transforms(&self) -> &[Option<SourceBodyTransform>] {
+        self.body_transforms
+            .get_or_init(|| decode_source_body_transforms(self.blob))
+    }
+
+    pub fn mass_distributions(&self) -> &[Option<SourceMassDistribution>] {
+        self.mass_distributions
+            .get_or_init(|| decode_source_mass_distributions(self.blob))
+    }
+
+    pub fn collision_summary(&self) -> Result<&str, String> {
+        self.collision_summary
+            .get_or_init(|| {
+                crate::api::havok_collision_summary(self.blob).map_err(|e| e.to_string())
+            })
+            .as_deref()
+            .map_err(Clone::clone)
+    }
+
+    pub fn direct_source_primitive(
+        &self,
+        body_id: usize,
+    ) -> HavokResult<Option<SourcePrimitiveShape>> {
+        match &self.hkx {
+            Some(hkx) => Ok(direct_source_primitive_for_body(hkx, body_id)),
+            None => extract_direct_source_primitive_from_blob(self.blob, body_id),
+        }
+    }
+
+    pub fn source_polytopes(&self, body_id: usize) -> HavokResult<Vec<SourcePolytopeShape>> {
+        match &self.hkx {
+            Some(hkx) => Ok(extract_source_polytopes_from_hkx(hkx, body_id)),
+            None => extract_source_polytopes_from_blob(self.blob, body_id),
+        }
+    }
+
+    pub fn source_compound_children(&self, body_id: usize) -> HavokResult<Vec<CompoundChild>> {
+        match &self.hkx {
+            Some(hkx) => Ok(extract_source_compound_children_from_hkx(hkx, body_id)),
+            None => extract_source_compound_children_from_blob(self.blob, body_id),
+        }
+    }
+
+    pub fn direct_raw_compressed_mesh(
+        &self,
+        body_id: usize,
+    ) -> HavokResult<Option<RawCompressedMeshData>> {
+        // This wrapper applies primitive_stores_is_flat_convex markers from the
+        // original packfile bytes; the materialized model does not carry them.
+        extract_direct_raw_compressed_mesh_from_blob(self.blob, body_id)
+    }
+
+    pub fn preview_meshes(
+        &self,
+        havok_scale: f32,
+        body_id: usize,
+    ) -> HavokResult<Vec<PreviewMesh>> {
+        // This wrapper has raw compressed-mesh marker handling that depends on
+        // the original bytes, so keep its exact behavior.
+        extract_preview_meshes_from_blob(self.blob, havok_scale, Some(body_id))
+    }
+}
+
 fn vec4_member(members: &[HkxMember], name: &str) -> Option<[f32; 4]> {
     let HkxValue::F32List(values) = &members.iter().find(|member| member.name == name)?.value
     else {
@@ -426,10 +519,12 @@ pub fn extract_preview_meshes_from_blob(
                 .iter()
                 .any(|mesh| mesh.primitive_stores_is_flat_convex == FLAT_CONVEX_ENABLED)
             {
-                hkx_meshes = raw_meshes
+                let corrected_compressed_meshes = raw_meshes
                     .iter()
                     .filter_map(|mesh| preview_compressed_mesh_from_raw(mesh, havok_scale))
-                    .collect();
+                    .collect::<Vec<_>>();
+                hkx_meshes.retain(|mesh| mesh.shape_type != "compressed_mesh");
+                hkx_meshes.extend(corrected_compressed_meshes);
             }
         }
         body_shape_class = shape_class;
@@ -3429,14 +3524,10 @@ fn inferred_compound_leaf_targets(
     body_shape_indices: &[usize],
 ) -> Vec<ShapeTarget> {
     let wrapped_shapes = wrapped_shape_indices(hkx);
-    // The compound's own backing data (`hknpDynamicCompoundShapeData` /
-    // `numLeaves`) is the only authoritative membership source. When it
-    // resolves, use it directly. When it does not, return nothing: the
-    // previous blanket whole-blob sweep treated EVERY previewable leaf in the
-    // file as this compound's child, pulling in shapes that belong to other
-    // bodies (the "×3 dup" / cross-body bleed) and producing degenerate hulls
-    // downstream. The SDK never enumerates "every leaf in the file" as compound
-    // membership.
+    // Only the compound's own backing data (`hknpDynamicCompoundShapeData` /
+    // `numLeaves`) defines membership; when it does not resolve, return nothing.
+    // Treating every previewable leaf in the file as a child pulls in other
+    // bodies' shapes and produces degenerate hulls.
     compound_backing_data_leaf_targets(hkx, obj, body_shape_indices, &wrapped_shapes)
         .unwrap_or_default()
 }

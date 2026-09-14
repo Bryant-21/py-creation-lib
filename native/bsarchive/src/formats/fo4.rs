@@ -5,8 +5,6 @@
 //!
 //! # References
 //! - `py_creation_lib/python/creation_lib/ba2/ba2_reader.py:91-207` — Python oracle (byte-equality target).
-//! - `refs/bsa-rs/src/fo4/archive.rs` — Rust reference for the header and
-//!   per-record layouts; study-only, not linked.
 //! - `refs/xedit/Core/wbBSArchive.pas` — `LoadFromStreamFO4` and related
 //!   routines, authoritative for version/field meaning.
 

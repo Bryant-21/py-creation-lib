@@ -6294,7 +6294,7 @@ mod tests {
     }
 
     #[test]
-    fn oblivion_tangents_use_binary_data_bytearray() {
+    fn tangent_processors_write_legacy_and_modern_tangents() {
         let mut nif = NifFile::new("oblivion");
         let shape = nif.add_block(
             "NiTriShape",
@@ -6318,86 +6318,7 @@ mod tests {
             Some(NifValue::Bytes(bytes)) if bytes.len() == 24
         ));
         assert!(extra.get_field("Data").is_none());
-    }
 
-    #[test]
-    fn remove_unused_nodes_preserves_and_remaps_footer_root() {
-        let mut nif = NifFile::new("oblivion");
-        nif.header.footer_roots = vec![1];
-        nif.add_block("NiNode", None);
-        let changes = remove_unused_nodes(&mut nif, &json!({}));
-        assert_eq!(nif.blocks.len(), 1);
-        assert_eq!(nif.header.footer_roots, vec![0]);
-        assert_eq!(changes, vec!["Removed 1 unused block(s)"]);
-    }
-
-    #[test]
-    fn set_missing_names_uses_input_stem() {
-        let mut nif = NifFile::new("fo4");
-        nif.blocks[0].set_field("Name", NifValue::String(String::new()));
-        let changes = set_missing_names(
-            &mut nif,
-            Path::new("meshes/example.nif"),
-            &json!({"rename_root": true}),
-        );
-        assert_eq!(
-            value_string(nif.blocks[0].get_field("Name").unwrap()),
-            Some("example")
-        );
-        assert_eq!(changes.len(), 1);
-    }
-
-    #[test]
-    fn replace_assets_only_changes_registered_asset_fields() {
-        let mut nif = NifFile::new("fo4");
-        nif.blocks[0].set_field("Name", NifValue::String("textures\\old\\root".to_string()));
-        let texture_id = nif.add_block(
-            "BSShaderTextureSet",
-            Some(IndexMap::from([(
-                "Textures".to_string(),
-                NifValue::Array(vec![NifValue::String(
-                    "C:\\Game\\Data\\textures\\old\\a.dds".to_string(),
-                )]),
-            )])),
-        );
-        let changes = replace_assets(
-            &mut nif,
-            &json!({
-                "pairs": [["textures\\old", "textures\\new"]],
-                "fix_absolute": true,
-            }),
-        )
-        .unwrap();
-        assert_eq!(changes.len(), 1);
-        assert_eq!(
-            value_array(nif.blocks[texture_id].get_field("Textures"))[0],
-            NifValue::String("textures\\new\\a.dds".to_string())
-        );
-        assert_eq!(
-            value_string(nif.blocks[0].get_field("Name").unwrap()),
-            Some("textures\\old\\root")
-        );
-    }
-
-    #[test]
-    fn replace_assets_uses_literal_replacement_without_regex_mode() {
-        let mut nif = NifFile::new("fo4");
-        let texture_id = nif.add_block(
-            "BSShaderTextureSet",
-            Some(IndexMap::from([(
-                "Textures".to_string(),
-                NifValue::Array(vec![NifValue::String("old.dds".to_string())]),
-            )])),
-        );
-        replace_assets(&mut nif, &json!({"pairs": [["old", "$1"]], "regex": false})).unwrap();
-        assert_eq!(
-            value_array(nif.blocks[texture_id].get_field("Textures"))[0],
-            NifValue::String("$1.dds".to_string())
-        );
-    }
-
-    #[test]
-    fn update_tangents_adds_modern_vertex_attribute() {
         let mut nif = NifFile::new("fo4");
         let vertex = |position: [f32; 3], uv: [f64; 2]| {
             NifValue::Struct(IndexMap::from([
@@ -6448,20 +6369,115 @@ mod tests {
     }
 
     #[test]
-    fn convert_block_type_preserves_root_reference() {
+    fn node_removal_processors_remap_links() {
+        let mut nif = NifFile::new("oblivion");
+        nif.header.footer_roots = vec![1];
+        nif.add_block("NiNode", None);
+        let changes = remove_unused_nodes(&mut nif, &json!({}));
+        assert_eq!(nif.blocks.len(), 1);
+        assert_eq!(nif.header.footer_roots, vec![0]);
+        assert_eq!(changes, vec!["Removed 1 unused block(s)"]);
+
         let mut nif = NifFile::new("fo4");
-        let changes = convert_block_types(
+        let child_id = nif.add_block(
+            "NiNode",
+            Some(IndexMap::from([(
+                "Name".to_string(),
+                NifValue::String("RemoveMe".to_string()),
+            )])),
+        );
+        let grandchild_id = nif.add_block(
+            "NiNode",
+            Some(IndexMap::from([(
+                "Name".to_string(),
+                NifValue::String("Descendant".to_string()),
+            )])),
+        );
+        let unused_id = nif.add_block(
+            "NiNode",
+            Some(IndexMap::from([(
+                "Name".to_string(),
+                NifValue::String("AlreadyUnused".to_string()),
+            )])),
+        );
+        nif.blocks[0].set_field(
+            "Children",
+            NifValue::Array(vec![NifValue::Ref(child_id as i32)]),
+        );
+        nif.blocks[child_id].set_field(
+            "Children",
+            NifValue::Array(vec![NifValue::Ref(grandchild_id as i32)]),
+        );
+        let changes = remove_nodes(
             &mut nif,
-            &json!({"from": "BSFadeNode", "to": "NiNode", "root_only": true}),
+            &json!({"names": ["removeme"], "exact_match": true}),
         )
         .unwrap();
-        assert_eq!(changes.len(), 1);
-        assert_eq!(nif.blocks[0].type_name, "NiNode");
-        assert_eq!(nif.header.footer_roots, vec![0]);
+        assert_eq!(changes.len(), 2);
+        assert!(value_array(nif.blocks[0].get_field("Children")).is_empty());
+        assert!(nif.blocks.iter().any(|block| {
+            block
+                .get_field("Name")
+                .and_then(value_string)
+                .is_some_and(|name| name == "AlreadyUnused")
+        }));
+        assert!(unused_id > grandchild_id);
+
+        let mut nif = NifFile::new("fo4");
+        assert_eq!(nif.blocks[0].type_name, "BSFadeNode");
+        let changes = remove_nodes(&mut nif, &json!({"node_type": "NiNode"})).unwrap();
+        assert_eq!(changes, vec!["Removed 0 BSFadeNode"]);
+        assert!(nif.blocks.is_empty());
     }
 
     #[test]
-    fn shader_flag_modes_match_nif() {
+    fn replace_assets_changes_only_registered_fields_literally() {
+        let mut nif = NifFile::new("fo4");
+        nif.blocks[0].set_field("Name", NifValue::String("textures\\old\\root".to_string()));
+        let texture_id = nif.add_block(
+            "BSShaderTextureSet",
+            Some(IndexMap::from([(
+                "Textures".to_string(),
+                NifValue::Array(vec![NifValue::String(
+                    "C:\\Game\\Data\\textures\\old\\a.dds".to_string(),
+                )]),
+            )])),
+        );
+        let changes = replace_assets(
+            &mut nif,
+            &json!({
+                "pairs": [["textures\\old", "textures\\new"]],
+                "fix_absolute": true,
+            }),
+        )
+        .unwrap();
+        assert_eq!(changes.len(), 1);
+        assert_eq!(
+            value_array(nif.blocks[texture_id].get_field("Textures"))[0],
+            NifValue::String("textures\\new\\a.dds".to_string())
+        );
+        assert_eq!(
+            value_string(nif.blocks[0].get_field("Name").unwrap()),
+            Some("textures\\old\\root")
+        );
+
+        let mut nif = NifFile::new("fo4");
+        let texture_id = nif.add_block(
+            "BSShaderTextureSet",
+            Some(IndexMap::from([(
+                "Textures".to_string(),
+                NifValue::Array(vec![NifValue::String("old.dds".to_string())]),
+            )])),
+        );
+        replace_assets(&mut nif, &json!({"pairs": [["old", "$1"]], "regex": false})).unwrap();
+        assert_eq!(
+            value_array(nif.blocks[texture_id].get_field("Textures"))[0],
+            NifValue::String("$1.dds".to_string())
+        );
+    }
+
+    #[test]
+    fn shader_flag_processors_use_game_specific_fields() {
         let mut nif = NifFile::new("fo4");
         let shader_id = nif.add_block(
             "BSLightingShaderProperty",
@@ -6492,10 +6508,7 @@ mod tests {
             value_u64(nif.blocks[shader_id].get_field("Shader Flags 2")),
             Some(0b1000)
         );
-    }
 
-    #[test]
-    fn fo3_shader_actions_use_the_fo3_shader_flags_field() {
         let mut nif = NifFile::new("fnv");
         let shader_id = nif.add_block(
             "BSShaderPPLightingProperty",
@@ -6561,38 +6574,7 @@ mod tests {
     }
 
     #[test]
-    fn ragdoll_motor_is_cross_product_and_can_be_wrapped() {
-        let mut nif = NifFile::new("skyrimse");
-        let ragdoll = NifValue::Struct(IndexMap::from([
-            ("Twist A".to_string(), NifValue::Vec4([1.0, 0.0, 0.0, 0.0])),
-            ("Plane A".to_string(), NifValue::Vec4([0.0, 1.0, 0.0, 0.0])),
-            ("Motor A".to_string(), NifValue::Vec4([0.0, 0.0, 0.0, 0.0])),
-            ("Twist B".to_string(), NifValue::Vec4([0.0, 1.0, 0.0, 0.0])),
-            ("Plane B".to_string(), NifValue::Vec4([0.0, 0.0, 1.0, 0.0])),
-            ("Motor B".to_string(), NifValue::Vec4([0.0, 0.0, 0.0, 0.0])),
-        ]));
-        let constraint_id = nif.add_block(
-            "bhkRagdollConstraint",
-            Some(IndexMap::from([("Constraint".to_string(), ragdoll)])),
-        );
-        let changes =
-            update_ragdoll_constraints(&mut nif, &json!({"convert_to_malleable": true})).unwrap();
-        assert_eq!(
-            nif.blocks[constraint_id].type_name,
-            "bhkMalleableConstraint"
-        );
-        let malleable = nif.blocks[constraint_id].get_field("Constraint");
-        assert_eq!(nested_u64(malleable, "Type"), Some(7));
-        let ragdoll = nested_value(malleable, "Ragdoll").unwrap();
-        assert_eq!(
-            nested_value(Some(ragdoll), "Motor A").and_then(vec4_xyz),
-            Some([0.0, 0.0, 1.0])
-        );
-        assert_eq!(changes.len(), 3);
-    }
-
-    #[test]
-    fn havok_settings_update_nested_rigid_body_info() {
+    fn havok_body_processors() {
         let mut nif = NifFile::new("fnv");
         let body_id = nif.add_block(
             "bhkRigidBody",
@@ -6634,10 +6616,7 @@ mod tests {
             Some(&NifValue::Matrix33([[0.0; 3]; 3]))
         );
         assert_eq!(changes.len(), 3);
-    }
 
-    #[test]
-    fn havok_inertia_uses_shape_dimensions_and_body_part_multiplier() {
         let mut nif = NifFile::new("fnv");
         let shape_id = nif.add_block(
             "bhkBoxShape",
@@ -6683,10 +6662,65 @@ mod tests {
                 [0.0, 0.0, 40.0]
             ]))
         );
+
+        let mut nif = NifFile::new("skyrimse");
+        let shape_id = nif.add_block(
+            "bhkBoxShape",
+            Some(IndexMap::from([(
+                "Material".to_string(),
+                NifValue::UInt(493_553_910),
+            )])),
+        );
+        let reported = search_havok_material(
+            &mut nif,
+            &json!({"material_search": 493_553_910, "report_only": true}),
+        )
+        .unwrap();
+        assert_eq!(reported, vec![format!("{shape_id}: Material 493553910")]);
+        search_havok_material(
+            &mut nif,
+            &json!({
+                "material_search": "SKY_HAV_MAT_BOTTLE",
+                "material_replace": "SKY_HAV_MAT_BONE_ACTOR"
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            value_u64(nif.blocks[shape_id].get_field("Material")),
+            Some(2_058_949_504)
+        );
+
+        let mut nif = NifFile::new("skyrimse");
+        let ragdoll = NifValue::Struct(IndexMap::from([
+            ("Twist A".to_string(), NifValue::Vec4([1.0, 0.0, 0.0, 0.0])),
+            ("Plane A".to_string(), NifValue::Vec4([0.0, 1.0, 0.0, 0.0])),
+            ("Motor A".to_string(), NifValue::Vec4([0.0, 0.0, 0.0, 0.0])),
+            ("Twist B".to_string(), NifValue::Vec4([0.0, 1.0, 0.0, 0.0])),
+            ("Plane B".to_string(), NifValue::Vec4([0.0, 0.0, 1.0, 0.0])),
+            ("Motor B".to_string(), NifValue::Vec4([0.0, 0.0, 0.0, 0.0])),
+        ]));
+        let constraint_id = nif.add_block(
+            "bhkRagdollConstraint",
+            Some(IndexMap::from([("Constraint".to_string(), ragdoll)])),
+        );
+        let changes =
+            update_ragdoll_constraints(&mut nif, &json!({"convert_to_malleable": true})).unwrap();
+        assert_eq!(
+            nif.blocks[constraint_id].type_name,
+            "bhkMalleableConstraint"
+        );
+        let malleable = nif.blocks[constraint_id].get_field("Constraint");
+        assert_eq!(nested_u64(malleable, "Type"), Some(7));
+        let ragdoll = nested_value(malleable, "Ragdoll").unwrap();
+        assert_eq!(
+            nested_value(Some(ragdoll), "Motor A").and_then(vec4_xyz),
+            Some([0.0, 0.0, 1.0])
+        );
+        assert_eq!(changes.len(), 3);
     }
 
     #[test]
-    fn fo3_packed_mopp_penetration_uses_fo3_game_units() {
+    fn mopp_processors_write_code_origin_and_scale() {
         let mut nif = NifFile::new("fnv");
         let data = nif.add_block(
             "hkPackedNiTriStripsData",
@@ -6746,40 +6780,125 @@ mod tests {
             .and_then(|value| value_f64(Some(value)))
             .unwrap();
         assert!((depth - 0.4 / 6.999125).abs() < 1.0e-8);
-    }
 
-    #[test]
-    fn havok_material_search_reports_or_replaces() {
-        let mut nif = NifFile::new("skyrimse");
-        let shape_id = nif.add_block(
-            "bhkBoxShape",
-            Some(IndexMap::from([(
-                "Material".to_string(),
-                NifValue::UInt(493_553_910),
-            )])),
+        let mut nif = NifFile::new("fnv");
+        nif.blocks[0].set_field("Children", NifValue::Array(vec![NifValue::Ref(1)]));
+
+        let mut mopp = NifBlock::new(1, "bhkMoppBvTreeShape");
+        mopp.set_field("Shape", NifValue::Ref(2));
+        mopp.set_field("Scale", NifValue::Float(1.0));
+        mopp.set_field(
+            "MOPP Code",
+            NifValue::Struct(IndexMap::from([
+                ("Data Size".to_string(), NifValue::UInt(0)),
+                ("Offset".to_string(), NifValue::Vec4([0.0; 4])),
+                ("Build Type".to_string(), NifValue::UInt(0)),
+                ("Data".to_string(), NifValue::Bytes(Vec::new())),
+            ])),
         );
-        let reported = search_havok_material(
-            &mut nif,
-            &json!({"material_search": 493_553_910, "report_only": true}),
-        )
-        .unwrap();
-        assert_eq!(reported, vec![format!("{shape_id}: Material 493553910")]);
-        search_havok_material(
-            &mut nif,
-            &json!({
-                "material_search": "SKY_HAV_MAT_BOTTLE",
-                "material_replace": "SKY_HAV_MAT_BONE_ACTOR"
-            }),
-        )
-        .unwrap();
+
+        let mut packed = NifBlock::new(2, "bhkPackedNiTriStripsShape");
+        packed.set_field("Radius", NifValue::Float(0.1));
+        packed.set_field("Data", NifValue::Ref(3));
+        packed.set_field(
+            "Sub Shapes",
+            NifValue::Array(vec![NifValue::Struct(IndexMap::from([(
+                "Num Vertices".to_string(),
+                NifValue::UInt(4),
+            )]))]),
+        );
+
+        let triangle = |v1, v2, v3| {
+            NifValue::Struct(IndexMap::from([(
+                "Triangle".to_string(),
+                NifValue::Struct(IndexMap::from([
+                    ("v1".to_string(), NifValue::UInt(v1)),
+                    ("v2".to_string(), NifValue::UInt(v2)),
+                    ("v3".to_string(), NifValue::UInt(v3)),
+                ])),
+            )]))
+        };
+        let mut data = NifBlock::new(3, "hkPackedNiTriStripsData");
+        data.set_field(
+            "Vertices",
+            NifValue::Array(vec![
+                NifValue::Vec3([0.0, 0.0, 0.0]),
+                NifValue::Vec3([1.0, 0.0, 0.0]),
+                NifValue::Vec3([0.0, 1.0, 0.0]),
+                NifValue::Vec3([1.0, 1.0, 0.0]),
+            ]),
+        );
+        data.set_field(
+            "Triangles",
+            NifValue::Array(vec![triangle(0, 1, 2), triangle(2, 1, 3)]),
+        );
+        nif.blocks.extend([mopp, packed, data]);
+
+        let changes = update_mopp_code(&mut nif).unwrap();
+        assert_eq!(changes.len(), 1);
+        assert!(value_f64(nif.blocks[1].get_field("Scale")).unwrap() > 1.0);
+        let code = nif.blocks[1].get_field("MOPP Code");
+        let bytes = nested_value(code, "Data").unwrap();
+        let NifValue::Bytes(bytes) = bytes else {
+            panic!("expected MOPP bytecode");
+        };
+        assert!(!bytes.is_empty());
+        assert_eq!(nested_u64(code, "Data Size"), Some(bytes.len() as u64));
         assert_eq!(
-            value_u64(nif.blocks[shape_id].get_field("Material")),
-            Some(2_058_949_504)
+            nested_value(code, "Offset").and_then(vec4_xyz),
+            Some([-0.1, -0.1, -0.1])
         );
+        assert!(changes[0].ends_with("across 1 subshapes"));
+
+        let mut nif = NifFile::new("oblivion");
+        let mut mopp = NifBlock::new(1, "bhkMoppBvTreeShape");
+        mopp.set_field("Shape", NifValue::Ref(2));
+        mopp.set_field(
+            "MOPP Code",
+            NifValue::Struct(IndexMap::from([
+                ("Data Size".to_string(), NifValue::UInt(0)),
+                ("Offset".to_string(), NifValue::Vec4([0.0; 4])),
+                ("Data".to_string(), NifValue::Bytes(Vec::new())),
+            ])),
+        );
+        let mut packed = NifBlock::new(2, "bhkPackedNiTriStripsShape");
+        packed.set_field("Data", NifValue::Ref(3));
+        let mut data = NifBlock::new(3, "hkPackedNiTriStripsData");
+        data.set_field(
+            "Sub Shapes",
+            NifValue::Array(vec![NifValue::Struct(IndexMap::from([(
+                "Num Vertices".to_string(),
+                NifValue::UInt(3),
+            )]))]),
+        );
+        data.set_field(
+            "Vertices",
+            NifValue::Array(vec![
+                NifValue::Vec3([0.0, 0.0, 0.0]),
+                NifValue::Vec3([1.0, 0.0, 0.0]),
+                NifValue::Vec3([0.0, 1.0, 0.0]),
+            ]),
+        );
+        data.set_field(
+            "Triangles",
+            NifValue::Array(vec![NifValue::Struct(IndexMap::from([(
+                "Triangle".to_string(),
+                NifValue::Struct(IndexMap::from([
+                    ("v1".to_string(), NifValue::UInt(0)),
+                    ("v2".to_string(), NifValue::UInt(1)),
+                    ("v3".to_string(), NifValue::UInt(2)),
+                ])),
+            )]))]),
+        );
+        nif.blocks.extend([mopp, packed, data]);
+
+        let changes = update_mopp_code(&mut nif).unwrap();
+        assert_eq!(changes.len(), 1);
+        assert!(changes[0].ends_with("across 1 subshapes"));
     }
 
     #[test]
-    fn animation_processors_edit_controlled_blocks_and_keys() {
+    fn animation_edit_processors() {
         let mut nif = NifFile::new("fnv");
         let key = |time: f64| {
             NifValue::Struct(IndexMap::from([
@@ -6869,10 +6988,7 @@ mod tests {
                 .unwrap();
         assert!(!removed.is_empty());
         assert!(value_array(nif.blocks[0].get_field("Controlled Blocks")).is_empty());
-    }
 
-    #[test]
-    fn copy_controlled_blocks_copies_interpolator_data_once() {
         let mut source = animation_sequence(Vec::new());
         let data_id = source.add_block("NiTransformData", None);
         let first_interpolator = source.add_block(
@@ -6931,10 +7047,7 @@ mod tests {
             .map(|id| value_ref(destination.blocks[*id].get_field("Data")).unwrap())
             .collect::<Vec<_>>();
         assert_eq!(copied_data[0], copied_data[1]);
-    }
 
-    #[test]
-    fn copy_priorities_matches_node_names_case_insensitively() {
         let source = animation_sequence(vec![controlled_entry(
             "Bip01 Head",
             "NiTransformController",
@@ -6958,44 +7071,7 @@ mod tests {
             .and_then(|value| value_u64(Some(value))),
             Some(77)
         );
-    }
 
-    #[test]
-    fn add_skeleton_blocks_copies_uncollided_bone_pose_to_death_animation() {
-        let mut skeleton = NifFile::new("oblivion");
-        let bone_id = skeleton.add_block("NiNode", None);
-        skeleton.blocks[bone_id].set_field("Name", NifValue::String("Bip01 Arm".to_string()));
-        skeleton.blocks[bone_id].set_field("Translation", NifValue::Vec3([1.0, 2.0, 3.0]));
-        skeleton.blocks[bone_id].set_field(
-            "Rotation",
-            NifValue::Matrix33([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]),
-        );
-        skeleton.blocks[bone_id].set_field("Scale", NifValue::Float(1.25));
-        skeleton.blocks[bone_id].set_field("Collision Object", NifValue::Ref(-1));
-        let mut death = animation_sequence(Vec::new());
-
-        let changes = add_skeleton_blocks_from(&mut death, &skeleton, &json!({}));
-        assert_eq!(changes.len(), 1);
-        let entry = &value_array(death.blocks[0].get_field("Controlled Blocks"))[0];
-        assert_eq!(
-            nested_value(Some(entry), "Priority").and_then(|value| value_u64(Some(value))),
-            Some(99)
-        );
-        let interpolator = nested_value(Some(entry), "Interpolator")
-            .and_then(|value| value_ref(Some(value)))
-            .unwrap() as usize;
-        assert_eq!(
-            nested_value(
-                death.blocks[interpolator].get_field("Transform"),
-                "Translation"
-            )
-            .and_then(vec3_value),
-            Some([1.0, 2.0, 3.0])
-        );
-    }
-
-    #[test]
-    fn weijiesen_blow_up_rebuilds_non_accum_controller_links() {
         let mut nif = NifFile::new("fnv");
         let non_accum = nif.add_block(
             "NiNode",
@@ -7074,64 +7150,134 @@ mod tests {
     }
 
     #[test]
-    fn remove_nodes_removes_newly_unreachable_branch_only() {
-        let mut nif = NifFile::new("fo4");
-        let child_id = nif.add_block(
-            "NiNode",
-            Some(IndexMap::from([(
-                "Name".to_string(),
-                NifValue::String("RemoveMe".to_string()),
-            )])),
+    fn animation_synthesis_processors() {
+        let mut skeleton = NifFile::new("oblivion");
+        let bone_id = skeleton.add_block("NiNode", None);
+        skeleton.blocks[bone_id].set_field("Name", NifValue::String("Bip01 Arm".to_string()));
+        skeleton.blocks[bone_id].set_field("Translation", NifValue::Vec3([1.0, 2.0, 3.0]));
+        skeleton.blocks[bone_id].set_field(
+            "Rotation",
+            NifValue::Matrix33([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]),
         );
-        let grandchild_id = nif.add_block(
-            "NiNode",
-            Some(IndexMap::from([(
-                "Name".to_string(),
-                NifValue::String("Descendant".to_string()),
-            )])),
+        skeleton.blocks[bone_id].set_field("Scale", NifValue::Float(1.25));
+        skeleton.blocks[bone_id].set_field("Collision Object", NifValue::Ref(-1));
+        let mut death = animation_sequence(Vec::new());
+
+        let changes = add_skeleton_blocks_from(&mut death, &skeleton, &json!({}));
+        assert_eq!(changes.len(), 1);
+        let entry = &value_array(death.blocks[0].get_field("Controlled Blocks"))[0];
+        assert_eq!(
+            nested_value(Some(entry), "Priority").and_then(|value| value_u64(Some(value))),
+            Some(99)
         );
-        let unused_id = nif.add_block(
-            "NiNode",
-            Some(IndexMap::from([(
-                "Name".to_string(),
-                NifValue::String("AlreadyUnused".to_string()),
-            )])),
+        let interpolator = nested_value(Some(entry), "Interpolator")
+            .and_then(|value| value_ref(Some(value)))
+            .unwrap() as usize;
+        assert_eq!(
+            nested_value(
+                death.blocks[interpolator].get_field("Transform"),
+                "Translation"
+            )
+            .and_then(vec3_value),
+            Some([1.0, 2.0, 3.0])
         );
+
+        let mut nif = NifFile::new("fnv");
+        nif.blocks[0].set_field("Stop Time", NifValue::Float(2.0));
+        let interpolator = nif.add_block("NiTransformInterpolator", None);
+        nif.blocks[interpolator].set_field("Data", NifValue::Ref(-1));
+        nif.blocks[interpolator].set_field(
+            "Transform",
+            NifValue::Struct(IndexMap::from([
+                ("Translation".to_string(), NifValue::Vec3([1.0, 2.0, 3.0])),
+                (
+                    "Rotation".to_string(),
+                    NifValue::Quaternion([0.0, 0.0, 0.0, 1.0]),
+                ),
+                ("Scale".to_string(), NifValue::Float(1.0)),
+            ])),
+        );
+        let changes = add_transform_data(&mut nif, &json!({})).unwrap();
+        assert_eq!(changes.len(), 1);
+        let data_id = value_ref(nif.blocks[interpolator].get_field("Data")).unwrap() as usize;
+        assert_eq!(
+            value_array(nif.blocks[data_id].get_field("Quaternion Keys")).len(),
+            2
+        );
+        let translations = nif.blocks[data_id].get_field("Translations");
+        assert_eq!(nested_u64(translations, "Num Keys"), Some(2));
+        let end_time = nested_array(translations, "Keys")
+            .get(1)
+            .and_then(|key| nested_value(Some(key), "Time"))
+            .and_then(|value| value_f64(Some(value)));
+        assert_eq!(end_time, Some(2.0));
+
+        let mut nif = NifFile::new("fnv");
+        nif.blocks[0].type_name = "NiControllerSequence".to_string();
+        nif.blocks[0].set_field("Stop Time", NifValue::Float(3.0));
         nif.blocks[0].set_field(
-            "Children",
-            NifValue::Array(vec![NifValue::Ref(child_id as i32)]),
+            "Controlled Blocks",
+            NifValue::Array(vec![NifValue::Struct(IndexMap::from([
+                (
+                    "Node Name".to_string(),
+                    NifValue::String("Bip01 Head".to_string()),
+                ),
+                ("Priority".to_string(), NifValue::UInt(77)),
+                (
+                    "Controller Type".to_string(),
+                    NifValue::String("NiTransformController".to_string()),
+                ),
+            ]))]),
         );
-        nif.blocks[child_id].set_field(
-            "Children",
-            NifValue::Array(vec![NifValue::Ref(grandchild_id as i32)]),
+        let changes = add_headtracking_anim(&mut nif, &json!({}));
+        assert_eq!(changes.len(), 1);
+        let entries = value_array(nif.blocks[0].get_field("Controlled Blocks"));
+        assert_eq!(entries.len(), 2);
+        assert_eq!(nested_u64(entries.get(1), "Priority"), Some(77));
+        assert_eq!(
+            nested_value(entries.get(1), "Controller ID").and_then(value_string),
+            Some("HeadTrack")
         );
-        let changes = remove_nodes(
+        let interpolator_id = nested_value(entries.get(1), "Interpolator")
+            .and_then(|value| value_ref(Some(value)))
+            .unwrap() as usize;
+        let data_id = value_ref(nif.blocks[interpolator_id].get_field("Data")).unwrap() as usize;
+        assert_eq!(
+            nested_array(nif.blocks[data_id].get_field("Data"), "Keys").len(),
+            4
+        );
+
+        let mut nif = NifFile::new("fnv");
+        nif.blocks[0].type_name = "NiControllerSequence".to_string();
+        nif.blocks[0].set_field("Controlled Blocks", NifValue::Array(Vec::new()));
+        let changes = add_facial_anim(
             &mut nif,
-            &json!({"names": ["removeme"], "exact_match": true}),
+            &json!({"facial_mods": ["99 Aah 0.466667 0 1.499999 1"]}),
         )
         .unwrap();
         assert_eq!(changes.len(), 2);
-        assert!(value_array(nif.blocks[0].get_field("Children")).is_empty());
-        assert!(nif.blocks.iter().any(|block| {
-            block
-                .get_field("Name")
-                .and_then(value_string)
-                .is_some_and(|name| name == "AlreadyUnused")
-        }));
-        assert!(unused_id > grandchild_id);
+        let entries = value_array(nif.blocks[0].get_field("Controlled Blocks"));
+        assert_eq!(entries.len(), 2);
+        assert_eq!(
+            nested_value(entries.first(), "Node Name").and_then(value_string),
+            Some("HeadAnims")
+        );
+        assert_eq!(
+            nested_value(entries.get(1), "Interpolator ID").and_then(value_string),
+            Some("Aah")
+        );
+        let interpolator_id = nested_value(entries.get(1), "Interpolator")
+            .and_then(|value| value_ref(Some(value)))
+            .unwrap() as usize;
+        let data_id = value_ref(nif.blocks[interpolator_id].get_field("Data")).unwrap() as usize;
+        assert_eq!(
+            nested_array(nif.blocks[data_id].get_field("Data"), "Keys").len(),
+            2
+        );
     }
 
     #[test]
-    fn remove_nodes_type_mode_matches_subtypes_and_the_root() {
-        let mut nif = NifFile::new("fo4");
-        assert_eq!(nif.blocks[0].type_name, "BSFadeNode");
-        let changes = remove_nodes(&mut nif, &json!({"node_type": "NiNode"})).unwrap();
-        assert_eq!(changes, vec!["Removed 0 BSFadeNode"]);
-        assert!(nif.blocks.is_empty());
-    }
-
-    #[test]
-    fn attach_parent_inserts_before_child_and_remaps_links() {
+    fn node_structure_processors() {
         let mut nif = NifFile::new("fo4");
         let child_id = nif.add_block(
             "NiNode",
@@ -7159,10 +7305,33 @@ mod tests {
             Some(2)
         );
         assert_eq!(nif.header.footer_roots, vec![0]);
+
+        let mut nif = NifFile::new("fo4");
+        let changes = convert_block_types(
+            &mut nif,
+            &json!({"from": "BSFadeNode", "to": "NiNode", "root_only": true}),
+        )
+        .unwrap();
+        assert_eq!(changes.len(), 1);
+        assert_eq!(nif.blocks[0].type_name, "NiNode");
+        assert_eq!(nif.header.footer_roots, vec![0]);
+
+        let mut nif = NifFile::new("fo4");
+        nif.blocks[0].set_field("Name", NifValue::String(String::new()));
+        let changes = set_missing_names(
+            &mut nif,
+            Path::new("meshes/example.nif"),
+            &json!({"rename_root": true}),
+        );
+        assert_eq!(
+            value_string(nif.blocks[0].get_field("Name").unwrap()),
+            Some("example")
+        );
+        assert_eq!(changes.len(), 1);
     }
 
     #[test]
-    fn morrowind_bounding_box_node_has_box_volume() {
+    fn morrowind_collision_nodes() {
         let mut nif = NifFile::new("morrowind");
         assert_eq!(nif.blocks[0].type_name, "NiNode");
         let changes = add_bounding_box(
@@ -7180,10 +7349,7 @@ mod tests {
                 .and_then(vec3_value),
             Some([4.0, 5.0, 6.0])
         );
-    }
 
-    #[test]
-    fn morrowind_root_collision_node_bakes_shape_transform() {
         let mut nif = NifFile::new("morrowind");
         let data_id = nif.add_block(
             "NiTriShapeData",
@@ -7231,7 +7397,7 @@ mod tests {
     }
 
     #[test]
-    fn apply_transform_propagates_node_transform_and_bakes_geometry() {
+    fn transform_processors() {
         let mut nif = NifFile::new("oblivion");
         let node_id = nif.add_block(
             "NiNode",
@@ -7282,10 +7448,7 @@ mod tests {
             nif.blocks[node_id].get_field("Translation"),
             Some(&NifValue::Vec3([0.0; 3]))
         );
-    }
 
-    #[test]
-    fn adjust_transform_matches_nif_add_and_name_filtering() {
         let mut nif = NifFile::new("fo4");
         let child = nif.add_block("NiNode", None);
         nif.blocks[child].set_field("Name", NifValue::String("WeaponNode".to_string()));
@@ -7361,10 +7524,7 @@ mod tests {
             .map(|block| value_ref(block.get_field("Texture Set")).unwrap())
             .collect::<Vec<_>>();
         assert_eq!(refs[0], refs[1]);
-    }
 
-    #[test]
-    fn fo3_merge_properties_ignores_names_and_material_specular_by_default() {
         let mut nif = NifFile::new("fnv");
         let first = nif.add_block(
             "NiMaterialProperty",
@@ -7407,7 +7567,7 @@ mod tests {
     }
 
     #[test]
-    fn group_shapes_uses_diffuse_texture_basename() {
+    fn shape_grouping_and_merging() {
         let mut nif = NifFile::new("fo4");
         let first = nif.add_block("BSTriShape", None);
         let second = nif.add_block("BSTriShape", None);
@@ -7445,10 +7605,77 @@ mod tests {
             value_array(nif.blocks[group_id].get_field("Children")).len(),
             2
         );
+
+        let mut nif = NifFile::new("fo4");
+        nif.blocks[0].set_field("Name", NifValue::String("MergeNode".to_string()));
+        let make_vertices = |offset: f32| {
+            NifValue::Array(
+                [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
+                    .into_iter()
+                    .map(|mut vertex| {
+                        vertex[0] += offset;
+                        NifValue::Struct(IndexMap::from([(
+                            "Vertex".to_string(),
+                            NifValue::Vec3(vertex),
+                        )]))
+                    })
+                    .collect(),
+            )
+        };
+        let triangle = || {
+            NifValue::Array(vec![NifValue::Struct(IndexMap::from([
+                ("v1".to_string(), NifValue::UInt(0)),
+                ("v2".to_string(), NifValue::UInt(1)),
+                ("v3".to_string(), NifValue::UInt(2)),
+            ]))])
+        };
+        let first = nif.add_block(
+            "BSTriShape",
+            Some(IndexMap::from([
+                ("Name".to_string(), NifValue::String("First".to_string())),
+                ("Vertex Data".to_string(), make_vertices(0.0)),
+                ("Triangles".to_string(), triangle()),
+                ("Num Vertices".to_string(), NifValue::UInt(3)),
+                ("Num Triangles".to_string(), NifValue::UInt(1)),
+            ])),
+        );
+        let second = nif.add_block(
+            "BSTriShape",
+            Some(IndexMap::from([
+                ("Name".to_string(), NifValue::String("Second".to_string())),
+                ("Vertex Data".to_string(), make_vertices(2.0)),
+                ("Triangles".to_string(), triangle()),
+                ("Num Vertices".to_string(), NifValue::UInt(3)),
+                ("Num Triangles".to_string(), NifValue::UInt(1)),
+            ])),
+        );
+        nif.blocks[0].set_field(
+            "Children",
+            NifValue::Array(vec![
+                NifValue::Ref(first as i32),
+                NifValue::Ref(second as i32),
+            ]),
+        );
+        nif.blocks[0].set_field("Num Children", NifValue::UInt(2));
+
+        let changes = merge_shapes(
+            &mut nif,
+            &json!({"names": ["MergeNode"], "exact_match": true}),
+        )
+        .unwrap();
+        assert_eq!(changes.len(), 1);
+        assert_eq!(value_array(nif.blocks[0].get_field("Children")).len(), 1);
+        let merged = nif
+            .blocks
+            .iter()
+            .find(|block| block.get_field("Name").and_then(value_string) == Some("First"))
+            .unwrap();
+        assert_eq!(value_array(merged.get_field("Vertex Data")).len(), 6);
+        assert_eq!(triangles(merged), vec![[0, 1, 2], [3, 4, 5]]);
     }
 
     #[test]
-    fn vertex_paint_adds_legacy_colors_and_replaces_modern_byte_colors() {
+    fn vertex_paint_processors() {
         let mut legacy = NifFile::new("oblivion");
         let data = legacy.add_block(
             "NiTriShapeData",
@@ -7517,10 +7744,7 @@ mod tests {
         .and_then(|value| read_vertex_color(value, true))
         .unwrap();
         assert!(same_color(painted, [0.0, 1.0, 0.0, 1.0]));
-    }
 
-    #[test]
-    fn legacy_vertex_paint_uses_existing_arrays_independently_of_the_color_flag() {
         let mut nif = NifFile::new("oblivion");
         let data = nif.add_block(
             "NiTriShapeData",
@@ -7566,10 +7790,7 @@ mod tests {
             value_array(nif.blocks[data].get_field("Vertex Colors")).len(),
             1
         );
-    }
 
-    #[test]
-    fn vertex_paint_only_handles_skin_partitions_in_skyrim_se() {
         let mut nif = NifFile::new("fnv");
         let partition = nif.add_block(
             "NiSkinPartition",
@@ -7650,77 +7871,7 @@ mod tests {
     }
 
     #[test]
-    fn merge_shapes_combines_modern_vertices_and_offsets_triangles() {
-        let mut nif = NifFile::new("fo4");
-        nif.blocks[0].set_field("Name", NifValue::String("MergeNode".to_string()));
-        let make_vertices = |offset: f32| {
-            NifValue::Array(
-                [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
-                    .into_iter()
-                    .map(|mut vertex| {
-                        vertex[0] += offset;
-                        NifValue::Struct(IndexMap::from([(
-                            "Vertex".to_string(),
-                            NifValue::Vec3(vertex),
-                        )]))
-                    })
-                    .collect(),
-            )
-        };
-        let triangle = || {
-            NifValue::Array(vec![NifValue::Struct(IndexMap::from([
-                ("v1".to_string(), NifValue::UInt(0)),
-                ("v2".to_string(), NifValue::UInt(1)),
-                ("v3".to_string(), NifValue::UInt(2)),
-            ]))])
-        };
-        let first = nif.add_block(
-            "BSTriShape",
-            Some(IndexMap::from([
-                ("Name".to_string(), NifValue::String("First".to_string())),
-                ("Vertex Data".to_string(), make_vertices(0.0)),
-                ("Triangles".to_string(), triangle()),
-                ("Num Vertices".to_string(), NifValue::UInt(3)),
-                ("Num Triangles".to_string(), NifValue::UInt(1)),
-            ])),
-        );
-        let second = nif.add_block(
-            "BSTriShape",
-            Some(IndexMap::from([
-                ("Name".to_string(), NifValue::String("Second".to_string())),
-                ("Vertex Data".to_string(), make_vertices(2.0)),
-                ("Triangles".to_string(), triangle()),
-                ("Num Vertices".to_string(), NifValue::UInt(3)),
-                ("Num Triangles".to_string(), NifValue::UInt(1)),
-            ])),
-        );
-        nif.blocks[0].set_field(
-            "Children",
-            NifValue::Array(vec![
-                NifValue::Ref(first as i32),
-                NifValue::Ref(second as i32),
-            ]),
-        );
-        nif.blocks[0].set_field("Num Children", NifValue::UInt(2));
-
-        let changes = merge_shapes(
-            &mut nif,
-            &json!({"names": ["MergeNode"], "exact_match": true}),
-        )
-        .unwrap();
-        assert_eq!(changes.len(), 1);
-        assert_eq!(value_array(nif.blocks[0].get_field("Children")).len(), 1);
-        let merged = nif
-            .blocks
-            .iter()
-            .find(|block| block.get_field("Name").and_then(value_string) == Some("First"))
-            .unwrap();
-        assert_eq!(value_array(merged.get_field("Vertex Data")).len(), 6);
-        assert_eq!(triangles(merged), vec![[0, 1, 2], [3, 4, 5]]);
-    }
-
-    #[test]
-    fn copy_geometry_blocks_preserves_destination_modern_links() {
+    fn copy_geometry_blocks_fixes_destination_links() {
         let mut source = NifFile::new("fo4");
         source.add_block(
             "BSTriShape",
@@ -7768,10 +7919,7 @@ mod tests {
             .and_then(vec3_value),
             Some([9.0, 8.0, 7.0])
         );
-    }
 
-    #[test]
-    fn copy_geometry_blocks_removes_obsolete_oblivion_tangent_data() {
         let mut source = NifFile::new("oblivion");
         let source_data = source.add_block(
             "NiTriShapeData",
@@ -7844,7 +7992,7 @@ mod tests {
     }
 
     #[test]
-    fn optimize_mesh_reorders_modern_vertices_for_first_use() {
+    fn optimize_mesh_processors() {
         let mut nif = NifFile::new("fo4");
         let shape = nif.add_block(
             "BSTriShape",
@@ -7877,131 +8025,7 @@ mod tests {
         assert_eq!(changes.len(), 1);
         assert_eq!(triangles(&nif.blocks[shape]), vec![[0, 1, 2]]);
         assert_eq!(positions(&nif.blocks[shape])[0], [30.0, 0.0, 0.0]);
-    }
 
-    #[test]
-    fn update_mopp_code_writes_compiled_data_origin_and_scale() {
-        let mut nif = NifFile::new("fnv");
-        nif.blocks[0].set_field("Children", NifValue::Array(vec![NifValue::Ref(1)]));
-
-        let mut mopp = NifBlock::new(1, "bhkMoppBvTreeShape");
-        mopp.set_field("Shape", NifValue::Ref(2));
-        mopp.set_field("Scale", NifValue::Float(1.0));
-        mopp.set_field(
-            "MOPP Code",
-            NifValue::Struct(IndexMap::from([
-                ("Data Size".to_string(), NifValue::UInt(0)),
-                ("Offset".to_string(), NifValue::Vec4([0.0; 4])),
-                ("Build Type".to_string(), NifValue::UInt(0)),
-                ("Data".to_string(), NifValue::Bytes(Vec::new())),
-            ])),
-        );
-
-        let mut packed = NifBlock::new(2, "bhkPackedNiTriStripsShape");
-        packed.set_field("Radius", NifValue::Float(0.1));
-        packed.set_field("Data", NifValue::Ref(3));
-        packed.set_field(
-            "Sub Shapes",
-            NifValue::Array(vec![NifValue::Struct(IndexMap::from([(
-                "Num Vertices".to_string(),
-                NifValue::UInt(4),
-            )]))]),
-        );
-
-        let triangle = |v1, v2, v3| {
-            NifValue::Struct(IndexMap::from([(
-                "Triangle".to_string(),
-                NifValue::Struct(IndexMap::from([
-                    ("v1".to_string(), NifValue::UInt(v1)),
-                    ("v2".to_string(), NifValue::UInt(v2)),
-                    ("v3".to_string(), NifValue::UInt(v3)),
-                ])),
-            )]))
-        };
-        let mut data = NifBlock::new(3, "hkPackedNiTriStripsData");
-        data.set_field(
-            "Vertices",
-            NifValue::Array(vec![
-                NifValue::Vec3([0.0, 0.0, 0.0]),
-                NifValue::Vec3([1.0, 0.0, 0.0]),
-                NifValue::Vec3([0.0, 1.0, 0.0]),
-                NifValue::Vec3([1.0, 1.0, 0.0]),
-            ]),
-        );
-        data.set_field(
-            "Triangles",
-            NifValue::Array(vec![triangle(0, 1, 2), triangle(2, 1, 3)]),
-        );
-        nif.blocks.extend([mopp, packed, data]);
-
-        let changes = update_mopp_code(&mut nif).unwrap();
-        assert_eq!(changes.len(), 1);
-        assert!(value_f64(nif.blocks[1].get_field("Scale")).unwrap() > 1.0);
-        let code = nif.blocks[1].get_field("MOPP Code");
-        let bytes = nested_value(code, "Data").unwrap();
-        let NifValue::Bytes(bytes) = bytes else {
-            panic!("expected MOPP bytecode");
-        };
-        assert!(!bytes.is_empty());
-        assert_eq!(nested_u64(code, "Data Size"), Some(bytes.len() as u64));
-        assert_eq!(
-            nested_value(code, "Offset").and_then(vec4_xyz),
-            Some([-0.1, -0.1, -0.1])
-        );
-        assert!(changes[0].ends_with("across 1 subshapes"));
-    }
-
-    #[test]
-    fn update_mopp_code_accepts_subshapes_on_packed_data() {
-        let mut nif = NifFile::new("oblivion");
-        let mut mopp = NifBlock::new(1, "bhkMoppBvTreeShape");
-        mopp.set_field("Shape", NifValue::Ref(2));
-        mopp.set_field(
-            "MOPP Code",
-            NifValue::Struct(IndexMap::from([
-                ("Data Size".to_string(), NifValue::UInt(0)),
-                ("Offset".to_string(), NifValue::Vec4([0.0; 4])),
-                ("Data".to_string(), NifValue::Bytes(Vec::new())),
-            ])),
-        );
-        let mut packed = NifBlock::new(2, "bhkPackedNiTriStripsShape");
-        packed.set_field("Data", NifValue::Ref(3));
-        let mut data = NifBlock::new(3, "hkPackedNiTriStripsData");
-        data.set_field(
-            "Sub Shapes",
-            NifValue::Array(vec![NifValue::Struct(IndexMap::from([(
-                "Num Vertices".to_string(),
-                NifValue::UInt(3),
-            )]))]),
-        );
-        data.set_field(
-            "Vertices",
-            NifValue::Array(vec![
-                NifValue::Vec3([0.0, 0.0, 0.0]),
-                NifValue::Vec3([1.0, 0.0, 0.0]),
-                NifValue::Vec3([0.0, 1.0, 0.0]),
-            ]),
-        );
-        data.set_field(
-            "Triangles",
-            NifValue::Array(vec![NifValue::Struct(IndexMap::from([(
-                "Triangle".to_string(),
-                NifValue::Struct(IndexMap::from([
-                    ("v1".to_string(), NifValue::UInt(0)),
-                    ("v2".to_string(), NifValue::UInt(1)),
-                    ("v3".to_string(), NifValue::UInt(2)),
-                ])),
-            )]))]),
-        );
-        nif.blocks.extend([mopp, packed, data]);
-
-        let changes = update_mopp_code(&mut nif).unwrap();
-        assert_eq!(changes.len(), 1);
-        assert!(changes[0].ends_with("across 1 subshapes"));
-    }
-
-    #[test]
-    fn optimize_mesh_triangulates_legacy_points() {
         let mut nif = NifFile::new("oblivion");
         let data = nif.add_block(
             "NiTriStripsData",
@@ -8037,108 +8061,6 @@ mod tests {
         assert_eq!(nif.blocks[shape].type_name, "NiTriShape");
         assert_eq!(nif.blocks[data].type_name, "NiTriShapeData");
         assert_eq!(triangles(&nif.blocks[data]), vec![[0, 1, 2], [2, 1, 3]]);
-    }
-
-    #[test]
-    fn add_transform_data_copies_interpolator_pose_to_end_keys() {
-        let mut nif = NifFile::new("fnv");
-        nif.blocks[0].set_field("Stop Time", NifValue::Float(2.0));
-        let interpolator = nif.add_block("NiTransformInterpolator", None);
-        nif.blocks[interpolator].set_field("Data", NifValue::Ref(-1));
-        nif.blocks[interpolator].set_field(
-            "Transform",
-            NifValue::Struct(IndexMap::from([
-                ("Translation".to_string(), NifValue::Vec3([1.0, 2.0, 3.0])),
-                (
-                    "Rotation".to_string(),
-                    NifValue::Quaternion([0.0, 0.0, 0.0, 1.0]),
-                ),
-                ("Scale".to_string(), NifValue::Float(1.0)),
-            ])),
-        );
-        let changes = add_transform_data(&mut nif, &json!({})).unwrap();
-        assert_eq!(changes.len(), 1);
-        let data_id = value_ref(nif.blocks[interpolator].get_field("Data")).unwrap() as usize;
-        assert_eq!(
-            value_array(nif.blocks[data_id].get_field("Quaternion Keys")).len(),
-            2
-        );
-        let translations = nif.blocks[data_id].get_field("Translations");
-        assert_eq!(nested_u64(translations, "Num Keys"), Some(2));
-        let end_time = nested_array(translations, "Keys")
-            .get(1)
-            .and_then(|key| nested_value(Some(key), "Time"))
-            .and_then(|value| value_f64(Some(value)));
-        assert_eq!(end_time, Some(2.0));
-    }
-
-    #[test]
-    fn add_headtracking_anim_uses_existing_head_priority() {
-        let mut nif = NifFile::new("fnv");
-        nif.blocks[0].type_name = "NiControllerSequence".to_string();
-        nif.blocks[0].set_field("Stop Time", NifValue::Float(3.0));
-        nif.blocks[0].set_field(
-            "Controlled Blocks",
-            NifValue::Array(vec![NifValue::Struct(IndexMap::from([
-                (
-                    "Node Name".to_string(),
-                    NifValue::String("Bip01 Head".to_string()),
-                ),
-                ("Priority".to_string(), NifValue::UInt(77)),
-                (
-                    "Controller Type".to_string(),
-                    NifValue::String("NiTransformController".to_string()),
-                ),
-            ]))]),
-        );
-        let changes = add_headtracking_anim(&mut nif, &json!({}));
-        assert_eq!(changes.len(), 1);
-        let entries = value_array(nif.blocks[0].get_field("Controlled Blocks"));
-        assert_eq!(entries.len(), 2);
-        assert_eq!(nested_u64(entries.get(1), "Priority"), Some(77));
-        assert_eq!(
-            nested_value(entries.get(1), "Controller ID").and_then(value_string),
-            Some("HeadTrack")
-        );
-        let interpolator_id = nested_value(entries.get(1), "Interpolator")
-            .and_then(|value| value_ref(Some(value)))
-            .unwrap() as usize;
-        let data_id = value_ref(nif.blocks[interpolator_id].get_field("Data")).unwrap() as usize;
-        assert_eq!(
-            nested_array(nif.blocks[data_id].get_field("Data"), "Keys").len(),
-            4
-        );
-    }
-
-    #[test]
-    fn add_facial_anim_builds_head_and_modifier_blocks() {
-        let mut nif = NifFile::new("fnv");
-        nif.blocks[0].type_name = "NiControllerSequence".to_string();
-        nif.blocks[0].set_field("Controlled Blocks", NifValue::Array(Vec::new()));
-        let changes = add_facial_anim(
-            &mut nif,
-            &json!({"facial_mods": ["99 Aah 0.466667 0 1.499999 1"]}),
-        )
-        .unwrap();
-        assert_eq!(changes.len(), 2);
-        let entries = value_array(nif.blocks[0].get_field("Controlled Blocks"));
-        assert_eq!(entries.len(), 2);
-        assert_eq!(
-            nested_value(entries.first(), "Node Name").and_then(value_string),
-            Some("HeadAnims")
-        );
-        assert_eq!(
-            nested_value(entries.get(1), "Interpolator ID").and_then(value_string),
-            Some("Aah")
-        );
-        let interpolator_id = nested_value(entries.get(1), "Interpolator")
-            .and_then(|value| value_ref(Some(value)))
-            .unwrap() as usize;
-        let data_id = value_ref(nif.blocks[interpolator_id].get_field("Data")).unwrap() as usize;
-        assert_eq!(
-            nested_array(nif.blocks[data_id].get_field("Data"), "Keys").len(),
-            2
-        );
     }
 
     #[test]

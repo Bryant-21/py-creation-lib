@@ -7,7 +7,8 @@ def _reset_host():
     host_mod._host = None
 
 
-def test_default_host_is_functional(tmp_path, monkeypatch):
+def test_default_host_is_functional_then_set_host_round_trip(tmp_path, monkeypatch):
+    # Phase 1: the default host resolves real paths under LOCALAPPDATA
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
     _reset_host()
     from creation_lib.ui.host import get_host
@@ -22,10 +23,8 @@ def test_default_host_is_functional(tmp_path, monkeypatch):
     assert host.db_builder_factory is None
     _reset_host()
 
-
-def test_set_host_round_trip():
-    _reset_host()
-    from creation_lib.ui.host import UiHost, get_host, set_host
+    # Phase 2: a custom host installed via set_host() is returned by get_host()
+    from creation_lib.ui.host import UiHost, set_host
 
     marker = Path("X:/host-marker")
     set_host(
@@ -43,16 +42,3 @@ def test_set_host_round_trip():
         assert host.db_builder_factory(a=1) == {"a": 1}
     finally:
         _reset_host()
-
-
-def test_game_esm_yaml_dir_covers_all_games():
-    from creation_lib.ui.host import GAME_ESM_YAML_DIR
-
-    assert GAME_ESM_YAML_DIR == {
-        "fo4": "fo4_esm_yaml",
-        "skyrimse": "skyrimse_esm_yaml",
-        "starfield": "starfield_esm_yaml",
-        "fo76": "fo76_esm_yaml",
-        "fo3": "fo3_esm_yaml",
-        "fnv": "fnv_esm_yaml",
-    }

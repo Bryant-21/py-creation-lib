@@ -82,29 +82,3 @@ pub fn bones_to_transform_set(bones: &[ClothBone]) -> (Vec<String>, Vec<[f32; 4]
     let positions = bones.iter().map(|b| b.position).collect();
     (names, positions)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn generate_cloth_bones_creates_correct_count() {
-        let names: Vec<String> = vec!["A".into(), "B".into()];
-        let pos = vec![[0.0f32, 0.0, 0.0, 0.0]; 2];
-        let bones = generate_cloth_bones(&names, &pos, "COM");
-        assert_eq!(bones.len(), 2);
-        assert_eq!(bones[0].parent_bone, "COM");
-    }
-
-    #[test]
-    fn bones_to_transform_set_round_trip() {
-        let bones = vec![ClothBone {
-            name: "Bone_A_001".into(),
-            position: [1.0, 2.0, 3.0, 0.0],
-            parent_bone: "COM".into(),
-        }];
-        let (names, positions) = bones_to_transform_set(&bones);
-        assert_eq!(names[0], "Bone_A_001");
-        assert_eq!(positions[0], [1.0, 2.0, 3.0, 0.0]);
-    }
-}

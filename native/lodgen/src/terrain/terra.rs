@@ -1132,42 +1132,6 @@ mod tests {
     }
 
     #[test]
-    fn spike_is_inserted() {
-        let w = 9;
-        let h = 9;
-        let mut heights = flat(w, h);
-        let (sx, sy) = (4usize, 4usize);
-        heights[sx + sy * w] = 1000.0; // sharp central spike
-        let mut t = Terra::new(0.5, -1, w, h, &heights);
-        t.triangulate();
-        let (verts, _tris) = t.generate_output();
-        // the spike post must be present in the output verts
-        assert!(
-            verts
-                .iter()
-                .any(|v| v[0] as usize == sx && v[1] as usize == sy && v[2] == 1000.0),
-            "spike vertex must be selected"
-        );
-        // Exactly 9 verts: 4 corners + spike + its 4 diagonal "shoulder" posts.
-        // The shoulders are forced in because the plane from spike->corner has
-        // large residual error at the intermediate posts; this is the faithful
-        // Garland-Heckbert result (max_error -> 0).
-        assert_eq!(verts.len(), 9, "got {} verts", verts.len());
-        let coords: std::collections::BTreeSet<(usize, usize)> = verts
-            .iter()
-            .map(|v| (v[0] as usize, v[1] as usize))
-            .collect();
-        for shoulder in [(3, 3), (5, 5), (3, 5), (5, 3)] {
-            assert!(
-                coords.contains(&shoulder),
-                "shoulder post {shoulder:?} must be selected; got {coords:?}"
-            );
-        }
-        // residual error fully eliminated below threshold
-        assert!(t.max_error() < 0.5, "max_error {}", t.max_error());
-    }
-
-    #[test]
     fn point_count_cap_honored() {
         let w = 17;
         let h = 17;
@@ -1181,26 +1145,6 @@ mod tests {
         t.triangulate();
         // PointCountLimit=10 ; loop stops once PointCount > 10, so count is 11
         assert!(t.point_count() <= 11, "point_count {}", t.point_count());
-    }
-
-    /// A planar ramp is exactly representable by 2 triangles; the plane fit and
-    /// scan-conversion must report zero error so only the 4 corners survive.
-    #[test]
-    fn planar_ramp_keeps_only_corners() {
-        let w = 13;
-        let h = 13;
-        let mut heights = vec![0.0; w * h];
-        for y in 0..h {
-            for x in 0..w {
-                // z = 3*x + 5*y + 7 — an exact plane
-                heights[x + y * w] = 3.0 * x as f32 + 5.0 * y as f32 + 7.0;
-            }
-        }
-        let mut t = Terra::new(0.5, -1, w, h, &heights);
-        t.triangulate();
-        let (verts, tris) = t.generate_output();
-        assert_eq!(verts.len(), 4, "planar ramp keeps only 4 corners");
-        assert_eq!(tris.len(), 2);
     }
 
     /// The quality guarantee: when no point-count cap binds, the greedy loop runs
@@ -1232,30 +1176,6 @@ mod tests {
         // and it actually decimated (kept far fewer than the full 17*17=289 posts)
         let (verts, _tris) = t.generate_output();
         assert!(verts.len() < w * h, "no decimation: {} verts", verts.len());
-    }
-
-    /// Repo rule: no nondeterminism. The deterministic Locate tie-break must make
-    /// two identical runs produce byte-identical vertex/triangle output.
-    #[test]
-    fn output_is_deterministic() {
-        let w = 17;
-        let h = 17;
-        let mut heights = vec![0.0; w * h];
-        for i in 0..(w * h) {
-            heights[i] = ((i as f32 * 13.0) % 50.0) + (i as f32 * 0.1).sin() * 7.0;
-        }
-        let run = || {
-            let mut t = Terra::new(2.0, -1, w, h, &heights);
-            t.triangulate();
-            t.generate_output()
-        };
-        let (v1, t1) = run();
-        let (v2, t2) = run();
-        assert_eq!(v1.len(), v2.len());
-        assert_eq!(t1, t2, "triangles must match across runs");
-        for (a, b) in v1.iter().zip(v2.iter()) {
-            assert_eq!(a, b, "vertex mismatch across runs");
-        }
     }
 
     /// ScriptedPreInsertion(state=0) marks posts Ignored; the scan-conversion

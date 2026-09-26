@@ -32,6 +32,7 @@ walkdir = "2.5.0"
 
 [dev-dependencies]
 anyhow = "1.0.102"
+tempfile = { workspace = true }
 
 [features]
 default = ["flate2/zlib-ng"]

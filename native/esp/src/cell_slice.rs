@@ -5880,71 +5880,75 @@ mod tests {
     use serde_json::Value as JsonValue;
 
     #[test]
-    fn prefer_default_candidate_picks_use_prefixed_entry() {
-        // LPI_FloraSootFlower01 → UseLPI_FloraSootFlower01 (non-nuked default),
-        // never the flux/nuke or harvested variants sharing the list.
-        let candidates = vec![
-            (0x0155_D76, Some("FloraRadGeigerBlossom01".to_string())),
-            (
-                0x03C6_0C9,
-                Some("UseLPI_FloraSootFlower01_Harvested".to_string()),
-            ),
-            (0x01C0_E69, Some("UseLPI_FloraSootFlower01".to_string())),
-        ];
-        assert_eq!(
-            prefer_default_candidate("LPI_FloraSootFlower01", &candidates),
-            Some(0x01C0_E69)
-        );
-        // No matching default → None (caller falls back to the stable pick).
-        let none = vec![
-            (0x0155_D76, Some("FloraRadGeigerBlossom01".to_string())),
-            (0x0AAAAAA, None),
-        ];
-        assert_eq!(
-            prefer_default_candidate("LPI_FloraSootFlower01", &none),
-            None
-        );
-        // Empty base editor-id never matches.
-        assert_eq!(prefer_default_candidate("", &candidates), None);
-    }
+    fn candidate_selection() {
+        // prefer_default_candidate_picks_use_prefixed_entry
+        {
+            // LPI_FloraSootFlower01 → UseLPI_FloraSootFlower01 (non-nuked default),
+            // never the flux/nuke or harvested variants sharing the list.
+            let candidates = vec![
+                (0x0155_D76, Some("FloraRadGeigerBlossom01".to_string())),
+                (
+                    0x03C6_0C9,
+                    Some("UseLPI_FloraSootFlower01_Harvested".to_string()),
+                ),
+                (0x01C0_E69, Some("UseLPI_FloraSootFlower01".to_string())),
+            ];
+            assert_eq!(
+                prefer_default_candidate("LPI_FloraSootFlower01", &candidates),
+                Some(0x01C0_E69)
+            );
+            // No matching default → None (caller falls back to the stable pick).
+            let none = vec![
+                (0x0155_D76, Some("FloraRadGeigerBlossom01".to_string())),
+                (0x0AAAAAA, None),
+            ];
+            assert_eq!(
+                prefer_default_candidate("LPI_FloraSootFlower01", &none),
+                None
+            );
+            // Empty base editor-id never matches.
+            assert_eq!(prefer_default_candidate("", &candidates), None);
 
-    #[test]
-    fn prefer_default_candidate_falls_back_to_unnumbered_use_entry() {
-        // LPI_FloraRhododendron01's default leaf drops the trailing number.
-        let candidates = vec![
-            (0x0525_646, Some("FloraRadRhododendron01".to_string())),
-            (
-                0x0525_647,
-                Some("UseLPI_FloraRhododendron01_Harvested".to_string()),
-            ),
-            (0x0525_642, Some("UseLPI_FloraRhododendron".to_string())),
-        ];
-        assert_eq!(
-            prefer_default_candidate("LPI_FloraRhododendron01", &candidates),
-            Some(0x0525_642)
-        );
-    }
+        }
+        // prefer_default_candidate_falls_back_to_unnumbered_use_entry
+        {
+            // LPI_FloraRhododendron01's default leaf drops the trailing number.
+            let candidates = vec![
+                (0x0525_646, Some("FloraRadRhododendron01".to_string())),
+                (
+                    0x0525_647,
+                    Some("UseLPI_FloraRhododendron01_Harvested".to_string()),
+                ),
+                (0x0525_642, Some("UseLPI_FloraRhododendron".to_string())),
+            ];
+            assert_eq!(
+                prefer_default_candidate("LPI_FloraRhododendron01", &candidates),
+                Some(0x0525_642)
+            );
 
-    #[test]
-    fn nuked_candidates_are_dropped_only_when_a_normal_entry_survives() {
-        let mut mixed = vec![
-            (0x0525_646, Some("FloraRadRhododendron01".to_string())),
-            (0x0525_642, Some("UseLPI_FloraRhododendron".to_string())),
-        ];
-        drop_nuked_candidates(&mut mixed);
-        assert_eq!(
-            mixed,
-            vec![(0x0525_642, Some("UseLPI_FloraRhododendron".to_string()))]
-        );
+        }
+        // nuked_candidates_are_dropped_only_when_a_normal_entry_survives
+        {
+            let mut mixed = vec![
+                (0x0525_646, Some("FloraRadRhododendron01".to_string())),
+                (0x0525_642, Some("UseLPI_FloraRhododendron".to_string())),
+            ];
+            drop_nuked_candidates(&mut mixed);
+            assert_eq!(
+                mixed,
+                vec![(0x0525_642, Some("UseLPI_FloraRhododendron".to_string()))]
+            );
 
-        // All-nuked lists keep their entries rather than resolving to nothing.
-        let all_nuked = vec![
-            (0x0155_D76, Some("FloraRadGeigerBlossom01".to_string())),
-            (0x0023_C223, Some("FloraRadGeigerBlossom02".to_string())),
-        ];
-        let mut unchanged = all_nuked.clone();
-        drop_nuked_candidates(&mut unchanged);
-        assert_eq!(unchanged, all_nuked);
+            // All-nuked lists keep their entries rather than resolving to nothing.
+            let all_nuked = vec![
+                (0x0155_D76, Some("FloraRadGeigerBlossom01".to_string())),
+                (0x0023_C223, Some("FloraRadGeigerBlossom02".to_string())),
+            ];
+            let mut unchanged = all_nuked.clone();
+            drop_nuked_candidates(&mut unchanged);
+            assert_eq!(unchanged, all_nuked);
+
+        }
     }
 
     fn subrecord(signature: &str, data: Vec<u8>) -> ParsedSubrecord {
@@ -5968,72 +5972,196 @@ mod tests {
     }
 
     #[test]
-    fn xprm_type_clamps_out_of_domain_to_none() {
-        // FO76 cylinder (7) / value (6) are out of FO4's 0..=5 domain.
-        let cylinder = normalize_placed_enum_flag_subrecord("XPRM", &xprm_bytes(7)).unwrap();
-        assert_eq!(&cylinder[28..32], &0u32.to_le_bytes());
-        let value = normalize_placed_enum_flag_subrecord("XPRM", &xprm_bytes(6)).unwrap();
-        assert_eq!(&value[28..32], &0u32.to_le_bytes());
-        // In-domain values are left untouched (no rewrite).
-        assert!(normalize_placed_enum_flag_subrecord("XPRM", &xprm_bytes(5)).is_none());
-        assert!(normalize_placed_enum_flag_subrecord("XPRM", &xprm_bytes(0)).is_none());
-    }
+    fn placed_record_fo4_normalization() {
+        // xprm_type_clamps_out_of_domain_to_none
+        {
+            // FO76 cylinder (7) / value (6) are out of FO4's 0..=5 domain.
+            let cylinder = normalize_placed_enum_flag_subrecord("XPRM", &xprm_bytes(7)).unwrap();
+            assert_eq!(&cylinder[28..32], &0u32.to_le_bytes());
+            let value = normalize_placed_enum_flag_subrecord("XPRM", &xprm_bytes(6)).unwrap();
+            assert_eq!(&value[28..32], &0u32.to_le_bytes());
+            // In-domain values are left untouched (no rewrite).
+            assert!(normalize_placed_enum_flag_subrecord("XPRM", &xprm_bytes(5)).is_none());
+            assert!(normalize_placed_enum_flag_subrecord("XPRM", &xprm_bytes(0)).is_none());
 
-    #[test]
-    fn xrdo_flags_mask_to_fo4_known_bit() {
-        // FO76 unknown bits 0x100 (bit 8) and 0x10000 (bit 16) masked off,
-        // FO4 IgnoresDistanceChecks (0x1) preserved.
-        let mixed = normalize_placed_enum_flag_subrecord("XRDO", &xrdo_bytes(0x10101)).unwrap();
-        assert_eq!(&mixed[12..16], &1u32.to_le_bytes());
-        let only_unknown =
-            normalize_placed_enum_flag_subrecord("XRDO", &xrdo_bytes(0x10000)).unwrap();
-        assert_eq!(&only_unknown[12..16], &0u32.to_le_bytes());
-        // Already-clean values are left untouched.
-        assert!(normalize_placed_enum_flag_subrecord("XRDO", &xrdo_bytes(0x1)).is_none());
-        assert!(normalize_placed_enum_flag_subrecord("XRDO", &xrdo_bytes(0x0)).is_none());
-    }
+        }
+        // xrdo_flags_mask_to_fo4_known_bit
+        {
+            // FO76 unknown bits 0x100 (bit 8) and 0x10000 (bit 16) masked off,
+            // FO4 IgnoresDistanceChecks (0x1) preserved.
+            let mixed = normalize_placed_enum_flag_subrecord("XRDO", &xrdo_bytes(0x10101)).unwrap();
+            assert_eq!(&mixed[12..16], &1u32.to_le_bytes());
+            let only_unknown =
+                normalize_placed_enum_flag_subrecord("XRDO", &xrdo_bytes(0x10000)).unwrap();
+            assert_eq!(&only_unknown[12..16], &0u32.to_le_bytes());
+            // Already-clean values are left untouched.
+            assert!(normalize_placed_enum_flag_subrecord("XRDO", &xrdo_bytes(0x1)).is_none());
+            assert!(normalize_placed_enum_flag_subrecord("XRDO", &xrdo_bytes(0x0)).is_none());
 
-    #[test]
-    fn region_map_marker_refs_lose_visible_map_marker_payload() {
-        let mut region = record("REFR", 0x00869989, Some("RegionMapMarkerTheForest"));
-        region.raw_payload = Some(Bytes::from_static(b"raw"));
-        region
-            .subrecords
-            .push(subrecord("NAME", 0x00000010_u32.to_le_bytes().to_vec()));
-        region.subrecords.push(subrecord("XMRK", Vec::new()));
-        region.subrecords.push(subrecord("FNAM", vec![0x03]));
-        region
-            .subrecords
-            .push(subrecord("FULL", b"$REGION_THE_FOREST\0".to_vec()));
-        region.subrecords.push(subrecord("TNAM", vec![64, 0]));
-        region.subrecords.push(subrecord("DATA", vec![0; 24]));
+        }
+        // region_map_marker_refs_lose_visible_map_marker_payload
+        {
+            let mut region = record("REFR", 0x00869989, Some("RegionMapMarkerTheForest"));
+            region.raw_payload = Some(Bytes::from_static(b"raw"));
+            region
+                .subrecords
+                .push(subrecord("NAME", 0x00000010_u32.to_le_bytes().to_vec()));
+            region.subrecords.push(subrecord("XMRK", Vec::new()));
+            region.subrecords.push(subrecord("FNAM", vec![0x03]));
+            region
+                .subrecords
+                .push(subrecord("FULL", b"$REGION_THE_FOREST\0".to_vec()));
+            region.subrecords.push(subrecord("TNAM", vec![64, 0]));
+            region.subrecords.push(subrecord("DATA", vec![0; 24]));
 
-        assert_eq!(strip_region_map_marker_payload(&mut region), 4);
-        assert!(region.raw_payload.is_none());
-        assert!(subrecord_data(&region, "XMRK").is_none());
-        assert!(subrecord_data(&region, "FNAM").is_none());
-        assert!(subrecord_data(&region, "FULL").is_none());
-        assert!(subrecord_data(&region, "TNAM").is_none());
-        assert!(subrecord_data(&region, "EDID").is_some());
-        assert!(subrecord_data(&region, "NAME").is_some());
-        assert!(subrecord_data(&region, "DATA").is_some());
-    }
+            assert_eq!(strip_region_map_marker_payload(&mut region), 4);
+            assert!(region.raw_payload.is_none());
+            assert!(subrecord_data(&region, "XMRK").is_none());
+            assert!(subrecord_data(&region, "FNAM").is_none());
+            assert!(subrecord_data(&region, "FULL").is_none());
+            assert!(subrecord_data(&region, "TNAM").is_none());
+            assert!(subrecord_data(&region, "EDID").is_some());
+            assert!(subrecord_data(&region, "NAME").is_some());
+            assert!(subrecord_data(&region, "DATA").is_some());
 
-    #[test]
-    fn non_region_map_marker_refs_keep_visible_map_marker_payload() {
-        let mut vault = record("REFR", 0x000B1051, Some("Vault76MapMarker"));
-        vault.subrecords.push(subrecord("XMRK", Vec::new()));
-        vault.subrecords.push(subrecord("FNAM", vec![0x03]));
-        vault
-            .subrecords
-            .push(subrecord("FULL", b"Vault 76\0".to_vec()));
-        vault.subrecords.push(subrecord("TNAM", vec![68, 0]));
+        }
+        // non_region_map_marker_refs_keep_visible_map_marker_payload
+        {
+            let mut vault = record("REFR", 0x000B1051, Some("Vault76MapMarker"));
+            vault.subrecords.push(subrecord("XMRK", Vec::new()));
+            vault.subrecords.push(subrecord("FNAM", vec![0x03]));
+            vault
+                .subrecords
+                .push(subrecord("FULL", b"Vault 76\0".to_vec()));
+            vault.subrecords.push(subrecord("TNAM", vec![68, 0]));
 
-        assert_eq!(strip_region_map_marker_payload(&mut vault), 0);
-        assert!(subrecord_data(&vault, "XMRK").is_some());
-        assert!(subrecord_data(&vault, "FNAM").is_some());
-        assert!(subrecord_data(&vault, "FULL").is_some());
-        assert!(subrecord_data(&vault, "TNAM").is_some());
+            assert_eq!(strip_region_map_marker_payload(&mut vault), 0);
+            assert!(subrecord_data(&vault, "XMRK").is_some());
+            assert!(subrecord_data(&vault, "FNAM").is_some());
+            assert!(subrecord_data(&vault, "FULL").is_some());
+            assert!(subrecord_data(&vault, "TNAM").is_some());
+
+        }
+        // stamps_fo4_form_version_over_copied_fo76_placed_record_header
+        {
+            let mut placed = record("REFR", 0x0059_52D4, None);
+            placed.form_version = Some(209);
+            placed.version_control = 1_976_130;
+
+            normalize_target_record_header(&mut placed, Some("fo4"));
+
+            assert_eq!(placed.form_version, Some(131));
+            assert_eq!(placed.version_control, 0);
+
+        }
+        // leaves_record_header_alone_for_targets_without_a_canonical_form_version
+        {
+            let mut placed = record("REFR", 0x0059_52D4, None);
+            placed.form_version = Some(179);
+            placed.version_control = 42;
+
+            normalize_target_record_header(&mut placed, Some("skyrimse"));
+            normalize_target_record_header(&mut placed, None);
+
+            assert_eq!(placed.form_version, Some(179));
+            assert_eq!(placed.version_control, 42);
+
+        }
+        // normalizes_fo76_xbsd_to_fo4_layout_before_schema_filter
+        {
+            let source_xbsd = hex::decode("CDCC4C3E0000404000C0BDC08020A6C310CCDF4300000000").unwrap();
+            let mut placed = record("REFR", 0x0003_9DE8, None);
+            placed.form_version = Some(179);
+            placed
+                .subrecords
+                .push(subrecord("XBSD", source_xbsd.clone()));
+
+            normalize_fo76_xbsd_for_fo4(&mut placed, Some("fo76"), Some("fo4"));
+            let removed = filter_record_to_target_schema(&mut placed, Some("fo4"));
+
+            assert_eq!(removed, 0);
+            assert_eq!(
+                subrecord_data(&placed, "XBSD").expect("XBSD"),
+                &source_xbsd[..21]
+            );
+
+        }
+        // normalizes_fo76_xpdd_to_fo4_layout_before_schema_filter
+        {
+            let source_xpdd = hex::decode("D6E77A3F28F6294100000000").unwrap();
+            let mut placed = record("REFR", 0x0000_D17A, None);
+            placed.form_version = Some(179);
+            placed
+                .subrecords
+                .push(subrecord("XPDD", source_xpdd.clone()));
+
+            normalize_fo76_xpdd_for_fo4(&mut placed, Some("fo76"), Some("fo4"));
+            let removed = filter_record_to_target_schema(&mut placed, Some("fo4"));
+
+            assert_eq!(removed, 0);
+            assert_eq!(
+                subrecord_data(&placed, "XPDD").expect("XPDD"),
+                &source_xpdd[..8]
+            );
+
+        }
+        // preserves_fo4_refr_xloc_variable_tail_payload
+        {
+            let source_xloc = hex::decode("64000000A75A55000102030400000000").unwrap();
+            let mut placed = record("REFR", 0x0083_6A41, None);
+            placed
+                .subrecords
+                .push(subrecord("XLOC", source_xloc.clone()));
+
+            let removed = filter_record_to_target_schema(&mut placed, Some("fo4"));
+
+            assert_eq!(removed, 0);
+            assert_eq!(subrecord_data(&placed, "XLOC").expect("XLOC"), source_xloc);
+
+        }
+        // preserves_fo4_refr_xplk_variable_tail_payloads
+        {
+            let source_xplk = [
+                hex::decode("0004040000000000").unwrap(),
+                hex::decode("23103D0000000000").unwrap(),
+            ];
+            let mut placed = record("REFR", 0x0043_31D0, None);
+            for payload in &source_xplk {
+                placed.subrecords.push(subrecord("XPLK", payload.clone()));
+            }
+
+            let removed = filter_record_to_target_schema(&mut placed, Some("fo4"));
+
+            assert_eq!(removed, 0);
+            let preserved: Vec<Vec<u8>> = placed
+                .subrecords
+                .iter()
+                .filter(|subrecord| subrecord.signature.as_str() == "XPLK")
+                .map(|subrecord| subrecord.data.to_vec())
+                .collect();
+            assert_eq!(preserved, source_xplk);
+
+        }
+        // normalizes_fo76_refr_lod_header_flag_combinations_for_fo4
+        {
+            assert_eq!(
+                normalize_fo76_refr_lod_header_flags(0x0000_0500, 0x0000_2000),
+                0x0000_0400
+            );
+            assert_eq!(
+                normalize_fo76_refr_lod_header_flags(0x0000_0100, 0x0000_2001),
+                0
+            );
+            assert_eq!(
+                normalize_fo76_refr_lod_header_flags(0x0000_0100, 0x0000_2200),
+                0x0000_8100
+            );
+            assert_eq!(
+                normalize_fo76_refr_lod_header_flags(0x0001_0100, 0),
+                0x0001_0100
+            );
+
+        }
     }
 
     fn plain_group(group_type: i32, label: [u8; 4], children: Vec<ParsedItem>) -> ParsedGroup {
@@ -6288,106 +6416,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn stamps_fo4_form_version_over_copied_fo76_placed_record_header() {
-        let mut placed = record("REFR", 0x0059_52D4, None);
-        placed.form_version = Some(209);
-        placed.version_control = 1_976_130;
-
-        normalize_target_record_header(&mut placed, Some("fo4"));
-
-        assert_eq!(placed.form_version, Some(131));
-        assert_eq!(placed.version_control, 0);
-    }
-
-    #[test]
-    fn leaves_record_header_alone_for_targets_without_a_canonical_form_version() {
-        let mut placed = record("REFR", 0x0059_52D4, None);
-        placed.form_version = Some(179);
-        placed.version_control = 42;
-
-        normalize_target_record_header(&mut placed, Some("skyrimse"));
-        normalize_target_record_header(&mut placed, None);
-
-        assert_eq!(placed.form_version, Some(179));
-        assert_eq!(placed.version_control, 42);
-    }
-
-    #[test]
-    fn normalizes_fo76_xbsd_to_fo4_layout_before_schema_filter() {
-        let source_xbsd = hex::decode("CDCC4C3E0000404000C0BDC08020A6C310CCDF4300000000").unwrap();
-        let mut placed = record("REFR", 0x0003_9DE8, None);
-        placed.form_version = Some(179);
-        placed
-            .subrecords
-            .push(subrecord("XBSD", source_xbsd.clone()));
-
-        normalize_fo76_xbsd_for_fo4(&mut placed, Some("fo76"), Some("fo4"));
-        let removed = filter_record_to_target_schema(&mut placed, Some("fo4"));
-
-        assert_eq!(removed, 0);
-        assert_eq!(
-            subrecord_data(&placed, "XBSD").expect("XBSD"),
-            &source_xbsd[..21]
-        );
-    }
-
-    #[test]
-    fn normalizes_fo76_xpdd_to_fo4_layout_before_schema_filter() {
-        let source_xpdd = hex::decode("D6E77A3F28F6294100000000").unwrap();
-        let mut placed = record("REFR", 0x0000_D17A, None);
-        placed.form_version = Some(179);
-        placed
-            .subrecords
-            .push(subrecord("XPDD", source_xpdd.clone()));
-
-        normalize_fo76_xpdd_for_fo4(&mut placed, Some("fo76"), Some("fo4"));
-        let removed = filter_record_to_target_schema(&mut placed, Some("fo4"));
-
-        assert_eq!(removed, 0);
-        assert_eq!(
-            subrecord_data(&placed, "XPDD").expect("XPDD"),
-            &source_xpdd[..8]
-        );
-    }
-
-    #[test]
-    fn preserves_fo4_refr_xloc_variable_tail_payload() {
-        let source_xloc = hex::decode("64000000A75A55000102030400000000").unwrap();
-        let mut placed = record("REFR", 0x0083_6A41, None);
-        placed
-            .subrecords
-            .push(subrecord("XLOC", source_xloc.clone()));
-
-        let removed = filter_record_to_target_schema(&mut placed, Some("fo4"));
-
-        assert_eq!(removed, 0);
-        assert_eq!(subrecord_data(&placed, "XLOC").expect("XLOC"), source_xloc);
-    }
-
-    #[test]
-    fn preserves_fo4_refr_xplk_variable_tail_payloads() {
-        let source_xplk = [
-            hex::decode("0004040000000000").unwrap(),
-            hex::decode("23103D0000000000").unwrap(),
-        ];
-        let mut placed = record("REFR", 0x0043_31D0, None);
-        for payload in &source_xplk {
-            placed.subrecords.push(subrecord("XPLK", payload.clone()));
-        }
-
-        let removed = filter_record_to_target_schema(&mut placed, Some("fo4"));
-
-        assert_eq!(removed, 0);
-        let preserved: Vec<Vec<u8>> = placed
-            .subrecords
-            .iter()
-            .filter(|subrecord| subrecord.signature.as_str() == "XPLK")
-            .map(|subrecord| subrecord.data.to_vec())
-            .collect();
-        assert_eq!(preserved, source_xplk);
-    }
-
     fn cell_record(form_id: u32, editor_id: &str, x: i32, y: i32) -> ParsedRecord {
         let mut record = record("CELL", form_id, Some(editor_id));
         let mut grid = Vec::new();
@@ -6560,1202 +6588,1232 @@ mod tests {
         None
     }
 
-    /// Pins the COMPLETE roots payload (minus timing) on a
-    /// fixture covering cross-cell duplicate bases, LVLI expansion (nested),
-    /// XLKR keywords, XLYR layers, XCLR regions, XLCN locations, an
-    /// out-of-bounds cell, an XCLC-less cell warning, and the direct
-    /// persistent-cell skip, so any change in the parallel gather/serial replay
-    /// output fails.
     #[test]
-    fn collect_roots_full_payload_pinned() {
-        let world = record("WRLD", 0x0025DA15, Some("APPALACHIA"));
-        let persistent_cell = cell_record(0x00050B2C, "PersistentWorldCell", 0, 0);
-        let persistent_cell_children = ParsedItem::Group(ParsedGroup {
-            label: 0x00050B2C_u32.to_le_bytes(),
-            group_type: CELL_CHILD_GROUP,
-            tail: Bytes::new(),
-            children: vec![ParsedItem::Group(ParsedGroup {
+    fn collect_roots_cases() {
+        // collect_roots_full_payload_pinned
+        // Pins the COMPLETE roots payload (minus timing) on a
+        // fixture covering cross-cell duplicate bases, LVLI expansion (nested),
+        // XLKR keywords, XLYR layers, XCLR regions, XLCN locations, an
+        // out-of-bounds cell, an XCLC-less cell warning, and the direct
+        // persistent-cell skip, so any change in the parallel gather/serial replay
+        // output fails.
+        {
+            let world = record("WRLD", 0x0025DA15, Some("APPALACHIA"));
+            let persistent_cell = cell_record(0x00050B2C, "PersistentWorldCell", 0, 0);
+            let persistent_cell_children = ParsedItem::Group(ParsedGroup {
                 label: 0x00050B2C_u32.to_le_bytes(),
-                group_type: PERSISTENT_GROUP,
-                tail: Bytes::new(),
-                children: vec![ParsedItem::Record(record("REFR", 0x008CC335, None))],
-            })],
-        });
-
-        // Base/dependency records the locator must resolve.
-        let stat_a = record("STAT", 0x001A6663, Some("RockBaseA"));
-        let stat_b = record("STAT", 0x001A7777, Some("RockBaseB"));
-        let stat_lvl1 = record("STAT", 0x00610000, Some("LeveledStatA"));
-        let stat_lvl2 = record("STAT", 0x00620000, Some("LeveledStatB"));
-        let mut lvli_inner = record("LVLI", 0x00600001, Some("InnerLeveled"));
-        {
-            let mut lvlo = vec![0u8; 12];
-            lvlo[4..8].copy_from_slice(&0x00620000_u32.to_le_bytes());
-            lvli_inner.subrecords.push(subrecord("LVLO", lvlo));
-        }
-        let mut lvli_outer = record("LVLI", 0x00600000, Some("OuterLeveled"));
-        {
-            let mut lvlo = vec![0u8; 12];
-            lvlo[4..8].copy_from_slice(&0x00610000_u32.to_le_bytes());
-            lvli_outer.subrecords.push(subrecord("LVLO", lvlo));
-            let mut lvlo2 = vec![0u8; 12];
-            lvlo2[4..8].copy_from_slice(&0x00600001_u32.to_le_bytes());
-            lvli_outer.subrecords.push(subrecord("LVLO", lvlo2));
-        }
-        let keyword = record("KYWD", 0x001CA8D0, Some("LinkKeyword"));
-        let layer = record("LAYR", 0x00700000, Some("PlacementLayer"));
-        let region = record("REGN", 0x00400000, Some("CellRegion"));
-        let location = record("LCTN", 0x00410000, Some("CellLocation"));
-
-        // Three in-bounds cells at (0,0), (1,0), (0,1) with 30 placed each;
-        // one out-of-bounds cell at (9,9); one CELL without XCLC.
-        let mut subblock_children: Vec<ParsedItem> = Vec::new();
-        for (cell_index, grid) in [(0u32, (0, 0)), (1, (1, 0)), (2, (0, 1))] {
-            let cell_id = 0x00300000 + cell_index;
-            let mut cell = cell_record(cell_id, &format!("Ext{cell_index}"), grid.0, grid.1);
-            if cell_index == 0 {
-                cell.subrecords
-                    .push(subrecord("XCLR", 0x00400000_u32.to_le_bytes().to_vec()));
-            }
-            if cell_index == 1 {
-                cell.subrecords
-                    .push(subrecord("XLCN", 0x00410000_u32.to_le_bytes().to_vec()));
-            }
-            let mut placed_children: Vec<ParsedItem> = Vec::new();
-            for i in 0..30u32 {
-                let mut placed = record("REFR", 0x00500000 + cell_index * 0x100 + i, None);
-                let base_raw: u32 = match i % 5 {
-                    0 => 0x001A6663, // shared cross-cell base
-                    1 => 0x001A7777, // second shared base
-                    2 => 0x00600000, // LVLI base -> nested expansion
-                    3 => 0x00DEAD00, // missing base -> not collected
-                    _ => 0x001A6663, // duplicate again
-                };
-                placed
-                    .subrecords
-                    .push(subrecord("NAME", base_raw.to_le_bytes().to_vec()));
-                if i % 7 == 0 {
-                    let mut xlkr = Vec::new();
-                    xlkr.extend_from_slice(&0x001CA8D0_u32.to_le_bytes());
-                    xlkr.extend_from_slice(&(0x00500000_u32 + i).to_le_bytes());
-                    placed.subrecords.push(subrecord("XLKR", xlkr));
-                }
-                if i % 11 == 0 {
-                    placed
-                        .subrecords
-                        .push(subrecord("XLYR", 0x00700000_u32.to_le_bytes().to_vec()));
-                }
-                placed_children.push(ParsedItem::Record(placed));
-            }
-            // Split across persistent + temporary sections.
-            let persistent: Vec<ParsedItem> = placed_children.drain(0..10).collect();
-            let cell_children = ParsedItem::Group(ParsedGroup {
-                label: cell_id.to_le_bytes(),
                 group_type: CELL_CHILD_GROUP,
                 tail: Bytes::new(),
+                children: vec![ParsedItem::Group(ParsedGroup {
+                    label: 0x00050B2C_u32.to_le_bytes(),
+                    group_type: PERSISTENT_GROUP,
+                    tail: Bytes::new(),
+                    children: vec![ParsedItem::Record(record("REFR", 0x008CC335, None))],
+                })],
+            });
+
+            // Base/dependency records the locator must resolve.
+            let stat_a = record("STAT", 0x001A6663, Some("RockBaseA"));
+            let stat_b = record("STAT", 0x001A7777, Some("RockBaseB"));
+            let stat_lvl1 = record("STAT", 0x00610000, Some("LeveledStatA"));
+            let stat_lvl2 = record("STAT", 0x00620000, Some("LeveledStatB"));
+            let mut lvli_inner = record("LVLI", 0x00600001, Some("InnerLeveled"));
+            {
+                let mut lvlo = vec![0u8; 12];
+                lvlo[4..8].copy_from_slice(&0x00620000_u32.to_le_bytes());
+                lvli_inner.subrecords.push(subrecord("LVLO", lvlo));
+            }
+            let mut lvli_outer = record("LVLI", 0x00600000, Some("OuterLeveled"));
+            {
+                let mut lvlo = vec![0u8; 12];
+                lvlo[4..8].copy_from_slice(&0x00610000_u32.to_le_bytes());
+                lvli_outer.subrecords.push(subrecord("LVLO", lvlo));
+                let mut lvlo2 = vec![0u8; 12];
+                lvlo2[4..8].copy_from_slice(&0x00600001_u32.to_le_bytes());
+                lvli_outer.subrecords.push(subrecord("LVLO", lvlo2));
+            }
+            let keyword = record("KYWD", 0x001CA8D0, Some("LinkKeyword"));
+            let layer = record("LAYR", 0x00700000, Some("PlacementLayer"));
+            let region = record("REGN", 0x00400000, Some("CellRegion"));
+            let location = record("LCTN", 0x00410000, Some("CellLocation"));
+
+            // Three in-bounds cells at (0,0), (1,0), (0,1) with 30 placed each;
+            // one out-of-bounds cell at (9,9); one CELL without XCLC.
+            let mut subblock_children: Vec<ParsedItem> = Vec::new();
+            for (cell_index, grid) in [(0u32, (0, 0)), (1, (1, 0)), (2, (0, 1))] {
+                let cell_id = 0x00300000 + cell_index;
+                let mut cell = cell_record(cell_id, &format!("Ext{cell_index}"), grid.0, grid.1);
+                if cell_index == 0 {
+                    cell.subrecords
+                        .push(subrecord("XCLR", 0x00400000_u32.to_le_bytes().to_vec()));
+                }
+                if cell_index == 1 {
+                    cell.subrecords
+                        .push(subrecord("XLCN", 0x00410000_u32.to_le_bytes().to_vec()));
+                }
+                let mut placed_children: Vec<ParsedItem> = Vec::new();
+                for i in 0..30u32 {
+                    let mut placed = record("REFR", 0x00500000 + cell_index * 0x100 + i, None);
+                    let base_raw: u32 = match i % 5 {
+                        0 => 0x001A6663, // shared cross-cell base
+                        1 => 0x001A7777, // second shared base
+                        2 => 0x00600000, // LVLI base -> nested expansion
+                        3 => 0x00DEAD00, // missing base -> not collected
+                        _ => 0x001A6663, // duplicate again
+                    };
+                    placed
+                        .subrecords
+                        .push(subrecord("NAME", base_raw.to_le_bytes().to_vec()));
+                    if i % 7 == 0 {
+                        let mut xlkr = Vec::new();
+                        xlkr.extend_from_slice(&0x001CA8D0_u32.to_le_bytes());
+                        xlkr.extend_from_slice(&(0x00500000_u32 + i).to_le_bytes());
+                        placed.subrecords.push(subrecord("XLKR", xlkr));
+                    }
+                    if i % 11 == 0 {
+                        placed
+                            .subrecords
+                            .push(subrecord("XLYR", 0x00700000_u32.to_le_bytes().to_vec()));
+                    }
+                    placed_children.push(ParsedItem::Record(placed));
+                }
+                // Split across persistent + temporary sections.
+                let persistent: Vec<ParsedItem> = placed_children.drain(0..10).collect();
+                let cell_children = ParsedItem::Group(ParsedGroup {
+                    label: cell_id.to_le_bytes(),
+                    group_type: CELL_CHILD_GROUP,
+                    tail: Bytes::new(),
+                    children: vec![
+                        ParsedItem::Group(ParsedGroup {
+                            label: cell_id.to_le_bytes(),
+                            group_type: PERSISTENT_GROUP,
+                            tail: Bytes::new(),
+                            children: persistent,
+                        }),
+                        ParsedItem::Group(ParsedGroup {
+                            label: cell_id.to_le_bytes(),
+                            group_type: TEMPORARY_GROUP,
+                            tail: Bytes::new(),
+                            children: placed_children,
+                        }),
+                    ],
+                });
+                subblock_children.push(ParsedItem::Record(cell));
+                subblock_children.push(cell_children);
+            }
+            subblock_children.push(ParsedItem::Record(cell_record(0x00300009, "FarCell", 9, 9)));
+            subblock_children.push(ParsedItem::Record(record(
+                "CELL",
+                0x0030000A,
+                Some("NoGridCell"),
+            )));
+
+            let exterior_block = ParsedItem::Group(ParsedGroup {
+                label: [0, 0, 0, 0],
+                group_type: EXTERIOR_CELL_BLOCK,
+                tail: Bytes::new(),
+                children: vec![ParsedItem::Group(ParsedGroup {
+                    label: [0, 0, 0, 0],
+                    group_type: EXTERIOR_CELL_SUBBLOCK,
+                    tail: Bytes::new(),
+                    children: subblock_children,
+                })],
+            });
+            let world_children = ParsedItem::Group(ParsedGroup {
+                label: 0x0025DA15_u32.to_le_bytes(),
+                group_type: 1,
+                tail: Bytes::new(),
                 children: vec![
-                    ParsedItem::Group(ParsedGroup {
-                        label: cell_id.to_le_bytes(),
-                        group_type: PERSISTENT_GROUP,
-                        tail: Bytes::new(),
-                        children: persistent,
-                    }),
-                    ParsedItem::Group(ParsedGroup {
-                        label: cell_id.to_le_bytes(),
-                        group_type: TEMPORARY_GROUP,
-                        tail: Bytes::new(),
-                        children: placed_children,
-                    }),
+                    ParsedItem::Record(persistent_cell),
+                    persistent_cell_children,
+                    exterior_block,
                 ],
             });
-            subblock_children.push(ParsedItem::Record(cell));
-            subblock_children.push(cell_children);
+            let plugin = plugin(vec![
+                top_group("WRLD", vec![ParsedItem::Record(world), world_children]),
+                top_group(
+                    "STAT",
+                    vec![
+                        ParsedItem::Record(stat_a),
+                        ParsedItem::Record(stat_b),
+                        ParsedItem::Record(stat_lvl1),
+                        ParsedItem::Record(stat_lvl2),
+                    ],
+                ),
+                top_group(
+                    "LVLI",
+                    vec![
+                        ParsedItem::Record(lvli_outer),
+                        ParsedItem::Record(lvli_inner),
+                    ],
+                ),
+                top_group("KYWD", vec![ParsedItem::Record(keyword)]),
+                top_group("LAYR", vec![ParsedItem::Record(layer)]),
+                top_group("REGN", vec![ParsedItem::Record(region)]),
+                top_group("LCTN", vec![ParsedItem::Record(location)]),
+            ]);
+            let handle = insert_plugin_handle(plugin, LocalizedStringsState::default());
+            let payload_text = plugin_handle_collect_cell_slice_roots_json(
+                handle,
+                "APPALACHIA",
+                0,
+                0,
+                1,
+                1,
+                false,
+                None,
+            )
+            .expect("collect roots");
+            plugin_handle_close_native(handle);
+
+            let mut payload: JsonValue = serde_json::from_str(&payload_text).expect("json payload");
+            payload
+                .as_object_mut()
+                .expect("payload object")
+                .remove("timing");
+            let canonical = serde_json::to_string(&payload).expect("canonical payload");
+            let expected = r#"{"cell_form_keys":["SeventySix.esm:300000","SeventySix.esm:300001","SeventySix.esm:300002"],"placed_form_keys":["SeventySix.esm:500000","SeventySix.esm:500001","SeventySix.esm:500002","SeventySix.esm:500003","SeventySix.esm:500004","SeventySix.esm:500005","SeventySix.esm:500006","SeventySix.esm:500007","SeventySix.esm:500008","SeventySix.esm:500009","SeventySix.esm:50000A","SeventySix.esm:50000B","SeventySix.esm:50000C","SeventySix.esm:50000D","SeventySix.esm:50000E","SeventySix.esm:50000F","SeventySix.esm:500010","SeventySix.esm:500011","SeventySix.esm:500012","SeventySix.esm:500013","SeventySix.esm:500014","SeventySix.esm:500015","SeventySix.esm:500016","SeventySix.esm:500017","SeventySix.esm:500018","SeventySix.esm:500019","SeventySix.esm:50001A","SeventySix.esm:50001B","SeventySix.esm:50001C","SeventySix.esm:50001D","SeventySix.esm:500100","SeventySix.esm:500101","SeventySix.esm:500102","SeventySix.esm:500103","SeventySix.esm:500104","SeventySix.esm:500105","SeventySix.esm:500106","SeventySix.esm:500107","SeventySix.esm:500108","SeventySix.esm:500109","SeventySix.esm:50010A","SeventySix.esm:50010B","SeventySix.esm:50010C","SeventySix.esm:50010D","SeventySix.esm:50010E","SeventySix.esm:50010F","SeventySix.esm:500110","SeventySix.esm:500111","SeventySix.esm:500112","SeventySix.esm:500113","SeventySix.esm:500114","SeventySix.esm:500115","SeventySix.esm:500116","SeventySix.esm:500117","SeventySix.esm:500118","SeventySix.esm:500119","SeventySix.esm:50011A","SeventySix.esm:50011B","SeventySix.esm:50011C","SeventySix.esm:50011D","SeventySix.esm:500200","SeventySix.esm:500201","SeventySix.esm:500202","SeventySix.esm:500203","SeventySix.esm:500204","SeventySix.esm:500205","SeventySix.esm:500206","SeventySix.esm:500207","SeventySix.esm:500208","SeventySix.esm:500209","SeventySix.esm:50020A","SeventySix.esm:50020B","SeventySix.esm:50020C","SeventySix.esm:50020D","SeventySix.esm:50020E","SeventySix.esm:50020F","SeventySix.esm:500210","SeventySix.esm:500211","SeventySix.esm:500212","SeventySix.esm:500213","SeventySix.esm:500214","SeventySix.esm:500215","SeventySix.esm:500216","SeventySix.esm:500217","SeventySix.esm:500218","SeventySix.esm:500219","SeventySix.esm:50021A","SeventySix.esm:50021B","SeventySix.esm:50021C","SeventySix.esm:50021D"],"static_base_form_keys":["SeventySix.esm:1A6663","SeventySix.esm:1A7777","SeventySix.esm:600000"],"leveled_base_entry_form_keys":["SeventySix.esm:610000","SeventySix.esm:600001","SeventySix.esm:620000"],"linked_ref_keyword_form_keys":["SeventySix.esm:1CA8D0"],"layer_form_keys":["SeventySix.esm:700000"],"location_form_keys":["SeventySix.esm:410000"],"location_data_form_keys":[],"region_form_keys":["SeventySix.esm:400000"],"region_data_form_keys":[],"audio_data_form_keys":[],"worldspace_form_keys":["SeventySix.esm:25DA15"],"worldspace_data_form_keys":[],"cell_children":{"SeventySix.esm:300000":{"Persistent":["SeventySix.esm:500000","SeventySix.esm:500001","SeventySix.esm:500002","SeventySix.esm:500003","SeventySix.esm:500004","SeventySix.esm:500005","SeventySix.esm:500006","SeventySix.esm:500007","SeventySix.esm:500008","SeventySix.esm:500009"],"Temporary":["SeventySix.esm:50000A","SeventySix.esm:50000B","SeventySix.esm:50000C","SeventySix.esm:50000D","SeventySix.esm:50000E","SeventySix.esm:50000F","SeventySix.esm:500010","SeventySix.esm:500011","SeventySix.esm:500012","SeventySix.esm:500013","SeventySix.esm:500014","SeventySix.esm:500015","SeventySix.esm:500016","SeventySix.esm:500017","SeventySix.esm:500018","SeventySix.esm:500019","SeventySix.esm:50001A","SeventySix.esm:50001B","SeventySix.esm:50001C","SeventySix.esm:50001D"]},"SeventySix.esm:300001":{"Persistent":["SeventySix.esm:500100","SeventySix.esm:500101","SeventySix.esm:500102","SeventySix.esm:500103","SeventySix.esm:500104","SeventySix.esm:500105","SeventySix.esm:500106","SeventySix.esm:500107","SeventySix.esm:500108","SeventySix.esm:500109"],"Temporary":["SeventySix.esm:50010A","SeventySix.esm:50010B","SeventySix.esm:50010C","SeventySix.esm:50010D","SeventySix.esm:50010E","SeventySix.esm:50010F","SeventySix.esm:500110","SeventySix.esm:500111","SeventySix.esm:500112","SeventySix.esm:500113","SeventySix.esm:500114","SeventySix.esm:500115","SeventySix.esm:500116","SeventySix.esm:500117","SeventySix.esm:500118","SeventySix.esm:500119","SeventySix.esm:50011A","SeventySix.esm:50011B","SeventySix.esm:50011C","SeventySix.esm:50011D"]},"SeventySix.esm:300002":{"Persistent":["SeventySix.esm:500200","SeventySix.esm:500201","SeventySix.esm:500202","SeventySix.esm:500203","SeventySix.esm:500204","SeventySix.esm:500205","SeventySix.esm:500206","SeventySix.esm:500207","SeventySix.esm:500208","SeventySix.esm:500209"],"Temporary":["SeventySix.esm:50020A","SeventySix.esm:50020B","SeventySix.esm:50020C","SeventySix.esm:50020D","SeventySix.esm:50020E","SeventySix.esm:50020F","SeventySix.esm:500210","SeventySix.esm:500211","SeventySix.esm:500212","SeventySix.esm:500213","SeventySix.esm:500214","SeventySix.esm:500215","SeventySix.esm:500216","SeventySix.esm:500217","SeventySix.esm:500218","SeventySix.esm:500219","SeventySix.esm:50021A","SeventySix.esm:50021B","SeventySix.esm:50021C","SeventySix.esm:50021D"]}},"cell_grids":{"SeventySix.esm:300000":{"x":0,"y":0},"SeventySix.esm:300001":{"x":1,"y":0},"SeventySix.esm:300002":{"x":0,"y":1}},"warnings":["CELL without XCLC skipped: SeventySix.esm:30000A"]}"#;
+            assert_eq!(canonical, expected, "pinned roots payload changed");
+
         }
-        subblock_children.push(ParsedItem::Record(cell_record(0x00300009, "FarCell", 9, 9)));
-        subblock_children.push(ParsedItem::Record(record(
-            "CELL",
-            0x0030000A,
-            Some("NoGridCell"),
-        )));
-
-        let exterior_block = ParsedItem::Group(ParsedGroup {
-            label: [0, 0, 0, 0],
-            group_type: EXTERIOR_CELL_BLOCK,
-            tail: Bytes::new(),
-            children: vec![ParsedItem::Group(ParsedGroup {
-                label: [0, 0, 0, 0],
-                group_type: EXTERIOR_CELL_SUBBLOCK,
-                tail: Bytes::new(),
-                children: subblock_children,
-            })],
-        });
-        let world_children = ParsedItem::Group(ParsedGroup {
-            label: 0x0025DA15_u32.to_le_bytes(),
-            group_type: 1,
-            tail: Bytes::new(),
-            children: vec![
-                ParsedItem::Record(persistent_cell),
-                persistent_cell_children,
-                exterior_block,
-            ],
-        });
-        let plugin = plugin(vec![
-            top_group("WRLD", vec![ParsedItem::Record(world), world_children]),
-            top_group(
-                "STAT",
-                vec![
-                    ParsedItem::Record(stat_a),
-                    ParsedItem::Record(stat_b),
-                    ParsedItem::Record(stat_lvl1),
-                    ParsedItem::Record(stat_lvl2),
-                ],
-            ),
-            top_group(
-                "LVLI",
-                vec![
-                    ParsedItem::Record(lvli_outer),
-                    ParsedItem::Record(lvli_inner),
-                ],
-            ),
-            top_group("KYWD", vec![ParsedItem::Record(keyword)]),
-            top_group("LAYR", vec![ParsedItem::Record(layer)]),
-            top_group("REGN", vec![ParsedItem::Record(region)]),
-            top_group("LCTN", vec![ParsedItem::Record(location)]),
-        ]);
-        let handle = insert_plugin_handle(plugin, LocalizedStringsState::default());
-        let payload_text = plugin_handle_collect_cell_slice_roots_json(
-            handle,
-            "APPALACHIA",
-            0,
-            0,
-            1,
-            1,
-            false,
-            None,
-        )
-        .expect("collect roots");
-        plugin_handle_close_native(handle);
-
-        let mut payload: JsonValue = serde_json::from_str(&payload_text).expect("json payload");
-        payload
-            .as_object_mut()
-            .expect("payload object")
-            .remove("timing");
-        let canonical = serde_json::to_string(&payload).expect("canonical payload");
-        let expected = r#"{"cell_form_keys":["SeventySix.esm:300000","SeventySix.esm:300001","SeventySix.esm:300002"],"placed_form_keys":["SeventySix.esm:500000","SeventySix.esm:500001","SeventySix.esm:500002","SeventySix.esm:500003","SeventySix.esm:500004","SeventySix.esm:500005","SeventySix.esm:500006","SeventySix.esm:500007","SeventySix.esm:500008","SeventySix.esm:500009","SeventySix.esm:50000A","SeventySix.esm:50000B","SeventySix.esm:50000C","SeventySix.esm:50000D","SeventySix.esm:50000E","SeventySix.esm:50000F","SeventySix.esm:500010","SeventySix.esm:500011","SeventySix.esm:500012","SeventySix.esm:500013","SeventySix.esm:500014","SeventySix.esm:500015","SeventySix.esm:500016","SeventySix.esm:500017","SeventySix.esm:500018","SeventySix.esm:500019","SeventySix.esm:50001A","SeventySix.esm:50001B","SeventySix.esm:50001C","SeventySix.esm:50001D","SeventySix.esm:500100","SeventySix.esm:500101","SeventySix.esm:500102","SeventySix.esm:500103","SeventySix.esm:500104","SeventySix.esm:500105","SeventySix.esm:500106","SeventySix.esm:500107","SeventySix.esm:500108","SeventySix.esm:500109","SeventySix.esm:50010A","SeventySix.esm:50010B","SeventySix.esm:50010C","SeventySix.esm:50010D","SeventySix.esm:50010E","SeventySix.esm:50010F","SeventySix.esm:500110","SeventySix.esm:500111","SeventySix.esm:500112","SeventySix.esm:500113","SeventySix.esm:500114","SeventySix.esm:500115","SeventySix.esm:500116","SeventySix.esm:500117","SeventySix.esm:500118","SeventySix.esm:500119","SeventySix.esm:50011A","SeventySix.esm:50011B","SeventySix.esm:50011C","SeventySix.esm:50011D","SeventySix.esm:500200","SeventySix.esm:500201","SeventySix.esm:500202","SeventySix.esm:500203","SeventySix.esm:500204","SeventySix.esm:500205","SeventySix.esm:500206","SeventySix.esm:500207","SeventySix.esm:500208","SeventySix.esm:500209","SeventySix.esm:50020A","SeventySix.esm:50020B","SeventySix.esm:50020C","SeventySix.esm:50020D","SeventySix.esm:50020E","SeventySix.esm:50020F","SeventySix.esm:500210","SeventySix.esm:500211","SeventySix.esm:500212","SeventySix.esm:500213","SeventySix.esm:500214","SeventySix.esm:500215","SeventySix.esm:500216","SeventySix.esm:500217","SeventySix.esm:500218","SeventySix.esm:500219","SeventySix.esm:50021A","SeventySix.esm:50021B","SeventySix.esm:50021C","SeventySix.esm:50021D"],"static_base_form_keys":["SeventySix.esm:1A6663","SeventySix.esm:1A7777","SeventySix.esm:600000"],"leveled_base_entry_form_keys":["SeventySix.esm:610000","SeventySix.esm:600001","SeventySix.esm:620000"],"linked_ref_keyword_form_keys":["SeventySix.esm:1CA8D0"],"layer_form_keys":["SeventySix.esm:700000"],"location_form_keys":["SeventySix.esm:410000"],"location_data_form_keys":[],"region_form_keys":["SeventySix.esm:400000"],"region_data_form_keys":[],"audio_data_form_keys":[],"worldspace_form_keys":["SeventySix.esm:25DA15"],"worldspace_data_form_keys":[],"cell_children":{"SeventySix.esm:300000":{"Persistent":["SeventySix.esm:500000","SeventySix.esm:500001","SeventySix.esm:500002","SeventySix.esm:500003","SeventySix.esm:500004","SeventySix.esm:500005","SeventySix.esm:500006","SeventySix.esm:500007","SeventySix.esm:500008","SeventySix.esm:500009"],"Temporary":["SeventySix.esm:50000A","SeventySix.esm:50000B","SeventySix.esm:50000C","SeventySix.esm:50000D","SeventySix.esm:50000E","SeventySix.esm:50000F","SeventySix.esm:500010","SeventySix.esm:500011","SeventySix.esm:500012","SeventySix.esm:500013","SeventySix.esm:500014","SeventySix.esm:500015","SeventySix.esm:500016","SeventySix.esm:500017","SeventySix.esm:500018","SeventySix.esm:500019","SeventySix.esm:50001A","SeventySix.esm:50001B","SeventySix.esm:50001C","SeventySix.esm:50001D"]},"SeventySix.esm:300001":{"Persistent":["SeventySix.esm:500100","SeventySix.esm:500101","SeventySix.esm:500102","SeventySix.esm:500103","SeventySix.esm:500104","SeventySix.esm:500105","SeventySix.esm:500106","SeventySix.esm:500107","SeventySix.esm:500108","SeventySix.esm:500109"],"Temporary":["SeventySix.esm:50010A","SeventySix.esm:50010B","SeventySix.esm:50010C","SeventySix.esm:50010D","SeventySix.esm:50010E","SeventySix.esm:50010F","SeventySix.esm:500110","SeventySix.esm:500111","SeventySix.esm:500112","SeventySix.esm:500113","SeventySix.esm:500114","SeventySix.esm:500115","SeventySix.esm:500116","SeventySix.esm:500117","SeventySix.esm:500118","SeventySix.esm:500119","SeventySix.esm:50011A","SeventySix.esm:50011B","SeventySix.esm:50011C","SeventySix.esm:50011D"]},"SeventySix.esm:300002":{"Persistent":["SeventySix.esm:500200","SeventySix.esm:500201","SeventySix.esm:500202","SeventySix.esm:500203","SeventySix.esm:500204","SeventySix.esm:500205","SeventySix.esm:500206","SeventySix.esm:500207","SeventySix.esm:500208","SeventySix.esm:500209"],"Temporary":["SeventySix.esm:50020A","SeventySix.esm:50020B","SeventySix.esm:50020C","SeventySix.esm:50020D","SeventySix.esm:50020E","SeventySix.esm:50020F","SeventySix.esm:500210","SeventySix.esm:500211","SeventySix.esm:500212","SeventySix.esm:500213","SeventySix.esm:500214","SeventySix.esm:500215","SeventySix.esm:500216","SeventySix.esm:500217","SeventySix.esm:500218","SeventySix.esm:500219","SeventySix.esm:50021A","SeventySix.esm:50021B","SeventySix.esm:50021C","SeventySix.esm:50021D"]}},"cell_grids":{"SeventySix.esm:300000":{"x":0,"y":0},"SeventySix.esm:300001":{"x":1,"y":0},"SeventySix.esm:300002":{"x":0,"y":1}},"warnings":["CELL without XCLC skipped: SeventySix.esm:30000A"]}"#;
-        assert_eq!(canonical, expected, "pinned roots payload changed");
-    }
-
-    #[test]
-    fn collect_roots_skips_direct_persistent_cell_for_bounded_slice() {
-        let world = record("WRLD", 0x0025DA15, Some("APPALACHIA"));
-        let persistent_cell = cell_record(0x00050B2C, "PersistentWorldCell", 0, 0);
-        let persistent_ref = record("REFR", 0x008CC335, None);
-        let exterior_cell = cell_record(0x002628FE, "OriginExt", 0, 0);
-        let temp_ref = record("REFR", 0x004EA534, None);
-        let persistent_cell_children = ParsedItem::Group(ParsedGroup {
-            label: 0x00050B2C_u32.to_le_bytes(),
-            group_type: CELL_CHILD_GROUP,
-            tail: Bytes::new(),
-            children: vec![ParsedItem::Group(ParsedGroup {
+        // collect_roots_skips_direct_persistent_cell_for_bounded_slice
+        {
+            let world = record("WRLD", 0x0025DA15, Some("APPALACHIA"));
+            let persistent_cell = cell_record(0x00050B2C, "PersistentWorldCell", 0, 0);
+            let persistent_ref = record("REFR", 0x008CC335, None);
+            let exterior_cell = cell_record(0x002628FE, "OriginExt", 0, 0);
+            let temp_ref = record("REFR", 0x004EA534, None);
+            let persistent_cell_children = ParsedItem::Group(ParsedGroup {
                 label: 0x00050B2C_u32.to_le_bytes(),
-                group_type: PERSISTENT_GROUP,
+                group_type: CELL_CHILD_GROUP,
                 tail: Bytes::new(),
-                children: vec![ParsedItem::Record(persistent_ref)],
-            })],
-        });
-        let exterior_cell_children = ParsedItem::Group(ParsedGroup {
-            label: 0x002628FE_u32.to_le_bytes(),
-            group_type: CELL_CHILD_GROUP,
-            tail: Bytes::new(),
-            children: vec![ParsedItem::Group(ParsedGroup {
+                children: vec![ParsedItem::Group(ParsedGroup {
+                    label: 0x00050B2C_u32.to_le_bytes(),
+                    group_type: PERSISTENT_GROUP,
+                    tail: Bytes::new(),
+                    children: vec![ParsedItem::Record(persistent_ref)],
+                })],
+            });
+            let exterior_cell_children = ParsedItem::Group(ParsedGroup {
                 label: 0x002628FE_u32.to_le_bytes(),
-                group_type: TEMPORARY_GROUP,
+                group_type: CELL_CHILD_GROUP,
                 tail: Bytes::new(),
-                children: vec![ParsedItem::Record(temp_ref)],
-            })],
-        });
-        let exterior_block = ParsedItem::Group(ParsedGroup {
-            label: [0, 0, 0, 0],
-            group_type: EXTERIOR_CELL_BLOCK,
-            tail: Bytes::new(),
-            children: vec![ParsedItem::Group(ParsedGroup {
+                children: vec![ParsedItem::Group(ParsedGroup {
+                    label: 0x002628FE_u32.to_le_bytes(),
+                    group_type: TEMPORARY_GROUP,
+                    tail: Bytes::new(),
+                    children: vec![ParsedItem::Record(temp_ref)],
+                })],
+            });
+            let exterior_block = ParsedItem::Group(ParsedGroup {
                 label: [0, 0, 0, 0],
-                group_type: EXTERIOR_CELL_SUBBLOCK,
+                group_type: EXTERIOR_CELL_BLOCK,
                 tail: Bytes::new(),
-                children: vec![ParsedItem::Record(exterior_cell), exterior_cell_children],
-            })],
-        });
-        let world_children = ParsedItem::Group(ParsedGroup {
-            label: 0x0025DA15_u32.to_le_bytes(),
-            group_type: 1,
-            tail: Bytes::new(),
-            children: vec![
-                ParsedItem::Record(persistent_cell),
-                persistent_cell_children,
-                exterior_block,
-            ],
-        });
-        let plugin = plugin(vec![top_group(
-            "WRLD",
-            vec![ParsedItem::Record(world), world_children],
-        )]);
-        let handle = insert_plugin_handle(plugin, LocalizedStringsState::default());
-        let payload_text = plugin_handle_collect_cell_slice_roots_json(
-            handle,
-            "APPALACHIA",
-            0,
-            0,
-            0,
-            0,
-            false,
-            None,
-        )
-        .expect("collect roots");
-        plugin_handle_close_native(handle);
-        let payload: JsonValue = serde_json::from_str(&payload_text).expect("json payload");
-
-        assert_eq!(
-            payload["cell_form_keys"],
-            serde_json::json!(["SeventySix.esm:2628FE"])
-        );
-        assert_eq!(
-            payload["placed_form_keys"],
-            serde_json::json!(["SeventySix.esm:4EA534"])
-        );
-        assert_eq!(
-            payload["cell_children"]["SeventySix.esm:2628FE"]["Temporary"],
-            serde_json::json!(["SeventySix.esm:4EA534"])
-        );
-    }
-
-    #[test]
-    fn collect_roots_recurses_nested_section_groups_and_ignores_navmesh() {
-        let world = record("WRLD", 0x0025DA15, Some("APPALACHIA"));
-        let exterior_cell = cell_record(0x002628FE, "OriginExt", 0, 0);
-        let static_base = record("STAT", 0x001A6663, Some("RockBase"));
-        let linked_keyword = record("KYWD", 0x001C_A8D0, Some("DMP_Sandbox_Prim_SkipLoad"));
-        let linked_keyword2 = record("KYWD", 0x0019_EDDA, Some("AnimFurnCoupleHolding"));
-        let mut nested_ref = record("REFR", 0x004EA534, None);
-        nested_ref
-            .subrecords
-            .push(subrecord("NAME", 0x001A6663_u32.to_le_bytes().to_vec()));
-        let mut xlkr = Vec::new();
-        xlkr.extend_from_slice(&0x001C_A8D0_u32.to_le_bytes());
-        xlkr.extend_from_slice(&0x004EA535_u32.to_le_bytes());
-        nested_ref.subrecords.push(subrecord("XLKR", xlkr));
-        let mut xlkr2 = Vec::new();
-        xlkr2.extend_from_slice(&0x0019_EDDA_u32.to_le_bytes());
-        xlkr2.extend_from_slice(&0x004EA536_u32.to_le_bytes());
-        nested_ref.subrecords.push(subrecord("XLKR", xlkr2));
-        let navmesh = record("NAVM", 0x0047129C, None);
-        let exterior_cell_children = ParsedItem::Group(ParsedGroup {
-            label: 0x002628FE_u32.to_le_bytes(),
-            group_type: CELL_CHILD_GROUP,
-            tail: Bytes::new(),
-            children: vec![ParsedItem::Group(ParsedGroup {
-                label: 0x002628FE_u32.to_le_bytes(),
-                group_type: TEMPORARY_GROUP,
+                children: vec![ParsedItem::Group(ParsedGroup {
+                    label: [0, 0, 0, 0],
+                    group_type: EXTERIOR_CELL_SUBBLOCK,
+                    tail: Bytes::new(),
+                    children: vec![ParsedItem::Record(exterior_cell), exterior_cell_children],
+                })],
+            });
+            let world_children = ParsedItem::Group(ParsedGroup {
+                label: 0x0025DA15_u32.to_le_bytes(),
+                group_type: 1,
                 tail: Bytes::new(),
                 children: vec![
-                    ParsedItem::Record(navmesh),
-                    ParsedItem::Group(ParsedGroup {
-                        label: [0, 0, 0, 0],
-                        group_type: EXTERIOR_CELL_SUBBLOCK,
-                        tail: Bytes::new(),
-                        children: vec![ParsedItem::Record(nested_ref)],
-                    }),
+                    ParsedItem::Record(persistent_cell),
+                    persistent_cell_children,
+                    exterior_block,
                 ],
-            })],
-        });
-        let exterior_block = ParsedItem::Group(ParsedGroup {
-            label: [0, 0, 0, 0],
-            group_type: EXTERIOR_CELL_BLOCK,
-            tail: Bytes::new(),
-            children: vec![ParsedItem::Group(ParsedGroup {
-                label: [0, 0, 0, 0],
-                group_type: EXTERIOR_CELL_SUBBLOCK,
+            });
+            let plugin = plugin(vec![top_group(
+                "WRLD",
+                vec![ParsedItem::Record(world), world_children],
+            )]);
+            let handle = insert_plugin_handle(plugin, LocalizedStringsState::default());
+            let payload_text = plugin_handle_collect_cell_slice_roots_json(
+                handle,
+                "APPALACHIA",
+                0,
+                0,
+                0,
+                0,
+                false,
+                None,
+            )
+            .expect("collect roots");
+            plugin_handle_close_native(handle);
+            let payload: JsonValue = serde_json::from_str(&payload_text).expect("json payload");
+
+            assert_eq!(
+                payload["cell_form_keys"],
+                serde_json::json!(["SeventySix.esm:2628FE"])
+            );
+            assert_eq!(
+                payload["placed_form_keys"],
+                serde_json::json!(["SeventySix.esm:4EA534"])
+            );
+            assert_eq!(
+                payload["cell_children"]["SeventySix.esm:2628FE"]["Temporary"],
+                serde_json::json!(["SeventySix.esm:4EA534"])
+            );
+
+        }
+        // collect_roots_recurses_nested_section_groups_and_ignores_navmesh
+        {
+            let world = record("WRLD", 0x0025DA15, Some("APPALACHIA"));
+            let exterior_cell = cell_record(0x002628FE, "OriginExt", 0, 0);
+            let static_base = record("STAT", 0x001A6663, Some("RockBase"));
+            let linked_keyword = record("KYWD", 0x001C_A8D0, Some("DMP_Sandbox_Prim_SkipLoad"));
+            let linked_keyword2 = record("KYWD", 0x0019_EDDA, Some("AnimFurnCoupleHolding"));
+            let mut nested_ref = record("REFR", 0x004EA534, None);
+            nested_ref
+                .subrecords
+                .push(subrecord("NAME", 0x001A6663_u32.to_le_bytes().to_vec()));
+            let mut xlkr = Vec::new();
+            xlkr.extend_from_slice(&0x001C_A8D0_u32.to_le_bytes());
+            xlkr.extend_from_slice(&0x004EA535_u32.to_le_bytes());
+            nested_ref.subrecords.push(subrecord("XLKR", xlkr));
+            let mut xlkr2 = Vec::new();
+            xlkr2.extend_from_slice(&0x0019_EDDA_u32.to_le_bytes());
+            xlkr2.extend_from_slice(&0x004EA536_u32.to_le_bytes());
+            nested_ref.subrecords.push(subrecord("XLKR", xlkr2));
+            let navmesh = record("NAVM", 0x0047129C, None);
+            let exterior_cell_children = ParsedItem::Group(ParsedGroup {
+                label: 0x002628FE_u32.to_le_bytes(),
+                group_type: CELL_CHILD_GROUP,
                 tail: Bytes::new(),
-                children: vec![ParsedItem::Record(exterior_cell), exterior_cell_children],
-            })],
-        });
-        let world_children = ParsedItem::Group(ParsedGroup {
-            label: 0x0025DA15_u32.to_le_bytes(),
-            group_type: 1,
-            tail: Bytes::new(),
-            children: vec![exterior_block],
-        });
-        let plugin = plugin(vec![
-            top_group("STAT", vec![ParsedItem::Record(static_base)]),
-            top_group(
-                "KYWD",
-                vec![
-                    ParsedItem::Record(linked_keyword),
-                    ParsedItem::Record(linked_keyword2),
-                ],
-            ),
-            top_group("WRLD", vec![ParsedItem::Record(world), world_children]),
-        ]);
-        let handle = insert_plugin_handle(plugin, LocalizedStringsState::default());
-        let payload_text = plugin_handle_collect_cell_slice_roots_json(
-            handle,
-            "APPALACHIA",
-            0,
-            0,
-            0,
-            0,
-            false,
-            None,
-        )
-        .expect("collect roots");
-        plugin_handle_close_native(handle);
-        let payload: JsonValue = serde_json::from_str(&payload_text).expect("json payload");
+                children: vec![ParsedItem::Group(ParsedGroup {
+                    label: 0x002628FE_u32.to_le_bytes(),
+                    group_type: TEMPORARY_GROUP,
+                    tail: Bytes::new(),
+                    children: vec![
+                        ParsedItem::Record(navmesh),
+                        ParsedItem::Group(ParsedGroup {
+                            label: [0, 0, 0, 0],
+                            group_type: EXTERIOR_CELL_SUBBLOCK,
+                            tail: Bytes::new(),
+                            children: vec![ParsedItem::Record(nested_ref)],
+                        }),
+                    ],
+                })],
+            });
+            let exterior_block = ParsedItem::Group(ParsedGroup {
+                label: [0, 0, 0, 0],
+                group_type: EXTERIOR_CELL_BLOCK,
+                tail: Bytes::new(),
+                children: vec![ParsedItem::Group(ParsedGroup {
+                    label: [0, 0, 0, 0],
+                    group_type: EXTERIOR_CELL_SUBBLOCK,
+                    tail: Bytes::new(),
+                    children: vec![ParsedItem::Record(exterior_cell), exterior_cell_children],
+                })],
+            });
+            let world_children = ParsedItem::Group(ParsedGroup {
+                label: 0x0025DA15_u32.to_le_bytes(),
+                group_type: 1,
+                tail: Bytes::new(),
+                children: vec![exterior_block],
+            });
+            let plugin = plugin(vec![
+                top_group("STAT", vec![ParsedItem::Record(static_base)]),
+                top_group(
+                    "KYWD",
+                    vec![
+                        ParsedItem::Record(linked_keyword),
+                        ParsedItem::Record(linked_keyword2),
+                    ],
+                ),
+                top_group("WRLD", vec![ParsedItem::Record(world), world_children]),
+            ]);
+            let handle = insert_plugin_handle(plugin, LocalizedStringsState::default());
+            let payload_text = plugin_handle_collect_cell_slice_roots_json(
+                handle,
+                "APPALACHIA",
+                0,
+                0,
+                0,
+                0,
+                false,
+                None,
+            )
+            .expect("collect roots");
+            plugin_handle_close_native(handle);
+            let payload: JsonValue = serde_json::from_str(&payload_text).expect("json payload");
 
-        assert_eq!(
-            payload["placed_form_keys"],
-            serde_json::json!(["SeventySix.esm:4EA534"])
-        );
-        assert_eq!(
-            payload["static_base_form_keys"],
-            serde_json::json!(["SeventySix.esm:1A6663"])
-        );
-        assert_eq!(
-            payload["linked_ref_keyword_form_keys"],
-            serde_json::json!(["SeventySix.esm:1CA8D0", "SeventySix.esm:19EDDA"])
-        );
-        assert_eq!(
-            payload["cell_children"]["SeventySix.esm:2628FE"]["Temporary"],
-            serde_json::json!(["SeventySix.esm:4EA534"])
-        );
-    }
+            assert_eq!(
+                payload["placed_form_keys"],
+                serde_json::json!(["SeventySix.esm:4EA534"])
+            );
+            assert_eq!(
+                payload["static_base_form_keys"],
+                serde_json::json!(["SeventySix.esm:1A6663"])
+            );
+            assert_eq!(
+                payload["linked_ref_keyword_form_keys"],
+                serde_json::json!(["SeventySix.esm:1CA8D0", "SeventySix.esm:19EDDA"])
+            );
+            assert_eq!(
+                payload["cell_children"]["SeventySix.esm:2628FE"]["Temporary"],
+                serde_json::json!(["SeventySix.esm:4EA534"])
+            );
 
-    #[test]
-    fn collect_roots_includes_region_payload_dependencies() {
-        let region_id: u32 = 0x001746B;
-        let music_id: u32 = 0x0010001;
-        let weather_id: u32 = 0x0010002;
-        let global_id: u32 = 0x0010003;
-        let sound_id: u32 = 0x0010004;
-        let grass_id: u32 = 0x0010005;
+        }
+        // collect_roots_includes_region_payload_dependencies
+        {
+            let region_id: u32 = 0x001746B;
+            let music_id: u32 = 0x0010001;
+            let weather_id: u32 = 0x0010002;
+            let global_id: u32 = 0x0010003;
+            let sound_id: u32 = 0x0010004;
+            let grass_id: u32 = 0x0010005;
 
-        let mut exterior_cell = cell_record(0x002628FE, "OriginExt", 0, 0);
-        exterior_cell
-            .subrecords
-            .push(subrecord("XCLR", region_id.to_le_bytes().to_vec()));
+            let mut exterior_cell = cell_record(0x002628FE, "OriginExt", 0, 0);
+            exterior_cell
+                .subrecords
+                .push(subrecord("XCLR", region_id.to_le_bytes().to_vec()));
 
-        let mut region = record("REGN", region_id, Some("RegionOrigin"));
-        region
-            .subrecords
-            .push(subrecord("RDMO", music_id.to_le_bytes().to_vec()));
-        let mut rdwt = Vec::new();
-        rdwt.extend_from_slice(&weather_id.to_le_bytes());
-        rdwt.extend_from_slice(&50u32.to_le_bytes());
-        rdwt.extend_from_slice(&global_id.to_le_bytes());
-        region.subrecords.push(subrecord("RDWT", rdwt));
-        let mut rdsa = Vec::new();
-        rdsa.extend_from_slice(&sound_id.to_le_bytes());
-        rdsa.extend_from_slice(&100u32.to_le_bytes());
-        rdsa.extend_from_slice(&0u32.to_le_bytes());
-        region.subrecords.push(subrecord("RDSA", rdsa));
-        let mut rdgs = Vec::new();
-        rdgs.extend_from_slice(&grass_id.to_le_bytes());
-        rdgs.extend_from_slice(&100u32.to_le_bytes());
-        region.subrecords.push(subrecord("RDGS", rdgs));
+            let mut region = record("REGN", region_id, Some("RegionOrigin"));
+            region
+                .subrecords
+                .push(subrecord("RDMO", music_id.to_le_bytes().to_vec()));
+            let mut rdwt = Vec::new();
+            rdwt.extend_from_slice(&weather_id.to_le_bytes());
+            rdwt.extend_from_slice(&50u32.to_le_bytes());
+            rdwt.extend_from_slice(&global_id.to_le_bytes());
+            region.subrecords.push(subrecord("RDWT", rdwt));
+            let mut rdsa = Vec::new();
+            rdsa.extend_from_slice(&sound_id.to_le_bytes());
+            rdsa.extend_from_slice(&100u32.to_le_bytes());
+            rdsa.extend_from_slice(&0u32.to_le_bytes());
+            region.subrecords.push(subrecord("RDSA", rdsa));
+            let mut rdgs = Vec::new();
+            rdgs.extend_from_slice(&grass_id.to_le_bytes());
+            rdgs.extend_from_slice(&100u32.to_le_bytes());
+            region.subrecords.push(subrecord("RDGS", rdgs));
 
-        let mut root_items = projected_world_with_cell(0x0025DA15, exterior_cell);
-        root_items.extend([
-            top_group("REGN", vec![ParsedItem::Record(region)]),
-            top_group(
-                "MUSC",
-                vec![ParsedItem::Record(record("MUSC", music_id, None))],
-            ),
-            top_group(
-                "WTHR",
-                vec![ParsedItem::Record(record("WTHR", weather_id, None))],
-            ),
-            top_group(
-                "GLOB",
-                vec![ParsedItem::Record(record("GLOB", global_id, None))],
-            ),
-            top_group(
-                "SNDR",
-                vec![ParsedItem::Record(record("SNDR", sound_id, None))],
-            ),
-            top_group(
-                "GRAS",
-                vec![ParsedItem::Record(record("GRAS", grass_id, None))],
-            ),
-        ]);
-        let plugin = plugin(root_items);
-        let handle = insert_plugin_handle(plugin, LocalizedStringsState::default());
-        let payload_text = plugin_handle_collect_cell_slice_roots_json(
-            handle,
-            "APPALACHIA",
-            0,
-            0,
-            0,
-            0,
-            false,
-            None,
-        )
-        .expect("collect roots");
-        plugin_handle_close_native(handle);
-        let payload: JsonValue = serde_json::from_str(&payload_text).expect("json payload");
+            let mut root_items = projected_world_with_cell(0x0025DA15, exterior_cell);
+            root_items.extend([
+                top_group("REGN", vec![ParsedItem::Record(region)]),
+                top_group(
+                    "MUSC",
+                    vec![ParsedItem::Record(record("MUSC", music_id, None))],
+                ),
+                top_group(
+                    "WTHR",
+                    vec![ParsedItem::Record(record("WTHR", weather_id, None))],
+                ),
+                top_group(
+                    "GLOB",
+                    vec![ParsedItem::Record(record("GLOB", global_id, None))],
+                ),
+                top_group(
+                    "SNDR",
+                    vec![ParsedItem::Record(record("SNDR", sound_id, None))],
+                ),
+                top_group(
+                    "GRAS",
+                    vec![ParsedItem::Record(record("GRAS", grass_id, None))],
+                ),
+            ]);
+            let plugin = plugin(root_items);
+            let handle = insert_plugin_handle(plugin, LocalizedStringsState::default());
+            let payload_text = plugin_handle_collect_cell_slice_roots_json(
+                handle,
+                "APPALACHIA",
+                0,
+                0,
+                0,
+                0,
+                false,
+                None,
+            )
+            .expect("collect roots");
+            plugin_handle_close_native(handle);
+            let payload: JsonValue = serde_json::from_str(&payload_text).expect("json payload");
 
-        assert_eq!(
-            payload["region_form_keys"],
-            serde_json::json!(["SeventySix.esm:01746B"])
-        );
-        assert_eq!(
-            payload["region_data_form_keys"],
-            serde_json::json!([
-                "SeventySix.esm:010001",
-                "SeventySix.esm:010002",
+            assert_eq!(
+                payload["region_form_keys"],
+                serde_json::json!(["SeventySix.esm:01746B"])
+            );
+            assert_eq!(
+                payload["region_data_form_keys"],
+                serde_json::json!([
+                    "SeventySix.esm:010001",
+                    "SeventySix.esm:010002",
+                    "SeventySix.esm:010003",
+                    "SeventySix.esm:010004",
+                    "SeventySix.esm:010005"
+                ])
+            );
+
+        }
+        // collect_roots_includes_worldspace_service_dependencies
+        {
+            let climate_id: u32 = 0x0011001;
+            let water_id: u32 = 0x0011002;
+            let lod_water_id: u32 = 0x0011003;
+
+            let mut root_items =
+                projected_world_with_cell(0x0025DA15, cell_record(0x002628FE, "OriginExt", 0, 0));
+            let ParsedItem::Group(wrld_group) = &mut root_items[0] else {
+                panic!("WRLD group");
+            };
+            let ParsedItem::Record(world) = &mut wrld_group.children[0] else {
+                panic!("WRLD record");
+            };
+            world
+                .subrecords
+                .push(subrecord("CNAM", climate_id.to_le_bytes().to_vec()));
+            world
+                .subrecords
+                .push(subrecord("NAM2", water_id.to_le_bytes().to_vec()));
+            world
+                .subrecords
+                .push(subrecord("NAM3", lod_water_id.to_le_bytes().to_vec()));
+
+            root_items.extend([
+                top_group(
+                    "CLMT",
+                    vec![ParsedItem::Record(record("CLMT", climate_id, None))],
+                ),
+                top_group(
+                    "WATR",
+                    vec![
+                        ParsedItem::Record(record("WATR", water_id, None)),
+                        ParsedItem::Record(record("WATR", lod_water_id, None)),
+                    ],
+                ),
+            ]);
+            let plugin = plugin(root_items);
+            let handle = insert_plugin_handle(plugin, LocalizedStringsState::default());
+            let payload_text = plugin_handle_collect_cell_slice_roots_json(
+                handle,
+                "APPALACHIA",
+                0,
+                0,
+                0,
+                0,
+                false,
+                None,
+            )
+            .expect("collect roots");
+            plugin_handle_close_native(handle);
+            let payload: JsonValue = serde_json::from_str(&payload_text).expect("json payload");
+
+            assert_eq!(
+                payload["worldspace_form_keys"],
+                serde_json::json!(["SeventySix.esm:25DA15"])
+            );
+            assert_eq!(
+                payload["worldspace_data_form_keys"],
+                serde_json::json!([
+                    "SeventySix.esm:011001",
+                    "SeventySix.esm:011002",
+                    "SeventySix.esm:011003"
+                ])
+            );
+
+        }
+        // collect_roots_includes_locations_and_location_music_dependencies
+        {
+            let world_id: u32 = 0x0025DA15;
+            let cell_location_id: u32 = 0x001789F8;
+            let world_location_id: u32 = 0x0001558C;
+            let parent_location_id: u32 = 0x00039CED;
+            let keyword_id: u32 = 0x00180819;
+            let music_id: u32 = 0x001096F7;
+            let track_id: u32 = 0x0000A743;
+
+            let mut exterior_cell = cell_record(0x002628FE, "OriginExt", 0, 0);
+            exterior_cell
+                .subrecords
+                .push(subrecord("XLCN", cell_location_id.to_le_bytes().to_vec()));
+            let mut root_items = projected_world_with_cell(world_id, exterior_cell);
+            let ParsedItem::Group(wrld_group) = &mut root_items[0] else {
+                panic!("WRLD group");
+            };
+            let ParsedItem::Record(world) = &mut wrld_group.children[0] else {
+                panic!("WRLD record");
+            };
+            world
+                .subrecords
+                .push(subrecord("XLCN", world_location_id.to_le_bytes().to_vec()));
+
+            let mut cell_location = location_record(cell_location_id, world_id, &[(0, 0)]);
+            cell_location
+                .subrecords
+                .push(subrecord("KWDA", keyword_id.to_le_bytes().to_vec()));
+            cell_location
+                .subrecords
+                .push(subrecord("NAM1", music_id.to_le_bytes().to_vec()));
+            cell_location
+                .subrecords
+                .push(subrecord("PNAM", parent_location_id.to_le_bytes().to_vec()));
+            let world_location = record("LCTN", world_location_id, Some("AppalachiaLocation"));
+            let parent_location = record("LCTN", parent_location_id, Some("ParentLocation"));
+            let mut music = record("MUSC", music_id, Some("MUS76ExploreForest"));
+            music
+                .subrecords
+                .push(subrecord("TNAM", track_id.to_le_bytes().to_vec()));
+
+            root_items.extend([
+                top_group(
+                    "LCTN",
+                    vec![
+                        ParsedItem::Record(cell_location),
+                        ParsedItem::Record(world_location),
+                        ParsedItem::Record(parent_location),
+                    ],
+                ),
+                top_group(
+                    "KYWD",
+                    vec![ParsedItem::Record(record("KYWD", keyword_id, None))],
+                ),
+                top_group("MUSC", vec![ParsedItem::Record(music)]),
+                top_group(
+                    "MUST",
+                    vec![ParsedItem::Record(record("MUST", track_id, None))],
+                ),
+            ]);
+            let plugin = plugin(root_items);
+            let handle = insert_plugin_handle(plugin, LocalizedStringsState::default());
+            let payload_text = plugin_handle_collect_cell_slice_roots_json(
+                handle,
+                "APPALACHIA",
+                0,
+                0,
+                0,
+                0,
+                false,
+                None,
+            )
+            .expect("collect roots");
+            plugin_handle_close_native(handle);
+            let payload: JsonValue = serde_json::from_str(&payload_text).expect("json payload");
+
+            assert_eq!(
+                payload["location_form_keys"],
+                serde_json::json!(["SeventySix.esm:1789F8", "SeventySix.esm:01558C"])
+            );
+            assert_eq!(
+                payload["location_data_form_keys"],
+                serde_json::json!([
+                    "SeventySix.esm:180819",
+                    "SeventySix.esm:1096F7",
+                    "SeventySix.esm:039CED"
+                ])
+            );
+            assert_eq!(
+                payload["audio_data_form_keys"],
+                serde_json::json!(["SeventySix.esm:00A743"])
+            );
+
+        }
+        // collect_roots_includes_audio_dependencies_from_placed_bases
+        {
+            let sound_marker_id: u32 = 0x0010001;
+            let aspc_id: u32 = 0x0010002;
+            let sound_descriptor_id: u32 = 0x0010003;
+            let loop_descriptor_id: u32 = 0x0010004;
+            let child_descriptor_id: u32 = 0x0010005;
+            let category_id: u32 = 0x0010006;
+            let parent_category_id: u32 = 0x0010007;
+            let output_model_id: u32 = 0x0010008;
+            let region_id: u32 = 0x0010009;
+            let reverb_id: u32 = 0x001000A;
+            let layer_id: u32 = 0x001000B;
+            let music_id: u32 = 0x001000C;
+            let track_id: u32 = 0x001000D;
+
+            let exterior_cell = cell_record(0x002628FE, "OriginExt", 0, 0);
+            let mut sound_ref = record("REFR", 0x004EA534, None);
+            sound_ref
+                .subrecords
+                .push(subrecord("NAME", sound_marker_id.to_le_bytes().to_vec()));
+            let mut aspc_ref = record("REFR", 0x004EA535, None);
+            aspc_ref
+                .subrecords
+                .push(subrecord("NAME", aspc_id.to_le_bytes().to_vec()));
+            let exterior_cell_children = ParsedItem::Group(ParsedGroup {
+                label: 0x002628FE_u32.to_le_bytes(),
+                group_type: CELL_CHILD_GROUP,
+                tail: Bytes::new(),
+                children: vec![ParsedItem::Group(ParsedGroup {
+                    label: 0x002628FE_u32.to_le_bytes(),
+                    group_type: TEMPORARY_GROUP,
+                    tail: Bytes::new(),
+                    children: vec![ParsedItem::Record(sound_ref), ParsedItem::Record(aspc_ref)],
+                })],
+            });
+            let exterior_block = ParsedItem::Group(ParsedGroup {
+                label: [0, 0, 0, 0],
+                group_type: EXTERIOR_CELL_BLOCK,
+                tail: Bytes::new(),
+                children: vec![ParsedItem::Group(ParsedGroup {
+                    label: [0, 0, 0, 0],
+                    group_type: EXTERIOR_CELL_SUBBLOCK,
+                    tail: Bytes::new(),
+                    children: vec![ParsedItem::Record(exterior_cell), exterior_cell_children],
+                })],
+            });
+            let world = record("WRLD", 0x0025DA15, Some("APPALACHIA"));
+            let world_children = ParsedItem::Group(ParsedGroup {
+                label: 0x0025DA15_u32.to_le_bytes(),
+                group_type: 1,
+                tail: Bytes::new(),
+                children: vec![exterior_block],
+            });
+
+            let mut sound_marker = record("SOUN", sound_marker_id, Some("SoundMarker"));
+            sound_marker.subrecords.push(subrecord(
+                "SDSC",
+                sound_descriptor_id.to_le_bytes().to_vec(),
+            ));
+            let mut aspc = record("ASPC", aspc_id, Some("AcousticSpace"));
+            aspc.subrecords
+                .push(subrecord("DEFL", layer_id.to_le_bytes().to_vec()));
+            aspc.subrecords
+                .push(subrecord("SNAM", loop_descriptor_id.to_le_bytes().to_vec()));
+            aspc.subrecords
+                .push(subrecord("RDAT", region_id.to_le_bytes().to_vec()));
+            aspc.subrecords
+                .push(subrecord("BNAM", reverb_id.to_le_bytes().to_vec()));
+            let mut descriptor = record("SNDR", sound_descriptor_id, Some("Descriptor"));
+            descriptor
+                .subrecords
+                .push(subrecord("GNAM", category_id.to_le_bytes().to_vec()));
+            descriptor
+                .subrecords
+                .push(subrecord("ONAM", output_model_id.to_le_bytes().to_vec()));
+            descriptor.subrecords.push(subrecord(
+                "DNAM",
+                child_descriptor_id.to_le_bytes().to_vec(),
+            ));
+            let loop_descriptor = record("SNDR", loop_descriptor_id, Some("LoopDescriptor"));
+            let child_descriptor = record("SNDR", child_descriptor_id, Some("ChildDescriptor"));
+            let mut category = record("SNCT", category_id, Some("Category"));
+            category
+                .subrecords
+                .push(subrecord("PNAM", parent_category_id.to_le_bytes().to_vec()));
+            let parent_category = record("SNCT", parent_category_id, Some("ParentCategory"));
+            let mut region = record("REGN", region_id, Some("AudioRegion"));
+            region
+                .subrecords
+                .push(subrecord("RDMO", music_id.to_le_bytes().to_vec()));
+            let mut music = record("MUSC", music_id, Some("Music"));
+            music
+                .subrecords
+                .push(subrecord("TNAM", track_id.to_le_bytes().to_vec()));
+
+            let plugin = plugin(vec![
+                top_group("WRLD", vec![ParsedItem::Record(world), world_children]),
+                top_group("SOUN", vec![ParsedItem::Record(sound_marker)]),
+                top_group("ASPC", vec![ParsedItem::Record(aspc)]),
+                top_group(
+                    "SNDR",
+                    vec![
+                        ParsedItem::Record(descriptor),
+                        ParsedItem::Record(loop_descriptor),
+                        ParsedItem::Record(child_descriptor),
+                    ],
+                ),
+                top_group(
+                    "SNCT",
+                    vec![
+                        ParsedItem::Record(category),
+                        ParsedItem::Record(parent_category),
+                    ],
+                ),
+                top_group(
+                    "SOPM",
+                    vec![ParsedItem::Record(record("SOPM", output_model_id, None))],
+                ),
+                top_group("REGN", vec![ParsedItem::Record(region)]),
+                top_group(
+                    "REVB",
+                    vec![ParsedItem::Record(record("REVB", reverb_id, None))],
+                ),
+                top_group(
+                    "LAYR",
+                    vec![ParsedItem::Record(record("LAYR", layer_id, None))],
+                ),
+                top_group("MUSC", vec![ParsedItem::Record(music)]),
+                top_group(
+                    "MUST",
+                    vec![ParsedItem::Record(record("MUST", track_id, None))],
+                ),
+            ]);
+            let handle = insert_plugin_handle(plugin, LocalizedStringsState::default());
+            let payload_text = plugin_handle_collect_cell_slice_roots_json(
+                handle,
+                "APPALACHIA",
+                0,
+                0,
+                0,
+                0,
+                false,
+                None,
+            )
+            .expect("collect roots");
+            plugin_handle_close_native(handle);
+            let payload: JsonValue = serde_json::from_str(&payload_text).expect("json payload");
+            let audio = payload["audio_data_form_keys"]
+                .as_array()
+                .expect("audio deps");
+
+            for expected in [
                 "SeventySix.esm:010003",
                 "SeventySix.esm:010004",
-                "SeventySix.esm:010005"
-            ])
-        );
-    }
+                "SeventySix.esm:010005",
+                "SeventySix.esm:010006",
+                "SeventySix.esm:010007",
+                "SeventySix.esm:010008",
+                "SeventySix.esm:010009",
+                "SeventySix.esm:01000A",
+                "SeventySix.esm:01000B",
+                "SeventySix.esm:01000C",
+                "SeventySix.esm:01000D",
+            ] {
+                assert!(
+                    audio.contains(&serde_json::json!(expected)),
+                    "missing {expected} in {audio:?}"
+                );
+            }
 
-    #[test]
-    fn collect_roots_includes_worldspace_service_dependencies() {
-        let climate_id: u32 = 0x0011001;
-        let water_id: u32 = 0x0011002;
-        let lod_water_id: u32 = 0x0011003;
-
-        let mut root_items =
-            projected_world_with_cell(0x0025DA15, cell_record(0x002628FE, "OriginExt", 0, 0));
-        let ParsedItem::Group(wrld_group) = &mut root_items[0] else {
-            panic!("WRLD group");
-        };
-        let ParsedItem::Record(world) = &mut wrld_group.children[0] else {
-            panic!("WRLD record");
-        };
-        world
-            .subrecords
-            .push(subrecord("CNAM", climate_id.to_le_bytes().to_vec()));
-        world
-            .subrecords
-            .push(subrecord("NAM2", water_id.to_le_bytes().to_vec()));
-        world
-            .subrecords
-            .push(subrecord("NAM3", lod_water_id.to_le_bytes().to_vec()));
-
-        root_items.extend([
-            top_group(
-                "CLMT",
-                vec![ParsedItem::Record(record("CLMT", climate_id, None))],
-            ),
-            top_group(
-                "WATR",
-                vec![
-                    ParsedItem::Record(record("WATR", water_id, None)),
-                    ParsedItem::Record(record("WATR", lod_water_id, None)),
-                ],
-            ),
-        ]);
-        let plugin = plugin(root_items);
-        let handle = insert_plugin_handle(plugin, LocalizedStringsState::default());
-        let payload_text = plugin_handle_collect_cell_slice_roots_json(
-            handle,
-            "APPALACHIA",
-            0,
-            0,
-            0,
-            0,
-            false,
-            None,
-        )
-        .expect("collect roots");
-        plugin_handle_close_native(handle);
-        let payload: JsonValue = serde_json::from_str(&payload_text).expect("json payload");
-
-        assert_eq!(
-            payload["worldspace_form_keys"],
-            serde_json::json!(["SeventySix.esm:25DA15"])
-        );
-        assert_eq!(
-            payload["worldspace_data_form_keys"],
-            serde_json::json!([
-                "SeventySix.esm:011001",
-                "SeventySix.esm:011002",
-                "SeventySix.esm:011003"
-            ])
-        );
-    }
-
-    #[test]
-    fn collect_roots_includes_locations_and_location_music_dependencies() {
-        let world_id: u32 = 0x0025DA15;
-        let cell_location_id: u32 = 0x001789F8;
-        let world_location_id: u32 = 0x0001558C;
-        let parent_location_id: u32 = 0x00039CED;
-        let keyword_id: u32 = 0x00180819;
-        let music_id: u32 = 0x001096F7;
-        let track_id: u32 = 0x0000A743;
-
-        let mut exterior_cell = cell_record(0x002628FE, "OriginExt", 0, 0);
-        exterior_cell
-            .subrecords
-            .push(subrecord("XLCN", cell_location_id.to_le_bytes().to_vec()));
-        let mut root_items = projected_world_with_cell(world_id, exterior_cell);
-        let ParsedItem::Group(wrld_group) = &mut root_items[0] else {
-            panic!("WRLD group");
-        };
-        let ParsedItem::Record(world) = &mut wrld_group.children[0] else {
-            panic!("WRLD record");
-        };
-        world
-            .subrecords
-            .push(subrecord("XLCN", world_location_id.to_le_bytes().to_vec()));
-
-        let mut cell_location = location_record(cell_location_id, world_id, &[(0, 0)]);
-        cell_location
-            .subrecords
-            .push(subrecord("KWDA", keyword_id.to_le_bytes().to_vec()));
-        cell_location
-            .subrecords
-            .push(subrecord("NAM1", music_id.to_le_bytes().to_vec()));
-        cell_location
-            .subrecords
-            .push(subrecord("PNAM", parent_location_id.to_le_bytes().to_vec()));
-        let world_location = record("LCTN", world_location_id, Some("AppalachiaLocation"));
-        let parent_location = record("LCTN", parent_location_id, Some("ParentLocation"));
-        let mut music = record("MUSC", music_id, Some("MUS76ExploreForest"));
-        music
-            .subrecords
-            .push(subrecord("TNAM", track_id.to_le_bytes().to_vec()));
-
-        root_items.extend([
-            top_group(
-                "LCTN",
-                vec![
-                    ParsedItem::Record(cell_location),
-                    ParsedItem::Record(world_location),
-                    ParsedItem::Record(parent_location),
-                ],
-            ),
-            top_group(
-                "KYWD",
-                vec![ParsedItem::Record(record("KYWD", keyword_id, None))],
-            ),
-            top_group("MUSC", vec![ParsedItem::Record(music)]),
-            top_group(
-                "MUST",
-                vec![ParsedItem::Record(record("MUST", track_id, None))],
-            ),
-        ]);
-        let plugin = plugin(root_items);
-        let handle = insert_plugin_handle(plugin, LocalizedStringsState::default());
-        let payload_text = plugin_handle_collect_cell_slice_roots_json(
-            handle,
-            "APPALACHIA",
-            0,
-            0,
-            0,
-            0,
-            false,
-            None,
-        )
-        .expect("collect roots");
-        plugin_handle_close_native(handle);
-        let payload: JsonValue = serde_json::from_str(&payload_text).expect("json payload");
-
-        assert_eq!(
-            payload["location_form_keys"],
-            serde_json::json!(["SeventySix.esm:1789F8", "SeventySix.esm:01558C"])
-        );
-        assert_eq!(
-            payload["location_data_form_keys"],
-            serde_json::json!([
-                "SeventySix.esm:180819",
-                "SeventySix.esm:1096F7",
-                "SeventySix.esm:039CED"
-            ])
-        );
-        assert_eq!(
-            payload["audio_data_form_keys"],
-            serde_json::json!(["SeventySix.esm:00A743"])
-        );
-    }
-
-    #[test]
-    fn collect_roots_includes_audio_dependencies_from_placed_bases() {
-        let sound_marker_id: u32 = 0x0010001;
-        let aspc_id: u32 = 0x0010002;
-        let sound_descriptor_id: u32 = 0x0010003;
-        let loop_descriptor_id: u32 = 0x0010004;
-        let child_descriptor_id: u32 = 0x0010005;
-        let category_id: u32 = 0x0010006;
-        let parent_category_id: u32 = 0x0010007;
-        let output_model_id: u32 = 0x0010008;
-        let region_id: u32 = 0x0010009;
-        let reverb_id: u32 = 0x001000A;
-        let layer_id: u32 = 0x001000B;
-        let music_id: u32 = 0x001000C;
-        let track_id: u32 = 0x001000D;
-
-        let exterior_cell = cell_record(0x002628FE, "OriginExt", 0, 0);
-        let mut sound_ref = record("REFR", 0x004EA534, None);
-        sound_ref
-            .subrecords
-            .push(subrecord("NAME", sound_marker_id.to_le_bytes().to_vec()));
-        let mut aspc_ref = record("REFR", 0x004EA535, None);
-        aspc_ref
-            .subrecords
-            .push(subrecord("NAME", aspc_id.to_le_bytes().to_vec()));
-        let exterior_cell_children = ParsedItem::Group(ParsedGroup {
-            label: 0x002628FE_u32.to_le_bytes(),
-            group_type: CELL_CHILD_GROUP,
-            tail: Bytes::new(),
-            children: vec![ParsedItem::Group(ParsedGroup {
+        }
+        // collect_roots_includes_entries_from_lvli_placement_bases
+        {
+            let world = record("WRLD", 0x0025DA15, Some("APPALACHIA"));
+            let exterior_cell = cell_record(0x002628FE, "OriginExt", 0, 0);
+            let static_base = record("STAT", 0x001A6663, Some("RockBase"));
+            let mut leveled_base = record("LVLI", 0x00100000, Some("LPI_RockBase"));
+            leveled_base
+                .subrecords
+                .push(subrecord("LVLO", 0x001A6663_u32.to_le_bytes().to_vec()));
+            let mut nested_ref = record("REFR", 0x004EA534, None);
+            nested_ref
+                .subrecords
+                .push(subrecord("NAME", 0x00100000_u32.to_le_bytes().to_vec()));
+            let exterior_cell_children = ParsedItem::Group(ParsedGroup {
                 label: 0x002628FE_u32.to_le_bytes(),
-                group_type: TEMPORARY_GROUP,
+                group_type: CELL_CHILD_GROUP,
                 tail: Bytes::new(),
-                children: vec![ParsedItem::Record(sound_ref), ParsedItem::Record(aspc_ref)],
-            })],
-        });
-        let exterior_block = ParsedItem::Group(ParsedGroup {
-            label: [0, 0, 0, 0],
-            group_type: EXTERIOR_CELL_BLOCK,
-            tail: Bytes::new(),
-            children: vec![ParsedItem::Group(ParsedGroup {
+                children: vec![ParsedItem::Group(ParsedGroup {
+                    label: 0x002628FE_u32.to_le_bytes(),
+                    group_type: TEMPORARY_GROUP,
+                    tail: Bytes::new(),
+                    children: vec![ParsedItem::Record(nested_ref)],
+                })],
+            });
+            let exterior_block = ParsedItem::Group(ParsedGroup {
                 label: [0, 0, 0, 0],
-                group_type: EXTERIOR_CELL_SUBBLOCK,
+                group_type: EXTERIOR_CELL_BLOCK,
                 tail: Bytes::new(),
-                children: vec![ParsedItem::Record(exterior_cell), exterior_cell_children],
-            })],
-        });
-        let world = record("WRLD", 0x0025DA15, Some("APPALACHIA"));
-        let world_children = ParsedItem::Group(ParsedGroup {
-            label: 0x0025DA15_u32.to_le_bytes(),
-            group_type: 1,
-            tail: Bytes::new(),
-            children: vec![exterior_block],
-        });
+                children: vec![ParsedItem::Group(ParsedGroup {
+                    label: [0, 0, 0, 0],
+                    group_type: EXTERIOR_CELL_SUBBLOCK,
+                    tail: Bytes::new(),
+                    children: vec![ParsedItem::Record(exterior_cell), exterior_cell_children],
+                })],
+            });
+            let world_children = ParsedItem::Group(ParsedGroup {
+                label: 0x0025DA15_u32.to_le_bytes(),
+                group_type: 1,
+                tail: Bytes::new(),
+                children: vec![exterior_block],
+            });
+            let plugin = plugin(vec![
+                top_group("STAT", vec![ParsedItem::Record(static_base)]),
+                top_group("LVLI", vec![ParsedItem::Record(leveled_base)]),
+                top_group("WRLD", vec![ParsedItem::Record(world), world_children]),
+            ]);
+            let handle = insert_plugin_handle(plugin, LocalizedStringsState::default());
+            let payload_text = plugin_handle_collect_cell_slice_roots_json(
+                handle,
+                "APPALACHIA",
+                0,
+                0,
+                0,
+                0,
+                false,
+                None,
+            )
+            .expect("collect roots");
+            plugin_handle_close_native(handle);
+            let payload: JsonValue = serde_json::from_str(&payload_text).expect("json payload");
 
-        let mut sound_marker = record("SOUN", sound_marker_id, Some("SoundMarker"));
-        sound_marker.subrecords.push(subrecord(
-            "SDSC",
-            sound_descriptor_id.to_le_bytes().to_vec(),
-        ));
-        let mut aspc = record("ASPC", aspc_id, Some("AcousticSpace"));
-        aspc.subrecords
-            .push(subrecord("DEFL", layer_id.to_le_bytes().to_vec()));
-        aspc.subrecords
-            .push(subrecord("SNAM", loop_descriptor_id.to_le_bytes().to_vec()));
-        aspc.subrecords
-            .push(subrecord("RDAT", region_id.to_le_bytes().to_vec()));
-        aspc.subrecords
-            .push(subrecord("BNAM", reverb_id.to_le_bytes().to_vec()));
-        let mut descriptor = record("SNDR", sound_descriptor_id, Some("Descriptor"));
-        descriptor
-            .subrecords
-            .push(subrecord("GNAM", category_id.to_le_bytes().to_vec()));
-        descriptor
-            .subrecords
-            .push(subrecord("ONAM", output_model_id.to_le_bytes().to_vec()));
-        descriptor.subrecords.push(subrecord(
-            "DNAM",
-            child_descriptor_id.to_le_bytes().to_vec(),
-        ));
-        let loop_descriptor = record("SNDR", loop_descriptor_id, Some("LoopDescriptor"));
-        let child_descriptor = record("SNDR", child_descriptor_id, Some("ChildDescriptor"));
-        let mut category = record("SNCT", category_id, Some("Category"));
-        category
-            .subrecords
-            .push(subrecord("PNAM", parent_category_id.to_le_bytes().to_vec()));
-        let parent_category = record("SNCT", parent_category_id, Some("ParentCategory"));
-        let mut region = record("REGN", region_id, Some("AudioRegion"));
-        region
-            .subrecords
-            .push(subrecord("RDMO", music_id.to_le_bytes().to_vec()));
-        let mut music = record("MUSC", music_id, Some("Music"));
-        music
-            .subrecords
-            .push(subrecord("TNAM", track_id.to_le_bytes().to_vec()));
-
-        let plugin = plugin(vec![
-            top_group("WRLD", vec![ParsedItem::Record(world), world_children]),
-            top_group("SOUN", vec![ParsedItem::Record(sound_marker)]),
-            top_group("ASPC", vec![ParsedItem::Record(aspc)]),
-            top_group(
-                "SNDR",
-                vec![
-                    ParsedItem::Record(descriptor),
-                    ParsedItem::Record(loop_descriptor),
-                    ParsedItem::Record(child_descriptor),
-                ],
-            ),
-            top_group(
-                "SNCT",
-                vec![
-                    ParsedItem::Record(category),
-                    ParsedItem::Record(parent_category),
-                ],
-            ),
-            top_group(
-                "SOPM",
-                vec![ParsedItem::Record(record("SOPM", output_model_id, None))],
-            ),
-            top_group("REGN", vec![ParsedItem::Record(region)]),
-            top_group(
-                "REVB",
-                vec![ParsedItem::Record(record("REVB", reverb_id, None))],
-            ),
-            top_group(
-                "LAYR",
-                vec![ParsedItem::Record(record("LAYR", layer_id, None))],
-            ),
-            top_group("MUSC", vec![ParsedItem::Record(music)]),
-            top_group(
-                "MUST",
-                vec![ParsedItem::Record(record("MUST", track_id, None))],
-            ),
-        ]);
-        let handle = insert_plugin_handle(plugin, LocalizedStringsState::default());
-        let payload_text = plugin_handle_collect_cell_slice_roots_json(
-            handle,
-            "APPALACHIA",
-            0,
-            0,
-            0,
-            0,
-            false,
-            None,
-        )
-        .expect("collect roots");
-        plugin_handle_close_native(handle);
-        let payload: JsonValue = serde_json::from_str(&payload_text).expect("json payload");
-        let audio = payload["audio_data_form_keys"]
-            .as_array()
-            .expect("audio deps");
-
-        for expected in [
-            "SeventySix.esm:010003",
-            "SeventySix.esm:010004",
-            "SeventySix.esm:010005",
-            "SeventySix.esm:010006",
-            "SeventySix.esm:010007",
-            "SeventySix.esm:010008",
-            "SeventySix.esm:010009",
-            "SeventySix.esm:01000A",
-            "SeventySix.esm:01000B",
-            "SeventySix.esm:01000C",
-            "SeventySix.esm:01000D",
-        ] {
-            assert!(
-                audio.contains(&serde_json::json!(expected)),
-                "missing {expected} in {audio:?}"
+            assert_eq!(
+                payload["static_base_form_keys"],
+                serde_json::json!(["SeventySix.esm:100000"])
             );
+            assert_eq!(
+                payload["leveled_base_entry_form_keys"],
+                serde_json::json!(["SeventySix.esm:1A6663"])
+            );
+
+        }
+        // placement_base_collection_includes_door_bases
+        {
+            let door = record("DOOR", 0x001A6663, Some("PaintedWoodDoorLoadD01"));
+            let mut refr = record("REFR", 0x001052B66, None);
+            refr.subrecords
+                .push(subrecord("NAME", 0x001A6663_u32.to_le_bytes().to_vec()));
+            let plugin = plugin(vec![top_group("DOOR", vec![ParsedItem::Record(door)])]);
+            let locator = build_locator_section(&plugin);
+            let mut base_keys = Vec::new();
+            let mut base_seen = BTreeSet::new();
+            let mut leveled_base_entry_keys = Vec::new();
+            let mut leveled_base_entry_seen = BTreeSet::new();
+            let mut layer_keys = Vec::new();
+            let mut layer_seen = BTreeSet::new();
+
+            append_static_placement_base_key(
+                &plugin,
+                &locator,
+                &refr,
+                &mut base_keys,
+                &mut base_seen,
+                &mut leveled_base_entry_keys,
+                &mut leveled_base_entry_seen,
+                &mut layer_keys,
+                &mut layer_seen,
+            );
+
+            assert_eq!(base_keys, vec!["SeventySix.esm:1A6663"]);
+            assert!(leveled_base_entry_keys.is_empty());
+            assert!(layer_keys.is_empty());
+
+        }
+        // placement_base_collection_includes_hazard_bases_for_phzd
+        {
+            let hazard = record("HAZD", 0x00092528, Some("RadiationHazardLight256"));
+            let mut placed_hazard = record("PHZD", 0x00091A72, None);
+            placed_hazard
+                .subrecords
+                .push(subrecord("NAME", 0x00092528_u32.to_le_bytes().to_vec()));
+            let plugin = plugin(vec![top_group("HAZD", vec![ParsedItem::Record(hazard)])]);
+            let locator = build_locator_section(&plugin);
+            let mut base_keys = Vec::new();
+            let mut base_seen = BTreeSet::new();
+            let mut leveled_base_entry_keys = Vec::new();
+            let mut leveled_base_entry_seen = BTreeSet::new();
+            let mut layer_keys = Vec::new();
+            let mut layer_seen = BTreeSet::new();
+
+            append_static_placement_base_key(
+                &plugin,
+                &locator,
+                &placed_hazard,
+                &mut base_keys,
+                &mut base_seen,
+                &mut leveled_base_entry_keys,
+                &mut leveled_base_entry_seen,
+                &mut layer_keys,
+                &mut layer_seen,
+            );
+
+            assert_eq!(base_keys, vec!["SeventySix.esm:092528"]);
+            assert!(leveled_base_entry_keys.is_empty());
+            assert!(layer_keys.is_empty());
+
+        }
+        // placement_base_collection_includes_actor_bases
+        {
+            let npc = record("NPC_", 0x00123456, Some("AppalachiaActorBase"));
+            let mut achr = record("ACHR", 0x0010AA00, None);
+            achr.subrecords
+                .push(subrecord("NAME", 0x00123456_u32.to_le_bytes().to_vec()));
+            let plugin = plugin(vec![top_group("NPC_", vec![ParsedItem::Record(npc)])]);
+            let locator = build_locator_section(&plugin);
+            let mut base_keys = Vec::new();
+            let mut base_seen = BTreeSet::new();
+            let mut leveled_base_entry_keys = Vec::new();
+            let mut leveled_base_entry_seen = BTreeSet::new();
+            let mut layer_keys = Vec::new();
+            let mut layer_seen = BTreeSet::new();
+
+            append_static_placement_base_key(
+                &plugin,
+                &locator,
+                &achr,
+                &mut base_keys,
+                &mut base_seen,
+                &mut leveled_base_entry_keys,
+                &mut leveled_base_entry_seen,
+                &mut layer_keys,
+                &mut layer_seen,
+            );
+
+            assert_eq!(base_keys, vec!["SeventySix.esm:123456"]);
+            assert!(leveled_base_entry_keys.is_empty());
+            assert!(layer_keys.is_empty());
+
+        }
+        // collect_persistent_base_keys_returns_every_base_deduped
+        {
+            // The persistent REFR + ACHR both point at base 1A6663; the collector
+            // returns each distinct base once, regardless of base record type (so
+            // non-PLACEMENT_BASE_SIGNATURES bases get seeded into the form_key_map).
+            let source_handle = insert_plugin_handle(
+                source_world_with_persistent_cell(),
+                LocalizedStringsState::default(),
+            );
+            let text =
+                plugin_handle_collect_worldspace_persistent_base_keys_json(source_handle, "APPALACHIA")
+                    .expect("collect base keys");
+            let keys: Vec<String> = serde_json::from_str(&text).expect("json");
+            plugin_handle_close_native(source_handle);
+            // 1A6663 is the shared base of both persistent refs — present exactly once.
+            assert_eq!(
+                keys.iter().filter(|k| k.ends_with(":1A6663")).count(),
+                1,
+                "shared base collected once (deduped)"
+            );
+
         }
     }
 
     #[test]
-    fn collect_roots_includes_entries_from_lvli_placement_bases() {
-        let world = record("WRLD", 0x0025DA15, Some("APPALACHIA"));
-        let exterior_cell = cell_record(0x002628FE, "OriginExt", 0, 0);
-        let static_base = record("STAT", 0x001A6663, Some("RockBase"));
-        let mut leveled_base = record("LVLI", 0x00100000, Some("LPI_RockBase"));
-        leveled_base
-            .subrecords
-            .push(subrecord("LVLO", 0x001A6663_u32.to_le_bytes().to_vec()));
-        let mut nested_ref = record("REFR", 0x004EA534, None);
-        nested_ref
-            .subrecords
-            .push(subrecord("NAME", 0x00100000_u32.to_le_bytes().to_vec()));
-        let exterior_cell_children = ParsedItem::Group(ParsedGroup {
-            label: 0x002628FE_u32.to_le_bytes(),
-            group_type: CELL_CHILD_GROUP,
-            tail: Bytes::new(),
-            children: vec![ParsedItem::Group(ParsedGroup {
-                label: 0x002628FE_u32.to_le_bytes(),
-                group_type: TEMPORARY_GROUP,
-                tail: Bytes::new(),
-                children: vec![ParsedItem::Record(nested_ref)],
-            })],
-        });
-        let exterior_block = ParsedItem::Group(ParsedGroup {
-            label: [0, 0, 0, 0],
-            group_type: EXTERIOR_CELL_BLOCK,
-            tail: Bytes::new(),
-            children: vec![ParsedItem::Group(ParsedGroup {
-                label: [0, 0, 0, 0],
-                group_type: EXTERIOR_CELL_SUBBLOCK,
-                tail: Bytes::new(),
-                children: vec![ParsedItem::Record(exterior_cell), exterior_cell_children],
-            })],
-        });
-        let world_children = ParsedItem::Group(ParsedGroup {
-            label: 0x0025DA15_u32.to_le_bytes(),
-            group_type: 1,
-            tail: Bytes::new(),
-            children: vec![exterior_block],
-        });
-        let plugin = plugin(vec![
-            top_group("STAT", vec![ParsedItem::Record(static_base)]),
-            top_group("LVLI", vec![ParsedItem::Record(leveled_base)]),
-            top_group("WRLD", vec![ParsedItem::Record(world), world_children]),
-        ]);
-        let handle = insert_plugin_handle(plugin, LocalizedStringsState::default());
-        let payload_text = plugin_handle_collect_cell_slice_roots_json(
-            handle,
-            "APPALACHIA",
-            0,
-            0,
-            0,
-            0,
-            false,
-            None,
-        )
-        .expect("collect roots");
-        plugin_handle_close_native(handle);
-        let payload: JsonValue = serde_json::from_str(&payload_text).expect("json payload");
-
-        assert_eq!(
-            payload["static_base_form_keys"],
-            serde_json::json!(["SeventySix.esm:100000"])
-        );
-        assert_eq!(
-            payload["leveled_base_entry_form_keys"],
-            serde_json::json!(["SeventySix.esm:1A6663"])
-        );
-    }
-
-    #[test]
-    fn placement_base_collection_includes_door_bases() {
-        let door = record("DOOR", 0x001A6663, Some("PaintedWoodDoorLoadD01"));
-        let mut refr = record("REFR", 0x001052B66, None);
-        refr.subrecords
-            .push(subrecord("NAME", 0x001A6663_u32.to_le_bytes().to_vec()));
-        let plugin = plugin(vec![top_group("DOOR", vec![ParsedItem::Record(door)])]);
-        let locator = build_locator_section(&plugin);
-        let mut base_keys = Vec::new();
-        let mut base_seen = BTreeSet::new();
-        let mut leveled_base_entry_keys = Vec::new();
-        let mut leveled_base_entry_seen = BTreeSet::new();
-        let mut layer_keys = Vec::new();
-        let mut layer_seen = BTreeSet::new();
-
-        append_static_placement_base_key(
-            &plugin,
-            &locator,
-            &refr,
-            &mut base_keys,
-            &mut base_seen,
-            &mut leveled_base_entry_keys,
-            &mut leveled_base_entry_seen,
-            &mut layer_keys,
-            &mut layer_seen,
-        );
-
-        assert_eq!(base_keys, vec!["SeventySix.esm:1A6663"]);
-        assert!(leveled_base_entry_keys.is_empty());
-        assert!(layer_keys.is_empty());
-    }
-
-    #[test]
-    fn placement_base_collection_includes_hazard_bases_for_phzd() {
-        let hazard = record("HAZD", 0x00092528, Some("RadiationHazardLight256"));
-        let mut placed_hazard = record("PHZD", 0x00091A72, None);
-        placed_hazard
-            .subrecords
-            .push(subrecord("NAME", 0x00092528_u32.to_le_bytes().to_vec()));
-        let plugin = plugin(vec![top_group("HAZD", vec![ParsedItem::Record(hazard)])]);
-        let locator = build_locator_section(&plugin);
-        let mut base_keys = Vec::new();
-        let mut base_seen = BTreeSet::new();
-        let mut leveled_base_entry_keys = Vec::new();
-        let mut leveled_base_entry_seen = BTreeSet::new();
-        let mut layer_keys = Vec::new();
-        let mut layer_seen = BTreeSet::new();
-
-        append_static_placement_base_key(
-            &plugin,
-            &locator,
-            &placed_hazard,
-            &mut base_keys,
-            &mut base_seen,
-            &mut leveled_base_entry_keys,
-            &mut leveled_base_entry_seen,
-            &mut layer_keys,
-            &mut layer_seen,
-        );
-
-        assert_eq!(base_keys, vec!["SeventySix.esm:092528"]);
-        assert!(leveled_base_entry_keys.is_empty());
-        assert!(layer_keys.is_empty());
-    }
-
-    #[test]
-    fn sync_cell_locations_from_lctn_tags_projected_exterior_cells() {
-        let world_form_id = 0x0725DA15;
-        let location_form_id = 0x072CD2E2;
-        let cell_form_id = 0x072628FE;
-        let mut root_items = vec![top_group(
-            "LCTN",
-            vec![ParsedItem::Record(location_record(
-                location_form_id,
-                world_form_id,
-                &[(19, -52)],
-            ))],
-        )];
-        root_items.extend(projected_world_with_cell(
-            world_form_id,
-            cell_record(cell_form_id, "CellX19Y-52", 19, -52),
-        ));
-        let mut plugin = plugin(root_items);
-
-        let payload = sync_cell_locations_from_lctn_world_cells(&mut plugin);
-
-        assert_eq!(payload.locations_indexed, 1);
-        assert_eq!(payload.location_conflicts, 0);
-        assert_eq!(payload.cells_changed, 1);
-        assert_eq!(payload.cells_retagged, 0);
-        let cell = find_record_by_form_id(&plugin.root_items, cell_form_id).expect("CELL");
-        let xlcn = subrecord_data(cell, "XLCN").expect("XLCN");
-        assert_eq!(
-            u32::from_le_bytes([xlcn[0], xlcn[1], xlcn[2], xlcn[3]]),
-            location_form_id
-        );
-    }
-
-    #[test]
-    fn sync_cell_locations_from_lctn_repairs_mismatched_cell_location() {
-        let world_form_id = 0x0725DA15;
-        let location_form_id = 0x072CD2E2;
-        let cell_form_id = 0x072628FE;
-        let mut cell = cell_record(cell_form_id, "CellX19Y-52", 19, -52);
-        cell.subrecords
-            .push(subrecord("XLCN", 0x0700AAAA_u32.to_le_bytes().to_vec()));
-        let mut root_items = vec![top_group(
-            "LCTN",
-            vec![ParsedItem::Record(location_record(
-                location_form_id,
-                world_form_id,
-                &[(19, -52)],
-            ))],
-        )];
-        root_items.extend(projected_world_with_cell(world_form_id, cell));
-        let mut plugin = plugin(root_items);
-
-        let payload = sync_cell_locations_from_lctn_world_cells(&mut plugin);
-
-        assert_eq!(payload.cells_changed, 1);
-        assert_eq!(payload.cells_retagged, 1);
-        let cell = find_record_by_form_id(&plugin.root_items, cell_form_id).expect("CELL");
-        let xlcn = subrecord_data(cell, "XLCN").expect("XLCN");
-        assert_eq!(
-            u32::from_le_bytes([xlcn[0], xlcn[1], xlcn[2], xlcn[3]]),
-            location_form_id
-        );
-    }
-
-    #[test]
-    fn sync_cell_regions_from_source_tags_projected_exterior_cells() {
-        let source_world_form_id: u32 = 0x0025DA15;
-        let target_world_form_id: u32 = 0x0125DA15;
-        let source_region_form_id: u32 = 0x00222222;
-        let target_region_form_id: u32 = 0x01222222;
-        let target_cell_form_id: u32 = 0x012628FE;
-
-        let mut source_cell = cell_record(0x002628FE, "CellX19Y-52", 19, -52);
-        source_cell.subrecords.push(subrecord(
-            "XCLR",
-            source_region_form_id.to_le_bytes().to_vec(),
-        ));
-        let source = plugin_with_name("SeventySix.esm", "fo76", Vec::new(), {
+    fn sync_cell_fields_from_source() {
+        // sync_cell_locations_from_lctn_tags_projected_exterior_cells
+        {
+            let world_form_id = 0x0725DA15;
+            let location_form_id = 0x072CD2E2;
+            let cell_form_id = 0x072628FE;
             let mut root_items = vec![top_group(
-                "REGN",
-                vec![ParsedItem::Record(record(
-                    "REGN",
-                    source_region_form_id,
-                    Some("ForestRegion"),
+                "LCTN",
+                vec![ParsedItem::Record(location_record(
+                    location_form_id,
+                    world_form_id,
+                    &[(19, -52)],
                 ))],
             )];
-            root_items.extend(projected_world_with_cell(source_world_form_id, source_cell));
-            root_items
-        });
+            root_items.extend(projected_world_with_cell(
+                world_form_id,
+                cell_record(cell_form_id, "CellX19Y-52", 19, -52),
+            ));
+            let mut plugin = plugin(root_items);
 
-        let mut target_cell = cell_record(target_cell_form_id, "CellX19Y-52", 19, -52);
-        target_cell
-            .subrecords
-            .push(subrecord("XLCN", 0x0100AAAA_u32.to_le_bytes().to_vec()));
-        let mut target = plugin_with_name(
-            "B21_Appalachia.esp",
-            "fo4",
-            vec!["Fallout4.esm".to_string()],
-            {
+            let payload = sync_cell_locations_from_lctn_world_cells(&mut plugin);
+
+            assert_eq!(payload.locations_indexed, 1);
+            assert_eq!(payload.location_conflicts, 0);
+            assert_eq!(payload.cells_changed, 1);
+            assert_eq!(payload.cells_retagged, 0);
+            let cell = find_record_by_form_id(&plugin.root_items, cell_form_id).expect("CELL");
+            let xlcn = subrecord_data(cell, "XLCN").expect("XLCN");
+            assert_eq!(
+                u32::from_le_bytes([xlcn[0], xlcn[1], xlcn[2], xlcn[3]]),
+                location_form_id
+            );
+
+        }
+        // sync_cell_locations_from_lctn_repairs_mismatched_cell_location
+        {
+            let world_form_id = 0x0725DA15;
+            let location_form_id = 0x072CD2E2;
+            let cell_form_id = 0x072628FE;
+            let mut cell = cell_record(cell_form_id, "CellX19Y-52", 19, -52);
+            cell.subrecords
+                .push(subrecord("XLCN", 0x0700AAAA_u32.to_le_bytes().to_vec()));
+            let mut root_items = vec![top_group(
+                "LCTN",
+                vec![ParsedItem::Record(location_record(
+                    location_form_id,
+                    world_form_id,
+                    &[(19, -52)],
+                ))],
+            )];
+            root_items.extend(projected_world_with_cell(world_form_id, cell));
+            let mut plugin = plugin(root_items);
+
+            let payload = sync_cell_locations_from_lctn_world_cells(&mut plugin);
+
+            assert_eq!(payload.cells_changed, 1);
+            assert_eq!(payload.cells_retagged, 1);
+            let cell = find_record_by_form_id(&plugin.root_items, cell_form_id).expect("CELL");
+            let xlcn = subrecord_data(cell, "XLCN").expect("XLCN");
+            assert_eq!(
+                u32::from_le_bytes([xlcn[0], xlcn[1], xlcn[2], xlcn[3]]),
+                location_form_id
+            );
+
+        }
+        // sync_cell_regions_from_source_tags_projected_exterior_cells
+        {
+            let source_world_form_id: u32 = 0x0025DA15;
+            let target_world_form_id: u32 = 0x0125DA15;
+            let source_region_form_id: u32 = 0x00222222;
+            let target_region_form_id: u32 = 0x01222222;
+            let target_cell_form_id: u32 = 0x012628FE;
+
+            let mut source_cell = cell_record(0x002628FE, "CellX19Y-52", 19, -52);
+            source_cell.subrecords.push(subrecord(
+                "XCLR",
+                source_region_form_id.to_le_bytes().to_vec(),
+            ));
+            let source = plugin_with_name("SeventySix.esm", "fo76", Vec::new(), {
                 let mut root_items = vec![top_group(
                     "REGN",
                     vec![ParsedItem::Record(record(
                         "REGN",
-                        target_region_form_id,
+                        source_region_form_id,
                         Some("ForestRegion"),
                     ))],
                 )];
-                root_items.extend(projected_world_with_cell(target_world_form_id, target_cell));
+                root_items.extend(projected_world_with_cell(source_world_form_id, source_cell));
                 root_items
-            },
-        );
+            });
 
-        let payload = sync_cell_regions_from_source_worldspace(
-            &source,
-            &mut target,
-            "APPALACHIA",
-            "APPALACHIA",
-        );
+            let mut target_cell = cell_record(target_cell_form_id, "CellX19Y-52", 19, -52);
+            target_cell
+                .subrecords
+                .push(subrecord("XLCN", 0x0100AAAA_u32.to_le_bytes().to_vec()));
+            let mut target = plugin_with_name(
+                "B21_Appalachia.esp",
+                "fo4",
+                vec!["Fallout4.esm".to_string()],
+                {
+                    let mut root_items = vec![top_group(
+                        "REGN",
+                        vec![ParsedItem::Record(record(
+                            "REGN",
+                            target_region_form_id,
+                            Some("ForestRegion"),
+                        ))],
+                    )];
+                    root_items.extend(projected_world_with_cell(target_world_form_id, target_cell));
+                    root_items
+                },
+            );
 
-        assert_eq!(payload.source_cells_indexed, 1);
-        assert_eq!(payload.target_cells_seen, 1);
-        assert_eq!(payload.cells_changed, 1);
-        assert_eq!(payload.region_refs_written, 1);
-        let cell = find_record_by_form_id(&target.root_items, target_cell_form_id).expect("CELL");
-        let xclr = subrecord_data(cell, "XCLR").expect("XCLR");
-        assert_eq!(
-            u32::from_le_bytes([xclr[0], xclr[1], xclr[2], xclr[3]]),
-            target_region_form_id
-        );
-        let xclr_index = cell
-            .subrecords
-            .iter()
-            .position(|subrecord| subrecord.signature.as_str() == "XCLR")
-            .expect("XCLR index");
-        let xlcn_index = cell
-            .subrecords
-            .iter()
-            .position(|subrecord| subrecord.signature.as_str() == "XLCN")
-            .expect("XLCN index");
-        assert!(xclr_index < xlcn_index);
+            let payload = sync_cell_regions_from_source_worldspace(
+                &source,
+                &mut target,
+                "APPALACHIA",
+                "APPALACHIA",
+            );
+
+            assert_eq!(payload.source_cells_indexed, 1);
+            assert_eq!(payload.target_cells_seen, 1);
+            assert_eq!(payload.cells_changed, 1);
+            assert_eq!(payload.region_refs_written, 1);
+            let cell = find_record_by_form_id(&target.root_items, target_cell_form_id).expect("CELL");
+            let xclr = subrecord_data(cell, "XCLR").expect("XCLR");
+            assert_eq!(
+                u32::from_le_bytes([xclr[0], xclr[1], xclr[2], xclr[3]]),
+                target_region_form_id
+            );
+            let xclr_index = cell
+                .subrecords
+                .iter()
+                .position(|subrecord| subrecord.signature.as_str() == "XCLR")
+                .expect("XCLR index");
+            let xlcn_index = cell
+                .subrecords
+                .iter()
+                .position(|subrecord| subrecord.signature.as_str() == "XLCN")
+                .expect("XLCN index");
+            assert!(xclr_index < xlcn_index);
+
+        }
+        // sync_cell_max_height_from_source_tags_projected_exterior_cells
+        {
+            let source_world_form_id: u32 = 0x0025DA15;
+            let target_world_form_id: u32 = 0x0125DA15;
+            let source_cell_form_id: u32 = 0x002628FE;
+            let target_cell_form_id: u32 = 0x012628FE;
+            let mhdt = cell_mhdt_blob(0x42);
+
+            let mut source_cell = cell_record(source_cell_form_id, "CellX19Y-52", 19, -52);
+            source_cell.subrecords.push(subrecord("MHDT", mhdt.clone()));
+            let source = plugin_with_name(
+                "SeventySix.esm",
+                "fo76",
+                Vec::new(),
+                projected_world_with_cell(source_world_form_id, source_cell),
+            );
+
+            let target_cell = cell_record(target_cell_form_id, "CellX19Y-52", 19, -52);
+            let mut target = plugin_with_name(
+                "B21_Appalachia.esp",
+                "fo4",
+                vec!["Fallout4.esm".to_string()],
+                projected_world_with_cell(target_world_form_id, target_cell),
+            );
+
+            let payload = sync_cell_max_height_from_source_worldspace(
+                &source,
+                &mut target,
+                "APPALACHIA",
+                "APPALACHIA",
+            );
+
+            assert_eq!(payload.source_cells_indexed, 1);
+            assert_eq!(payload.target_cells_seen, 1);
+            assert_eq!(payload.cells_changed, 1);
+            assert_eq!(payload.malformed_source_cells, 0);
+
+            let cell = find_record_by_form_id(&target.root_items, target_cell_form_id).expect("CELL");
+            let out = subrecord_data(cell, "MHDT").expect("MHDT");
+            assert_eq!(out.as_ref(), mhdt.as_slice());
+            let mhdt_index = cell
+                .subrecords
+                .iter()
+                .position(|subrecord| subrecord.signature.as_str() == "MHDT")
+                .expect("MHDT index");
+            let xclc_index = cell
+                .subrecords
+                .iter()
+                .position(|subrecord| subrecord.signature.as_str() == "XCLC")
+                .expect("XCLC index");
+            assert!(xclc_index < mhdt_index);
+
+        }
+        // sync_cell_max_height_skips_malformed_source
+        {
+            let source_world_form_id: u32 = 0x0025DA15;
+            let target_world_form_id: u32 = 0x0125DA15;
+            let mut source_cell = cell_record(0x002628FE, "CellX19Y-52", 19, -52);
+            let mut short = cell_mhdt_blob(0);
+            short.truncate(1027);
+            source_cell.subrecords.push(subrecord("MHDT", short));
+            let source = plugin_with_name(
+                "SeventySix.esm",
+                "fo76",
+                Vec::new(),
+                projected_world_with_cell(source_world_form_id, source_cell),
+            );
+
+            let target_cell = cell_record(0x012628FE, "CellX19Y-52", 19, -52);
+            let mut target = plugin_with_name(
+                "B21_Appalachia.esp",
+                "fo4",
+                vec!["Fallout4.esm".to_string()],
+                projected_world_with_cell(target_world_form_id, target_cell),
+            );
+
+            let payload = sync_cell_max_height_from_source_worldspace(
+                &source,
+                &mut target,
+                "APPALACHIA",
+                "APPALACHIA",
+            );
+
+            assert_eq!(payload.source_cells_indexed, 0);
+            assert_eq!(payload.malformed_source_cells, 1);
+            assert_eq!(payload.cells_changed, 0);
+            let cell = find_record_by_form_id(&target.root_items, 0x012628FE).expect("CELL");
+            assert!(subrecord_data(cell, "MHDT").is_none());
+
+        }
     }
 
     fn cell_mhdt_blob(fill: u8) -> Vec<u8> {
         let mut data = 128.0f32.to_le_bytes().to_vec();
         data.extend(std::iter::repeat(fill).take(1024));
         data
-    }
-
-    #[test]
-    fn sync_cell_max_height_from_source_tags_projected_exterior_cells() {
-        let source_world_form_id: u32 = 0x0025DA15;
-        let target_world_form_id: u32 = 0x0125DA15;
-        let source_cell_form_id: u32 = 0x002628FE;
-        let target_cell_form_id: u32 = 0x012628FE;
-        let mhdt = cell_mhdt_blob(0x42);
-
-        let mut source_cell = cell_record(source_cell_form_id, "CellX19Y-52", 19, -52);
-        source_cell.subrecords.push(subrecord("MHDT", mhdt.clone()));
-        let source = plugin_with_name(
-            "SeventySix.esm",
-            "fo76",
-            Vec::new(),
-            projected_world_with_cell(source_world_form_id, source_cell),
-        );
-
-        let target_cell = cell_record(target_cell_form_id, "CellX19Y-52", 19, -52);
-        let mut target = plugin_with_name(
-            "B21_Appalachia.esp",
-            "fo4",
-            vec!["Fallout4.esm".to_string()],
-            projected_world_with_cell(target_world_form_id, target_cell),
-        );
-
-        let payload = sync_cell_max_height_from_source_worldspace(
-            &source,
-            &mut target,
-            "APPALACHIA",
-            "APPALACHIA",
-        );
-
-        assert_eq!(payload.source_cells_indexed, 1);
-        assert_eq!(payload.target_cells_seen, 1);
-        assert_eq!(payload.cells_changed, 1);
-        assert_eq!(payload.malformed_source_cells, 0);
-
-        let cell = find_record_by_form_id(&target.root_items, target_cell_form_id).expect("CELL");
-        let out = subrecord_data(cell, "MHDT").expect("MHDT");
-        assert_eq!(out.as_ref(), mhdt.as_slice());
-        let mhdt_index = cell
-            .subrecords
-            .iter()
-            .position(|subrecord| subrecord.signature.as_str() == "MHDT")
-            .expect("MHDT index");
-        let xclc_index = cell
-            .subrecords
-            .iter()
-            .position(|subrecord| subrecord.signature.as_str() == "XCLC")
-            .expect("XCLC index");
-        assert!(xclc_index < mhdt_index);
-    }
-
-    #[test]
-    fn sync_cell_max_height_skips_malformed_source() {
-        let source_world_form_id: u32 = 0x0025DA15;
-        let target_world_form_id: u32 = 0x0125DA15;
-        let mut source_cell = cell_record(0x002628FE, "CellX19Y-52", 19, -52);
-        let mut short = cell_mhdt_blob(0);
-        short.truncate(1027);
-        source_cell.subrecords.push(subrecord("MHDT", short));
-        let source = plugin_with_name(
-            "SeventySix.esm",
-            "fo76",
-            Vec::new(),
-            projected_world_with_cell(source_world_form_id, source_cell),
-        );
-
-        let target_cell = cell_record(0x012628FE, "CellX19Y-52", 19, -52);
-        let mut target = plugin_with_name(
-            "B21_Appalachia.esp",
-            "fo4",
-            vec!["Fallout4.esm".to_string()],
-            projected_world_with_cell(target_world_form_id, target_cell),
-        );
-
-        let payload = sync_cell_max_height_from_source_worldspace(
-            &source,
-            &mut target,
-            "APPALACHIA",
-            "APPALACHIA",
-        );
-
-        assert_eq!(payload.source_cells_indexed, 0);
-        assert_eq!(payload.malformed_source_cells, 1);
-        assert_eq!(payload.cells_changed, 0);
-        let cell = find_record_by_form_id(&target.root_items, 0x012628FE).expect("CELL");
-        assert!(subrecord_data(cell, "MHDT").is_none());
-    }
-
-    #[test]
-    fn placement_base_collection_includes_actor_bases() {
-        let npc = record("NPC_", 0x00123456, Some("AppalachiaActorBase"));
-        let mut achr = record("ACHR", 0x0010AA00, None);
-        achr.subrecords
-            .push(subrecord("NAME", 0x00123456_u32.to_le_bytes().to_vec()));
-        let plugin = plugin(vec![top_group("NPC_", vec![ParsedItem::Record(npc)])]);
-        let locator = build_locator_section(&plugin);
-        let mut base_keys = Vec::new();
-        let mut base_seen = BTreeSet::new();
-        let mut leveled_base_entry_keys = Vec::new();
-        let mut leveled_base_entry_seen = BTreeSet::new();
-        let mut layer_keys = Vec::new();
-        let mut layer_seen = BTreeSet::new();
-
-        append_static_placement_base_key(
-            &plugin,
-            &locator,
-            &achr,
-            &mut base_keys,
-            &mut base_seen,
-            &mut leveled_base_entry_keys,
-            &mut leveled_base_entry_seen,
-            &mut layer_keys,
-            &mut layer_seen,
-        );
-
-        assert_eq!(base_keys, vec!["SeventySix.esm:123456"]);
-        assert!(leveled_base_entry_keys.is_empty());
-        assert!(layer_keys.is_empty());
     }
 
     fn placed_vmad_object_property(
@@ -7794,662 +7852,670 @@ mod tests {
     }
 
     #[test]
-    fn placed_vmad_rewrite_disambiguates_source_self_from_target_master_collision() {
-        let source = plugin_with_name("SeventySix.esm", "fo76", Vec::new(), Vec::new());
-        let target = TargetFormIdContext {
-            plugin_name: "SeventySix.esm".to_string(),
-            masters: vec!["Fallout4.esm".to_string()],
-            own_prefix: 0x0100_0000,
-        };
-        let target_plugin = plugin_with_name(
-            "SeventySix.esm",
-            "fo4",
-            target.masters.clone(),
-            vec![top_group(
-                "QUST",
-                vec![ParsedItem::Record(record(
+    fn placed_child_ref_rewrite() {
+        // placed_vmad_rewrite_disambiguates_source_self_from_target_master_collision
+        {
+            let source = plugin_with_name("SeventySix.esm", "fo76", Vec::new(), Vec::new());
+            let target = TargetFormIdContext {
+                plugin_name: "SeventySix.esm".to_string(),
+                masters: vec!["Fallout4.esm".to_string()],
+                own_prefix: 0x0100_0000,
+            };
+            let target_plugin = plugin_with_name(
+                "SeventySix.esm",
+                "fo4",
+                target.masters.clone(),
+                vec![top_group(
                     "QUST",
-                    0x0101_C035,
-                    Some("RE_EcologicalBalance"),
-                ))],
-            )],
-        );
-        let target_locator = build_locator_section(&target_plugin);
-        let mut refr = record("REFR", 0x0011_B1D0, None);
-        refr.subrecords.push(subrecord(
-            "VMAD",
-            placed_vmad_object_property(
+                    vec![ParsedItem::Record(record(
+                        "QUST",
+                        0x0101_C035,
+                        Some("RE_EcologicalBalance"),
+                    ))],
+                )],
+            );
+            let target_locator = build_locator_section(&target_plugin);
+            let mut refr = record("REFR", 0x0011_B1D0, None);
+            refr.subrecords.push(subrecord(
+                "VMAD",
+                placed_vmad_object_property(
+                    source.plugin_name.as_str(),
+                    &source.header.masters,
+                    source.plugin_name.as_str(),
+                    "01C035",
+                ),
+            ));
+
+            let changed = rewrite_placed_child_local_refs(
+                &mut refr,
+                &source,
+                0,
+                &target,
+                &target_locator,
+                &BTreeMap::new(),
+            );
+
+            assert_eq!(changed, 1);
+            let data = subrecord_data(&refr, "VMAD").expect("VMAD");
+            let decoded = authoring::authoring_serialize::compact_vmad_payload_json(
+                data.as_ref(),
+                &target.masters,
+                target.plugin_name.as_str(),
+                None,
+            )
+            .expect("rewritten VMAD");
+            assert_eq!(
+                decoded["Scripts"][0]["Properties"][0]["Value"]["FormID"]["reference"]["plugin"],
+                serde_json::json!("SeventySix.esm")
+            );
+            assert_eq!(
+                decoded["Scripts"][0]["Properties"][0]["Value"]["FormID"]["reference"]["object_id"],
+                serde_json::json!("01C035")
+            );
+
+        }
+        // placed_vmad_rewrite_preserves_genuine_source_master_reference
+        {
+            let source = plugin_with_name(
+                "SourcePatch.esm",
+                "fo76",
+                vec!["Fallout4.esm".to_string()],
+                Vec::new(),
+            );
+            let target = TargetFormIdContext {
+                plugin_name: "SeventySix.esm".to_string(),
+                masters: vec!["Fallout4.esm".to_string()],
+                own_prefix: 0x0100_0000,
+            };
+            let target_plugin =
+                plugin_with_name("SeventySix.esm", "fo4", target.masters.clone(), Vec::new());
+            let target_locator = build_locator_section(&target_plugin);
+            let vmad = placed_vmad_object_property(
                 source.plugin_name.as_str(),
                 &source.header.masters,
-                source.plugin_name.as_str(),
+                "Fallout4.esm",
                 "01C035",
-            ),
-        ));
+            );
+            let mut refr = record("REFR", 0x0111_B1D0, None);
+            refr.subrecords.push(subrecord("VMAD", vmad.clone()));
 
-        let changed = rewrite_placed_child_local_refs(
-            &mut refr,
-            &source,
-            0,
-            &target,
-            &target_locator,
-            &BTreeMap::new(),
-        );
-
-        assert_eq!(changed, 1);
-        let data = subrecord_data(&refr, "VMAD").expect("VMAD");
-        let decoded = authoring::authoring_serialize::compact_vmad_payload_json(
-            data.as_ref(),
-            &target.masters,
-            target.plugin_name.as_str(),
-            None,
-        )
-        .expect("rewritten VMAD");
-        assert_eq!(
-            decoded["Scripts"][0]["Properties"][0]["Value"]["FormID"]["reference"]["plugin"],
-            serde_json::json!("SeventySix.esm")
-        );
-        assert_eq!(
-            decoded["Scripts"][0]["Properties"][0]["Value"]["FormID"]["reference"]["object_id"],
-            serde_json::json!("01C035")
-        );
-    }
-
-    #[test]
-    fn placed_vmad_rewrite_preserves_genuine_source_master_reference() {
-        let source = plugin_with_name(
-            "SourcePatch.esm",
-            "fo76",
-            vec!["Fallout4.esm".to_string()],
-            Vec::new(),
-        );
-        let target = TargetFormIdContext {
-            plugin_name: "SeventySix.esm".to_string(),
-            masters: vec!["Fallout4.esm".to_string()],
-            own_prefix: 0x0100_0000,
-        };
-        let target_plugin =
-            plugin_with_name("SeventySix.esm", "fo4", target.masters.clone(), Vec::new());
-        let target_locator = build_locator_section(&target_plugin);
-        let vmad = placed_vmad_object_property(
-            source.plugin_name.as_str(),
-            &source.header.masters,
-            "Fallout4.esm",
-            "01C035",
-        );
-        let mut refr = record("REFR", 0x0111_B1D0, None);
-        refr.subrecords.push(subrecord("VMAD", vmad.clone()));
-
-        let changed = rewrite_placed_child_local_refs(
-            &mut refr,
-            &source,
-            1,
-            &target,
-            &target_locator,
-            &BTreeMap::new(),
-        );
-
-        assert_eq!(changed, 0);
-        assert_eq!(subrecord_data(&refr, "VMAD").expect("VMAD").as_ref(), vmad);
-    }
-
-    #[test]
-    fn placed_child_local_ref_rewrite_maps_xlkr_keyword_and_ref() {
-        let source = plugin(Vec::new());
-        let target = TargetFormIdContext {
-            plugin_name: "B21_Appalachia.esp".to_string(),
-            masters: vec!["Fallout4.esm".to_string()],
-            own_prefix: 0x0100_0000,
-        };
-        let target_plugin = plugin_with_name(
-            "B21_Appalachia.esp",
-            "fo4",
-            target.masters.clone(),
-            Vec::new(),
-        );
-        let target_locator = build_locator_section(&target_plugin);
-        let mut achr = record("ACHR", 0x0055CBBB, None);
-        let mut xlkr = Vec::new();
-        xlkr.extend_from_slice(&0x0055DE21_u32.to_le_bytes());
-        xlkr.extend_from_slice(&0x0058DBBB_u32.to_le_bytes());
-        achr.subrecords.push(subrecord("XLKR", xlkr));
-
-        let changed = rewrite_placed_child_local_refs(
-            &mut achr,
-            &source,
-            0,
-            &target,
-            &target_locator,
-            &BTreeMap::new(),
-        );
-
-        assert_eq!(changed, 2);
-        let data = subrecord_data(&achr, "XLKR").expect("XLKR");
-        assert_eq!(
-            u32::from_le_bytes([data[0], data[1], data[2], data[3]]),
-            0x0155DE21
-        );
-        assert_eq!(
-            u32::from_le_bytes([data[4], data[5], data[6], data[7]]),
-            0x0158DBBB
-        );
-    }
-
-    #[test]
-    fn placed_child_local_ref_rewrite_maps_xndp_offset0_only() {
-        let source = plugin(Vec::new());
-        let target = TargetFormIdContext {
-            plugin_name: "B21_Appalachia.esp".to_string(),
-            masters: vec!["Fallout4.esm".to_string()],
-            own_prefix: 0x0100_0000,
-        };
-        let target_plugin = plugin_with_name(
-            "B21_Appalachia.esp",
-            "fo4",
-            target.masters.clone(),
-            Vec::new(),
-        );
-        let target_locator = build_locator_section(&target_plugin);
-        let mut refr = record("REFR", 0x0055CBBB, None);
-        // struct:I,h,B,B — formid at offset 0, int16 triangle index at offset 4,
-        // two trailing bytes. Only offset 0 may be remapped.
-        let mut xndp = Vec::new();
-        xndp.extend_from_slice(&0x0049994D_u32.to_le_bytes());
-        xndp.extend_from_slice(&0x1234_u16.to_le_bytes());
-        xndp.push(0xAB);
-        xndp.push(0xCD);
-        refr.subrecords.push(subrecord("XNDP", xndp));
-
-        let changed = rewrite_placed_child_local_refs(
-            &mut refr,
-            &source,
-            0,
-            &target,
-            &target_locator,
-            &BTreeMap::new(),
-        );
-
-        assert_eq!(changed, 1);
-        let data = subrecord_data(&refr, "XNDP").expect("XNDP");
-        assert_eq!(
-            u32::from_le_bytes([data[0], data[1], data[2], data[3]]),
-            0x0149994D
-        );
-        // Offset 4 (int16 triangle index) and trailing bytes untouched.
-        assert_eq!(u16::from_le_bytes([data[4], data[5]]), 0x1234);
-        assert_eq!(data[6], 0xAB);
-        assert_eq!(data[7], 0xCD);
-    }
-
-    #[test]
-    fn placed_child_local_ref_rewrite_maps_xtnm_offset0() {
-        let source = plugin(Vec::new());
-        let target = TargetFormIdContext {
-            plugin_name: "B21_Appalachia.esp".to_string(),
-            masters: vec!["Fallout4.esm".to_string()],
-            own_prefix: 0x0100_0000,
-        };
-        let target_plugin = plugin_with_name(
-            "B21_Appalachia.esp",
-            "fo4",
-            target.masters.clone(),
-            Vec::new(),
-        );
-        let target_locator = build_locator_section(&target_plugin);
-        let mut refr = record("REFR", 0x0055CBBB, None);
-        // XTNM is a bare 4-byte FormID (Teleport Loc Name → MESG). FO76 master
-        // byte 00 must be remapped to 07 (own-plugin index after copy).
-        refr.subrecords
-            .push(subrecord("XTNM", 0x0032BE70_u32.to_le_bytes().to_vec()));
-
-        let changed = rewrite_placed_child_local_refs(
-            &mut refr,
-            &source,
-            0,
-            &target,
-            &target_locator,
-            &BTreeMap::new(),
-        );
-
-        assert_eq!(changed, 1);
-        let data = subrecord_data(&refr, "XTNM").expect("XTNM");
-        assert_eq!(
-            u32::from_le_bytes([data[0], data[1], data[2], data[3]]),
-            0x0132BE70
-        );
-    }
-
-    #[test]
-    fn placed_child_local_ref_rewrite_maps_reference_group() {
-        let source = plugin(Vec::new());
-        let target = TargetFormIdContext {
-            plugin_name: "B21_Appalachia.esp".to_string(),
-            masters: vec!["Fallout4.esm".to_string()],
-            own_prefix: 0x0100_0000,
-        };
-        let target_plugin = plugin_with_name(
-            "B21_Appalachia.esp",
-            "fo4",
-            target.masters.clone(),
-            Vec::new(),
-        );
-        let target_locator = build_locator_section(&target_plugin);
-        let mut refr = record("REFR", 0x0055CBBB, None);
-        refr.subrecords
-            .push(subrecord("XRFG", 0x001B1A6E_u32.to_le_bytes().to_vec()));
-
-        let changed = rewrite_placed_child_local_refs(
-            &mut refr,
-            &source,
-            0,
-            &target,
-            &target_locator,
-            &BTreeMap::new(),
-        );
-
-        assert_eq!(changed, 1);
-        let data = subrecord_data(&refr, "XRFG").expect("XRFG");
-        assert_eq!(
-            u32::from_le_bytes([data[0], data[1], data[2], data[3]]),
-            0x011B1A6E
-        );
-    }
-
-    #[test]
-    fn placed_child_local_ref_rewrite_maps_activate_parent() {
-        let source = plugin(Vec::new());
-        let target = TargetFormIdContext {
-            plugin_name: "B21_Appalachia.esp".to_string(),
-            masters: vec!["Fallout4.esm".to_string()],
-            own_prefix: 0x0100_0000,
-        };
-        let target_plugin = plugin_with_name(
-            "B21_Appalachia.esp",
-            "fo4",
-            target.masters.clone(),
-            Vec::new(),
-        );
-        let target_locator = build_locator_section(&target_plugin);
-        let mut achr = record("ACHR", 0x0055CBBB, None);
-        let mut xapr = Vec::new();
-        xapr.extend_from_slice(&0x0081CC71_u32.to_le_bytes());
-        xapr.extend_from_slice(&0_u32.to_le_bytes());
-        achr.subrecords.push(subrecord("XAPR", xapr));
-
-        let changed = rewrite_placed_child_local_refs(
-            &mut achr,
-            &source,
-            0,
-            &target,
-            &target_locator,
-            &BTreeMap::new(),
-        );
-
-        assert_eq!(changed, 1);
-        let data = subrecord_data(&achr, "XAPR").expect("XAPR");
-        assert_eq!(
-            u32::from_le_bytes([data[0], data[1], data[2], data[3]]),
-            0x0181CC71
-        );
-    }
-
-    #[test]
-    fn placed_child_local_ref_rewrite_maps_xloc_key_offset4() {
-        let source = plugin(Vec::new());
-        let target = TargetFormIdContext {
-            plugin_name: "B21_Appalachia.esp".to_string(),
-            masters: vec!["Fallout4.esm".to_string()],
-            own_prefix: 0x0100_0000,
-        };
-        let target_plugin = plugin_with_name(
-            "B21_Appalachia.esp",
-            "fo4",
-            target.masters.clone(),
-            Vec::new(),
-        );
-        let target_locator = build_locator_section(&target_plugin);
-        let mut refr = record("REFR", 0x0055CBBB, None);
-        let mut xloc = vec![0, 0, 0, 0];
-        xloc.extend_from_slice(&0x0055ADA7_u32.to_le_bytes());
-        xloc.extend_from_slice(&[1, 2, 3, 4]);
-        refr.subrecords.push(subrecord("XLOC", xloc));
-
-        let changed = rewrite_placed_child_local_refs(
-            &mut refr,
-            &source,
-            0,
-            &target,
-            &target_locator,
-            &BTreeMap::new(),
-        );
-
-        assert_eq!(changed, 1);
-        let data = subrecord_data(&refr, "XLOC").expect("XLOC");
-        assert_eq!(&data[0..4], &[0, 0, 0, 0]);
-        assert_eq!(
-            u32::from_le_bytes([data[4], data[5], data[6], data[7]]),
-            0x0155ADA7
-        );
-        assert_eq!(&data[8..12], &[1, 2, 3, 4]);
-    }
-
-    #[test]
-    fn placed_child_local_ref_rewrite_maps_xplk_ref_offset0() {
-        let source = plugin(Vec::new());
-        let target = TargetFormIdContext {
-            plugin_name: "B21_Appalachia.esp".to_string(),
-            masters: vec!["Fallout4.esm".to_string()],
-            own_prefix: 0x0100_0000,
-        };
-        let target_plugin = plugin_with_name(
-            "B21_Appalachia.esp",
-            "fo4",
-            target.masters.clone(),
-            Vec::new(),
-        );
-        let target_locator = build_locator_section(&target_plugin);
-        let mut refr = record("REFR", 0x0055CBBB, None);
-        let mut xplk = Vec::new();
-        xplk.extend_from_slice(&0x0039E691_u32.to_le_bytes());
-        xplk.extend_from_slice(&0xAABBCCDD_u32.to_le_bytes());
-        refr.subrecords.push(subrecord("XPLK", xplk));
-
-        let changed = rewrite_placed_child_local_refs(
-            &mut refr,
-            &source,
-            0,
-            &target,
-            &target_locator,
-            &BTreeMap::new(),
-        );
-
-        assert_eq!(changed, 1);
-        let data = subrecord_data(&refr, "XPLK").expect("XPLK");
-        assert_eq!(
-            u32::from_le_bytes([data[0], data[1], data[2], data[3]]),
-            0x0139E691
-        );
-        assert_eq!(
-            u32::from_le_bytes([data[4], data[5], data[6], data[7]]),
-            0xAABBCCDD,
-            "XPLK trailing bytes are not a FormID"
-        );
-    }
-
-    #[test]
-    fn placed_child_local_ref_rewrite_maps_material_location_and_ref_types() {
-        let source = plugin_with_name(
-            "SeventySix.esm",
-            "fo76",
-            vec!["Fallout76.esm".to_string()],
-            Vec::new(),
-        );
-        let target = TargetFormIdContext {
-            plugin_name: "B21_Appalachia.esp".to_string(),
-            masters: vec!["Fallout4.esm".to_string()],
-            own_prefix: 0x0100_0000,
-        };
-        let target_plugin = plugin_with_name(
-            "B21_Appalachia.esp",
-            "fo4",
-            target.masters.clone(),
-            vec![
-                top_group(
-                    "MSWP",
-                    vec![ParsedItem::Record(record("MSWP", 0x01114118, None))],
-                ),
-                top_group(
-                    "LCTN",
-                    vec![ParsedItem::Record(record("LCTN", 0x012CD2E2, None))],
-                ),
-                top_group(
-                    "ECZN",
-                    vec![ParsedItem::Record(record("ECZN", 0x01358545, None))],
-                ),
-                top_group(
-                    "CELL",
-                    vec![ParsedItem::Record(record("CELL", 0x01262208, None))],
-                ),
-                top_group(
-                    "LCRT",
-                    vec![
-                        ParsedItem::Record(record("LCRT", 0x01111111, None)),
-                        ParsedItem::Record(record("LCRT", 0x01222222, None)),
-                    ],
-                ),
-            ],
-        );
-        let target_locator = build_locator_section(&target_plugin);
-        let mut refr = record("REFR", 0x0055CBBB, None);
-        refr.subrecords
-            .push(subrecord("XMSP", 0x00114118_u32.to_le_bytes().to_vec()));
-        refr.subrecords
-            .push(subrecord("XLCN", 0x002CD2E2_u32.to_le_bytes().to_vec()));
-        refr.subrecords
-            .push(subrecord("XEZN", 0x00358545_u32.to_le_bytes().to_vec()));
-        refr.subrecords
-            .push(subrecord("XCZC", 0x00262208_u32.to_le_bytes().to_vec()));
-        let mut xlrt = Vec::new();
-        xlrt.extend_from_slice(&0x00111111_u32.to_le_bytes());
-        xlrt.extend_from_slice(&0x00222222_u32.to_le_bytes());
-        refr.subrecords.push(subrecord("XLRT", xlrt));
-
-        let changed = rewrite_placed_child_local_refs(
-            &mut refr,
-            &source,
-            1,
-            &target,
-            &target_locator,
-            &BTreeMap::new(),
-        );
-
-        // changed still 6: the XEZN strip (+1) replaces the XEZN remap (+1);
-        // XMSP/XLCN/XCZC (+1 each) + XLRT (+2) = 5; total 6.
-        assert_eq!(changed, 6);
-        let xmsp = subrecord_data(&refr, "XMSP").expect("XMSP");
-        let xlcn = subrecord_data(&refr, "XLCN").expect("XLCN");
-        let xczc = subrecord_data(&refr, "XCZC").expect("XCZC");
-        let xlrt = subrecord_data(&refr, "XLRT").expect("XLRT");
-        // FO4 placed-ref XEZN must be ECZN; with no ECZN to map to, XEZN is
-        // stripped from copied REFR/ACHR/PGRE rather than left pointing at a LCTN.
-        assert!(
-            subrecord_data(&refr, "XEZN").is_none(),
-            "REFR XEZN must be stripped (no valid FO4 ECZN target)"
-        );
-        assert_eq!(
-            u32::from_le_bytes([xmsp[0], xmsp[1], xmsp[2], xmsp[3]]),
-            0x01114118
-        );
-        assert_eq!(
-            u32::from_le_bytes([xlcn[0], xlcn[1], xlcn[2], xlcn[3]]),
-            0x012CD2E2
-        );
-        assert_eq!(
-            u32::from_le_bytes([xczc[0], xczc[1], xczc[2], xczc[3]]),
-            0x01262208
-        );
-        assert_eq!(
-            u32::from_le_bytes([xlrt[0], xlrt[1], xlrt[2], xlrt[3]]),
-            0x01111111
-        );
-        assert_eq!(
-            u32::from_le_bytes([xlrt[4], xlrt[5], xlrt[6], xlrt[7]]),
-            0x01222222
-        );
-    }
-
-    #[test]
-    fn placed_child_xezn_is_stripped_for_achr_and_pgre() {
-        // FO4 placed-ref XEZN must be an ECZN; FO76 has none and we synthesize
-        // none, so XEZN is stripped from every copied placed sig (ACHR/PGRE too,
-        // not just REFR) rather than left pointing at a LCTN.
-        let source = plugin(Vec::new());
-        let target = TargetFormIdContext {
-            plugin_name: "B21_Appalachia.esp".to_string(),
-            masters: vec!["Fallout4.esm".to_string()],
-            own_prefix: 0x0100_0000,
-        };
-        let target_plugin = plugin_with_name(
-            "B21_Appalachia.esp",
-            "fo4",
-            target.masters.clone(),
-            Vec::new(),
-        );
-        let target_locator = build_locator_section(&target_plugin);
-        for sig in ["ACHR", "PGRE"] {
-            let mut rec = record(sig, 0x0055CBBB, None);
-            rec.subrecords
-                .push(subrecord("XEZN", 0x00358545_u32.to_le_bytes().to_vec()));
             let changed = rewrite_placed_child_local_refs(
-                &mut rec,
+                &mut refr,
                 &source,
                 1,
                 &target,
                 &target_locator,
                 &BTreeMap::new(),
             );
-            assert_eq!(changed, 1, "{sig} XEZN strip should count one change");
-            assert!(
-                subrecord_data(&rec, "XEZN").is_none(),
-                "{sig} XEZN must be stripped"
+
+            assert_eq!(changed, 0);
+            assert_eq!(subrecord_data(&refr, "VMAD").expect("VMAD").as_ref(), vmad);
+
+        }
+        // placed_child_local_ref_rewrite_maps_xlkr_keyword_and_ref
+        {
+            let source = plugin(Vec::new());
+            let target = TargetFormIdContext {
+                plugin_name: "B21_Appalachia.esp".to_string(),
+                masters: vec!["Fallout4.esm".to_string()],
+                own_prefix: 0x0100_0000,
+            };
+            let target_plugin = plugin_with_name(
+                "B21_Appalachia.esp",
+                "fo4",
+                target.masters.clone(),
+                Vec::new(),
             );
+            let target_locator = build_locator_section(&target_plugin);
+            let mut achr = record("ACHR", 0x0055CBBB, None);
+            let mut xlkr = Vec::new();
+            xlkr.extend_from_slice(&0x0055DE21_u32.to_le_bytes());
+            xlkr.extend_from_slice(&0x0058DBBB_u32.to_le_bytes());
+            achr.subrecords.push(subrecord("XLKR", xlkr));
+
+            let changed = rewrite_placed_child_local_refs(
+                &mut achr,
+                &source,
+                0,
+                &target,
+                &target_locator,
+                &BTreeMap::new(),
+            );
+
+            assert_eq!(changed, 2);
+            let data = subrecord_data(&achr, "XLKR").expect("XLKR");
+            assert_eq!(
+                u32::from_le_bytes([data[0], data[1], data[2], data[3]]),
+                0x0155DE21
+            );
+            assert_eq!(
+                u32::from_le_bytes([data[4], data[5], data[6], data[7]]),
+                0x0158DBBB
+            );
+
+        }
+        // placed_child_local_ref_rewrite_maps_xndp_offset0_only
+        {
+            let source = plugin(Vec::new());
+            let target = TargetFormIdContext {
+                plugin_name: "B21_Appalachia.esp".to_string(),
+                masters: vec!["Fallout4.esm".to_string()],
+                own_prefix: 0x0100_0000,
+            };
+            let target_plugin = plugin_with_name(
+                "B21_Appalachia.esp",
+                "fo4",
+                target.masters.clone(),
+                Vec::new(),
+            );
+            let target_locator = build_locator_section(&target_plugin);
+            let mut refr = record("REFR", 0x0055CBBB, None);
+            // struct:I,h,B,B — formid at offset 0, int16 triangle index at offset 4,
+            // two trailing bytes. Only offset 0 may be remapped.
+            let mut xndp = Vec::new();
+            xndp.extend_from_slice(&0x0049994D_u32.to_le_bytes());
+            xndp.extend_from_slice(&0x1234_u16.to_le_bytes());
+            xndp.push(0xAB);
+            xndp.push(0xCD);
+            refr.subrecords.push(subrecord("XNDP", xndp));
+
+            let changed = rewrite_placed_child_local_refs(
+                &mut refr,
+                &source,
+                0,
+                &target,
+                &target_locator,
+                &BTreeMap::new(),
+            );
+
+            assert_eq!(changed, 1);
+            let data = subrecord_data(&refr, "XNDP").expect("XNDP");
+            assert_eq!(
+                u32::from_le_bytes([data[0], data[1], data[2], data[3]]),
+                0x0149994D
+            );
+            // Offset 4 (int16 triangle index) and trailing bytes untouched.
+            assert_eq!(u16::from_le_bytes([data[4], data[5]]), 0x1234);
+            assert_eq!(data[6], 0xAB);
+            assert_eq!(data[7], 0xCD);
+
+        }
+        // placed_child_local_ref_rewrite_maps_xtnm_offset0
+        {
+            let source = plugin(Vec::new());
+            let target = TargetFormIdContext {
+                plugin_name: "B21_Appalachia.esp".to_string(),
+                masters: vec!["Fallout4.esm".to_string()],
+                own_prefix: 0x0100_0000,
+            };
+            let target_plugin = plugin_with_name(
+                "B21_Appalachia.esp",
+                "fo4",
+                target.masters.clone(),
+                Vec::new(),
+            );
+            let target_locator = build_locator_section(&target_plugin);
+            let mut refr = record("REFR", 0x0055CBBB, None);
+            // XTNM is a bare 4-byte FormID (Teleport Loc Name → MESG). FO76 master
+            // byte 00 must be remapped to 07 (own-plugin index after copy).
+            refr.subrecords
+                .push(subrecord("XTNM", 0x0032BE70_u32.to_le_bytes().to_vec()));
+
+            let changed = rewrite_placed_child_local_refs(
+                &mut refr,
+                &source,
+                0,
+                &target,
+                &target_locator,
+                &BTreeMap::new(),
+            );
+
+            assert_eq!(changed, 1);
+            let data = subrecord_data(&refr, "XTNM").expect("XTNM");
+            assert_eq!(
+                u32::from_le_bytes([data[0], data[1], data[2], data[3]]),
+                0x0132BE70
+            );
+
+        }
+        // placed_child_local_ref_rewrite_maps_reference_group
+        {
+            let source = plugin(Vec::new());
+            let target = TargetFormIdContext {
+                plugin_name: "B21_Appalachia.esp".to_string(),
+                masters: vec!["Fallout4.esm".to_string()],
+                own_prefix: 0x0100_0000,
+            };
+            let target_plugin = plugin_with_name(
+                "B21_Appalachia.esp",
+                "fo4",
+                target.masters.clone(),
+                Vec::new(),
+            );
+            let target_locator = build_locator_section(&target_plugin);
+            let mut refr = record("REFR", 0x0055CBBB, None);
+            refr.subrecords
+                .push(subrecord("XRFG", 0x001B1A6E_u32.to_le_bytes().to_vec()));
+
+            let changed = rewrite_placed_child_local_refs(
+                &mut refr,
+                &source,
+                0,
+                &target,
+                &target_locator,
+                &BTreeMap::new(),
+            );
+
+            assert_eq!(changed, 1);
+            let data = subrecord_data(&refr, "XRFG").expect("XRFG");
+            assert_eq!(
+                u32::from_le_bytes([data[0], data[1], data[2], data[3]]),
+                0x011B1A6E
+            );
+
+        }
+        // placed_child_local_ref_rewrite_maps_activate_parent
+        {
+            let source = plugin(Vec::new());
+            let target = TargetFormIdContext {
+                plugin_name: "B21_Appalachia.esp".to_string(),
+                masters: vec!["Fallout4.esm".to_string()],
+                own_prefix: 0x0100_0000,
+            };
+            let target_plugin = plugin_with_name(
+                "B21_Appalachia.esp",
+                "fo4",
+                target.masters.clone(),
+                Vec::new(),
+            );
+            let target_locator = build_locator_section(&target_plugin);
+            let mut achr = record("ACHR", 0x0055CBBB, None);
+            let mut xapr = Vec::new();
+            xapr.extend_from_slice(&0x0081CC71_u32.to_le_bytes());
+            xapr.extend_from_slice(&0_u32.to_le_bytes());
+            achr.subrecords.push(subrecord("XAPR", xapr));
+
+            let changed = rewrite_placed_child_local_refs(
+                &mut achr,
+                &source,
+                0,
+                &target,
+                &target_locator,
+                &BTreeMap::new(),
+            );
+
+            assert_eq!(changed, 1);
+            let data = subrecord_data(&achr, "XAPR").expect("XAPR");
+            assert_eq!(
+                u32::from_le_bytes([data[0], data[1], data[2], data[3]]),
+                0x0181CC71
+            );
+
+        }
+        // placed_child_local_ref_rewrite_maps_xloc_key_offset4
+        {
+            let source = plugin(Vec::new());
+            let target = TargetFormIdContext {
+                plugin_name: "B21_Appalachia.esp".to_string(),
+                masters: vec!["Fallout4.esm".to_string()],
+                own_prefix: 0x0100_0000,
+            };
+            let target_plugin = plugin_with_name(
+                "B21_Appalachia.esp",
+                "fo4",
+                target.masters.clone(),
+                Vec::new(),
+            );
+            let target_locator = build_locator_section(&target_plugin);
+            let mut refr = record("REFR", 0x0055CBBB, None);
+            let mut xloc = vec![0, 0, 0, 0];
+            xloc.extend_from_slice(&0x0055ADA7_u32.to_le_bytes());
+            xloc.extend_from_slice(&[1, 2, 3, 4]);
+            refr.subrecords.push(subrecord("XLOC", xloc));
+
+            let changed = rewrite_placed_child_local_refs(
+                &mut refr,
+                &source,
+                0,
+                &target,
+                &target_locator,
+                &BTreeMap::new(),
+            );
+
+            assert_eq!(changed, 1);
+            let data = subrecord_data(&refr, "XLOC").expect("XLOC");
+            assert_eq!(&data[0..4], &[0, 0, 0, 0]);
+            assert_eq!(
+                u32::from_le_bytes([data[4], data[5], data[6], data[7]]),
+                0x0155ADA7
+            );
+            assert_eq!(&data[8..12], &[1, 2, 3, 4]);
+
+        }
+        // placed_child_local_ref_rewrite_maps_xplk_ref_offset0
+        {
+            let source = plugin(Vec::new());
+            let target = TargetFormIdContext {
+                plugin_name: "B21_Appalachia.esp".to_string(),
+                masters: vec!["Fallout4.esm".to_string()],
+                own_prefix: 0x0100_0000,
+            };
+            let target_plugin = plugin_with_name(
+                "B21_Appalachia.esp",
+                "fo4",
+                target.masters.clone(),
+                Vec::new(),
+            );
+            let target_locator = build_locator_section(&target_plugin);
+            let mut refr = record("REFR", 0x0055CBBB, None);
+            let mut xplk = Vec::new();
+            xplk.extend_from_slice(&0x0039E691_u32.to_le_bytes());
+            xplk.extend_from_slice(&0xAABBCCDD_u32.to_le_bytes());
+            refr.subrecords.push(subrecord("XPLK", xplk));
+
+            let changed = rewrite_placed_child_local_refs(
+                &mut refr,
+                &source,
+                0,
+                &target,
+                &target_locator,
+                &BTreeMap::new(),
+            );
+
+            assert_eq!(changed, 1);
+            let data = subrecord_data(&refr, "XPLK").expect("XPLK");
+            assert_eq!(
+                u32::from_le_bytes([data[0], data[1], data[2], data[3]]),
+                0x0139E691
+            );
+            assert_eq!(
+                u32::from_le_bytes([data[4], data[5], data[6], data[7]]),
+                0xAABBCCDD,
+                "XPLK trailing bytes are not a FormID"
+            );
+
+        }
+        // placed_child_local_ref_rewrite_maps_material_location_and_ref_types
+        {
+            let source = plugin_with_name(
+                "SeventySix.esm",
+                "fo76",
+                vec!["Fallout76.esm".to_string()],
+                Vec::new(),
+            );
+            let target = TargetFormIdContext {
+                plugin_name: "B21_Appalachia.esp".to_string(),
+                masters: vec!["Fallout4.esm".to_string()],
+                own_prefix: 0x0100_0000,
+            };
+            let target_plugin = plugin_with_name(
+                "B21_Appalachia.esp",
+                "fo4",
+                target.masters.clone(),
+                vec![
+                    top_group(
+                        "MSWP",
+                        vec![ParsedItem::Record(record("MSWP", 0x01114118, None))],
+                    ),
+                    top_group(
+                        "LCTN",
+                        vec![ParsedItem::Record(record("LCTN", 0x012CD2E2, None))],
+                    ),
+                    top_group(
+                        "ECZN",
+                        vec![ParsedItem::Record(record("ECZN", 0x01358545, None))],
+                    ),
+                    top_group(
+                        "CELL",
+                        vec![ParsedItem::Record(record("CELL", 0x01262208, None))],
+                    ),
+                    top_group(
+                        "LCRT",
+                        vec![
+                            ParsedItem::Record(record("LCRT", 0x01111111, None)),
+                            ParsedItem::Record(record("LCRT", 0x01222222, None)),
+                        ],
+                    ),
+                ],
+            );
+            let target_locator = build_locator_section(&target_plugin);
+            let mut refr = record("REFR", 0x0055CBBB, None);
+            refr.subrecords
+                .push(subrecord("XMSP", 0x00114118_u32.to_le_bytes().to_vec()));
+            refr.subrecords
+                .push(subrecord("XLCN", 0x002CD2E2_u32.to_le_bytes().to_vec()));
+            refr.subrecords
+                .push(subrecord("XEZN", 0x00358545_u32.to_le_bytes().to_vec()));
+            refr.subrecords
+                .push(subrecord("XCZC", 0x00262208_u32.to_le_bytes().to_vec()));
+            let mut xlrt = Vec::new();
+            xlrt.extend_from_slice(&0x00111111_u32.to_le_bytes());
+            xlrt.extend_from_slice(&0x00222222_u32.to_le_bytes());
+            refr.subrecords.push(subrecord("XLRT", xlrt));
+
+            let changed = rewrite_placed_child_local_refs(
+                &mut refr,
+                &source,
+                1,
+                &target,
+                &target_locator,
+                &BTreeMap::new(),
+            );
+
+            // changed still 6: the XEZN strip (+1) replaces the XEZN remap (+1);
+            // XMSP/XLCN/XCZC (+1 each) + XLRT (+2) = 5; total 6.
+            assert_eq!(changed, 6);
+            let xmsp = subrecord_data(&refr, "XMSP").expect("XMSP");
+            let xlcn = subrecord_data(&refr, "XLCN").expect("XLCN");
+            let xczc = subrecord_data(&refr, "XCZC").expect("XCZC");
+            let xlrt = subrecord_data(&refr, "XLRT").expect("XLRT");
+            // FO4 placed-ref XEZN must be ECZN; with no ECZN to map to, XEZN is
+            // stripped from copied REFR/ACHR/PGRE rather than left pointing at a LCTN.
+            assert!(
+                subrecord_data(&refr, "XEZN").is_none(),
+                "REFR XEZN must be stripped (no valid FO4 ECZN target)"
+            );
+            assert_eq!(
+                u32::from_le_bytes([xmsp[0], xmsp[1], xmsp[2], xmsp[3]]),
+                0x01114118
+            );
+            assert_eq!(
+                u32::from_le_bytes([xlcn[0], xlcn[1], xlcn[2], xlcn[3]]),
+                0x012CD2E2
+            );
+            assert_eq!(
+                u32::from_le_bytes([xczc[0], xczc[1], xczc[2], xczc[3]]),
+                0x01262208
+            );
+            assert_eq!(
+                u32::from_le_bytes([xlrt[0], xlrt[1], xlrt[2], xlrt[3]]),
+                0x01111111
+            );
+            assert_eq!(
+                u32::from_le_bytes([xlrt[4], xlrt[5], xlrt[6], xlrt[7]]),
+                0x01222222
+            );
+
         }
     }
 
     #[test]
-    fn placed_child_empty_xrgd_is_stripped_from_refr_only() {
-        let source = plugin(Vec::new());
-        let target = TargetFormIdContext {
-            plugin_name: "B21_Appalachia.esp".to_string(),
-            masters: vec!["Fallout4.esm".to_string()],
-            own_prefix: 0x0100_0000,
-        };
-        let target_plugin = plugin_with_name(
-            "B21_Appalachia.esp",
-            "fo4",
-            target.masters.clone(),
-            Vec::new(),
-        );
-        let target_locator = build_locator_section(&target_plugin);
+    fn placed_child_strip_and_drop() {
+        // placed_child_xezn_is_stripped_for_achr_and_pgre
+        {
+            // FO4 placed-ref XEZN must be an ECZN; FO76 has none and we synthesize
+            // none, so XEZN is stripped from every copied placed sig (ACHR/PGRE too,
+            // not just REFR) rather than left pointing at a LCTN.
+            let source = plugin(Vec::new());
+            let target = TargetFormIdContext {
+                plugin_name: "B21_Appalachia.esp".to_string(),
+                masters: vec!["Fallout4.esm".to_string()],
+                own_prefix: 0x0100_0000,
+            };
+            let target_plugin = plugin_with_name(
+                "B21_Appalachia.esp",
+                "fo4",
+                target.masters.clone(),
+                Vec::new(),
+            );
+            let target_locator = build_locator_section(&target_plugin);
+            for sig in ["ACHR", "PGRE"] {
+                let mut rec = record(sig, 0x0055CBBB, None);
+                rec.subrecords
+                    .push(subrecord("XEZN", 0x00358545_u32.to_le_bytes().to_vec()));
+                let changed = rewrite_placed_child_local_refs(
+                    &mut rec,
+                    &source,
+                    1,
+                    &target,
+                    &target_locator,
+                    &BTreeMap::new(),
+                );
+                assert_eq!(changed, 1, "{sig} XEZN strip should count one change");
+                assert!(
+                    subrecord_data(&rec, "XEZN").is_none(),
+                    "{sig} XEZN must be stripped"
+                );
+            }
 
-        let mut refr = record("REFR", 0x0055CBBB, None);
-        let mut empty_xrgd = vec![0; 28];
-        empty_xrgd[19] = 0x80;
-        empty_xrgd[23] = 0x80;
-        empty_xrgd[27] = 0x80;
-        refr.subrecords.push(subrecord("XRGD", empty_xrgd.clone()));
-        let changed = rewrite_placed_child_local_refs(
-            &mut refr,
-            &source,
-            1,
-            &target,
-            &target_locator,
-            &BTreeMap::new(),
-        );
-        assert_eq!(changed, 1);
-        assert!(subrecord_data(&refr, "XRGD").is_none());
+        }
+        // placed_child_empty_xrgd_is_stripped_from_refr_only
+        {
+            let source = plugin(Vec::new());
+            let target = TargetFormIdContext {
+                plugin_name: "B21_Appalachia.esp".to_string(),
+                masters: vec!["Fallout4.esm".to_string()],
+                own_prefix: 0x0100_0000,
+            };
+            let target_plugin = plugin_with_name(
+                "B21_Appalachia.esp",
+                "fo4",
+                target.masters.clone(),
+                Vec::new(),
+            );
+            let target_locator = build_locator_section(&target_plugin);
 
-        let mut nonzero_refr = record("REFR", 0x0055CBBC, None);
-        let mut xrgd = vec![0; 28];
-        xrgd[4] = 1;
-        nonzero_refr.subrecords.push(subrecord("XRGD", xrgd));
-        let changed = rewrite_placed_child_local_refs(
-            &mut nonzero_refr,
-            &source,
-            1,
-            &target,
-            &target_locator,
-            &BTreeMap::new(),
-        );
-        assert_eq!(changed, 0);
-        assert!(subrecord_data(&nonzero_refr, "XRGD").is_some());
+            let mut refr = record("REFR", 0x0055CBBB, None);
+            let mut empty_xrgd = vec![0; 28];
+            empty_xrgd[19] = 0x80;
+            empty_xrgd[23] = 0x80;
+            empty_xrgd[27] = 0x80;
+            refr.subrecords.push(subrecord("XRGD", empty_xrgd.clone()));
+            let changed = rewrite_placed_child_local_refs(
+                &mut refr,
+                &source,
+                1,
+                &target,
+                &target_locator,
+                &BTreeMap::new(),
+            );
+            assert_eq!(changed, 1);
+            assert!(subrecord_data(&refr, "XRGD").is_none());
 
-        let mut achr = record("ACHR", 0x0055CBBD, None);
-        achr.subrecords.push(subrecord("XRGD", empty_xrgd));
-        let changed = rewrite_placed_child_local_refs(
-            &mut achr,
-            &source,
-            1,
-            &target,
-            &target_locator,
-            &BTreeMap::new(),
-        );
-        assert_eq!(changed, 0);
-        assert!(subrecord_data(&achr, "XRGD").is_some());
-    }
+            let mut nonzero_refr = record("REFR", 0x0055CBBC, None);
+            let mut xrgd = vec![0; 28];
+            xrgd[4] = 1;
+            nonzero_refr.subrecords.push(subrecord("XRGD", xrgd));
+            let changed = rewrite_placed_child_local_refs(
+                &mut nonzero_refr,
+                &source,
+                1,
+                &target,
+                &target_locator,
+                &BTreeMap::new(),
+            );
+            assert_eq!(changed, 0);
+            assert!(subrecord_data(&nonzero_refr, "XRGD").is_some());
 
-    #[test]
-    fn placed_child_local_ref_drop_keeps_xlkr_for_postcopy_validation() {
-        // XLKR is deferred to post-copy `normalize_placed_records`: the per-pass
-        // `target_existing_form_ids` snapshot can't see linked refs copied in a
-        // different pass, so dropping here strands actor sleep/sandbox packages.
-        let target = TargetFormIdContext {
-            plugin_name: "B21_Appalachia.esp".to_string(),
-            masters: vec!["Fallout4.esm".to_string()],
-            own_prefix: 0x0100_0000,
-        };
-        let mut existing = BTreeSet::new();
-        existing.insert(0x01195411);
-        let mut refr = record("REFR", 0x014EA534, None);
-        let mut xlkr = Vec::new();
-        xlkr.extend_from_slice(&0x01195411_u32.to_le_bytes());
-        // Linked ref absent from THIS pass's snapshot (copied in another pass).
-        xlkr.extend_from_slice(&0x013BEF28_u32.to_le_bytes());
-        refr.subrecords.push(subrecord("XLKR", xlkr));
+            let mut achr = record("ACHR", 0x0055CBBD, None);
+            achr.subrecords.push(subrecord("XRGD", empty_xrgd));
+            let changed = rewrite_placed_child_local_refs(
+                &mut achr,
+                &source,
+                1,
+                &target,
+                &target_locator,
+                &BTreeMap::new(),
+            );
+            assert_eq!(changed, 0);
+            assert!(subrecord_data(&achr, "XRGD").is_some());
 
-        let removed = drop_unresolved_placed_child_local_refs(&mut refr, &target, &existing);
+        }
+        // placed_child_local_ref_drop_keeps_xlkr_for_postcopy_validation
+        {
+            // XLKR is deferred to post-copy `normalize_placed_records`: the per-pass
+            // `target_existing_form_ids` snapshot can't see linked refs copied in a
+            // different pass, so dropping here strands actor sleep/sandbox packages.
+            let target = TargetFormIdContext {
+                plugin_name: "B21_Appalachia.esp".to_string(),
+                masters: vec!["Fallout4.esm".to_string()],
+                own_prefix: 0x0100_0000,
+            };
+            let mut existing = BTreeSet::new();
+            existing.insert(0x01195411);
+            let mut refr = record("REFR", 0x014EA534, None);
+            let mut xlkr = Vec::new();
+            xlkr.extend_from_slice(&0x01195411_u32.to_le_bytes());
+            // Linked ref absent from THIS pass's snapshot (copied in another pass).
+            xlkr.extend_from_slice(&0x013BEF28_u32.to_le_bytes());
+            refr.subrecords.push(subrecord("XLKR", xlkr));
 
-        assert_eq!(removed, 0);
-        assert!(subrecord_data(&refr, "XLKR").is_some());
-    }
+            let removed = drop_unresolved_placed_child_local_refs(&mut refr, &target, &existing);
 
-    #[test]
-    fn placed_child_missing_local_ref_drop_defers_enable_and_activate_parent_refs() {
-        let target = TargetFormIdContext {
-            plugin_name: "B21_Appalachia.esp".to_string(),
-            masters: vec!["Fallout4.esm".to_string()],
-            own_prefix: 0x0100_0000,
-        };
-        let existing = BTreeSet::new();
-        let mut refr = record("REFR", 0x014EA534, None);
-        let mut xesp = Vec::new();
-        xesp.extend_from_slice(&0x014337F1_u32.to_le_bytes());
-        xesp.extend_from_slice(&0_u32.to_le_bytes());
-        let mut xapr = Vec::new();
-        xapr.extend_from_slice(&0x0181CC71_u32.to_le_bytes());
-        xapr.extend_from_slice(&0_u32.to_le_bytes());
-        refr.subrecords.push(subrecord("XESP", xesp));
-        refr.subrecords.push(subrecord("XAPR", xapr));
+            assert_eq!(removed, 0);
+            assert!(subrecord_data(&refr, "XLKR").is_some());
 
-        let removed = drop_unresolved_placed_child_local_refs(&mut refr, &target, &existing);
+        }
+        // placed_child_missing_local_ref_drop_defers_enable_and_activate_parent_refs
+        {
+            let target = TargetFormIdContext {
+                plugin_name: "B21_Appalachia.esp".to_string(),
+                masters: vec!["Fallout4.esm".to_string()],
+                own_prefix: 0x0100_0000,
+            };
+            let existing = BTreeSet::new();
+            let mut refr = record("REFR", 0x014EA534, None);
+            let mut xesp = Vec::new();
+            xesp.extend_from_slice(&0x014337F1_u32.to_le_bytes());
+            xesp.extend_from_slice(&0_u32.to_le_bytes());
+            let mut xapr = Vec::new();
+            xapr.extend_from_slice(&0x0181CC71_u32.to_le_bytes());
+            xapr.extend_from_slice(&0_u32.to_le_bytes());
+            refr.subrecords.push(subrecord("XESP", xesp));
+            refr.subrecords.push(subrecord("XAPR", xapr));
 
-        // XESP enable-parent, like XAPR, must survive a cross-pass "missing" ref:
-        // its target is often a PERSISTENT ref copied in the persistent-cell pass.
-        assert_eq!(removed, 0);
-        assert!(subrecord_data(&refr, "XESP").is_some());
-        assert!(subrecord_data(&refr, "XAPR").is_some());
-    }
+            let removed = drop_unresolved_placed_child_local_refs(&mut refr, &target, &existing);
 
-    #[test]
-    fn placed_child_missing_local_ref_drop_removes_unresolved_material_and_ref_types() {
-        let target = TargetFormIdContext {
-            plugin_name: "B21_Appalachia.esp".to_string(),
-            masters: vec!["Fallout4.esm".to_string()],
-            own_prefix: 0x0100_0000,
-        };
-        let existing = BTreeSet::new();
-        let mut refr = record("REFR", 0x014EA534, None);
-        refr.subrecords
-            .push(subrecord("XMSP", 0x01114118_u32.to_le_bytes().to_vec()));
-        let mut xlrt = Vec::new();
-        xlrt.extend_from_slice(&0x01000001_u32.to_le_bytes());
-        xlrt.extend_from_slice(&0x01000002_u32.to_le_bytes());
-        refr.subrecords.push(subrecord("XLRT", xlrt));
+            // XESP enable-parent, like XAPR, must survive a cross-pass "missing" ref:
+            // its target is often a PERSISTENT ref copied in the persistent-cell pass.
+            assert_eq!(removed, 0);
+            assert!(subrecord_data(&refr, "XESP").is_some());
+            assert!(subrecord_data(&refr, "XAPR").is_some());
 
-        let removed = drop_unresolved_placed_child_local_refs(&mut refr, &target, &existing);
+        }
+        // placed_child_missing_local_ref_drop_removes_unresolved_material_and_ref_types
+        {
+            let target = TargetFormIdContext {
+                plugin_name: "B21_Appalachia.esp".to_string(),
+                masters: vec!["Fallout4.esm".to_string()],
+                own_prefix: 0x0100_0000,
+            };
+            let existing = BTreeSet::new();
+            let mut refr = record("REFR", 0x014EA534, None);
+            refr.subrecords
+                .push(subrecord("XMSP", 0x01114118_u32.to_le_bytes().to_vec()));
+            let mut xlrt = Vec::new();
+            xlrt.extend_from_slice(&0x01000001_u32.to_le_bytes());
+            xlrt.extend_from_slice(&0x01000002_u32.to_le_bytes());
+            refr.subrecords.push(subrecord("XLRT", xlrt));
 
-        assert_eq!(removed, 2);
-        assert!(subrecord_data(&refr, "XMSP").is_none());
-        assert!(subrecord_data(&refr, "XLRT").is_none());
+            let removed = drop_unresolved_placed_child_local_refs(&mut refr, &target, &existing);
+
+            assert_eq!(removed, 2);
+            assert!(subrecord_data(&refr, "XMSP").is_none());
+            assert!(subrecord_data(&refr, "XLRT").is_none());
+
+        }
     }
 
     /// The parallel prepare kernel must reproduce the serial loop's
@@ -8639,602 +8705,580 @@ mod tests {
     }
 
     #[test]
-    fn placed_child_batches_are_bounded_by_worker_count() {
-        assert_eq!(placed_child_batch_size(1), 64);
-        assert_eq!(placed_child_batch_size(4), 256);
-    }
-
-    #[test]
-    fn normalizes_fo76_refr_lod_header_flag_combinations_for_fo4() {
-        assert_eq!(
-            normalize_fo76_refr_lod_header_flags(0x0000_0500, 0x0000_2000),
-            0x0000_0400
-        );
-        assert_eq!(
-            normalize_fo76_refr_lod_header_flags(0x0000_0100, 0x0000_2001),
-            0
-        );
-        assert_eq!(
-            normalize_fo76_refr_lod_header_flags(0x0000_0100, 0x0000_2200),
-            0x0000_8100
-        );
-        assert_eq!(
-            normalize_fo76_refr_lod_header_flags(0x0001_0100, 0),
-            0x0001_0100
-        );
-    }
-
-    #[test]
-    fn copy_cell_slice_children_clones_source_records_into_target_cells() {
-        let mut source_ref = record("REFR", 0x014EA534, None);
-        source_ref.flags = RECORD_FLAG_LOD_RESPECTS_ENABLE_STATE;
-        source_ref
-            .subrecords
-            .push(subrecord("NAME", 0x011A6663_u32.to_le_bytes().to_vec()));
-        source_ref
-            .subrecords
-            .push(subrecord("XALG", vec![0, 34, 0, 0, 0, 0, 0, 0]));
-        let mut data = Vec::new();
-        for value in [10.0_f32, 20.0, 30.0, 0.0, 0.0, 0.0] {
-            data.extend_from_slice(&value.to_le_bytes());
-        }
-        source_ref.subrecords.push(subrecord("DATA", data));
-        let source = plugin_with_name(
-            "SeventySix.esm",
-            "fo76",
-            vec!["Fallout76.esm".to_string()],
-            vec![top_group("REFR", vec![ParsedItem::Record(source_ref)])],
-        );
-
-        let target_cell_group = ParsedItem::Group(ParsedGroup {
-            label: 0x012628FE_u32.to_le_bytes(),
-            group_type: CELL_CHILD_GROUP,
-            tail: Bytes::new(),
-            children: Vec::new(),
-        });
-        let target = plugin_with_name(
-            "B21_Appalachia.esp",
-            "fo4",
-            vec!["Fallout4.esm".to_string()],
-            vec![target_cell_group],
-        );
-        let source_handle = insert_plugin_handle(source, LocalizedStringsState::default());
-        let target_handle = insert_plugin_handle(target, LocalizedStringsState::default());
-        let children = serde_json::json!({
-            "B21_Appalachia.esp:2628FE": {
-                "Persistent": [],
-                "Temporary": ["B21_Appalachia.esp:4EA534"]
+    fn copy_cell_slice_children_cases() {
+        // copy_cell_slice_children_clones_source_records_into_target_cells
+        {
+            let mut source_ref = record("REFR", 0x014EA534, None);
+            source_ref.flags = RECORD_FLAG_LOD_RESPECTS_ENABLE_STATE;
+            source_ref
+                .subrecords
+                .push(subrecord("NAME", 0x011A6663_u32.to_le_bytes().to_vec()));
+            source_ref
+                .subrecords
+                .push(subrecord("XALG", vec![0, 34, 0, 0, 0, 0, 0, 0]));
+            let mut data = Vec::new();
+            for value in [10.0_f32, 20.0, 30.0, 0.0, 0.0, 0.0] {
+                data.extend_from_slice(&value.to_le_bytes());
             }
-        });
-        let form_key_map = serde_json::json!({
-            "SeventySix.esm:1A6663": "Fallout4.esm:1A6663"
-        });
+            source_ref.subrecords.push(subrecord("DATA", data));
+            let source = plugin_with_name(
+                "SeventySix.esm",
+                "fo76",
+                vec!["Fallout76.esm".to_string()],
+                vec![top_group("REFR", vec![ParsedItem::Record(source_ref)])],
+            );
 
-        let payload_text = plugin_handle_copy_cell_slice_children_json(
-            source_handle,
-            target_handle,
-            &children.to_string(),
-            2048.0,
-            2048.0,
-            0.0,
-            Some(&form_key_map.to_string()),
-        )
-        .expect("copy children");
-        let payload: JsonValue = serde_json::from_str(&payload_text).expect("json payload");
-        assert_eq!(payload["children_inserted"], serde_json::json!(1));
-        assert_eq!(payload["mapped_form_refs"], serde_json::json!(1));
-        assert_eq!(payload["schema_subrecords_dropped"], serde_json::json!(1));
+            let target_cell_group = ParsedItem::Group(ParsedGroup {
+                label: 0x012628FE_u32.to_le_bytes(),
+                group_type: CELL_CHILD_GROUP,
+                tail: Bytes::new(),
+                children: Vec::new(),
+            });
+            let target = plugin_with_name(
+                "B21_Appalachia.esp",
+                "fo4",
+                vec!["Fallout4.esm".to_string()],
+                vec![target_cell_group],
+            );
+            let source_handle = insert_plugin_handle(source, LocalizedStringsState::default());
+            let target_handle = insert_plugin_handle(target, LocalizedStringsState::default());
+            let children = serde_json::json!({
+                "B21_Appalachia.esp:2628FE": {
+                    "Persistent": [],
+                    "Temporary": ["B21_Appalachia.esp:4EA534"]
+                }
+            });
+            let form_key_map = serde_json::json!({
+                "SeventySix.esm:1A6663": "Fallout4.esm:1A6663"
+            });
 
-        let store = plugin_handle_store_ref().lock().unwrap();
-        let target_slot = store.get(&target_handle).expect("target handle");
-        let ParsedItem::Group(cell_group) = &target_slot.parsed.root_items[0] else {
-            panic!("expected cell child group");
-        };
-        let ParsedItem::Group(temp_group) = &cell_group.children[1] else {
-            panic!("expected temporary group");
-        };
-        let ParsedItem::Record(inserted) = &temp_group.children[0] else {
-            panic!("expected inserted record");
-        };
-        assert_eq!(inserted.form_id, 0x014EA534);
-        assert_eq!(
-            inserted.flags & RECORD_FLAG_VISIBLE_WHEN_DISTANT,
-            RECORD_FLAG_VISIBLE_WHEN_DISTANT,
-            "FO76 REFR XALG VisibleDistant must carry into the FO4 header flag"
-        );
-        assert_eq!(
-            inserted.flags & RECORD_FLAG_LOD_RESPECTS_ENABLE_STATE,
-            RECORD_FLAG_LOD_RESPECTS_ENABLE_STATE,
-            "LOD Respects Enable State is valid once Visible When Distant is carried"
-        );
-        let name = subrecord_data(inserted, "NAME").expect("NAME");
-        assert_eq!(
-            u32::from_le_bytes([name[0], name[1], name[2], name[3]]),
-            0x001A6663
-        );
-        assert!(subrecord_data(inserted, "XALG").is_none());
-        let placed_data = subrecord_data(inserted, "DATA").expect("DATA");
-        assert_eq!(
-            f32::from_le_bytes([
-                placed_data[0],
-                placed_data[1],
-                placed_data[2],
-                placed_data[3]
-            ]),
-            2058.0
-        );
-        assert_eq!(
-            f32::from_le_bytes([
-                placed_data[4],
-                placed_data[5],
-                placed_data[6],
-                placed_data[7]
-            ]),
-            2068.0
-        );
-        drop(store);
-        plugin_handle_close_native(source_handle);
-        plugin_handle_close_native(target_handle);
-    }
+            let payload_text = plugin_handle_copy_cell_slice_children_json(
+                source_handle,
+                target_handle,
+                &children.to_string(),
+                2048.0,
+                2048.0,
+                0.0,
+                Some(&form_key_map.to_string()),
+            )
+            .expect("copy children");
+            let payload: JsonValue = serde_json::from_str(&payload_text).expect("json payload");
+            assert_eq!(payload["children_inserted"], serde_json::json!(1));
+            assert_eq!(payload["mapped_form_refs"], serde_json::json!(1));
+            assert_eq!(payload["schema_subrecords_dropped"], serde_json::json!(1));
 
-    #[test]
-    fn copy_cell_slice_children_rebuckets_offset_refs_to_adjusted_cell() {
-        let mut source_ref = record("REFR", 0x014EA534, None);
-        source_ref
-            .subrecords
-            .push(subrecord("NAME", 0x011A6663_u32.to_le_bytes().to_vec()));
-        let mut data = Vec::new();
-        for value in [4090.0_f32, 20.0, 30.0, 0.0, 0.0, 0.0] {
-            data.extend_from_slice(&value.to_le_bytes());
+            let store = plugin_handle_store_ref().lock().unwrap();
+            let target_slot = store.get(&target_handle).expect("target handle");
+            let ParsedItem::Group(cell_group) = &target_slot.parsed.root_items[0] else {
+                panic!("expected cell child group");
+            };
+            let ParsedItem::Group(temp_group) = &cell_group.children[1] else {
+                panic!("expected temporary group");
+            };
+            let ParsedItem::Record(inserted) = &temp_group.children[0] else {
+                panic!("expected inserted record");
+            };
+            assert_eq!(inserted.form_id, 0x014EA534);
+            assert_eq!(
+                inserted.flags & RECORD_FLAG_VISIBLE_WHEN_DISTANT,
+                RECORD_FLAG_VISIBLE_WHEN_DISTANT,
+                "FO76 REFR XALG VisibleDistant must carry into the FO4 header flag"
+            );
+            assert_eq!(
+                inserted.flags & RECORD_FLAG_LOD_RESPECTS_ENABLE_STATE,
+                RECORD_FLAG_LOD_RESPECTS_ENABLE_STATE,
+                "LOD Respects Enable State is valid once Visible When Distant is carried"
+            );
+            let name = subrecord_data(inserted, "NAME").expect("NAME");
+            assert_eq!(
+                u32::from_le_bytes([name[0], name[1], name[2], name[3]]),
+                0x001A6663
+            );
+            assert!(subrecord_data(inserted, "XALG").is_none());
+            let placed_data = subrecord_data(inserted, "DATA").expect("DATA");
+            assert_eq!(
+                f32::from_le_bytes([
+                    placed_data[0],
+                    placed_data[1],
+                    placed_data[2],
+                    placed_data[3]
+                ]),
+                2058.0
+            );
+            assert_eq!(
+                f32::from_le_bytes([
+                    placed_data[4],
+                    placed_data[5],
+                    placed_data[6],
+                    placed_data[7]
+                ]),
+                2068.0
+            );
+            drop(store);
+            plugin_handle_close_native(source_handle);
+            plugin_handle_close_native(target_handle);
+
         }
-        source_ref.subrecords.push(subrecord("DATA", data));
-        let source = plugin_with_name(
-            "SeventySix.esm",
-            "fo76",
-            vec!["Fallout76.esm".to_string()],
-            vec![top_group("REFR", vec![ParsedItem::Record(source_ref)])],
-        );
-
-        let target_cell_0 = cell_record(0x01000800, "Cell00", 0, 0);
-        let target_cell_1 = cell_record(0x01000801, "Cell10", 1, 0);
-        let target_cell_group_0 = ParsedItem::Group(ParsedGroup {
-            label: 0x01000800_u32.to_le_bytes(),
-            group_type: CELL_CHILD_GROUP,
-            tail: Bytes::new(),
-            children: Vec::new(),
-        });
-        let target_cell_group_1 = ParsedItem::Group(ParsedGroup {
-            label: 0x01000801_u32.to_le_bytes(),
-            group_type: CELL_CHILD_GROUP,
-            tail: Bytes::new(),
-            children: Vec::new(),
-        });
-        let target = plugin_with_name(
-            "B21_Appalachia.esp",
-            "fo4",
-            vec!["Fallout4.esm".to_string()],
-            vec![
-                top_group(
-                    "CELL",
-                    vec![
-                        ParsedItem::Record(target_cell_0),
-                        ParsedItem::Record(target_cell_1),
-                    ],
-                ),
-                target_cell_group_0,
-                target_cell_group_1,
-            ],
-        );
-        let source_handle = insert_plugin_handle(source, LocalizedStringsState::default());
-        let target_handle = insert_plugin_handle(target, LocalizedStringsState::default());
-        let children = serde_json::json!({
-            "B21_Appalachia.esp:000800": {
-                "Persistent": [],
-                "Temporary": ["B21_Appalachia.esp:4EA534"]
+        // copy_cell_slice_children_rebuckets_offset_refs_to_adjusted_cell
+        {
+            let mut source_ref = record("REFR", 0x014EA534, None);
+            source_ref
+                .subrecords
+                .push(subrecord("NAME", 0x011A6663_u32.to_le_bytes().to_vec()));
+            let mut data = Vec::new();
+            for value in [4090.0_f32, 20.0, 30.0, 0.0, 0.0, 0.0] {
+                data.extend_from_slice(&value.to_le_bytes());
             }
-        });
-        let form_key_map = serde_json::json!({
-            "SeventySix.esm:1A6663": "Fallout4.esm:1A6663"
-        });
+            source_ref.subrecords.push(subrecord("DATA", data));
+            let source = plugin_with_name(
+                "SeventySix.esm",
+                "fo76",
+                vec!["Fallout76.esm".to_string()],
+                vec![top_group("REFR", vec![ParsedItem::Record(source_ref)])],
+            );
 
-        let payload_text = plugin_handle_copy_cell_slice_children_json(
-            source_handle,
-            target_handle,
-            &children.to_string(),
-            20.0,
-            0.0,
-            0.0,
-            Some(&form_key_map.to_string()),
-        )
-        .expect("copy children");
-        let payload: JsonValue = serde_json::from_str(&payload_text).expect("json payload");
-        assert_eq!(payload["children_inserted"], serde_json::json!(1));
-        assert_eq!(payload["children_rebucketed"], serde_json::json!(1));
-
-        let store = plugin_handle_store_ref().lock().unwrap();
-        let target_slot = store.get(&target_handle).expect("target handle");
-        let ParsedItem::Group(original_cell_group) = &target_slot.parsed.root_items[1] else {
-            panic!("expected original cell child group");
-        };
-        assert!(original_cell_group.children.is_empty());
-
-        let ParsedItem::Group(adjusted_cell_group) = &target_slot.parsed.root_items[2] else {
-            panic!("expected adjusted cell child group");
-        };
-        let ParsedItem::Group(temp_group) = &adjusted_cell_group.children[1] else {
-            panic!("expected temporary group");
-        };
-        let ParsedItem::Record(inserted) = &temp_group.children[0] else {
-            panic!("expected inserted record");
-        };
-        let placed_data = subrecord_data(inserted, "DATA").expect("DATA");
-        assert_eq!(
-            f32::from_le_bytes([
-                placed_data[0],
-                placed_data[1],
-                placed_data[2],
-                placed_data[3]
-            ]),
-            4110.0
-        );
-        drop(store);
-        plugin_handle_close_native(source_handle);
-        plugin_handle_close_native(target_handle);
-    }
-
-    #[test]
-    fn copy_cell_slice_children_reallocates_colliding_child_form_ids() {
-        let mut first_ref = record("REFR", 0x014EA534, None);
-        first_ref
-            .subrecords
-            .push(subrecord("NAME", 0x011A6663_u32.to_le_bytes().to_vec()));
-        let mut second_ref = record("REFR", 0x014EA535, None);
-        second_ref
-            .subrecords
-            .push(subrecord("NAME", 0x011A6663_u32.to_le_bytes().to_vec()));
-        second_ref
-            .subrecords
-            .push(subrecord("XLRL", 0x014EA534_u32.to_le_bytes().to_vec()));
-        let source = plugin_with_name(
-            "SeventySix.esm",
-            "fo76",
-            vec!["Fallout76.esm".to_string()],
-            vec![top_group(
-                "REFR",
+            let target_cell_0 = cell_record(0x01000800, "Cell00", 0, 0);
+            let target_cell_1 = cell_record(0x01000801, "Cell10", 1, 0);
+            let target_cell_group_0 = ParsedItem::Group(ParsedGroup {
+                label: 0x01000800_u32.to_le_bytes(),
+                group_type: CELL_CHILD_GROUP,
+                tail: Bytes::new(),
+                children: Vec::new(),
+            });
+            let target_cell_group_1 = ParsedItem::Group(ParsedGroup {
+                label: 0x01000801_u32.to_le_bytes(),
+                group_type: CELL_CHILD_GROUP,
+                tail: Bytes::new(),
+                children: Vec::new(),
+            });
+            let target = plugin_with_name(
+                "B21_Appalachia.esp",
+                "fo4",
+                vec!["Fallout4.esm".to_string()],
                 vec![
-                    ParsedItem::Record(first_ref),
-                    ParsedItem::Record(second_ref),
+                    top_group(
+                        "CELL",
+                        vec![
+                            ParsedItem::Record(target_cell_0),
+                            ParsedItem::Record(target_cell_1),
+                        ],
+                    ),
+                    target_cell_group_0,
+                    target_cell_group_1,
                 ],
-            )],
-        );
+            );
+            let source_handle = insert_plugin_handle(source, LocalizedStringsState::default());
+            let target_handle = insert_plugin_handle(target, LocalizedStringsState::default());
+            let children = serde_json::json!({
+                "B21_Appalachia.esp:000800": {
+                    "Persistent": [],
+                    "Temporary": ["B21_Appalachia.esp:4EA534"]
+                }
+            });
+            let form_key_map = serde_json::json!({
+                "SeventySix.esm:1A6663": "Fallout4.esm:1A6663"
+            });
 
-        let target_cell_group = ParsedItem::Group(ParsedGroup {
-            label: 0x012628FE_u32.to_le_bytes(),
-            group_type: CELL_CHILD_GROUP,
-            tail: Bytes::new(),
-            children: Vec::new(),
-        });
-        let existing_collision = record("STAT", 0x014EA534, Some("ExistingCollision"));
-        let high_water = record("GLOB", 0x018D804D, Some("HighWater"));
-        let target = plugin_with_name(
-            "B21_Appalachia.esp",
-            "fo4",
-            vec!["Fallout4.esm".to_string()],
-            vec![
-                target_cell_group,
-                top_group("STAT", vec![ParsedItem::Record(existing_collision)]),
-                top_group("GLOB", vec![ParsedItem::Record(high_water)]),
-            ],
-        );
-        let source_handle = insert_plugin_handle(source, LocalizedStringsState::default());
-        let target_handle = insert_plugin_handle(target, LocalizedStringsState::default());
-        let children = serde_json::json!({
-            "B21_Appalachia.esp:2628FE": {
-                "Persistent": [],
-                "Temporary": ["B21_Appalachia.esp:4EA534", "B21_Appalachia.esp:4EA535"]
-            }
-        });
-        let form_key_map = serde_json::json!({
-            "SeventySix.esm:1A6663": "Fallout4.esm:1A6663"
-        });
+            let payload_text = plugin_handle_copy_cell_slice_children_json(
+                source_handle,
+                target_handle,
+                &children.to_string(),
+                20.0,
+                0.0,
+                0.0,
+                Some(&form_key_map.to_string()),
+            )
+            .expect("copy children");
+            let payload: JsonValue = serde_json::from_str(&payload_text).expect("json payload");
+            assert_eq!(payload["children_inserted"], serde_json::json!(1));
+            assert_eq!(payload["children_rebucketed"], serde_json::json!(1));
 
-        let payload_text = plugin_handle_copy_cell_slice_children_json(
-            source_handle,
-            target_handle,
-            &children.to_string(),
-            0.0,
-            0.0,
-            0.0,
-            Some(&form_key_map.to_string()),
-        )
-        .expect("copy children");
-        let payload: JsonValue = serde_json::from_str(&payload_text).expect("json payload");
-        assert_eq!(payload["children_inserted"], serde_json::json!(2));
-        assert_eq!(payload["child_form_ids_reallocated"], serde_json::json!(1));
+            let store = plugin_handle_store_ref().lock().unwrap();
+            let target_slot = store.get(&target_handle).expect("target handle");
+            let ParsedItem::Group(original_cell_group) = &target_slot.parsed.root_items[1] else {
+                panic!("expected original cell child group");
+            };
+            assert!(original_cell_group.children.is_empty());
 
-        let store = plugin_handle_store_ref().lock().unwrap();
-        let target_slot = store.get(&target_handle).expect("target handle");
-        let ParsedItem::Group(cell_group) = &target_slot.parsed.root_items[0] else {
-            panic!("expected cell child group");
-        };
-        let ParsedItem::Group(temp_group) = &cell_group.children[1] else {
-            panic!("expected temporary group");
-        };
-        let ParsedItem::Record(inserted_first) = &temp_group.children[0] else {
-            panic!("expected first inserted record");
-        };
-        let ParsedItem::Record(inserted_second) = &temp_group.children[1] else {
-            panic!("expected second inserted record");
-        };
-        assert_eq!(inserted_first.form_id, 0x018D804E);
-        assert_eq!(inserted_second.form_id, 0x014EA535);
-        let linked_ref = subrecord_data(inserted_second, "XLRL").expect("XLRL");
-        assert_eq!(
-            u32::from_le_bytes([linked_ref[0], linked_ref[1], linked_ref[2], linked_ref[3]]),
-            0x018D804E
-        );
-        drop(store);
-        plugin_handle_close_native(source_handle);
-        plugin_handle_close_native(target_handle);
-    }
+            let ParsedItem::Group(adjusted_cell_group) = &target_slot.parsed.root_items[2] else {
+                panic!("expected adjusted cell child group");
+            };
+            let ParsedItem::Group(temp_group) = &adjusted_cell_group.children[1] else {
+                panic!("expected temporary group");
+            };
+            let ParsedItem::Record(inserted) = &temp_group.children[0] else {
+                panic!("expected inserted record");
+            };
+            let placed_data = subrecord_data(inserted, "DATA").expect("DATA");
+            assert_eq!(
+                f32::from_le_bytes([
+                    placed_data[0],
+                    placed_data[1],
+                    placed_data[2],
+                    placed_data[3]
+                ]),
+                4110.0
+            );
+            drop(store);
+            plugin_handle_close_native(source_handle);
+            plugin_handle_close_native(target_handle);
 
-    #[test]
-    fn copy_cell_slice_children_drops_fo76_workshop_pack_in_inam_bool() {
-        let mut source_ref = record("REFR", 0x014EA534, None);
-        source_ref
-            .subrecords
-            .push(subrecord("NAME", 0x011A6663_u32.to_le_bytes().to_vec()));
-        source_ref
-            .subrecords
-            .push(subrecord("INAM", 1_u16.to_le_bytes().to_vec()));
-        let source = plugin_with_name(
-            "SeventySix.esm",
-            "fo76",
-            vec!["Fallout76.esm".to_string()],
-            vec![top_group("REFR", vec![ParsedItem::Record(source_ref)])],
-        );
-
-        let target_cell_group = ParsedItem::Group(ParsedGroup {
-            label: 0x012628FE_u32.to_le_bytes(),
-            group_type: CELL_CHILD_GROUP,
-            tail: Bytes::new(),
-            children: Vec::new(),
-        });
-        let target = plugin_with_name(
-            "B21_Appalachia.esp",
-            "fo4",
-            vec!["Fallout4.esm".to_string()],
-            vec![target_cell_group],
-        );
-        let source_handle = insert_plugin_handle(source, LocalizedStringsState::default());
-        let target_handle = insert_plugin_handle(target, LocalizedStringsState::default());
-        let children = serde_json::json!({
-            "B21_Appalachia.esp:2628FE": {
-                "Persistent": [],
-                "Temporary": ["B21_Appalachia.esp:4EA534"]
-            }
-        });
-        let form_key_map = serde_json::json!({
-            "SeventySix.esm:1A6663": "Fallout4.esm:1A6663"
-        });
-
-        let payload_text = plugin_handle_copy_cell_slice_children_json(
-            source_handle,
-            target_handle,
-            &children.to_string(),
-            0.0,
-            0.0,
-            0.0,
-            Some(&form_key_map.to_string()),
-        )
-        .expect("copy children");
-        let payload: JsonValue = serde_json::from_str(&payload_text).expect("json payload");
-        assert_eq!(payload["children_inserted"], serde_json::json!(1));
-        assert_eq!(payload["schema_subrecords_dropped"], serde_json::json!(1));
-
-        let store = plugin_handle_store_ref().lock().unwrap();
-        let target_slot = store.get(&target_handle).expect("target handle");
-        let ParsedItem::Group(cell_group) = &target_slot.parsed.root_items[0] else {
-            panic!("expected cell child group");
-        };
-        let ParsedItem::Group(temp_group) = &cell_group.children[1] else {
-            panic!("expected temporary group");
-        };
-        let ParsedItem::Record(inserted) = &temp_group.children[0] else {
-            panic!("expected inserted record");
-        };
-        assert!(subrecord_data(inserted, "INAM").is_none());
-        drop(store);
-        plugin_handle_close_native(source_handle);
-        plugin_handle_close_native(target_handle);
-    }
-
-    #[test]
-    fn copy_cell_slice_children_preserves_fo76_lvli_through_fo4_xlib() {
-        let mut leveled_base = record("LVLI", 0x01100000, Some("LPI_RockBase"));
-        leveled_base
-            .subrecords
-            .push(subrecord("LVLO", 0x011A6663_u32.to_le_bytes().to_vec()));
-        leveled_base
-            .subrecords
-            .push(subrecord("LVLO", 0x011A7777_u32.to_le_bytes().to_vec()));
-        let static_base = record("STAT", 0x011A6663, Some("RockBase"));
-        let second_static_base = record("STAT", 0x011A7777, Some("RockBaseVariant"));
-        let mut source_ref = record("REFR", 0x014EA534, None);
-        source_ref
-            .subrecords
-            .push(subrecord("NAME", 0x01100000_u32.to_le_bytes().to_vec()));
-        let source = plugin_with_name(
-            "SeventySix.esm",
-            "fo76",
-            vec!["Fallout76.esm".to_string()],
-            vec![
-                top_group("LVLI", vec![ParsedItem::Record(leveled_base)]),
-                top_group(
-                    "STAT",
-                    vec![
-                        ParsedItem::Record(static_base),
-                        ParsedItem::Record(second_static_base),
-                    ],
-                ),
-                top_group("REFR", vec![ParsedItem::Record(source_ref)]),
-            ],
-        );
-
-        let target_cell_group = ParsedItem::Group(ParsedGroup {
-            label: 0x012628FE_u32.to_le_bytes(),
-            group_type: CELL_CHILD_GROUP,
-            tail: Bytes::new(),
-            children: Vec::new(),
-        });
-        let target_lvli = record("LVLI", 0x01100000, Some("LPI_RockBase"));
-        let target = plugin_with_name(
-            "B21_Appalachia.esp",
-            "fo4",
-            vec!["Fallout4.esm".to_string()],
-            vec![
-                top_group("LVLI", vec![ParsedItem::Record(target_lvli)]),
-                target_cell_group,
-            ],
-        );
-        let source_handle = insert_plugin_handle(source, LocalizedStringsState::default());
-        let target_handle = insert_plugin_handle(target, LocalizedStringsState::default());
-        let children = serde_json::json!({
-            "B21_Appalachia.esp:2628FE": {
-                "Persistent": [],
-                "Temporary": ["B21_Appalachia.esp:4EA534"]
-            }
-        });
-        let form_key_map = serde_json::json!({
-            "SeventySix.esm:100000": "B21_Appalachia.esp:100000",
-            "SeventySix.esm:1A6663": "Fallout4.esm:1A6663",
-            "SeventySix.esm:1A7777": "Fallout4.esm:1A7777"
-        });
-
-        let payload_text = plugin_handle_copy_cell_slice_children_json(
-            source_handle,
-            target_handle,
-            &children.to_string(),
-            0.0,
-            0.0,
-            0.0,
-            Some(&form_key_map.to_string()),
-        )
-        .expect("copy children");
-        let payload: JsonValue = serde_json::from_str(&payload_text).expect("json payload");
-        assert_eq!(payload["children_inserted"], serde_json::json!(1));
-        assert_eq!(payload["leveled_bases_resolved"], serde_json::json!(1));
-
-        let store = plugin_handle_store_ref().lock().unwrap();
-        let target_slot = store.get(&target_handle).expect("target handle");
-        let ParsedItem::Group(cell_group) = &target_slot.parsed.root_items[1] else {
-            panic!("expected cell child group");
-        };
-        let ParsedItem::Group(temp_group) = &cell_group.children[1] else {
-            panic!("expected temporary group");
-        };
-        let ParsedItem::Record(inserted) = &temp_group.children[0] else {
-            panic!("expected inserted record");
-        };
-        let name = subrecord_data(inserted, "NAME").expect("NAME");
-        assert_eq!(
-            u32::from_le_bytes([name[0], name[1], name[2], name[3]]),
-            0x000928C8
-        );
-        let xlib = subrecord_data(inserted, "XLIB").expect("XLIB");
-        assert_eq!(
-            u32::from_le_bytes([xlib[0], xlib[1], xlib[2], xlib[3]]),
-            0x01100000
-        );
-        drop(store);
-        plugin_handle_close_native(source_handle);
-        plugin_handle_close_native(target_handle);
-    }
-
-    #[test]
-    fn copy_cell_slice_children_drops_zero_extent_primitive() {
-        let mut source_ref = record("REFR", 0x014EA534, None);
-        source_ref
-            .subrecords
-            .push(subrecord("NAME", 0x011A6663_u32.to_le_bytes().to_vec()));
-        let mut xprm = Vec::new();
-        for value in [0.0_f32, 0.0, 0.0, 0.5, 0.5, 1.0, 0.3] {
-            xprm.extend_from_slice(&value.to_le_bytes());
         }
-        xprm.extend_from_slice(&1_u32.to_le_bytes());
-        source_ref.subrecords.push(subrecord("XPRM", xprm));
-        let source = plugin_with_name(
-            "SeventySix.esm",
-            "fo76",
-            vec!["Fallout76.esm".to_string()],
-            vec![
-                top_group(
-                    "STAT",
-                    vec![ParsedItem::Record(record("STAT", 0x011A6663, Some("Base")))],
-                ),
-                top_group("REFR", vec![ParsedItem::Record(source_ref)]),
-            ],
-        );
+        // copy_cell_slice_children_reallocates_colliding_child_form_ids
+        {
+            let mut first_ref = record("REFR", 0x014EA534, None);
+            first_ref
+                .subrecords
+                .push(subrecord("NAME", 0x011A6663_u32.to_le_bytes().to_vec()));
+            let mut second_ref = record("REFR", 0x014EA535, None);
+            second_ref
+                .subrecords
+                .push(subrecord("NAME", 0x011A6663_u32.to_le_bytes().to_vec()));
+            second_ref
+                .subrecords
+                .push(subrecord("XLRL", 0x014EA534_u32.to_le_bytes().to_vec()));
+            let source = plugin_with_name(
+                "SeventySix.esm",
+                "fo76",
+                vec!["Fallout76.esm".to_string()],
+                vec![top_group(
+                    "REFR",
+                    vec![
+                        ParsedItem::Record(first_ref),
+                        ParsedItem::Record(second_ref),
+                    ],
+                )],
+            );
 
-        let target_cell_group = ParsedItem::Group(ParsedGroup {
-            label: 0x012628FE_u32.to_le_bytes(),
-            group_type: CELL_CHILD_GROUP,
-            tail: Bytes::new(),
-            children: Vec::new(),
-        });
-        let target = plugin_with_name(
-            "B21_Appalachia.esp",
-            "fo4",
-            vec!["Fallout4.esm".to_string()],
-            vec![
-                target_cell_group,
-                top_group(
-                    "STAT",
-                    vec![ParsedItem::Record(record("STAT", 0x011A6663, Some("Base")))],
-                ),
-            ],
-        );
-        let source_handle = insert_plugin_handle(source, LocalizedStringsState::default());
-        let target_handle = insert_plugin_handle(target, LocalizedStringsState::default());
-        let children = serde_json::json!({
-            "B21_Appalachia.esp:2628FE": {
-                "Persistent": [],
-                "Temporary": ["B21_Appalachia.esp:4EA534"]
+            let target_cell_group = ParsedItem::Group(ParsedGroup {
+                label: 0x012628FE_u32.to_le_bytes(),
+                group_type: CELL_CHILD_GROUP,
+                tail: Bytes::new(),
+                children: Vec::new(),
+            });
+            let existing_collision = record("STAT", 0x014EA534, Some("ExistingCollision"));
+            let high_water = record("GLOB", 0x018D804D, Some("HighWater"));
+            let target = plugin_with_name(
+                "B21_Appalachia.esp",
+                "fo4",
+                vec!["Fallout4.esm".to_string()],
+                vec![
+                    target_cell_group,
+                    top_group("STAT", vec![ParsedItem::Record(existing_collision)]),
+                    top_group("GLOB", vec![ParsedItem::Record(high_water)]),
+                ],
+            );
+            let source_handle = insert_plugin_handle(source, LocalizedStringsState::default());
+            let target_handle = insert_plugin_handle(target, LocalizedStringsState::default());
+            let children = serde_json::json!({
+                "B21_Appalachia.esp:2628FE": {
+                    "Persistent": [],
+                    "Temporary": ["B21_Appalachia.esp:4EA534", "B21_Appalachia.esp:4EA535"]
+                }
+            });
+            let form_key_map = serde_json::json!({
+                "SeventySix.esm:1A6663": "Fallout4.esm:1A6663"
+            });
+
+            let payload_text = plugin_handle_copy_cell_slice_children_json(
+                source_handle,
+                target_handle,
+                &children.to_string(),
+                0.0,
+                0.0,
+                0.0,
+                Some(&form_key_map.to_string()),
+            )
+            .expect("copy children");
+            let payload: JsonValue = serde_json::from_str(&payload_text).expect("json payload");
+            assert_eq!(payload["children_inserted"], serde_json::json!(2));
+            assert_eq!(payload["child_form_ids_reallocated"], serde_json::json!(1));
+
+            let store = plugin_handle_store_ref().lock().unwrap();
+            let target_slot = store.get(&target_handle).expect("target handle");
+            let ParsedItem::Group(cell_group) = &target_slot.parsed.root_items[0] else {
+                panic!("expected cell child group");
+            };
+            let ParsedItem::Group(temp_group) = &cell_group.children[1] else {
+                panic!("expected temporary group");
+            };
+            let ParsedItem::Record(inserted_first) = &temp_group.children[0] else {
+                panic!("expected first inserted record");
+            };
+            let ParsedItem::Record(inserted_second) = &temp_group.children[1] else {
+                panic!("expected second inserted record");
+            };
+            assert_eq!(inserted_first.form_id, 0x018D804E);
+            assert_eq!(inserted_second.form_id, 0x014EA535);
+            let linked_ref = subrecord_data(inserted_second, "XLRL").expect("XLRL");
+            assert_eq!(
+                u32::from_le_bytes([linked_ref[0], linked_ref[1], linked_ref[2], linked_ref[3]]),
+                0x018D804E
+            );
+            drop(store);
+            plugin_handle_close_native(source_handle);
+            plugin_handle_close_native(target_handle);
+
+        }
+        // copy_cell_slice_children_drops_fo76_workshop_pack_in_inam_bool
+        {
+            let mut source_ref = record("REFR", 0x014EA534, None);
+            source_ref
+                .subrecords
+                .push(subrecord("NAME", 0x011A6663_u32.to_le_bytes().to_vec()));
+            source_ref
+                .subrecords
+                .push(subrecord("INAM", 1_u16.to_le_bytes().to_vec()));
+            let source = plugin_with_name(
+                "SeventySix.esm",
+                "fo76",
+                vec!["Fallout76.esm".to_string()],
+                vec![top_group("REFR", vec![ParsedItem::Record(source_ref)])],
+            );
+
+            let target_cell_group = ParsedItem::Group(ParsedGroup {
+                label: 0x012628FE_u32.to_le_bytes(),
+                group_type: CELL_CHILD_GROUP,
+                tail: Bytes::new(),
+                children: Vec::new(),
+            });
+            let target = plugin_with_name(
+                "B21_Appalachia.esp",
+                "fo4",
+                vec!["Fallout4.esm".to_string()],
+                vec![target_cell_group],
+            );
+            let source_handle = insert_plugin_handle(source, LocalizedStringsState::default());
+            let target_handle = insert_plugin_handle(target, LocalizedStringsState::default());
+            let children = serde_json::json!({
+                "B21_Appalachia.esp:2628FE": {
+                    "Persistent": [],
+                    "Temporary": ["B21_Appalachia.esp:4EA534"]
+                }
+            });
+            let form_key_map = serde_json::json!({
+                "SeventySix.esm:1A6663": "Fallout4.esm:1A6663"
+            });
+
+            let payload_text = plugin_handle_copy_cell_slice_children_json(
+                source_handle,
+                target_handle,
+                &children.to_string(),
+                0.0,
+                0.0,
+                0.0,
+                Some(&form_key_map.to_string()),
+            )
+            .expect("copy children");
+            let payload: JsonValue = serde_json::from_str(&payload_text).expect("json payload");
+            assert_eq!(payload["children_inserted"], serde_json::json!(1));
+            assert_eq!(payload["schema_subrecords_dropped"], serde_json::json!(1));
+
+            let store = plugin_handle_store_ref().lock().unwrap();
+            let target_slot = store.get(&target_handle).expect("target handle");
+            let ParsedItem::Group(cell_group) = &target_slot.parsed.root_items[0] else {
+                panic!("expected cell child group");
+            };
+            let ParsedItem::Group(temp_group) = &cell_group.children[1] else {
+                panic!("expected temporary group");
+            };
+            let ParsedItem::Record(inserted) = &temp_group.children[0] else {
+                panic!("expected inserted record");
+            };
+            assert!(subrecord_data(inserted, "INAM").is_none());
+            drop(store);
+            plugin_handle_close_native(source_handle);
+            plugin_handle_close_native(target_handle);
+
+        }
+        // copy_cell_slice_children_preserves_fo76_lvli_through_fo4_xlib
+        {
+            let mut leveled_base = record("LVLI", 0x01100000, Some("LPI_RockBase"));
+            leveled_base
+                .subrecords
+                .push(subrecord("LVLO", 0x011A6663_u32.to_le_bytes().to_vec()));
+            leveled_base
+                .subrecords
+                .push(subrecord("LVLO", 0x011A7777_u32.to_le_bytes().to_vec()));
+            let static_base = record("STAT", 0x011A6663, Some("RockBase"));
+            let second_static_base = record("STAT", 0x011A7777, Some("RockBaseVariant"));
+            let mut source_ref = record("REFR", 0x014EA534, None);
+            source_ref
+                .subrecords
+                .push(subrecord("NAME", 0x01100000_u32.to_le_bytes().to_vec()));
+            let source = plugin_with_name(
+                "SeventySix.esm",
+                "fo76",
+                vec!["Fallout76.esm".to_string()],
+                vec![
+                    top_group("LVLI", vec![ParsedItem::Record(leveled_base)]),
+                    top_group(
+                        "STAT",
+                        vec![
+                            ParsedItem::Record(static_base),
+                            ParsedItem::Record(second_static_base),
+                        ],
+                    ),
+                    top_group("REFR", vec![ParsedItem::Record(source_ref)]),
+                ],
+            );
+
+            let target_cell_group = ParsedItem::Group(ParsedGroup {
+                label: 0x012628FE_u32.to_le_bytes(),
+                group_type: CELL_CHILD_GROUP,
+                tail: Bytes::new(),
+                children: Vec::new(),
+            });
+            let target_lvli = record("LVLI", 0x01100000, Some("LPI_RockBase"));
+            let target = plugin_with_name(
+                "B21_Appalachia.esp",
+                "fo4",
+                vec!["Fallout4.esm".to_string()],
+                vec![
+                    top_group("LVLI", vec![ParsedItem::Record(target_lvli)]),
+                    target_cell_group,
+                ],
+            );
+            let source_handle = insert_plugin_handle(source, LocalizedStringsState::default());
+            let target_handle = insert_plugin_handle(target, LocalizedStringsState::default());
+            let children = serde_json::json!({
+                "B21_Appalachia.esp:2628FE": {
+                    "Persistent": [],
+                    "Temporary": ["B21_Appalachia.esp:4EA534"]
+                }
+            });
+            let form_key_map = serde_json::json!({
+                "SeventySix.esm:100000": "B21_Appalachia.esp:100000",
+                "SeventySix.esm:1A6663": "Fallout4.esm:1A6663",
+                "SeventySix.esm:1A7777": "Fallout4.esm:1A7777"
+            });
+
+            let payload_text = plugin_handle_copy_cell_slice_children_json(
+                source_handle,
+                target_handle,
+                &children.to_string(),
+                0.0,
+                0.0,
+                0.0,
+                Some(&form_key_map.to_string()),
+            )
+            .expect("copy children");
+            let payload: JsonValue = serde_json::from_str(&payload_text).expect("json payload");
+            assert_eq!(payload["children_inserted"], serde_json::json!(1));
+            assert_eq!(payload["leveled_bases_resolved"], serde_json::json!(1));
+
+            let store = plugin_handle_store_ref().lock().unwrap();
+            let target_slot = store.get(&target_handle).expect("target handle");
+            let ParsedItem::Group(cell_group) = &target_slot.parsed.root_items[1] else {
+                panic!("expected cell child group");
+            };
+            let ParsedItem::Group(temp_group) = &cell_group.children[1] else {
+                panic!("expected temporary group");
+            };
+            let ParsedItem::Record(inserted) = &temp_group.children[0] else {
+                panic!("expected inserted record");
+            };
+            let name = subrecord_data(inserted, "NAME").expect("NAME");
+            assert_eq!(
+                u32::from_le_bytes([name[0], name[1], name[2], name[3]]),
+                0x000928C8
+            );
+            let xlib = subrecord_data(inserted, "XLIB").expect("XLIB");
+            assert_eq!(
+                u32::from_le_bytes([xlib[0], xlib[1], xlib[2], xlib[3]]),
+                0x01100000
+            );
+            drop(store);
+            plugin_handle_close_native(source_handle);
+            plugin_handle_close_native(target_handle);
+
+        }
+        // copy_cell_slice_children_drops_zero_extent_primitive
+        {
+            let mut source_ref = record("REFR", 0x014EA534, None);
+            source_ref
+                .subrecords
+                .push(subrecord("NAME", 0x011A6663_u32.to_le_bytes().to_vec()));
+            let mut xprm = Vec::new();
+            for value in [0.0_f32, 0.0, 0.0, 0.5, 0.5, 1.0, 0.3] {
+                xprm.extend_from_slice(&value.to_le_bytes());
             }
-        });
-        let form_key_map = serde_json::json!({
-            "SeventySix.esm:1A6663": "Fallout4.esm:1A6663"
-        });
+            xprm.extend_from_slice(&1_u32.to_le_bytes());
+            source_ref.subrecords.push(subrecord("XPRM", xprm));
+            let source = plugin_with_name(
+                "SeventySix.esm",
+                "fo76",
+                vec!["Fallout76.esm".to_string()],
+                vec![
+                    top_group(
+                        "STAT",
+                        vec![ParsedItem::Record(record("STAT", 0x011A6663, Some("Base")))],
+                    ),
+                    top_group("REFR", vec![ParsedItem::Record(source_ref)]),
+                ],
+            );
 
-        let payload_text = plugin_handle_copy_cell_slice_children_json(
-            source_handle,
-            target_handle,
-            &children.to_string(),
-            0.0,
-            0.0,
-            0.0,
-            Some(&form_key_map.to_string()),
-        )
-        .expect("copy children");
-        let payload: JsonValue = serde_json::from_str(&payload_text).expect("json payload");
-        assert_eq!(payload["children_inserted"], serde_json::json!(1));
-        assert_eq!(payload["schema_subrecords_dropped"], serde_json::json!(1));
+            let target_cell_group = ParsedItem::Group(ParsedGroup {
+                label: 0x012628FE_u32.to_le_bytes(),
+                group_type: CELL_CHILD_GROUP,
+                tail: Bytes::new(),
+                children: Vec::new(),
+            });
+            let target = plugin_with_name(
+                "B21_Appalachia.esp",
+                "fo4",
+                vec!["Fallout4.esm".to_string()],
+                vec![
+                    target_cell_group,
+                    top_group(
+                        "STAT",
+                        vec![ParsedItem::Record(record("STAT", 0x011A6663, Some("Base")))],
+                    ),
+                ],
+            );
+            let source_handle = insert_plugin_handle(source, LocalizedStringsState::default());
+            let target_handle = insert_plugin_handle(target, LocalizedStringsState::default());
+            let children = serde_json::json!({
+                "B21_Appalachia.esp:2628FE": {
+                    "Persistent": [],
+                    "Temporary": ["B21_Appalachia.esp:4EA534"]
+                }
+            });
+            let form_key_map = serde_json::json!({
+                "SeventySix.esm:1A6663": "Fallout4.esm:1A6663"
+            });
 
-        let store = plugin_handle_store_ref().lock().unwrap();
-        let target_slot = store.get(&target_handle).expect("target handle");
-        let ParsedItem::Group(cell_group) = &target_slot.parsed.root_items[0] else {
-            panic!("expected cell child group");
-        };
-        let ParsedItem::Group(temp_group) = &cell_group.children[1] else {
-            panic!("expected temporary group");
-        };
-        let ParsedItem::Record(inserted) = &temp_group.children[0] else {
-            panic!("expected inserted record");
-        };
-        assert!(subrecord_data(inserted, "XPRM").is_none());
-        drop(store);
-        plugin_handle_close_native(source_handle);
-        plugin_handle_close_native(target_handle);
+            let payload_text = plugin_handle_copy_cell_slice_children_json(
+                source_handle,
+                target_handle,
+                &children.to_string(),
+                0.0,
+                0.0,
+                0.0,
+                Some(&form_key_map.to_string()),
+            )
+            .expect("copy children");
+            let payload: JsonValue = serde_json::from_str(&payload_text).expect("json payload");
+            assert_eq!(payload["children_inserted"], serde_json::json!(1));
+            assert_eq!(payload["schema_subrecords_dropped"], serde_json::json!(1));
+
+            let store = plugin_handle_store_ref().lock().unwrap();
+            let target_slot = store.get(&target_handle).expect("target handle");
+            let ParsedItem::Group(cell_group) = &target_slot.parsed.root_items[0] else {
+                panic!("expected cell child group");
+            };
+            let ParsedItem::Group(temp_group) = &cell_group.children[1] else {
+                panic!("expected temporary group");
+            };
+            let ParsedItem::Record(inserted) = &temp_group.children[0] else {
+                panic!("expected inserted record");
+            };
+            assert!(subrecord_data(inserted, "XPRM").is_none());
+            drop(store);
+            plugin_handle_close_native(source_handle);
+            plugin_handle_close_native(target_handle);
+
+        }
     }
 
     // ── Worldspace persistent-cell synthesis ────────────────────────────────
@@ -9457,110 +9501,161 @@ mod tests {
     }
 
     #[test]
-    fn synthesize_persistent_cell_emits_cell_as_first_world_child() {
-        let (source_handle, target_handle, payload) = run_synthesis(
-            source_world_with_persistent_cell(),
-            target_world_without_persistent_cell(),
-        );
+    fn synthesize_persistent_cell_cases() {
+        // synthesize_persistent_cell_emits_cell_as_first_world_child
+        {
+            let (source_handle, target_handle, payload) = run_synthesis(
+                source_world_with_persistent_cell(),
+                target_world_without_persistent_cell(),
+            );
 
-        assert_eq!(payload["cell_synthesized"], serde_json::json!(true));
-        assert_eq!(payload["persistent_refs_converted"], serde_json::json!(2));
-        assert_eq!(payload["persistent_refs_skipped"], serde_json::json!(0));
+            assert_eq!(payload["cell_synthesized"], serde_json::json!(true));
+            assert_eq!(payload["persistent_refs_converted"], serde_json::json!(2));
+            assert_eq!(payload["persistent_refs_skipped"], serde_json::json!(0));
 
-        let store = plugin_handle_store_ref().lock().unwrap();
-        let target_slot = store.get(&target_handle).expect("target handle");
-        let world_children = world_children_of(&target_slot.parsed.root_items);
-
-        // First child of World Children = the persistent CELL, before block GRUPs.
-        let ParsedItem::Record(cell) = &world_children.children[0] else {
-            panic!("expected persistent CELL as first World Children record");
-        };
-        assert_eq!(cell.signature.as_str(), "CELL");
-        assert_eq!(cell.form_id & 0x00FF_FFFF, 0x00050B2C, "objid preserved");
-        assert_eq!(cell.form_id & 0xFF00_0000, 0x0100_0000, "own-plugin prefix");
-        assert_eq!(
-            cell.flags & 0x0000_0400,
-            0x0000_0400,
-            "persistent header flag"
-        );
-
-        // DATA is re-encoded to 2 bytes (FO4 uint16) carrying has_water.
-        let data = subrecord_data(cell, "DATA").expect("CELL DATA");
-        assert_eq!(data.len(), 2, "FO4 CELL DATA is uint16");
-        assert_eq!(u16::from_le_bytes([data[0], data[1]]), 0x0002, "has_water");
-        // FO4-valid XCLW carried; FO76-only XILS/CII0 dropped.
-        assert!(subrecord_data(cell, "XCLW").is_some());
-        assert!(subrecord_data(cell, "XILS").is_none());
-        assert!(subrecord_data(cell, "CII0").is_none());
-
-        // Second child = the persistent CELL's Cell-Children(6) group.
-        let ParsedItem::Group(cell_children) = &world_children.children[1] else {
-            panic!("expected Cell Children group after persistent CELL");
-        };
-        assert_eq!(cell_children.group_type, CELL_CHILD_GROUP);
-        assert_eq!(u32::from_le_bytes(cell_children.label), cell.form_id);
-
-        // Block GRUP still present, after the persistent cell.
-        assert!(world_children.children.iter().any(
-            |item| matches!(item, ParsedItem::Group(g) if g.group_type == EXTERIOR_CELL_BLOCK)
-        ));
-        drop(store);
-        plugin_handle_close_native(source_handle);
-        plugin_handle_close_native(target_handle);
-    }
-
-    #[test]
-    fn synthesize_persistent_cell_without_source_cell_uses_fresh_target_id() {
-        let source_handle = insert_plugin_handle(
-            source_pitt_world_without_persistent_cell(),
-            LocalizedStringsState::default(),
-        );
-        let target_handle = insert_plugin_handle(
-            target_pitt_world_without_persistent_cell(),
-            LocalizedStringsState::default(),
-        );
-        let call = || {
-            let text = plugin_handle_synthesize_worldspace_persistent_cell_json(
-                source_handle,
-                target_handle,
-                "EXM1PittWorldspace",
-                0.0,
-                0.0,
-                0.0,
-                None,
-            )
-            .expect("synthesize");
-            serde_json::from_str::<JsonValue>(&text).expect("json")
-        };
-
-        let first = call();
-        assert_eq!(first["cell_synthesized"], serde_json::json!(true));
-        assert_eq!(first["persistent_refs_converted"], serde_json::json!(0));
-        assert_eq!(
-            first["persistent_cell_form_key"],
-            serde_json::json!("B21_Pitt.esp:635F98")
-        );
-
-        let next_object_id_after_first = {
             let store = plugin_handle_store_ref().lock().unwrap();
             let target_slot = store.get(&target_handle).expect("target handle");
             let world_children = world_children_of(&target_slot.parsed.root_items);
+
+            // First child of World Children = the persistent CELL, before block GRUPs.
             let ParsedItem::Record(cell) = &world_children.children[0] else {
                 panic!("expected persistent CELL as first World Children record");
             };
-            assert_eq!(cell.form_id, 0x01635F98);
-            assert_eq!(cell.flags, 0x0004_0400);
-            assert!(subrecord_data(cell, "EDID").is_none());
+            assert_eq!(cell.signature.as_str(), "CELL");
+            assert_eq!(cell.form_id & 0x00FF_FFFF, 0x00050B2C, "objid preserved");
+            assert_eq!(cell.form_id & 0xFF00_0000, 0x0100_0000, "own-plugin prefix");
             assert_eq!(
-                subrecord_data(cell, "DATA").expect("DATA").as_ref(),
-                &[0x02, 0x00]
-            );
-            assert_eq!(cell_grid(cell), Some((0, 0)));
-            assert_eq!(
-                subrecord_data(cell, "XCLW").expect("XCLW").as_ref(),
-                f32::MAX.to_le_bytes()
+                cell.flags & 0x0000_0400,
+                0x0000_0400,
+                "persistent header flag"
             );
 
+            // DATA is re-encoded to 2 bytes (FO4 uint16) carrying has_water.
+            let data = subrecord_data(cell, "DATA").expect("CELL DATA");
+            assert_eq!(data.len(), 2, "FO4 CELL DATA is uint16");
+            assert_eq!(u16::from_le_bytes([data[0], data[1]]), 0x0002, "has_water");
+            // FO4-valid XCLW carried; FO76-only XILS/CII0 dropped.
+            assert!(subrecord_data(cell, "XCLW").is_some());
+            assert!(subrecord_data(cell, "XILS").is_none());
+            assert!(subrecord_data(cell, "CII0").is_none());
+
+            // Second child = the persistent CELL's Cell-Children(6) group.
+            let ParsedItem::Group(cell_children) = &world_children.children[1] else {
+                panic!("expected Cell Children group after persistent CELL");
+            };
+            assert_eq!(cell_children.group_type, CELL_CHILD_GROUP);
+            assert_eq!(u32::from_le_bytes(cell_children.label), cell.form_id);
+
+            // Block GRUP still present, after the persistent cell.
+            assert!(world_children.children.iter().any(
+                |item| matches!(item, ParsedItem::Group(g) if g.group_type == EXTERIOR_CELL_BLOCK)
+            ));
+            drop(store);
+            plugin_handle_close_native(source_handle);
+            plugin_handle_close_native(target_handle);
+
+        }
+        // synthesize_persistent_cell_without_source_cell_uses_fresh_target_id
+        {
+            let source_handle = insert_plugin_handle(
+                source_pitt_world_without_persistent_cell(),
+                LocalizedStringsState::default(),
+            );
+            let target_handle = insert_plugin_handle(
+                target_pitt_world_without_persistent_cell(),
+                LocalizedStringsState::default(),
+            );
+            let call = || {
+                let text = plugin_handle_synthesize_worldspace_persistent_cell_json(
+                    source_handle,
+                    target_handle,
+                    "EXM1PittWorldspace",
+                    0.0,
+                    0.0,
+                    0.0,
+                    None,
+                )
+                .expect("synthesize");
+                serde_json::from_str::<JsonValue>(&text).expect("json")
+            };
+
+            let first = call();
+            assert_eq!(first["cell_synthesized"], serde_json::json!(true));
+            assert_eq!(first["persistent_refs_converted"], serde_json::json!(0));
+            assert_eq!(
+                first["persistent_cell_form_key"],
+                serde_json::json!("B21_Pitt.esp:635F98")
+            );
+
+            let next_object_id_after_first = {
+                let store = plugin_handle_store_ref().lock().unwrap();
+                let target_slot = store.get(&target_handle).expect("target handle");
+                let world_children = world_children_of(&target_slot.parsed.root_items);
+                let ParsedItem::Record(cell) = &world_children.children[0] else {
+                    panic!("expected persistent CELL as first World Children record");
+                };
+                assert_eq!(cell.form_id, 0x01635F98);
+                assert_eq!(cell.flags, 0x0004_0400);
+                assert!(subrecord_data(cell, "EDID").is_none());
+                assert_eq!(
+                    subrecord_data(cell, "DATA").expect("DATA").as_ref(),
+                    &[0x02, 0x00]
+                );
+                assert_eq!(cell_grid(cell), Some((0, 0)));
+                assert_eq!(
+                    subrecord_data(cell, "XCLW").expect("XCLW").as_ref(),
+                    f32::MAX.to_le_bytes()
+                );
+
+                let ParsedItem::Group(cell_children) = &world_children.children[1] else {
+                    panic!("expected Cell Children group");
+                };
+                let persistent = cell_children
+                    .children
+                    .iter()
+                    .find_map(|item| match item {
+                        ParsedItem::Group(group) if group.group_type == PERSISTENT_GROUP => Some(group),
+                        _ => None,
+                    })
+                    .expect("Cell Persistent group");
+                assert!(persistent.children.is_empty());
+                target_slot.parsed.header.next_object_id
+            };
+
+            let second = call();
+            assert_eq!(second["cell_synthesized"], serde_json::json!(false));
+            assert_eq!(
+                second["persistent_cell_form_key"],
+                first["persistent_cell_form_key"]
+            );
+            let store = plugin_handle_store_ref().lock().unwrap();
+            let target_slot = store.get(&target_handle).expect("target handle");
+            assert_eq!(
+                target_slot.parsed.header.next_object_id,
+                next_object_id_after_first
+            );
+            let world_children = world_children_of(&target_slot.parsed.root_items);
+            let persistent_cell_count = world_children
+                .children
+                .iter()
+                .filter(|item| matches!(item, ParsedItem::Record(record) if record.signature == "CELL"))
+                .count();
+            assert_eq!(persistent_cell_count, 1);
+            drop(store);
+            plugin_handle_close_native(source_handle);
+            plugin_handle_close_native(target_handle);
+
+        }
+        // synthesize_persistent_cell_nests_converted_refs_in_cell_persistent
+        {
+            let (source_handle, target_handle, _payload) = run_synthesis(
+                source_world_with_persistent_cell(),
+                target_world_without_persistent_cell(),
+            );
+
+            let store = plugin_handle_store_ref().lock().unwrap();
+            let target_slot = store.get(&target_handle).expect("target handle");
+            let world_children = world_children_of(&target_slot.parsed.root_items);
             let ParsedItem::Group(cell_children) = &world_children.children[1] else {
                 panic!("expected Cell Children group");
             };
@@ -9571,121 +9666,128 @@ mod tests {
                     ParsedItem::Group(group) if group.group_type == PERSISTENT_GROUP => Some(group),
                     _ => None,
                 })
-                .expect("Cell Persistent group");
-            assert!(persistent.children.is_empty());
-            target_slot.parsed.header.next_object_id
-        };
-
-        let second = call();
-        assert_eq!(second["cell_synthesized"], serde_json::json!(false));
-        assert_eq!(
-            second["persistent_cell_form_key"],
-            first["persistent_cell_form_key"]
-        );
-        let store = plugin_handle_store_ref().lock().unwrap();
-        let target_slot = store.get(&target_handle).expect("target handle");
-        assert_eq!(
-            target_slot.parsed.header.next_object_id,
-            next_object_id_after_first
-        );
-        let world_children = world_children_of(&target_slot.parsed.root_items);
-        let persistent_cell_count = world_children
-            .children
-            .iter()
-            .filter(|item| matches!(item, ParsedItem::Record(record) if record.signature == "CELL"))
-            .count();
-        assert_eq!(persistent_cell_count, 1);
-        drop(store);
-        plugin_handle_close_native(source_handle);
-        plugin_handle_close_native(target_handle);
-    }
-
-    #[test]
-    fn synthesize_persistent_cell_nests_converted_refs_in_cell_persistent() {
-        let (source_handle, target_handle, _payload) = run_synthesis(
-            source_world_with_persistent_cell(),
-            target_world_without_persistent_cell(),
-        );
-
-        let store = plugin_handle_store_ref().lock().unwrap();
-        let target_slot = store.get(&target_handle).expect("target handle");
-        let world_children = world_children_of(&target_slot.parsed.root_items);
-        let ParsedItem::Group(cell_children) = &world_children.children[1] else {
-            panic!("expected Cell Children group");
-        };
-        let persistent = cell_children
-            .children
-            .iter()
-            .find_map(|item| match item {
-                ParsedItem::Group(group) if group.group_type == PERSISTENT_GROUP => Some(group),
-                _ => None,
-            })
-            .expect("Cell Persistent(8) group");
-        assert_eq!(persistent.children.len(), 2, "both refs routed");
-        // No Temporary(9) group emitted (FO4 persistent cell has none).
-        assert!(
-            !cell_children.children.iter().any(
-                |item| matches!(item, ParsedItem::Group(g) if g.group_type == TEMPORARY_GROUP)
-            )
-        );
-
-        for child in &persistent.children {
-            let ParsedItem::Record(refr) = child else {
-                panic!("expected placed record");
-            };
-            // Accuracy A: 0x400 persistent header flag preserved on each ref.
-            assert_eq!(refr.flags & 0x0000_0400, 0x0000_0400, "ref persistent flag");
-            // Base NAME remapped to the Fallout4.esm master.
-            let name = subrecord_data(refr, "NAME").expect("NAME");
-            assert_eq!(
-                u32::from_le_bytes([name[0], name[1], name[2], name[3]]) & 0x00FF_FFFF,
-                0x001A6663
+                .expect("Cell Persistent(8) group");
+            assert_eq!(persistent.children.len(), 2, "both refs routed");
+            // No Temporary(9) group emitted (FO4 persistent cell has none).
+            assert!(
+                !cell_children.children.iter().any(
+                    |item| matches!(item, ParsedItem::Group(g) if g.group_type == TEMPORARY_GROUP)
+                )
             );
-        }
 
-        // Refs were NOT scattered into the grid cell / any grid-cell child group.
-        let grid_block = world_children
-            .children
-            .iter()
-            .find_map(|item| match item {
-                ParsedItem::Group(group) if group.group_type == EXTERIOR_CELL_BLOCK => Some(group),
-                _ => None,
-            })
-            .expect("exterior block");
-        let mut grid_persistent_count = 0usize;
-        fn count_persistent(group: &ParsedGroup, count: &mut usize) {
-            for item in &group.children {
-                if let ParsedItem::Group(g) = item {
-                    if g.group_type == PERSISTENT_GROUP {
-                        *count += g.children.len();
+            for child in &persistent.children {
+                let ParsedItem::Record(refr) = child else {
+                    panic!("expected placed record");
+                };
+                // Accuracy A: 0x400 persistent header flag preserved on each ref.
+                assert_eq!(refr.flags & 0x0000_0400, 0x0000_0400, "ref persistent flag");
+                // Base NAME remapped to the Fallout4.esm master.
+                let name = subrecord_data(refr, "NAME").expect("NAME");
+                assert_eq!(
+                    u32::from_le_bytes([name[0], name[1], name[2], name[3]]) & 0x00FF_FFFF,
+                    0x001A6663
+                );
+            }
+
+            // Refs were NOT scattered into the grid cell / any grid-cell child group.
+            let grid_block = world_children
+                .children
+                .iter()
+                .find_map(|item| match item {
+                    ParsedItem::Group(group) if group.group_type == EXTERIOR_CELL_BLOCK => Some(group),
+                    _ => None,
+                })
+                .expect("exterior block");
+            let mut grid_persistent_count = 0usize;
+            fn count_persistent(group: &ParsedGroup, count: &mut usize) {
+                for item in &group.children {
+                    if let ParsedItem::Group(g) = item {
+                        if g.group_type == PERSISTENT_GROUP {
+                            *count += g.children.len();
+                        }
+                        count_persistent(g, count);
                     }
-                    count_persistent(g, count);
                 }
             }
-        }
-        count_persistent(grid_block, &mut grid_persistent_count);
-        assert_eq!(
-            grid_persistent_count, 0,
-            "no persistent refs leaked into grid cells"
-        );
-        drop(store);
-        plugin_handle_close_native(source_handle);
-        plugin_handle_close_native(target_handle);
-    }
+            count_persistent(grid_block, &mut grid_persistent_count);
+            assert_eq!(
+                grid_persistent_count, 0,
+                "no persistent refs leaked into grid cells"
+            );
+            drop(store);
+            plugin_handle_close_native(source_handle);
+            plugin_handle_close_native(target_handle);
 
-    #[test]
-    fn synthesize_persistent_cell_is_idempotent() {
-        let source_handle = insert_plugin_handle(
-            source_world_with_persistent_cell(),
-            LocalizedStringsState::default(),
-        );
-        let target_handle = insert_plugin_handle(
-            target_world_without_persistent_cell(),
-            LocalizedStringsState::default(),
-        );
-        let form_key_map = serde_json::json!({ "SeventySix.esm:1A6663": "Fallout4.esm:1A6663" });
-        let call = || {
-            let text = plugin_handle_synthesize_worldspace_persistent_cell_json(
+        }
+        // synthesize_persistent_cell_is_idempotent
+        {
+            let source_handle = insert_plugin_handle(
+                source_world_with_persistent_cell(),
+                LocalizedStringsState::default(),
+            );
+            let target_handle = insert_plugin_handle(
+                target_world_without_persistent_cell(),
+                LocalizedStringsState::default(),
+            );
+            let form_key_map = serde_json::json!({ "SeventySix.esm:1A6663": "Fallout4.esm:1A6663" });
+            let call = || {
+                let text = plugin_handle_synthesize_worldspace_persistent_cell_json(
+                    source_handle,
+                    target_handle,
+                    "APPALACHIA",
+                    0.0,
+                    0.0,
+                    0.0,
+                    Some(&form_key_map.to_string()),
+                )
+                .expect("synthesize");
+                serde_json::from_str::<JsonValue>(&text).expect("json")
+            };
+            let first = call();
+            assert_eq!(first["cell_synthesized"], serde_json::json!(true));
+            let second = call();
+            assert_eq!(
+                second["cell_synthesized"],
+                serde_json::json!(false),
+                "no re-synthesis"
+            );
+
+            let store = plugin_handle_store_ref().lock().unwrap();
+            let target_slot = store.get(&target_handle).expect("target handle");
+            let world_children = world_children_of(&target_slot.parsed.root_items);
+            let cell_count = world_children
+                .children
+                .iter()
+                .filter(|item| matches!(item, ParsedItem::Record(r) if r.signature.as_str() == "CELL"))
+                .count();
+            assert_eq!(cell_count, 1, "exactly one persistent cell after two runs");
+            drop(store);
+            plugin_handle_close_native(source_handle);
+            plugin_handle_close_native(target_handle);
+
+        }
+        // synthesize_persistent_cell_routes_objid_remapped_ref
+        {
+            // Regression: a persistent ref whose objid is REMAPPED via form_key_map
+            // (collision-reallocation or QUST-translate remap) must still be found in
+            // the SOURCE, converted, and land under Cell-Persistent(8) at the REMAPPED
+            // target objid. The earlier code looked the source up by the *target* objid
+            // → miss → silent drop + objid loss (breaking Owner A's ALFR-by-objid repair).
+            let source_handle = insert_plugin_handle(
+                source_world_with_persistent_cell(),
+                LocalizedStringsState::default(),
+            );
+            let target_handle = insert_plugin_handle(
+                target_world_without_persistent_cell(),
+                LocalizedStringsState::default(),
+            );
+            // Remap the persistent REFR's own objid 8CC335 -> 099999 (own-plugin) and
+            // its base NAME as usual.
+            let form_key_map = serde_json::json!({
+                "SeventySix.esm:1A6663": "Fallout4.esm:1A6663",
+                "SeventySix.esm:8CC335": "B21_Appalachia.esp:099999",
+            });
+            let payload_text = plugin_handle_synthesize_worldspace_persistent_cell_json(
                 source_handle,
                 target_handle,
                 "APPALACHIA",
@@ -9695,114 +9797,39 @@ mod tests {
                 Some(&form_key_map.to_string()),
             )
             .expect("synthesize");
-            serde_json::from_str::<JsonValue>(&text).expect("json")
-        };
-        let first = call();
-        assert_eq!(first["cell_synthesized"], serde_json::json!(true));
-        let second = call();
-        assert_eq!(
-            second["cell_synthesized"],
-            serde_json::json!(false),
-            "no re-synthesis"
-        );
+            let payload: JsonValue = serde_json::from_str(&payload_text).expect("json");
+            // Both refs convert (none dropped) — the remapped one is NOT lost.
+            assert_eq!(payload["persistent_refs_converted"], serde_json::json!(2));
+            assert_eq!(payload["persistent_refs_skipped"], serde_json::json!(0));
 
-        let store = plugin_handle_store_ref().lock().unwrap();
-        let target_slot = store.get(&target_handle).expect("target handle");
-        let world_children = world_children_of(&target_slot.parsed.root_items);
-        let cell_count = world_children
-            .children
-            .iter()
-            .filter(|item| matches!(item, ParsedItem::Record(r) if r.signature.as_str() == "CELL"))
-            .count();
-        assert_eq!(cell_count, 1, "exactly one persistent cell after two runs");
-        drop(store);
-        plugin_handle_close_native(source_handle);
-        plugin_handle_close_native(target_handle);
+            let store = plugin_handle_store_ref().lock().unwrap();
+            let target_slot = store.get(&target_handle).expect("target handle");
+            let world_children = world_children_of(&target_slot.parsed.root_items);
+            let ParsedItem::Group(cell_children) = &world_children.children[1] else {
+                panic!("expected Cell Children group");
+            };
+            let persistent = cell_children
+                .children
+                .iter()
+                .find_map(|item| match item {
+                    ParsedItem::Group(group) if group.group_type == PERSISTENT_GROUP => Some(group),
+                    _ => None,
+                })
+                .expect("Cell Persistent(8) group");
+            // The remapped REFR is present at the REMAPPED target form_id (own_prefix|099999).
+            let remapped_present = persistent.children.iter().any(|child| {
+                matches!(child, ParsedItem::Record(r)
+                    if r.signature.as_str() == "REFR" && r.form_id == (0x0100_0000 | 0x0009_9999))
+            });
+            assert!(
+                remapped_present,
+                "objid-remapped REFR routed at remapped form_id, not dropped"
+            );
+            drop(store);
+            plugin_handle_close_native(source_handle);
+            plugin_handle_close_native(target_handle);
+
+        }
     }
 
-    #[test]
-    fn synthesize_persistent_cell_routes_objid_remapped_ref() {
-        // Regression: a persistent ref whose objid is REMAPPED via form_key_map
-        // (collision-reallocation or QUST-translate remap) must still be found in
-        // the SOURCE, converted, and land under Cell-Persistent(8) at the REMAPPED
-        // target objid. The earlier code looked the source up by the *target* objid
-        // → miss → silent drop + objid loss (breaking Owner A's ALFR-by-objid repair).
-        let source_handle = insert_plugin_handle(
-            source_world_with_persistent_cell(),
-            LocalizedStringsState::default(),
-        );
-        let target_handle = insert_plugin_handle(
-            target_world_without_persistent_cell(),
-            LocalizedStringsState::default(),
-        );
-        // Remap the persistent REFR's own objid 8CC335 -> 099999 (own-plugin) and
-        // its base NAME as usual.
-        let form_key_map = serde_json::json!({
-            "SeventySix.esm:1A6663": "Fallout4.esm:1A6663",
-            "SeventySix.esm:8CC335": "B21_Appalachia.esp:099999",
-        });
-        let payload_text = plugin_handle_synthesize_worldspace_persistent_cell_json(
-            source_handle,
-            target_handle,
-            "APPALACHIA",
-            0.0,
-            0.0,
-            0.0,
-            Some(&form_key_map.to_string()),
-        )
-        .expect("synthesize");
-        let payload: JsonValue = serde_json::from_str(&payload_text).expect("json");
-        // Both refs convert (none dropped) — the remapped one is NOT lost.
-        assert_eq!(payload["persistent_refs_converted"], serde_json::json!(2));
-        assert_eq!(payload["persistent_refs_skipped"], serde_json::json!(0));
-
-        let store = plugin_handle_store_ref().lock().unwrap();
-        let target_slot = store.get(&target_handle).expect("target handle");
-        let world_children = world_children_of(&target_slot.parsed.root_items);
-        let ParsedItem::Group(cell_children) = &world_children.children[1] else {
-            panic!("expected Cell Children group");
-        };
-        let persistent = cell_children
-            .children
-            .iter()
-            .find_map(|item| match item {
-                ParsedItem::Group(group) if group.group_type == PERSISTENT_GROUP => Some(group),
-                _ => None,
-            })
-            .expect("Cell Persistent(8) group");
-        // The remapped REFR is present at the REMAPPED target form_id (own_prefix|099999).
-        let remapped_present = persistent.children.iter().any(|child| {
-            matches!(child, ParsedItem::Record(r)
-                if r.signature.as_str() == "REFR" && r.form_id == (0x0100_0000 | 0x0009_9999))
-        });
-        assert!(
-            remapped_present,
-            "objid-remapped REFR routed at remapped form_id, not dropped"
-        );
-        drop(store);
-        plugin_handle_close_native(source_handle);
-        plugin_handle_close_native(target_handle);
-    }
-
-    #[test]
-    fn collect_persistent_base_keys_returns_every_base_deduped() {
-        // The persistent REFR + ACHR both point at base 1A6663; the collector
-        // returns each distinct base once, regardless of base record type (so
-        // non-PLACEMENT_BASE_SIGNATURES bases get seeded into the form_key_map).
-        let source_handle = insert_plugin_handle(
-            source_world_with_persistent_cell(),
-            LocalizedStringsState::default(),
-        );
-        let text =
-            plugin_handle_collect_worldspace_persistent_base_keys_json(source_handle, "APPALACHIA")
-                .expect("collect base keys");
-        let keys: Vec<String> = serde_json::from_str(&text).expect("json");
-        plugin_handle_close_native(source_handle);
-        // 1A6663 is the shared base of both persistent refs — present exactly once.
-        assert_eq!(
-            keys.iter().filter(|k| k.ends_with(":1A6663")).count(),
-            1,
-            "shared base collected once (deduped)"
-        );
-    }
 }

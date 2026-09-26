@@ -132,70 +132,68 @@ mod tests {
     }
 
     #[test]
-    fn detects_planted_frames_in_walk_cycle() {
-        let seq = BonePositionSequence {
-            bone_name: "LeftAnkle".into(),
-            positions: walk_cycle_positions(),
-        };
-        let params = FootstepParams {
-            fps: 60.0,
-            velocity_threshold: 0.1,
-            smoothing_half_window: 0,
-        };
-        let events = detect_footsteps(&[seq], &params);
-        // Should detect at least one planted event (at the start of the plant phases).
-        assert!(!events.is_empty(), "expected at least one footstep event");
-        // All events should reference the correct bone.
-        assert!(events.iter().all(|e| e.bone == "LeftAnkle"));
-    }
-
-    #[test]
-    fn no_events_for_constant_motion() {
-        // Constant velocity: no zero-crossing — no events.
-        let positions: Vec<[f32; 3]> = (0..60).map(|i| [i as f32 * 1.0, 0.0, 0.0]).collect();
-        let seq = BonePositionSequence {
-            bone_name: "RightAnkle".into(),
-            positions,
-        };
-        let params = FootstepParams {
-            fps: 60.0,
-            velocity_threshold: 0.05,
-            smoothing_half_window: 0,
-        };
-        let events = detect_footsteps(&[seq], &params);
-        assert!(
-            events.is_empty(),
-            "expected no events for constant-velocity motion"
-        );
-    }
-
-    #[test]
-    fn detects_events_for_multiple_bones() {
-        // Left: planted (low velocity) at frame 0, then moving.
-        // Right: moving at frame 0, planted at frame 2.
-        // Using fps=1.0 so velocity = position difference directly.
-        let left = BonePositionSequence {
-            bone_name: "Left".into(),
-            positions: vec![[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
-        };
-        let right = BonePositionSequence {
-            bone_name: "Right".into(),
-            positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
-        };
-        let params = FootstepParams {
-            fps: 1.0,
-            velocity_threshold: 0.05,
-            smoothing_half_window: 0,
-        };
-        let events = detect_footsteps(&[left, right], &params);
-        let bones: Vec<&str> = events.iter().map(|e| e.bone.as_str()).collect();
-        assert!(
-            bones.contains(&"Left"),
-            "expected Left event, got: {bones:?}"
-        );
-        assert!(
-            bones.contains(&"Right"),
-            "expected Right event, got: {bones:?}"
-        );
+    fn footstep_detection() {
+        {
+            let seq = BonePositionSequence {
+                bone_name: "LeftAnkle".into(),
+                positions: walk_cycle_positions(),
+            };
+            let params = FootstepParams {
+                fps: 60.0,
+                velocity_threshold: 0.1,
+                smoothing_half_window: 0,
+            };
+            let events = detect_footsteps(&[seq], &params);
+            // Should detect at least one planted event (at the start of the plant phases).
+            assert!(!events.is_empty(), "expected at least one footstep event");
+            // All events should reference the correct bone.
+            assert!(events.iter().all(|e| e.bone == "LeftAnkle"));
+        }
+        {
+            // Constant velocity: no zero-crossing — no events.
+            let positions: Vec<[f32; 3]> = (0..60).map(|i| [i as f32 * 1.0, 0.0, 0.0]).collect();
+            let seq = BonePositionSequence {
+                bone_name: "RightAnkle".into(),
+                positions,
+            };
+            let params = FootstepParams {
+                fps: 60.0,
+                velocity_threshold: 0.05,
+                smoothing_half_window: 0,
+            };
+            let events = detect_footsteps(&[seq], &params);
+            assert!(
+                events.is_empty(),
+                "expected no events for constant-velocity motion"
+            );
+        }
+        {
+            // Left: planted (low velocity) at frame 0, then moving.
+            // Right: moving at frame 0, planted at frame 2.
+            // Using fps=1.0 so velocity = position difference directly.
+            let left = BonePositionSequence {
+                bone_name: "Left".into(),
+                positions: vec![[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+            };
+            let right = BonePositionSequence {
+                bone_name: "Right".into(),
+                positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+            };
+            let params = FootstepParams {
+                fps: 1.0,
+                velocity_threshold: 0.05,
+                smoothing_half_window: 0,
+            };
+            let events = detect_footsteps(&[left, right], &params);
+            let bones: Vec<&str> = events.iter().map(|e| e.bone.as_str()).collect();
+            assert!(
+                bones.contains(&"Left"),
+                "expected Left event, got: {bones:?}"
+            );
+            assert!(
+                bones.contains(&"Right"),
+                "expected Right event, got: {bones:?}"
+            );
+        }
     }
 }

@@ -152,14 +152,78 @@ pub(crate) fn byte_array_to_bytes(value: &NifValue) -> NifClothResult<Vec<u8>> {
 pub(crate) fn bytes_to_byte_array(bytes: &[u8]) -> NifValue {
     let mut fields = IndexMap::new();
     fields.insert("Data Size".to_string(), NifValue::UInt(bytes.len() as u64));
-    fields.insert(
-        "Data".to_string(),
-        NifValue::Array(
-            bytes
-                .iter()
-                .map(|byte| NifValue::UInt(u64::from(*byte)))
-                .collect(),
-        ),
-    );
+    fields.insert("Data".to_string(), NifValue::Bytes(bytes.to_vec()));
     NifValue::Struct(fields)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn nif_with_binary_data(binary_data: NifValue) -> NifFile {
+        let mut nif = NifFile::new("fo4");
+        nif.add_block(
+            "bhkPhysicsSystem",
+            Some(IndexMap::from([("Binary Data".to_string(), binary_data)])),
+        );
+        nif
+    }
+
+    fn legacy_byte_array(bytes: &[u8], declared_size: usize) -> NifValue {
+        NifValue::Struct(IndexMap::from([
+            (
+                "Data Size".to_string(),
+                NifValue::UInt(declared_size as u64),
+            ),
+            (
+                "Data".to_string(),
+                NifValue::Array(
+                    bytes
+                        .iter()
+                        .map(|byte| NifValue::UInt(u64::from(*byte)))
+                        .collect(),
+                ),
+            ),
+        ]))
+    }
+
+    #[test]
+    fn compact_byte_array_matches_legacy_array_encoding() {
+        for payload in [&[][..], &[0, 1, 127, 128, 254, 255][..]] {
+            let compact = bytes_to_byte_array(payload);
+            let NifValue::Struct(fields) = &compact else {
+                panic!("expected ByteArray struct");
+            };
+            assert!(matches!(fields.get("Data"), Some(NifValue::Bytes(bytes)) if bytes == payload));
+
+            let compact_bytes = nif_with_binary_data(compact).to_bytes().unwrap();
+            let legacy_bytes = nif_with_binary_data(legacy_byte_array(payload, payload.len()))
+                .to_bytes()
+                .unwrap();
+            assert_eq!(compact_bytes, legacy_bytes);
+
+            let decoded = NifFile::from_bytes(&compact_bytes, None).unwrap();
+            let binary_data = decoded
+                .blocks
+                .iter()
+                .find(|block| block.type_name == "bhkPhysicsSystem")
+                .and_then(|block| block.get_field("Binary Data"))
+                .unwrap();
+            assert_eq!(byte_array_to_bytes(binary_data).unwrap(), payload);
+        }
+    }
+
+    #[test]
+    fn byte_array_size_mismatch_is_rejected_for_both_representations() {
+        let compact = NifValue::Struct(IndexMap::from([
+            ("Data Size".to_string(), NifValue::UInt(3)),
+            ("Data".to_string(), NifValue::Bytes(vec![1, 2])),
+        ]));
+        let legacy = legacy_byte_array(&[1, 2], 3);
+
+        for binary_data in [compact, legacy] {
+            let error = nif_with_binary_data(binary_data).to_bytes().unwrap_err();
+            assert!(error.to_string().contains("ByteArray Data Size mismatch"));
+        }
+    }
 }

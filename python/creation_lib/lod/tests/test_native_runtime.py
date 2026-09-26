@@ -9,7 +9,7 @@ import pytest
 from creation_lib.lod import native_runtime
 
 
-def test_load_native_module_returns_submodule(monkeypatch):
+def test_load_native_module_returns_submodule_or_raises_when_missing(monkeypatch):
     fake = types.SimpleNamespace(generate_lod=lambda *a, **k: None)
     umbrella = types.ModuleType("creation_lib._native")
     umbrella.lodgen_native = fake
@@ -18,10 +18,8 @@ def test_load_native_module_returns_submodule(monkeypatch):
     assert native_runtime.load_native_module() is fake
     assert native_runtime.is_available() is True
 
-
-def test_load_native_module_missing_raises(monkeypatch):
-    umbrella = types.ModuleType("creation_lib._native")  # no lodgen_native attr
-    monkeypatch.setitem(sys.modules, "creation_lib._native", umbrella)
+    missing_umbrella = types.ModuleType("creation_lib._native")  # no lodgen_native attr
+    monkeypatch.setitem(sys.modules, "creation_lib._native", missing_umbrella)
     sys.modules.pop("creation_lib._native.lodgen_native", None)
     native_runtime._reset_for_tests()
     with pytest.raises(RuntimeError):
@@ -74,7 +72,7 @@ def _fake_native():
     return ns
 
 
-def test_generate_lod_marshals_dict_settings(monkeypatch):
+def test_generate_lod_marshals_dict_settings_and_passes_str_through(monkeypatch):
     fake = _fake_native()
     monkeypatch.setattr(native_runtime, "load_native_module", lambda: fake)
     events = []
@@ -97,10 +95,6 @@ def test_generate_lod_marshals_dict_settings(monkeypatch):
     assert result.btr == 7 and result.dds == 14 and result.lod_written is True
     assert result.warnings == ("one bad quad",)
 
-
-def test_generate_lod_passes_str_settings_through(monkeypatch):
-    fake = _fake_native()
-    monkeypatch.setattr(native_runtime, "load_native_module", lambda: fake)
     native_runtime.generate_lod(
         "W", '{"already":"json"}', data_dirs=[], output_dir="o", progress=None,
     )
@@ -108,23 +102,7 @@ def test_generate_lod_passes_str_settings_through(monkeypatch):
     assert fake._captured["progress"] is None
 
 
-def test_generate_lod_marshals_plugin_path(monkeypatch):
-    fake = _fake_native()
-    monkeypatch.setattr(native_runtime, "load_native_module", lambda: fake)
-    native_runtime.generate_lod(
-        "APPALACHIA",
-        {"global": {}},
-        data_dirs=["C:/out/data", "X:/extracted/fo4"],
-        output_dir="C:/out/data",
-        plugin_path="C:/out/SeventySix.esm",
-        progress=None,
-    )
-    # The working ESM is pinned as the sole plugin source; asset dirs stay separate.
-    assert fake._captured["working_esm"] == "C:/out/SeventySix.esm"
-    assert fake._captured["data_dirs"] == ["C:/out/data", "X:/extracted/fo4"]
-
-
-def test_generate_lod_marshals_source_data_dir(monkeypatch):
+def test_generate_lod_marshals_plugin_path_source_dir_and_overlay(monkeypatch):
     fake = _fake_native()
     monkeypatch.setattr(native_runtime, "load_native_module", lambda: fake)
     native_runtime.generate_lod(
@@ -134,55 +112,39 @@ def test_generate_lod_marshals_source_data_dir(monkeypatch):
         output_dir="C:/out/data",
         plugin_path="C:/out/SeventySix.esm",
         source_data_dir="X:/extracted/fo76",
-        progress=None,
-    )
-    assert fake._captured["source_data_dir"] == "X:/extracted/fo76"
-
-
-def test_generate_lod_marshals_object_lod_overlay(monkeypatch):
-    fake = _fake_native()
-    monkeypatch.setattr(native_runtime, "load_native_module", lambda: fake)
-    native_runtime.generate_lod(
-        "Mojave",
-        {"global": {}, "objects": {"source": "records"}},
-        data_dirs=["C:/out/data"],
-        output_dir="C:/out/data",
-        plugin_path="C:/out/FNV.esm",
         object_lod_overlay="C:/out/.modkit/object_lod_overlay.v1.json",
         progress=None,
     )
+    # The working ESM is pinned as the sole plugin source; asset dirs stay separate.
+    assert fake._captured["working_esm"] == "C:/out/SeventySix.esm"
+    assert fake._captured["data_dirs"] == ["C:/out/data", "X:/extracted/fo4"]
+    assert fake._captured["source_data_dir"] == "X:/extracted/fo76"
     assert fake._captured["object_lod_overlay"] == (
         "C:/out/.modkit/object_lod_overlay.v1.json"
     )
 
 
-def test_discover_worldspaces_uses_built_plugin(monkeypatch):
+def test_discover_worldspaces_and_count_fo76_bto_tiles_delegate_to_native(monkeypatch):
     calls = []
     fake = types.SimpleNamespace(
         discover_worldspaces=lambda plugin_path, game: calls.append(
-            (plugin_path, game)
+            ("discover_worldspaces", plugin_path, game)
         )
-        or ["Tamriel", "Blackreach"]
+        or ["Tamriel", "Blackreach"],
+        count_fo76_bto_tiles=lambda source_root, world: calls.append(
+            ("count_fo76_bto_tiles", source_root, world)
+        )
+        or 37,
     )
     monkeypatch.setattr(native_runtime, "load_native_module", lambda: fake)
 
     assert native_runtime.discover_worldspaces(
         "C:/mods/Skyrim/Skyrim_Merged.esm"
     ) == ("Tamriel", "Blackreach")
-    assert calls == [("C:/mods/Skyrim/Skyrim_Merged.esm", "fo4")]
-
-
-def test_count_fo76_bto_tiles_uses_native_enumerator(monkeypatch):
-    calls = []
-    fake = types.SimpleNamespace(
-        count_fo76_bto_tiles=lambda source_root, world: calls.append(
-            (source_root, world)
-        )
-        or 37
-    )
-    monkeypatch.setattr(native_runtime, "load_native_module", lambda: fake)
-
     assert native_runtime.count_fo76_bto_tiles(
         "X:/extracted/fo76", "EXM1PittWorldspace"
     ) == 37
-    assert calls == [("X:/extracted/fo76", "EXM1PittWorldspace")]
+    assert calls == [
+        ("discover_worldspaces", "C:/mods/Skyrim/Skyrim_Merged.esm", "fo4"),
+        ("count_fo76_bto_tiles", "X:/extracted/fo76", "EXM1PittWorldspace"),
+    ]

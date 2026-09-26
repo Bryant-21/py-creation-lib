@@ -24,6 +24,7 @@ from creation_lib.build.archive_plan import (
     ArchiveEntry,
     PlannedArchive,
     discover_mod_archives,
+    is_precombine_sidecar,
     plan_archive_outputs,
 )
 
@@ -372,23 +373,25 @@ def _default_native_archive_workers() -> int:
 
 
 def _inventory_tree_entries(root: Path, *, relative_prefix: str = "") -> list[ArchiveEntry]:
-    entries: list[ArchiveEntry] = []
     if not root.is_dir():
-        return entries
-    for source_path in sorted(root.rglob("*"), key=lambda path: path.as_posix().lower()):
-        if not source_path.is_file():
-            continue
-        rel_path = source_path.relative_to(root)
-        if relative_prefix:
-            rel_path = Path(relative_prefix) / rel_path
-        entries.append(
-            ArchiveEntry(
-                rel_path.as_posix(),
-                source_path,
-                source_path.stat().st_size,
-            )
-        )
-    return entries
+        return []
+    # scandir, not rglob + stat: on Windows the directory listing already carries
+    # each file's size, so a 1.5M-file converted mod scans without 3M syscalls.
+    root_str = str(root)
+    skip = len(os.path.join(root_str, ""))
+    prefix = f"{relative_prefix}/" if relative_prefix else ""
+    files: list[tuple[str, str, str, int]] = []
+    pending = [root_str]
+    while pending:
+        with os.scandir(pending.pop()) as listing:
+            for item in listing:
+                if item.is_dir():
+                    pending.append(item.path)
+                elif item.is_file() and not is_precombine_sidecar(Path(item.name)):
+                    rel = prefix + item.path[skip:].replace("\\", "/")
+                    files.append((rel.lower(), rel, item.path, item.stat().st_size))
+    files.sort()
+    return [ArchiveEntry(rel, Path(path), size) for _key, rel, path, size in files]
 
 
 def _inventory_data_entries(data_dir: Path, *, include_textures: bool = True) -> list[ArchiveEntry]:
@@ -398,6 +401,11 @@ def _inventory_data_entries(data_dir: Path, *, include_textures: bool = True) ->
 
     for child in sorted(data_dir.iterdir(), key=lambda path: path.as_posix().lower()):
         if child.is_file():
+            # A precombine .csg/.cdx that lands in data/ (it belongs beside the
+            # plugin, not inside the archived tree) must never ship in a BA2 —
+            # the engine only reads these two loose next to the plugin.
+            if is_precombine_sidecar(child):
+                continue
             entries.append(ArchiveEntry(child.name, child, child.stat().st_size))
             continue
         if not child.is_dir():
@@ -856,7 +864,6 @@ def pack_mod(mod_name: str, *, pc: bool = True, xbox: bool = False, ps: bool = F
 
     can_use_native_mod_pack = (
         not use_archive2
-        and not og_target
         and pc
         and not xbox
         and not ps
@@ -892,6 +899,7 @@ def pack_mod(mod_name: str, *, pc: bool = True, xbox: bool = False, ps: bool = F
                 "xbox": xbox,
                 "archive_workers": native_archive_workers,
                 "manifest_path": manifest_path,
+                "fo4_og": og_target,
             },
             progress=_on_native_progress,
         )
@@ -946,7 +954,15 @@ def pack_mod(mod_name: str, *, pc: bool = True, xbox: bool = False, ps: bool = F
             inventory_started = time.perf_counter()
             _log.info("Archive inventory: scanning non-texture data for platform=%s", platform)
             main_entries = _inventory_data_entries(data_dir_path, include_textures=False)
-            main_entries.extend(_inventory_root_strings_entries(strings_dir_path))
+            root_strings = _inventory_root_strings_entries(strings_dir_path)
+            if root_strings:
+                root_string_paths = {entry.relative_path.casefold() for entry in root_strings}
+                main_entries = [
+                    entry
+                    for entry in main_entries
+                    if entry.relative_path.casefold() not in root_string_paths
+                ]
+                main_entries.extend(root_strings)
             ps_audio_adjusted = False
             if is_ps:
                 main_entries, ps_audio_adjusted = _prepare_playstation_audio_entries(

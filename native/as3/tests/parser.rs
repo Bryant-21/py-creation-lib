@@ -11,6 +11,18 @@ fn one_class(src: &str) -> ClassDecl {
     unit.packages[0].classes[0].clone()
 }
 
+fn first_statement(src: &str) -> Stmt {
+    let class = one_class(src);
+    let Member::Function(f) = &class.members[0] else {
+        panic!("expected a function member");
+    };
+    f.body.as_ref().unwrap().statements[0].clone()
+}
+
+fn joined(names: &[DottedName]) -> Vec<String> {
+    names.iter().map(DottedName::joined).collect()
+}
+
 #[test]
 fn the_task_source_parses_to_the_expected_tree() {
     let unit = parse(
@@ -52,180 +64,107 @@ fn the_task_source_parses_to_the_expected_tree() {
 }
 
 #[test]
-fn a_dotted_package_name_is_kept_whole() {
-    let unit = parse("package com.example.ui { public class A { } }").unwrap();
+fn package_and_class_headers_are_recorded() {
+    let unit = parse("package com.example.ui { import flash.display.*; public class A { } }").unwrap();
     assert_eq!(unit.packages[0].name, "com.example.ui");
-}
-
-#[test]
-fn a_wildcard_import_is_flagged() {
-    let unit = parse("package { import flash.display.*; public class A { } }").unwrap();
     assert!(unit.packages[0].imports[0].wildcard);
     assert_eq!(unit.packages[0].imports[0].name.joined(), "flash.display");
-}
 
-#[test]
-fn modifiers_are_collected_in_any_order() {
     let class = one_class("package { dynamic public final class A { } }");
     assert_eq!(class.modifiers.visibility, Some(Visibility::Public));
-    assert!(class.modifiers.is_dynamic);
-    assert!(class.modifiers.is_final);
-}
+    assert!(class.modifiers.is_dynamic && class.modifiers.is_final);
 
-/// `static` is only a modifier when a declaration follows it; used as a name it
-/// must stay an ordinary identifier.
-#[test]
-fn static_is_a_modifier_only_before_a_declaration() {
-    let class = one_class("package { public class A { public static var n:int; } }");
-    match &class.members[0] {
-        Member::Var(v) => {
-            assert!(v.modifiers.is_static);
-            assert_eq!(v.name, "n");
-        }
-        other => panic!("expected a var member, got {other:?}"),
-    }
-
-    let class = one_class("package { public class A { public function f() { static = 1; } } }");
-    match &class.members[0] {
-        Member::Function(f) => {
-            let body = f.body.as_ref().unwrap();
-            assert!(matches!(
-                body.statements[0],
-                Stmt::Expr(Expr::Assign { .. })
-            ));
-        }
-        other => panic!("expected a function member, got {other:?}"),
-    }
-}
-
-#[test]
-fn implements_and_extends_are_recorded_separately() {
     let class = one_class("package { public class A extends B implements C, D { } }");
     assert_eq!(class.extends.as_ref().unwrap().joined(), "B");
-    let names: Vec<String> = class.implements.iter().map(DottedName::joined).collect();
-    assert_eq!(names, ["C", "D"]);
-}
+    assert_eq!(joined(&class.implements), ["C", "D"]);
 
-/// An interface's `extends` list is a conformance list, not a superclass.
-#[test]
-fn an_interface_extends_list_becomes_implements() {
+    // An interface's `extends` list is a conformance list, not a superclass.
     let class = one_class("package { public interface A extends B, C { } }");
     assert!(class.is_interface);
     assert!(class.extends.is_none());
-    let names: Vec<String> = class.implements.iter().map(DottedName::joined).collect();
-    assert_eq!(names, ["B", "C"]);
+    assert_eq!(joined(&class.implements), ["B", "C"]);
 }
 
 #[test]
-fn the_hudframework_widget_interface_parses() {
+fn members_carry_modifiers_accessors_and_signatures() {
     let class = one_class(
-        r#"
-        package hudframework {
-            public interface IHUDWidget {
-                function processMessage(command:String, params:Array):void;
-            }
-        }
-        "#,
+        "package { public class A { public static var n:int; \
+         public function get width():int { return 0; } \
+         public function get():int { return 0; } \
+         public function f(a:int, b:String = \"x\", ...rest) { } } }",
     );
-    assert!(class.is_interface);
-    assert_eq!(class.name, "IHUDWidget");
-    match &class.members[0] {
-        Member::Function(f) => {
-            assert_eq!(f.name, "processMessage");
-            assert!(f.body.is_none(), "an interface method has no body");
-            assert_eq!(f.sig.return_type, TypeRef::Void);
-            let params: Vec<(&str, String)> = f
-                .sig
-                .params
-                .iter()
-                .map(|p| {
-                    let ty = match &p.type_ref {
-                        TypeRef::Named(n) => n.joined(),
-                        TypeRef::Any => "*".into(),
-                        TypeRef::Void => "void".into(),
-                    };
-                    (p.name.as_str(), ty)
-                })
-                .collect();
-            assert_eq!(
-                params,
-                [
-                    ("command", "String".to_string()),
-                    ("params", "Array".to_string())
-                ]
-            );
-        }
-        other => panic!("expected a function member, got {other:?}"),
-    }
-}
-
-#[test]
-fn accessors_are_distinguished_from_a_method_named_get() {
-    let class = one_class(
-        "package { public class A { public function get width():int { return 0; } \
-         public function get():int { return 0; } } }",
-    );
-    match (&class.members[0], &class.members[1]) {
-        (Member::Function(a), Member::Function(b)) => {
-            assert_eq!(a.accessor, Accessor::Getter);
-            assert_eq!(a.name, "width");
-            assert_eq!(b.accessor, Accessor::None);
-            assert_eq!(b.name, "get");
-        }
-        other => panic!("expected two function members, got {other:?}"),
-    }
-}
-
-#[test]
-fn parameters_carry_types_defaults_and_rest() {
-    let class = one_class(
-        "package { public class A { public function f(a:int, b:String = \"x\", ...rest) { } } }",
-    );
-    let Member::Function(f) = &class.members[0] else {
-        panic!("expected a function member");
+    let Member::Var(v) = &class.members[0] else {
+        panic!("expected a var member");
     };
+    assert!(v.modifiers.is_static);
+    assert_eq!(v.name, "n");
+    let [Member::Function(getter), Member::Function(get), Member::Function(f)] =
+        &class.members[1..]
+    else {
+        panic!("expected three function members");
+    };
+    assert_eq!((getter.accessor, getter.name.as_str()), (Accessor::Getter, "width"));
+    assert_eq!((get.accessor, get.name.as_str()), (Accessor::None, "get"));
     assert_eq!(f.sig.params.len(), 3);
     assert!(f.sig.params[1].default.is_some());
     assert!(f.sig.params[2].is_rest);
     assert_eq!(f.sig.params[2].name, "rest");
-}
 
-/// Precedence, not just acceptance: `a + b * c` must nest the multiply under
-/// the add, and comparison must bind looser than arithmetic.
-#[test]
-fn binary_operators_nest_by_precedence() {
-    let class = one_class("package { public class A { public function f() { x = a + b * c; } } }");
-    let Member::Function(f) = &class.members[0] else {
+    let class = one_class(
+        "package hudframework { public interface IHUDWidget { \
+         function processMessage(command:String, params:Array):void; } }",
+    );
+    let Member::Function(m) = &class.members[0] else {
         panic!("expected a function member");
     };
-    let Stmt::Expr(Expr::Assign { value, .. }) = &f.body.as_ref().unwrap().statements[0] else {
+    assert_eq!(m.name, "processMessage");
+    assert!(m.body.is_none(), "an interface method has no body");
+    assert_eq!(m.sig.return_type, TypeRef::Void);
+    let params: Vec<(&str, String)> = m
+        .sig
+        .params
+        .iter()
+        .map(|p| match &p.type_ref {
+            TypeRef::Named(n) => (p.name.as_str(), n.joined()),
+            other => panic!("unexpected type {other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        params,
+        [("command", "String".to_string()), ("params", "Array".to_string())]
+    );
+}
+
+#[test]
+fn expressions_nest_by_precedence_and_chain_left_to_right() {
+    let Stmt::Expr(Expr::Assign { value, .. }) =
+        first_statement("package { public class A { public function f() { x = a + b * c; } } }")
+    else {
         panic!("expected an assignment");
     };
-    let Expr::Binary { op, rhs, .. } = &**value else {
+    let Expr::Binary { op, rhs, .. } = &*value else {
         panic!("expected a binary expression");
     };
     assert_eq!(*op, BinOp::Add);
     assert!(matches!(**rhs, Expr::Binary { op: BinOp::Mul, .. }));
-}
 
-#[test]
-fn a_call_chain_parses_left_to_right() {
-    let class = one_class("package { public class A { public function f() { a.b(1).c[2]; } } }");
-    let Member::Function(f) = &class.members[0] else {
-        panic!("expected a function member");
-    };
-    let Stmt::Expr(expr) = &f.body.as_ref().unwrap().statements[0] else {
-        panic!("expected an expression statement");
-    };
     // Outermost is the index, then the member `c`, then the call, then `a.b`.
-    let Expr::Index { object, .. } = expr else {
+    let Stmt::Expr(Expr::Index { object, .. }) =
+        first_statement("package { public class A { public function f() { a.b(1).c[2]; } } }")
+    else {
         panic!("outermost should be an index");
     };
-    let Expr::Member { object, name, .. } = &**object else {
+    let Expr::Member { object, name, .. } = &*object else {
         panic!("next should be a member access");
     };
     assert_eq!(name, "c");
     assert!(matches!(**object, Expr::Call { .. }));
+
+    // `static` used as a name stays an ordinary identifier.
+    assert!(matches!(
+        first_statement("package { public class A { public function f() { static = 1; } } }"),
+        Stmt::Expr(Expr::Assign { .. })
+    ));
 }
 
 #[test]
@@ -238,10 +177,7 @@ fn statements_this_phase_will_not_lower_are_marked_not_dropped() {
         panic!("expected a function member");
     };
     let body = f.body.as_ref().unwrap();
-    assert!(matches!(
-        body.statements[0],
-        Stmt::Unsupported { what: "for", .. }
-    ));
+    assert!(matches!(body.statements[0], Stmt::For { .. }));
     assert!(matches!(
         body.statements[1],
         Stmt::Unsupported { what: "switch", .. }
@@ -252,12 +188,12 @@ fn statements_this_phase_will_not_lower_are_marked_not_dropped() {
 
 #[test]
 fn syntax_errors_report_what_was_expected() {
-    let err = parse("package { public class A extends { } }").unwrap_err();
-    assert!(err.message.contains("expected an identifier"), "{err}");
-
-    let err = parse("class A { }").unwrap_err();
-    assert!(err.message.contains("expected `package`"), "{err}");
-
-    let err = parse("package { public class A { ").unwrap_err();
-    assert!(err.message.contains("unterminated class body"), "{err}");
+    for (src, needle) in [
+        ("package { public class A extends { } }", "expected an identifier"),
+        ("class A { }", "expected `package`"),
+        ("package { public class A { ", "unterminated class body"),
+    ] {
+        let err = parse(src).unwrap_err();
+        assert!(err.message.contains(needle), "{src}: {err}");
+    }
 }

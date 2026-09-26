@@ -130,15 +130,15 @@ class TestArchiveCache:
         assert row is not None
         cache.close()
 
-    def test_get_miss_returns_none(self, tmp_path):
-        cache = ArchiveCache(tmp_path)
-        ba2 = _build_minimal_ba2(tmp_path / "test.ba2")
-        assert cache.get(ba2) is None
-        cache.close()
+    def test_put_then_get_then_stale_after_modification(self, tmp_path):
+        # Phase 1: miss, put, hit
+        put_dir = tmp_path / "put_then_get"
+        put_dir.mkdir()
+        cache = ArchiveCache(put_dir)
+        ba2 = _build_minimal_ba2(put_dir / "test.ba2")
 
-    def test_put_then_get(self, tmp_path):
-        cache = ArchiveCache(tmp_path)
-        ba2 = _build_minimal_ba2(tmp_path / "test.ba2")
+        assert cache.get(ba2) is None
+
         data = {"archive_type": "GNRL", "files": {"meshes/test.nif": ["g", 24, 0, 8]}}
         cache.put(ba2, data)
         result = cache.get(ba2)
@@ -147,9 +147,11 @@ class TestArchiveCache:
         assert "meshes/test.nif" in result["files"]
         cache.close()
 
-    def test_stale_after_modification(self, tmp_path):
-        cache = ArchiveCache(tmp_path)
-        ba2_path = tmp_path / "test.ba2"
+        # Phase 2: modifying the cached archive invalidates the entry
+        stale_dir = tmp_path / "stale_after_modification"
+        stale_dir.mkdir()
+        cache = ArchiveCache(stale_dir)
+        ba2_path = stale_dir / "test.ba2"
         _build_minimal_ba2(ba2_path)
         cache.put(ba2_path, {"archive_type": "GNRL", "files": {}})
 
@@ -160,32 +162,29 @@ class TestArchiveCache:
         assert cache.get(ba2_path) is None
         cache.close()
 
-    def test_cleanup_removes_stale(self, tmp_path):
+    @pytest.mark.parametrize(
+        ("valid_paths_fn", "expect_kept"),
+        [
+            (lambda ba2: set(), False),
+            (lambda ba2: {str(ba2.resolve()).lower()}, True),
+        ],
+    )
+    def test_cleanup_removes_stale_and_keeps_valid(self, tmp_path, valid_paths_fn, expect_kept):
         cache = ArchiveCache(tmp_path)
         ba2 = _build_minimal_ba2(tmp_path / "test.ba2")
-        resolved = str(ba2.resolve())
-        cache.put(ba2, {"files": {}})
+        cache.put(ba2, {"archive_type": "GNRL", "files": {}})
 
-        # Cleanup with no valid paths → removes entry
-        cache.cleanup(set())
-        assert cache.get(ba2) is None
-        cache.close()
+        cache.cleanup(valid_paths_fn(ba2))
 
-    def test_cleanup_keeps_valid(self, tmp_path):
-        cache = ArchiveCache(tmp_path)
-        ba2 = _build_minimal_ba2(tmp_path / "test.ba2")
-        data = {"archive_type": "GNRL", "files": {}}
-        cache.put(ba2, data)
-
-        cache.cleanup({str(ba2.resolve()).lower()})
-        assert cache.get(ba2) is not None
+        assert (cache.get(ba2) is not None) is expect_kept
         cache.close()
 
 
-# ---- BA2File cache round-trip ----
+# ---- BA2File / BSAReader cache round-trip ----
 
-class TestBA2FileCacheRoundTrip:
+class TestArchiveReaderCacheRoundTrip:
     def test_to_cache_and_restore(self, tmp_path):
+        # Phase 1: BA2File
         ba2_path = _build_minimal_ba2(tmp_path / "test.ba2")
         original = BA2File(ba2_path)
         cached_data = original.to_cache()
@@ -198,11 +197,7 @@ class TestBA2FileCacheRoundTrip:
         assert data == b"NIF_DATA"
         restored.close()
 
-
-# ---- BSAReader cache round-trip ----
-
-class TestBSAReaderCacheRoundTrip:
-    def test_to_cache_and_restore(self, tmp_path):
+        # Phase 2: BSAReader
         bsa_path = _build_minimal_bsa(tmp_path / "test.bsa")
         original = BSAReader(bsa_path)
         cached_data = original.to_cache()
@@ -265,9 +260,11 @@ class TestBA2ManagerWithCache:
         assert data is not None
         mgr2.close_all()
 
-    def test_cache_invalidated_on_change(self, tmp_path, monkeypatch):
-        archive_dir = tmp_path / "data"
-        archive_dir.mkdir()
+    def test_cache_invalidated_on_change_and_new_archive_detected(self, tmp_path, monkeypatch):
+        # Phase 1: modifying an already-cached archive invalidates its entries
+        changed_dir = tmp_path / "changed"
+        archive_dir = changed_dir / "data"
+        archive_dir.mkdir(parents=True)
         ba2_path = archive_dir / "test.ba2"
         _build_minimal_ba2(ba2_path)
         archive_map = {
@@ -275,7 +272,7 @@ class TestBA2ManagerWithCache:
         }
         self._stub_native_runtime(monkeypatch, archive_map)
 
-        cache_dir = tmp_path / "cache"
+        cache_dir = changed_dir / "cache"
         mgr = BA2Manager(cache_dir=cache_dir)
         mgr.scan_directories([archive_dir])
         mgr.close_all()
@@ -291,16 +288,17 @@ class TestBA2ManagerWithCache:
         assert mgr2.find("meshes/test.nif") is None
         mgr2.close_all()
 
-    def test_new_archive_detected(self, tmp_path, monkeypatch):
-        archive_dir = tmp_path / "data"
-        archive_dir.mkdir()
+        # Phase 2: a new archive added to the directory is picked up on rescan
+        new_dir = tmp_path / "new_archive"
+        archive_dir = new_dir / "data"
+        archive_dir.mkdir(parents=True)
         first_path = _build_minimal_ba2(archive_dir / "first.ba2")
         archive_map = {
             str(first_path.resolve()).lower(): {"files": {"meshes/test.nif": b"NIF_DATA"}},
         }
         self._stub_native_runtime(monkeypatch, archive_map)
 
-        cache_dir = tmp_path / "cache"
+        cache_dir = new_dir / "cache"
         mgr = BA2Manager(cache_dir=cache_dir)
         mgr.scan_directories([archive_dir])
         assert mgr.archive_count == 1

@@ -1780,15 +1780,19 @@ struct StreamingEspBuilder<W: Write> {
     bytes_written: u64,
     record_count: usize,
     group_patches: Vec<(u64, u32)>,
+    schema: Option<Arc<CompiledSchema>>,
+    localized_table_refs: HashMap<&'static str, HashSet<u32>>,
 }
 
 impl<W: Write> StreamingEspBuilder<W> {
-    fn new(writer: W) -> Self {
+    fn new(writer: W, game: Option<&str>) -> Self {
         Self {
             writer,
             bytes_written: 0,
             record_count: 0,
             group_patches: Vec::new(),
+            schema: game.and_then(|game| compiled_schema_for_game(game).ok()),
+            localized_table_refs: HashMap::new(),
         }
     }
 
@@ -1828,6 +1832,11 @@ impl<W: Write> StreamingEspBuilder<W> {
         self.write_all(&bytes)
             .map_err(|e| io_error(format!("write record: {e}")))?;
         self.record_count += 1;
+        collect_record_localized_table_refs(
+            record,
+            self.schema.as_deref(),
+            &mut self.localized_table_refs,
+        );
         Ok(())
     }
 }
@@ -3389,7 +3398,7 @@ pub(crate) fn build_authoring_dir_streaming_native(
     let file = File::create(output_path)
         .map_err(|err| io_error(format!("failed to create '{output_path}': {err}")))?;
     let writer = BufWriter::with_capacity(8 * 1024 * 1024, file);
-    let mut builder = StreamingEspBuilder::new(writer);
+    let mut builder = StreamingEspBuilder::new(writer, context.game.as_deref());
 
     let hedr_num_records_offset = write_tes4_header_streaming(&mut builder, &context, header_size)?;
 
@@ -3525,7 +3534,7 @@ pub(crate) fn build_authoring_dir_streaming_native(
         total_groups
     ));
 
-    // Strings sidecar (uses a minimal ParsedPlugin shell)
+    // Streaming discards records, so carry their table references into the shared writer.
     let plugin_shell = ParsedPlugin {
         plugin_name,
         file_path: String::new(),
@@ -3534,7 +3543,12 @@ pub(crate) fn build_authoring_dir_streaming_native(
         root_items: Vec::new(),
         game: context.game.clone(),
     };
-    write_localized_strings_for_parsed(&plugin_shell, &context.strings, output_path)?;
+    write_localized_strings_with_refs(
+        &plugin_shell,
+        &context.strings,
+        output_path,
+        &builder.localized_table_refs,
+    )?;
 
     Ok(())
 }

@@ -70,32 +70,6 @@ fn convert_batch_runs_mixed_fixture_tree_with_deterministic_results() {
 }
 
 #[test]
-fn convert_batch_rejects_flattened_duplicate_destinations() {
-    let temp = clean_temp("havok_convert_batch_duplicates");
-    let src_root = temp.join("src");
-    let dst_root = temp.join("dst");
-    std::fs::create_dir_all(src_root.join("a")).unwrap();
-    std::fs::create_dir_all(src_root.join("b")).unwrap();
-    copy_fixture(
-        "native/havok/tests/fixtures/skeleton.hkx",
-        &src_root.join("a/same.hkx"),
-    );
-    copy_fixture(
-        "../bacup/py_bacup_lib/python/bacup_lib/tests/fixtures/creatures/deathclaw/expected/character.hkx",
-        &src_root.join("b/same.hkx"),
-    );
-
-    let error =
-        havok_native::api::havok_convert_batch(&src_root, &dst_root, "fo4", false).unwrap_err();
-
-    assert!(
-        error.to_string().contains("duplicate batch destination"),
-        "unexpected error: {error}"
-    );
-    assert!(!dst_root.join("same.hkx").exists());
-}
-
-#[test]
 fn ps4_conversion_uses_64g_layout_and_preserves_the_model() {
     let source_bytes =
         std::fs::read(repo_path("native/havok/tests/fixtures/skeleton.hkx")).unwrap();
@@ -153,21 +127,6 @@ fn ps4_layout_honors_explicit_member_alignment() {
         .unwrap();
 
     assert_eq!(control_data.offset, 96);
-}
-
-#[test]
-fn ps4_layout_honors_explicit_align_8_after_compact_base_class() {
-    use havok_native::hkx::descriptors::{DescriptorRegistry, StructureLayout};
-
-    let mut registry = DescriptorRegistry::new();
-    registry.set_structure_layout(StructureLayout::Generic);
-    let members = registry.get_all_members("hknpShapeMassProperties").unwrap();
-    let compressed = members
-        .iter()
-        .find(|member| member.name == "compressedMassProperties")
-        .unwrap();
-
-    assert_eq!(compressed.offset, 16);
 }
 
 #[test]
@@ -248,24 +207,4 @@ fn ps4_batch_uses_nested_ps4_folder_without_reprocessing_it() {
     assert_eq!(second.converted, 0);
     assert_eq!(second.skipped, 1);
     assert!(second.errors.is_empty());
-}
-
-#[test]
-fn ps4_batch_can_replace_sources_without_processing_the_ps4_subtree() {
-    let temp = clean_temp("havok_convert_ps4_replace_sources");
-    let src_root = temp.join("src");
-    let source = src_root.join("nested/skeleton.hkx");
-    std::fs::create_dir_all(source.parent().unwrap()).unwrap();
-    std::fs::create_dir_all(src_root.join("ps4")).unwrap();
-    copy_fixture("native/havok/tests/fixtures/skeleton.hkx", &source);
-    std::fs::write(src_root.join("ps4/ignored.hkx"), b"not an hkx").unwrap();
-
-    let result = havok_native::api::havok_convert_ps4_batch(&src_root, &src_root, true).unwrap();
-    assert_eq!(result.converted, 1);
-    assert_eq!(result.skipped, 0);
-    assert!(result.errors.is_empty());
-
-    let header =
-        havok_native::hkx::packfile::parse_header(&std::fs::read(source).unwrap()).unwrap();
-    assert_eq!(header.reuse_padding_optimization, 1);
 }

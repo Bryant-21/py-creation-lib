@@ -4,7 +4,7 @@ from creation_lib.world_renderer import RenderSettings, WorldSceneBuilder
 from creation_lib.world_renderer.reports import WorldReport
 
 
-def test_builder_creates_and_closes_native_session(monkeypatch) -> None:
+def test_builder_creates_and_closes_native_session_and_rejects_unsupported_game(monkeypatch) -> None:
     calls: list[tuple] = []
 
     def create_world_session(config):
@@ -43,19 +43,16 @@ def test_builder_creates_and_closes_native_session(monkeypatch) -> None:
         ("destroy_session", 10),
     ]
 
-
-def test_builder_rejects_unsupported_game() -> None:
-    builder = WorldSceneBuilder(game="starfield", plugin_paths=[], data_paths=[], archive_paths=[])
-
+    unsupported = WorldSceneBuilder(game="starfield", plugin_paths=[], data_paths=[], archive_paths=[])
     try:
-        builder.open()
+        unsupported.open()
     except ValueError as exc:
         assert "Unsupported world renderer game" in str(exc)
     else:
         raise AssertionError("expected unsupported game to raise ValueError")
 
 
-def test_render_settings_round_trip_to_json() -> None:
+def test_render_settings_and_world_report_round_trip_to_json() -> None:
     settings = RenderSettings(
         include_terrain=True,
         include_statics=True,
@@ -63,14 +60,10 @@ def test_render_settings_round_trip_to_json() -> None:
         include_water=True,
         include_disabled_refs=False,
     )
-
     assert settings.to_json()["include_water"] is True
     assert settings.to_json()["include_disabled_refs"] is False
 
-
-def test_world_report_round_trip_defaults() -> None:
     report = WorldReport.from_json({"ok": True, "data": {"worldspaces": []}})
-
     assert report.to_json()["warnings"] == []
     assert report.to_json()["data"]["worldspaces"] == []
 

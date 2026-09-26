@@ -44,25 +44,29 @@ def _stub_index(tmp_path, monkeypatch, rows):
     return db_dir
 
 
-def test_shipped_index_archive_paths_are_rebased_to_the_local_game(tmp_path, monkeypatch):
-    data_dir = _game_dir(tmp_path, "Fallout4 - Voices.ba2")
-    db_dir = _stub_index(tmp_path, monkeypatch, [_row(_FOREIGN)])
+def test_rebase_reports_local_archive_path_whether_present_or_absent(tmp_path, monkeypatch):
+    present_root = tmp_path / "present"
+    present_root.mkdir()
+    data_dir = _game_dir(present_root, "Fallout4 - Voices.ba2")
+    db_dir = _stub_index(present_root, monkeypatch, [_row(_FOREIGN)])
 
     index = voice_reference.load_cached_voice_reference(game="fo4", data_dir=data_dir, db_dir=db_dir)
 
     assert index is not None
     assert index.lines[0].archive_path == str(data_dir / "Fallout4 - Voices.ba2")
 
+    # A missing archive must still report the local path, not the build machine's.
+    absent_root = tmp_path / "absent"
+    absent_root.mkdir()
+    absent_data_dir = _game_dir(absent_root)
+    absent_db_dir = _stub_index(absent_root, monkeypatch, [_row(_FOREIGN)])
 
-def test_rebase_is_applied_even_when_the_archive_is_absent_locally(tmp_path, monkeypatch):
-    """A missing archive must report the local path, not the build machine's."""
-    data_dir = _game_dir(tmp_path)
-    db_dir = _stub_index(tmp_path, monkeypatch, [_row(_FOREIGN)])
+    absent_index = voice_reference.load_cached_voice_reference(
+        game="fo4", data_dir=absent_data_dir, db_dir=absent_db_dir
+    )
 
-    index = voice_reference.load_cached_voice_reference(game="fo4", data_dir=data_dir, db_dir=db_dir)
-
-    assert index.lines[0].archive_path == str(data_dir / "Fallout4 - Voices.ba2")
-    assert "Steam Games" not in index.lines[0].archive_path
+    assert absent_index.lines[0].archive_path == str(absent_data_dir / "Fallout4 - Voices.ba2")
+    assert "Steam Games" not in absent_index.lines[0].archive_path
 
 
 def test_archives_the_caller_supplied_explicitly_are_honoured(tmp_path, monkeypatch):

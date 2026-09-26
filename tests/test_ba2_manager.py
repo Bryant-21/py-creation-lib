@@ -53,7 +53,7 @@ def test_find_uses_native_routing_and_normalizes_paths(tmp_path: Path, monkeypat
     mgr.close_all()
 
 
-def test_find_returns_none_for_missing_member(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_find_returns_none_for_missing_member_and_close_all_clears_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     (tmp_path / "textures.ba2").write_bytes(b"")
     _install_native_stubs(monkeypatch, files=["textures/test.dds"])
 
@@ -61,15 +61,6 @@ def test_find_returns_none_for_missing_member(tmp_path: Path, monkeypatch: pytes
     mgr.scan_directories([tmp_path])
 
     assert mgr.find("textures/missing.dds") is None
-    mgr.close_all()
-
-
-def test_close_all_clears_native_manager_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    (tmp_path / "textures.ba2").write_bytes(b"")
-    _install_native_stubs(monkeypatch, files=["textures/test.dds"])
-
-    mgr = BA2Manager(use_cache=False)
-    mgr.scan_directories([tmp_path])
     _ = mgr.total_file_count
 
     mgr.close_all()

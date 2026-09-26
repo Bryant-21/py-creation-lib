@@ -10,7 +10,6 @@
 /// bytes.
 use std::collections::BTreeMap;
 use std::f32::consts::PI;
-use std::path::PathBuf;
 
 use crate::atlas::AtlasResult;
 use crate::billboards::BillboardManifest;

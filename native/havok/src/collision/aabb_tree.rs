@@ -335,116 +335,63 @@ fn _build_with_tracking(
 mod tests {
     use super::*;
 
-    fn min_w(bytes: &[u8], node_idx: usize) -> u32 {
-        let off = node_idx * 32 + 12;
+    fn word(bytes: &[u8], node_idx: usize, offset: usize) -> u32 {
+        let off = node_idx * 32 + offset;
         u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap())
     }
 
-    fn max_w(bytes: &[u8], node_idx: usize) -> u32 {
-        let off = node_idx * 32 + 28;
-        u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap())
-    }
-
-    fn free_next(bytes: &[u8], node_idx: usize) -> u16 {
-        let off = node_idx * 32;
-        u16::from_le_bytes(bytes[off..off + 2].try_into().unwrap())
-    }
-
-    #[test]
-    fn single_leaf_produces_null_leaf_and_free_node() {
-        let aabbs = vec![Aabb {
-            min: [0.0, 0.0, 0.0],
-            max: [1.0, 1.0, 1.0],
-        }];
-        let bytes = build_aabb_tree_nodes(&aabbs);
-        // node 0 (null) + node 1 (leaf) + node 2 (free) = 3 nodes × 32 bytes
-        assert_eq!(bytes.len(), 96, "single leaf: 3 nodes × 32 bytes");
-        // Node 0 is all zeros
-        assert!(bytes[..32].iter().all(|&b| b == 0));
-        // Node 1 min.xyz = (0,0,0), max.xyz = (1,1,1)
-        let min_x = f32::from_le_bytes(bytes[32..36].try_into().unwrap());
-        let max_x = f32::from_le_bytes(bytes[48..52].try_into().unwrap());
-        assert!((min_x - 0.0).abs() < 1e-6);
-        assert!((max_x - 1.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn two_leaves_encode_structure_and_free_list() {
-        let aabbs = vec![
-            Aabb {
-                min: [0.0, 0.0, 0.0],
-                max: [1.0, 1.0, 1.0],
-            },
-            Aabb {
-                min: [2.0, 0.0, 0.0],
-                max: [3.0, 1.0, 1.0],
-            },
-        ];
-        let bytes = build_aabb_tree_nodes(&aabbs);
-        // null + root(internal) + leaf0 + leaf1 + free = 5 nodes
-        assert_eq!(bytes.len(), 5 * 32, "two leaves: 5 nodes × 32 bytes");
-
-        // Node 1 is internal: max_w lower16 = 2 (left), upper16 = 3 (right)
-        let max_w_1 = max_w(&bytes, 1);
-        let left = max_w_1 & 0xFFFF;
-        let right = (max_w_1 >> 16) & 0xFFFF;
-        assert_eq!(left, 2, "left child should be node 2");
-        assert_eq!(right, 3, "right child should be node 3");
-
-        assert_eq!(min_w(&bytes, 1), 0x3F00_0000, "root parent is 0");
-        assert_eq!(min_w(&bytes, 2), 0x3F00_0001, "left leaf parent is root");
-        assert_eq!(min_w(&bytes, 3), 0x3F00_0001, "right leaf parent is root");
-
-        assert_eq!(max_w(&bytes, 2) & 0xFFFF, 0, "leaf child slot is 0");
-        assert_eq!(max_w(&bytes, 2) >> 16, 0, "leaf data is instance 0");
-        assert_eq!(max_w(&bytes, 3) & 0xFFFF, 0, "leaf child slot is 0");
-        assert_eq!(max_w(&bytes, 3) >> 16, 1, "leaf data is instance 1");
-
-        assert_eq!(free_next(&bytes, 4), 0, "free node next-free starts at 0");
-    }
-
-    #[test]
-    fn leaf_to_node_mapping_correct() {
-        let aabbs = vec![
-            Aabb {
-                min: [0.0, 0.0, 0.0],
-                max: [1.0, 1.0, 1.0],
-            },
-            Aabb {
-                min: [2.0, 0.0, 0.0],
-                max: [3.0, 1.0, 1.0],
-            },
-        ];
-        let mapping = leaf_node_indices(&aabbs);
-        assert_eq!(mapping.len(), 2);
-        // Both leaves should map to nodes 2 and 3
-        let set: std::collections::HashSet<usize> = mapping.iter().copied().collect();
-        assert!(set.contains(&2) && set.contains(&3));
-    }
-
-    #[test]
-    fn empty_leaf_list_produces_null_only() {
-        let bytes = build_aabb_tree_nodes(&[]);
-        assert_eq!(bytes.len(), 32, "empty: just null node (32 bytes)");
-        assert!(bytes.iter().all(|&b| b == 0));
-    }
-
-    #[test]
-    fn max_node_count_matches_serialized_tree_capacity() {
-        for n in [0, 1, 2, 6, 9] {
-            let aabbs = vec![
-                Aabb {
-                    min: [0.0, 0.0, 0.0],
-                    max: [1.0, 1.0, 1.0],
-                };
-                n
-            ];
-            assert_eq!(build_aabb_tree_nodes(&aabbs).len() / 32, max_node_count(n));
+    fn unit_box(x: f32) -> Aabb {
+        Aabb {
+            min: [x, 0.0, 0.0],
+            max: [x + 1.0, 1.0, 1.0],
         }
     }
 
     #[test]
-    fn codec32_count_guard_rejects_unrepresentable_tree() {
+    fn aabb_tree_node_encoding() {
+        let empty = build_aabb_tree_nodes(&[]);
+        assert_eq!(empty.len(), 32, "empty tree is only the null node");
+        assert!(empty.iter().all(|&b| b == 0));
+
+        // null + leaf + free
+        let single = build_aabb_tree_nodes(&[unit_box(0.0)]);
+        assert_eq!(single.len(), 96);
+        assert!(single[..32].iter().all(|&b| b == 0));
+        assert_eq!(f32::from_le_bytes(single[32..36].try_into().unwrap()), 0.0);
+        assert_eq!(f32::from_le_bytes(single[48..52].try_into().unwrap()), 1.0);
+
+        // null + root + leaf0 + leaf1 + free
+        let leaves = [unit_box(0.0), unit_box(2.0)];
+        let two = build_aabb_tree_nodes(&leaves);
+        assert_eq!(two.len(), 5 * 32);
+        let root_max_w = word(&two, 1, 28);
+        assert_eq!(
+            (root_max_w & 0xFFFF, root_max_w >> 16),
+            (2, 3),
+            "root children"
+        );
+        assert_eq!(word(&two, 1, 12), 0x3F00_0000, "root parent is 0");
+        assert_eq!(word(&two, 2, 12), 0x3F00_0001, "leaf parent is root");
+        assert_eq!(word(&two, 3, 12), 0x3F00_0001, "leaf parent is root");
+        assert_eq!(word(&two, 2, 28), 0, "leaf 0: child slot 0, instance 0");
+        assert_eq!(
+            word(&two, 3, 28),
+            1 << 16,
+            "leaf 1: child slot 0, instance 1"
+        );
+        assert_eq!(
+            word(&two, 4, 0) & 0xFFFF,
+            0,
+            "free node next-free starts at 0"
+        );
+        let mut mapping = leaf_node_indices(&leaves);
+        mapping.sort_unstable();
+        assert_eq!(mapping, vec![2, 3]);
+
+        for n in [0, 1, 2, 6, 9] {
+            let aabbs = vec![unit_box(0.0); n];
+            assert_eq!(build_aabb_tree_nodes(&aabbs).len() / 32, max_node_count(n));
+        }
         assert!(codec32_counts_fit(CODEC32_MAX_LEAVES));
         assert!(!codec32_counts_fit(CODEC32_MAX_LEAVES + 1));
     }

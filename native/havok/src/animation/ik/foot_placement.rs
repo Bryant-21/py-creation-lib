@@ -6,7 +6,7 @@ use super::two_bone::{TwoBoneParams, solve_two_bone};
 /// previews and armor authoring.
 use crate::animation::pose::{
     quat_from_axis_angle, quat_mul, quat_normalize, quat_rotate, vec3_add, vec3_cross, vec3_dot,
-    vec3_len, vec3_normalize, vec3_scale, vec3_sub,
+    vec3_normalize, vec3_scale, vec3_sub,
 };
 
 /// A simple ground plane defined by a point and normal.
@@ -170,49 +170,49 @@ mod tests {
     use super::*;
 
     #[test]
-    fn foot_placement_flat_ground_noop() {
-        // Ankle already on the flat ground plane (Z=0), no movement needed.
-        let params = FootPlacementParams {
-            hip_ws: [0.0, 0.0, 1.0],
-            knee_ws: [0.0, 0.0, 0.5],
-            ankle_ws: [0.0, 0.0, 0.0],
-            hip_rot_ws: [0.0, 0.0, 0.0, 1.0],
-            knee_rot_ws: [0.0, 0.0, 0.0, 1.0],
-            ground: GroundPlane {
-                point: [0.0, 0.0, 0.0],
-                normal: [0.0, 0.0, 1.0],
-            },
-            max_lift_offset: 0.5,
-            max_drop_offset: 0.5,
-            ankle_orient_blend: 0.0,
-        };
-        let result = solve_foot_placement(&params);
-        // Result should still be normalized quaternions.
-        let len = |q: [f32; 4]| (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt();
-        assert!((len(result.hip_new_rot_ws) - 1.0).abs() < 1e-4);
-        assert!((len(result.knee_new_rot_ws) - 1.0).abs() < 1e-4);
-    }
-
-    #[test]
-    fn foot_placement_stepped_ground() {
-        // Ankle above a step: ground at Z=0.5 (step up), ankle at Z=0.
-        // Should try to drop the ankle onto the ground.
-        let params = FootPlacementParams {
-            hip_ws: [0.0, 0.0, 2.0],
-            knee_ws: [0.0, 0.0, 1.0],
-            ankle_ws: [0.0, 0.0, 0.0],
-            hip_rot_ws: [0.0, 0.0, 0.0, 1.0],
-            knee_rot_ws: [0.0, 0.0, 0.0, 1.0],
-            ground: GroundPlane {
-                point: [0.0, 0.0, 0.5],
-                normal: [0.0, 0.0, 1.0],
-            },
-            max_lift_offset: 0.0,
-            max_drop_offset: 1.0,
-            ankle_orient_blend: 0.0,
-        };
-        let result = solve_foot_placement(&params);
-        let len = |q: [f32; 4]| (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt();
-        assert!((len(result.hip_new_rot_ws) - 1.0).abs() < 1e-4);
+    fn foot_placement_flat_and_stepped() {
+        {
+            // Ankle already on the flat ground plane (Z=0), no movement needed.
+            let params = FootPlacementParams {
+                hip_ws: [0.0, 0.0, 1.0],
+                knee_ws: [0.0, 0.0, 0.5],
+                ankle_ws: [0.0, 0.0, 0.0],
+                hip_rot_ws: [0.0, 0.0, 0.0, 1.0],
+                knee_rot_ws: [0.0, 0.0, 0.0, 1.0],
+                ground: GroundPlane {
+                    point: [0.0, 0.0, 0.0],
+                    normal: [0.0, 0.0, 1.0],
+                },
+                max_lift_offset: 0.5,
+                max_drop_offset: 0.5,
+                ankle_orient_blend: 0.0,
+            };
+            let result = solve_foot_placement(&params);
+            // Result should still be normalized quaternions.
+            let len = |q: [f32; 4]| (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt();
+            assert!((len(result.hip_new_rot_ws) - 1.0).abs() < 1e-4);
+            assert!((len(result.knee_new_rot_ws) - 1.0).abs() < 1e-4);
+        }
+        {
+            // Ankle above a step: ground at Z=0.5 (step up), ankle at Z=0.
+            // Should try to drop the ankle onto the ground.
+            let params = FootPlacementParams {
+                hip_ws: [0.0, 0.0, 2.0],
+                knee_ws: [0.0, 0.0, 1.0],
+                ankle_ws: [0.0, 0.0, 0.0],
+                hip_rot_ws: [0.0, 0.0, 0.0, 1.0],
+                knee_rot_ws: [0.0, 0.0, 0.0, 1.0],
+                ground: GroundPlane {
+                    point: [0.0, 0.0, 0.5],
+                    normal: [0.0, 0.0, 1.0],
+                },
+                max_lift_offset: 0.0,
+                max_drop_offset: 1.0,
+                ankle_orient_blend: 0.0,
+            };
+            let result = solve_foot_placement(&params);
+            let len = |q: [f32; 4]| (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt();
+            assert!((len(result.hip_new_rot_ws) - 1.0).abs() < 1e-4);
+        }
     }
 }

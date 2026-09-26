@@ -176,18 +176,12 @@ pub(crate) mod tests {
         let runs = pe.climbing_pointer_runs(4, 16);
         let expected: Vec<usize> = (0..6).map(|index| RDATA_RAW + index * 8).collect();
         assert_eq!(runs, vec![expected]);
-    }
 
-    #[test]
-    fn pointer_runs_break_on_large_steps() {
         let image = synthetic_image(&[vec![0; 512]], &[vec![0, 8, 16, 300, 308, 316]]);
         let pe = PeImage::parse(&image).unwrap();
-        assert_eq!(pe.climbing_pointer_runs(3, 16).len(), 2);
+        assert_eq!(pe.climbing_pointer_runs(3, 16).len(), 2, "large steps break runs");
         assert!(pe.climbing_pointer_runs(4, 16).is_empty());
-    }
 
-    #[test]
-    fn non_pe_input_is_rejected() {
         assert!(PeImage::parse(b"RIFF....WAVE").is_err());
     }
 }

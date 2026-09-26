@@ -108,66 +108,66 @@ const INTERLEAVED_ANIMATION_XML: &str = r##"<?xml version="1.0" encoding="ASCII"
 // ---------------------------------------------------------------------------
 
 #[test]
-fn lossless_clip_extracts_frame0_keyframes_with_skeleton_bone_names() {
-    let skeleton = parse_skeleton_xml(SKELETON_XML).expect("parse skeleton");
-    let clip =
-        extract_clip(LOSSLESS_ANIMATION_XML, Some(&skeleton)).expect("extract lossless clip");
+fn lossless_clip_extraction() {
+    {
+        let skeleton = parse_skeleton_xml(SKELETON_XML).expect("parse skeleton");
+        let clip =
+            extract_clip(LOSSLESS_ANIMATION_XML, Some(&skeleton)).expect("extract lossless clip");
 
-    assert_eq!(clip.source_format, "hkx");
-    assert_eq!(clip.channels.len(), 2);
+        assert_eq!(clip.source_format, "hkx");
+        assert_eq!(clip.channels.len(), 2);
 
-    // Bone names from skeleton
-    assert_eq!(clip.channels[0].bone_name, "Root");
-    assert_eq!(clip.channels[1].bone_name, "Spine");
+        // Bone names from skeleton
+        assert_eq!(clip.channels[0].bone_name, "Root");
+        assert_eq!(clip.channels[1].bone_name, "Spine");
 
-    // Bone 0 rotation: type=0 (identity) → (0,0,0,1)
-    assert!(
-        !clip.channels[0].rotations.is_empty(),
-        "Root should have a rotation keyframe"
-    );
-    let r0 = &clip.channels[0].rotations[0];
-    assert_eq!(r0.time, 0.0);
-    assert!(
-        (r0.value[3] - 1.0).abs() < 1e-5,
-        "Root rotation w should be 1.0"
-    );
+        // Bone 0 rotation: type=0 (identity) → (0,0,0,1)
+        assert!(
+            !clip.channels[0].rotations.is_empty(),
+            "Root should have a rotation keyframe"
+        );
+        let r0 = &clip.channels[0].rotations[0];
+        assert_eq!(r0.time, 0.0);
+        assert!(
+            (r0.value[3] - 1.0).abs() < 1e-5,
+            "Root rotation w should be 1.0"
+        );
 
-    // Bone 1 rotation: type=1 (static), offset=0 → staticRotations[0] = (0,0,0.707,0.707)
-    // Note: rotationTypeAndOffsets "0 1" means bone0 raw=0 (type=0,off=0), bone1 raw=1 (type=1,off=0)
-    assert!(
-        !clip.channels[1].rotations.is_empty(),
-        "Spine should have a rotation keyframe"
-    );
-    let r1 = &clip.channels[1].rotations[0];
-    assert_eq!(r1.time, 0.0);
-    assert!(
-        (r1.value[2] - 0.7071068).abs() < 1e-4,
-        "Spine rotation z ≈ 0.707"
-    );
-    assert!(
-        (r1.value[3] - 0.7071068).abs() < 1e-4,
-        "Spine rotation w ≈ 0.707"
-    );
+        // Bone 1 rotation: type=1 (static), offset=0 → staticRotations[0] = (0,0,0.707,0.707)
+        // Note: rotationTypeAndOffsets "0 1" means bone0 raw=0 (type=0,off=0), bone1 raw=1 (type=1,off=0)
+        assert!(
+            !clip.channels[1].rotations.is_empty(),
+            "Spine should have a rotation keyframe"
+        );
+        let r1 = &clip.channels[1].rotations[0];
+        assert_eq!(r1.time, 0.0);
+        assert!(
+            (r1.value[2] - 0.7071068).abs() < 1e-4,
+            "Spine rotation z ≈ 0.707"
+        );
+        assert!(
+            (r1.value[3] - 0.7071068).abs() < 1e-4,
+            "Spine rotation w ≈ 0.707"
+        );
 
-    // translationTypeAndOffsets holds a uint64 per bone; each component's low
-    // 16 bits are type(&3)+offset(>>2). bone0 raw=4 → type 0 (identity), so
-    // bone0 translation resolves to (0,0,0) regardless of staticTranslations.
-    assert!(
-        !clip.channels[0].translations.is_empty(),
-        "Root should have a translation keyframe"
-    );
+        // translationTypeAndOffsets holds a uint64 per bone; each component's low
+        // 16 bits are type(&3)+offset(>>2). bone0 raw=4 → type 0 (identity), so
+        // bone0 translation resolves to (0,0,0) regardless of staticTranslations.
+        assert!(
+            !clip.channels[0].translations.is_empty(),
+            "Root should have a translation keyframe"
+        );
 
-    // Duration preserved
-    assert!((clip.duration - 0.033333).abs() < 1e-4);
-}
+        // Duration preserved
+        assert!((clip.duration - 0.033333).abs() < 1e-4);
+    }
+    {
+        let clip = extract_clip(LOSSLESS_ANIMATION_XML, None)
+            .expect("extract lossless clip without skeleton");
 
-#[test]
-fn lossless_clip_without_skeleton_uses_track_names() {
-    let clip =
-        extract_clip(LOSSLESS_ANIMATION_XML, None).expect("extract lossless clip without skeleton");
-
-    assert_eq!(clip.channels[0].bone_name, "track_0");
-    assert_eq!(clip.channels[1].bone_name, "track_1");
+        assert_eq!(clip.channels[0].bone_name, "track_0");
+        assert_eq!(clip.channels[1].bone_name, "track_1");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -175,61 +175,61 @@ fn lossless_clip_without_skeleton_uses_track_names() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn interleaved_clip_extracts_multiframe_keyframes() {
-    let clip = extract_clip(INTERLEAVED_ANIMATION_XML, None).expect("extract interleaved clip");
+fn interleaved_clip_extraction() {
+    {
+        let clip = extract_clip(INTERLEAVED_ANIMATION_XML, None).expect("extract interleaved clip");
 
-    assert_eq!(clip.source_format, "hkx");
-    assert_eq!(clip.channels.len(), 2);
+        assert_eq!(clip.source_format, "hkx");
+        assert_eq!(clip.channels.len(), 2);
 
-    // Bone 0 ("track_0") should have 5 translation keyframes
-    let ch0 = &clip.channels[0];
-    assert_eq!(
-        ch0.translations.len(),
-        5,
-        "track_0 should have 5 translation keyframes"
-    );
-    assert_eq!(
-        ch0.rotations.len(),
-        5,
-        "track_0 should have 5 rotation keyframes"
-    );
+        // Bone 0 ("track_0") should have 5 translation keyframes
+        let ch0 = &clip.channels[0];
+        assert_eq!(
+            ch0.translations.len(),
+            5,
+            "track_0 should have 5 translation keyframes"
+        );
+        assert_eq!(
+            ch0.rotations.len(),
+            5,
+            "track_0 should have 5 rotation keyframes"
+        );
 
-    // Frame 0: translation (0,0,0)
-    assert!(
-        (ch0.translations[0].value[0]).abs() < 1e-5,
-        "frame0 x should be 0"
-    );
-    // Frame 1: translation (1,0,0)
-    assert!(
-        (ch0.translations[1].value[0] - 1.0).abs() < 1e-5,
-        "frame1 x should be 1.0"
-    );
-    // Frame 4: translation (4,0,0)
-    assert!(
-        (ch0.translations[4].value[0] - 4.0).abs() < 1e-5,
-        "frame4 x should be 4.0"
-    );
+        // Frame 0: translation (0,0,0)
+        assert!(
+            (ch0.translations[0].value[0]).abs() < 1e-5,
+            "frame0 x should be 0"
+        );
+        // Frame 1: translation (1,0,0)
+        assert!(
+            (ch0.translations[1].value[0] - 1.0).abs() < 1e-5,
+            "frame1 x should be 1.0"
+        );
+        // Frame 4: translation (4,0,0)
+        assert!(
+            (ch0.translations[4].value[0] - 4.0).abs() < 1e-5,
+            "frame4 x should be 4.0"
+        );
 
-    // Timestamps should be evenly spaced
-    let dt = ch0.translations[1].time - ch0.translations[0].time;
-    assert!(dt > 1e-5, "frame dt should be positive, got {dt}");
-    let dt2 = ch0.translations[2].time - ch0.translations[1].time;
-    assert!((dt - dt2).abs() < 1e-5, "frame spacing should be uniform");
+        // Timestamps should be evenly spaced
+        let dt = ch0.translations[1].time - ch0.translations[0].time;
+        assert!(dt > 1e-5, "frame dt should be positive, got {dt}");
+        let dt2 = ch0.translations[2].time - ch0.translations[1].time;
+        assert!((dt - dt2).abs() < 1e-5, "frame spacing should be uniform");
 
-    // Events from annotation track
-    assert_eq!(clip.events.len(), 1);
-    assert_eq!(clip.events[0].text, "FootLeft");
-    assert!((clip.events[0].time - 0.066667).abs() < 1e-4);
-}
+        // Events from annotation track
+        assert_eq!(clip.events.len(), 1);
+        assert_eq!(clip.events[0].text, "FootLeft");
+        assert!((clip.events[0].time - 0.066667).abs() < 1e-4);
+    }
+    {
+        let skeleton = parse_skeleton_xml(SKELETON_XML).expect("parse skeleton");
+        let clip = extract_clip(INTERLEAVED_ANIMATION_XML, Some(&skeleton))
+            .expect("extract interleaved clip with skeleton");
 
-#[test]
-fn interleaved_clip_with_skeleton_maps_bone_names() {
-    let skeleton = parse_skeleton_xml(SKELETON_XML).expect("parse skeleton");
-    let clip = extract_clip(INTERLEAVED_ANIMATION_XML, Some(&skeleton))
-        .expect("extract interleaved clip with skeleton");
-
-    assert_eq!(clip.channels[0].bone_name, "Root");
-    assert_eq!(clip.channels[1].bone_name, "Spine");
+        assert_eq!(clip.channels[0].bone_name, "Root");
+        assert_eq!(clip.channels[1].bone_name, "Spine");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -297,55 +297,50 @@ fn make_spline_xml(data_bytes: &[u8]) -> String {
 }
 
 #[test]
-fn spline_clip_static_rotation_extracts_identity_keyframe() {
-    let buf = build_static_spline_buf();
-    let xml = make_spline_xml(&buf);
+fn compressed_clip_extraction() {
+    {
+        let buf = build_static_spline_buf();
+        let xml = make_spline_xml(&buf);
 
-    let clip = extract_clip(&xml, None).expect("extract spline clip");
+        let clip = extract_clip(&xml, None).expect("extract spline clip");
 
-    assert_eq!(clip.source_format, "hkx");
-    assert_eq!(clip.channels.len(), 1);
+        assert_eq!(clip.source_format, "hkx");
+        assert_eq!(clip.channels.len(), 1);
 
-    let ch = &clip.channels[0];
-    assert_eq!(ch.bone_name, "track_0");
+        let ch = &clip.channels[0];
+        assert_eq!(ch.bone_name, "track_0");
 
-    // Should have at least 1 rotation keyframe with identity quaternion
-    assert!(
-        !ch.rotations.is_empty(),
-        "spline clip should have rotation keyframe"
-    );
-    let r = &ch.rotations[0];
-    assert_eq!(r.time, 0.0);
-    assert!((r.value[0]).abs() < 1e-5, "x should be 0");
-    assert!((r.value[1]).abs() < 1e-5, "y should be 0");
-    assert!((r.value[2]).abs() < 1e-5, "z should be 0");
-    assert!(
-        (r.value[3] - 1.0).abs() < 1e-5,
-        "w should be 1.0 (identity)"
-    );
+        // Should have at least 1 rotation keyframe with identity quaternion
+        assert!(
+            !ch.rotations.is_empty(),
+            "spline clip should have rotation keyframe"
+        );
+        let r = &ch.rotations[0];
+        assert_eq!(r.time, 0.0);
+        assert!((r.value[0]).abs() < 1e-5, "x should be 0");
+        assert!((r.value[1]).abs() < 1e-5, "y should be 0");
+        assert!((r.value[2]).abs() < 1e-5, "z should be 0");
+        assert!(
+            (r.value[3] - 1.0).abs() < 1e-5,
+            "w should be 1.0 (identity)"
+        );
 
-    // Translation should be (0,0,0)
-    assert!(
-        !ch.translations.is_empty(),
-        "spline clip should have translation keyframe"
-    );
-    let t = &ch.translations[0];
-    assert!((t.value[0]).abs() < 1e-5);
-    assert!((t.value[1]).abs() < 1e-5);
-    assert!((t.value[2]).abs() < 1e-5);
-}
-
-// ---------------------------------------------------------------------------
-// Test 4: Quantized XML blob extraction
-// ---------------------------------------------------------------------------
-
-#[test]
-fn quantized_clip_extracts_channels_from_inline_data_blob() {
-    let data = build_synthetic_static_blob(2, 3, 1.0);
-    let data_joined = data.iter().map(u8::to_string).collect::<Vec<_>>().join(" ");
-    let data_len = data.len();
-    let xml = format!(
-        r##"<?xml version="1.0" encoding="ASCII" standalone="no"?>
+        // Translation should be (0,0,0)
+        assert!(
+            !ch.translations.is_empty(),
+            "spline clip should have translation keyframe"
+        );
+        let t = &ch.translations[0];
+        assert!((t.value[0]).abs() < 1e-5);
+        assert!((t.value[1]).abs() < 1e-5);
+        assert!((t.value[2]).abs() < 1e-5);
+    }
+    {
+        let data = build_synthetic_static_blob(2, 3, 1.0);
+        let data_joined = data.iter().map(u8::to_string).collect::<Vec<_>>().join(" ");
+        let data_len = data.len();
+        let xml = format!(
+            r##"<?xml version="1.0" encoding="ASCII" standalone="no"?>
 <hkpackfile classversion="11" contentsversion="hk_2014.1.0-r1">
   <hksection name="__data__">
     <hkobject name="#anim" class="hkaQuantizedAnimation" signature="0x00000001">
@@ -358,92 +353,97 @@ fn quantized_clip_extracts_channels_from_inline_data_blob() {
     </hkobject>
   </hksection>
 </hkpackfile>"##
-    );
+        );
 
-    let clip = extract_clip(&xml, None).expect("extract quantized clip");
+        let clip = extract_clip(&xml, None).expect("extract quantized clip");
 
-    assert_eq!(clip.channels.len(), 2);
-    assert!(
-        clip.warnings.is_empty(),
-        "quantized extraction warnings: {:?}",
-        clip.warnings
-    );
-    assert_eq!(clip.channels[0].bone_name, "track_0");
-    assert_eq!(clip.channels[0].translations.len(), 3);
-    assert_eq!(clip.channels[0].rotations.len(), 3);
-    assert!((clip.channels[0].translations[0].value[0] - 1.0).abs() < 1e-5);
-    assert!((clip.native_fps - 2.0).abs() < 1e-5);
+        assert_eq!(clip.channels.len(), 2);
+        assert!(
+            clip.warnings.is_empty(),
+            "quantized extraction warnings: {:?}",
+            clip.warnings
+        );
+        assert_eq!(clip.channels[0].bone_name, "track_0");
+        assert_eq!(clip.channels[0].translations.len(), 3);
+        assert_eq!(clip.channels[0].rotations.len(), 3);
+        assert!((clip.channels[0].translations[0].value[0] - 1.0).abs() < 1e-5);
+        assert!((clip.native_fps - 2.0).abs() < 1e-5);
+    }
 }
+
+// ---------------------------------------------------------------------------
+// Test 4: Quantized XML blob extraction
+// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // Test 5: infer_clip_fps
 // ---------------------------------------------------------------------------
 
 #[test]
-fn infer_clip_fps_recovers_sample_rate_from_keyframe_spacing() {
-    use havok_native::animation::clip::{AnimationClip, AnimationKeyframe, BoneChannel};
+fn infer_clip_fps_from_spacing_or_default() {
+    {
+        use havok_native::animation::clip::{AnimationClip, AnimationKeyframe, BoneChannel};
 
-    let fps = 30.0f32;
-    let dt = 1.0f32 / fps;
-    let clip = AnimationClip {
-        source_format: "test".into(),
-        duration: 1.0,
-        native_fps: 0.0, // not yet set
-        channels: vec![BoneChannel {
-            bone_name: "Root".into(),
-            translations: vec![
-                AnimationKeyframe {
+        let fps = 30.0f32;
+        let dt = 1.0f32 / fps;
+        let clip = AnimationClip {
+            source_format: "test".into(),
+            duration: 1.0,
+            native_fps: 0.0, // not yet set
+            channels: vec![BoneChannel {
+                bone_name: "Root".into(),
+                translations: vec![
+                    AnimationKeyframe {
+                        time: 0.0,
+                        value: [0.0; 3],
+                    },
+                    AnimationKeyframe {
+                        time: dt,
+                        value: [1.0, 0.0, 0.0],
+                    },
+                ],
+                rotations: vec![],
+                scales: vec![],
+            }],
+            events: vec![],
+            original_skeleton_name: None,
+            warnings: vec![],
+            is_additive: false,
+            track_to_bone_indices: vec![],
+            extracted_motion_ref: String::new(),
+        };
+
+        let inferred = infer_clip_fps(&clip, 24.0);
+        assert!(
+            (inferred - fps).abs() < 0.5,
+            "expected ~30 fps, got {inferred}"
+        );
+    }
+    {
+        use havok_native::animation::clip::{AnimationClip, AnimationKeyframe, BoneChannel};
+
+        let clip = AnimationClip {
+            source_format: "test".into(),
+            duration: 0.033333,
+            native_fps: 0.0,
+            channels: vec![BoneChannel {
+                bone_name: "Root".into(),
+                translations: vec![AnimationKeyframe {
                     time: 0.0,
                     value: [0.0; 3],
-                },
-                AnimationKeyframe {
-                    time: dt,
-                    value: [1.0, 0.0, 0.0],
-                },
-            ],
-            rotations: vec![],
-            scales: vec![],
-        }],
-        events: vec![],
-        original_skeleton_name: None,
-        warnings: vec![],
-        is_additive: false,
-        track_to_bone_indices: vec![],
-        extracted_motion_ref: String::new(),
-    };
-
-    let inferred = infer_clip_fps(&clip, 24.0);
-    assert!(
-        (inferred - fps).abs() < 0.5,
-        "expected ~30 fps, got {inferred}"
-    );
-}
-
-#[test]
-fn infer_clip_fps_falls_back_to_default_for_single_keyframe_clip() {
-    use havok_native::animation::clip::{AnimationClip, AnimationKeyframe, BoneChannel};
-
-    let clip = AnimationClip {
-        source_format: "test".into(),
-        duration: 0.033333,
-        native_fps: 0.0,
-        channels: vec![BoneChannel {
-            bone_name: "Root".into(),
-            translations: vec![AnimationKeyframe {
-                time: 0.0,
-                value: [0.0; 3],
+                }],
+                rotations: vec![],
+                scales: vec![],
             }],
-            rotations: vec![],
-            scales: vec![],
-        }],
-        events: vec![],
-        original_skeleton_name: None,
-        warnings: vec![],
-        is_additive: false,
-        track_to_bone_indices: vec![],
-        extracted_motion_ref: String::new(),
-    };
+            events: vec![],
+            original_skeleton_name: None,
+            warnings: vec![],
+            is_additive: false,
+            track_to_bone_indices: vec![],
+            extracted_motion_ref: String::new(),
+        };
 
-    let inferred = infer_clip_fps(&clip, 24.0);
-    assert_eq!(inferred, 24.0, "should fall back to default 24.0");
+        let inferred = infer_clip_fps(&clip, 24.0);
+        assert_eq!(inferred, 24.0, "should fall back to default 24.0");
+    }
 }

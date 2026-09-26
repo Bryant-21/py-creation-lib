@@ -82,10 +82,12 @@ def test_slice10_pyfunctions_exist_and_accept_inputs():
     assert "meshes" in preview
 
 
-def test_tagxml_reader_accepts_named_object_pointers(tmp_path):
+def test_tagxml_reader_accepts_named_pointers_and_rejects_duplicate_names(tmp_path):
     from creation_lib.havok.native_runtime import load_native_module
 
-    xml = """<?xml version="1.0" encoding="ASCII" standalone="no"?>
+    native = load_native_module()
+
+    ok_xml = """<?xml version="1.0" encoding="ASCII" standalone="no"?>
 <hkpackfile classversion="11" contentsversion="hk_2014.1.0-r1">
   <hksection name="__data__">
     <hkobject name="#container" class="hkaAnimationContainer" signature="0x8dc20f3">
@@ -104,19 +106,14 @@ def test_tagxml_reader_accepts_named_object_pointers(tmp_path):
     </hkobject>
   </hksection>
 </hkpackfile>"""
-    native = load_native_module()
     xml_path = tmp_path / "named_pointers.xml"
     hkx_path = tmp_path / "named_pointers.hkx"
-    xml_path.write_text(xml, encoding="ascii")
+    xml_path.write_text(ok_xml, encoding="ascii")
 
     native.pack_xml_to_hkx(str(xml_path), str(hkx_path))
     assert "hkaAnimationContainer" in native.unpack_hkx_to_xml(str(hkx_path))
 
-
-def test_tagxml_reader_rejects_duplicate_hkobject_names(tmp_path):
-    from creation_lib.havok.native_runtime import load_native_module
-
-    xml = """<?xml version="1.0" encoding="ASCII" standalone="no"?>
+    dup_xml = """<?xml version="1.0" encoding="ASCII" standalone="no"?>
 <hkpackfile classversion="11" contentsversion="hk_2014.1.0-r1">
   <hksection name="__data__">
     <hkobject name="#container" class="hkaAnimationContainer" signature="0x8dc20f3">
@@ -136,10 +133,9 @@ def test_tagxml_reader_rejects_duplicate_hkobject_names(tmp_path):
     </hkobject>
   </hksection>
 </hkpackfile>"""
-    native = load_native_module()
     xml_path = tmp_path / "duplicate_names.xml"
     hkx_path = tmp_path / "duplicate_names.hkx"
-    xml_path.write_text(xml, encoding="ascii")
+    xml_path.write_text(dup_xml, encoding="ascii")
 
     with pytest.raises(ValueError, match="duplicate hkobject name #animation"):
         native.pack_xml_to_hkx(str(xml_path), str(hkx_path))

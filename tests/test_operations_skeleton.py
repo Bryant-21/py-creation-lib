@@ -27,7 +27,6 @@ def _make_skeleton_nif() -> NifFile:
     bone_r.set_field("Children", [])
     nif.blocks.append(bone_r)
 
-    # Stub schema methods
     class _FakeSchema:
         def is_subtype_of(self, t, base):
             return t == base or t == "NiNode"
@@ -40,45 +39,29 @@ def _make_skeleton_nif() -> NifFile:
     return nif
 
 
-def test_mirror_skeleton_x():
+def test_mirror_skeleton_negates_x_and_reports_no_change_on_y():
     nif = _make_skeleton_nif()
     result = mirror_skeleton(nif, "x")
     assert result.success
     assert result.modified_block_ids  # at least one bone mirrored
+    assert nif.blocks[1].get_field("Translation")["x"] == -5.0
+    assert nif.blocks[2].get_field("Translation")["x"] == 5.0
 
-    bone_l = nif.blocks[1]
-    t = bone_l.get_field("Translation")
-    assert t["x"] == -5.0  # negated
-
-    bone_r = nif.blocks[2]
-    t = bone_r.get_field("Translation")
-    assert t["x"] == 5.0  # negated back
-
-
-def test_mirror_skeleton_y():
-    nif = _make_skeleton_nif()
-    result = mirror_skeleton(nif, "y")
-    assert result.success
-    # Y was 0 for all bones, so nothing should be modified
-    assert len(result.modified_block_ids) == 0
+    # Y was 0 for all bones, so mirroring on Y should modify nothing.
+    y_result = mirror_skeleton(_make_skeleton_nif(), "y")
+    assert y_result.success
+    assert len(y_result.modified_block_ids) == 0
 
 
 def test_mirror_skeleton_invalid_axis():
     nif = _make_skeleton_nif()
-    result = mirror_skeleton(nif, "w")
-    assert not result.success
+    assert not mirror_skeleton(nif, "w").success
 
 
-def test_fix_bone_bounds_no_skin():
-    """Block without skin should fail gracefully."""
+def test_fix_bone_bounds_failure_cases():
+    """Missing block, and a block without skin, should both fail gracefully."""
     nif = NifFile()
     shape = NifBlock(block_id=0, type_name="BSTriShape")
     nif.blocks.append(shape)
-    result = fix_bone_bounds(nif, 0)
-    assert not result.success
-
-
-def test_fix_bone_bounds_invalid_block():
-    nif = NifFile()
-    result = fix_bone_bounds(nif, 99)
-    assert not result.success
+    assert not fix_bone_bounds(nif, 0).success  # no skin
+    assert not fix_bone_bounds(nif, 99).success  # invalid block

@@ -581,68 +581,61 @@ mod tests {
 
     #[test]
     fn parse_filename_splits_editor_id_form_id_plugin() {
-        let (eid, fk) = parse_filename("Ammo10mm - 01F276_Fallout4.esm.yaml").unwrap();
-        assert_eq!(eid, "Ammo10mm");
-        assert_eq!(fk, "01F276:Fallout4.esm");
+        for (name, want_eid, want_fk) in [
+            ("Ammo10mm - 01F276_Fallout4.esm.yaml", "Ammo10mm", "01F276:Fallout4.esm"),
+            (
+                "ccBGSFO4044_Armor_Power_Hellfire_ArmLeft - 000800_ccBGSFO4044-HellfirePowerArmor.esl.yaml",
+                "ccBGSFO4044_Armor_Power_Hellfire_ArmLeft",
+                "000800:ccBGSFO4044-HellfirePowerArmor.esl",
+            ),
+        ] {
+            let (eid, fk) = parse_filename(name).unwrap();
+            assert_eq!(eid, want_eid);
+            assert_eq!(fk, want_fk);
+        }
     }
 
     #[test]
-    fn parse_filename_handles_quoted_form_id() {
-        let (eid, fk) = parse_filename(
-            "ccBGSFO4044_Armor_Power_Hellfire_ArmLeft - 000800_ccBGSFO4044-HellfirePowerArmor.esl.yaml",
-        )
-        .unwrap();
-        assert_eq!(eid, "ccBGSFO4044_Armor_Power_Hellfire_ArmLeft");
-        assert_eq!(fk, "000800:ccBGSFO4044-HellfirePowerArmor.esl");
+    fn form_key_string_pads_and_uppercases() {
+        for (oid, want) in [("F4AE8", "0F4AE8:Fallout4.esm"), ("1cc46a", "1CC46A:Fallout4.esm")] {
+            let v = serde_json::json!({"plugin": "Fallout4.esm", "object_id": oid});
+            assert_eq!(form_key_string(&v).as_deref(), Some(want));
+        }
     }
 
     #[test]
-    fn form_key_string_pads_short_object_id() {
-        let v = serde_json::json!({"plugin": "Fallout4.esm", "object_id": "F4AE8"});
-        assert_eq!(form_key_string(&v).as_deref(), Some("0F4AE8:Fallout4.esm"));
-    }
-
-    #[test]
-    fn form_key_string_uppercases_hex() {
-        let v = serde_json::json!({"plugin": "Fallout4.esm", "object_id": "1cc46a"});
-        assert_eq!(form_key_string(&v).as_deref(), Some("1CC46A:Fallout4.esm"));
-    }
-
-    #[test]
-    fn resolve_localized_prefers_english() {
-        let v = serde_json::json!({
-            "TargetLanguage": "English",
-            "Values": [
-                {"Language": "Chinese", "String": "10mm彈藥"},
-                {"Language": "English", "String": "10mm Round"},
-                {"Language": "German", "String": "10-mm-Patrone"},
-            ],
-        });
-        assert_eq!(resolve_localized(&v), "10mm Round");
-    }
-
-    #[test]
-    fn resolve_localized_falls_back_to_first_nonempty() {
-        let v = serde_json::json!({
-            "TargetLanguage": "English",
-            "Values": [
-                {"Language": "ChineseTraditional", "String": ""},
-                {"Language": "German", "String": "Fallback"},
-            ],
-        });
-        assert_eq!(resolve_localized(&v), "Fallback");
-    }
-
-    #[test]
-    fn resolve_localized_passes_plain_string() {
-        let v = serde_json::Value::String("Plain".to_string());
-        assert_eq!(resolve_localized(&v), "Plain");
-    }
-
-    #[test]
-    fn resolve_localized_uses_raw_hex_when_no_values() {
-        let v = serde_json::json!({"TargetLanguage": "English", "raw_hex": "DB030000"});
-        assert_eq!(resolve_localized(&v), "DB030000");
+    fn resolve_localized_cases() {
+        let cases = [
+            (
+                serde_json::json!({
+                    "TargetLanguage": "English",
+                    "Values": [
+                        {"Language": "Chinese", "String": "10mm彈藥"},
+                        {"Language": "English", "String": "10mm Round"},
+                        {"Language": "German", "String": "10-mm-Patrone"},
+                    ],
+                }),
+                "10mm Round",
+            ),
+            (
+                serde_json::json!({
+                    "TargetLanguage": "English",
+                    "Values": [
+                        {"Language": "ChineseTraditional", "String": ""},
+                        {"Language": "German", "String": "Fallback"},
+                    ],
+                }),
+                "Fallback",
+            ),
+            (serde_json::Value::String("Plain".to_string()), "Plain"),
+            (
+                serde_json::json!({"TargetLanguage": "English", "raw_hex": "DB030000"}),
+                "DB030000",
+            ),
+        ];
+        for (v, want) in cases {
+            assert_eq!(resolve_localized(&v), want);
+        }
     }
 
     #[test]

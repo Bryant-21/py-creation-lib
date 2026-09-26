@@ -144,178 +144,154 @@ fn parse(xml: &str) -> serde_json::Value {
 }
 
 #[test]
-fn behavior_graph_returns_valid_json() {
-    parse(IDLE_BEHAVIOR_XML);
-}
-
-#[test]
-fn behavior_graph_nodes_keyed_by_id_string() {
-    let v = parse(IDLE_BEHAVIOR_XML);
-    let nodes = v["nodes"].as_object().expect("nodes must be object");
-    // Root (#0001), BehaviorGraph (#0002), StateMachine (#0003),
-    // StateInfo (#0004), ClipGenerator (#0005) — metadata nodes excluded
-    assert!(nodes.contains_key("1"), "root node present");
-    assert!(nodes.contains_key("2"), "behavior graph present");
-    assert!(nodes.contains_key("3"), "state machine present");
-    assert!(nodes.contains_key("4"), "state info present");
-    assert!(nodes.contains_key("5"), "clip generator present");
-}
-
-#[test]
-fn behavior_graph_connections_are_arrays_of_three() {
-    let v = parse(IDLE_BEHAVIOR_XML);
-    let conns = v["connections"]
-        .as_array()
-        .expect("connections must be array");
-    assert!(!conns.is_empty(), "should have at least one connection");
-    for conn in conns {
-        let arr = conn
-            .as_array()
-            .expect("each connection is [port, from, to]");
-        assert_eq!(arr.len(), 3, "connection has exactly 3 elements");
+fn idle_behavior_graph_json_shape() {
+    {
+        parse(IDLE_BEHAVIOR_XML);
     }
-}
+    {
+        let v = parse(IDLE_BEHAVIOR_XML);
+        let nodes = v["nodes"].as_object().expect("nodes must be object");
+        // Root (#0001), BehaviorGraph (#0002), StateMachine (#0003),
+        // StateInfo (#0004), ClipGenerator (#0005) — metadata nodes excluded
+        assert!(nodes.contains_key("1"), "root node present");
+        assert!(nodes.contains_key("2"), "behavior graph present");
+        assert!(nodes.contains_key("3"), "state machine present");
+        assert!(nodes.contains_key("4"), "state info present");
+        assert!(nodes.contains_key("5"), "clip generator present");
+    }
+    {
+        let v = parse(IDLE_BEHAVIOR_XML);
+        let conns = v["connections"]
+            .as_array()
+            .expect("connections must be array");
+        assert!(!conns.is_empty(), "should have at least one connection");
+        for conn in conns {
+            let arr = conn
+                .as_array()
+                .expect("each connection is [port, from, to]");
+            assert_eq!(arr.len(), 3, "connection has exactly 3 elements");
+        }
+    }
+    {
+        let v = parse(IDLE_BEHAVIOR_XML);
+        let conns = v["connections"].as_array().unwrap();
+        // Root (1) → port 0 → BehaviorGraph (2)
+        let found = conns.iter().any(|c| {
+            let a = c.as_array().unwrap();
+            a[0].as_i64() == Some(0) && a[1].as_i64() == Some(1) && a[2].as_i64() == Some(2)
+        });
+        assert!(
+            found,
+            "root (#1) port 0 → behavior graph (#2) connection missing"
+        );
+    }
+    {
+        let v = parse(IDLE_BEHAVIOR_XML);
+        let nodes = v["nodes"].as_object().unwrap();
 
-#[test]
-fn behavior_graph_root_connects_to_behavior_graph() {
-    let v = parse(IDLE_BEHAVIOR_XML);
-    let conns = v["connections"].as_array().unwrap();
-    // Root (1) → port 0 → BehaviorGraph (2)
-    let found = conns.iter().any(|c| {
-        let a = c.as_array().unwrap();
-        a[0].as_i64() == Some(0) && a[1].as_i64() == Some(1) && a[2].as_i64() == Some(2)
-    });
-    assert!(
-        found,
-        "root (#1) port 0 → behavior graph (#2) connection missing"
-    );
-}
-
-#[test]
-fn behavior_graph_node_type_ids_correct() {
-    let v = parse(IDLE_BEHAVIOR_XML);
-    let nodes = v["nodes"].as_object().unwrap();
-
-    assert_eq!(
-        nodes["1"]["nodeTypeID"], 0,
-        "hkRootLevelContainer is type 0"
-    );
-    assert_eq!(nodes["2"]["nodeTypeID"], 1, "hkbBehaviorGraph is type 1");
-    assert_eq!(nodes["3"]["nodeTypeID"], 5, "hkbStateMachine is type 5");
-    assert_eq!(
-        nodes["4"]["nodeTypeID"], 6,
-        "hkbStateMachineStateInfo is type 6"
-    );
-    assert_eq!(nodes["5"]["nodeTypeID"], 25, "hkbClipGenerator is type 25");
-}
-
-#[test]
-fn behavior_graph_clip_generator_properties() {
-    let v = parse(IDLE_BEHAVIOR_XML);
-    let clip = &v["nodes"]["5"];
-    assert_eq!(clip["nodeName"], "Idle");
-    assert_eq!(clip["animationName"], "Animations\\Idle.hkt");
-    assert_eq!(clip["mode"], 1, "MODE_LOOPING maps to 1");
-    assert_eq!(clip["playbackSpeed"], "1.000000");
-}
-
-#[test]
-fn behavior_graph_state_machine_properties() {
-    let v = parse(IDLE_BEHAVIOR_XML);
-    let sm = &v["nodes"]["3"];
-    assert_eq!(sm["nodeName"], "IdleRoot");
-    assert_eq!(sm["startStateId"], 0);
-    assert_eq!(sm["randomTransitionEventId"], -1);
-}
-
-#[test]
-fn behavior_graph_state_machine_connects_state_info() {
-    let v = parse(IDLE_BEHAVIOR_XML);
-    let conns = v["connections"].as_array().unwrap();
-    // SM (#3) port 1 → StateInfo (#4)
-    let found = conns.iter().any(|c| {
-        let a = c.as_array().unwrap();
-        a[0].as_i64() == Some(1) && a[1].as_i64() == Some(3) && a[2].as_i64() == Some(4)
-    });
-    assert!(found, "state machine (#3) port 1 → state info (#4) missing");
-}
-
-#[test]
-fn behavior_graph_global_state_has_events() {
-    let v = parse(IDLE_BEHAVIOR_XML);
-    let events = v["global_state"]["events"].as_array().unwrap();
-    assert_eq!(events.len(), 2);
-    assert_eq!(events[0]["eventName"], "footstep");
-    assert_eq!(events[1]["eventName"], "attack");
-    assert_eq!(events[0]["eventID"], 0);
-    assert_eq!(events[1]["eventID"], 1);
-}
-
-#[test]
-fn behavior_graph_global_state_has_variables() {
-    let v = parse(IDLE_BEHAVIOR_XML);
-    let vars = v["global_state"]["variables"].as_array().unwrap();
-    assert_eq!(vars.len(), 1);
-    assert_eq!(vars[0]["variableName"], "speed");
-    // VARIABLE_TYPE_INT32 = 3
-    assert_eq!(vars[0]["variableType"], 3);
-}
-
-#[test]
-fn behavior_graph_unhandled_is_empty_for_known_classes() {
-    let v = parse(IDLE_BEHAVIOR_XML);
-    let unhandled = v["unhandled"].as_array().unwrap();
-    assert!(
-        unhandled.is_empty(),
-        "unexpected unhandled classes: {unhandled:?}"
-    );
-}
-
-#[test]
-fn behavior_graph_metadata_nodes_not_in_nodes_dict() {
-    let v = parse(IDLE_BEHAVIOR_XML);
-    let nodes = v["nodes"].as_object().unwrap();
-    // #0006 = hkbBehaviorGraphData (metadata-only, type 2)
-    // #0007 = hkbVariableValueSet (metadata-only, type 3)
-    // #0008 = hkbBehaviorGraphStringData (metadata-only, type 4)
-    assert!(
-        !nodes.contains_key("6"),
-        "hkbBehaviorGraphData must not appear in nodes"
-    );
-    assert!(
-        !nodes.contains_key("7"),
-        "hkbVariableValueSet must not appear in nodes"
-    );
-    assert!(
-        !nodes.contains_key("8"),
-        "hkbBehaviorGraphStringData must not appear in nodes"
-    );
-}
-
-#[test]
-fn behavior_graph_node_color_ids_assigned() {
-    let v = parse(IDLE_BEHAVIOR_XML);
-    let nodes = v["nodes"].as_object().unwrap();
-    // StateMachine should get a fallback type color (4 for type 5)
-    // States and clip should get SM-derived colors (non-zero)
-    let sm = &nodes["3"];
-    let state = &nodes["4"];
-    let clip = &nodes["5"];
-    // Colors should be non-negative integers
-    assert!(sm["nodeColorID"].as_i64().is_some());
-    assert!(
-        state["nodeColorID"].as_i64().unwrap() > 0,
-        "state info inside SM should be colored"
-    );
-    assert!(
-        clip["nodeColorID"].as_i64().unwrap() > 0,
-        "clip inside state should be colored"
-    );
-}
-
-#[test]
-fn behavior_graph_parses_error_on_malformed_xml() {
-    assert!(parse_behavior_graph_to_ui_json("<broken<<xml").is_err());
+        assert_eq!(
+            nodes["1"]["nodeTypeID"], 0,
+            "hkRootLevelContainer is type 0"
+        );
+        assert_eq!(nodes["2"]["nodeTypeID"], 1, "hkbBehaviorGraph is type 1");
+        assert_eq!(nodes["3"]["nodeTypeID"], 5, "hkbStateMachine is type 5");
+        assert_eq!(
+            nodes["4"]["nodeTypeID"], 6,
+            "hkbStateMachineStateInfo is type 6"
+        );
+        assert_eq!(nodes["5"]["nodeTypeID"], 25, "hkbClipGenerator is type 25");
+    }
+    {
+        let v = parse(IDLE_BEHAVIOR_XML);
+        let clip = &v["nodes"]["5"];
+        assert_eq!(clip["nodeName"], "Idle");
+        assert_eq!(clip["animationName"], "Animations\\Idle.hkt");
+        assert_eq!(clip["mode"], 1, "MODE_LOOPING maps to 1");
+        assert_eq!(clip["playbackSpeed"], "1.000000");
+    }
+    {
+        let v = parse(IDLE_BEHAVIOR_XML);
+        let sm = &v["nodes"]["3"];
+        assert_eq!(sm["nodeName"], "IdleRoot");
+        assert_eq!(sm["startStateId"], 0);
+        assert_eq!(sm["randomTransitionEventId"], -1);
+    }
+    {
+        let v = parse(IDLE_BEHAVIOR_XML);
+        let conns = v["connections"].as_array().unwrap();
+        // SM (#3) port 1 → StateInfo (#4)
+        let found = conns.iter().any(|c| {
+            let a = c.as_array().unwrap();
+            a[0].as_i64() == Some(1) && a[1].as_i64() == Some(3) && a[2].as_i64() == Some(4)
+        });
+        assert!(found, "state machine (#3) port 1 → state info (#4) missing");
+    }
+    {
+        let v = parse(IDLE_BEHAVIOR_XML);
+        let events = v["global_state"]["events"].as_array().unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0]["eventName"], "footstep");
+        assert_eq!(events[1]["eventName"], "attack");
+        assert_eq!(events[0]["eventID"], 0);
+        assert_eq!(events[1]["eventID"], 1);
+    }
+    {
+        let v = parse(IDLE_BEHAVIOR_XML);
+        let vars = v["global_state"]["variables"].as_array().unwrap();
+        assert_eq!(vars.len(), 1);
+        assert_eq!(vars[0]["variableName"], "speed");
+        // VARIABLE_TYPE_INT32 = 3
+        assert_eq!(vars[0]["variableType"], 3);
+    }
+    {
+        let v = parse(IDLE_BEHAVIOR_XML);
+        let unhandled = v["unhandled"].as_array().unwrap();
+        assert!(
+            unhandled.is_empty(),
+            "unexpected unhandled classes: {unhandled:?}"
+        );
+    }
+    {
+        let v = parse(IDLE_BEHAVIOR_XML);
+        let nodes = v["nodes"].as_object().unwrap();
+        // #0006 = hkbBehaviorGraphData (metadata-only, type 2)
+        // #0007 = hkbVariableValueSet (metadata-only, type 3)
+        // #0008 = hkbBehaviorGraphStringData (metadata-only, type 4)
+        assert!(
+            !nodes.contains_key("6"),
+            "hkbBehaviorGraphData must not appear in nodes"
+        );
+        assert!(
+            !nodes.contains_key("7"),
+            "hkbVariableValueSet must not appear in nodes"
+        );
+        assert!(
+            !nodes.contains_key("8"),
+            "hkbBehaviorGraphStringData must not appear in nodes"
+        );
+    }
+    {
+        let v = parse(IDLE_BEHAVIOR_XML);
+        let nodes = v["nodes"].as_object().unwrap();
+        // StateMachine should get a fallback type color (4 for type 5)
+        // States and clip should get SM-derived colors (non-zero)
+        let sm = &nodes["3"];
+        let state = &nodes["4"];
+        let clip = &nodes["5"];
+        // Colors should be non-negative integers
+        assert!(sm["nodeColorID"].as_i64().is_some());
+        assert!(
+            state["nodeColorID"].as_i64().unwrap() > 0,
+            "state info inside SM should be colored"
+        );
+        assert!(
+            clip["nodeColorID"].as_i64().unwrap() > 0,
+            "clip inside state should be colored"
+        );
+    }
+    {
+        assert!(parse_behavior_graph_to_ui_json("<broken<<xml").is_err());
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -372,47 +348,45 @@ const TRANSITION_XML: &str = r##"<?xml version="1.0" encoding="ASCII" standalone
 </hkpackfile>"##;
 
 #[test]
-fn behavior_graph_transitions_captured_in_global_state() {
-    let v: serde_json::Value = {
-        let json_str = parse_behavior_graph_to_ui_json(TRANSITION_XML).unwrap();
-        serde_json::from_str(&json_str).unwrap()
-    };
-    let transitions = v["global_state"]["transitions"].as_array().unwrap();
-    assert_eq!(transitions.len(), 1);
-    assert_eq!(transitions[0]["transitionName"], "BlendTransition_0.2s");
-    assert_eq!(transitions[0]["transitionDuration"], "0.200000");
-    assert_eq!(transitions[0]["transitionID"], 1);
-}
-
-#[test]
-fn behavior_graph_payloads_captured_in_global_state() {
-    let v: serde_json::Value = {
-        let json_str = parse_behavior_graph_to_ui_json(TRANSITION_XML).unwrap();
-        serde_json::from_str(&json_str).unwrap()
-    };
-    let payloads = v["global_state"]["payloads"].as_array().unwrap();
-    assert_eq!(payloads.len(), 1);
-    assert_eq!(payloads[0]["payloadName"], "MyPayloadString");
-    assert_eq!(payloads[0]["payloadID"], 1);
-}
-
-#[test]
-fn behavior_graph_transition_effect_excluded_from_nodes() {
-    let v: serde_json::Value = {
-        let json_str = parse_behavior_graph_to_ui_json(TRANSITION_XML).unwrap();
-        serde_json::from_str(&json_str).unwrap()
-    };
-    let nodes = v["nodes"].as_object().unwrap();
-    // hkbBlendingTransitionEffect (#10) is skipped (in skip_classes)
-    assert!(
-        !nodes.contains_key("10"),
-        "transition effect must not appear in nodes"
-    );
-    // hkbStringEventPayload (#11) is also skipped
-    assert!(
-        !nodes.contains_key("11"),
-        "payload must not appear in nodes"
-    );
+fn behavior_graph_transitions_and_payloads() {
+    {
+        let v: serde_json::Value = {
+            let json_str = parse_behavior_graph_to_ui_json(TRANSITION_XML).unwrap();
+            serde_json::from_str(&json_str).unwrap()
+        };
+        let transitions = v["global_state"]["transitions"].as_array().unwrap();
+        assert_eq!(transitions.len(), 1);
+        assert_eq!(transitions[0]["transitionName"], "BlendTransition_0.2s");
+        assert_eq!(transitions[0]["transitionDuration"], "0.200000");
+        assert_eq!(transitions[0]["transitionID"], 1);
+    }
+    {
+        let v: serde_json::Value = {
+            let json_str = parse_behavior_graph_to_ui_json(TRANSITION_XML).unwrap();
+            serde_json::from_str(&json_str).unwrap()
+        };
+        let payloads = v["global_state"]["payloads"].as_array().unwrap();
+        assert_eq!(payloads.len(), 1);
+        assert_eq!(payloads[0]["payloadName"], "MyPayloadString");
+        assert_eq!(payloads[0]["payloadID"], 1);
+    }
+    {
+        let v: serde_json::Value = {
+            let json_str = parse_behavior_graph_to_ui_json(TRANSITION_XML).unwrap();
+            serde_json::from_str(&json_str).unwrap()
+        };
+        let nodes = v["nodes"].as_object().unwrap();
+        // hkbBlendingTransitionEffect (#10) is skipped (in skip_classes)
+        assert!(
+            !nodes.contains_key("10"),
+            "transition effect must not appear in nodes"
+        );
+        // hkbStringEventPayload (#11) is also skipped
+        assert!(
+            !nodes.contains_key("11"),
+            "payload must not appear in nodes"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -456,28 +430,28 @@ const TRANSITION_ARRAY_XML: &str = r##"<?xml version="1.0" encoding="ASCII" stan
 </hkpackfile>"##;
 
 #[test]
-fn behavior_graph_transition_info_array_parsed() {
-    let v = parse(TRANSITION_ARRAY_XML);
-    let nodes = v["nodes"].as_object().unwrap();
-    let tia = &nodes["1"];
-    assert_eq!(tia["nodeTypeID"], 7);
-    let arr = tia["transitionArray"].as_array().unwrap();
-    assert_eq!(arr.len(), 1);
-    let t = &arr[0];
-    assert_eq!(t["eventId"], 3);
-    assert_eq!(t["toStateId"], 7);
-    // FLAG_DISABLED = index 5
-    let flags = t["flags"].as_array().unwrap();
-    assert_eq!(flags.len(), 15);
-    assert_eq!(flags[5], true, "FLAG_DISABLED should be set");
-    assert_eq!(flags[0], false, "other flags should be false");
-}
-
-#[test]
-fn behavior_graph_transition_interval_parsed() {
-    let v = parse(TRANSITION_ARRAY_XML);
-    let nodes = v["nodes"].as_object().unwrap();
-    let t = &nodes["1"]["transitionArray"][0];
-    assert_eq!(t["triggerInterval"]["enterEventId"], -1);
-    assert_eq!(t["triggerInterval"]["exitEventId"], -1);
+fn behavior_graph_transition_info_array() {
+    {
+        let v = parse(TRANSITION_ARRAY_XML);
+        let nodes = v["nodes"].as_object().unwrap();
+        let tia = &nodes["1"];
+        assert_eq!(tia["nodeTypeID"], 7);
+        let arr = tia["transitionArray"].as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        let t = &arr[0];
+        assert_eq!(t["eventId"], 3);
+        assert_eq!(t["toStateId"], 7);
+        // FLAG_DISABLED = index 5
+        let flags = t["flags"].as_array().unwrap();
+        assert_eq!(flags.len(), 15);
+        assert_eq!(flags[5], true, "FLAG_DISABLED should be set");
+        assert_eq!(flags[0], false, "other flags should be false");
+    }
+    {
+        let v = parse(TRANSITION_ARRAY_XML);
+        let nodes = v["nodes"].as_object().unwrap();
+        let t = &nodes["1"]["transitionArray"][0];
+        assert_eq!(t["triggerInterval"]["enterEventId"], -1);
+        assert_eq!(t["triggerInterval"]["exitEventId"], -1);
+    }
 }

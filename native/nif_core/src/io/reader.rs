@@ -582,6 +582,26 @@ fn read_bs_vertex_data<R: Read + Seek>(
     Ok(NifValue::Struct(fields))
 }
 
+/// Serialized size of one vertex, matching what [`read_bs_vertex_data`] consumes.
+pub(crate) fn bs_vertex_data_size(type_name: &str, attributes: u64) -> usize {
+    let position = if type_name == "BSVertexDataSSE" {
+        if attributes & 0x1 != 0 { 16 } else { 0 }
+    } else if attributes & 0x401 == 0x401 {
+        16
+    } else if attributes & 0x401 == 0x1 {
+        8
+    } else {
+        0
+    };
+    position
+        + 4 * usize::from(attributes & 0x2 != 0)
+        + 4 * usize::from(attributes & 0x8 != 0)
+        + 4 * usize::from(attributes & 0x18 == 0x18)
+        + 4 * usize::from(attributes & 0x20 != 0)
+        + 12 * usize::from(attributes & 0x40 != 0)
+        + 4 * usize::from(attributes & 0x100 != 0)
+}
+
 fn read_bs_vertex_data_array<R: Read + Seek>(
     type_name: &str,
     count: usize,
@@ -607,6 +627,7 @@ fn read_value<R: Read + Seek>(
     bs_version: u32,
     strings: &[String],
     depth: u32,
+    options: NifReadOptions,
 ) -> Result<NifValue, ReadError> {
     // Resolve #T# placeholder
     let mut tn: &str = type_name;
@@ -649,6 +670,7 @@ fn read_value<R: Read + Seek>(
             bs_version,
             strings,
             depth + 1,
+            options,
         );
     }
     // Fallback: read as uint
@@ -667,6 +689,7 @@ fn read_struct<R: Read + Seek>(
     bs_version: u32,
     strings: &[String],
     depth: u32,
+    options: NifReadOptions,
 ) -> Result<NifValue, ReadError> {
     let s = match schema.get_struct(type_name) {
         Some(s) => s,
@@ -712,6 +735,7 @@ fn read_struct<R: Read + Seek>(
             bs_version,
             strings,
             depth,
+            options,
         )?;
         fields.insert(key, val);
     }
@@ -723,7 +747,7 @@ fn read_struct<R: Read + Seek>(
 fn read_field_value<R: Read + Seek>(
     fdef: &FieldDef,
     block_fields: &mut IndexMap<String, NifValue>,
-    _actual_type: &str,
+    actual_type: &str,
     struct_template: Option<&str>,
     schema: &NifSchema,
     reader: &mut BasicReader<R>,
@@ -732,6 +756,7 @@ fn read_field_value<R: Read + Seek>(
     bs_version: u32,
     strings: &[String],
     depth: u32,
+    options: NifReadOptions,
 ) -> Result<NifValue, ReadError> {
     // Resolve #T#
     let mut field_type: &str = fdef.type_name;
@@ -818,12 +843,36 @@ fn read_field_value<R: Read + Seek>(
                         bs_version,
                         strings,
                         depth,
+                        options,
                     )?;
                     row.push(v);
                 }
                 outer.push(NifValue::Array(row));
             }
             return Ok(NifValue::Array(outer));
+        }
+
+        if options.compact_byte_array_data
+            && actual_type == "ByteArray"
+            && fdef.name == "Data"
+            && field_type == "byte"
+            && field_template.is_none()
+        {
+            return Ok(NifValue::Bytes(reader.read_n_bytes(count)?));
+        }
+
+        if options.raw_geometry_arrays && field_template.is_none() && !reader.big_endian {
+            let element_size = match field_type {
+                "Triangle" => Some(6),
+                "BSVertexData" | "BSVertexDataSSE" => {
+                    let attributes = arg_val.as_ref().map(Value::as_int).unwrap_or(0).max(0) as u64;
+                    Some(bs_vertex_data_size(field_type, attributes))
+                }
+                _ => None,
+            };
+            if let Some(element_size) = element_size {
+                return Ok(NifValue::Bytes(reader.read_n_bytes(count * element_size)?));
+            }
         }
 
         // 1D array — fast path for numeric basic types (no arg, no template)
@@ -856,6 +905,7 @@ fn read_field_value<R: Read + Seek>(
                 bs_version,
                 strings,
                 depth,
+                options,
             )?;
             out.push(v);
         }
@@ -875,6 +925,7 @@ fn read_field_value<R: Read + Seek>(
             bs_version,
             strings,
             depth + 1,
+            options,
         );
     }
 
@@ -890,12 +941,54 @@ fn read_field_value<R: Read + Seek>(
         bs_version,
         strings,
         depth,
+        options,
     )
 }
 
 // --- NifReader ---
 
 pub struct NifReader;
+
+#[derive(Clone, Copy)]
+pub(crate) struct NifReadOptions {
+    retain_original_metadata: bool,
+    compact_byte_array_data: bool,
+    raw_geometry_arrays: bool,
+}
+
+impl NifReadOptions {
+    const fn full() -> Self {
+        Self {
+            retain_original_metadata: true,
+            compact_byte_array_data: false,
+            raw_geometry_arrays: false,
+        }
+    }
+
+    const fn lean() -> Self {
+        Self {
+            retain_original_metadata: false,
+            compact_byte_array_data: false,
+            raw_geometry_arrays: false,
+        }
+    }
+
+    pub(crate) const fn compact_lean() -> Self {
+        Self {
+            retain_original_metadata: false,
+            compact_byte_array_data: true,
+            raw_geometry_arrays: false,
+        }
+    }
+
+    pub(crate) const fn raw_arrays_lean() -> Self {
+        Self {
+            retain_original_metadata: false,
+            compact_byte_array_data: true,
+            raw_geometry_arrays: true,
+        }
+    }
+}
 
 fn read_block_fields<R: Read + Seek>(
     block: &mut NifBlock,
@@ -906,6 +999,7 @@ fn read_block_fields<R: Read + Seek>(
     user_version: u32,
     bs_version: u32,
     strings: &[String],
+    options: NifReadOptions,
 ) -> Result<(), ReadError> {
     let block_start = reader.pos();
     let all_fields = schema.get_all_field_plan(&block.type_name);
@@ -935,6 +1029,7 @@ fn read_block_fields<R: Read + Seek>(
                 bs_version,
                 strings,
                 0,
+                options,
             );
             match result {
                 Ok(val) => {
@@ -1048,6 +1143,7 @@ impl NifReader {
                 uv,
                 bv,
                 &nif.header.strings,
+                NifReadOptions::full(),
             )?;
             nif.blocks.push(block);
         }
@@ -1056,19 +1152,19 @@ impl NifReader {
     }
 
     pub fn read(data: &[u8], schema: &NifSchema) -> Result<NifFile, ReadError> {
-        Self::read_with_original_metadata(data, schema, true)
+        Self::read_with_options(data, schema, NifReadOptions::full())
     }
 
     /// Decode a complete NIF without retaining per-block source bytes or
     /// content hashes used only by lossless raw-block reuse during writing.
     pub fn read_lean(data: &[u8], schema: &NifSchema) -> Result<NifFile, ReadError> {
-        Self::read_with_original_metadata(data, schema, false)
+        Self::read_with_options(data, schema, NifReadOptions::lean())
     }
 
-    fn read_with_original_metadata(
+    pub(crate) fn read_with_options(
         data: &[u8],
         schema: &NifSchema,
-        retain_original_metadata: bool,
+        options: NifReadOptions,
     ) -> Result<NifFile, ReadError> {
         let cursor = Cursor::new(data);
         let mut reader = BasicReader::new(cursor);
@@ -1103,7 +1199,7 @@ impl NifReader {
             let mut block = NifBlock::new(block_idx, &type_name);
 
             if let Some(size) = expected_size {
-                if retain_original_metadata {
+                if options.retain_original_metadata {
                     let block_bytes = reader.read_n_bytes(size as usize)?;
                     let mut block_reader = BasicReader::new(Cursor::new(block_bytes.as_slice()));
                     block_reader.big_endian = reader.big_endian;
@@ -1116,6 +1212,7 @@ impl NifReader {
                         uv,
                         bv,
                         &nif.header.strings,
+                        options,
                     )?;
                     block.original_bytes = Some(block_bytes);
                     block.original_content_hash = Some(block.content_hash());
@@ -1143,6 +1240,7 @@ impl NifReader {
                         uv,
                         bv,
                         &nif.header.strings,
+                        options,
                     )?;
                     reader.seek(block_end)?;
                 }
@@ -1156,9 +1254,10 @@ impl NifReader {
                     uv,
                     bv,
                     &nif.header.strings,
+                    options,
                 )?;
                 let block_end = reader.pos();
-                if retain_original_metadata
+                if options.retain_original_metadata
                     && block_start <= block_end
                     && block_end <= data.len() as u64
                 {
@@ -1395,6 +1494,219 @@ mod tests {
     }
 
     #[test]
+    fn compact_byte_array_option_preserves_public_loaders_and_binary_output() {
+        let payload = vec![0, 1, 127, 128, 254, 255];
+        let mut source = NifFile::new("fo76");
+        source.add_block(
+            "bhkPhysicsSystem",
+            Some(IndexMap::from([(
+                "Binary Data".to_string(),
+                crate::cloth::bytes_to_byte_array(&payload),
+            )])),
+        );
+        let bytes = source.to_bytes().expect("serialize ByteArray fixture");
+        let schema = NifSchema::from_generated();
+
+        let mut full = NifReader::read(&bytes, &schema).expect("full parse");
+        let legacy = full.blocks[1].get_field("Binary Data").expect("Binary Data");
+        assert!(matches!(
+            legacy,
+            NifValue::Struct(fields) if matches!(fields.get("Data"), Some(NifValue::Array(_)))
+        ));
+
+        let lean = NifReader::read_lean(&bytes, &schema).expect("lean parse");
+        let legacy = lean.blocks[1].get_field("Binary Data").expect("Binary Data");
+        assert!(matches!(
+            legacy,
+            NifValue::Struct(fields) if matches!(fields.get("Data"), Some(NifValue::Array(_)))
+        ));
+
+        let mut compact = NifReader::read_with_options(
+            &bytes,
+            &schema,
+            NifReadOptions::compact_lean(),
+        )
+        .expect("compact parse");
+        let compact_data = compact.blocks[1].get_field("Binary Data").expect("Binary Data");
+        assert!(matches!(
+            compact_data,
+            NifValue::Struct(fields) if matches!(fields.get("Data"), Some(NifValue::Bytes(data)) if data == &payload)
+        ));
+
+        assert_eq!(full.to_bytes().unwrap(), compact.to_bytes().unwrap());
+    }
+
+    #[test]
+    fn compact_byte_array_option_keeps_non_byte_array_and_matrix_fields_as_arrays() {
+        let schema = NifSchema::from_generated();
+        let byte_array_data = schema
+            .get_struct("ByteArray")
+            .unwrap()
+            .fields
+            .iter()
+            .find(|field| field.name == "Data")
+            .unwrap();
+        let mut fields = IndexMap::from([("Data Size".to_string(), NifValue::UInt(3))]);
+        let mut reader = BasicReader::new(Cursor::new(vec![3, 4, 5]));
+        let generic = read_field_value(
+            byte_array_data,
+            &mut fields,
+            "NotByteArray",
+            None,
+            &schema,
+            &mut reader,
+            0x14020007,
+            12,
+            155,
+            &[],
+            0,
+            NifReadOptions::compact_lean(),
+        )
+        .unwrap();
+        assert!(matches!(generic, NifValue::Array(values) if values.len() == 3));
+
+        let byte_matrix_data = schema
+            .get_struct("ByteMatrix")
+            .unwrap()
+            .fields
+            .iter()
+            .find(|field| field.name == "Data")
+            .unwrap();
+        let mut fields = IndexMap::from([
+            ("Data Size 1".to_string(), NifValue::UInt(2)),
+            ("Data Size 2".to_string(), NifValue::UInt(3)),
+        ]);
+        let mut reader = BasicReader::new(Cursor::new(vec![0; 6]));
+        let matrix = read_field_value(
+            byte_matrix_data,
+            &mut fields,
+            "ByteMatrix",
+            None,
+            &schema,
+            &mut reader,
+            0x14020007,
+            12,
+            155,
+            &[],
+            0,
+            NifReadOptions::compact_lean(),
+        )
+        .unwrap();
+        assert!(matches!(matrix, NifValue::Array(rows) if rows.len() == 3 && rows.iter().all(|row| matches!(row, NifValue::Array(values) if values.len() == 2))));
+    }
+
+    #[test]
+    fn bs_vertex_data_size_matches_decoded_vertex() {
+        for type_name in ["BSVertexData", "BSVertexDataSSE"] {
+            for attributes in 0..0x800u64 {
+                let mut reader = BasicReader::new(Cursor::new(vec![0u8; 64]));
+                read_bs_vertex_data(type_name, attributes, &mut reader).unwrap();
+                assert_eq!(
+                    reader.pos() as usize,
+                    bs_vertex_data_size(type_name, attributes),
+                    "{type_name} {attributes:#x}"
+                );
+            }
+        }
+    }
+
+    fn raw_arrays_fixture() -> Vec<u8> {
+        let vertex = |x: f32, u: f64| {
+            NifValue::Struct(IndexMap::from([
+                ("Vertex".to_string(), NifValue::Vec3([x, 2.0, 3.0])),
+                ("Unused W".to_string(), NifValue::UInt(0)),
+                (
+                    "UV".to_string(),
+                    NifValue::Struct(IndexMap::from([
+                        ("u".to_string(), NifValue::Float(u)),
+                        ("v".to_string(), NifValue::Float(0.5)),
+                    ])),
+                ),
+                ("Normal".to_string(), NifValue::Vec3([0.0, 0.0, 1.0])),
+                ("Bitangent Y".to_string(), NifValue::Float(0.0)),
+            ]))
+        };
+        let triangle = |v: [u64; 3]| {
+            NifValue::Struct(IndexMap::from([
+                ("v1".to_string(), NifValue::UInt(v[0])),
+                ("v2".to_string(), NifValue::UInt(v[1])),
+                ("v3".to_string(), NifValue::UInt(v[2])),
+            ]))
+        };
+        let mut nif = NifFile::new("fo4");
+        let shape = nif.add_block(
+            "BSTriShape",
+            Some(IndexMap::from([
+                ("Name".to_string(), NifValue::String("Shape".to_string())),
+                ("Vertex Desc".to_string(), NifValue::UInt(0xB000_0003_0204)),
+                ("Num Triangles".to_string(), NifValue::UInt(2)),
+                ("Num Vertices".to_string(), NifValue::UInt(3)),
+                (
+                    "Vertex Data".to_string(),
+                    NifValue::Array(vec![vertex(1.0, 0.0), vertex(-4.0, 1.0), vertex(7.5, 0.25)]),
+                ),
+                (
+                    "Triangles".to_string(),
+                    NifValue::Array(vec![triangle([0, 1, 2]), triangle([2, 1, 0])]),
+                ),
+            ])),
+        );
+        nif.blocks[0].set_field("Num Children", NifValue::UInt(1));
+        nif.blocks[0].set_field("Children", NifValue::Array(vec![NifValue::Ref(shape as i32)]));
+        nif.add_block(
+            "bhkPhysicsSystem",
+            Some(IndexMap::from([(
+                "Binary Data".to_string(),
+                crate::cloth::bytes_to_byte_array(&[9, 8, 7, 6, 5]),
+            )])),
+        );
+        nif.to_bytes().expect("serialize raw-array fixture")
+    }
+
+    #[test]
+    fn raw_arrays_reader_keeps_bulk_payload_bytes_and_decodes_the_rest() {
+        let bytes = raw_arrays_fixture();
+        let schema = NifSchema::from_generated();
+        let full = NifReader::read(&bytes, &schema).expect("full parse");
+        let raw = NifFile::from_bytes_raw_arrays(&bytes, None).expect("raw-array parse");
+
+        assert_eq!(raw.blocks.len(), full.blocks.len());
+        for (raw_block, full_block) in raw.blocks.iter().zip(&full.blocks) {
+            assert!(raw_block.original_bytes.is_none());
+            assert_eq!(raw_block.fields.len(), full_block.fields.len());
+            for (name, value) in &full_block.fields {
+                if !matches!(name.as_str(), "Vertex Data" | "Triangles" | "Binary Data") {
+                    assert_eq!(raw_block.fields.get(name), Some(value), "{name}");
+                }
+            }
+        }
+
+        let shape = &raw.blocks[1];
+        let Some(NifValue::Bytes(vertices)) = shape.get_field("Vertex Data") else {
+            panic!("raw vertex data");
+        };
+        let Some(NifValue::Bytes(triangles)) = shape.get_field("Triangles") else {
+            panic!("raw triangles");
+        };
+        assert_eq!(vertices.len(), 3 * 16);
+        assert_eq!(triangles, &[0, 0, 1, 0, 2, 0, 2, 0, 1, 0, 0, 0]);
+        let original = full.blocks[1].original_bytes.as_ref().unwrap();
+        assert!(original.ends_with(&[vertices.as_slice(), triangles].concat()));
+
+        let Some(NifValue::Struct(binary)) = raw.blocks[2].get_field("Binary Data") else {
+            panic!("raw Binary Data");
+        };
+        assert_eq!(binary.get("Data"), Some(&NifValue::Bytes(vec![9, 8, 7, 6, 5])));
+    }
+
+    #[test]
+    fn writer_rejects_raw_geometry_arrays() {
+        let mut raw = NifFile::from_bytes_raw_arrays(&raw_arrays_fixture(), None).unwrap();
+        let error = raw.to_bytes().unwrap_err().to_string();
+        assert!(error.contains("raw geometry"), "{error}");
+    }
+
+    #[test]
     fn lean_reader_matches_lossless_errors_and_unknown_block_remainder() {
         let mut nif = NifFile::new("fo4");
         let mut bytes = nif.to_bytes().expect("serialize fixture");
@@ -1512,6 +1824,7 @@ mod tests {
             12,
             130,
             &["Root".to_string()],
+            NifReadOptions::full(),
         )
         .expect("sized block read should tolerate a field miss");
 
@@ -1524,201 +1837,6 @@ mod tests {
             block.get_field("Num Extra Data List").map(NifValue::as_i64),
             Some(0)
         );
-    }
-
-    #[test]
-    #[ignore]
-    fn read_fo4_all_blocks_bisect() {
-        let Ok(p) = std::env::var("FO4_TEST_NIF") else {
-            eprintln!("SKIP: FO4_TEST_NIF unset");
-            return;
-        };
-        let bytes = match std::fs::read(p) {
-            Ok(b) => b,
-            Err(_) => return,
-        };
-        let mut r = BasicReader::new(Cursor::new(&bytes[..]));
-        let h = read_header(&mut r).expect("header parse");
-        let schema = NifSchema::from_generated();
-        let v = h.version_packed;
-        let uv = h.user_version;
-        let bv = h.bs_version;
-
-        for bi in 0..h.num_blocks as usize {
-            let type_idx = h.block_type_index[bi] as usize;
-            let type_name = h.block_type_names[type_idx].clone();
-            let expected_size = h.block_sizes[bi] as usize;
-            let start = r.pos();
-            println!(
-                "block {} type={} start={} expected_size={}",
-                bi, type_name, start, expected_size
-            );
-
-            let fields = schema.get_all_fields(&type_name);
-            let mut block_fields: IndexMap<String, NifValue> = IndexMap::new();
-            for fdef in fields.iter() {
-                if !should_read_field(fdef, &block_fields, &type_name, &schema, v, uv, bv) {
-                    continue;
-                }
-                let key = if let Some(sfx) = fdef.suffix {
-                    format!("{}:{}", fdef.name, sfx)
-                } else {
-                    fdef.name.to_string()
-                };
-                let pos_before = r.pos();
-                let consumed_from_start = pos_before - start;
-                if consumed_from_start > (expected_size as u64) + 128 {
-                    panic!(
-                        "runaway read in block {} type={}: consumed {} bytes already (expected {}), field {:?}",
-                        bi, type_name, consumed_from_start, expected_size, key
-                    );
-                }
-                let val = read_field_value(
-                    fdef,
-                    &mut block_fields,
-                    &type_name,
-                    None,
-                    &schema,
-                    &mut r,
-                    v,
-                    uv,
-                    bv,
-                    &h.strings,
-                    0,
-                )
-                .unwrap_or_else(|e| {
-                    panic!(
-                        "block {} type={} field {:?} @{}: {:?}",
-                        bi, type_name, key, pos_before, e
-                    )
-                });
-                block_fields.insert(key, val);
-            }
-            let end = r.pos();
-            let consumed = end - start;
-            if consumed != expected_size as u64 {
-                println!(
-                    "  MISMATCH: consumed {} vs expected {} (delta {})",
-                    consumed,
-                    expected_size,
-                    (consumed as i64) - (expected_size as i64)
-                );
-            }
-            // Skip to next block boundary per recorded size to recover
-            if consumed < expected_size as u64 {
-                let rem = expected_size as u64 - consumed;
-                let _ = r.read_n_bytes(rem as usize).unwrap();
-            } else if consumed > expected_size as u64 {
-                panic!(
-                    "block {} type={} overshot: consumed {} vs expected {}",
-                    bi, type_name, consumed, expected_size
-                );
-            }
-        }
-        println!("final pos {}", r.pos());
-    }
-
-    #[test]
-    #[ignore]
-    fn read_fo4_block0_ninode() {
-        let Ok(p) = std::env::var("FO4_TEST_NIF") else {
-            eprintln!("SKIP: FO4_TEST_NIF unset");
-            return;
-        };
-        let bytes = match std::fs::read(p) {
-            Ok(b) => b,
-            Err(_) => return,
-        };
-        let mut r = BasicReader::new(Cursor::new(&bytes[..]));
-        let h = read_header(&mut r).expect("header parse");
-        let schema = NifSchema::from_generated();
-
-        let v = h.version_packed;
-        let uv = h.user_version;
-        let bv = h.bs_version;
-        let type_name = &h.block_type_names[h.block_type_index[0] as usize];
-        let fields = schema.get_all_fields(type_name);
-        println!("block0 type={} field_defs={}", type_name, fields.len());
-
-        let mut block_fields: IndexMap<String, NifValue> = IndexMap::new();
-        for fdef in fields.iter() {
-            if !should_read_field(fdef, &block_fields, type_name, &schema, v, uv, bv) {
-                continue;
-            }
-            let key = if let Some(sfx) = fdef.suffix {
-                format!("{}:{}", fdef.name, sfx)
-            } else {
-                fdef.name.to_string()
-            };
-            let pos_before = r.pos();
-            let val = read_field_value(
-                fdef,
-                &mut block_fields,
-                type_name,
-                None,
-                &schema,
-                &mut r,
-                v,
-                uv,
-                bv,
-                &h.strings,
-                0,
-            )
-            .unwrap_or_else(|e| panic!("field {} at pos {}: {:?}", key, pos_before, e));
-            println!(
-                "  field {:?} @{} -> @{} = {}",
-                key,
-                pos_before,
-                r.pos(),
-                match &val {
-                    NifValue::String(s) => format!("String({:?})", s),
-                    NifValue::Int(i) => format!("Int({})", i),
-                    NifValue::UInt(u) => format!("UInt({})", u),
-                    NifValue::Ref(r) => format!("Ref({})", r),
-                    NifValue::Array(a) => format!("Array(len={})", a.len()),
-                    NifValue::Struct(m) => format!("Struct(keys={})", m.len()),
-                    other => format!("{:?}", other),
-                }
-            );
-            block_fields.insert(key, val);
-            if pos_before > 2000 {
-                break;
-            }
-        }
-    }
-
-    #[test]
-    #[ignore]
-    fn header_only_from_fo4_fixture() {
-        let Ok(p) = std::env::var("FO4_TEST_NIF") else {
-            eprintln!("SKIP: FO4_TEST_NIF unset");
-            return;
-        };
-        let bytes = match std::fs::read(p) {
-            Ok(b) => b,
-            Err(_) => return,
-        };
-        let mut r = BasicReader::new(Cursor::new(bytes));
-        let h = read_header(&mut r).expect("header parse");
-        println!(
-            "version={:x} uv={} bs={} nblocks={}",
-            h.version_packed, h.user_version, h.bs_version, h.num_blocks
-        );
-        println!(
-            "block_type_names={}, block_sizes={}, strings={}, groups={}",
-            h.block_type_names.len(),
-            h.block_sizes.len(),
-            h.strings.len(),
-            h.groups.len()
-        );
-        for (i, n) in h.block_type_names.iter().enumerate().take(5) {
-            println!("  btn[{}] = {:?}", i, n);
-        }
-        for (i, s) in h.block_sizes.iter().enumerate().take(5) {
-            println!("  bsz[{}] = {}", i, s);
-        }
-        println!("pos after header = {}", r.pos());
-        assert_eq!(h.num_blocks, 45);
     }
 
     #[test]

@@ -3,9 +3,11 @@
 /// Closed-form solve for root→mid→end chains. Given root, mid, end joint
 /// world positions plus a target and pole vector, computes new world
 /// rotations for root and mid. Standard law-of-cosines two-bone IK.
+#[cfg(test)]
+use crate::animation::pose::quat_rotate;
 use crate::animation::pose::{
-    quat_conjugate, quat_from_axis_angle, quat_mul, quat_normalize, quat_rotate, vec3_add,
-    vec3_cross, vec3_dot, vec3_len, vec3_normalize, vec3_scale, vec3_sub,
+    quat_from_axis_angle, quat_mul, quat_normalize, vec3_add, vec3_cross, vec3_dot, vec3_len,
+    vec3_normalize, vec3_scale, vec3_sub,
 };
 
 /// Input for the two-bone IK solver.
@@ -183,43 +185,43 @@ mod tests {
     }
 
     #[test]
-    fn two_bone_ik_reaches_toward_target() {
-        // Straight chain along X: root(0,0,0), mid(1,0,0), end(2,0,0).
-        // Target at (1, 1, 0) — should bend mid upward.
-        let params = TwoBoneParams {
-            root_ws: [0.0, 0.0, 0.0],
-            mid_ws: [1.0, 0.0, 0.0],
-            end_ws: [2.0, 0.0, 0.0],
-            target_ws: [1.0, 1.0, 0.0],
-            pole_ws: [0.0, 1.0, 0.0],
-            gain: 1.0,
-        };
-        let end = end_pos_after_solve(&params);
-        let dist_to_target = vec3_len(&vec3_sub(&end, &params.target_ws));
-        // End should move substantially closer to target (within ~10% of chain length).
-        assert!(
-            dist_to_target < 0.5,
-            "end={end:?} dist_to_target={dist_to_target}"
-        );
-    }
-
-    #[test]
-    fn two_bone_ik_90_degree_bend() {
-        // Target places end at 90° bend: root at origin, target at (1,1,0), upper len=1, lower len=1.
-        let params = TwoBoneParams {
-            root_ws: [0.0, 0.0, 0.0],
-            mid_ws: [0.0, 1.0, 0.0],
-            end_ws: [0.0, 2.0, 0.0],
-            target_ws: [1.0, 1.0, 0.0],
-            pole_ws: [0.0, 0.0, 1.0],
-            gain: 1.0,
-        };
-        let result = solve_two_bone(&[0.0, 0.0, 0.0, 1.0], &[0.0, 0.0, 0.0, 1.0], &params);
-        // Result should give valid quaternions (normalized).
-        let r_len = {
-            let r = result.root_new_rot_ws;
-            (r[0] * r[0] + r[1] * r[1] + r[2] * r[2] + r[3] * r[3]).sqrt()
-        };
-        assert!((r_len - 1.0).abs() < 1e-4);
+    fn two_bone_ik_solves() {
+        {
+            // Straight chain along X: root(0,0,0), mid(1,0,0), end(2,0,0).
+            // Target at (1, 1, 0) — should bend mid upward.
+            let params = TwoBoneParams {
+                root_ws: [0.0, 0.0, 0.0],
+                mid_ws: [1.0, 0.0, 0.0],
+                end_ws: [2.0, 0.0, 0.0],
+                target_ws: [1.0, 1.0, 0.0],
+                pole_ws: [0.0, 1.0, 0.0],
+                gain: 1.0,
+            };
+            let end = end_pos_after_solve(&params);
+            let dist_to_target = vec3_len(&vec3_sub(&end, &params.target_ws));
+            // End should move substantially closer to target (within ~10% of chain length).
+            assert!(
+                dist_to_target < 0.5,
+                "end={end:?} dist_to_target={dist_to_target}"
+            );
+        }
+        {
+            // Target places end at 90° bend: root at origin, target at (1,1,0), upper len=1, lower len=1.
+            let params = TwoBoneParams {
+                root_ws: [0.0, 0.0, 0.0],
+                mid_ws: [0.0, 1.0, 0.0],
+                end_ws: [0.0, 2.0, 0.0],
+                target_ws: [1.0, 1.0, 0.0],
+                pole_ws: [0.0, 0.0, 1.0],
+                gain: 1.0,
+            };
+            let result = solve_two_bone(&[0.0, 0.0, 0.0, 1.0], &[0.0, 0.0, 0.0, 1.0], &params);
+            // Result should give valid quaternions (normalized).
+            let r_len = {
+                let r = result.root_new_rot_ws;
+                (r[0] * r[0] + r[1] * r[1] + r[2] * r[2] + r[3] * r[3]).sqrt()
+            };
+            assert!((r_len - 1.0).abs() < 1e-4);
+        }
     }
 }

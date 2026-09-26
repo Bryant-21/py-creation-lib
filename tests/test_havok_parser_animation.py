@@ -1,6 +1,6 @@
 import pytest
 
-from creation_lib.havok.parsers.animation import AnimationData, parse_animation
+from creation_lib.havok.parsers.animation import parse_animation
 
 
 SAMPLE_LOSSLESS_ANIM_XML = """\
@@ -34,35 +34,21 @@ SAMPLE_LOSSLESS_ANIM_XML = """\
 """
 
 
-class TestParseAnimation:
-    def test_extracts_duration(self, tmp_path):
-        xml_path = tmp_path / "Anim.xml"
-        xml_path.write_text(SAMPLE_LOSSLESS_ANIM_XML)
-        result = parse_animation(xml_path)
-        assert result.duration == pytest.approx(1.0)
+def test_parse_animation_extracts_duration_bones_compression_and_transforms(tmp_path):
+    xml_path = tmp_path / "Anim.xml"
+    xml_path.write_text(SAMPLE_LOSSLESS_ANIM_XML)
+    result = parse_animation(xml_path)
 
-    def test_extracts_bone_count(self, tmp_path):
-        xml_path = tmp_path / "Anim.xml"
-        xml_path.write_text(SAMPLE_LOSSLESS_ANIM_XML)
-        result = parse_animation(xml_path)
-        assert result.bone_count == 2
+    assert result.duration == pytest.approx(1.0)
+    assert result.bone_count == 2
+    assert result.compression_type == "lossless"
+    assert result.frame0_transforms is not None
+    assert len(result.frame0_transforms) > 0  # Binary BLOB
 
-    def test_detects_lossless_compression(self, tmp_path):
-        xml_path = tmp_path / "Anim.xml"
-        xml_path.write_text(SAMPLE_LOSSLESS_ANIM_XML)
-        result = parse_animation(xml_path)
-        assert result.compression_type == "lossless"
 
-    def test_extracts_frame0_transforms(self, tmp_path):
-        xml_path = tmp_path / "Anim.xml"
-        xml_path.write_text(SAMPLE_LOSSLESS_ANIM_XML)
-        result = parse_animation(xml_path)
-        assert result.frame0_transforms is not None
-        assert len(result.frame0_transforms) > 0  # Binary BLOB
-
-    def test_handles_empty_animation(self, tmp_path):
-        xml_path = tmp_path / "Empty.xml"
-        xml_path.write_text('<?xml version="1.0"?><hkpackfile><hksection name="__data__"></hksection></hkpackfile>')
-        result = parse_animation(xml_path)
-        assert result.bone_count == 0
-        assert result.compression_type == "unknown"
+def test_parse_animation_handles_empty_animation(tmp_path):
+    xml_path = tmp_path / "Empty.xml"
+    xml_path.write_text('<?xml version="1.0"?><hkpackfile><hksection name="__data__"></hksection></hkpackfile>')
+    result = parse_animation(xml_path)
+    assert result.bone_count == 0
+    assert result.compression_type == "unknown"

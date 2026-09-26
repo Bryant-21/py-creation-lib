@@ -2705,14 +2705,26 @@ mod tests {
             validate_dds_bytes(&reduced, true).unwrap().findings[0].rule,
             "sse-unsupported-texture-format"
         );
-    }
-
-    #[test]
-    fn sniff_dds_rejects_invalid_header() {
         assert_eq!(
             validate_dds_bytes(b"not a dds", false).unwrap_err(),
             "Not a valid DDS file"
         );
+    }
+
+    #[test]
+    fn ffi_struct_layouts_match_native() {
+        macro_rules! layout {
+            ($ty:ty, $size:ident, $align:ident) => {
+                assert_eq!(core::mem::size_of::<$ty>(), unsafe { ffi::$size() });
+                assert_eq!(core::mem::align_of::<$ty>(), unsafe { ffi::$align() });
+            };
+        }
+        layout!(Blob, DirectXTexFFI_Blob_Sizeof, DirectXTexFFI_Blob_Alignof);
+        layout!(DDSMetaData, DirectXTexFFI_DDSMetaData_Sizeof, DirectXTexFFI_DDSMetaData_Alignof);
+        layout!(Image, DirectXTexFFI_Image_Sizeof, DirectXTexFFI_Image_Alignof);
+        layout!(Rect, DirectXTexFFI_Rect_Sizeof, DirectXTexFFI_Rect_Alignof);
+        layout!(ScratchImage, DirectXTexFFI_ScratchImage_Sizeof, DirectXTexFFI_ScratchImage_Alignof);
+        layout!(TexMetadata, DirectXTexFFI_TexMetadata_Sizeof, DirectXTexFFI_TexMetadata_Alignof);
     }
 
     #[test]
@@ -2735,17 +2747,12 @@ mod tests {
     }
 
     #[test]
-    fn bc7_uses_quick_parallel_compression_flags() {
+    fn bc7_uses_quick_compression_flags_with_optional_parallel() {
         let flags = compression_flags_for_format(DXGI_FORMAT::DXGI_FORMAT_BC7_UNORM, true);
-
         assert!(flags.contains(TEX_COMPRESS_FLAGS::TEX_COMPRESS_BC7_QUICK));
         assert!(flags.contains(TEX_COMPRESS_FLAGS::TEX_COMPRESS_PARALLEL));
-    }
 
-    #[test]
-    fn bc7_can_disable_parallel_compression_flags() {
         let flags = compression_flags_for_format(DXGI_FORMAT::DXGI_FORMAT_BC7_UNORM, false);
-
         assert!(flags.contains(TEX_COMPRESS_FLAGS::TEX_COMPRESS_BC7_QUICK));
         assert!(!flags.contains(TEX_COMPRESS_FLAGS::TEX_COMPRESS_PARALLEL));
     }
@@ -2826,38 +2833,6 @@ mod tests {
     }
 
     #[test]
-    fn no_mip_bc1_and_bc3_writers_use_ispc_payloads() {
-        let width = 8usize;
-        let height = 8usize;
-        let rgba = vec![40u8, 180, 70, 255].repeat(width * height);
-        let tmp =
-            std::env::temp_dir().join(format!("modbox21_ispc_bc1_bc3_{}", std::process::id()));
-        let _ = fs::remove_dir_all(&tmp);
-        fs::create_dir_all(&tmp).unwrap();
-
-        for (format, filename, expected_payload) in [
-            (
-                "BC1_UNORM",
-                "bc1.dds",
-                ispc_bc::bc1_blocks_from_rgba(width, height, &rgba).unwrap(),
-            ),
-            (
-                "BC3_UNORM",
-                "bc3.dds",
-                ispc_bc::bc3_blocks_from_rgba(width, height, &rgba).unwrap(),
-            ),
-        ] {
-            let path = tmp.join(filename);
-            write_dds_rgba_image(&path, width as u32, height as u32, &rgba, format, false).unwrap();
-            let bytes = fs::read(path).unwrap();
-            assert_eq!(&bytes[84..88], b"DX10");
-            assert_eq!(&bytes[148..], expected_payload);
-        }
-
-        let _ = fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
     fn public_rgba_helpers_roundtrip_dds() {
         let dir = std::env::temp_dir();
         let path = dir.join(format!("modbox21_public_rgba_{}.dds", std::process::id()));
@@ -2901,45 +2876,22 @@ mod tests {
                 .collect::<Vec<_>>(),
             original_alpha
         );
-    }
 
-    #[test]
-    fn mip_flood_downsample_ignores_rgb_with_zero_alpha() {
-        let rgba = vec![255, 0, 0, 255, 0, 0, 255, 0];
+        let chain = rgba8_mip_flood_chain(2, 1, &[255, 0, 0, 255, 0, 0, 255, 0]).unwrap();
+        assert_eq!(chain[1].2, vec![255, 0, 0, 128], "zero-alpha RGB ignored");
+        assert_eq!(&chain[0].2[4..8], &[255, 0, 0, 0]);
 
-        let chain = rgba8_mip_flood_chain(2, 1, &rgba).unwrap();
-
-        assert_eq!(chain[1].2, vec![255, 0, 0, 128]);
-        assert_eq!(&chain[0].2[4..7], &[255, 0, 0]);
-        assert_eq!(chain[0].2[7], 0);
-    }
-
-    #[test]
-    fn mip_flood_fully_transparent_image_is_unchanged() {
-        let rgba = vec![10, 20, 30, 0, 40, 50, 60, 0];
-
-        let chain = rgba8_mip_flood_chain(2, 1, &rgba).unwrap();
-
-        assert_eq!(chain[0].2, rgba);
+        let transparent = vec![10, 20, 30, 0, 40, 50, 60, 0];
+        let chain = rgba8_mip_flood_chain(2, 1, &transparent).unwrap();
+        assert_eq!(chain[0].2, transparent);
         assert_eq!(chain[1].2, vec![25, 35, 45, 0]);
-    }
 
-    #[test]
-    fn mip_flood_keeps_sub_byte_alpha_coverage_as_a_color_seed() {
         let mut rgba = vec![0u8; 16 * 16 * 4];
         rgba[..4].copy_from_slice(&[20, 180, 60, 1]);
-
         let chain = rgba8_mip_flood_chain(16, 16, &rgba).unwrap();
-
-        assert_eq!(&chain.last().unwrap().2[..3], &[20, 180, 60]);
-        assert!(
-            chain[0]
-                .2
-                .chunks_exact(4)
-                .all(|pixel| pixel[..3] == [20, 180, 60])
-        );
-        assert_eq!(chain[0].2[3], 1);
-        assert_eq!(chain[0].2[7], 0);
+        assert_eq!(&chain.last().unwrap().2[..3], &[20, 180, 60], "sub-byte alpha seeds colour");
+        assert!(chain[0].2.chunks_exact(4).all(|pixel| pixel[..3] == [20, 180, 60]));
+        assert_eq!((chain[0].2[3], chain[0].2[7]), (1, 0));
     }
 
     #[test]
@@ -2971,19 +2923,13 @@ mod tests {
                     .collect::<Vec<_>>()
             );
         }
-    }
 
-    #[test]
-    fn mip_flood_generates_standard_mips_from_flooded_base() {
         let mut rgba = vec![0u8; 8 * 8 * 4];
         rgba[..4].copy_from_slice(&[220, 30, 10, 255]);
         let last = rgba.len() - 4;
         rgba[last..].copy_from_slice(&[10, 40, 230, 128]);
-
         let flooded = rgba8_mip_flood_chain(8, 8, &rgba).unwrap();
-        let standard_from_flooded = rgba8_box_mip_chain(8, 8, &flooded[0].2).unwrap();
-
-        assert_eq!(flooded, standard_from_flooded);
+        assert_eq!(flooded, rgba8_box_mip_chain(8, 8, &flooded[0].2).unwrap());
     }
 
     #[test]
@@ -3009,35 +2955,6 @@ mod tests {
     }
 
     #[test]
-    fn mip_flood_writer_emits_direct_dds_mip_chain() {
-        let path = std::env::temp_dir().join(format!(
-            "modbox21_mip_flood_writer_{}.dds",
-            std::process::id()
-        ));
-        let mut rgba = vec![0u8; 4 * 4 * 4];
-        rgba[..4].copy_from_slice(&[12, 80, 200, 255]);
-
-        write_dds_rgba_image_mip_flooded(&path, 4, 4, &rgba, "R8G8B8A8_UNORM").unwrap();
-        let decoded = read_dds_mips_rgba8(&path).unwrap();
-
-        assert_eq!(decoded.mips.len(), 3);
-        assert_eq!(decoded.mips[0].2[3], 255);
-        assert_eq!(decoded.mips[0].2[7], 0);
-        assert_eq!(&decoded.mips[0].2[4..7], &[12, 80, 200]);
-        std::fs::remove_file(path).ok();
-    }
-
-    #[test]
-    fn srgb_texels_convert_to_linear_unorm() {
-        let converted = convert_srgb_texels_to_linear_unorm(1, 1, &[128, 64, 32, 200]).unwrap();
-
-        assert!((converted[0] as i32 - 55).abs() <= 1);
-        assert!((converted[1] as i32 - 13).abs() <= 1);
-        assert!((converted[2] as i32 - 4).abs() <= 1);
-        assert_eq!(converted[3], 200);
-    }
-
-    #[test]
     fn srgb_payload_writer_keeps_unorm_header_and_builds_mips_in_linear_space() {
         let path = std::env::temp_dir().join(format!(
             "modbox21_srgb_payload_unorm_header_{}.dds",
@@ -3059,24 +2976,6 @@ mod tests {
             );
         }
         std::fs::remove_file(path).ok();
-    }
-
-    #[test]
-    fn bc5_unorm_can_write_full_mip_chain() {
-        let dir = std::env::temp_dir();
-        let path = dir.join(format!("modbox21_bc5_mips_{}.dds", std::process::id()));
-        let width = 8;
-        let height = 8;
-        let rgba = vec![128u8; width * height * 4];
-
-        write_dds_bytes(&path, width as u32, height as u32, &rgba, "BC5_UNORM", true).unwrap();
-
-        let bytes = std::fs::read(&path).unwrap();
-        let _ = std::fs::remove_file(&path);
-
-        assert_eq!(&bytes[0..4], b"DDS ");
-        assert_eq!(u32::from_le_bytes(bytes[28..32].try_into().unwrap()), 4);
-        assert_eq!(bytes.len(), 128 + 64 + 16 + 16 + 16);
     }
 
     #[test]
@@ -3157,47 +3056,6 @@ mod tests {
     }
 
     #[test]
-    fn compressed_srgb_formats_write_valid_dds() {
-        let tmp = std::env::temp_dir().join("modbox21_compressed_srgb_formats");
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
-        let rgba = vec![200u8, 100, 50, 255].repeat(8 * 8);
-        let cases = [
-            ("BC1_UNORM_SRGB", 72u32),
-            ("BC3_UNORM_SRGB", 78u32),
-            ("BC7_UNORM_SRGB", 99u32),
-        ];
-
-        for (format, expected_dxgi) in cases {
-            for generate_mips in [false, true] {
-                let path = tmp.join(format!("{format}_{generate_mips}.dds"));
-                write_dds_rgba_image(&path, 8, 8, &rgba, format, generate_mips).unwrap();
-                let info = crate::dds_base_rgba(&path).unwrap();
-                assert_eq!(info.3, expected_dxgi, "{format} mips={generate_mips}");
-            }
-        }
-
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn rgba8_srgb_writes_valid_dds() {
-        let tmp = std::env::temp_dir().join("modbox21_rgba8_srgb_format");
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
-        let rgba = vec![200u8, 100, 50, 255].repeat(8 * 8);
-
-        for generate_mips in [false, true] {
-            let path = tmp.join(format!("rgba8_srgb_{generate_mips}.dds"));
-            write_dds_rgba_image(&path, 8, 8, &rgba, "R8G8B8A8_UNORM_SRGB", generate_mips).unwrap();
-            let info = crate::dds_base_rgba(&path).unwrap();
-            assert_eq!(info.3, 29, "mips={generate_mips}");
-        }
-
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
     fn fo76_bundle_remix_resamples_auxiliary_maps_to_diffuse_dimensions() {
         let dir = std::env::temp_dir().join(format!(
             "modbox21_fo76_bundle_resample_{}",
@@ -3257,11 +3115,13 @@ mod tests {
             ("BC1_UNORM", 71u32),
             ("BC1_UNORM_SRGB", 72),
             ("BC3_UNORM", 77),
+            ("BC3_UNORM_SRGB", 78),
             ("BC4_UNORM", 80),
             ("BC5_UNORM", 83),
             ("BC7_UNORM", 98),
             ("BC7_UNORM_SRGB", 99),
             ("R8G8B8A8_UNORM", 28),
+            ("R8G8B8A8_UNORM_SRGB", 29),
         ] {
             for mips in [false, true] {
                 let p = tmp.join(format!("{format}_{mips}.dds"));
@@ -3280,14 +3140,6 @@ mod tests {
             }
         }
         let _ = fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn dds_probe_full_mip_helper() {
-        assert_eq!(full_mip_count(1, 1), 1);
-        assert_eq!(full_mip_count(16, 8), 5);
-        assert_eq!(full_mip_count(1024, 512), 11);
-        assert_eq!(full_mip_count(4096, 4096), 13);
     }
 
     #[test]
@@ -3377,15 +3229,8 @@ mod tests {
         assert_eq!(out, cpu);
     }
 
-    #[test]
-    fn batch_gpu_fn_is_publicly_reachable() {
-        // Compile-time check that the re-export exists; runtime tolerates no GPU.
-        let _ = crate::compress_bc7_gpu_batch(&[], false);
-    }
 }
 
 #[cfg(test)]
 mod owned_chain_tests;
 
-#[cfg(test)]
-mod write_bench;

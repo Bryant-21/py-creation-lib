@@ -221,36 +221,34 @@ mod tests {
     use super::*;
 
     #[test]
-    fn nearest_finds_correct_point() {
-        let pts = vec![[0.0f32, 0.0, 0.0], [1.0, 0.0, 0.0], [5.0, 0.0, 0.0]];
-        let tree = KdTree::build(&pts);
-        assert_eq!(tree.nearest([0.1, 0.0, 0.0]), Some(0));
-        assert_eq!(tree.nearest([0.9, 0.0, 0.0]), Some(1));
-        assert_eq!(tree.nearest([4.8, 0.0, 0.0]), Some(2));
-    }
-
-    #[test]
-    fn transfer_weights_copies_nearest() {
-        let src = vec![[0.0f32, 0.0, 0.0], [10.0, 0.0, 0.0]];
-        let src_weights = vec![
-            vec![SkinWeight {
-                bone: 0,
-                weight: 1.0,
-            }],
-            vec![SkinWeight {
-                bone: 1,
-                weight: 1.0,
-            }],
-        ];
-        let tgt = vec![[0.1f32, 0.0, 0.0], [9.9, 0.0, 0.0]];
-        let tw = transfer_weights(&src, &src_weights, &tgt);
-        assert_eq!(tw[0][0].bone, 0);
-        assert_eq!(tw[1][0].bone, 1);
-    }
-
-    #[test]
-    fn empty_tree_returns_none() {
-        let tree = KdTree::build(&[]);
-        assert!(tree.nearest([0.0, 0.0, 0.0]).is_none());
+    fn kdtree_nearest_and_weight_transfer() {
+        {
+            let pts = vec![[0.0f32, 0.0, 0.0], [1.0, 0.0, 0.0], [5.0, 0.0, 0.0]];
+            let tree = KdTree::build(&pts);
+            assert_eq!(tree.nearest([0.1, 0.0, 0.0]), Some(0));
+            assert_eq!(tree.nearest([0.9, 0.0, 0.0]), Some(1));
+            assert_eq!(tree.nearest([4.8, 0.0, 0.0]), Some(2));
+        }
+        {
+            let src = vec![[0.0f32, 0.0, 0.0], [10.0, 0.0, 0.0]];
+            let src_weights = vec![
+                vec![SkinWeight {
+                    bone: 0,
+                    weight: 1.0,
+                }],
+                vec![SkinWeight {
+                    bone: 1,
+                    weight: 1.0,
+                }],
+            ];
+            let tgt = vec![[0.1f32, 0.0, 0.0], [9.9, 0.0, 0.0]];
+            let tw = transfer_weights(&src, &src_weights, &tgt);
+            assert_eq!(tw[0][0].bone, 0);
+            assert_eq!(tw[1][0].bone, 1);
+        }
+        {
+            let tree = KdTree::build(&[]);
+            assert!(tree.nearest([0.0, 0.0, 0.0]).is_none());
+        }
     }
 }

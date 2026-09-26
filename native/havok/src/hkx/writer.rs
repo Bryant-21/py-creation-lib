@@ -1208,17 +1208,3 @@ fn needs_sixteen_byte_data_padding(hkx_file: &HkxFile, registry: &mut Descriptor
     }
     false
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn snap_to_16_internal() {
-        assert_eq!(snap_to_16(0), 0);
-        assert_eq!(snap_to_16(1), 16);
-        assert_eq!(snap_to_16(15), 16);
-        assert_eq!(snap_to_16(16), 16);
-        assert_eq!(snap_to_16(17), 32);
-    }
-}

@@ -86,20 +86,17 @@ fn build_setup_with_specialty_ops() -> ClothSetupObject {
     }
 }
 
-#[test]
-fn specialty_ops_roundtrip_bake_reverse() {
-    let setup = build_setup_with_specialty_ops();
-    let hkx_file = bake_cloth_setup(&setup).expect("bake failed");
-    let blob = {
-        let mut reg = hkx::descriptors::DescriptorRegistry::new();
-        hkx::write_hkx(&hkx_file, &mut reg)
-    };
-
-    // Parse blob back into ClothData
+fn bake_and_reverse(setup: &ClothSetupObject) -> ClothSetupObject {
+    let hkx_file = bake_cloth_setup(setup).expect("bake failed");
+    let blob = hkx::write_hkx(&hkx_file, &mut hkx::descriptors::DescriptorRegistry::new());
     let parsed = hkx::read_packfile(&blob).expect("parse blob failed");
     let cloth_data = ClothData::from_hkx_file(&parsed).expect("no cloth data in parsed blob");
+    reverse_cloth_data(&cloth_data).expect("reverse failed")
+}
 
-    let reversed = reverse_cloth_data(&cloth_data).expect("reverse failed");
+#[test]
+fn specialty_ops_roundtrip_bake_reverse() {
+    let reversed = bake_and_reverse(&build_setup_with_specialty_ops());
 
     let mut have_copy = false;
     let mut have_move = false;
@@ -136,31 +133,16 @@ fn specialty_ops_roundtrip_bake_reverse() {
     assert!(have_copy, "CopyVertices missing after roundtrip");
     assert!(have_move, "MoveParticles missing after roundtrip");
     assert!(have_gather, "GatherAllVertices missing after roundtrip");
-}
 
-#[test]
-fn gather_all_vertices_partial_gather_inferred_from_minus_one_index() {
-    // When the index list contains -1, the bake pipeline must derive
-    // partial_gather = true even if the setup explicitly set false.
+    // A -1 index forces partial_gather even when the setup says false.
     let mut setup = build_setup_with_specialty_ops();
-    if let Some(OperatorSetupObject::GatherAllVertices(g)) = setup
-        .operator_setups
-        .iter_mut()
-        .find(|o| matches!(o, OperatorSetupObject::GatherAllVertices(_)))
-    {
-        g.vertex_input_from_vertex_output = vec![0, -1, 2, 3];
-        g.partial_gather = false;
+    for op in &mut setup.operator_setups {
+        if let OperatorSetupObject::GatherAllVertices(g) = op {
+            g.vertex_input_from_vertex_output = vec![0, -1, 2, 3];
+            g.partial_gather = false;
+        }
     }
-
-    let hkx_file = bake_cloth_setup(&setup).expect("bake failed");
-    let blob = {
-        let mut reg = hkx::descriptors::DescriptorRegistry::new();
-        hkx::write_hkx(&hkx_file, &mut reg)
-    };
-    let parsed = hkx::read_packfile(&blob).expect("parse blob failed");
-    let cloth_data = ClothData::from_hkx_file(&parsed).expect("no cloth data in parsed blob");
-    let reversed = reverse_cloth_data(&cloth_data).expect("reverse failed");
-
+    let reversed = bake_and_reverse(&setup);
     let g = reversed
         .operator_setups
         .iter()
@@ -169,10 +151,6 @@ fn gather_all_vertices_partial_gather_inferred_from_minus_one_index() {
             _ => None,
         })
         .expect("GatherAllVertices missing");
-
-    assert!(
-        g.partial_gather,
-        "partial_gather should be inferred true when index list has -1"
-    );
+    assert!(g.partial_gather);
     assert_eq!(g.vertex_input_from_vertex_output, vec![0, -1, 2, 3]);
 }

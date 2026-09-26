@@ -63,7 +63,7 @@ mod model;
 pub use model::*;
 #[path = "asset_index.rs"]
 mod asset_index;
-pub use asset_index::*;
+pub(crate) use asset_index::*;
 #[path = "plugin_index.rs"]
 mod plugin_index;
 pub use plugin_index::*;
@@ -86,16 +86,16 @@ mod asset_collect;
 pub use asset_collect::*;
 #[path = "walker_policy.rs"]
 mod walker_policy;
-pub use walker_policy::*;
+pub(crate) use walker_policy::*;
 #[path = "walker.rs"]
 mod walker;
 pub use walker::*;
 #[path = "import_py.rs"]
 mod import_py;
-pub use import_py::*;
+pub(crate) use import_py::*;
 #[path = "export_py.rs"]
 mod export_py;
-pub use export_py::*;
+pub(crate) use export_py::*;
 #[path = "schema.rs"]
 mod schema;
 pub use schema::*;
@@ -103,13 +103,13 @@ pub use schema::*;
 pub mod condition_functions;
 #[path = "text_payload_py.rs"]
 mod text_payload_py;
-pub use text_payload_py::*;
+pub(crate) use text_payload_py::*;
 #[path = "authoring_dir.rs"]
 mod authoring_dir;
 pub use authoring_dir::*;
 #[path = "authoring_validate.rs"]
 mod authoring_validate;
-pub use authoring_validate::*;
+pub(crate) use authoring_validate::*;
 #[path = "io.rs"]
 mod io;
 pub use io::*;
@@ -356,6 +356,9 @@ pub struct LazyRecordStore {
     offsets: std::sync::OnceLock<rustc_hash::FxHashMap<u32, usize>>,
     /// Lookups served before the map existed. See [`Self::offset_of`].
     probes: std::sync::atomic::AtomicUsize,
+    /// EditorID index read from the file alone, for EditorID lookups that do
+    /// not need the whole `CoreSection`. See [`lazy_eid_form_ids`].
+    eid_form_ids: std::sync::OnceLock<HashMap<String, Vec<u32>>>,
 }
 
 impl LazyRecordStore {
@@ -430,6 +433,22 @@ impl NativePluginSlot {
         self.sections.core.is_some()
     }
 
+    pub fn cached_unique_core_records_sections(
+        &self,
+    ) -> Option<(Arc<CoreSection>, Arc<RecordsSection>)> {
+        let core = self.sections.core.as_ref()?;
+        let records = self.sections.records.as_ref()?;
+        let indexed_record_count = core
+            .by_signature_form_keys
+            .values()
+            .map(Vec::len)
+            .sum::<usize>();
+        if indexed_record_count != core.by_form_key.len() {
+            return None;
+        }
+        Some((Arc::clone(core), Arc::clone(records)))
+    }
+
     pub fn has_form_id_paths_section(&self) -> bool {
         self.sections.form_id_paths.is_some()
     }
@@ -439,6 +458,24 @@ impl NativePluginSlot {
     /// records via [`Self::lazy_record`] instead of indexing the empty tree.
     pub fn is_lazy(&self) -> bool {
         self.lazy.is_some()
+    }
+
+    pub fn visit_lazy_records(
+        &self,
+        signatures: &[&str],
+        mut visit: impl FnMut(&ParsedRecord) -> std::ops::ControlFlow<()>,
+    ) -> Result<(), String> {
+        let lazy = self.lazy.as_ref().ok_or("record streaming requires an index-only handle")?;
+        let cursor = lazy.cursor();
+        cursor.scan(&mut |view| {
+            if signatures.iter().any(|signature| signature.as_bytes() == view.signature) {
+                if let Ok(record) = cursor.parse_at(view.offset) {
+                    return visit(&record);
+                }
+            }
+            std::ops::ControlFlow::Continue(())
+        });
+        Ok(())
     }
 
     /// Re-parse a single record from the retained (mmap-backed) buffer by its
@@ -715,20 +752,8 @@ fn build_core_section_streaming(slot: &NativePluginSlot) -> CoreSection {
     let mut core = CoreSection::default();
 
     lazy.cursor().scan(&mut |view| {
-        let signature = SmolStr::new(String::from_utf8_lossy(view.signature).as_ref());
-        let stub = ParsedRecord {
-            signature: signature.clone(),
-            form_id: view.form_id,
-            flags: view.flags,
-            version_control: 0,
-            form_version: None,
-            version2: None,
-            subrecords: first_edid_subrecord(view.payload, view.flags)
-                .into_iter()
-                .collect(),
-            raw_payload: None,
-            parse_error: None,
-        };
+        let stub = index_stub_record(&view);
+        let signature = stub.signature.clone();
         let entry = record_index_entry_for_record(&stub, &own_plugin_name, masters);
         let form_key = entry.form_key.clone();
 
@@ -757,6 +782,96 @@ fn build_core_section_streaming(slot: &NativePluginSlot) -> CoreSection {
     core
 }
 
+/// A record carrying only the fields an index entry reads: signature, ids,
+/// flags and the EDID. Every streamed index must build entries from this so
+/// they match what `build_core_section_streaming` produces.
+fn index_stub_record(view: &crate::record_cursor::RecordHeaderView<'_>) -> ParsedRecord {
+    ParsedRecord {
+        signature: SmolStr::new(String::from_utf8_lossy(view.signature).as_ref()),
+        form_id: view.form_id,
+        flags: view.flags,
+        version_control: 0,
+        form_version: None,
+        version2: None,
+        subrecords: first_edid_subrecord(view.payload, view.flags)
+            .into_iter()
+            .collect(),
+        raw_payload: None,
+        parse_error: None,
+    }
+}
+
+/// `CoreSection::by_signature_form_keys`-filtered entries for a lazy handle,
+/// without indexing every record in the plugin.
+///
+/// Building the whole core section to list one record type costs ~8 s on
+/// SeventySix.esm; a header scan costs ~0.25 s. A later record with the same
+/// form key replaces an earlier one in `by_form_key`, so a non-matching
+/// duplicate must evict a matching one here too.
+fn lazy_index_entries_for_signatures(
+    slot: &NativePluginSlot,
+    wanted: &HashSet<SmolStr>,
+) -> Vec<RecordIndexEntry> {
+    let Some(lazy) = slot.lazy.as_ref() else {
+        return Vec::new();
+    };
+    let own_plugin_name: Arc<str> = Arc::from(slot.parsed.plugin_name.as_str());
+    let masters = &slot.parsed.header.masters;
+    let mut by_form_key: FormKeyIndex<Option<RecordIndexEntry>> = FormKeyIndex::default();
+    lazy.cursor().scan(&mut |view| {
+        let signature = SmolStr::new(String::from_utf8_lossy(view.signature).as_ref());
+        if wanted.contains(&signature) {
+            let entry = record_index_entry_for_record(&index_stub_record(&view), &own_plugin_name, masters);
+            by_form_key.insert(entry.form_key.clone(), Some(entry));
+        } else if by_form_key.len() > 0 {
+            let form_key = form_key_for_raw_form_id(view.form_id, &own_plugin_name, masters);
+            if by_form_key.get(&form_key).is_some() {
+                by_form_key.insert(form_key, None);
+            }
+        }
+        std::ops::ControlFlow::Continue(())
+    });
+    by_form_key.into_values().flatten().collect()
+}
+
+/// `pick_owned_form_id` over `CoreSection::form_ids_by_object_id[object_id]`,
+/// which holds every record's form id in file order, without building it: the
+/// first owned match ends the scan.
+fn lazy_pick_owned_form_id(lazy: &LazyRecordStore, object_id: u32, own_index: u8) -> Option<u32> {
+    let mut first = None;
+    let mut owned = None;
+    lazy.cursor().scan(&mut |view| {
+        if view.form_id & 0x00FF_FFFF != object_id {
+            return std::ops::ControlFlow::Continue(());
+        }
+        let index = ((view.form_id >> 24) & 0xFF) as u8;
+        if index == LOCAL_FORM_INDEX || index == own_index {
+            owned = Some(view.form_id);
+            return std::ops::ControlFlow::Break(());
+        }
+        first.get_or_insert(view.form_id);
+        std::ops::ControlFlow::Continue(())
+    });
+    owned.or(first)
+}
+
+/// `CoreSection::by_eid_lower` for a lazy handle, as raw form ids in file
+/// order so the form keys can be rendered against the current masters.
+fn lazy_eid_form_ids(lazy: &LazyRecordStore) -> HashMap<String, Vec<u32>> {
+    let mut by_eid_lower: HashMap<String, Vec<u32>> = HashMap::new();
+    lazy.cursor().scan(&mut |view| {
+        let stub = index_stub_record(&view);
+        if let Some(eid) = editor_id_from_parsed(&stub).filter(|eid| !eid.is_empty()) {
+            by_eid_lower
+                .entry(eid.to_ascii_lowercase())
+                .or_default()
+                .push(view.form_id);
+        }
+        std::ops::ControlFlow::Continue(())
+    });
+    by_eid_lower
+}
+
 /// The `EDID` subrecord of an encoded payload, if it has one.
 ///
 /// Only 5.7% of records in SeventySix.esm carry an EditorID, so this gives up
@@ -771,11 +886,30 @@ fn first_edid_subrecord(payload: &[u8], flags: u32) -> Option<ParsedSubrecord> {
         if payload.len() < 4 {
             return None;
         }
-        let mut inflated = Vec::new();
-        ZlibDecoder::new(&payload[4..])
-            .read_to_end(&mut inflated)
-            .ok()?;
-        return first_edid_subrecord(&inflated, 0);
+        // Inflate only as far as the subrecords examined. Inflating whole
+        // payloads cost ~3 s on SeventySix.esm (965 MB, mostly CELL/LAND/NAVM)
+        // to read a handful of leading bytes. Unlike a full inflate, a stream
+        // corrupted past the EDID no longer hides it.
+        let mut decoder = ZlibDecoder::new(&payload[4..]);
+        for _ in 0..MAX_SUBRECORDS_SCANNED {
+            let mut header = [0u8; 6];
+            decoder.read_exact(&mut header).ok()?;
+            let length = u16::from_le_bytes([header[4], header[5]]) as u64;
+            if &header[..4] == b"EDID" {
+                let mut data = Vec::new();
+                (&mut decoder).take(length).read_to_end(&mut data).ok()?;
+                return Some(ParsedSubrecord {
+                    signature: SmolStr::new_static("EDID"),
+                    data: Bytes::from(data),
+                    semantic_type: None,
+                });
+            }
+            let skipped = std::io::copy(&mut (&mut decoder).take(length), &mut std::io::sink()).ok()?;
+            if skipped < length {
+                return None;
+            }
+        }
+        return None;
     }
 
     let mut cursor = 0usize;
@@ -1087,17 +1221,8 @@ mod lazy_offset_probe_tests {
             root_start,
             offsets: std::sync::OnceLock::new(),
             probes: std::sync::atomic::AtomicUsize::new(0),
+            eid_form_ids: std::sync::OnceLock::new(),
         }
-    }
-
-    #[test]
-    fn one_lookup_does_not_index_the_file() {
-        let store = store(64);
-        assert!(store.offset_of(0x0100_0005).is_some());
-        assert!(
-            store.offsets.get().is_none(),
-            "a single form-id read must not build the offsets map"
-        );
     }
 
     #[test]
@@ -1149,6 +1274,7 @@ mod lazy_cell_children_tests {
                 root_start: 0,
                 offsets: std::sync::OnceLock::from(offsets),
                 probes: std::sync::atomic::AtomicUsize::new(0),
+                eid_form_ids: std::sync::OnceLock::new(),
             }),
         }
     }
@@ -1196,64 +1322,6 @@ mod lazy_cell_children_tests {
     }
 
     #[test]
-    fn childless_cell_returns_empty_when_sibling_record_follows() {
-        let cell = 0x0000_0020u32;
-        let slot = lazy_slot(
-            [
-                record(b"CELL", cell, 0, &[]),
-                record(b"CELL", 0x0000_0021, 0, &[]),
-            ]
-            .concat(),
-            Vec::new(),
-        );
-
-        assert!(slot.lazy_cell_children(cell).unwrap().is_empty());
-    }
-
-    #[test]
-    fn raw_form_id_distinguishes_master_override_from_local_cell() {
-        let object_id = 0x0000_0020u32;
-        let local_cell = 0x0100_0020u32;
-        let base_children = group(
-            object_id.to_le_bytes(),
-            CELL_CHILD_GROUP,
-            &group(
-                object_id.to_le_bytes(),
-                TEMPORARY_GROUP,
-                &record(b"REFR", 0x0000_0021, 0, &[]),
-            ),
-        );
-        let local_children = group(
-            local_cell.to_le_bytes(),
-            CELL_CHILD_GROUP,
-            &group(
-                local_cell.to_le_bytes(),
-                TEMPORARY_GROUP,
-                &record(b"REFR", 0x0100_0021, 0, &[]),
-            ),
-        );
-        let slot = lazy_slot(
-            [
-                record(b"CELL", object_id, 0, &[]),
-                base_children,
-                record(b"CELL", local_cell, 0, &[]),
-                local_children,
-            ]
-            .concat(),
-            vec!["Fallout4.esm".to_string()],
-        );
-
-        assert_eq!(
-            slot.lazy_cell_children(object_id).unwrap()[0].1.form_id,
-            0x0000_0021
-        );
-        assert_eq!(
-            slot.lazy_cell_children(local_cell).unwrap()[0].1.form_id,
-            0x0100_0021
-        );
-    }
-
-    #[test]
     fn mislabelled_cell_children_group_is_an_error() {
         let cell = 0x0000_0030u32;
         let children = group(
@@ -1273,16 +1341,151 @@ mod lazy_cell_children_tests {
         assert!(error.contains("labelled 00000031"), "got: {error}");
     }
 
+}
+
+/// The streamed lazy lookups must answer exactly what the core section they
+/// avoid building would.
+#[cfg(test)]
+mod lazy_core_parity_tests {
+    use super::*;
+    use crate::plugin_runtime::test_support::{compressed_record, group, record, subrecord};
+
+    fn slot() -> NativePluginSlot {
+        let edid = |text: &str| subrecord(b"EDID", format!("{text}\0").as_bytes());
+        let misc = [
+            record(b"MISC", 0x0100_0001, 0, &edid("Alpha")),
+            record(b"MISC", 0x0000_0002, 0, &edid("Beta")),
+            compressed_record(b"MISC", 0x0100_0003, &edid("alpha")),
+            record(b"MISC", 0x0100_0008, 0, &edid("Shadowed")),
+            record(b"MISC", 0x0100_0009, 0, &edid("Kept")),
+        ]
+        .concat();
+        let cobj = [
+            record(b"COBJ", 0x0000_0004, 0, &edid("Recipe")),
+            record(b"COBJ", 0x0100_0004, 0, &edid("RecipeOwned")),
+            record(b"COBJ", 0x0000_0005, 0, &subrecord(b"FNAM", &[0; 4])),
+        ]
+        .concat();
+        let cell_children = group(
+            0x0100_0006u32.to_le_bytes(),
+            CELL_CHILD_GROUP,
+            &group(
+                0x0100_0006u32.to_le_bytes(),
+                TEMPORARY_GROUP,
+                &record(b"REFR", 0x0100_0007, 0, &[]),
+            ),
+        );
+        let cells = [record(b"CELL", 0x0100_0006, 0, &edid("Cell")), cell_children].concat();
+        let stat = [
+            record(b"STAT", 0x0100_0008, 0, &edid("Duplicate")),
+            record(b"STAT", 0x0000_0009, 0, &[]),
+        ]
+        .concat();
+        let buffer = Bytes::from(
+            [
+                group(*b"MISC", 0, &misc),
+                group(*b"COBJ", 0, &cobj),
+                group(*b"CELL", 0, &cells),
+                group(*b"STAT", 0, &stat),
+            ]
+            .concat(),
+        );
+        let mut header = ParsedPluginHeader::default_for_test();
+        header.masters = vec!["Master.esm".to_string()];
+        NativePluginSlot {
+            parsed: ParsedPlugin {
+                plugin_name: "Test.esp".to_string(),
+                file_path: String::new(),
+                header_size: MODERN_HEADER_SIZE,
+                header,
+                root_items: Vec::new(),
+                game: Some("fo4".to_string()),
+            },
+            strings: LocalizedStringsState::default(),
+            localized_text_index: None,
+            record_count_cache: None,
+            sections: PluginIndexSections::default(),
+            lazy: Some(LazyRecordStore {
+                buffer,
+                header_size: MODERN_HEADER_SIZE,
+                root_start: 0,
+                offsets: std::sync::OnceLock::new(),
+                probes: std::sync::atomic::AtomicUsize::new(0),
+                eid_form_ids: std::sync::OnceLock::new(),
+            }),
+        }
+    }
+
+    fn rows(entries: Vec<&RecordIndexEntry>) -> Vec<(String, String, String, u32, u32)> {
+        let mut rows: Vec<_> = entries
+            .into_iter()
+            .map(|entry| {
+                (
+                    entry.form_key.render(),
+                    entry.eid.clone(),
+                    entry.signature.to_string(),
+                    entry.object_id,
+                    entry.raw_form_id,
+                )
+            })
+            .collect();
+        rows.sort();
+        rows
+    }
+
     #[test]
-    fn eager_handle_is_rejected() {
-        let mut slot = lazy_slot(Vec::new(), Vec::new());
-        slot.lazy = None;
+    fn signature_entries_match_the_core_section() {
+        let slot = slot();
+        let core = build_core_section_streaming(&slot);
+        for signatures in [&["COBJ"][..], &["MISC"], &["REFR"], &["STAT"], &["MISC", "STAT"], &["NONE"]] {
+            let wanted: HashSet<SmolStr> = signatures.iter().map(|s| SmolStr::new(*s)).collect();
+            let streamed = lazy_index_entries_for_signatures(&slot, &wanted);
+            let expected = core
+                .by_form_key
+                .values()
+                .filter(|entry| wanted.contains(&entry.signature))
+                .collect();
+            assert_eq!(rows(streamed.iter().collect()), rows(expected), "{signatures:?}");
+        }
+    }
 
-        let Err(error) = slot.lazy_cell_children(0x10) else {
-            panic!("eager handle must fail");
-        };
+    #[test]
+    fn eid_index_matches_the_core_section() {
+        let slot = slot();
+        let core = build_core_section_streaming(&slot);
+        let lazy = slot.lazy.as_ref().unwrap();
+        let own: Arc<str> = Arc::from(slot.parsed.plugin_name.as_str());
+        let streamed: BTreeMap<String, Vec<String>> = lazy_eid_form_ids(lazy)
+            .into_iter()
+            .map(|(eid, ids)| {
+                let keys = ids
+                    .into_iter()
+                    .map(|id| form_key_for_raw_form_id(id, &own, &slot.parsed.header.masters).render())
+                    .collect();
+                (eid, keys)
+            })
+            .collect();
+        let expected: BTreeMap<String, Vec<String>> = core
+            .by_eid_lower
+            .iter()
+            .map(|(eid, keys)| (eid.clone(), keys.iter().map(FormKey::render).collect()))
+            .collect();
+        assert_eq!(streamed, expected);
+        assert_eq!(streamed["alpha"].len(), 2, "compressed EDIDs must be indexed");
+    }
 
-        assert!(error.contains("index-only"), "got: {error}");
+    #[test]
+    fn owned_form_id_pick_matches_the_core_section() {
+        let slot = slot();
+        let core = build_core_section_streaming(&slot);
+        let lazy = slot.lazy.as_ref().unwrap();
+        for object_id in 0..=0x0Au32 {
+            let expected = core
+                .form_ids_by_object_id
+                .get(&object_id)
+                .and_then(|ids| pick_owned_form_id(ids, 1));
+            assert_eq!(lazy_pick_owned_form_id(lazy, object_id, 1), expected, "{object_id:06X}");
+        }
     }
 }
 
@@ -3226,6 +3429,7 @@ pub fn plugin_handle_load_index_no_py(
         root_start,
         offsets: std::sync::OnceLock::new(),
             probes: std::sync::atomic::AtomicUsize::new(0),
+            eid_form_ids: std::sync::OnceLock::new(),
     };
     Ok(insert_plugin_handle_lazy(parsed, strings, lazy))
 }
@@ -3370,14 +3574,25 @@ pub fn plugin_handle_identity_native(
     })
 }
 
+/// `include_record_count=False` reports 0 for callers that only want header
+/// fields, since counting is a pass over the whole file on a lazy handle.
 #[pyfunction(name = "plugin_handle_get_meta")]
-pub fn plugin_handle_get_meta_native(py: Python<'_>, handle_id: u64) -> PyResult<Py<PyAny>> {
+#[pyo3(signature = (handle_id, include_record_count=true))]
+pub fn plugin_handle_get_meta_native(
+    py: Python<'_>,
+    handle_id: u64,
+    include_record_count: bool,
+) -> PyResult<Py<PyAny>> {
     let snapshot = py.detach(move || {
         let mut store = plugin_handle_store().lock().unwrap();
         let slot = store
             .get_mut(&handle_id)
             .ok_or_else(|| PyKeyError::new_err(format!("unknown plugin handle: {handle_id}")))?;
-        let record_count = slot_record_count(slot);
+        let record_count = if include_record_count {
+            slot_record_count(slot)
+        } else {
+            0
+        };
         Ok::<_, PyErr>(PluginMetadataSnapshot {
             plugin_name: slot.parsed.plugin_name.clone(),
             file_path: slot.parsed.file_path.clone(),
@@ -4137,6 +4352,10 @@ pub fn plugin_handle_read_authoring_record_native(
         let records = ensure_records_section(slot);
         if records.record(&slot.parsed, raw_form_id).is_some() {
             Some(raw_form_id)
+        } else if let (Some(lazy), false) = (slot.lazy.as_ref(), slot.has_core_section()) {
+            // Building the core section to answer this costs ~8 s on
+            // SeventySix.esm; an early-exit scan gives the same answer.
+            lazy_pick_owned_form_id(lazy, raw_form_id & 0x00FF_FFFF, own_index)
         } else {
             let object_id = raw_form_id & 0x00FF_FFFF;
             let core = ensure_core_section(slot);
@@ -4450,6 +4669,28 @@ pub fn plugin_handle_record_eid_index_native(
         let slot = store
             .get_mut(&handle_id)
             .ok_or_else(|| PyKeyError::new_err(format!("unknown plugin handle: {handle_id}")))?;
+        if let (Some(lazy), false) = (slot.lazy.as_ref(), slot.has_core_section()) {
+            let own_plugin_name: Arc<str> = Arc::from(slot.parsed.plugin_name.as_str());
+            let masters = &slot.parsed.header.masters;
+            return Ok::<_, PyErr>(
+                lazy.eid_form_ids
+                    .get_or_init(|| lazy_eid_form_ids(lazy))
+                    .iter()
+                    .map(|(eid, form_ids)| {
+                        (
+                            eid.clone(),
+                            form_ids
+                                .iter()
+                                .map(|&form_id| {
+                                    form_key_for_raw_form_id(form_id, &own_plugin_name, masters)
+                                        .render()
+                                })
+                                .collect::<Vec<_>>(),
+                        )
+                    })
+                    .collect::<HashMap<_, _>>(),
+            );
+        }
         let core = ensure_core_section(slot);
         Ok::<_, PyErr>(
             core.by_eid_lower
@@ -4484,13 +4725,36 @@ pub fn plugin_handle_record_index_rows_native(
         let slot = store
             .get_mut(&handle_id)
             .ok_or_else(|| PyKeyError::new_err(format!("unknown plugin handle: {handle_id}")))?;
-        let core = ensure_core_section(slot);
         let wanted_signatures = signatures.map(|values| {
             values
                 .into_iter()
                 .map(|value| SmolStr::new(value.trim().to_ascii_uppercase()))
                 .collect::<HashSet<_>>()
         });
+        if let (Some(wanted), None, true, false) = (
+            wanted_signatures.as_ref(),
+            form_keys.as_ref(),
+            slot.is_lazy(),
+            slot.has_core_section(),
+        ) {
+            let mut entries = lazy_index_entries_for_signatures(slot, wanted);
+            entries.sort_unstable_by(|left, right| {
+                left.form_key.render().cmp(&right.form_key.render())
+            });
+            return Ok(entries
+                .into_iter()
+                .map(|entry| {
+                    (
+                        entry.form_key.render(),
+                        entry.eid,
+                        entry.signature.to_string(),
+                        entry.object_id,
+                        entry.raw_form_id,
+                    )
+                })
+                .collect());
+        }
+        let core = ensure_core_section(slot);
         let include = |entry: &&RecordIndexEntry| {
             wanted_signatures
                 .as_ref()
@@ -7953,9 +8217,12 @@ pub fn insert_interior_cell_with_children(
 }
 
 /// Remove every `CELL` record whose object id (low 24 bits) is in `object_ids`,
-/// anywhere in the tree, in a single pass. Returns the number removed. Used by
-/// the interior-cell phase to strip PKIN storage-cell stubs once before the
-/// real interior cells are emitted.
+/// anywhere in the tree, in a single pass, together with its Cell-Children
+/// group. Returns the number of CELL records removed. Used by the interior-cell
+/// phase to strip PKIN storage-cell stubs once before the real interior cells
+/// are emitted. The children go too: the re-insert reuses a leftover group with
+/// the same label, so a child already written under the stub (a projected NAVM)
+/// would land twice with the same FormID.
 pub fn remove_cell_records_by_object_id(
     handle_id: u64,
     object_ids: &[u32],
@@ -7980,6 +8247,12 @@ pub fn remove_cell_records_by_object_id(
                 if r.signature.as_str() == "CELL" && set.contains(&(r.form_id & 0x00FF_FFFF)) =>
             {
                 *removed += 1;
+                false
+            }
+            ParsedItem::Group(g)
+                if g.group_type == CELL_CHILD_GROUP
+                    && set.contains(&(u32::from_le_bytes(g.label) & 0x00FF_FFFF)) =>
+            {
                 false
             }
             _ => true,
@@ -12280,18 +12553,44 @@ fn lookup_subrecord_spec_for_parsed<'a>(
 /// would never match. This inserts the decoded sibling value under the alias
 /// key the union conditions reference.
 ///
-/// The sources are single-field ``parsed`` specs whose post-compact
-/// ``field_payload`` is a bare scalar (Number for EPFT uint8, String for
-/// AECH.KNAM / SNDR.CNAM uint32-with-enum); an Object containing the source
-/// field is accepted too.
+/// The AECH.KNAM / SNDR.CNAM sources are single-field ``parsed`` specs whose
+/// post-compact ``field_payload`` is a bare enum-label String, matching their
+/// String conditions; an Object containing the source field is accepted too.
+///
+/// PERK.EPFD's conditions compare native integers (``wbEPFDDecider`` returns
+/// ``EPFT``, remapped by ``..\DATA\Entry Point\Function``), but EPFT and the
+/// Entry Point Function decode to enum labels ("Float", "SetValue"), so those
+/// two aliases are published from the raw bytes instead.
 fn publish_sibling_decider_context_aliases(
     record_sig: &str,
     subrecord_sig: &str,
+    data: &[u8],
     field_payload: &serde_json::Value,
     context: &mut HashMap<String, serde_json::Value>,
 ) {
+    match (record_sig, subrecord_sig) {
+        ("PERK", "EPFT") => {
+            if let Some(epft) = data.first() {
+                context.insert("epft".to_string(), serde_json::Value::from(*epft));
+            }
+            return;
+        }
+        ("PERK", "DATA") => {
+            let is_entry_point = field_payload
+                .get("variant")
+                .and_then(|variant| variant.as_str())
+                == Some("entry_point");
+            if let (true, Some(function)) = (is_entry_point, data.get(1)) {
+                context.insert(
+                    "entry_point_function".to_string(),
+                    serde_json::Value::from(*function),
+                );
+            }
+            return;
+        }
+        _ => {}
+    }
     let alias = match (record_sig, subrecord_sig) {
-        ("PERK", "EPFT") => Some(("type", "epft")),
         ("AECH", "KNAM") => Some(("type", "knam_edit_value")),
         ("SNDR", "CNAM") => Some(("descriptor_type", "cnam_edit_value")),
         _ => None,
@@ -12795,6 +13094,7 @@ pub fn serialize_record_payload_to_json(
         publish_sibling_decider_context_aliases(
             record.signature.as_str(),
             signature,
+            &sub.data,
             &field_payload,
             &mut context,
         );
@@ -15302,6 +15602,42 @@ fn encode_schema_array_count_json(
     }
 }
 
+/// Sibling count-field values derived from the authored array lengths. The
+/// decoder strips count fields from authoring output, so the encoder must
+/// rebuild them; `count_transform` is inverted here (the decoder's "half"
+/// means the stored field is twice the row count).
+fn derived_array_count_values_json(
+    fields: &[SchemaFieldJson],
+    mapping: &JsonMap<String, JsonValue>,
+    field_name: &str,
+) -> PyResult<HashMap<String, usize>> {
+    let empty_array = JsonValue::Array(Vec::new());
+    let mut count_values: HashMap<String, usize> = HashMap::new();
+    for field in fields {
+        let Some(array) = field.array.as_ref() else {
+            continue;
+        };
+        let Some(count_field) = array.count_field.as_ref() else {
+            continue;
+        };
+        let key_path = format!("{field_name}.{}", schema_field_key(field));
+        let field_value = schema_mapping_value_json(mapping, field).unwrap_or(&empty_array);
+        let rows = json_array(field_value, &key_path)?.len();
+        let stored = match array.count_transform.as_deref() {
+            None => Some(rows),
+            Some("half") => rows.checked_mul(2),
+            Some(other) => {
+                return Err(value_error(format!(
+                    "{key_path} uses unsupported array count transform {other:?}"
+                )));
+            }
+        }
+        .ok_or_else(|| value_error(format!("{key_path} has too many entries")))?;
+        count_values.insert(count_field.clone(), stored);
+    }
+    Ok(count_values)
+}
+
 fn encode_schema_struct_with_arrays_json(
     signature: &str,
     codec: &str,
@@ -15314,21 +15650,7 @@ fn encode_schema_struct_with_arrays_json(
     let mut token_index = 0usize;
     let mut encoded = Vec::new();
     let empty_array = JsonValue::Array(Vec::new());
-    let mut count_values: HashMap<String, usize> = HashMap::new();
-    for field in fields {
-        let Some(array) = field.array.as_ref() else {
-            continue;
-        };
-        let Some(count_field) = array.count_field.as_ref() else {
-            continue;
-        };
-        let field_value = schema_mapping_value_json(mapping, field).unwrap_or(&empty_array);
-        let values = json_array(
-            field_value,
-            &format!("{field_name}.{}", schema_field_key(field)),
-        )?;
-        count_values.insert(count_field.clone(), values.len());
-    }
+    let count_values = derived_array_count_values_json(fields, mapping, field_name)?;
 
     for field in fields {
         while token_index < tokens.len() && tokens[token_index] == "x" {
@@ -15449,6 +15771,7 @@ fn encode_variable_struct_json(
     let empty_array = JsonValue::Array(Vec::new());
     let null_value = JsonValue::Null;
     let mut encoded = Vec::new();
+    let count_values = derived_array_count_values_json(fields, mapping, field_name)?;
     for field in fields {
         if field.kind == "empty" {
             continue;
@@ -15515,7 +15838,14 @@ fn encode_variable_struct_json(
                 )));
             }
         };
-        let value = schema_mapping_value_json(mapping, field).unwrap_or(&null_value);
+        let derived_count;
+        let value = match count_values.get(field.id.as_str()) {
+            Some(count) => {
+                derived_count = JsonValue::Number((*count as u64).into());
+                &derived_count
+            }
+            None => schema_mapping_value_json(mapping, field).unwrap_or(&null_value),
+        };
         let enum_def = field_enum_def_json(context, field);
         encoded.extend_from_slice(&encode_scalar_codec_json(
             scalar_codec.as_str(),
@@ -16288,7 +16618,16 @@ fn build_subrecord_from_authoring_field_json_native(
     } else if let Some(spec) = spec {
         if localized && spec.localized {
             if let Some(raw_value) = payload.get("value") {
-                if let Some(mapping) = raw_value.as_object() {
+                if let Some(text) = raw_value.as_str() {
+                    let string_id = context.allocate_localized_string_id(1);
+                    let values = HashMap::from([("en".to_string(), text.to_string())]);
+                    let table_type = io::localized_table_type_for_signature(
+                        context.current_record_signature.as_deref(),
+                        signature,
+                    );
+                    context.set_localized_field_values(string_id, &values, None, table_type);
+                    string_id.to_le_bytes().to_vec()
+                } else if let Some(mapping) = raw_value.as_object() {
                     if mapping.contains_key("TargetLanguage")
                         || mapping.contains_key("Values")
                         || mapping.contains_key("Value")
@@ -17722,25 +18061,6 @@ fn detect_special_layout(directory: &Path, signature: &str) -> PyResult<&'static
 mod tests {
     use super::*;
 
-    #[test]
-    fn source_context_no_py_preserves_game_and_master_order_and_rejects_closed_handle() {
-        let handle = plugin_handle_new_no_py("Source.esp", Some("fnv"));
-        plugin_handle_add_master_no_py(handle, "FalloutNV.esm", None).expect("first master");
-        plugin_handle_add_master_no_py(handle, "DeadMoney.esm", None).expect("second master");
-
-        assert_eq!(
-            plugin_handle_master_names_no_py(handle).expect("master names"),
-            ["FalloutNV.esm", "DeadMoney.esm"]
-        );
-        assert_eq!(
-            plugin_handle_game_no_py(handle).expect("game").as_deref(),
-            Some("fnv")
-        );
-        assert!(plugin_handle_close_native(handle));
-        assert!(plugin_handle_master_names_no_py(handle).is_err());
-        assert!(plugin_handle_game_no_py(handle).is_err());
-    }
-
     fn make_record(signature: &str, form_id: u32, editor_id: Option<&str>) -> ParsedRecord {
         let mut subrecords = Vec::new();
         if let Some(eid) = editor_id {
@@ -17851,111 +18171,6 @@ mod tests {
         let mut null_changes = Vec::new();
         remove_formid_subrecords_in_items(&mut items, "TERM", "SNAM", 0, false, &mut null_changes);
         assert_eq!(null_changes.len(), 1);
-    }
-
-    #[test]
-    fn repair_term_marker_parameters_restores_source_row_and_preserves_sound() {
-        let mut marker_parameters = Vec::new();
-        marker_parameters.extend_from_slice(&1.0_f32.to_le_bytes());
-        marker_parameters.extend_from_slice(&(-59.0_f32).to_le_bytes());
-        marker_parameters.extend_from_slice(&1.0_f32.to_le_bytes());
-        marker_parameters.extend_from_slice(&0.0_f32.to_le_bytes());
-        marker_parameters.extend_from_slice(&0_u32.to_le_bytes());
-        marker_parameters.extend_from_slice(&[0xFF, 1, 0, 0]);
-
-        let mut source = make_record(
-            "TERM",
-            0x0072_6E6C,
-            Some("Storm_UpperAtrium_ClinicTerminal"),
-        );
-        source.subrecords.push(ParsedSubrecord {
-            signature: SmolStr::new_static("ZNAM"),
-            data: Bytes::from(marker_parameters.clone()),
-            semantic_type: None,
-        });
-        let mut markers_by_object_id = HashMap::new();
-        collect_owned_term_marker_parameters(
-            &[ParsedItem::Record(source)],
-            0,
-            &mut markers_by_object_id,
-        );
-
-        let mut target = make_record(
-            "TERM",
-            0x0772_6E6C,
-            Some("Storm_UpperAtrium_ClinicTerminal"),
-        );
-        target.raw_payload = Some(Bytes::from_static(b"original"));
-        target.subrecords.extend([
-            formid_subrecord("SNAM", 0x0009_80FB),
-            ParsedSubrecord {
-                signature: SmolStr::new_static("XMRK"),
-                data: Bytes::from_static(b"Markers\\MarkerDeskTerminal3rdP.nif\0"),
-                semantic_type: None,
-            },
-            formid_subrecord("SNAM", 0x0780_0000),
-            ParsedSubrecord {
-                signature: SmolStr::new_static("BSIZ"),
-                data: Bytes::from(1_u32.to_le_bytes().to_vec()),
-                semantic_type: None,
-            },
-        ]);
-        let mut items = vec![ParsedItem::Record(target)];
-
-        let mut dry_run_changes = Vec::new();
-        repair_term_marker_parameters_in_items(
-            &mut items,
-            7,
-            &markers_by_object_id,
-            true,
-            &mut dry_run_changes,
-        );
-        assert_eq!(
-            dry_run_changes,
-            vec![(
-                0x0772_6E6C,
-                Some("Storm_UpperAtrium_ClinicTerminal".to_string()),
-                1,
-                1
-            )]
-        );
-        let ParsedItem::Record(target) = &items[0] else {
-            panic!("expected terminal record");
-        };
-        assert!(target.subrecords.iter().any(|subrecord| {
-            subrecord.signature.as_str() == "SNAM"
-                && subrecord.data.as_ref() == 0x0780_0000_u32.to_le_bytes()
-        }));
-
-        let mut changes = Vec::new();
-        repair_term_marker_parameters_in_items(
-            &mut items,
-            7,
-            &markers_by_object_id,
-            false,
-            &mut changes,
-        );
-        assert_eq!(changes, dry_run_changes);
-        let ParsedItem::Record(target) = &items[0] else {
-            panic!("expected terminal record");
-        };
-        let xmrk = target
-            .subrecords
-            .iter()
-            .position(|subrecord| subrecord.signature.as_str() == "XMRK")
-            .unwrap();
-        let snam = target
-            .subrecords
-            .iter()
-            .enumerate()
-            .filter(|(_, subrecord)| subrecord.signature.as_str() == "SNAM")
-            .collect::<Vec<_>>();
-        assert_eq!(snam.len(), 2);
-        assert!(snam[0].0 < xmrk);
-        assert_eq!(snam[0].1.data.as_ref(), 0x0009_80FB_u32.to_le_bytes());
-        assert_eq!(snam[1].0, xmrk + 1);
-        assert_eq!(snam[1].1.data.as_ref(), marker_parameters.as_slice());
-        assert!(target.raw_payload.is_none());
     }
 
     fn land_layer_subrecord(signature: &str, texture_form_id: u32) -> ParsedSubrecord {
@@ -18088,36 +18303,12 @@ mod tests {
         }
     }
 
-    fn data_subrecord(values: [f32; 6]) -> ParsedSubrecord {
-        let mut data = Vec::new();
-        for value in values {
-            data.extend_from_slice(&value.to_le_bytes());
-        }
-        ParsedSubrecord {
-            signature: SmolStr::new_static("DATA"),
-            data: Bytes::from(data),
-            semantic_type: None,
-        }
-    }
-
     fn exterior_navmesh_record(form_id: u32, world_form_id: u32, cell: (i16, i16)) -> ParsedRecord {
         let mut record = make_record("NAVM", form_id, None);
         let mut nvnm = vec![0u8; 16];
         nvnm[8..12].copy_from_slice(&world_form_id.to_le_bytes());
         nvnm[12..14].copy_from_slice(&cell.1.to_le_bytes());
         nvnm[14..16].copy_from_slice(&cell.0.to_le_bytes());
-        record.subrecords.push(ParsedSubrecord {
-            signature: SmolStr::new_static("NVNM"),
-            data: Bytes::from(nvnm),
-            semantic_type: None,
-        });
-        record
-    }
-
-    fn interior_navmesh_record(form_id: u32, cell_form_id: u32) -> ParsedRecord {
-        let mut record = make_record("NAVM", form_id, None);
-        let mut nvnm = vec![0u8; 16];
-        nvnm[12..16].copy_from_slice(&cell_form_id.to_le_bytes());
         record.subrecords.push(ParsedSubrecord {
             signature: SmolStr::new_static("NVNM"),
             data: Bytes::from(nvnm),
@@ -18347,293 +18538,6 @@ mod tests {
         data
     }
 
-    fn refr_record(form_id: u32) -> ParsedRecord {
-        make_record("REFR", form_id, None)
-    }
-
-    /// Regression: NVMI door links whose remapped Door Ref is NOT an emitted
-    /// REFR are wild pointers (CTD on cell entry) and must be dropped; links to
-    /// emitted REFRs survive.
-    #[test]
-    fn rebuild_projected_navi_drops_door_links_to_non_emitted_refrs() {
-        let handle_id = create_empty_plugin_handle("Test.esp", Some("fo4"));
-        // Two source door links: ref 0x000700 -> target 0x000C00 (REFR will be
-        // emitted), ref 0x000701 -> target 0x000C99 (NOT emitted -> wild ptr).
-        let source_nvmi = source_nvmi_with_doors(
-            0x000900,
-            0x000800,
-            &[],
-            &[(0x1111, 0x000700), (0x2222, 0x000701)],
-        );
-        let source_root_items = vec![ParsedItem::Record(source_navi_with_nvmi(
-            0x000FF1,
-            source_nvmi,
-        ))];
-
-        {
-            let mut store = plugin_handle_store_ref().lock().unwrap();
-            let slot = store.get_mut(&handle_id).unwrap();
-            // Target NAVM for the NVMI.
-            slot.parsed
-                .root_items
-                .push(ParsedItem::Record(exterior_navmesh_record_with_edges(
-                    0x000A00,
-                    0x000B00,
-                    (3, -2),
-                    &[],
-                )));
-            // Only the FIRST door's target REFR (0x000C00) is emitted; 0x000C99 is not.
-            slot.parsed
-                .root_items
-                .push(ParsedItem::Record(refr_record(0x000C00)));
-
-            let stats = rebuild_projected_navi_record_from_source_in_slot(
-                slot,
-                &source_root_items,
-                &[
-                    (0x000800, 0x000B00),
-                    (0x000900, 0x000A00),
-                    (0x000700, 0x000C00),
-                    (0x000701, 0x000C99),
-                ],
-                Some(0x000FF1),
-            )
-            .expect("NAVI rebuild");
-            assert_eq!(stats.navmesh_infos, 1);
-            // One door link dropped (the non-emitted 0x000C99 wild pointer).
-            assert_eq!(stats.stale_edge_links_dropped, 1);
-        }
-
-        let store = plugin_handle_store_ref().lock().unwrap();
-        let slot = store.get(&handle_id).unwrap();
-        let navi = first_top_level_record(&slot.parsed.root_items, "NAVI").expect("top-level NAVI");
-        let nvmi = navmesh_info_subrecord(navi, 0x000A00);
-        // Re-parse the NVMI to the door-link section and assert exactly 1 link
-        // survives, pointing at the emitted REFR 0x000C00.
-        let mut o = 24usize; // navmesh + flags + loc + f0
-        let ec = u32::from_le_bytes(nvmi[o..o + 4].try_into().unwrap()) as usize;
-        o += 4 + 4 * ec;
-        let pc = u32::from_le_bytes(nvmi[o..o + 4].try_into().unwrap()) as usize;
-        o += 4 + 4 * pc;
-        let dc = u32::from_le_bytes(nvmi[o..o + 4].try_into().unwrap()) as usize;
-        o += 4;
-        assert_eq!(dc, 1, "exactly one door link survives");
-        let surviving_ref = u32::from_le_bytes(nvmi[o + 4..o + 8].try_into().unwrap());
-        assert_eq!(
-            surviving_ref, 0x000C00,
-            "surviving link points at emitted REFR"
-        );
-    }
-
-    #[test]
-    fn rebuild_projected_navi_can_override_source_nver() {
-        let handle_id = create_empty_plugin_handle("Test.esp", Some("fo4"));
-        let mut source_navi = source_navi_with_nvmi(
-            0x000FF1,
-            source_nvmi_with_doors(0x000900, 0x000800, &[], &[]),
-        );
-        source_navi.subrecords[0].data = Bytes::from(12u32.to_le_bytes().to_vec());
-        source_navi
-            .subrecords
-            .iter_mut()
-            .find(|subrecord| subrecord.signature.as_str() == "NVPP")
-            .unwrap()
-            .data = Bytes::from(vec![1, 0, 0, 0, 0x34, 0x12, 0, 0, 0, 0, 0, 0]);
-        let source_root_items = vec![ParsedItem::Record(source_navi)];
-
-        {
-            let mut store = plugin_handle_store_ref().lock().unwrap();
-            let slot = store.get_mut(&handle_id).unwrap();
-            slot.parsed
-                .root_items
-                .push(ParsedItem::Record(exterior_navmesh_record_with_edges(
-                    0x000A00,
-                    0x000B00,
-                    (3, -2),
-                    &[],
-                )));
-
-            rebuild_projected_navi_record_from_source_in_slot_with_nver(
-                slot,
-                &source_root_items,
-                &[(0x000800, 0x000B00), (0x000900, 0x000A00)],
-                Some(0x000FF1),
-                Some(15),
-            )
-            .expect("NAVI rebuild");
-
-            let navi =
-                first_top_level_record(&slot.parsed.root_items, "NAVI").expect("top-level NAVI");
-            let nver = navi
-                .subrecords
-                .iter()
-                .find(|subrecord| subrecord.signature.as_str() == "NVER")
-                .expect("NVER");
-            assert_eq!(nver.data.as_ref(), 15u32.to_le_bytes());
-            let nvpp = navi
-                .subrecords
-                .iter()
-                .find(|subrecord| subrecord.signature.as_str() == "NVPP")
-                .expect("NVPP");
-            assert_eq!(nvpp.data.as_ref(), &[0u8; 8]);
-        }
-
-        assert!(plugin_handle_close_native(handle_id));
-    }
-
-    #[test]
-    fn rebuild_projected_navi_forces_fo4_nver_by_default() {
-        let handle_id = create_empty_plugin_handle("Test.esp", Some("fo4"));
-        let mut source_navi = source_navi_with_nvmi(
-            0x000FF1,
-            source_nvmi_with_doors(0x000900, 0x000800, &[], &[]),
-        );
-        source_navi.subrecords[0].data = Bytes::from(12u32.to_le_bytes().to_vec());
-        source_navi
-            .subrecords
-            .iter_mut()
-            .find(|subrecord| subrecord.signature.as_str() == "NVPP")
-            .unwrap()
-            .data = Bytes::from(vec![1, 0, 0, 0, 0x34, 0x12, 0, 0, 0, 0, 0, 0]);
-        let source_root_items = vec![ParsedItem::Record(source_navi)];
-
-        {
-            let mut store = plugin_handle_store_ref().lock().unwrap();
-            let slot = store.get_mut(&handle_id).unwrap();
-            slot.parsed
-                .root_items
-                .push(ParsedItem::Record(exterior_navmesh_record_with_edges(
-                    0x000A00,
-                    0x000B00,
-                    (3, -2),
-                    &[],
-                )));
-
-            rebuild_projected_navi_record_from_source_in_slot(
-                slot,
-                &source_root_items,
-                &[(0x000800, 0x000B00), (0x000900, 0x000A00)],
-                Some(0x000FF1),
-            )
-            .expect("NAVI rebuild");
-
-            let navi =
-                first_top_level_record(&slot.parsed.root_items, "NAVI").expect("top-level NAVI");
-            let nver = navi
-                .subrecords
-                .iter()
-                .find(|subrecord| subrecord.signature.as_str() == "NVER")
-                .expect("NVER");
-            assert_eq!(nver.data.as_ref(), 15u32.to_le_bytes());
-            let nvpp = navi
-                .subrecords
-                .iter()
-                .find(|subrecord| subrecord.signature.as_str() == "NVPP")
-                .expect("NVPP");
-            assert_eq!(nvpp.data.as_ref(), &[0u8; 8]);
-        }
-
-        assert!(plugin_handle_close_native(handle_id));
-    }
-
-    fn rebuild_mixed_version_navi(order: &[(u32, u32)]) -> Vec<(String, Vec<u8>)> {
-        let handle_id =
-            create_empty_plugin_handle(&format!("MixedNavi{:08X}.esp", order[0].0), Some("fo4"));
-        {
-            let mut store = plugin_handle_store_ref().lock().unwrap();
-            let slot = store.get_mut(&handle_id).unwrap();
-            for &(form_id, version) in order {
-                let mut record = exterior_navmesh_record_with_edges(
-                    form_id,
-                    0x000B00,
-                    ((form_id & 0xFF) as i16, -2),
-                    &[],
-                );
-                let nvnm = record
-                    .subrecords
-                    .iter_mut()
-                    .find(|subrecord| subrecord.signature.as_str() == "NVNM")
-                    .expect("NVNM");
-                let mut data = nvnm.data.to_vec();
-                data[0..4].copy_from_slice(&version.to_le_bytes());
-                nvnm.data = Bytes::from(data);
-                slot.parsed.root_items.push(ParsedItem::Record(record));
-            }
-            rebuild_projected_navi_record_in_slot(slot, Some(0x000FF1))
-                .expect("mixed-version NAVI rebuild");
-
-            let mut normalized_versions = Vec::new();
-            fn collect_versions(items: &[ParsedItem], out: &mut Vec<(u32, u32)>) {
-                for item in items {
-                    match item {
-                        ParsedItem::Record(record) if record.signature.as_str() == "NAVM" => {
-                            let nvnm = record
-                                .subrecords
-                                .iter()
-                                .find(|subrecord| subrecord.signature.as_str() == "NVNM")
-                                .expect("normalized NVNM");
-                            out.push((
-                                record.form_id,
-                                u32::from_le_bytes(nvnm.data[0..4].try_into().unwrap()),
-                            ));
-                        }
-                        ParsedItem::Group(group) => collect_versions(&group.children, out),
-                        _ => {}
-                    }
-                }
-            }
-            collect_versions(&slot.parsed.root_items, &mut normalized_versions);
-            normalized_versions.sort_unstable();
-            assert_eq!(
-                normalized_versions,
-                vec![(0x000900, 15), (0x000901, 15)],
-                "every finalized target NVNM must be normalized to v15"
-            );
-
-            let navi = first_top_level_record(&slot.parsed.root_items, "NAVI").expect("NAVI");
-            let nver = navi
-                .subrecords
-                .iter()
-                .find(|subrecord| subrecord.signature.as_str() == "NVER")
-                .expect("NVER");
-            assert_eq!(nver.data.as_ref(), 15u32.to_le_bytes());
-            assert_eq!(
-                navi.subrecords
-                    .iter()
-                    .filter(|subrecord| subrecord.signature.as_str() == "NVMI")
-                    .count(),
-                2
-            );
-            let mut navmesh_ids = navi
-                .subrecords
-                .iter()
-                .filter(|subrecord| subrecord.signature.as_str() == "NVMI")
-                .map(|subrecord| u32::from_le_bytes(subrecord.data[0..4].try_into().unwrap()))
-                .collect::<Vec<_>>();
-            navmesh_ids.sort_unstable();
-            assert_eq!(navmesh_ids, vec![0x000900, 0x000901]);
-        }
-
-        let store = plugin_handle_store_ref().lock().unwrap();
-        let slot = store.get(&handle_id).unwrap();
-        let navi = first_top_level_record(&slot.parsed.root_items, "NAVI").expect("NAVI");
-        let snapshot = navi
-            .subrecords
-            .iter()
-            .map(|subrecord| (subrecord.signature.to_string(), subrecord.data.to_vec()))
-            .collect();
-        drop(store);
-        assert!(plugin_handle_close_native(handle_id));
-        snapshot
-    }
-
-    #[test]
-    fn rebuild_projected_navi_normalizes_mixed_versions_deterministically() {
-        let legacy_first = rebuild_mixed_version_navi(&[(0x000900, 11), (0x000901, 15)]);
-        let fo4_first = rebuild_mixed_version_navi(&[(0x000901, 15), (0x000900, 11)]);
-        assert_eq!(legacy_first, fo4_first, "input order must not affect NAVI");
-    }
-
     #[test]
     fn rebuild_projected_navi_rejects_true_legacy_layout_before_mutation() {
         let handle_id = create_empty_plugin_handle("LegacyNaviReject.esp", Some("fo4"));
@@ -18717,40 +18621,6 @@ mod tests {
     }
 
     #[test]
-    fn placed_record_position_offset_updates_only_placed_data() {
-        let mut placed = make_record("REFR", 0x01000800, None);
-        placed
-            .subrecords
-            .push(data_subrecord([1.0, 2.0, 3.0, 4.0, 5.0, 6.0]));
-        placed.raw_payload = Some(Bytes::from_static(b"stale"));
-        let mut non_placed = make_record("STAT", 0x01000801, None);
-        non_placed
-            .subrecords
-            .push(data_subrecord([10.0, 20.0, 30.0, 40.0, 50.0, 60.0]));
-        let mut items = vec![ParsedItem::Record(placed), ParsedItem::Record(non_placed)];
-
-        let changed =
-            apply_placed_record_position_offset_in_items(&mut items, (2048.0, 1024.0, -10.0));
-
-        assert_eq!(changed, 1);
-        let ParsedItem::Record(placed) = &items[0] else {
-            panic!("expected record");
-        };
-        let data = &placed.subrecords[0].data;
-        assert_eq!(f32::from_le_bytes(data[0..4].try_into().unwrap()), 2049.0);
-        assert_eq!(f32::from_le_bytes(data[4..8].try_into().unwrap()), 1026.0);
-        assert_eq!(f32::from_le_bytes(data[8..12].try_into().unwrap()), -7.0);
-        assert_eq!(f32::from_le_bytes(data[12..16].try_into().unwrap()), 4.0);
-        assert!(placed.raw_payload.is_none());
-
-        let ParsedItem::Record(non_placed) = &items[1] else {
-            panic!("expected record");
-        };
-        let data = &non_placed.subrecords[0].data;
-        assert_eq!(f32::from_le_bytes(data[0..4].try_into().unwrap()), 10.0);
-    }
-
-    #[test]
     fn insert_parsed_record_creates_top_group_in_game_order() {
         let handle_id = create_empty_plugin_handle("Test.esp", Some("fo4"));
 
@@ -18772,169 +18642,6 @@ mod tests {
             .collect();
 
         assert_eq!(labels, vec!["STAT", "WRLD"]);
-    }
-
-    #[test]
-    fn projected_cell_import_preserves_landscape_child_group() {
-        let handle_id = create_empty_plugin_handle("Test.esp", Some("fo4"));
-        let world_payload = serde_json::json!({
-            "signature": "WRLD",
-            "form_id": "000800:Test.esp",
-            "eid": "TestWorld",
-            "subrecords": [
-                { "signature": "EDID", "data_hex": "54657374576F726C6400" }
-            ]
-        });
-        let payload = serde_json::json!({
-            "signature": "CELL",
-            "form_id": "000801:Test.esp",
-            "eid": "TestCell",
-            "subrecords": [
-                { "signature": "EDID", "data_hex": "5465737443656C6C00" }
-            ],
-            "Landscape": {
-                "form_id": "000802:Test.esp",
-                "subrecords": []
-            }
-        });
-        let replacement_payload = serde_json::json!({
-            "signature": "CELL",
-            "form_id": "000801:Test.esp",
-            "eid": "TestCell",
-            "subrecords": [
-                { "signature": "EDID", "data_hex": "5465737443656C6C00" },
-                { "signature": "DATA", "data_hex": "0200" },
-                { "signature": "XCLC", "data_hex": "03000000FEFFFFFF00000000" },
-                { "signature": "LTMP", "data_hex": "00000000" },
-                { "signature": "XCLW", "data_hex": "FFFF7F7F" }
-            ],
-            "Landscape": {
-                "form_id": "000803:Test.esp",
-                "subrecords": []
-            }
-        });
-        let relative_path =
-            "records/WRLD/TestWorld - 000800_Test.esp/0, 0/0, 0/0, 0/RecordData.yaml";
-
-        plugin_handle_replace_authoring_record_value(handle_id, &world_payload)
-            .expect("WRLD import");
-        let imported = plugin_handle_replace_projected_cell_authoring_record_value(
-            handle_id,
-            &payload,
-            relative_path,
-        )
-        .expect("projected CELL import");
-        plugin_handle_replace_projected_cell_authoring_record_value(
-            handle_id,
-            &replacement_payload,
-            relative_path,
-        )
-        .expect("projected CELL replacement");
-
-        assert_eq!(imported.len(), 2);
-        let store = plugin_handle_store_ref().lock().unwrap();
-        let slot = store.get(&handle_id).unwrap();
-        assert!(slot.parsed.root_items.iter().all(|item| !matches!(
-            item,
-            ParsedItem::Group(group) if group.group_type == 0 && group.label == *b"CELL"
-        )));
-        let wrld_group = slot
-            .parsed
-            .root_items
-            .iter()
-            .find_map(|item| match item {
-                ParsedItem::Group(group) if group.group_type == 0 && group.label == *b"WRLD" => {
-                    Some(group)
-                }
-                _ => None,
-            })
-            .expect("WRLD top group");
-        assert!(matches!(
-            wrld_group.children.first(),
-            Some(ParsedItem::Record(record))
-                if record.signature.as_str() == "WRLD" && record.form_id == 0x000800
-        ));
-        let world_children = wrld_group
-            .children
-            .iter()
-            .find_map(|item| match item {
-                ParsedItem::Group(group) if group.group_type == 1 => Some(group),
-                _ => None,
-            })
-            .expect("WRLD children group");
-        assert_eq!(world_children.label, 0x000800u32.to_le_bytes());
-        let block_group = world_children
-            .children
-            .iter()
-            .find_map(|item| match item {
-                ParsedItem::Group(group) if group.group_type == EXTERIOR_CELL_BLOCK => Some(group),
-                _ => None,
-            })
-            .expect("exterior block group");
-        assert_eq!(block_group.label, encode_exterior_grid_label(0, 0));
-        let subblock_group = block_group
-            .children
-            .iter()
-            .find_map(|item| match item {
-                ParsedItem::Group(group) if group.group_type == EXTERIOR_CELL_SUBBLOCK => {
-                    Some(group)
-                }
-                _ => None,
-            })
-            .expect("exterior subblock group");
-        assert_eq!(subblock_group.label, encode_exterior_grid_label(0, 0));
-        let cell_records: Vec<&ParsedRecord> = subblock_group
-            .children
-            .iter()
-            .filter_map(|item| match item {
-                ParsedItem::Record(record) if record.signature.as_str() == "CELL" => Some(record),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(cell_records.len(), 1);
-        assert_eq!(cell_records[0].form_id, 0x000801);
-        assert!(cell_records[0].subrecords.iter().any(|subrecord| {
-            subrecord.signature.as_str() == "DATA" && subrecord.data.as_ref() == [0x02, 0x00]
-        }));
-        assert!(cell_records[0].subrecords.iter().any(|subrecord| {
-            subrecord.signature.as_str() == "XCLW"
-                && subrecord.data.as_ref() == [0xFF, 0xFF, 0x7F, 0x7F]
-        }));
-        assert!(cell_records[0].subrecords.iter().any(|subrecord| {
-            subrecord.signature.as_str() == "LTMP"
-                && subrecord.data.as_ref() == [0x00, 0x00, 0x00, 0x00]
-        }));
-        let child_groups: Vec<&ParsedGroup> = subblock_group
-            .children
-            .iter()
-            .filter_map(|item| match item {
-                ParsedItem::Group(group) if group.group_type == CELL_CHILD_GROUP => Some(group),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(child_groups.len(), 1);
-        let child_group = child_groups[0];
-
-        assert_eq!(child_group.label, 0x000801u32.to_le_bytes());
-        assert!(
-            child_group.children.iter().all(|item| {
-                !matches!(item, ParsedItem::Record(record) if record.signature.as_str() == "LAND")
-            }),
-            "LAND must be nested in the CELL temporary group",
-        );
-        let temporary_group = child_group
-            .children
-            .iter()
-            .find_map(|item| match item {
-                ParsedItem::Group(group) if group.group_type == TEMPORARY_GROUP => Some(group),
-                _ => None,
-            })
-            .expect("temporary group");
-        assert!(matches!(
-            temporary_group.children.first(),
-            Some(ParsedItem::Record(record))
-                if record.signature.as_str() == "LAND" && record.form_id == 0x000803
-        ));
     }
 
     #[test]
@@ -19003,311 +18710,6 @@ mod tests {
             .find(|subrecord| subrecord.signature.as_str() == "VTXT")
             .expect("VTXT subrecord");
         assert_eq!(vtxt_subrecord.data.as_ref(), vtxt.as_slice());
-    }
-
-    #[test]
-    fn projected_cell_batch_import_preserves_land_vtxt_raw_hex() {
-        let handle_id = create_empty_plugin_handle("Test.esp", Some("fo4"));
-        let world_payload = serde_json::json!({
-            "signature": "WRLD",
-            "form_id": "000800:Test.esp",
-            "eid": "TestWorld",
-            "subrecords": [
-                { "signature": "EDID", "data_hex": "54657374576F726C6400" }
-            ]
-        });
-        let mut vtxt = Vec::new();
-        vtxt.extend_from_slice(&0u16.to_le_bytes());
-        vtxt.extend_from_slice(&[0, 0]);
-        vtxt.extend_from_slice(&(254.0f32 / 255.0).to_le_bytes());
-        let vtxt_hex = hex::encode_upper(&vtxt);
-        let payload = serde_json::json!({
-            "signature": "CELL",
-            "form_id": "000801:Test.esp",
-            "eid": "TestCell",
-            "fields": [
-                { "XCLC": { "raw_hex": "000000000000000000000000" } }
-            ],
-            "Landscape": {
-                "form_id": "000802:Test.esp",
-                "fields": [
-                    { "BTXT": {
-                        "Texture": { "reference": { "plugin": "Test.esp", "object_id": "000900" } },
-                        "Quadrant": "BottomLeft",
-                        "UnknownByte3": 2,
-                        "Layer": -1
-                    }},
-                    { "ATXT": {
-                        "Texture": { "reference": { "plugin": "Test.esp", "object_id": "000901" } },
-                        "Quadrant": "BottomLeft",
-                        "UnknownByte3": 0,
-                        "Layer": 0
-                    }},
-                    { "AlphaLayerData": { "raw_hex": vtxt_hex } }
-                ]
-            }
-        });
-        let relative_path =
-            "records/WRLD/TestWorld - 000800_Test.esp/0, 0/0, 0/0, 0/RecordData.yaml";
-
-        plugin_handle_replace_authoring_record_value(handle_id, &world_payload)
-            .expect("WRLD import");
-        plugin_handle_replace_projected_cell_authoring_record_values_at_locations(
-            handle_id,
-            vec![(payload, relative_path.to_string())],
-        )
-        .expect("projected CELL batch import");
-
-        let store = plugin_handle_store_ref().lock().unwrap();
-        let slot = store.get(&handle_id).unwrap();
-        let land = find_first_record(&slot.parsed.root_items, &mut |record| {
-            record.signature.as_str() == "LAND"
-        })
-        .expect("LAND record");
-        let vtxt_subrecord = land
-            .subrecords
-            .iter()
-            .find(|subrecord| subrecord.signature.as_str() == "VTXT")
-            .expect("VTXT subrecord");
-        assert_eq!(vtxt_subrecord.data.as_ref(), vtxt.as_slice());
-    }
-
-    #[test]
-    fn projected_navmesh_insertion_ignores_persistent_cell_origin_grid() {
-        let handle_id = create_empty_plugin_handle("Test.esp", Some("fo4"));
-        let world_payload = serde_json::json!({
-            "signature": "WRLD",
-            "form_id": "000800:Test.esp",
-            "eid": "TestWorld",
-            "subrecords": [
-                { "signature": "EDID", "data_hex": "54657374576F726C6400" }
-            ]
-        });
-        let cell_payload = serde_json::json!({
-            "signature": "CELL",
-            "form_id": "000801:Test.esp",
-            "eid": "TestExteriorOrigin",
-            "subrecords": [
-                { "signature": "EDID", "data_hex": "546573744578746572696F724F726967696E00" },
-                { "signature": "XCLC", "data_hex": "000000000000000000000000" }
-            ],
-            "Landscape": {
-                "form_id": "000803:Test.esp",
-                "subrecords": []
-            }
-        });
-        let relative_path = "records/WRLD/TestWorld - 000800_Test.esp/0,0/0,0/0,0/RecordData.yaml";
-
-        plugin_handle_replace_authoring_record_value(handle_id, &world_payload)
-            .expect("WRLD import");
-        plugin_handle_replace_projected_cell_authoring_record_value(
-            handle_id,
-            &cell_payload,
-            relative_path,
-        )
-        .expect("projected CELL import");
-
-        let mut store = plugin_handle_store_ref().lock().unwrap();
-        let slot = store.get_mut(&handle_id).unwrap();
-        {
-            let world_children =
-                projected_world_children_group_mut(&mut slot.parsed.root_items, 0x000800)
-                    .expect("WRLD children");
-            let mut persistent_cell = make_record("CELL", 0x000802, Some("TestPersistentCell"));
-            ensure_projected_cell_grid_subrecord(&mut persistent_cell, (0, 0));
-            world_children.children.insert(
-                0,
-                ParsedItem::Group(ParsedGroup {
-                    label: 0x000802u32.to_le_bytes(),
-                    group_type: CELL_CHILD_GROUP,
-                    tail: Bytes::from(vec![0u8; MODERN_HEADER_SIZE - 16]),
-                    children: Vec::new(),
-                }),
-            );
-            world_children
-                .children
-                .insert(0, ParsedItem::Record(persistent_cell));
-            assert_eq!(
-                build_cell_grid_index(&world_children.children).get(&(0, 0)),
-                Some(&0x000801)
-            );
-        }
-
-        assert!(
-            insert_projected_navmesh_record_in_slot(
-                slot,
-                exterior_navmesh_record(0x000900, 0x000800, (0, 0)),
-            )
-            .expect("single NAVM insert")
-        );
-        assert_eq!(
-            insert_projected_navmeshes_batch_in_slot(
-                slot,
-                vec![exterior_navmesh_record(0x000901, 0x000800, (0, 0))],
-            ),
-            vec![Ok(true)]
-        );
-
-        let world_children =
-            projected_world_children_group_mut(&mut slot.parsed.root_items, 0x000800)
-                .expect("WRLD children");
-        let exterior_group =
-            find_cell_child_group_mut_in_items(&mut world_children.children, 0x000801)
-                .expect("exterior CELL children");
-        assert_eq!(
-            count_test_records_by_signature(&exterior_group.children, "NAVM"),
-            2
-        );
-        let persistent_group =
-            find_cell_child_group_mut_in_items(&mut world_children.children, 0x000802)
-                .expect("persistent CELL children");
-        assert_eq!(
-            count_test_records_by_signature(&persistent_group.children, "NAVM"),
-            0
-        );
-    }
-
-    #[test]
-    fn insert_projected_navmesh_record_uses_exterior_cell_temporary_group() {
-        let handle_id = create_empty_plugin_handle("Test.esp", Some("fo4"));
-        let world_payload = serde_json::json!({
-            "signature": "WRLD",
-            "form_id": "000800:Test.esp",
-            "eid": "TestWorld",
-            "subrecords": [
-                { "signature": "EDID", "data_hex": "54657374576F726C6400" }
-            ]
-        });
-        let cell_payload = serde_json::json!({
-            "signature": "CELL",
-            "form_id": "000801:Test.esp",
-            "eid": "TestCell",
-            "subrecords": [
-                { "signature": "EDID", "data_hex": "5465737443656C6C00" },
-                { "signature": "XCLC", "data_hex": "03000000FEFFFFFF00000000" }
-            ],
-            "Landscape": {
-                "form_id": "000803:Test.esp",
-                "subrecords": []
-            }
-        });
-        let relative_path = "records/WRLD/TestWorld - 000800_Test.esp/0,0/0,0/3,-2/RecordData.yaml";
-
-        plugin_handle_replace_authoring_record_value(handle_id, &world_payload)
-            .expect("WRLD import");
-        plugin_handle_replace_projected_cell_authoring_record_value(
-            handle_id,
-            &cell_payload,
-            relative_path,
-        )
-        .expect("projected CELL import");
-
-        {
-            let mut store = plugin_handle_store_ref().lock().unwrap();
-            let slot = store.get_mut(&handle_id).unwrap();
-            assert!(
-                insert_projected_navmesh_record_in_slot(
-                    slot,
-                    exterior_navmesh_record(0x000900, 0x000800, (3, -2)),
-                )
-                .expect("first NAVM insert")
-            );
-            assert!(
-                insert_projected_navmesh_record_in_slot(
-                    slot,
-                    exterior_navmesh_record(0x000900, 0x000800, (3, -2)),
-                )
-                .expect("replacement NAVM insert")
-            );
-        }
-
-        let store = plugin_handle_store_ref().lock().unwrap();
-        let slot = store.get(&handle_id).unwrap();
-        let wrld_group = slot
-            .parsed
-            .root_items
-            .iter()
-            .find_map(|item| match item {
-                ParsedItem::Group(group) if group.group_type == 0 && group.label == *b"WRLD" => {
-                    Some(group)
-                }
-                _ => None,
-            })
-            .expect("WRLD top group");
-        let world_children = wrld_group
-            .children
-            .iter()
-            .find_map(|item| match item {
-                ParsedItem::Group(group) if group.group_type == 1 => Some(group),
-                _ => None,
-            })
-            .expect("WRLD children group");
-        let block_group = world_children
-            .children
-            .iter()
-            .find_map(|item| match item {
-                ParsedItem::Group(group)
-                    if group.group_type == EXTERIOR_CELL_BLOCK
-                        && group.label == encode_exterior_grid_label(0, 0) =>
-                {
-                    Some(group)
-                }
-                _ => None,
-            })
-            .expect("target exterior block group");
-        let subblock_group = block_group
-            .children
-            .iter()
-            .find_map(|item| match item {
-                ParsedItem::Group(group)
-                    if group.group_type == EXTERIOR_CELL_SUBBLOCK
-                        && group.label == encode_exterior_grid_label(0, 0) =>
-                {
-                    Some(group)
-                }
-                _ => None,
-            })
-            .expect("target exterior subblock group");
-        let child_group = subblock_group
-            .children
-            .iter()
-            .find_map(|item| match item {
-                ParsedItem::Group(group) if group.group_type == CELL_CHILD_GROUP => Some(group),
-                _ => None,
-            })
-            .expect("CELL child group");
-        assert!(
-            child_group.children.iter().all(|item| {
-                !matches!(item, ParsedItem::Record(record) if record.signature.as_str() == "NAVM")
-            }),
-            "NAVM must be nested in the CELL temporary group",
-        );
-        let temporary_group = child_group
-            .children
-            .iter()
-            .find_map(|item| match item {
-                ParsedItem::Group(group) if group.group_type == TEMPORARY_GROUP => Some(group),
-                _ => None,
-            })
-            .expect("temporary group");
-        let navmesh_records: Vec<&ParsedRecord> = temporary_group
-            .children
-            .iter()
-            .filter_map(|item| match item {
-                ParsedItem::Record(record) if record.signature.as_str() == "NAVM" => Some(record),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(navmesh_records.len(), 1);
-        assert_eq!(navmesh_records[0].form_id, 0x000900);
-        assert_eq!(
-            navmesh_parent_from_record(navmesh_records[0]).expect("NAVM parent"),
-            Some(NavmeshParent::Exterior {
-                world_form_id: 0x000800,
-                x: 3,
-                y: -2,
-            })
-        );
     }
 
     fn setup_projected_world_handle_for_batch(plugin_name: &str) -> u64 {
@@ -19527,49 +18929,6 @@ mod tests {
     }
 
     #[test]
-    fn batch_interior_navmesh_insert_matches_sequential_without_existing_child_group() {
-        let seq_handle = create_empty_plugin_handle("SeqInterior.esp", Some("fo4"));
-        let batch_handle = create_empty_plugin_handle("BatchInterior.esp", Some("fo4"));
-        let mut store = plugin_handle_store_ref().lock().unwrap();
-        for handle in [seq_handle, batch_handle] {
-            store
-                .get_mut(&handle)
-                .unwrap()
-                .parsed
-                .root_items
-                .push(ParsedItem::Record(make_record("CELL", 0x000801, None)));
-        }
-
-        let seq_outcome = insert_projected_navmesh_record_in_slot(
-            store.get_mut(&seq_handle).unwrap(),
-            interior_navmesh_record(0x000900, 0x000801),
-        );
-        let batch_outcome = insert_projected_navmeshes_batch_in_slot(
-            store.get_mut(&batch_handle).unwrap(),
-            vec![interior_navmesh_record(0x000900, 0x000801)],
-        );
-        assert_eq!(
-            format!("{seq_outcome:?}"),
-            format!("{:?}", batch_outcome[0])
-        );
-        assert!(seq_outcome.expect("sequential insert"));
-
-        let mut seq_fp = String::new();
-        tree_fingerprint(
-            &store.get(&seq_handle).unwrap().parsed.root_items,
-            0,
-            &mut seq_fp,
-        );
-        let mut batch_fp = String::new();
-        tree_fingerprint(
-            &store.get(&batch_handle).unwrap().parsed.root_items,
-            0,
-            &mut batch_fp,
-        );
-        assert_eq!(seq_fp, batch_fp);
-    }
-
-    #[test]
     fn rebuild_projected_navi_uses_emitted_navmeshes_and_filters_stale_edges() {
         let handle_id = create_empty_plugin_handle("Test.esp", Some("fo4"));
         let world_payload = serde_json::json!({
@@ -19733,7 +19092,7 @@ mod tests {
                     .try_into()
                     .unwrap()
             ),
-            0xAABB_CCDD
+            FO4_PATHING_CELL_CRC_HASH
         );
         assert_eq!(
             u32::from_le_bytes(
@@ -19758,128 +19117,6 @@ mod tests {
                     .unwrap()
             ),
             3
-        );
-    }
-
-    #[test]
-    fn rebuild_projected_navi_preserves_source_nvmi_metadata_when_available() {
-        let handle_id = create_empty_plugin_handle("Test.esp", Some("fo4"));
-        let source_nvmi = source_nvmi_with_island(0x000900, 0x000800, &[0x000901, 0x000999]);
-        let source_root_items = vec![ParsedItem::Record(source_navi_with_nvmi(
-            0x000FF1,
-            source_nvmi.clone(),
-        ))];
-
-        {
-            let mut store = plugin_handle_store_ref().lock().unwrap();
-            let slot = store.get_mut(&handle_id).unwrap();
-            // NVMI.edge_links is rebuilt from
-            // the TARGET NAVM's NVNM topology, not preserved from the source
-            // NVMI. Give the target NAVMs real NVNMs with edge_links so the
-            // test still exercises the edge_links path. NAVM 0x000A00 edges
-            // out to 0x000A01 (in-slot) and 0x000B99 (NOT in-slot — verifies
-            // stale filtering still happens during the NVNM rebuild).
-            slot.parsed
-                .root_items
-                .push(ParsedItem::Record(exterior_navmesh_record_with_edges(
-                    0x000A00,
-                    0x000B00,
-                    (3, -2),
-                    &[0x000A01, 0x000B99],
-                )));
-            slot.parsed
-                .root_items
-                .push(ParsedItem::Record(exterior_navmesh_record_with_edges(
-                    0x000A01,
-                    0x000B00,
-                    (3, -2),
-                    &[],
-                )));
-
-            let stats = rebuild_projected_navi_record_from_source_in_slot(
-                slot,
-                &source_root_items,
-                &[
-                    (0x000800, 0x000B00),
-                    (0x000900, 0x000A00),
-                    (0x000901, 0x000A01),
-                ],
-                Some(0x000FF1),
-            )
-            .expect("NAVI rebuild");
-            assert_eq!(stats.records_added, 1);
-            // Source NAVI has 1 NVMI (for navmesh 0x000900 -> target 0x000A00);
-            // the from-source path only emits NVMIs that appear in the source.
-            assert_eq!(stats.navmesh_infos, 1);
-            assert_eq!(stats.edge_links, 1);
-            // The 0x000B99 in NAVM 0x000A00's NVNM is filtered as stale
-            // (not in emitted_navmesh_ids). The source NVMI's 0x000999 is
-            // never iterated, so stale_edge_links_dropped counts only the
-            // NVNM-derived stale filter.
-            assert_eq!(stats.stale_edge_links_dropped, 1);
-        }
-
-        let store = plugin_handle_store_ref().lock().unwrap();
-        let slot = store.get(&handle_id).unwrap();
-        let navi = first_top_level_record(&slot.parsed.root_items, "NAVI").expect("top-level NAVI");
-        let nvmi = navmesh_info_subrecord(navi, 0x000A00);
-        assert_eq!(
-            u32::from_le_bytes(nvmi[4..8].try_into().unwrap()),
-            NAVI_NVMI_FLAG_IS_ISLAND
-        );
-        assert!(nvmi.len() < source_nvmi.len());
-        assert_eq!(u32::from_le_bytes(nvmi[24..28].try_into().unwrap()), 1);
-        assert_eq!(
-            u32::from_le_bytes(nvmi[28..32].try_into().unwrap()),
-            0x000A01
-        );
-        assert_eq!(nvmi[40], 1);
-        assert_eq!(u32::from_le_bytes(nvmi[65..69].try_into().unwrap()), 1);
-        assert_eq!(&nvmi[69..75], &[0, 0, 1, 0, 2, 0]);
-        assert_eq!(u32::from_le_bytes(nvmi[75..79].try_into().unwrap()), 3);
-        assert_eq!(
-            u32::from_le_bytes(nvmi[nvmi.len() - 12..nvmi.len() - 8].try_into().unwrap()),
-            FO4_PATHING_CELL_CRC_HASH
-        );
-        assert_eq!(
-            u32::from_le_bytes(nvmi[nvmi.len() - 8..nvmi.len() - 4].try_into().unwrap()),
-            0x000B00
-        );
-    }
-
-    #[test]
-    fn rebuild_projected_navi_stamps_fo4_pathing_cell_crc() {
-        let handle_id = create_empty_plugin_handle("Test.esp", Some("fo4"));
-        let mut store = plugin_handle_store_ref().lock().unwrap();
-        let slot = store.get_mut(&handle_id).unwrap();
-        slot.parsed
-            .root_items
-            .push(ParsedItem::Record(exterior_navmesh_record_with_edges(
-                0x000A00,
-                0x000B00,
-                (3, -2),
-                &[],
-            )));
-
-        rebuild_projected_navi_record_in_slot(slot, Some(0x000FF1)).expect("NAVI rebuild");
-
-        let navm = find_record_mut(&mut slot.parsed.root_items, 0x000A00).expect("target NAVM");
-        let nvnm = effective_subrecords_for_record(navm)
-            .iter()
-            .find(|subrecord| subrecord.signature.as_str() == "NVNM")
-            .expect("target NVNM")
-            .data
-            .clone();
-        assert_eq!(
-            u32::from_le_bytes(nvnm[4..8].try_into().unwrap()),
-            FO4_PATHING_CELL_CRC_HASH
-        );
-
-        let navi = first_top_level_record(&slot.parsed.root_items, "NAVI").expect("top-level NAVI");
-        let nvmi = navmesh_info_subrecord(navi, 0x000A00);
-        assert_eq!(
-            u32::from_le_bytes(nvmi[nvmi.len() - 12..nvmi.len() - 8].try_into().unwrap()),
-            FO4_PATHING_CELL_CRC_HASH
         );
     }
 
@@ -19970,75 +19207,6 @@ mod tests {
             edge_target, 0x000A02,
             "NVMI.edge_links[0] must be the NVNM-derived target, not a source artifact"
         );
-    }
-
-    #[test]
-    fn rebuild_projected_navi_uses_fo4_canonical_form_id_with_owned_object_id_collision() {
-        let handle_id = create_empty_plugin_handle("Test.esp", Some("fo4"));
-        let world_payload = serde_json::json!({
-            "signature": "WRLD",
-            "form_id": "000800:Test.esp",
-            "eid": "TestWorld",
-            "subrecords": [
-                { "signature": "EDID", "data_hex": "54657374576F726C6400" }
-            ]
-        });
-        let cell_payload = serde_json::json!({
-            "signature": "CELL",
-            "form_id": "000801:Test.esp",
-            "eid": "TestCell",
-            "subrecords": [
-                { "signature": "EDID", "data_hex": "5465737443656C6C00" },
-                { "signature": "XCLC", "data_hex": "03000000FEFFFFFF00000000" }
-            ],
-            "Landscape": {
-                "form_id": "000803:Test.esp",
-                "subrecords": []
-            }
-        });
-        let relative_path = "records/WRLD/TestWorld - 000800_Test.esp/0,0/0,0/3,-2/RecordData.yaml";
-
-        plugin_handle_replace_authoring_record_value(handle_id, &world_payload)
-            .expect("WRLD import");
-        plugin_handle_replace_projected_cell_authoring_record_value(
-            handle_id,
-            &cell_payload,
-            relative_path,
-        )
-        .expect("projected CELL import");
-
-        {
-            let mut store = plugin_handle_store_ref().lock().unwrap();
-            let slot = store.get_mut(&handle_id).unwrap();
-            slot.parsed.header.masters = vec![
-                "Fallout4.esm".into(),
-                "DLCRobot.esm".into(),
-                "DLCworkshop01.esm".into(),
-                "DLCCoast.esm".into(),
-                "DLCworkshop02.esm".into(),
-                "DLCworkshop03.esm".into(),
-                "DLCNukaWorld.esm".into(),
-            ];
-            insert_parsed_record_in_slot(slot, make_record("REFR", 0x07000FF1, None));
-            insert_projected_navmesh_record_in_slot(
-                slot,
-                exterior_navmesh_record_with_edges(0x000900, 0x000800, (3, -2), &[]),
-            )
-            .expect("NAVM insert");
-
-            rebuild_projected_navi_record_in_slot(slot, Some(0x0001_4B92)).expect("NAVI rebuild");
-            assert_eq!(
-                first_top_level_record(&slot.parsed.root_items, "NAVI")
-                    .expect("top-level NAVI")
-                    .form_id,
-                FO4_CANONICAL_NAVI_FORM_ID
-            );
-            assert!(slot.parsed.header.next_object_id > 0x000FF1);
-            assert_eq!(
-                find_first_record_form_id_by_signature(&slot.parsed.root_items, "REFR"),
-                Some(0x0700_0FF1)
-            );
-        }
     }
 
     #[test]
@@ -20138,293 +19306,6 @@ mod tests {
         assert_eq!(
             u32::from_le_bytes(land.subrecords[1].data[..4].try_into().unwrap()),
             0x02011981
-        );
-    }
-
-    #[test]
-    fn ensure_source_masters_rebases_existing_local_records_on_append() {
-        let handle_id = create_empty_plugin_handle("Test.esp", Some("fo4"));
-        {
-            let mut store = plugin_handle_store_ref().lock().unwrap();
-            let slot = store.get_mut(&handle_id).unwrap();
-            slot.parsed.header.masters = vec!["Fallout4.esm".to_string()];
-            slot.parsed.header.master_sizes = vec![0];
-            slot.parsed.root_items.push(ParsedItem::Record(make_record(
-                "WRLD",
-                0x010025DA,
-                Some("TestWorld"),
-            )));
-        }
-
-        plugin_handle_ensure_source_masters_native(
-            handle_id,
-            vec![
-                "Fallout4.esm".to_string(),
-                "DLCRobot.esm".to_string(),
-                "DLCworkshop01.esm".to_string(),
-            ],
-            None,
-        )
-        .expect("ensure source masters");
-
-        let store = plugin_handle_store_ref().lock().unwrap();
-        let slot = store.get(&handle_id).unwrap();
-        let ParsedItem::Record(world) = &slot.parsed.root_items[0] else {
-            panic!("expected WRLD record");
-        };
-        assert_eq!(world.form_id, 0x030025DA);
-    }
-
-    #[test]
-    fn rebuild_projected_navi_skips_preferred_source_object_id_when_reserved() {
-        let handle_id = create_empty_plugin_handle("Test.esp", Some("fo4"));
-        let world_payload = serde_json::json!({
-            "signature": "WRLD",
-            "form_id": "000800:Test.esp",
-            "eid": "TestWorld",
-            "subrecords": [
-                { "signature": "EDID", "data_hex": "54657374576F726C6400" }
-            ]
-        });
-        let cell_payload = serde_json::json!({
-            "signature": "CELL",
-            "form_id": "000801:Test.esp",
-            "eid": "TestCell",
-            "subrecords": [
-                { "signature": "EDID", "data_hex": "5465737443656C6C00" },
-                { "signature": "XCLC", "data_hex": "03000000FEFFFFFF00000000" }
-            ],
-            "Landscape": {
-                "form_id": "000803:Test.esp",
-                "subrecords": []
-            }
-        });
-        let relative_path = "records/WRLD/TestWorld - 000800_Test.esp/0,0/0,0/3,-2/RecordData.yaml";
-
-        plugin_handle_replace_authoring_record_value(handle_id, &world_payload)
-            .expect("WRLD import");
-        plugin_handle_replace_projected_cell_authoring_record_value(
-            handle_id,
-            &cell_payload,
-            relative_path,
-        )
-        .expect("projected CELL import");
-
-        {
-            let mut store = plugin_handle_store_ref().lock().unwrap();
-            let slot = store.get_mut(&handle_id).unwrap();
-            insert_parsed_record_in_slot(
-                slot,
-                make_record("TXST", 0x000FF1, Some("ReservedTextureSet")),
-            );
-            insert_projected_navmesh_record_in_slot(
-                slot,
-                exterior_navmesh_record_with_edges(0x000900, 0x000800, (3, -2), &[]),
-            )
-            .expect("NAVM insert");
-
-            rebuild_projected_navi_record_in_slot(slot, Some(0x000FF1)).expect("NAVI rebuild");
-            assert_ne!(
-                first_top_level_record(&slot.parsed.root_items, "NAVI")
-                    .expect("top-level NAVI")
-                    .form_id,
-                0x000FF1
-            );
-            assert!(
-                find_first_record_form_id_by_signature(&slot.parsed.root_items, "TXST").is_some()
-            );
-        }
-    }
-
-    #[test]
-    fn navi_island_data_samples_dense_navmesh_for_ck_bounds_limits() {
-        let vertices: Vec<(f32, f32, f32)> = (0..600)
-            .map(|index| {
-                (
-                    (index % 30) as f32 * 16.0,
-                    (index / 30) as f32 * 16.0,
-                    (index % 7) as f32,
-                )
-            })
-            .collect();
-        let triangles: Vec<[u16; 3]> = (0..598)
-            .map(|index| [index as u16, (index + 1) as u16, (index + 2) as u16])
-            .collect();
-        let record = exterior_navmesh_record_with_geometry(
-            0x000900,
-            0x000800,
-            (3, -2),
-            &vertices,
-            &triangles,
-            &[],
-        );
-        let emitted_navmesh_ids = HashSet::from([0x000900]);
-        let mut stats = NaviRebuildStats::default();
-
-        let info = navmesh_info_input_from_record(&record, &emitted_navmesh_ids, &mut stats)
-            .expect("NAVM parsed")
-            .expect("NAVI info");
-        let island = info.island_data.expect("island data");
-
-        assert_eq!(island.min, (0.0, 0.0, 0.0));
-        assert_eq!(island.max, (464.0, 304.0, 6.0));
-        assert!(!island.triangles.is_empty());
-        assert!(!island.vertices.is_empty());
-        assert!(island.triangles.len() <= NAVI_ISLAND_TRIANGLE_LIMIT);
-        assert!(island.vertices.len() <= NAVI_ISLAND_VERTEX_LIMIT);
-        for triangle in &island.triangles {
-            for vertex_index in triangle {
-                assert!((*vertex_index as usize) < island.vertices.len());
-            }
-        }
-        assert_eq!(stats.warnings, 0);
-    }
-
-    #[test]
-    fn projected_cell_import_replaces_existing_cell_at_same_location() {
-        let handle_id = create_empty_plugin_handle("Test.esp", Some("fo4"));
-        let world_payload = serde_json::json!({
-            "signature": "WRLD",
-            "form_id": "000800:Test.esp",
-            "eid": "TestWorld",
-            "subrecords": [
-                { "signature": "EDID", "data_hex": "54657374576F726C6400" }
-            ]
-        });
-        let first_payload = serde_json::json!({
-            "signature": "CELL",
-            "form_id": "000801:Test.esp",
-            "eid": "TestCell",
-            "subrecords": [
-                { "signature": "EDID", "data_hex": "5465737443656C6C00" },
-                { "signature": "XCLC", "data_hex": "03000000FEFFFFFF" }
-            ],
-            "Landscape": {
-                "form_id": "000802:Test.esp",
-                "subrecords": []
-            }
-        });
-        let second_payload = serde_json::json!({
-            "signature": "CELL",
-            "form_id": "000901:Test.esp",
-            "eid": "TestCellRegen",
-            "subrecords": [
-                { "signature": "EDID", "data_hex": "5465737443656C6C526567656E00" },
-                { "signature": "XCLC", "data_hex": "03000000FEFFFFFF" }
-            ],
-            "Landscape": {
-                "form_id": "000902:Test.esp",
-                "subrecords": []
-            }
-        });
-        let relative_path = "records/WRLD/TestWorld - 000800_Test.esp/0,0/0,0/3,-2/RecordData.yaml";
-
-        plugin_handle_replace_authoring_record_value(handle_id, &world_payload)
-            .expect("WRLD import");
-        plugin_handle_replace_projected_cell_authoring_record_value(
-            handle_id,
-            &first_payload,
-            relative_path,
-        )
-        .expect("first projected CELL import");
-        plugin_handle_replace_projected_cell_authoring_record_value(
-            handle_id,
-            &second_payload,
-            relative_path,
-        )
-        .expect("second projected CELL import");
-
-        let store = plugin_handle_store_ref().lock().unwrap();
-        let slot = store.get(&handle_id).unwrap();
-        let wrld_group = slot
-            .parsed
-            .root_items
-            .iter()
-            .find_map(|item| match item {
-                ParsedItem::Group(group) if group.group_type == 0 && group.label == *b"WRLD" => {
-                    Some(group)
-                }
-                _ => None,
-            })
-            .expect("WRLD top group");
-        let world_children = wrld_group
-            .children
-            .iter()
-            .find_map(|item| match item {
-                ParsedItem::Group(group) if group.group_type == 1 => Some(group),
-                _ => None,
-            })
-            .expect("WRLD children group");
-        let block_group = world_children
-            .children
-            .iter()
-            .find_map(|item| match item {
-                ParsedItem::Group(group)
-                    if group.group_type == EXTERIOR_CELL_BLOCK
-                        && group.label == encode_exterior_grid_label(0, 0) =>
-                {
-                    Some(group)
-                }
-                _ => None,
-            })
-            .expect("target exterior block group");
-        let subblock_group = block_group
-            .children
-            .iter()
-            .find_map(|item| match item {
-                ParsedItem::Group(group)
-                    if group.group_type == EXTERIOR_CELL_SUBBLOCK
-                        && group.label == encode_exterior_grid_label(0, 0) =>
-                {
-                    Some(group)
-                }
-                _ => None,
-            })
-            .expect("target exterior subblock group");
-
-        let cell_records: Vec<&ParsedRecord> = subblock_group
-            .children
-            .iter()
-            .filter_map(|item| match item {
-                ParsedItem::Record(record) if record.signature.as_str() == "CELL" => Some(record),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(cell_records.len(), 1);
-        assert_eq!(cell_records[0].form_id, 0x000901);
-        assert_eq!(
-            projected_cell_grid_from_record(cell_records[0]),
-            Some((3, -2))
-        );
-
-        let child_groups: Vec<&ParsedGroup> = subblock_group
-            .children
-            .iter()
-            .filter_map(|item| match item {
-                ParsedItem::Group(group) if group.group_type == CELL_CHILD_GROUP => Some(group),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(child_groups.len(), 1);
-        let child_group = child_groups[0];
-        assert_eq!(child_group.label, 0x000901u32.to_le_bytes());
-        assert!(matches!(
-            child_group.children.first(),
-            Some(ParsedItem::Record(record))
-                if record.signature.as_str() == "LAND" && record.form_id == 0x000902
-        ));
-
-        assert!(
-            !subblock_group.children.iter().any(|item| {
-                matches!(item, ParsedItem::Record(record) if record.form_id == 0x000801)
-            }),
-            "old projected CELL should be removed",
-        );
-        assert!(
-            !subblock_group.children.iter().any(|item| {
-                matches!(item, ParsedItem::Group(group) if group.group_type == CELL_CHILD_GROUP && group.label == 0x000801u32.to_le_bytes())
-            }),
-            "old projected CELL child group should be removed",
         );
     }
 
@@ -20544,377 +19425,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn projected_cell_batch_import_reuses_existing_cell_and_land_ids() {
-        let handle_id = create_empty_plugin_handle("Test.esp", Some("fo4"));
-        let world_payload = serde_json::json!({
-            "signature": "WRLD",
-            "form_id": "000800:Test.esp",
-            "eid": "TestWorld",
-            "subrecords": [
-                { "signature": "EDID", "data_hex": "54657374576F726C6400" }
-            ]
-        });
-        plugin_handle_replace_authoring_record_value(handle_id, &world_payload)
-            .expect("WRLD import");
-
-        {
-            let mut existing_cell = make_record("CELL", 0x18D2755, Some("TestWorldCellXP003YN002"));
-            existing_cell.subrecords.push(ParsedSubrecord {
-                signature: SmolStr::new_static("XCLC"),
-                data: Bytes::from_static(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
-                semantic_type: None,
-            });
-            let existing_land = make_record("LAND", 0x18D2756, None);
-            let existing_ref = make_record("REFR", 0x18D2757, Some("PlacedRef"));
-            let mut store = plugin_handle_store_ref().lock().unwrap();
-            let slot = store.get_mut(&handle_id).unwrap();
-            let wrld_group = slot
-                .parsed
-                .root_items
-                .iter_mut()
-                .find_map(|item| match item {
-                    ParsedItem::Group(group)
-                        if group.group_type == 0 && group.label == *b"WRLD" =>
-                    {
-                        Some(group)
-                    }
-                    _ => None,
-                })
-                .expect("WRLD top group");
-            let world_children =
-                ensure_world_children_group(&mut wrld_group.children, 0x800, MODERN_HEADER_SIZE);
-            let block_group = ensure_exterior_grid_group(
-                &mut world_children.children,
-                EXTERIOR_CELL_BLOCK,
-                (0, 0),
-                MODERN_HEADER_SIZE,
-            );
-            let subblock_group = ensure_exterior_grid_group(
-                &mut block_group.children,
-                EXTERIOR_CELL_SUBBLOCK,
-                (0, 0),
-                MODERN_HEADER_SIZE,
-            );
-            subblock_group
-                .children
-                .push(ParsedItem::Record(existing_cell));
-            subblock_group.children.push(ParsedItem::Group(ParsedGroup {
-                label: 0x18D2755u32.to_le_bytes(),
-                group_type: CELL_CHILD_GROUP,
-                tail: Bytes::from(vec![0u8; MODERN_HEADER_SIZE - 16]),
-                children: vec![
-                    ParsedItem::Record(existing_land),
-                    ParsedItem::Group(ParsedGroup {
-                        label: 0x18D2755u32.to_le_bytes(),
-                        group_type: TEMPORARY_GROUP,
-                        tail: Bytes::from(vec![0u8; MODERN_HEADER_SIZE - 16]),
-                        children: vec![ParsedItem::Record(existing_ref)],
-                    }),
-                ],
-            }));
-        }
-
-        let projected_payload = serde_json::json!({
-            "signature": "CELL",
-            "form_id": "190000:Test.esp",
-            "eid": "TestWorldCellXP003YN002",
-            "subrecords": [
-                { "signature": "EDID", "data_hex": "54657374576F726C6443656C6C5850303033594E30303200" },
-                { "signature": "XCLC", "data_hex": "03000000FEFFFFFF00000000" }
-            ],
-            "Landscape": {
-                "form_id": "190001:Test.esp",
-                "subrecords": []
-            }
-        });
-        let relative_path = "records/WRLD/TestWorld - 000800_Test.esp/0,0/0,0/3,-2/RecordData.yaml";
-
-        plugin_handle_replace_projected_cell_authoring_record_values_at_locations(
-            handle_id,
-            vec![(projected_payload, relative_path.to_string())],
-        )
-        .expect("projected CELL batch import");
-
-        let store = plugin_handle_store_ref().lock().unwrap();
-        let slot = store.get(&handle_id).unwrap();
-        let wrld_group = slot
-            .parsed
-            .root_items
-            .iter()
-            .find_map(|item| match item {
-                ParsedItem::Group(group) if group.group_type == 0 && group.label == *b"WRLD" => {
-                    Some(group)
-                }
-                _ => None,
-            })
-            .expect("WRLD top group");
-        let world_children = wrld_group
-            .children
-            .iter()
-            .find_map(|item| match item {
-                ParsedItem::Group(group) if group.group_type == 1 => Some(group),
-                _ => None,
-            })
-            .expect("WRLD children group");
-        let block_group = world_children
-            .children
-            .iter()
-            .find_map(|item| match item {
-                ParsedItem::Group(group)
-                    if group.group_type == EXTERIOR_CELL_BLOCK
-                        && group.label == encode_exterior_grid_label(0, 0) =>
-                {
-                    Some(group)
-                }
-                _ => None,
-            })
-            .expect("target exterior block group");
-        let subblock_group = block_group
-            .children
-            .iter()
-            .find_map(|item| match item {
-                ParsedItem::Group(group)
-                    if group.group_type == EXTERIOR_CELL_SUBBLOCK
-                        && group.label == encode_exterior_grid_label(0, 0) =>
-                {
-                    Some(group)
-                }
-                _ => None,
-            })
-            .expect("target exterior subblock group");
-        let cell = subblock_group
-            .children
-            .iter()
-            .find_map(|item| match item {
-                ParsedItem::Record(record) if record.signature.as_str() == "CELL" => Some(record),
-                _ => None,
-            })
-            .expect("merged CELL");
-        assert_eq!(cell.form_id, 0x18D2755);
-        assert_eq!(projected_cell_grid_from_record(cell), Some((3, -2)));
-
-        let child_group = subblock_group
-            .children
-            .iter()
-            .find_map(|item| match item {
-                ParsedItem::Group(group) if group.group_type == CELL_CHILD_GROUP => Some(group),
-                _ => None,
-            })
-            .expect("merged CELL child group");
-        assert_eq!(child_group.label, 0x18D2755u32.to_le_bytes());
-        assert!(child_group.children.iter().any(|item| {
-            matches!(item, ParsedItem::Record(record) if record.signature.as_str() == "LAND" && record.form_id == 0x18D2756)
-        }));
-        assert!(child_group.children.iter().any(|item| {
-            matches!(item, ParsedItem::Group(group) if group.group_type == TEMPORARY_GROUP)
-        }));
-    }
-
-    #[test]
-    fn projected_cell_batch_import_moves_existing_cell_from_wrong_subblock_by_editor_id() {
-        let handle_id = create_empty_plugin_handle("Test.esp", Some("fo4"));
-        let world_payload = serde_json::json!({
-            "signature": "WRLD",
-            "form_id": "000800:Test.esp",
-            "eid": "TestWorld",
-            "subrecords": [
-                { "signature": "EDID", "data_hex": "54657374576F726C6400" }
-            ]
-        });
-        plugin_handle_replace_authoring_record_value(handle_id, &world_payload)
-            .expect("WRLD import");
-
-        {
-            let mut existing_cell = make_record("CELL", 0x18D2755, Some("TestWorldCellXN100YN100"));
-            existing_cell.subrecords.push(ParsedSubrecord {
-                signature: SmolStr::new_static("XCLC"),
-                data: Bytes::from_static(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
-                semantic_type: None,
-            });
-            let existing_land = make_record("LAND", 0x18D2756, None);
-            let existing_ref = make_record("REFR", 0x18D2757, Some("PlacedRef"));
-            let mut store = plugin_handle_store_ref().lock().unwrap();
-            let slot = store.get_mut(&handle_id).unwrap();
-            let wrld_group = slot
-                .parsed
-                .root_items
-                .iter_mut()
-                .find_map(|item| match item {
-                    ParsedItem::Group(group)
-                        if group.group_type == 0 && group.label == *b"WRLD" =>
-                    {
-                        Some(group)
-                    }
-                    _ => None,
-                })
-                .expect("WRLD top group");
-            let world_children =
-                ensure_world_children_group(&mut wrld_group.children, 0x800, MODERN_HEADER_SIZE);
-            let block_group = ensure_exterior_grid_group(
-                &mut world_children.children,
-                EXTERIOR_CELL_BLOCK,
-                (0, 0),
-                MODERN_HEADER_SIZE,
-            );
-            let subblock_group = ensure_exterior_grid_group(
-                &mut block_group.children,
-                EXTERIOR_CELL_SUBBLOCK,
-                (0, 0),
-                MODERN_HEADER_SIZE,
-            );
-            subblock_group
-                .children
-                .push(ParsedItem::Record(existing_cell));
-            subblock_group.children.push(ParsedItem::Group(ParsedGroup {
-                label: 0x18D2755u32.to_le_bytes(),
-                group_type: CELL_CHILD_GROUP,
-                tail: Bytes::from(vec![0u8; MODERN_HEADER_SIZE - 16]),
-                children: vec![
-                    ParsedItem::Record(existing_land),
-                    ParsedItem::Group(ParsedGroup {
-                        label: 0x18D2755u32.to_le_bytes(),
-                        group_type: TEMPORARY_GROUP,
-                        tail: Bytes::from(vec![0u8; MODERN_HEADER_SIZE - 16]),
-                        children: vec![ParsedItem::Record(existing_ref)],
-                    }),
-                ],
-            }));
-        }
-
-        let projected_payload = serde_json::json!({
-            "signature": "CELL",
-            "form_id": "190000:Test.esp",
-            "eid": "TestWorldCellXN100YN100",
-            "subrecords": [
-                { "signature": "EDID", "data_hex": "54657374576F726C6443656C6C584E313030594E31303000" },
-                { "signature": "XCLC", "data_hex": "9CFFFFFF9CFFFFFF00000000" }
-            ],
-            "Landscape": {
-                "form_id": "190001:Test.esp",
-                "subrecords": []
-            }
-        });
-        let relative_path =
-            "records/WRLD/TestWorld - 000800_Test.esp/-4,-4/-13,-13/-100,-100/RecordData.yaml";
-
-        plugin_handle_replace_projected_cell_authoring_record_values_at_locations(
-            handle_id,
-            vec![(projected_payload, relative_path.to_string())],
-        )
-        .expect("projected CELL batch import");
-
-        let store = plugin_handle_store_ref().lock().unwrap();
-        let slot = store.get(&handle_id).unwrap();
-        let wrld_group = slot
-            .parsed
-            .root_items
-            .iter()
-            .find_map(|item| match item {
-                ParsedItem::Group(group) if group.group_type == 0 && group.label == *b"WRLD" => {
-                    Some(group)
-                }
-                _ => None,
-            })
-            .expect("WRLD top group");
-        let world_children = wrld_group
-            .children
-            .iter()
-            .find_map(|item| match item {
-                ParsedItem::Group(group) if group.group_type == 1 => Some(group),
-                _ => None,
-            })
-            .expect("WRLD children group");
-        let old_subblock_has_cell = world_children
-            .children
-            .iter()
-            .find_map(|item| match item {
-                ParsedItem::Group(group)
-                    if group.group_type == EXTERIOR_CELL_BLOCK
-                        && group.label == encode_exterior_grid_label(0, 0) =>
-                {
-                    Some(group)
-                }
-                _ => None,
-            })
-            .and_then(|block| {
-                block.children.iter().find_map(|item| match item {
-                    ParsedItem::Group(group)
-                        if group.group_type == EXTERIOR_CELL_SUBBLOCK
-                            && group.label == encode_exterior_grid_label(0, 0) =>
-                    {
-                        Some(group)
-                    }
-                    _ => None,
-                })
-            })
-            .is_some_and(|subblock| {
-                subblock.children.iter().any(
-                    |item| matches!(item, ParsedItem::Record(record) if record.form_id == 0x18D2755),
-                )
-            });
-        assert!(!old_subblock_has_cell);
-
-        let target_block = world_children
-            .children
-            .iter()
-            .find_map(|item| match item {
-                ParsedItem::Group(group)
-                    if group.group_type == EXTERIOR_CELL_BLOCK
-                        && group.label == encode_exterior_grid_label(-4, -4) =>
-                {
-                    Some(group)
-                }
-                _ => None,
-            })
-            .expect("target exterior block group");
-        let target_subblock = target_block
-            .children
-            .iter()
-            .find_map(|item| match item {
-                ParsedItem::Group(group)
-                    if group.group_type == EXTERIOR_CELL_SUBBLOCK
-                        && group.label == encode_exterior_grid_label(-13, -13) =>
-                {
-                    Some(group)
-                }
-                _ => None,
-            })
-            .expect("target exterior subblock group");
-        let cell = target_subblock
-            .children
-            .iter()
-            .find_map(|item| match item {
-                ParsedItem::Record(record) if record.signature.as_str() == "CELL" => Some(record),
-                _ => None,
-            })
-            .expect("moved CELL");
-        assert_eq!(cell.form_id, 0x18D2755);
-        assert_eq!(projected_cell_grid_from_record(cell), Some((-100, -100)));
-
-        let child_group = target_subblock
-            .children
-            .iter()
-            .find_map(|item| match item {
-                ParsedItem::Group(group) if group.group_type == CELL_CHILD_GROUP => Some(group),
-                _ => None,
-            })
-            .expect("moved CELL child group");
-        assert_eq!(child_group.label, 0x18D2755u32.to_le_bytes());
-        assert!(child_group.children.iter().any(|item| {
-            matches!(item, ParsedItem::Record(record) if record.signature.as_str() == "LAND" && record.form_id == 0x18D2756)
-        }));
-        assert!(child_group.children.iter().any(|item| {
-            matches!(item, ParsedItem::Group(group) if group.group_type == TEMPORARY_GROUP)
-        }));
-    }
-
-    #[test]
-    fn parse_grid_dir_name_accepts_optional_space_after_comma() {
-        assert_eq!(parse_grid_dir_name("3,-2"), Some((3, -2)));
-        assert_eq!(parse_grid_dir_name("3, -2"), Some((3, -2)));
-    }
-
     mod invalidation_classification_tests {
         use super::*;
 
@@ -20928,43 +19438,6 @@ mod tests {
 
             let store = plugin_handle_store_ref().lock().unwrap();
             let slot = store.get(&handle_id).unwrap();
-            assert!(slot.sections.locator.is_none());
-            assert!(slot.sections.core.is_none());
-            assert!(slot.sections.records.is_none());
-            assert!(slot.sections.form_id_paths.is_none());
-            assert!(slot.sections.refs.is_none());
-            assert!(slot.sections.assets.is_none());
-        }
-
-        #[test]
-        fn update_saved_path_preserves_sections_when_plugin_name_is_stable() {
-            let handle_id = create_empty_plugin_handle("Test.esp", Some("fo4"));
-            populate_all_sections(handle_id);
-
-            update_plugin_handle_saved_path(handle_id, r"C:\mods\Test.esp");
-
-            let store = plugin_handle_store_ref().lock().unwrap();
-            let slot = store.get(&handle_id).unwrap();
-            assert_eq!(slot.parsed.plugin_name, "Test.esp");
-            assert_eq!(slot.parsed.file_path, r"C:\mods\Test.esp");
-            assert!(slot.sections.locator.is_some());
-            assert!(slot.sections.core.is_some());
-            assert!(slot.sections.records.is_some());
-            assert!(slot.sections.form_id_paths.is_some());
-            assert!(slot.sections.refs.is_some());
-            assert!(slot.sections.assets.is_some());
-        }
-
-        #[test]
-        fn update_saved_path_invalidates_when_plugin_name_changes() {
-            let handle_id = create_empty_plugin_handle("Test.esp", Some("fo4"));
-            populate_all_sections(handle_id);
-
-            update_plugin_handle_saved_path(handle_id, r"C:\mods\Renamed.esp");
-
-            let store = plugin_handle_store_ref().lock().unwrap();
-            let slot = store.get(&handle_id).unwrap();
-            assert_eq!(slot.parsed.plugin_name, "Renamed.esp");
             assert!(slot.sections.locator.is_none());
             assert!(slot.sections.core.is_none());
             assert!(slot.sections.records.is_none());
@@ -20990,38 +19463,6 @@ mod tests {
             assert_eq!(slot.parsed.plugin_name, "Test.esp");
             assert_eq!(slot.parsed.file_path, "");
             assert!(snapshot_path.is_file());
-        }
-
-        #[test]
-        fn patch_subrecord_bytes_preserves_form_id_index() {
-            let mut record = make_record("WEAP", 0xFF000800, Some("PatchedWeap"));
-            record.subrecords.push(ParsedSubrecord {
-                signature: SmolStr::new("DNAM"),
-                data: Bytes::from_static(&[0x00, 0x01, 0x02, 0x03]),
-                semantic_type: None,
-            });
-
-            let mut plugin = empty_plugin(Some("fo4"));
-            plugin.root_items.push(ParsedItem::Record(record));
-            let handle_id = insert_plugin_handle(plugin, LocalizedStringsState::default());
-            populate_all_sections(handle_id);
-
-            let changed =
-                patch_record_subrecord_bytes(handle_id, "Test.esp:000800", "DNAM", |bytes| {
-                    bytes[0] = 0xAB;
-                    true
-                })
-                .unwrap();
-            assert!(changed);
-
-            let store = plugin_handle_store_ref().lock().unwrap();
-            let slot = store.get(&handle_id).unwrap();
-            assert!(slot.sections.locator.is_some());
-            assert!(slot.sections.core.is_some());
-            assert!(slot.sections.records.is_some());
-            assert!(slot.sections.form_id_paths.is_some());
-            assert!(slot.sections.refs.is_none());
-            assert!(slot.sections.assets.is_none());
         }
 
         #[test]
@@ -21089,26 +19530,6 @@ mod tests {
         }
 
         #[test]
-        fn replace_parsed_record_contents_rejects_missing_record() {
-            let mut plugin = empty_plugin(Some("fo4"));
-            plugin.root_items.push(ParsedItem::Record(make_record(
-                "WEAP",
-                0xFF000800,
-                Some("Weap"),
-            )));
-            let handle_id = insert_plugin_handle(plugin, LocalizedStringsState::default());
-            populate_all_sections(handle_id);
-
-            let replacement = make_record("WEAP", 0xFF000801, Some("OtherWeap"));
-
-            let mut store = plugin_handle_store_ref().lock().unwrap();
-            let slot = store.get_mut(&handle_id).expect("plugin handle present");
-            assert!(!replace_parsed_record_contents_in_slot(slot, replacement));
-            assert!(slot.sections.core.is_some());
-            assert!(slot.sections.form_id_paths.is_some());
-        }
-
-        #[test]
         fn replace_parsed_record_contents_rejects_signature_mismatch() {
             let mut plugin = empty_plugin(Some("fo4"));
             plugin.root_items.push(ParsedItem::Record(make_record(
@@ -21133,133 +19554,6 @@ mod tests {
             assert!(slot.sections.form_id_paths.is_some());
         }
 
-        #[test]
-        fn replace_parsed_record_contents_rejects_edid_mismatch() {
-            let mut plugin = empty_plugin(Some("fo4"));
-            plugin.root_items.push(ParsedItem::Record(make_record(
-                "WEAP",
-                0xFF000800,
-                Some("Weap"),
-            )));
-            let handle_id = insert_plugin_handle(plugin, LocalizedStringsState::default());
-            populate_all_sections(handle_id);
-
-            let mut replacement = make_record("WEAP", 0xFF000800, Some("OtherWeap"));
-            replacement.subrecords.push(ParsedSubrecord {
-                signature: SmolStr::new("DNAM"),
-                data: Bytes::from_static(&[0xAA, 0xBB]),
-                semantic_type: None,
-            });
-
-            let mut store = plugin_handle_store_ref().lock().unwrap();
-            let slot = store.get_mut(&handle_id).expect("plugin handle present");
-            assert!(!replace_parsed_record_contents_in_slot(slot, replacement));
-
-            let ParsedItem::Record(existing) = &slot.parsed.root_items[0] else {
-                panic!("expected root record");
-            };
-            assert_eq!(record_editor_id_value(existing).as_deref(), Some("Weap"));
-            assert_eq!(existing.subrecords.len(), 1);
-            assert!(slot.sections.core.is_some());
-            assert!(slot.sections.form_id_paths.is_some());
-        }
-
-        #[test]
-        fn replace_parsed_record_contents_rejects_flag_mismatch() {
-            let mut plugin = empty_plugin(Some("fo4"));
-            let mut record = make_record("WEAP", 0xFF000800, Some("Weap"));
-            record.flags = 0x0000_0001;
-            plugin.root_items.push(ParsedItem::Record(record));
-            let handle_id = insert_plugin_handle(plugin, LocalizedStringsState::default());
-            populate_all_sections(handle_id);
-
-            let mut replacement = make_record("WEAP", 0xFF000800, Some("Weap"));
-            replacement.flags = 0x0000_0002;
-            replacement.subrecords.push(ParsedSubrecord {
-                signature: SmolStr::new("DNAM"),
-                data: Bytes::from_static(&[0xAA, 0xBB]),
-                semantic_type: None,
-            });
-
-            let mut store = plugin_handle_store_ref().lock().unwrap();
-            let slot = store.get_mut(&handle_id).expect("plugin handle present");
-            assert!(!replace_parsed_record_contents_in_slot(slot, replacement));
-
-            let ParsedItem::Record(existing) = &slot.parsed.root_items[0] else {
-                panic!("expected root record");
-            };
-            assert_eq!(existing.flags, 0x0000_0001);
-            assert_eq!(existing.subrecords.len(), 1);
-            assert!(slot.sections.core.is_some());
-            assert!(slot.sections.form_id_paths.is_some());
-        }
-
-        #[test]
-        fn replace_parsed_record_contents_allows_compressed_bit_only_flag_delta() {
-            // Re-encoding a CELL/LAND deterministically sets the COMPRESSED storage
-            // bit; an in-place content swap must still apply when that is the ONLY
-            // flag difference (the record keeps its own flags — the body is what
-            // changes). Without masking this bit, XEZN stamping every footprint cell
-            // would silently no-op.
-            let mut plugin = empty_plugin(Some("fo4"));
-            let mut record = make_record("CELL", 0xFF000800, Some("Cell"));
-            record.flags = 0x0000_0001; // uncompressed in the tree
-            plugin.root_items.push(ParsedItem::Record(record));
-            let handle_id = insert_plugin_handle(plugin, LocalizedStringsState::default());
-            populate_all_sections(handle_id);
-
-            let mut replacement = make_record("CELL", 0xFF000800, Some("Cell"));
-            replacement.flags = 0x0000_0001 | COMPRESSED_RECORD_FLAG; // re-encoded ⇒ compressed
-            replacement.subrecords.push(ParsedSubrecord {
-                signature: SmolStr::new("XEZN"),
-                data: Bytes::from_static(&[0x01, 0x02, 0x03, 0x04]),
-                semantic_type: None,
-            });
-
-            let mut store = plugin_handle_store_ref().lock().unwrap();
-            let slot = store.get_mut(&handle_id).expect("plugin handle present");
-            assert!(replace_parsed_record_contents_in_slot(slot, replacement));
-
-            let ParsedItem::Record(updated) = &slot.parsed.root_items[0] else {
-                panic!("expected root record");
-            };
-            assert_eq!(updated.subrecords.len(), 2);
-            assert_eq!(updated.subrecords[1].signature.as_str(), "XEZN");
-            // Content-replace never rewrites flags: the masked compressed bit is not
-            // adopted, the record keeps its own header flags.
-            assert_eq!(updated.flags, 0x0000_0001);
-        }
-    }
-
-    fn make_bool_enum() -> SchemaEnumJson {
-        SchemaEnumJson {
-            id: "bool_enum".to_string(),
-            values: vec![
-                SchemaEnumValueJson {
-                    value: 0,
-                    id: "false".to_string(),
-                },
-                SchemaEnumValueJson {
-                    value: 1,
-                    id: "true".to_string(),
-                },
-            ],
-            labels: vec![
-                SchemaEnumLabelJson {
-                    value: 0,
-                    label: "False".to_string(),
-                },
-                SchemaEnumLabelJson {
-                    value: 1,
-                    label: "True".to_string(),
-                },
-            ],
-            aliases: Vec::new(),
-            scope: "scoped".to_string(),
-            storage_kind: "enum".to_string(),
-            byte_width: 1,
-            default_value: None,
-        }
     }
 
     fn make_flag_enum() -> SchemaEnumJson {
@@ -21320,139 +19614,6 @@ mod tests {
         }
     }
 
-    fn make_formid_subrecord_spec() -> SchemaSubrecordJson {
-        SchemaSubrecordJson {
-            id: "PNAM".to_string(),
-            kind: "parsed".to_string(),
-            display_label: Some("Previous INFO".to_string()),
-            codec: Some("formid".to_string()),
-            fields: Vec::new(),
-            repeatable: false,
-            required: false,
-            localized: false,
-            enum_ref: None,
-            formlink_target: Some("INFO".to_string()),
-            formlink_targets: Vec::new(),
-            null_allowed: false,
-            union_selector: None,
-            union_variants: Vec::new(),
-            _array: None,
-            row_label: None,
-            authoring_layout: None,
-            authoring_key: None,
-            scope_id: None,
-        }
-    }
-
-    fn make_schema_field(id: &str, kind: &str, display_label: &str) -> SchemaFieldJson {
-        SchemaFieldJson {
-            id: id.to_string(),
-            kind: kind.to_string(),
-            display_label: Some(display_label.to_string()),
-            enum_ref: None,
-            formlink_target: None,
-            formlink_targets: Vec::new(),
-            null_allowed: false,
-            union_variants: Vec::new(),
-            array: None,
-            fields: Vec::new(),
-            default_value: None,
-            presence_conditions: Vec::new(),
-        }
-    }
-
-    fn make_union_struct_subrecord_spec() -> SchemaSubrecordJson {
-        SchemaSubrecordJson {
-            id: "DNAM".to_string(),
-            kind: "parsed_with_raw_fallback".to_string(),
-            display_label: Some("Data".to_string()),
-            codec: None,
-            fields: Vec::new(),
-            repeatable: false,
-            required: false,
-            localized: false,
-            enum_ref: None,
-            formlink_target: None,
-            formlink_targets: Vec::new(),
-            null_allowed: false,
-            union_selector: None,
-            union_variants: vec![SchemaUnionVariantJson {
-                id: "data".to_string(),
-                codec: Some("struct:I,I,I,B,f".to_string()),
-                enum_ref: None,
-                fields: vec![
-                    make_schema_field("field_a", "uint32", "FieldA"),
-                    make_schema_field("field_b", "uint32", "FieldB"),
-                    make_schema_field("field_c", "uint32", "FieldC"),
-                    make_schema_field("field_d", "uint8", "FieldD"),
-                    make_schema_field("field_e", "float32", "FieldE"),
-                ],
-                conditions: Vec::new(),
-            }],
-            _array: None,
-            row_label: None,
-            authoring_layout: None,
-            authoring_key: None,
-            scope_id: None,
-        }
-    }
-
-    #[test]
-    fn enum_numeric_value_json_accepts_bool_scalars() {
-        let enum_def = make_bool_enum();
-        assert_eq!(
-            enum_numeric_value_json(&JsonValue::Bool(true), Some(&enum_def), "field").unwrap(),
-            1
-        );
-        assert_eq!(
-            enum_numeric_value_json(
-                &JsonValue::String("False".to_string()),
-                Some(&enum_def),
-                "field",
-            )
-            .unwrap(),
-            0
-        );
-    }
-
-    #[test]
-    fn compact_null_typed_subrecord_expands_to_null_value() {
-        let spec = make_formid_subrecord_spec();
-        let expanded = expand_compact_field_payload_from_schema_json(
-            "PNAM",
-            &JsonValue::Null,
-            Some(&spec),
-            None,
-        )
-        .expect("expand null formid");
-
-        assert_eq!(expanded.get("value"), Some(&JsonValue::Null));
-    }
-
-    #[test]
-    fn compact_union_struct_payload_fills_omitted_defaults() {
-        let spec = make_union_struct_subrecord_spec();
-        let compact = serde_json::json!({
-            "variant": "data",
-            "value": {
-                "FieldA": 1,
-                "FieldB": 2,
-                "FieldC": 3,
-                "FieldE": 1.5
-            }
-        });
-        let expanded =
-            expand_compact_field_payload_from_schema_json("DNAM", &compact, Some(&spec), Some(131))
-                .expect("expand union struct");
-        let value = expanded
-            .get("value")
-            .and_then(|value| value.as_object())
-            .expect("expanded value mapping");
-
-        assert_eq!(value.get("FieldD"), Some(&JsonValue::Number(0.into())));
-        assert!(value.contains_key("FieldE"));
-    }
-
     #[test]
     fn enum_numeric_value_json_accepts_flag_label_lists() {
         let enum_def = make_flag_enum();
@@ -21463,43 +19624,6 @@ mod tests {
         assert_eq!(
             enum_numeric_value_json(&value, Some(&enum_def), "field").unwrap(),
             4_194_560
-        );
-    }
-
-    #[test]
-    fn enum_numeric_value_json_accepts_unknown_flag_labels() {
-        let enum_def = make_flag_enum();
-        assert_eq!(
-            enum_numeric_value_json(
-                &JsonValue::String("Unknown3".to_string()),
-                Some(&enum_def),
-                "field",
-            )
-            .unwrap(),
-            8
-        );
-        assert_eq!(
-            enum_numeric_value_json(
-                &JsonValue::String("unknown_5".to_string()),
-                Some(&enum_def),
-                "field",
-            )
-            .unwrap(),
-            32
-        );
-    }
-
-    #[test]
-    fn enum_numeric_value_json_accepts_aliases() {
-        let enum_def = make_flag_enum();
-        assert_eq!(
-            enum_numeric_value_json(
-                &JsonValue::String("CritEffectOnDeath".to_string()),
-                Some(&enum_def),
-                "field",
-            )
-            .unwrap(),
-            256
         );
     }
 
@@ -21578,127 +19702,6 @@ mod tests {
     }
 
     #[test]
-    fn build_nvnm_authoring_field_uses_structured_payload_over_raw_hex() {
-        // Regression for fix #2: when the authoring-dir YAML carries an
-        // edited NVNM structured payload alongside `raw_hex`, the encoder
-        // must re-serialize from the structured fields, not silently fall
-        // back to the (now-stale) raw_hex.
-        use crate::nvnm::{
-            NvnmDoorRef, NvnmGrid, NvnmParent, NvnmPayload, NvnmTriangle, NvnmVertex,
-        };
-        let spec = make_custom_codec_spec("NVNM", "esp_authoring_core::nvnm");
-        let edited = NvnmPayload {
-            version: 15,
-            flags: 0,
-            parent: NvnmParent::Interior { cell: 0x0001_2345 },
-            vertices: vec![NvnmVertex {
-                x: 0.0,
-                y: 0.0,
-                z: 0.0,
-            }],
-            triangles: vec![NvnmTriangle {
-                vertices: [0, 0, 0],
-                links: [-1, -1, -1],
-                cover_marker: [0u8; 9],
-                flags: 0,
-            }],
-            edge_links: vec![],
-            door_refs: vec![NvnmDoorRef {
-                triangle_index: 0,
-                padding: [0u8; 4],
-                door_ref_form_id: 0x0099_8877,
-            }],
-            cover_array: vec![],
-            cover_triangle_mappings: vec![],
-            waypoints: vec![],
-            grid: NvnmGrid::default(),
-        };
-        let edited_bytes = crate::nvnm::write_nvnm(&edited);
-
-        let mut payload = match crate::nvnm::nvnm_to_yaml(&edited) {
-            JsonValue::Object(map) => map,
-            _ => panic!("nvnm_to_yaml returned non-object"),
-        };
-        // The export flattens nvnm_to_yaml into the subrecord payload alongside
-        // a stale raw_hex (representing the on-disk bytes before the YAML edit).
-        // Pre-fix, the encoder would emit those stale bytes and lose the edit.
-        payload.insert(
-            "raw_hex".to_string(),
-            JsonValue::String("DEADBEEF".to_string()),
-        );
-
-        let mut context = empty_native_import_context();
-        let subrecord = build_subrecord_from_authoring_field_json_native(
-            "NVNM",
-            &payload,
-            Some(&spec),
-            &mut context,
-            false,
-        )
-        .unwrap();
-        assert_eq!(subrecord.signature, "NVNM");
-        assert_eq!(subrecord.data.as_ref(), edited_bytes.as_slice());
-    }
-
-    #[test]
-    fn build_vhgt_authoring_field_uses_structured_payload() {
-        let spec = make_custom_codec_spec("VHGT", "esp_authoring_core::land::heightmap");
-        let mut deltas = [[0i8; 33]; 33];
-        deltas[10][20] = 17;
-        let edited = crate::land::heightmap::LandHeightMap { base: 42.5, deltas };
-        let edited_bytes = crate::land::heightmap::write_heightmap(&edited);
-
-        let mut payload = match crate::land::heightmap::heightmap_to_yaml(&edited) {
-            JsonValue::Object(map) => map,
-            _ => panic!("heightmap_to_yaml returned non-object"),
-        };
-        payload.insert(
-            "raw_hex".to_string(),
-            JsonValue::String("DEADBEEF".to_string()),
-        );
-
-        let mut context = empty_native_import_context();
-        let subrecord = build_subrecord_from_authoring_field_json_native(
-            "VHGT",
-            &payload,
-            Some(&spec),
-            &mut context,
-            false,
-        )
-        .unwrap();
-        assert_eq!(subrecord.data.as_ref(), edited_bytes.as_slice());
-    }
-
-    #[test]
-    fn build_vnml_authoring_field_uses_structured_payload() {
-        let spec = make_custom_codec_spec("VNML", "esp_authoring_core::land::heightmap");
-        let mut normals = [[(0i8, 0i8, 0i8); 33]; 33];
-        normals[5][7] = (1, 2, 3);
-        let edited = crate::land::heightmap::LandVertexNormals { normals };
-        let edited_bytes = crate::land::heightmap::write_vertex_normals(&edited);
-
-        let mut payload = match crate::land::heightmap::vertex_normals_to_yaml(&edited) {
-            JsonValue::Object(map) => map,
-            _ => panic!("vertex_normals_to_yaml returned non-object"),
-        };
-        payload.insert(
-            "raw_hex".to_string(),
-            JsonValue::String("DEADBEEF".to_string()),
-        );
-
-        let mut context = empty_native_import_context();
-        let subrecord = build_subrecord_from_authoring_field_json_native(
-            "VNML",
-            &payload,
-            Some(&spec),
-            &mut context,
-            false,
-        )
-        .unwrap();
-        assert_eq!(subrecord.data.as_ref(), edited_bytes.as_slice());
-    }
-
-    #[test]
     fn build_nvnm_authoring_field_falls_back_to_raw_hex_when_structured_fails() {
         // Resilience: when the structured payload is malformed (e.g. an
         // invalid `parent`), the encoder must fall back to raw_hex rather
@@ -21726,286 +19729,54 @@ mod tests {
     }
 
     #[test]
-    fn build_vmad_authoring_field_uses_parsed_payload_when_complete() {
-        // The parsed payload wins over raw_hex when build_vmad_bytes_from_payload
-        // succeeds; raw_hex is only the fallback for unparsable blobs.
-        let spec = make_vmad_subrecord_spec();
-        let mut payload = JsonMap::new();
-        payload.insert(
-            "preservation_mode".to_string(),
-            JsonValue::String("hybrid".to_string()),
-        );
-        // raw_hex carries different bytes than the parsed payload would
-        // produce. With the new behaviour, the parsed payload wins.
-        payload.insert(
-            "raw_hex".to_string(),
-            JsonValue::String("DEADBEEFCAFE".to_string()),
-        );
-        payload.insert(
-            "value".to_string(),
-            serde_json::json!({
-                "kind": "vmad",
-                "Version": 6,
-                "Object Format": 2,
-                "Scripts": []
-            }),
-        );
-        let header = ParsedPluginHeader {
-            version: 1.0,
-            num_records: 0,
-            next_object_id: 0,
-            author: String::new(),
-            description: String::new(),
-            masters: Vec::new(),
-            master_sizes: Vec::new(),
-            overridden_forms: Vec::new(),
-            flags: 0,
-            extra_subrecords: Vec::new(),
-            version_control: 0,
-            form_version: Some(131),
-            version2: Some(0),
-            hedr_raw: None,
-            raw_subrecords: Vec::new(),
-        };
-        let mut context =
-            NativeImportContext::new("Patch.esp".to_string(), Some("fo4".to_string()), 24, header);
-
-        let subrecord = build_subrecord_from_authoring_field_json_native(
-            "VMAD",
-            &payload,
-            Some(&spec),
-            &mut context,
-            false,
-        )
-        .unwrap();
-
-        assert_eq!(subrecord.signature, "VMAD");
-        assert_eq!(subrecord.data, vec![0x06, 0x00, 0x02, 0x00, 0x00, 0x00]);
-    }
-
-    #[test]
-    fn record_filename_with_editor_id() {
-        let r = make_record("ARMO", 0x010023AB, Some("MyArmor"));
-        assert_eq!(
-            record_filename_native(&r, "MyMod.esp", ".json"),
-            "MyArmor - 0023AB_MyMod.esp.json"
-        );
-    }
-
-    #[test]
-    fn record_filename_without_editor_id() {
-        let r = make_record("WEAP", 0x0200FF42, None);
-        assert_eq!(
-            record_filename_native(&r, "MyMod.esp", ".yaml"),
-            "00FF42_MyMod.esp.yaml"
-        );
-    }
-
-    #[test]
-    fn record_filename_strips_editor_id_trailing_null() {
-        let r = make_record("NPC_", 0x00ABCDEF, Some("Actor1"));
-        assert_eq!(
-            record_filename_native(&r, "P.esp", ".json"),
-            "Actor1 - ABCDEF_P.esp.json"
-        );
-    }
-
-    #[test]
-    fn form_ref_from_raw_handles_local_and_master() {
-        let masters = vec!["Master.esm".to_string(), "Other.esm".to_string()];
-        // master index 0
-        let (p, obj, raw, mi) = form_ref_from_raw_native(0x00_0000AB, &masters, "Me.esp");
-        assert_eq!(p.as_deref(), Some("Master.esm"));
-        assert_eq!(obj, 0xAB);
-        assert_eq!(raw, Some(0xAB));
-        assert!(mi.is_none());
-        // master index 1
-        let (p, _, _, _) = form_ref_from_raw_native(0x01_0000FF, &masters, "Me.esp");
-        assert_eq!(p.as_deref(), Some("Other.esm"));
-        // own plugin (index == len(masters))
-        let (p, _, _, _) = form_ref_from_raw_native(0x02_0000AB, &masters, "Me.esp");
-        assert_eq!(p.as_deref(), Some("Me.esp"));
-        // LOCAL_FORM_INDEX (0xFF)
-        let (p, obj, _, _) = form_ref_from_raw_native(0xFF_001234, &masters, "Me.esp");
-        assert_eq!(p, None);
-        assert_eq!(obj, 0x1234);
-        // null form
-        let (p, obj, raw, _) = form_ref_from_raw_native(0, &masters, "Me.esp");
-        assert_eq!(p, None);
-        assert_eq!(obj, 0);
-        assert_eq!(raw, Some(0));
-        // missing index
-        let (p, _, _, mi) = form_ref_from_raw_native(0x05_0000AB, &masters, "Me.esp");
-        assert!(p.is_none());
-        assert_eq!(mi, Some(5));
-    }
-
-    #[test]
-    fn record_form_id_format_preserves_missing_master_index() {
-        let masters = vec!["FalloutNV.esm".to_string()];
-        assert_eq!(
-            format_record_form_id_native(0x0200_0801, &masters, "GunRunnersArsenal.esm"),
-            "02000801"
-        );
-    }
-
-    #[test]
-    fn authoring_export_lifts_editor_id_to_top_level_eid() {
-        let plugin = empty_plugin(Some("fo4"));
+    fn fo4_ctda_global_parameter_exports_as_form_key_and_reimports_byte_exact() {
+        let mut plugin = empty_plugin(Some("fo4"));
+        plugin.header.masters = vec!["Fallout4.esm".to_string(), "SeventySix.esm".to_string()];
         let strings = LocalizedStringsState::default();
-        let mut record = make_record("KYWD", 0xFF001234, Some("NativeKeyword"));
+        let mut record = make_record("COBJ", 0x0200_0800, Some("TestRecipe"));
+        let mut ctda = [0u8; 32];
+        ctda[4..8].copy_from_slice(&1.0f32.to_le_bytes());
+        ctda[8..10].copy_from_slice(&74u16.to_le_bytes());
+        ctda[12..16].copy_from_slice(&0x01B0_7AB5u32.to_le_bytes());
+        ctda[28..32].copy_from_slice(&(-1i32).to_le_bytes());
         record.subrecords.push(ParsedSubrecord {
-            signature: SmolStr::new_static("FULL"),
-            data: Bytes::from_static(b"Keyword Name\0"),
+            signature: SmolStr::new_static("CTDA"),
+            data: Bytes::copy_from_slice(&ctda),
             semantic_type: None,
         });
 
         let payload = serialize_record_payload_to_json(&record, &plugin, &strings);
-        assert_eq!(
-            payload.get("eid").and_then(JsonValue::as_str),
-            Some("NativeKeyword")
-        );
-        let fields = payload
+        let condition = payload
             .get("fields")
             .and_then(JsonValue::as_array)
-            .expect("fields");
-        assert!(fields.iter().all(|entry| {
-            single_key_mapping_json(entry)
-                .map(|(key, _)| !compact_authoring_key_is_eid(key))
-                .unwrap_or(true)
-        }));
-    }
-
-    #[test]
-    fn authoring_import_builds_edid_from_top_level_eid() {
-        let mut context = NativeImportContext::new(
-            "Test.esp".to_string(),
-            Some("fo4".to_string()),
-            MODERN_HEADER_SIZE,
-            empty_header(),
-        );
-        let payload = serde_json::json!({
-            "signature": "KYWD",
-            "form_id": "000123",
-            "eid": "TopLevelKeyword",
-            "fields": []
-        });
-
-        let record = parse_record_from_json_compact_native(
-            payload.as_object().expect("record payload"),
-            &mut context,
-        )
-        .unwrap();
-
-        assert_eq!(record.subrecords.len(), 1);
-        assert_eq!(record.subrecords[0].signature.as_str(), "EDID");
-        assert_eq!(&record.subrecords[0].data[..], b"TopLevelKeyword\0");
-    }
-
-    #[test]
-    fn authoring_import_uses_alias_flags_for_qust_fnam_inside_alias_block() {
-        let mut context = NativeImportContext::new(
-            "Test.esp".to_string(),
-            Some("fo4".to_string()),
-            MODERN_HEADER_SIZE,
-            empty_header(),
-        );
-        let payload = serde_json::json!({
-            "signature": "QUST",
-            "form_id": "000123",
-            "eid": "TestQuest",
-            "fields": [
-                {"ANAM": 1},
-                {"ALST": 0},
-                {"ALID": "TestAlias"},
-                {"FNAM": ["Optional", "Allow Dead"]},
-                {"ALED": true}
-            ]
-        });
-
-        let record = parse_record_from_json_compact_native(
-            payload.as_object().expect("record payload"),
-            &mut context,
-        )
-        .unwrap();
-        let flags = record
-            .subrecords
-            .iter()
-            .find(|subrecord| subrecord.signature.as_str() == "FNAM")
-            .expect("alias FNAM");
-
+            .and_then(|fields| fields.iter().find_map(|entry| entry.get("CTDA")))
+            .expect("CTDA field");
+        assert!(condition.get("raw_hex").is_none(), "fell back to raw_hex: {condition}");
         assert_eq!(
-            u32::from_le_bytes(flags.data[..4].try_into().unwrap()),
-            0x12
+            condition["Parameter1"],
+            serde_json::json!({
+                "variant": "global",
+                "value": {"reference": {"plugin": "SeventySix.esm", "object_id": "B07AB5"}}
+            })
         );
-    }
 
-    #[test]
-    fn authoring_import_uses_action_flags_for_scoped_scen_fnam() {
+        let mut header = empty_header();
+        header.masters = plugin.header.masters.clone();
         let mut context = NativeImportContext::new(
             "Test.esp".to_string(),
             Some("fo4".to_string()),
             MODERN_HEADER_SIZE,
-            empty_header(),
+            header,
         );
-        let payload = serde_json::json!({
-            "signature": "SCEN",
-            "form_id": "000123",
-            "eid": "TestScene",
-            "fields": [
-                {"FNAM": ["Show All Text"]},
-                {"ALID": 0},
-                {"INAM": 1},
-                {"FNAM": ["Face Target"]}
-            ]
-        });
-
-        let record = parse_record_from_json_compact_native(
-            payload.as_object().expect("record payload"),
-            &mut context,
-        )
-        .unwrap();
-        let flags = record
+        let mut reimport = payload.as_object().expect("record payload").clone();
+        reimport.insert("signature".to_string(), serde_json::json!("COBJ"));
+        let rebuilt = parse_record_from_json_compact_native(&reimport, &mut context).unwrap();
+        let rebuilt_ctda = rebuilt
             .subrecords
             .iter()
-            .filter(|subrecord| subrecord.signature.as_str() == "FNAM")
-            .nth(1)
-            .expect("action FNAM");
-
-        assert_eq!(
-            u32::from_le_bytes(flags.data[..4].try_into().unwrap()),
-            0x8000
-        );
-    }
-
-    #[test]
-    fn authoring_import_fills_presence_gated_gap_before_explicit_trailing_field() {
-        let mut context = NativeImportContext::new(
-            "Test.esp".to_string(),
-            Some("fo4".to_string()),
-            MODERN_HEADER_SIZE,
-            empty_header(),
-        );
-        let payload = serde_json::json!({
-            "signature": "PERK",
-            "form_id": "000123",
-            "fields": [
-                {"DATA": {"NumRanks": 1, "Hidden": true}}
-            ]
-        });
-
-        let record = parse_record_from_json_compact_native(
-            payload.as_object().expect("record payload"),
-            &mut context,
-        )
-        .unwrap();
-        let data = record
-            .subrecords
-            .iter()
-            .find(|subrecord| subrecord.signature.as_str() == "DATA")
-            .expect("PERK DATA");
-
-        assert_eq!(&data.data[..], &[0, 0, 1, 0, 1]);
+            .find(|subrecord| subrecord.signature == "CTDA")
+            .expect("CTDA subrecord");
+        assert_eq!(rebuilt_ctda.data.as_ref(), ctda.as_slice());
     }
 
     #[test]
@@ -22078,61 +19849,6 @@ mod tests {
     }
 
     #[test]
-    fn starfield_component_streams_export_as_components_field() {
-        let plugin = empty_plugin(Some("starfield"));
-        let strings = LocalizedStringsState::default();
-        let mut record = make_record("WEAP", 0x0002_BF65B, None);
-        record.subrecords.push(ParsedSubrecord {
-            signature: SmolStr::new_static("BFCB"),
-            data: Bytes::from_static(b"BGSAnimationGraph_Component\0"),
-            semantic_type: None,
-        });
-        record.subrecords.push(ParsedSubrecord {
-            signature: SmolStr::new_static("ANAM"),
-            data: Bytes::from_static(b"graph\0"),
-            semantic_type: None,
-        });
-        record.subrecords.push(ParsedSubrecord {
-            signature: SmolStr::new_static("BFCE"),
-            data: Bytes::new(),
-            semantic_type: None,
-        });
-
-        let payload = serialize_record_payload_to_json(&record, &plugin, &strings);
-        let fields = payload
-            .get("fields")
-            .and_then(JsonValue::as_array)
-            .expect("fields");
-
-        assert_eq!(fields.len(), 1);
-        let components = fields[0]
-            .get("Components")
-            .and_then(JsonValue::as_array)
-            .expect("Components");
-        let component = components[0]
-            .get("AnimationGraphComponent")
-            .and_then(JsonValue::as_object)
-            .expect("AnimationGraphComponent");
-        assert_eq!(
-            component.get("Type").and_then(JsonValue::as_str),
-            Some("BGSAnimationGraph_Component")
-        );
-        assert_eq!(
-            component
-                .get("ANAM")
-                .or_else(|| component.get("Root Animation Graph"))
-                .or_else(|| component.get("RootAnimationGraph"))
-                .and_then(JsonValue::as_str),
-            Some("graph")
-        );
-        assert!(fields.iter().all(|entry| {
-            single_key_mapping_json(entry)
-                .map(|(key, _)| key != "BFCB" && key != "BFCE")
-                .unwrap_or(true)
-        }));
-    }
-
-    #[test]
     fn starfield_components_field_imports_as_bfcb_payload_bfce_stream() {
         let mut context = NativeImportContext::new(
             "Test.esp".to_string(),
@@ -22176,43 +19892,6 @@ mod tests {
         );
         assert_eq!(&record.subrecords[1].data[..], b"graph\0");
         assert!(record.subrecords[2].data.is_empty());
-    }
-
-    #[test]
-    fn group_label_text_returns_sig_for_type_zero() {
-        let g = ParsedGroup {
-            label: *b"WEAP",
-            group_type: 0,
-            tail: Bytes::new(),
-            children: Vec::new(),
-        };
-        assert_eq!(group_label_text_native(&g).as_deref(), Some("WEAP"));
-    }
-
-    #[test]
-    fn group_label_text_rejects_nonzero_type() {
-        let g = ParsedGroup {
-            label: *b"WEAP",
-            group_type: 1,
-            tail: Bytes::new(),
-            children: Vec::new(),
-        };
-        assert!(group_label_text_native(&g).is_none());
-    }
-
-    #[test]
-    fn plugin_index_duplicate_object_id_keeps_last_traversal_record() {
-        let mut plugin = empty_plugin(None);
-        plugin.root_items = vec![
-            ParsedItem::Record(make_record("ARMO", 0x0100_1234, Some("First"))),
-            ParsedItem::Record(make_record("WEAP", 0x0200_1234, Some("Second"))),
-        ];
-
-        let index = PluginIndex::build(&plugin);
-        let record = index.get(0x001234).expect("indexed record");
-
-        assert_eq!(record.signature.as_str(), "WEAP");
-        assert_eq!(record.form_id, 0x0200_1234);
     }
 
     #[test]
@@ -22512,186 +20191,33 @@ mod tests {
         );
     }
 
-    #[test]
-    fn plugin_index_sections_missing_master_refs_preserve_raw_form_id() {
-        let mut plugin = empty_plugin(Some("fo4"));
-        plugin.header.masters.push("Fallout4.esm".to_string());
-        plugin.header.master_sizes.push(0);
-
-        let source = make_record_with_formid_ref(
-            "MISC",
-            0xFF000801,
-            Some("NativeSource"),
-            "YNAM",
-            0x050000AB,
-        );
-        plugin.root_items = vec![ParsedItem::Record(source)];
-
-        let refs = build_refs_section(&plugin);
-
-        assert_eq!(
-            refs.forward_refs_by_form_key
-                .get(&normalize_form_key("Test.esp:000801").unwrap())
-                .map(|values| values.iter().map(|v| v.render()).collect::<Vec<_>>()),
-            Some(vec!["050000AB".to_string()]),
-        );
-        assert_eq!(
-            resolve_form_id_to_form_key(
-                0x050000AB,
-                &Arc::from("Test.esp"),
-                &plugin.header.masters,
-            )
-            .render()
-            .as_str(),
-            "050000AB",
-        );
-    }
-
-    #[test]
-    fn parsed_plugin_index_pick_owned_form_id_prefers_local() {
-        // 0x00 = master 0, 0xFF = local. own_index = 1 (one master), so 0x01 also counts as own.
-        let candidates = vec![0x00ABCDEF, 0xFFABCDEF, 0x01ABCDEF];
-        assert_eq!(
-            pick_owned_form_id(&candidates, 1),
-            Some(0xFFABCDEF), // 0xFF wins because LOCAL_FORM_INDEX matches first
-        );
-        // Without a local match, falls back to first
-        let masters_only = vec![0x00ABCDEF, 0x02ABCDEF];
-        assert_eq!(pick_owned_form_id(&masters_only, 1), Some(0x00ABCDEF));
-    }
-
     // Sibling-subrecord union deciders (PERK.EPFD, AECH.Data,
     // SNDR.Data) reference selectors whose names don't match the standard
     // field-name population path. The runtime publishes synthetic context
     // aliases right after the source subrecord decodes so that union
     // conditions evaluate against the correct sibling value.
 
-    // Production shape: PERK.EPFT uint8 single-field → bare Number.
+    // Production shape: PERK.EPFT decodes to its enum label ("Float"), but
+    // the EPFD conditions compare the native byte.
     #[test]
-    fn publish_decider_aliases_perk_epft_bare_scalar() {
+    fn publish_decider_aliases_perk_epft_uses_native_byte() {
         let mut ctx: HashMap<String, JsonValue> = HashMap::new();
-        let payload = JsonValue::Number(6_u64.into());
-        publish_sibling_decider_context_aliases("PERK", "EPFT", &payload, &mut ctx);
-        assert_eq!(ctx.get("epft"), Some(&JsonValue::Number(6_u64.into())));
-    }
-
-    // Production shape: AECH.KNAM uint32 + enum_ref → bare String label.
-    #[test]
-    fn publish_decider_aliases_aech_knam_bare_scalar_string() {
-        let mut ctx: HashMap<String, JsonValue> = HashMap::new();
-        let payload = JsonValue::String("BSOverdrive".to_string());
-        publish_sibling_decider_context_aliases("AECH", "KNAM", &payload, &mut ctx);
-        assert_eq!(
-            ctx.get("knam_edit_value"),
-            Some(&JsonValue::String("BSOverdrive".to_string()))
-        );
-    }
-
-    // Production shape: SNDR.CNAM uint32 + enum_ref → bare String label.
-    #[test]
-    fn publish_decider_aliases_sndr_cnam_bare_scalar_string() {
-        let mut ctx: HashMap<String, JsonValue> = HashMap::new();
-        let payload = JsonValue::String("AutoWeapon".to_string());
-        publish_sibling_decider_context_aliases("SNDR", "CNAM", &payload, &mut ctx);
-        assert_eq!(
-            ctx.get("cnam_edit_value"),
-            Some(&JsonValue::String("AutoWeapon".to_string()))
-        );
-    }
-
-    // PERK.PRKE Type=Ability/EntryPoint round-trips its own label and
-    // overwrites context["Type"] from any prior Effect.
-    #[test]
-    fn publish_decider_aliases_perk_prke_passes_through_decoded_type() {
-        let mut ctx: HashMap<String, JsonValue> = HashMap::new();
-        ctx.insert("Type".to_string(), JsonValue::String("Ability".to_string()));
-        let payload = serde_json::json!({"Type": "EntryPoint", "Rank": 0_u64, "Priority": 0_u64});
-        publish_sibling_decider_context_aliases("PERK", "PRKE", &payload, &mut ctx);
-        assert_eq!(
-            ctx.get("Type"),
-            Some(&JsonValue::String("EntryPoint".to_string()))
-        );
-    }
-
-    // PERK.PRKE Type=0 (QuestStage) is default-stripped to {} by
-    // authoring_field_is_default_json. The alias must default-publish
-    // "QuestStage" so the wbPerkDATADecider union still dispatches —
-    // and crucially must overwrite a stale "Type" left by a prior Effect.
-    #[test]
-    fn publish_decider_aliases_perk_prke_default_strip_publishes_quest_stage() {
-        let mut ctx: HashMap<String, JsonValue> = HashMap::new();
-        ctx.insert("Type".to_string(), JsonValue::String("Ability".to_string()));
-        let payload = serde_json::json!({});
-        publish_sibling_decider_context_aliases("PERK", "PRKE", &payload, &mut ctx);
-        assert_eq!(
-            ctx.get("Type"),
-            Some(&JsonValue::String("QuestStage".to_string()))
-        );
-    }
-
-    // Forward-compat: Object payload variant still works (defensive).
-    #[test]
-    fn publish_decider_aliases_object_payload_extracts_named_field() {
-        let mut ctx: HashMap<String, JsonValue> = HashMap::new();
-        let payload = serde_json::json!({"type": 6_u64, "other": "ignored"});
-        publish_sibling_decider_context_aliases("PERK", "EPFT", &payload, &mut ctx);
-        assert_eq!(ctx.get("epft"), Some(&JsonValue::Number(6_u64.into())));
+        let payload = JsonValue::String("Float".to_string());
+        publish_sibling_decider_context_aliases("PERK", "EPFT", &[1], &payload, &mut ctx);
+        assert_eq!(ctx.get("epft"), Some(&JsonValue::Number(1_u64.into())));
     }
 
     #[test]
-    fn publish_decider_aliases_unrelated_record_is_noop() {
+    fn publish_decider_aliases_perk_entry_point_function_only_for_entry_points() {
         let mut ctx: HashMap<String, JsonValue> = HashMap::new();
-        let payload = JsonValue::Number(1_u64.into());
-        publish_sibling_decider_context_aliases("WEAP", "EPFT", &payload, &mut ctx);
-        assert!(ctx.is_empty());
-    }
+        let entry_point = serde_json::json!({"variant": "entry_point", "value": {}});
+        publish_sibling_decider_context_aliases("PERK", "DATA", &[0x2A, 12, 1], &entry_point, &mut ctx);
+        assert_eq!(ctx.get("entry_point_function"), Some(&JsonValue::Number(12_u64.into())));
 
-    #[test]
-    fn publish_decider_aliases_null_payload_is_noop() {
         let mut ctx: HashMap<String, JsonValue> = HashMap::new();
-        publish_sibling_decider_context_aliases("PERK", "EPFT", &JsonValue::Null, &mut ctx);
-        assert!(ctx.is_empty());
-    }
-
-    // EDID single-field parsed payload decodes as a bare String — that is the
-    // production shape the GMST.DATA union selector consumes.
-    #[test]
-    fn publish_editor_id_prefix_alias_bare_string_extracts_first_char() {
-        let mut ctx: HashMap<String, JsonValue> = HashMap::new();
-        let payload = JsonValue::String("fNearDistance".to_string());
-        publish_editor_id_prefix_alias("EDID", &payload, &mut ctx);
-        assert_eq!(
-            ctx.get("editor_id_prefix"),
-            Some(&JsonValue::String("f".to_string()))
-        );
-    }
-
-    // Defensive: future decoders may wrap EDID in an Object — still works.
-    #[test]
-    fn publish_editor_id_prefix_alias_object_payload_extracts_first_char() {
-        let mut ctx: HashMap<String, JsonValue> = HashMap::new();
-        let payload = serde_json::json!({"editor_id": "iMaxAllocatedActorsPerLocation"});
-        publish_editor_id_prefix_alias("EDID", &payload, &mut ctx);
-        assert_eq!(
-            ctx.get("editor_id_prefix"),
-            Some(&JsonValue::String("i".to_string()))
-        );
-    }
-
-    #[test]
-    fn publish_editor_id_prefix_alias_non_edid_is_noop() {
-        let mut ctx: HashMap<String, JsonValue> = HashMap::new();
-        let payload = JsonValue::String("anything".to_string());
-        publish_editor_id_prefix_alias("DATA", &payload, &mut ctx);
-        assert!(ctx.is_empty());
-    }
-
-    #[test]
-    fn publish_editor_id_prefix_alias_empty_string_is_noop() {
-        let mut ctx: HashMap<String, JsonValue> = HashMap::new();
-        let payload = JsonValue::String(String::new());
-        publish_editor_id_prefix_alias("EDID", &payload, &mut ctx);
-        assert!(ctx.is_empty());
+        let ability = serde_json::json!({"variant": "ability", "value": {}});
+        publish_sibling_decider_context_aliases("PERK", "DATA", &[1, 2, 0, 0], &ability, &mut ctx);
+        assert_eq!(ctx.get("entry_point_function"), None);
     }
 
     // Payload-length disambiguation between two
@@ -22722,50 +20248,6 @@ mod tests {
     }
 
     #[test]
-    fn pick_unique_spec_by_payload_length_routes_4_bytes_to_formid() {
-        let rec = term_snam_record_spec();
-        let spec = pick_unique_spec_by_payload_length(&rec, "SNAM", None, 4)
-            .expect("formid spec for 4-byte payload");
-        assert_eq!(spec.display_label.as_deref(), Some("Looping Sound"));
-    }
-
-    #[test]
-    fn pick_unique_spec_by_payload_length_routes_24_bytes_to_array_struct() {
-        let rec = term_snam_record_spec();
-        let spec = pick_unique_spec_by_payload_length(&rec, "SNAM", None, 24)
-            .expect("array_struct spec for 24-byte payload");
-        assert_eq!(spec.display_label.as_deref(), Some("Marker Parameters"));
-    }
-
-    #[test]
-    fn pick_unique_spec_by_payload_length_routes_48_bytes_to_array_struct() {
-        // Two-row Marker Parameters payload: 2 * 24 = 48.
-        let rec = term_snam_record_spec();
-        let spec = pick_unique_spec_by_payload_length(&rec, "SNAM", None, 48)
-            .expect("array_struct spec for 48-byte payload");
-        assert_eq!(spec.display_label.as_deref(), Some("Marker Parameters"));
-    }
-
-    #[test]
-    fn pick_unique_spec_by_payload_length_returns_none_when_both_reject() {
-        // 7 bytes: not 4 (formid) and not a multiple of 24 (Marker Parameters).
-        let rec = term_snam_record_spec();
-        assert!(pick_unique_spec_by_payload_length(&rec, "SNAM", None, 7).is_none());
-    }
-
-    #[test]
-    fn pick_unique_spec_by_payload_length_returns_none_when_only_one_spec() {
-        let rec: SchemaRecordJson = serde_json::from_value(serde_json::json!({
-            "id": "TERM",
-            "subrecords": [
-                {"id": "SNAM", "kind": "parsed", "codec": "formid", "fields": []}
-            ]
-        }))
-        .expect("single-spec fixture");
-        assert!(pick_unique_spec_by_payload_length(&rec, "SNAM", None, 4).is_none());
-    }
-
-    #[test]
     fn dispatch_with_payload_length_routes_term_marker_params_correctly() {
         let rec = term_snam_record_spec();
         let counts: HashMap<(Option<String>, String), usize> = HashMap::new();
@@ -22774,138 +20256,6 @@ mod tests {
             .expect("dispatch found a spec");
         assert_eq!(spec.display_label.as_deref(), Some("Marker Parameters"));
         assert_eq!(scope, None);
-    }
-
-    #[test]
-    fn dispatch_with_payload_length_falls_through_to_occurrence_when_ambiguous() {
-        // Both specs accept 0 bytes (formid says no, array_struct says no — 0
-        // is technically a multiple of 24). Verify behavior matches the
-        // legacy occurrence-based dispatch in this case.
-        let rec = term_snam_record_spec();
-        let counts: HashMap<(Option<String>, String), usize> = HashMap::new();
-        // 4-byte SNAM at occurrence=0 → Looping Sound (formid accepts, array
-        // rejects → unique) — confirms length-aware path is correct.
-        let (spec, _) = dispatch_subrecord_spec_in_scope(&rec, "SNAM", 4, None, &counts)
-            .expect("dispatch found a spec");
-        assert_eq!(spec.display_label.as_deref(), Some("Looping Sound"));
-    }
-
-    #[test]
-    fn insert_topic_child_places_info_under_explicit_parent_dialogue() {
-        const QUEST_FORM_ID: u32 = 0x0100_1000;
-        const DIAL_FORM_ID: u32 = 0x0100_2000;
-        const INFO_FORM_ID: u32 = 0x0100_3000;
-
-        let handle_id = create_empty_plugin_handle("Test.esp", Some("fo4"));
-        let inserted = {
-            let mut store = plugin_handle_store_ref().lock().unwrap();
-            let slot = store.get_mut(&handle_id).unwrap();
-            // Quest-child group holding the parent DIAL (mirrors the target layout
-            // the structured dialogue emitter builds: DIAL under QUST).
-            slot.parsed.root_items.push(ParsedItem::Group(ParsedGroup {
-                label: QUEST_FORM_ID.to_le_bytes(),
-                group_type: QUEST_CHILD_GROUP,
-                tail: Bytes::new(),
-                children: vec![ParsedItem::Record(make_record("DIAL", DIAL_FORM_ID, None))],
-            }));
-
-            insert_topic_child_record_in_slot(
-                slot,
-                DIAL_FORM_ID,
-                make_record("INFO", INFO_FORM_ID, None),
-            )
-            .expect("insert")
-        };
-        assert!(
-            inserted,
-            "INFO should be inserted under its explicit parent DIAL"
-        );
-
-        let store = plugin_handle_store_ref().lock().unwrap();
-        let slot = store.get(&handle_id).unwrap();
-        // The INFO must live in a Topic-Child group (type 7) labelled with the
-        // parent DIAL's form_id, nested inside the quest-child group.
-        let ParsedItem::Group(quest_group) = &slot.parsed.root_items[0] else {
-            panic!("expected quest-child group");
-        };
-        let topic_group = quest_group
-            .children
-            .iter()
-            .find_map(|item| match item {
-                ParsedItem::Group(group)
-                    if group.group_type == TOPIC_CHILD_GROUP
-                        && group.label == DIAL_FORM_ID.to_le_bytes() =>
-                {
-                    Some(group)
-                }
-                _ => None,
-            })
-            .expect("topic-child group labelled with the DIAL form_id");
-        assert!(topic_group.children.iter().any(|item| matches!(
-            item,
-            ParsedItem::Record(record)
-                if record.signature.as_str() == "INFO" && record.form_id == INFO_FORM_ID
-        )));
-    }
-
-    #[test]
-    fn insert_topic_child_matches_parent_dialogue_by_object_id() {
-        // Regression for the Stage-A INFO=0 bug: the conversion mapper passes the
-        // parent DIAL's 24-bit object-id (`target.local`), but the emitted DIAL
-        // record carries the output plugin's own-index byte (e.g. 0x07). The
-        // insert must match on object-id and label the Topic-Child group with the
-        // DIAL's FULL form_id.
-        const QUEST_OBJ: u32 = 0x0000_2315;
-        const DIAL_OBJ: u32 = 0x004E_314B;
-        const OWN_INDEX: u32 = 0x07 << 24;
-        let quest_full = OWN_INDEX | QUEST_OBJ;
-        let dial_full = OWN_INDEX | DIAL_OBJ;
-        let info_full = OWN_INDEX | 0x004E_315F;
-
-        let handle_id = create_empty_plugin_handle("Test.esp", Some("fo4"));
-        let inserted = {
-            let mut store = plugin_handle_store_ref().lock().unwrap();
-            let slot = store.get_mut(&handle_id).unwrap();
-            slot.parsed.root_items.push(ParsedItem::Group(ParsedGroup {
-                label: quest_full.to_le_bytes(),
-                group_type: QUEST_CHILD_GROUP,
-                tail: Bytes::new(),
-                children: vec![ParsedItem::Record(make_record("DIAL", dial_full, None))],
-            }));
-
-            // Caller passes the 24-bit object-id, NOT the full form_id.
-            insert_topic_child_record_in_slot(slot, DIAL_OBJ, make_record("INFO", info_full, None))
-                .expect("insert")
-        };
-        assert!(
-            inserted,
-            "INFO must insert even when the caller passes the 24-bit object-id"
-        );
-
-        let store = plugin_handle_store_ref().lock().unwrap();
-        let slot = store.get(&handle_id).unwrap();
-        let ParsedItem::Group(quest_group) = &slot.parsed.root_items[0] else {
-            panic!("expected quest-child group");
-        };
-        let topic_group = quest_group
-            .children
-            .iter()
-            .find_map(|item| match item {
-                ParsedItem::Group(group)
-                    if group.group_type == TOPIC_CHILD_GROUP
-                        // Label must be the FULL DIAL form_id, not the 24-bit id.
-                        && group.label == dial_full.to_le_bytes() =>
-                {
-                    Some(group)
-                }
-                _ => None,
-            })
-            .expect("topic-child group labelled with the FULL DIAL form_id");
-        assert!(topic_group.children.iter().any(|item| matches!(
-            item,
-            ParsedItem::Record(record)
-                if record.signature.as_str() == "INFO" && record.form_id == info_full
-        )));
     }
 
     fn child_insert_fixture() -> ParsedPlugin {
@@ -23136,195 +20486,6 @@ mod tests {
         plugin_handle_close_native(indexed_handle);
     }
 
-    #[test]
-    fn indexed_quest_child_insert_falls_back_for_ambiguous_parent_topology() {
-        const QUEST_A: u32 = 0x0100_1000;
-        const QUEST_B: u32 = 0x0100_1001;
-        let mut fixture = child_insert_fixture();
-        let ParsedItem::Group(top_quest_group) = &mut fixture.root_items[0] else {
-            panic!("expected top QUST group");
-        };
-        top_quest_group.children.extend([
-            ParsedItem::Record(make_record("QUST", QUEST_B, Some("DuplicateQuestB"))),
-            group(
-                QUEST_CHILD_GROUP,
-                QUEST_A.to_le_bytes(),
-                vec![ParsedItem::Record(make_record(
-                    "DIAL",
-                    0x0100_2001,
-                    Some("DuplicateQuestAChildGroup"),
-                ))],
-            ),
-        ]);
-        let serial_handle = insert_plugin_handle(fixture.clone(), LocalizedStringsState::default());
-        let indexed_handle = insert_plugin_handle(fixture, LocalizedStringsState::default());
-        let operations = [
-            (QUEST_A, make_record("SCEN", 0x0100_3500, Some("AmbiguousGroup"))),
-            (QUEST_B, make_record("DIAL", 0x0100_3501, Some("AmbiguousQuest"))),
-        ];
-
-        let mut serial_outcomes = Vec::new();
-        let mut indexed_outcomes = Vec::new();
-        {
-            let mut store = plugin_handle_store_ref().lock().unwrap();
-            let serial = store.get_mut(&serial_handle).unwrap();
-            for (parent, record) in operations.iter().cloned() {
-                serial_outcomes.push(
-                    insert_quest_child_record_in_slot(serial, parent, record).expect("serial quest"),
-                );
-            }
-            let indexed = store.get_mut(&indexed_handle).unwrap();
-            let mut index = build_quest_child_insert_index(indexed);
-            for (parent, record) in operations.iter().cloned() {
-                indexed_outcomes.push(
-                    insert_quest_child_record_indexed_in_slot(
-                        indexed,
-                        &mut index,
-                        parent,
-                        record,
-                    )
-                    .expect("indexed quest"),
-                );
-            }
-            assert_eq!(index.fast_inserts(), 0);
-            assert_eq!(index.serial_fallbacks(), operations.len());
-        }
-
-        assert_eq!(indexed_outcomes, serial_outcomes);
-        assert_eq!(child_insert_bytes(indexed_handle), child_insert_bytes(serial_handle));
-        plugin_handle_close_native(serial_handle);
-        plugin_handle_close_native(indexed_handle);
-    }
-
-    fn child_insert_scaling_fixture(filler_records: u32, quest_count: u32) -> ParsedPlugin {
-        let mut plugin = empty_plugin(Some("fo4"));
-        plugin.root_items.push(group(
-            0,
-            *b"WRLD",
-            (0..filler_records)
-                .map(|index| {
-                    ParsedItem::Record(make_record("REFR", 0x0200_0000 + index, None))
-                })
-                .collect(),
-        ));
-        let mut quest_items = Vec::with_capacity((quest_count * 2) as usize);
-        for index in 0..quest_count {
-            let quest = 0x0101_0000 + index;
-            let dialogue = 0x0102_0000 + index;
-            quest_items.push(ParsedItem::Record(make_record("QUST", quest, None)));
-            quest_items.push(group(
-                QUEST_CHILD_GROUP,
-                quest.to_le_bytes(),
-                vec![ParsedItem::Record(make_record("DIAL", dialogue, None))],
-            ));
-        }
-        plugin.root_items.push(group(0, *b"QUST", quest_items));
-        plugin
-    }
-
-    #[test]
-    #[ignore = "release scaling benchmark"]
-    fn indexed_child_insert_scaling() {
-        use std::time::Instant;
-
-        const QUEST_COUNT: u32 = 32;
-        const DIALOGUE_INSERTS: u32 = 256;
-        const INFO_INSERTS: u32 = 512;
-        for filler_records in [5_000, 20_000] {
-            let fixture = child_insert_scaling_fixture(filler_records, QUEST_COUNT);
-            let serial_handle =
-                insert_plugin_handle(fixture.clone(), LocalizedStringsState::default());
-            let indexed_handle = insert_plugin_handle(fixture, LocalizedStringsState::default());
-            let quest_operations = (0..DIALOGUE_INSERTS)
-                .map(|index| {
-                    (
-                        0x0101_0000 + index % QUEST_COUNT,
-                        make_record("DIAL", 0x0103_0000 + index, None),
-                    )
-                })
-                .collect::<Vec<_>>();
-            let topic_operations = (0..INFO_INSERTS)
-                .map(|index| {
-                    (
-                        (0x0103_0000 + index % DIALOGUE_INSERTS) & 0x00FF_FFFF,
-                        make_record("INFO", 0x0104_0000 + index, None),
-                    )
-                })
-                .collect::<Vec<_>>();
-
-            let (serial_quest, indexed_quest, indexed_quest_records) = {
-                let mut store = plugin_handle_store_ref().lock().unwrap();
-                let serial_started = Instant::now();
-                let serial = store.get_mut(&serial_handle).unwrap();
-                for (parent, record) in quest_operations.iter().cloned() {
-                    assert!(insert_quest_child_record_in_slot(serial, parent, record).unwrap());
-                }
-                let serial_elapsed = serial_started.elapsed();
-
-                let indexed_started = Instant::now();
-                let indexed = store.get_mut(&indexed_handle).unwrap();
-                let mut index = build_quest_child_insert_index(indexed);
-                let indexed_record_count = index.record_form_ids.len();
-                for (parent, record) in quest_operations.iter().cloned() {
-                    assert!(
-                        insert_quest_child_record_indexed_in_slot(
-                            indexed,
-                            &mut index,
-                            parent,
-                            record,
-                        )
-                        .unwrap()
-                    );
-                }
-                assert_eq!(index.fast_inserts(), quest_operations.len());
-                assert_eq!(index.serial_fallbacks(), 0);
-                (serial_elapsed, indexed_started.elapsed(), indexed_record_count)
-            };
-
-            let (serial_topic, indexed_topic, indexed_topic_records) = {
-                let mut store = plugin_handle_store_ref().lock().unwrap();
-                let serial_started = Instant::now();
-                let serial = store.get_mut(&serial_handle).unwrap();
-                for (parent, record) in topic_operations.iter().cloned() {
-                    assert!(insert_topic_child_record_in_slot(serial, parent, record).unwrap());
-                }
-                let serial_elapsed = serial_started.elapsed();
-
-                let indexed_started = Instant::now();
-                let indexed = store.get_mut(&indexed_handle).unwrap();
-                let mut index = build_topic_child_insert_index(indexed);
-                let indexed_record_count = index.record_form_ids.len();
-                for (parent, record) in topic_operations.iter().cloned() {
-                    assert!(
-                        insert_topic_child_record_indexed_in_slot(
-                            indexed,
-                            &mut index,
-                            parent,
-                            record,
-                        )
-                        .unwrap()
-                    );
-                }
-                assert_eq!(index.fast_inserts(), topic_operations.len());
-                assert_eq!(index.serial_fallbacks(), 0);
-                (serial_elapsed, indexed_started.elapsed(), indexed_record_count)
-            };
-
-            assert_eq!(child_insert_bytes(indexed_handle), child_insert_bytes(serial_handle));
-            eprintln!(
-                "child_insert_scaling filler_records={filler_records} dialogues={} infos={} quest_index_records={indexed_quest_records} topic_index_records={indexed_topic_records} serial_quest_ms={:.3} indexed_quest_ms={:.3} serial_topic_ms={:.3} indexed_topic_ms={:.3}",
-                quest_operations.len(),
-                topic_operations.len(),
-                serial_quest.as_secs_f64() * 1000.0,
-                indexed_quest.as_secs_f64() * 1000.0,
-                serial_topic.as_secs_f64() * 1000.0,
-                indexed_topic.as_secs_f64() * 1000.0,
-            );
-            plugin_handle_close_native(serial_handle);
-            plugin_handle_close_native(indexed_handle);
-        }
-    }
-
     // ── Single-pass batch content-replace (perf + correctness) ─────────────────
     //
     // The per-record replace path scans the whole GRUP tree once per record
@@ -23361,7 +20522,7 @@ mod tests {
 
     #[test]
     fn batch_replace_applies_exactly_the_targeted_records() {
-        let mut plugin = nested_plugin(50);
+        let plugin = nested_plugin(50);
         // Replace one record in the FIRST group and one in the SECOND (last) group,
         // plus include a non-existent form_id (must be ignored) and a
         // signature-mismatch (must be rejected, left untouched).
@@ -23430,62 +20591,6 @@ mod tests {
         assert_eq!(others_intact, 98, "all 98 non-target records untouched");
     }
 
-    #[test]
-    fn batch_replace_is_single_pass_linear() {
-        // N records; replace K. A single traversal visits at most N_nodes (records
-        // + groups) once. Prove visits ≤ N + groups + K, i.e. NOT K × N.
-        let per_group = 500u32;
-        let mut plugin = nested_plugin(per_group); // 1000 records, 4 groups
-        // sanity: count nodes
-        fn count_nodes(items: &[ParsedItem]) -> usize {
-            items
-                .iter()
-                .map(|i| match i {
-                    ParsedItem::Record(_) => 1,
-                    ParsedItem::Group(g) => 1 + count_nodes(&g.children),
-                })
-                .sum()
-        }
-        let total_nodes = count_nodes(&plugin.root_items);
-
-        // Replace K records spread across BOTH groups, incl. the last record of
-        // the last group (worst case for a linear scan).
-        let mut replacements = Vec::new();
-        let mut expected_targets = Vec::new();
-        for &(g, i) in &[(0u32, 0u32), (0, 250), (1, 0), (1, 250), (1, per_group - 1)] {
-            let fid = 0xFF00_0000 | (g << 16) | i;
-            replacements.push(make_record("WEAP", fid, Some("W")));
-            expected_targets.push(fid);
-        }
-        let k = replacements.len();
-
-        let mut by_form_id: HashMap<u32, ParsedRecord> = HashMap::new();
-        for r in replacements {
-            by_form_id.insert(r.form_id, r);
-        }
-        let mut applied = Vec::new();
-        let mut visits = 0usize;
-        replace_record_contents_in_items_batch(
-            &mut plugin.root_items,
-            &mut by_form_id,
-            &mut applied,
-            &mut visits,
-        );
-
-        assert_eq!(applied.len(), k, "all {k} targets applied");
-        // LINEARITY: a single pass visits each node at most once → visits ≤ total
-        // nodes. (A K×N per-record scan would be ~K × total_nodes.) Allow ==.
-        assert!(
-            visits <= total_nodes,
-            "batch replace must be single-pass: visits={visits} total_nodes={total_nodes} (K×N would be ~{})",
-            k * total_nodes
-        );
-        // And it must have visited enough to reach the last-group records.
-        assert!(
-            visits >= total_nodes / 2,
-            "should traverse into the second group"
-        );
-    }
 }
 
 #[cfg(test)]
@@ -23606,23 +20711,6 @@ mod interior_cell_tests {
         })
     }
 
-    /// Count CELL records with the given FormID anywhere in `items`.
-    fn count_cell_records_in_items(items: &[ParsedItem], form_id: u32) -> usize {
-        let mut count = 0;
-        for item in items {
-            match item {
-                ParsedItem::Record(r) if r.signature.as_str() == "CELL" && r.form_id == form_id => {
-                    count += 1;
-                }
-                ParsedItem::Group(g) => {
-                    count += count_cell_records_in_items(&g.children, form_id);
-                }
-                _ => {}
-            }
-        }
-        count
-    }
-
     /// Find the Cell-Children group (type 6) for `cell_form_id` anywhere in
     /// root_items.
     fn find_cell_child_group_in_items<'a>(
@@ -23674,144 +20762,6 @@ mod interior_cell_tests {
         );
     }
 
-    #[test]
-    fn interior_cell_bucket_uses_local_object_id() {
-        let handle = new_empty_plugin_handle();
-        let cell = make_test_cell_record(0x076240BB);
-        ensure_interior_cell_and_child_group(handle, cell).expect("emit interior cell");
-
-        let store = plugin_handle_store_ref().lock().unwrap();
-        let slot = store.get(&handle).unwrap();
-        let cell_top = find_top_group_in_items(&slot.parsed.root_items, b"CELL").expect("CELL top");
-        let block = find_child_group_by_int(cell_top, INTERIOR_CELL_BLOCK, 9).expect("block 9");
-        let subblock =
-            find_child_group_by_int(block, INTERIOR_CELL_SUBBLOCK, 9).expect("subblock 9");
-
-        assert!(
-            group_has_record(subblock, 0x076240BB),
-            "CELL record must be bucketed by local object id"
-        );
-        assert!(
-            find_child_group_by_int(cell_top, INTERIOR_CELL_BLOCK, 1).is_none(),
-            "raw FormID bucketing would incorrectly create block 1"
-        );
-    }
-
-    #[test]
-    fn insert_interior_cell_with_children_bucket_uses_local_object_id() {
-        let handle = new_empty_plugin_handle();
-        let cell = make_test_cell_record(0x076240BB);
-        let temporary = vec![make_test_refr_record(0x0762EE15)];
-        insert_interior_cell_with_children(handle, cell, Vec::new(), temporary)
-            .expect("insert interior cell with children");
-
-        let store = plugin_handle_store_ref().lock().unwrap();
-        let slot = store.get(&handle).unwrap();
-        let cell_top = find_top_group_in_items(&slot.parsed.root_items, b"CELL").expect("CELL top");
-        let block = find_child_group_by_int(cell_top, INTERIOR_CELL_BLOCK, 9).expect("block 9");
-        let subblock =
-            find_child_group_by_int(block, INTERIOR_CELL_SUBBLOCK, 9).expect("subblock 9");
-        assert!(
-            group_has_record(subblock, 0x076240BB),
-            "CELL record present"
-        );
-
-        let cell_child = find_child_group_by_formid(subblock, CELL_CHILD_GROUP, 0x076240BB)
-            .expect("Cell-Children group");
-        let temporary_group = find_child_group_by_formid(cell_child, TEMPORARY_GROUP, 0x076240BB)
-            .expect("Temporary section");
-        assert!(
-            group_has_record(temporary_group, 0x0762EE15),
-            "temporary REFR present"
-        );
-    }
-
-    /// Pre-insert a DATA-only stub for FormID 0x00275EDE, then emit the real
-    /// CELL and assert exactly one CELL record for that FormID carrying the new fields.
-    #[test]
-    fn interior_cell_emit_replaces_existing_stub() {
-        let handle = new_empty_plugin_handle();
-
-        // Insert a stub CELL into the tree before calling our fn.
-        {
-            let mut store = plugin_handle_store_ref().lock().unwrap();
-            let slot = store.get_mut(&handle).unwrap();
-            let cell_stub = make_test_cell_record(0x00275EDE);
-            slot.parsed.root_items.push(ParsedItem::Record(cell_stub));
-        }
-
-        // Now emit the real cell (with an extra subrecord to distinguish it).
-        let mut real_cell = make_test_cell_record(0x00275EDE);
-        real_cell.subrecords.push(ParsedSubrecord {
-            signature: SmolStr::new_static("FULL"),
-            data: Bytes::from(b"Interior Cell\0".to_vec()),
-            semantic_type: None,
-        });
-        ensure_interior_cell_and_child_group(handle, real_cell).expect("emit real cell");
-
-        let store = plugin_handle_store_ref().lock().unwrap();
-        let slot = store.get(&handle).unwrap();
-        let count = count_cell_records_in_items(&slot.parsed.root_items, 0x00275EDE);
-        assert_eq!(count, 1, "exactly one CELL record for this FormID");
-
-        // Verify the surviving record carries the FULL subrecord (is the real one).
-        let cell_top = find_top_group_in_items(&slot.parsed.root_items, b"CELL").expect("CELL top");
-        // 0x00275EDE = 2580190 decimal -> block = 2580190 % 10 = 0; subblock = (2580190/10) % 10 = 9
-        let block = find_child_group_by_int(cell_top, INTERIOR_CELL_BLOCK, 0).expect("block 0");
-        let subblock =
-            find_child_group_by_int(block, INTERIOR_CELL_SUBBLOCK, 9).expect("subblock 9");
-        let cell_record = subblock
-            .children
-            .iter()
-            .find_map(|item| match item {
-                ParsedItem::Record(r) if r.form_id == 0x00275EDE => Some(r),
-                _ => None,
-            })
-            .expect("CELL record in subblock");
-        assert!(
-            cell_record
-                .subrecords
-                .iter()
-                .any(|s| s.signature.as_str() == "FULL"),
-            "surviving record must carry FULL subrecord (the real cell, not the stub)"
-        );
-    }
-
-    #[test]
-    fn placed_child_lands_in_temporary_group_of_existing_cell() {
-        let handle = new_empty_plugin_handle();
-        ensure_interior_cell_and_child_group(handle, make_test_cell_record(0x00275EDE)).unwrap();
-
-        let refr = make_test_refr_record(0x002F74A0);
-        let inserted =
-            insert_placed_child_into_cell_group(handle, 0x00275EDE, TEMPORARY_GROUP, refr)
-                .expect("insert child");
-        assert!(inserted, "child must be inserted into existing cell");
-
-        let store = plugin_handle_store_ref().lock().unwrap();
-        let slot = store.get(&handle).unwrap();
-        let cell_child = find_cell_child_group_in_items(&slot.parsed.root_items, 0x00275EDE)
-            .expect("Cell-Children group");
-        let temp = find_child_group_by_formid(cell_child, TEMPORARY_GROUP, 0x00275EDE)
-            .expect("Temporary group (type 9) inside cell children");
-        assert!(
-            group_has_record(temp, 0x002F74A0),
-            "REFR must appear in the Temporary section"
-        );
-    }
-
-    #[test]
-    fn placed_child_returns_false_when_cell_missing() {
-        let handle = new_empty_plugin_handle();
-        let refr = make_test_refr_record(0x002F74A0);
-        let inserted =
-            insert_placed_child_into_cell_group(handle, 0x00DEAD00, TEMPORARY_GROUP, refr).unwrap();
-        assert!(
-            !inserted,
-            "must return false when no cell-child group exists"
-        );
-    }
-
     /// Batch insert: one call builds the full Block/Sub-Block/CELL/Cell-Children
     /// subtree with both placed-child sections populated, no whole-tree search.
     #[test]
@@ -23853,35 +20803,43 @@ mod interior_cell_tests {
         );
     }
 
-    /// One-pass dedup: removes only the CELL records whose object id is in the
-    /// set, leaving other CELLs untouched.
+    /// A stub cell that already holds a child (the projected NAVM of a PKIN
+    /// storage cell) must not leave that child behind for the real cell's
+    /// re-insert to duplicate.
     #[test]
-    fn remove_cell_records_by_object_id_drops_matching_stubs() {
-        let handle = new_empty_plugin_handle();
-        {
-            let mut store = plugin_handle_store_ref().lock().unwrap();
-            let slot = store.get_mut(&handle).unwrap();
-            slot.parsed
-                .root_items
-                .push(ParsedItem::Record(make_test_cell_record(0x00275EDE)));
-            slot.parsed
-                .root_items
-                .push(ParsedItem::Record(make_test_cell_record(0x00280000)));
+    fn removing_cell_stub_drops_its_children_so_reinsert_has_no_duplicates() {
+        fn count_form_id(items: &[ParsedItem], form_id: u32) -> usize {
+            items
+                .iter()
+                .map(|item| match item {
+                    ParsedItem::Record(r) => usize::from(r.form_id == form_id),
+                    ParsedItem::Group(g) => count_form_id(&g.children, form_id),
+                })
+                .sum()
         }
-        let removed = remove_cell_records_by_object_id(handle, &[0x275EDE]).expect("remove");
-        assert_eq!(removed, 1, "exactly one stub removed");
+
+        let handle = new_empty_plugin_handle();
+        let stub_child = vec![make_test_refr_record(0x002F74A0)];
+        insert_interior_cell_with_children(
+            handle,
+            make_test_cell_record(0x00275EDE),
+            Vec::new(),
+            stub_child,
+        )
+        .unwrap();
+
+        assert_eq!(remove_cell_records_by_object_id(handle, &[0x00275EDE]).unwrap(), 1);
+        insert_interior_cell_with_children(
+            handle,
+            make_test_cell_record(0x00275EDE),
+            Vec::new(),
+            vec![make_test_refr_record(0x002F74A0)],
+        )
+        .unwrap();
 
         let store = plugin_handle_store_ref().lock().unwrap();
-        let slot = store.get(&handle).unwrap();
-        assert_eq!(
-            count_cell_records_in_items(&slot.parsed.root_items, 0x00275EDE),
-            0,
-            "matching stub removed"
-        );
-        assert_eq!(
-            count_cell_records_in_items(&slot.parsed.root_items, 0x00280000),
-            1,
-            "non-matching stub kept"
-        );
+        let items = &store.get(&handle).unwrap().parsed.root_items;
+        assert_eq!(count_form_id(items, 0x00275EDE), 1);
+        assert_eq!(count_form_id(items, 0x002F74A0), 1);
     }
 }

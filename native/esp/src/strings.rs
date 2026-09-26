@@ -714,7 +714,7 @@ impl LazyStringTable {
 /// SeventySix's tables are 215 MB packed, ~860 MB unpacked. So the archive
 /// index is scanned for names only, and a table is unpacked when a lookup
 /// needs that language and table type.
-pub(crate) struct LazyStringTables {
+pub struct LazyStringTables {
     tables: Vec<LazyStringTable>,
     archive_paths: Vec<PathBuf>,
     plugin_stem: String,
@@ -846,7 +846,7 @@ impl LazyStringTables {
     ) -> (HashMap<String, HashMap<u32, String>>, HashMap<u32, String>) {
         let mut by_language: HashMap<String, HashMap<u32, String>> = HashMap::new();
         let mut table_types: HashMap<u32, String> = HashMap::new();
-        let mut absorb = |table: &LazyStringTable,
+        let absorb = |table: &LazyStringTable,
                           by_language: &mut HashMap<String, HashMap<u32, String>>,
                           table_types: &mut HashMap<u32, String>| {
             let target = by_language.entry(table.language.clone()).or_default();

@@ -6,8 +6,8 @@
 ///
 /// Callers can attach an `AnimatedReferenceFrame` to an `AnimationClip`; the
 /// writer then emits its `extractedMotion` data instead of `#null`.
-use crate::animation::clip::{AnimationClip, AnimationKeyframe};
-use crate::animation::pose::{quat_mul, quat_normalize, vec3_add, vec3_len, vec3_sub};
+use crate::animation::clip::AnimationClip;
+use crate::animation::pose::{quat_normalize, vec3_sub};
 
 /// The type of reference frame (matches SDK `hkaAnimatedReferenceFrame::ReferenceFrameType`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -155,65 +155,61 @@ mod tests {
     }
 
     #[test]
-    fn displacement_at_start() {
-        let rf = make_linear_frame();
-        let d = rf.displacement_at(0.0);
-        assert!((d[0]).abs() < 1e-5);
-    }
-
-    #[test]
-    fn displacement_at_end() {
-        let rf = make_linear_frame();
-        let d = rf.displacement_at(rf.duration);
-        assert!((d[0] - 2.0).abs() < 0.1, "end displacement: {d:?}");
-    }
-
-    #[test]
-    fn total_displacement_x() {
-        let rf = make_linear_frame();
-        let total = rf.total_displacement();
-        assert!((total[0] - 2.0).abs() < 1e-5);
-    }
-
-    #[test]
-    fn extract_from_root_channel_smoke() {
-        let clip = AnimationClip {
-            source_format: "hkx".into(),
-            duration: 1.0,
-            native_fps: 30.0,
-            channels: vec![BoneChannel {
-                bone_name: "Root".into(),
-                translations: vec![
-                    AnimationKeyframe {
-                        time: 0.0,
-                        value: [0.0, 0.0, 0.0],
-                    },
-                    AnimationKeyframe {
-                        time: 1.0,
-                        value: [5.0, 0.0, 0.0],
-                    },
-                ],
-                rotations: vec![
-                    AnimationKeyframe {
-                        time: 0.0,
-                        value: [0.0, 0.0, 0.0, 1.0],
-                    },
-                    AnimationKeyframe {
-                        time: 1.0,
-                        value: [0.0, 0.0, 0.0, 1.0],
-                    },
-                ],
-                scales: Vec::new(),
-            }],
-            events: Vec::new(),
-            original_skeleton_name: None,
-            warnings: Vec::new(),
-            is_additive: false,
-            track_to_bone_indices: Vec::new(),
-            extracted_motion_ref: String::new(),
-        };
-        let rf = AnimatedReferenceFrame::extract_from_root_channel(&clip).unwrap();
-        assert_eq!(rf.displacements.len(), 2);
-        assert!((rf.total_displacement()[0] - 5.0).abs() < 1e-5);
+    fn root_motion_displacement() {
+        {
+            let rf = make_linear_frame();
+            let d = rf.displacement_at(0.0);
+            assert!((d[0]).abs() < 1e-5);
+        }
+        {
+            let rf = make_linear_frame();
+            let d = rf.displacement_at(rf.duration);
+            assert!((d[0] - 2.0).abs() < 0.1, "end displacement: {d:?}");
+        }
+        {
+            let rf = make_linear_frame();
+            let total = rf.total_displacement();
+            assert!((total[0] - 2.0).abs() < 1e-5);
+        }
+        {
+            let clip = AnimationClip {
+                source_format: "hkx".into(),
+                duration: 1.0,
+                native_fps: 30.0,
+                channels: vec![BoneChannel {
+                    bone_name: "Root".into(),
+                    translations: vec![
+                        AnimationKeyframe {
+                            time: 0.0,
+                            value: [0.0, 0.0, 0.0],
+                        },
+                        AnimationKeyframe {
+                            time: 1.0,
+                            value: [5.0, 0.0, 0.0],
+                        },
+                    ],
+                    rotations: vec![
+                        AnimationKeyframe {
+                            time: 0.0,
+                            value: [0.0, 0.0, 0.0, 1.0],
+                        },
+                        AnimationKeyframe {
+                            time: 1.0,
+                            value: [0.0, 0.0, 0.0, 1.0],
+                        },
+                    ],
+                    scales: Vec::new(),
+                }],
+                events: Vec::new(),
+                original_skeleton_name: None,
+                warnings: Vec::new(),
+                is_additive: false,
+                track_to_bone_indices: Vec::new(),
+                extracted_motion_ref: String::new(),
+            };
+            let rf = AnimatedReferenceFrame::extract_from_root_channel(&clip).unwrap();
+            assert_eq!(rf.displacements.len(), 2);
+            assert!((rf.total_displacement()[0] - 5.0).abs() < 1e-5);
+        }
     }
 }

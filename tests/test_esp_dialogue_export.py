@@ -313,65 +313,81 @@ def test_player_topic_in_scene_is_spoken_by_player_voices(tmp_path: Path) -> Non
     assert _voices(lines) == {(voice, "player") for voice in PLAYER_VOICE_TYPES}
 
 
-def test_npc_response_topic_uses_the_scene_alias_voice(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("action_type", "alias_id", "alias_subrecords", "topic_subrecords"),
+    [
+        (PLAYER_DIALOGUE_ACTION, 0, (_sub("ALUA", _fid(BOB)),), (_sub("NPOT", _fid(TOPIC)),)),
+        (NPC_RESPONSE_DIALOGUE_ACTION, 0, (_sub("ALUA", _fid(BOB)),), (_sub("PTOP", _fid(TOPIC)),)),
+        (DIALOGUE_ACTION, 1, (_sub("ALFR", _fid(BOB_REF)),), (_sub("DATA", _fid(TOPIC)),)),
+    ],
+    ids=["scene-alias", "player-slot-alias", "forced-ref-alias"],
+)
+def test_scene_actions_resolve_voice_through_the_alias(
+    tmp_path: Path, action_type: int, alias_id: int, alias_subrecords, topic_subrecords
+) -> None:
     lines = _export(
         tmp_path,
-        quests=[_quest(QUEST, _alias(0, _sub("ALUA", _fid(BOB))))],
+        quests=[_quest(QUEST, _alias(alias_id, *alias_subrecords))],
         topics=[_topic(TOPIC, _info(INFO))],
-        scenes=[_scene((PLAYER_DIALOGUE_ACTION, 0, [_sub("NPOT", _fid(TOPIC))]))],
+        scenes=[_scene((action_type, alias_id, list(topic_subrecords)))],
     )
 
     assert _voices(lines) == {("MaleBoston", "scene")}
 
 
-def test_npc_response_dialogue_gives_player_slots_to_the_actor_alias(tmp_path: Path) -> None:
-    lines = _export(
-        tmp_path,
-        quests=[_quest(QUEST, _alias(0, _sub("ALUA", _fid(BOB))))],
-        topics=[_topic(TOPIC, _info(INFO))],
-        scenes=[_scene((NPC_RESPONSE_DIALOGUE_ACTION, 0, [_sub("PTOP", _fid(TOPIC))]))],
-    )
+@pytest.mark.parametrize(
+    ("info_subrecords", "expected"),
+    [
+        pytest.param(
+            (_ctda(GET_IS_VOICE_TYPE, MALE_AND_FEMALE_LIST),),
+            {("FemaleBoston", "condition"), ("MaleBoston", "condition")},
+            id="voice-type-condition-expands-form-list",
+        ),
+        pytest.param(
+            (
+                _ctda(GET_IS_VOICE_TYPE, MALE_BOSTON, or_next=True),
+                _ctda(GET_IS_VOICE_TYPE, FEMALE_BOSTON),
+                _ctda(GET_IS_ID, ALICE),
+            ),
+            {("FemaleBoston", "condition")},
+            id="or-group-intersected-with-next-condition",
+        ),
+        pytest.param(
+            (
+                _ctda(GET_IS_ID, BOB, value=0.0),
+                _ctda(GET_IS_ID, GUARD, run_on=1),
+                _ctda(GET_IS_VOICE_TYPE, FEMALE_BOSTON),
+            ),
+            {("FemaleBoston", "condition")},
+            id="negated-and-non-subject-conditions-ignored",
+        ),
+        pytest.param(
+            (_ctda(GET_IS_ID, ROBOT_ACTIVATOR),),
+            {("RobotVoice", "condition")},
+            id="talking-activator-condition",
+        ),
+        pytest.param(
+            (_ctda(GET_IN_FACTION, ALICE_FACTION),),
+            {("FemaleBoston", "condition")},
+            id="faction-condition",
+        ),
+        pytest.param(
+            (_ctda(GET_IS_CLASS, ALICE_CLASS),),
+            {("FemaleBoston", "condition")},
+            id="class-condition",
+        ),
+        pytest.param(
+            (_sub("ANAM", _fid(GUARD_TEMPLATED)),),
+            {("MaleRough", "speaker")},
+            id="templated-npc-inherits-voice-through-leveled-list",
+        ),
+        pytest.param((), {("MaleRough", "default")}, id="default-npc-voice-types-are-the-last-resort"),
+    ],
+)
+def test_info_voice_resolution(tmp_path: Path, info_subrecords, expected: set[tuple[str, str]]) -> None:
+    lines = _export(tmp_path, topics=[_topic(TOPIC, _info(INFO, *info_subrecords))])
 
-    assert _voices(lines) == {("MaleBoston", "scene")}
-
-
-def test_dialogue_action_uses_forced_reference_alias(tmp_path: Path) -> None:
-    lines = _export(
-        tmp_path,
-        quests=[_quest(QUEST, _alias(1, _sub("ALFR", _fid(BOB_REF))))],
-        topics=[_topic(TOPIC, _info(INFO))],
-        scenes=[_scene((DIALOGUE_ACTION, 1, [_sub("DATA", _fid(TOPIC))]))],
-    )
-
-    assert _voices(lines) == {("MaleBoston", "scene")}
-
-
-def test_voice_type_condition_expands_form_lists(tmp_path: Path) -> None:
-    lines = _export(tmp_path, topics=[_topic(TOPIC, _info(INFO, _ctda(GET_IS_VOICE_TYPE, MALE_AND_FEMALE_LIST)))])
-
-    assert _voices(lines) == {("FemaleBoston", "condition"), ("MaleBoston", "condition")}
-
-
-def test_or_group_is_intersected_with_the_next_condition(tmp_path: Path) -> None:
-    info = _info(
-        INFO,
-        _ctda(GET_IS_VOICE_TYPE, MALE_BOSTON, or_next=True),
-        _ctda(GET_IS_VOICE_TYPE, FEMALE_BOSTON),
-        _ctda(GET_IS_ID, ALICE),
-    )
-
-    assert _voices(_export(tmp_path, topics=[_topic(TOPIC, info)])) == {("FemaleBoston", "condition")}
-
-
-def test_negated_and_non_subject_conditions_do_not_name_the_speaker(tmp_path: Path) -> None:
-    info = _info(
-        INFO,
-        _ctda(GET_IS_ID, BOB, value=0.0),
-        _ctda(GET_IS_ID, GUARD, run_on=1),
-        _ctda(GET_IS_VOICE_TYPE, FEMALE_BOSTON),
-    )
-
-    assert _voices(_export(tmp_path, topics=[_topic(TOPIC, info)])) == {("FemaleBoston", "condition")}
+    assert _voices(lines) == expected
 
 
 def test_alias_ref_condition_follows_external_alias(tmp_path: Path) -> None:
@@ -398,44 +414,21 @@ def test_alias_voice_type_list_limits_alias_conditions(tmp_path: Path) -> None:
     assert _voices(lines) == {("MaleBoston", "condition")}
 
 
-def test_quest_dialogue_conditions_voice_unconditioned_lines(tmp_path: Path) -> None:
-    quest = _quest(
+def test_quest_dialogue_conditions_voice_unconditioned_lines_and_narrow_info_conditions(tmp_path: Path) -> None:
+    unconditioned_quest = _quest(
         dialogue_conditions=(_ctda(GET_IS_VOICE_TYPE, MALE_AND_FEMALE_LIST),),
         event_conditions=(_ctda(GET_IS_VOICE_TYPE, ROBOT_VOICE),),
     )
-    lines = _export(tmp_path, quests=[quest], topics=[_topic(TOPIC, _info(INFO))])
+    unconditioned_lines = _export(tmp_path, quests=[unconditioned_quest], topics=[_topic(TOPIC, _info(INFO))])
+    assert _voices(unconditioned_lines) == {("FemaleBoston", "condition"), ("MaleBoston", "condition")}
 
-    assert _voices(lines) == {("FemaleBoston", "condition"), ("MaleBoston", "condition")}
-
-
-def test_quest_dialogue_conditions_narrow_info_conditions(tmp_path: Path) -> None:
-    quest = _quest(dialogue_conditions=(_ctda(GET_IS_VOICE_TYPE, FEMALE_BOSTON),))
-    lines = _export(
+    narrowing_quest = _quest(dialogue_conditions=(_ctda(GET_IS_VOICE_TYPE, FEMALE_BOSTON),))
+    narrowed_lines = _export(
         tmp_path,
-        quests=[quest],
+        quests=[narrowing_quest],
         topics=[_topic(TOPIC, _info(INFO, _ctda(GET_IS_VOICE_TYPE, MALE_AND_FEMALE_LIST)))],
     )
-
-    assert _voices(lines) == {("FemaleBoston", "condition")}
-
-
-def test_templated_npc_inherits_voice_through_leveled_list(tmp_path: Path) -> None:
-    lines = _export(tmp_path, topics=[_topic(TOPIC, _info(INFO, _sub("ANAM", _fid(GUARD_TEMPLATED))))])
-
-    assert _voices(lines) == {("MaleRough", "speaker")}
-
-
-def test_talking_activator_condition_uses_activator_voice(tmp_path: Path) -> None:
-    lines = _export(tmp_path, topics=[_topic(TOPIC, _info(INFO, _ctda(GET_IS_ID, ROBOT_ACTIVATOR)))])
-
-    assert _voices(lines) == {("RobotVoice", "condition")}
-
-
-@pytest.mark.parametrize(("function", "form_id"), [(GET_IN_FACTION, ALICE_FACTION), (GET_IS_CLASS, ALICE_CLASS)])
-def test_faction_and_class_conditions_collect_member_voices(tmp_path: Path, function: int, form_id: int) -> None:
-    lines = _export(tmp_path, topics=[_topic(TOPIC, _info(INFO, _ctda(function, form_id)))])
-
-    assert _voices(lines) == {("FemaleBoston", "condition")}
+    assert _voices(narrowed_lines) == {("FemaleBoston", "condition")}
 
 
 def test_previous_info_voice_is_used_when_unresolved(tmp_path: Path) -> None:
@@ -463,12 +456,6 @@ def test_quest_greeting_voice_is_the_fallback(tmp_path: Path) -> None:
     )
 
     assert _voices([line for line in lines if line.info_form_id == "01000802"]) == {("FemaleBoston", "greeting")}
-
-
-def test_default_npc_voice_types_are_the_last_resort(tmp_path: Path) -> None:
-    lines = _export(tmp_path, topics=[_topic(TOPIC, _info(INFO))])
-
-    assert _voices(lines) == {("MaleRough", "default")}
 
 
 def test_unresolved_line_is_exported_without_voice_type(tmp_path: Path) -> None:

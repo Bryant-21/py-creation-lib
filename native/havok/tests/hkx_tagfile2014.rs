@@ -26,30 +26,7 @@ fn synthesize_header_only(magic_le: bool, tag: u32, version: u32) -> Vec<u8> {
     buf
 }
 
-#[test]
-fn detects_binary_tagfile_magic_in_either_endianness() {
-    let le = synthesize_header_only(true, 1, 13);
-    assert!(is_binary_tagfile_magic(&le));
-
-    let be = synthesize_header_only(false, 1, 13);
-    assert!(is_binary_tagfile_magic(&be));
-
-    let mut bogus = vec![0u8; 16];
-    bogus[0..4].copy_from_slice(&0xDEAD_BEEFu32.to_le_bytes());
-    assert!(!is_binary_tagfile_magic(&bogus));
-}
-
-#[test]
-fn rejects_buffer_too_small_for_magic() {
-    assert!(!is_binary_tagfile_magic(&[]));
-    assert!(!is_binary_tagfile_magic(&[0x1E]));
-    assert!(!is_binary_tagfile_magic(&[
-        0x1E, 0x0D, 0xB0, 0xCA, 0xCE, 0xFA, 0x11
-    ]));
-}
-
 // VLE-encoded signed int helper, mirrors the stream codec in tagfile2014.rs.
-// Used only by the synthetic-stream integration tests below.
 fn vle_signed(value: i64) -> Vec<u8> {
     let neg = value < 0;
     let mag = if neg { (-value) as u64 } else { value as u64 };
@@ -82,44 +59,104 @@ const SYNTH_TAG_METADATA: i64 = 2;
 const SYNTH_TAG_FILE_END: i64 = 7;
 
 #[test]
-fn read_with_only_header_errors_on_missing_tag_file_info() {
-    // No content past the 16-byte header: the reader should fail trying to
-    // read the first tag, not silently succeed.
+fn magic_detection_and_header_parse_accept_valid_prefixes_and_reject_bad_ones() {
+    assert!(is_binary_tagfile_magic(&synthesize_header_only(true, 1, 13)));
+    assert!(is_binary_tagfile_magic(&synthesize_header_only(false, 1, 13)));
+    let mut bogus = vec![0u8; 16];
+    bogus[0..4].copy_from_slice(&0xDEAD_BEEFu32.to_le_bytes());
+    for short in [&bogus[..], &[], &[0x1E], &[0x1E, 0x0D, 0xB0, 0xCA, 0xCE, 0xFA, 0x11]] {
+        assert!(!is_binary_tagfile_magic(short));
+    }
+
+    let mut le = synthesize_header_only(true, 1, TAGFILE_VERSION_2014_2);
+    le.extend_from_slice(&vle_signed(SYNTH_TAG_FILE_INFO));
+    let mut be = Vec::new();
+    be.extend_from_slice(&BINARY_MAGIC_0.to_be_bytes());
+    be.extend_from_slice(&BINARY_MAGIC_1.to_be_bytes());
+    be.extend_from_slice(&1u32.to_be_bytes());
+    be.extend_from_slice(&TAGFILE_VERSION_2014_2.to_be_bytes());
+    be.extend_from_slice(&vle_signed(SYNTH_TAG_FILE_INFO));
+    // HCT 2014 exports put the stream directly after the two magic words.
+    let mut hct = BINARY_MAGIC_0.to_le_bytes().to_vec();
+    hct.extend_from_slice(&BINARY_MAGIC_1.to_le_bytes());
+    hct.extend_from_slice(&vle_signed(SYNTH_TAG_FILE_INFO));
+    hct.extend_from_slice(&vle_signed(3));
+    for (label, buf, swap, offset) in [("le", le, false, 16), ("be", be, true, 16), ("hct", hct, false, 8)] {
+        let header = parse_header(&buf).unwrap_or_else(|error| panic!("{label}: {error}"));
+        assert_eq!(header.swap_bytes, swap, "{label}");
+        assert_eq!(header.stream_offset, offset, "{label}");
+    }
+
+    let mut bad_magic0 = synthesize_header_only(true, 1, TAGFILE_VERSION_2014_2);
+    bad_magic0[0..4].copy_from_slice(&0xDEAD_BEEFu32.to_le_bytes());
+    let mut bad_magic1 = synthesize_header_only(true, 1, TAGFILE_VERSION_2014_2);
+    bad_magic1[4..8].copy_from_slice(&0u32.to_le_bytes());
+    for (buf, message) in [
+        (vec![0u8; 7], "Tagfile2014 magic requires"),
+        (bad_magic0, "magic0 mismatch"),
+        (bad_magic1, "magic1 mismatch"),
+        (synthesize_header_only(true, 1, 11), "starts with tag"),
+        (synthesize_header_only(true, 7, TAGFILE_VERSION_2014_2), "starts with tag"),
+    ] {
+        let error = parse_header(&buf).unwrap_err().to_string();
+        assert!(error.contains(message), "expected {message:?}, got {error}");
+    }
+}
+
+#[test]
+fn object_free_streams_materialize_empty_and_malformed_starts_are_rejected() {
     let header = synthesize_header_only(true, 1, 13);
-    let err = read_tagfile2014(&header).unwrap_err();
-    assert!(
-        err.to_string().contains("truncated") || err.to_string().contains("VLE"),
-        "expected truncation/VLE error past header, got: {err}"
-    );
-}
+    let err = read_tagfile2014(&header).unwrap_err().to_string();
+    assert!(err.contains("truncated") || err.contains("VLE"), "{err}");
 
-#[test]
-fn read_with_metadata_before_file_info_is_rejected() {
-    let mut buf = synthesize_header_only(true, 1, 13);
-    buf.extend_from_slice(&vle_signed(SYNTH_TAG_METADATA));
-    let err = read_tagfile2014(&buf).unwrap_err();
+    let mut metadata_first = header.clone();
+    metadata_first.extend_from_slice(&vle_signed(SYNTH_TAG_METADATA));
+    let err = read_tagfile2014(&metadata_first).unwrap_err().to_string();
     assert!(
-        err.to_string().contains("starts with tag 2")
-            && err.to_string().contains("expected TAG_FILE_INFO"),
-        "unexpected error: {err}"
+        err.contains("starts with tag 2") && err.contains("expected TAG_FILE_INFO"),
+        "{err}"
     );
-}
 
-#[test]
-fn read_v3_file_info_only_then_end_yields_empty_hkx_file() {
-    // Minimal valid stream: TAG_FILE_INFO version=3 (no sdk version,
-    // no predicates, single precision), then TAG_FILE_END. This
-    // materializes successfully with zero objects.
-    let mut buf = synthesize_header_only(true, 1, 13);
-    buf.extend_from_slice(&vle_signed(SYNTH_TAG_FILE_INFO));
-    buf.extend_from_slice(&vle_signed(3));
-    buf.extend_from_slice(&vle_signed(SYNTH_TAG_FILE_END));
-    let hkx = read_tagfile2014(&buf).expect("v13 file-info-only stream materializes");
-    assert!(
-        hkx.objects().is_empty(),
-        "expected zero objects, got {}",
-        hkx.objects().len()
-    );
+    let mut info_only = header.clone();
+    info_only.extend_from_slice(&vle_signed(SYNTH_TAG_FILE_INFO));
+    info_only.extend_from_slice(&vle_signed(3));
+
+    let mut one_class = info_only.clone();
+    one_class.extend_from_slice(&vle_signed(SYNTH_TAG_METADATA));
+    one_class.extend_from_slice(&vle_string("TestClass"));
+    one_class.extend_from_slice(&vle_signed(0)); // version
+    one_class.extend_from_slice(&vle_signed(-1)); // parent index
+    one_class.extend_from_slice(&vle_signed(1)); // numFields
+    one_class.extend_from_slice(&vle_string("x"));
+    one_class.extend_from_slice(&vle_signed(3)); // TYPE_REAL
+
+    // STRUCT field-type bits require an extra class-name string after the
+    // legacy type; the codec must advance past it rather than desync.
+    const LT_TYPE_STRUCT: u32 = 9;
+    let mut struct_field = info_only.clone();
+    struct_field.extend_from_slice(&vle_signed(SYNTH_TAG_METADATA));
+    struct_field.extend_from_slice(&vle_string("StructPayload"));
+    struct_field.extend_from_slice(&vle_signed(0));
+    struct_field.extend_from_slice(&vle_signed(-1));
+    struct_field.extend_from_slice(&vle_signed(0));
+    struct_field.extend_from_slice(&vle_signed(SYNTH_TAG_METADATA));
+    struct_field.extend_from_slice(&vle_string("Container"));
+    struct_field.extend_from_slice(&vle_signed(0));
+    struct_field.extend_from_slice(&vle_signed(-1));
+    struct_field.extend_from_slice(&vle_signed(1));
+    struct_field.extend_from_slice(&vle_string("payload"));
+    struct_field.extend_from_slice(&vle_signed(LT_TYPE_STRUCT as i64));
+    struct_field.extend_from_slice(&vle_signed(-2)); // backref "StructPayload"
+
+    for (label, mut buf) in [
+        ("info_only", info_only),
+        ("one_class", one_class),
+        ("struct_field", struct_field),
+    ] {
+        buf.extend_from_slice(&vle_signed(SYNTH_TAG_FILE_END));
+        let hkx = read_tagfile2014(&buf).unwrap_or_else(|error| panic!("{label}: {error}"));
+        assert!(hkx.objects().is_empty(), "{label}");
+    }
 }
 
 #[test]
@@ -165,138 +202,6 @@ fn write_minimal_v13_object_graph_round_trips_through_reader() {
 
     let reparsed = read_tagfile2014(&bytes).expect("writer output should parse");
     assert_eq!(reparsed.objects(), hkx.objects());
-}
-
-#[test]
-fn read_v3_with_one_metadata_class_then_end_yields_empty_hkx_file() {
-    // Class table is populated by TAG_METADATA but no TAG_OBJECT* records
-    // follow, so the materialized HkxFile still has zero objects.
-    let mut buf = synthesize_header_only(true, 1, 13);
-    buf.extend_from_slice(&vle_signed(SYNTH_TAG_FILE_INFO));
-    buf.extend_from_slice(&vle_signed(3));
-
-    buf.extend_from_slice(&vle_signed(SYNTH_TAG_METADATA));
-    buf.extend_from_slice(&vle_string("TestClass")); // record name
-    buf.extend_from_slice(&vle_signed(0)); // version
-    buf.extend_from_slice(&vle_signed(-1)); // parent index
-    buf.extend_from_slice(&vle_signed(1)); // numFields
-    buf.extend_from_slice(&vle_string("x")); // field name
-    buf.extend_from_slice(&vle_signed(3)); // legacyType TYPE_REAL
-
-    buf.extend_from_slice(&vle_signed(SYNTH_TAG_FILE_END));
-    let hkx = read_tagfile2014(&buf).expect("v13 stream with one class materializes");
-    assert!(hkx.objects().is_empty());
-}
-
-#[test]
-fn read_metadata_with_struct_field_consumes_class_name_string() {
-    // STRUCT field-type bits require an extra string after the legacy type
-    // — the class name. Verify the codec advances the stream past it
-    // rather than getting out of sync.
-    const LT_TYPE_STRUCT: u32 = 9;
-    let mut buf = synthesize_header_only(true, 1, 13);
-    buf.extend_from_slice(&vle_signed(SYNTH_TAG_FILE_INFO));
-    buf.extend_from_slice(&vle_signed(3));
-
-    // Class A (the struct payload type, declared first so its name index
-    // can be used).
-    buf.extend_from_slice(&vle_signed(SYNTH_TAG_METADATA));
-    buf.extend_from_slice(&vle_string("StructPayload"));
-    buf.extend_from_slice(&vle_signed(0));
-    buf.extend_from_slice(&vle_signed(-1));
-    buf.extend_from_slice(&vle_signed(0)); // numFields=0
-
-    // Class B with a STRUCT-typed field whose class name = "StructPayload".
-    buf.extend_from_slice(&vle_signed(SYNTH_TAG_METADATA));
-    buf.extend_from_slice(&vle_string("Container"));
-    buf.extend_from_slice(&vle_signed(0));
-    buf.extend_from_slice(&vle_signed(-1));
-    buf.extend_from_slice(&vle_signed(1));
-    buf.extend_from_slice(&vle_string("payload"));
-    buf.extend_from_slice(&vle_signed(LT_TYPE_STRUCT as i64));
-    // STRUCT triggers an extra class-name string; backref -2 references
-    // "StructPayload" which was pushed at slot 2 of prev_strings.
-    buf.extend_from_slice(&vle_signed(-2));
-
-    buf.extend_from_slice(&vle_signed(SYNTH_TAG_FILE_END));
-    let hkx = read_tagfile2014(&buf).expect("two-metadata stream materializes");
-    assert!(hkx.objects().is_empty());
-}
-
-#[test]
-fn header_parse_accepts_canonical_little_endian_v13() {
-    let mut buf = synthesize_header_only(true, 1, TAGFILE_VERSION_2014_2);
-    buf.extend_from_slice(&vle_signed(SYNTH_TAG_FILE_INFO));
-    let header = parse_header(&buf).expect("canonical LE header parses");
-    assert!(!header.swap_bytes);
-    assert_eq!(header.stream_offset, 16);
-}
-
-#[test]
-fn header_parse_detects_byte_swap_from_big_endian_magic() {
-    // BE-magic file: magic words are written big-endian, but the rest of
-    // the file (tag, version) is also stored in the BE byte order.
-    // parse_header normalizes by swapping every u32 it reads after detect.
-    let mut buf = Vec::new();
-    buf.extend_from_slice(&BINARY_MAGIC_0.to_be_bytes());
-    buf.extend_from_slice(&BINARY_MAGIC_1.to_be_bytes());
-    buf.extend_from_slice(&1u32.to_be_bytes());
-    buf.extend_from_slice(&TAGFILE_VERSION_2014_2.to_be_bytes());
-    buf.extend_from_slice(&vle_signed(SYNTH_TAG_FILE_INFO));
-    let header = parse_header(&buf).expect("BE header parses");
-    assert!(header.swap_bytes);
-    assert_eq!(header.stream_offset, 16);
-}
-
-#[test]
-fn header_parse_rejects_truncated_buffer() {
-    let err = parse_header(&[0u8; 7]).unwrap_err();
-    assert!(
-        err.to_string().contains("Tagfile2014 magic requires"),
-        "unexpected error: {err}"
-    );
-}
-
-#[test]
-fn header_parse_rejects_wrong_magic0() {
-    let mut buf = synthesize_header_only(true, 1, TAGFILE_VERSION_2014_2);
-    buf[0..4].copy_from_slice(&0xDEAD_BEEFu32.to_le_bytes());
-    let err = parse_header(&buf).unwrap_err();
-    assert!(
-        err.to_string().contains("magic0 mismatch"),
-        "unexpected error: {err}"
-    );
-}
-
-#[test]
-fn header_parse_rejects_wrong_magic1() {
-    let mut buf = synthesize_header_only(true, 1, TAGFILE_VERSION_2014_2);
-    buf[4..8].copy_from_slice(&0u32.to_le_bytes());
-    let err = parse_header(&buf).unwrap_err();
-    assert!(
-        err.to_string().contains("magic1 mismatch"),
-        "unexpected error: {err}"
-    );
-}
-
-#[test]
-fn header_parse_rejects_non_v13_layout() {
-    let buf = synthesize_header_only(true, 1, 11);
-    let err = parse_header(&buf).unwrap_err();
-    assert!(
-        err.to_string().contains("starts with tag"),
-        "unexpected error: {err}"
-    );
-}
-
-#[test]
-fn header_parse_rejects_non_one_tag_word() {
-    let buf = synthesize_header_only(true, 7, TAGFILE_VERSION_2014_2);
-    let err = parse_header(&buf).unwrap_err();
-    assert!(
-        err.to_string().contains("starts with tag"),
-        "unexpected error: {err}"
-    );
 }
 
 // hkLegacyType bits used by the synthesized hkRootLevelContainer fixture.

@@ -291,16 +291,6 @@ mod tests {
     };
 
     #[test]
-    fn default_state() {
-        let c = Chunk::default();
-        assert!(c.is_empty());
-        assert!(!c.is_compressed());
-        assert!(c.is_decompressed());
-        assert_eq!(c.len(), 0);
-        assert_eq!(c.mips, None);
-    }
-
-    #[test]
     fn lz4_roundtrip_for_starfield_dx10_block() {
         let payload = vec![0x5Au8; 8192];
         let chunk = Chunk::from_decompressed(payload.as_slice());

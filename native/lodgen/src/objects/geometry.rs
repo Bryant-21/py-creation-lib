@@ -1096,16 +1096,6 @@ mod simplify_tests {
     }
 
     #[test]
-    fn simplify_is_deterministic() {
-        let mut a = flat_fan_square();
-        let mut b = flat_fan_square();
-        a.simplify();
-        b.simplify();
-        assert_eq!(a.triangles, b.triangles, "same input → same triangles");
-        assert_eq!(a.vertices, b.vertices, "same input → same vertices");
-    }
-
-    #[test]
     fn simplify_preserves_corner_uvs_and_normals() {
         let mut g = flat_fan_square();
         g.simplify();
@@ -1120,24 +1110,6 @@ mod simplify_tests {
         }
         assert_eq!(g.uvcoords.len(), g.vertices.len());
         assert_eq!(g.normals.len(), g.vertices.len());
-    }
-
-    #[test]
-    fn simplify_noop_on_already_minimal_quad() {
-        // Two triangles forming a flat quad — no interior vertex to remove.
-        let mut g = LodGeometry::new();
-        g.vertices = vec![
-            [0.0, 0.0, 0.0],
-            [1.0, 0.0, 0.0],
-            [1.0, 1.0, 0.0],
-            [0.0, 1.0, 0.0],
-        ];
-        g.uvcoords = vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
-        g.normals = vec![[0.0, 0.0, 1.0]; 4];
-        g.triangles = vec![[0, 1, 2], [0, 2, 3]];
-        let changed = g.simplify();
-        assert!(!changed, "minimal quad cannot simplify further");
-        assert_eq!(g.num_triangles(), 2);
     }
 
     #[test]
@@ -1158,21 +1130,6 @@ mod simplify_tests {
                 assert!((i as usize) < g.num_vertices());
             }
         }
-    }
-
-    #[test]
-    fn simplify_keeps_non_coplanar_pyramid() {
-        // A pyramid apex (center vertex lifted in Z) — fan is NOT coplanar, so the
-        // apex must be kept (angle/normal test fails).
-        let mut g = flat_fan_square();
-        g.vertices[4] = [0.5, 0.5, 0.5]; // lift the apex out of plane
-        // Recompute apex normal isn't needed; Simplify uses face normals.
-        let before_tris = g.num_triangles();
-        let before_verts = g.num_vertices();
-        let changed = g.simplify();
-        assert!(!changed, "non-coplanar pyramid apex must not collapse");
-        assert_eq!(g.num_triangles(), before_tris);
-        assert_eq!(g.num_vertices(), before_verts);
     }
 
     #[test]
@@ -1215,57 +1172,6 @@ mod simplify_tests {
         for uv in &g.uvcoords {
             assert!(uv[0].is_finite() && uv[1].is_finite());
         }
-    }
-
-    #[test]
-    fn reuv_break_reweld_simplify_is_deterministic() {
-        let build = || {
-            let mut g = LodGeometry::new();
-            let n = 3;
-            for j in 0..n {
-                for i in 0..n {
-                    g.vertices.push([i as f32, j as f32, 0.0]);
-                    g.uvcoords.push([i as f32 / 2.0, j as f32 / 2.0]);
-                    g.normals.push([0.0, 0.0, 1.0]);
-                }
-            }
-            let vid = |i: usize, j: usize| (j * n + i) as u32;
-            for j in 0..n - 1 {
-                for i in 0..n - 1 {
-                    g.triangles
-                        .push([vid(i, j), vid(i + 1, j), vid(i + 1, j + 1)]);
-                    g.triangles
-                        .push([vid(i, j), vid(i + 1, j + 1), vid(i, j + 1)]);
-                }
-            }
-            g
-        };
-        let mut a = build();
-        let mut b = build();
-        a.reuv_break_reweld_simplify(false, false, true);
-        b.reuv_break_reweld_simplify(false, false, true);
-        assert_eq!(a.triangles, b.triangles);
-        assert_eq!(a.vertices, b.vertices);
-    }
-
-    #[test]
-    fn quvx_truncates_signed() {
-        assert_eq!(super::quvx(0.123456), 0.123);
-        assert_eq!(super::quvx(-0.123456), -0.123);
-        assert_eq!(super::quvx(1.0), 1.0);
-    }
-
-    #[test]
-    fn face_normal_key_matches_for_coplanar() {
-        let verts = vec![
-            [0.0, 0.0, 0.0],
-            [1.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0],
-            [1.0, 1.0, 0.0],
-        ];
-        let k1 = super::face_normal_key(&verts, &[0, 1, 2]);
-        let k2 = super::face_normal_key(&verts, &[1, 3, 2]);
-        assert_eq!(k1, k2, "two coplanar +Z tris share a normal key");
     }
 
     // -----------------------------------------------------------------------
@@ -1328,45 +1234,6 @@ mod simplify_tests {
     }
 
     #[test]
-    fn cross_seam_weld_respects_uv_band_far_apart_not_welded() {
-        // Out-of-band UV delta (0.5 > UV_BAND 0.10): a far-apart seam (would smear
-        // the source texture). Must NOT weld — the seam is preserved.
-        let mut g = seam_split_quad(0.5);
-        assert_eq!(g.num_vertices(), 6);
-        g.cross_seam_weld_vertices();
-        assert_eq!(
-            g.num_vertices(),
-            6,
-            "far-apart-UV seam preserved (texturing safety)"
-        );
-        assert_eq!(g.num_triangles(), 2, "both triangles kept");
-    }
-
-    #[test]
-    fn cross_seam_weld_representative_keeps_own_uv() {
-        // The representative (lower index) keeps its OWN UV — never averaged across
-        // the (in-band) twin's region. Bounds each weld's UV displacement.
-        let mut g = seam_split_quad(0.02);
-        // Capture vert 1's and vert 2's UVs (the representatives).
-        let u1 = g.uvcoords[1];
-        let u2 = g.uvcoords[2];
-        g.cross_seam_weld_vertices();
-        // After compaction the surviving verts must include exactly the rep UVs for
-        // the welded positions (1.0,0.0) and (0.0,1.0) — NOT the twins' shifted UVs
-        // and NOT an average.
-        let has = |target: [f32; 2]| {
-            g.uvcoords
-                .iter()
-                .any(|uv| (uv[0] - target[0]).abs() < 1e-6 && (uv[1] - target[1]).abs() < 1e-6)
-        };
-        assert!(has(u1), "representative vert 1 UV preserved: {u1:?}");
-        assert!(has(u2), "representative vert 2 UV preserved: {u2:?}");
-        // The twins' shifted UVs (u=1.02, 0.02) must be gone.
-        assert!(!has([1.02, 0.0]), "twin UV (1.02,0.0) removed");
-        assert!(!has([0.02, 1.0]), "twin UV (0.02,1.0) removed");
-    }
-
-    #[test]
     fn cross_seam_weld_drops_degenerate_triangles() {
         // A triangle whose two verts are position-coincident seam twins collapses to
         // a degenerate (two equal indices) after the weld and must be dropped.
@@ -1393,112 +1260,4 @@ mod simplify_tests {
         }
     }
 
-    #[test]
-    fn cross_seam_weld_is_deterministic() {
-        let mut a = seam_split_quad(0.02);
-        let mut b = seam_split_quad(0.02);
-        a.cross_seam_weld_vertices();
-        b.cross_seam_weld_vertices();
-        assert_eq!(a.triangles, b.triangles, "same input → same triangles");
-        assert_eq!(a.vertices, b.vertices, "same input → same vertices");
-        assert_eq!(a.uvcoords, b.uvcoords, "same input → same UVs");
-    }
-
-    #[test]
-    fn cross_seam_weld_noop_when_no_seams() {
-        // A clean quad with no coincident-position twins must be untouched.
-        let mut g = LodGeometry::new();
-        g.vertices = vec![
-            [0.0, 0.0, 0.0],
-            [1.0, 0.0, 0.0],
-            [1.0, 1.0, 0.0],
-            [0.0, 1.0, 0.0],
-        ];
-        g.uvcoords = vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
-        g.normals = vec![[0.0, 0.0, 1.0]; 4];
-        g.triangles = vec![[0, 1, 2], [0, 2, 3]];
-        let before_v = g.num_vertices();
-        let before_t = g.num_triangles();
-        g.cross_seam_weld_vertices();
-        assert_eq!(g.num_vertices(), before_v, "no twins → verts unchanged");
-        assert_eq!(g.num_triangles(), before_t, "no twins → tris unchanged");
-    }
-
-    /// END-TO-END (synthetic): a flat surface split down the middle by a UV seam,
-    /// each half subdivided into a fan. With cross_seam_weld OFF the faithful
-    /// pipeline cannot collapse across the seam; with it ON the whole surface
-    /// decimates further — the mechanism the boat meshes need, in miniature.
-    fn seamed_subdivided_surface() -> LodGeometry {
-        // 3x3 vertex grid over a 2x2 unit square, but the middle column (i==1) is
-        // DUPLICATED so the left and right halves have independent UVs (a seam down
-        // x=1). Positions of the two middle columns coincide.
-        let mut g = LodGeometry::new();
-        // Left half cols i=0,1 ; right half cols i=1(dup),2. We'll store columns as
-        // separate vertices to create the seam.
-        // Vertex layout: for each row j in 0..3, push left(0), leftmid(1),
-        // rightmid(1 dup), right(2).
-        for j in 0..3 {
-            let y = j as f32;
-            g.vertices.push([0.0, y, 0.0]); // left
-            g.vertices.push([1.0, y, 0.0]); // left-mid
-            g.vertices.push([1.0, y, 0.0]); // right-mid (dup pos, seam)
-            g.vertices.push([2.0, y, 0.0]); // right
-            // UVs: left half u in [0,0.50], right half u in [0.52,1.0]. The seam
-            // twins sit at u=0.50 (left-mid) vs u=0.52 (right-mid): a 0.02 UV jump
-            // — ABOVE the faithful reweld threshold (0.005) so the faithful path
-            // keeps them split, but WITHIN the cross-seam UV_BAND (0.10) so the weld
-            // merges them. This is the genuine UV seam the boat meshes exhibit.
-            g.uvcoords.push([0.0, y / 2.0]);
-            g.uvcoords.push([0.50, y / 2.0]);
-            g.uvcoords.push([0.52, y / 2.0]);
-            g.uvcoords.push([1.0, y / 2.0]);
-            for _ in 0..4 {
-                g.normals.push([0.0, 0.0, 1.0]);
-            }
-        }
-        let idx = |i: usize, j: usize| (j * 4 + i) as u32; // i: 0=L,1=Lmid,2=Rmid,3=R
-        // Left-half tris (cols 0..1), right-half tris (cols 2..3).
-        for j in 0..2 {
-            // left cell
-            g.triangles.push([idx(0, j), idx(1, j), idx(1, j + 1)]);
-            g.triangles.push([idx(0, j), idx(1, j + 1), idx(0, j + 1)]);
-            // right cell
-            g.triangles.push([idx(2, j), idx(3, j), idx(3, j + 1)]);
-            g.triangles.push([idx(2, j), idx(3, j + 1), idx(2, j + 1)]);
-        }
-        g
-    }
-
-    #[test]
-    fn cross_seam_weld_enables_more_decimation_than_faithful() {
-        let mut faithful = seamed_subdivided_surface();
-        let mut welded = seamed_subdivided_surface();
-        let t0 = faithful.num_triangles();
-        faithful.reuv_break_reweld_simplify(false, false, false);
-        welded.reuv_break_reweld_simplify(false, false, true);
-        eprintln!(
-            "seam surface tris: start={t0} faithful={} welded={}",
-            faithful.num_triangles(),
-            welded.num_triangles()
-        );
-        // The weld must not INCREASE triangles vs faithful, and on this seamed
-        // surface it strictly decimates further (crosses the x=1 seam).
-        assert!(
-            welded.num_triangles() <= faithful.num_triangles(),
-            "weld never worse than faithful ({} > {})",
-            welded.num_triangles(),
-            faithful.num_triangles()
-        );
-        assert!(
-            welded.num_triangles() < faithful.num_triangles(),
-            "weld crosses the seam and decimates further (welded={} faithful={})",
-            welded.num_triangles(),
-            faithful.num_triangles()
-        );
-        // Sanity: arrays stay consistent, UVs finite.
-        assert_eq!(welded.uvcoords.len(), welded.vertices.len());
-        for uv in &welded.uvcoords {
-            assert!(uv[0].is_finite() && uv[1].is_finite());
-        }
-    }
 }

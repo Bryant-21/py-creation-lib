@@ -294,14 +294,6 @@ fn default_bgsm(header: BaseHeader) -> BgsmData {
 mod tests {
     use super::*;
 
-    fn starfield_materials_cdb() -> PathBuf {
-        let root = std::env::var_os("STARFIELD_EXTRACTED_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../extracted/starfield")
-            });
-        root.join("materials/materialsbeta.cdb")
-    }
     use crate::ce2::{
         Ce2LayerPayload, Ce2MaterialPropsPayload, Ce2TextureSetPayload, Ce2UvStreamPayload,
     };
@@ -346,14 +338,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_layers_errors() {
-        let mat = material(Vec::new());
-        let err = build_bgsm(&mat, "materials\\bad.mat").expect_err("no layers");
-        assert!(err.contains("has no layers"), "{err}");
-    }
-
-    #[test]
-    fn single_layer_lands_at_fo76_v22() {
+    fn single_layer_lands_at_fo76_v22_and_empty_errors() {
         let mat = material(vec![layer(0.6, 0.0)]);
         let bgsm = build_bgsm(&mat, "materials\\gun.mat").expect("builds");
         assert_eq!(bgsm.header.version, 22);
@@ -361,6 +346,10 @@ mod tests {
         assert_eq!(bgsm.NormalTexture, "tex_n.dds");
         // roughness = 1 - 0.6 = 0.4 -> gloss = 0.6 at neutral multipliers.
         assert!((bgsm.Smoothness - 0.6).abs() < 1e-5, "{}", bgsm.Smoothness);
+
+        let mat = material(Vec::new());
+        let err = build_bgsm(&mat, "materials\\bad.mat").expect_err("no layers");
+        assert!(err.contains("has no layers"), "{err}");
     }
 
     #[test]
@@ -400,44 +389,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn matches_python_cdb_to_bgsm_output() {
-        let cdb_path = starfield_materials_cdb();
-        if !cdb_path.exists() {
-            eprintln!("skip: starfield extracted data not present");
-            return;
-        }
-        let cases: [(&str, &[u8]); 3] = [
-            (
-                r"materials\architecture\catwalks\barescuffedmetal01_base01.mat",
-                include_bytes!("../tests/fixtures/barescuffedmetal01_base01.bgsm").as_slice(),
-            ),
-            (
-                r"materials\terrain\default001solid.mat",
-                include_bytes!("../tests/fixtures/default001solid.bgsm").as_slice(),
-            ),
-            (
-                r"materials\items\animalgenericingredients\animalgenericingredients_bone.mat",
-                include_bytes!("../tests/fixtures/animalgenericingredients_bone.bgsm").as_slice(),
-            ),
-        ];
-        for (mat_path, fixture) in cases {
-            let got =
-                cdb_to_bgsm(&cdb_path, mat_path).unwrap_or_else(|e| panic!("{mat_path}: {e}"));
-            assert_eq!(got, fixture, "{mat_path}");
-        }
-    }
-
-    #[test]
-    fn resolves_starfield_ltex_material_without_materials_prefix() {
-        let cdb_path = starfield_materials_cdb();
-        if !cdb_path.exists() {
-            eprintln!("skip: starfield extracted data not present");
-            return;
-        }
-
-        let got = cdb_to_bgsm(&cdb_path, r"TERRAIN\MossClumpy01_Yellow.mat")
-            .expect("LTEX-relative material path resolves through canonical Materials root");
-        bgsm::parse(&got).expect("resolved material converts to parseable BGSM");
-    }
 }

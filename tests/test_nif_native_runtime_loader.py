@@ -41,41 +41,17 @@ def test_load_native_module_falls_back_to_umbrella_submodule(monkeypatch):
     assert calls == ["nif_core_native", "creation_lib._native"]
 
 
-def test_load_native_module_falls_back_to_umbrella_extension(monkeypatch):
-    from creation_lib.nif import native_runtime
 
-    native_runtime._NATIVE_MODULE = None
-    native_runtime._NATIVE_IMPORT_ATTEMPTED = False
-
-    extension_module = SimpleNamespace(
-        nif_core_native=SimpleNamespace(load_nif=lambda path: {"path": path}),
-    )
-    calls: list[str] = []
-
-    def _fake_import(name: str):
-        calls.append(name)
-        if name in {"nif_core_native", "nif_core_native.nif_core_native"}:
-            raise ImportError(name)
-        if name == "creation_lib._native":
-            return extension_module
-        raise ImportError(name)
-
-    monkeypatch.setattr(native_runtime, "import_module", _fake_import)
-
-    module = native_runtime.load_native_module()
-
-    assert module is extension_module.nif_core_native
-    assert calls == [
-        "nif_core_native",
-        "creation_lib._native",
-    ]
-
-
-def test_load_nif_raw_uses_function_payload(monkeypatch):
+def test_raw_helpers_forward_to_native_functions(monkeypatch):
     from creation_lib.nif import native_runtime
 
     payload = {"header": {}, "blocks": []}
-    native_runtime._NATIVE_MODULE = SimpleNamespace(load_nif=lambda path: payload | {"path": path})
+    native_runtime._NATIVE_MODULE = SimpleNamespace(
+        load_nif=lambda path: payload | {"path": path},
+        nif_from_bytes=lambda data: payload | {"size": len(data)},
+        nif_to_bytes=lambda raw: b"NIF" + bytes([len(raw["blocks"])]),
+        new_nif=lambda game: {"header": {"version": (20, 2, 0, 7)}, "blocks": [], "game": game},
+    )
     native_runtime._NATIVE_IMPORT_ATTEMPTED = True
 
     assert native_runtime.load_nif_raw("example.nif") == {
@@ -83,33 +59,12 @@ def test_load_nif_raw_uses_function_payload(monkeypatch):
         "blocks": [],
         "path": "example.nif",
     }
-
-
-def test_bytes_helpers_use_function_payloads(monkeypatch):
-    from creation_lib.nif import native_runtime
-
-    payload = {"header": {}, "blocks": []}
-    native_runtime._NATIVE_MODULE = SimpleNamespace(
-        nif_from_bytes=lambda data: payload | {"size": len(data)},
-        nif_to_bytes=lambda raw: b"NIF" + bytes([len(raw["blocks"])]),
-    )
-    native_runtime._NATIVE_IMPORT_ATTEMPTED = True
-
     assert native_runtime.nif_from_bytes_raw(b"abc") == {
         "header": {},
         "blocks": [],
         "size": 3,
     }
     assert native_runtime.nif_to_bytes_raw(payload) == b"NIF\x00"
-
-
-def test_new_nif_raw_uses_native_function(monkeypatch):
-    from creation_lib.nif import native_runtime
-
-    payload = {"header": {"version": (20, 2, 0, 7)}, "blocks": []}
-    native_runtime._NATIVE_MODULE = SimpleNamespace(new_nif=lambda game: payload | {"game": game})
-    native_runtime._NATIVE_IMPORT_ATTEMPTED = True
-
     assert native_runtime.new_nif_raw("fo4") == {
         "header": {"version": (20, 2, 0, 7)},
         "blocks": [],

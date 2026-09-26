@@ -67,88 +67,51 @@ def test_native_handle_formkey_index_apis_stay_native_backed() -> None:
 
 
 @pytest.mark.skipif(not _NATIVE_AVAILABLE, reason="esp_authoring_core not installed")
-def test_native_handle_index_invalidates_when_masters_change() -> None:
-    plugin = Plugin.new("MasterInvalidation.esp", game="fo4")
+@pytest.mark.parametrize("trigger", ["add_master", "ensure_source_masters", "identity_change", "save"])
+def test_native_handle_index_invalidates_on_state_change(trigger: str, tmp_path) -> None:
+    """The cached eid_index() must be invalidated (and rebuilt with fresh
+    form keys) whenever masters, plugin identity, or the saved path change."""
+    plugin = Plugin.new(f"BeforeChange_{trigger}.esp", game="fo4")
 
-    override = plugin.new_record("MISC", form_id=0x0000ABCD)
-    override.editor_id = "MaybeOverride"
-    plugin.add_record(override)
+    if trigger in ("add_master", "ensure_source_masters"):
+        # This record's raw form_id was minted while the plugin had zero
+        # masters, so its mod-index byte is 0 (self). Adding a master shifts
+        # "self" to index 1; the record must be rebased to the new self index
+        # so it stays a local record rather than silently becoming an
+        # override of whatever the new master defines at that object ID.
+        override = plugin.new_record("MISC", form_id=0x0000ABCD)
+        override.editor_id = "MaybeOverride"
+        plugin.add_record(override)
+        assert plugin.eid_index()["maybeoverride"] == [f"BeforeChange_{trigger}.esp:00ABCD"]
 
-    assert plugin.eid_index()["maybeoverride"] == ["MasterInvalidation.esp:00ABCD"]
+        if trigger == "add_master":
+            plugin.add_master("Fallout4.esm")
+        else:
+            native_runtime.plugin_handle_call(
+                plugin._rust_handle, "ensure_source_masters", ["Fallout4.esm"], None,
+            )
 
-    plugin.add_master("Fallout4.esm")
-
-    assert plugin.eid_index()["maybeoverride"] == ["Fallout4.esm:00ABCD"]
-
-
-@pytest.mark.skipif(not _NATIVE_AVAILABLE, reason="esp_authoring_core not installed")
-def test_native_handle_index_invalidates_when_source_masters_are_ensured() -> None:
-    plugin = Plugin.new("EnsureMastersInvalidation.esp", game="fo4")
-
-    override = plugin.new_record("MISC", form_id=0x0000ABCD)
-    override.editor_id = "MaybeOverride"
-    plugin.add_record(override)
-
-    assert plugin.eid_index()["maybeoverride"] == ["EnsureMastersInvalidation.esp:00ABCD"]
-
-    native_runtime.plugin_handle_call(
-        plugin._rust_handle,
-        "ensure_source_masters",
-        ["Fallout4.esm"],
-        None,
-    )
-
-    assert plugin.eid_index()["maybeoverride"] == ["Fallout4.esm:00ABCD"]
-
-
-@pytest.mark.skipif(not _NATIVE_AVAILABLE, reason="esp_authoring_core not installed")
-def test_native_handle_index_invalidates_when_plugin_identity_changes() -> None:
-    plugin = Plugin.new("BeforeRename.esp", game="fo4")
+        assert plugin.eid_index()["maybeoverride"] == [f"BeforeChange_{trigger}.esp:00ABCD"]
+        return
 
     record = plugin.new_record("MISC")
-    record.editor_id = "RenameRecord"
+    record.editor_id = "ChangeRecord"
     plugin.add_record(record)
+    assert plugin.eid_index()["changerecord"] == [f"BeforeChange_{trigger}.esp:000800"]
 
-    assert plugin.eid_index()["renamerecord"] == ["BeforeRename.esp:000800"]
+    if trigger == "identity_change":
+        native_runtime.plugin_handle_call(
+            plugin._rust_handle, "set_logical_identity", f"AfterChange_{trigger}.esp", "fo4", None,
+        )
+        assert plugin.eid_index()["changerecord"] == [f"AfterChange_{trigger}.esp:000800"]
+    else:  # save
+        plugin.save(tmp_path / f"AfterChange_{trigger}.esp")
+        assert plugin.eid_index()["changerecord"] == [f"AfterChange_{trigger}.esp:000800"]
 
-    native_runtime.plugin_handle_call(
-        plugin._rust_handle,
-        "set_logical_identity",
-        "AfterRename.esp",
-        "fo4",
-        None,
-    )
-
-    assert plugin.eid_index()["renamerecord"] == ["AfterRename.esp:000800"]
     exported = native_runtime.plugin_handle_call(
-        plugin._rust_handle,
-        "export_record_text",
-        0x000800,
-        "json",
+        plugin._rust_handle, "export_record_text", 0x000800, "json",
     )
-    assert "RenameRecord" in exported
-
-
-@pytest.mark.skipif(not _NATIVE_AVAILABLE, reason="esp_authoring_core not installed")
-def test_native_handle_index_invalidates_when_saved_path_changes(tmp_path) -> None:
-    plugin = Plugin.new("BeforeSave.esp", game="fo4")
-
-    record = plugin.new_record("MISC")
-    record.editor_id = "SavedRecord"
-    plugin.add_record(record)
-
-    assert plugin.eid_index()["savedrecord"] == ["BeforeSave.esp:000800"]
-
-    plugin.save(tmp_path / "AfterSave.esp")
-
-    assert plugin.eid_index()["savedrecord"] == ["AfterSave.esp:000800"]
-    exported = native_runtime.plugin_handle_call(
-        plugin._rust_handle,
-        "export_record_text",
-        0x000800,
-        "json",
-    )
-    assert "SavedRecord" in exported
+    assert "ChangeRecord" in exported
 
 
 @pytest.mark.skipif(not _NATIVE_AVAILABLE, reason="esp_authoring_core not installed")

@@ -3631,6 +3631,42 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
+                        310,
+                        1292
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "none",
+                  "codec": "struct:B,B,B,B",
+                  "fields": [
+                    {
+                      "id": "none_byte_1",
+                      "kind": "uint8",
+                      "display_label": "None Byte 1"
+                    },
+                    {
+                      "id": "none_byte_2",
+                      "kind": "uint8",
+                      "display_label": "None Byte 2"
+                    },
+                    {
+                      "id": "none_byte_3",
+                      "kind": "uint8",
+                      "display_label": "None Byte 3"
+                    },
+                    {
+                      "id": "none_byte_4",
+                      "kind": "uint8",
+                      "display_label": "None Byte 4"
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
                         5,
                         12,
                         18,
@@ -3725,7 +3761,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                         304,
                         306,
                         309,
-                        310,
                         313,
                         314,
                         315,
@@ -3781,7 +3816,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                         1102,
                         1105,
                         1266,
-                        1292,
                         1440,
                         1441,
                         1541,
@@ -3852,28 +3886,13 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "none",
-                  "codec": "struct:B,B,B,B",
+                  "id": "float",
+                  "codec": "float32",
                   "fields": [
                     {
-                      "id": "none_byte_1",
-                      "kind": "uint8",
-                      "display_label": "None Byte 1"
-                    },
-                    {
-                      "id": "none_byte_2",
-                      "kind": "uint8",
-                      "display_label": "None Byte 2"
-                    },
-                    {
-                      "id": "none_byte_3",
-                      "kind": "uint8",
-                      "display_label": "None Byte 3"
-                    },
-                    {
-                      "id": "none_byte_4",
-                      "kind": "uint8",
-                      "display_label": "None Byte 4"
+                      "id": "float_float",
+                      "kind": "float32",
+                      "display_label": "Float Float"
                     }
                   ],
                   "conditions": [
@@ -3892,13 +3911,13 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "float",
-                  "codec": "float32",
+                  "id": "integer",
+                  "codec": "int32",
                   "fields": [
                     {
-                      "id": "float_float",
-                      "kind": "float32",
-                      "display_label": "Float Float"
+                      "id": "integer_integer",
+                      "kind": "int32",
+                      "display_label": "Integer Integer"
                     }
                   ],
                   "conditions": [
@@ -3937,31 +3956,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "vats_value_param",
-                  "codec": "struct:I",
-                  "fields": [
-                    {
-                      "id": "vats_value_param_vats_value_param",
-                      "kind": "uint32",
-                      "display_label": "VATS Value Param VATS Value Param"
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        14,
-                        109,
-                        277,
-                        462,
-                        495,
-                        11509
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "actor_value",
                   "codec": "int32",
                   "fields": [
@@ -3977,7 +3971,12 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        474
+                        14,
+                        109,
+                        277,
+                        462,
+                        495,
+                        11509
                       ]
                     }
                   ]
@@ -3998,10 +3997,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        6,
-                        8,
-                        10,
-                        11
+                        474
                       ]
                     }
                   ]
@@ -4022,7 +4018,10 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        398
+                        6,
+                        8,
+                        10,
+                        11
                       ]
                     }
                   ]
@@ -4043,20 +4042,20 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        438
+                        398
                       ]
                     }
                   ]
                 },
                 {
-                  "id": "crime_type",
+                  "id": "creature_type",
                   "codec": "uint32",
                   "fields": [
                     {
-                      "id": "crime_type_crime_type",
+                      "id": "creature_type_creature_type",
                       "kind": "uint32",
-                      "display_label": "Crime Type Crime Type",
-                      "enum_ref": "crime_type_enum"
+                      "display_label": "Creature Type Creature Type",
+                      "enum_ref": "creature_type_enum"
                     }
                   ],
                   "conditions": [
@@ -4064,7 +4063,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        531
+                        438
                       ]
                     }
                   ]
@@ -4085,7 +4084,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        480
+                        531
                       ]
                     }
                   ]
@@ -4106,12 +4105,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        247,
-                        433,
-                        1029,
-                        1034,
-                        1286,
-                        1288
+                        480
                       ]
                     }
                   ]
@@ -4132,7 +4126,12 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        36
+                        247,
+                        433,
+                        1029,
+                        1034,
+                        1286,
+                        1288
                       ]
                     }
                   ]
@@ -4152,7 +4151,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        312
+                        36
                       ]
                     }
                   ]
@@ -4173,7 +4172,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        368
+                        312
                       ]
                     }
                   ]
@@ -4194,8 +4193,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        70,
-                        131
+                        368
                       ]
                     }
                   ]
@@ -4216,7 +4214,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        408
+                        70,
+                        131
                       ]
                     }
                   ]
@@ -4237,8 +4236,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        4708,
-                        6167
+                        408
                       ]
                     }
                   ]
@@ -4251,6 +4249,33 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "id": "form_form",
                       "kind": "formid",
                       "display_label": "Form Form"
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        4708,
+                        6167
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "actor",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "actor_actor",
+                      "kind": "formid",
+                      "display_label": "Actor Actor",
+                      "formlink_targets": [
+                        "ACHR",
+                        "ACRE",
+                        "PLYR",
+                        "TRGT"
+                      ]
                     }
                   ],
                   "conditions": [
@@ -4281,35 +4306,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "actor",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "actor_actor",
-                      "kind": "formid",
-                      "display_label": "Actor Actor",
-                      "formlink_targets": [
-                        "ACHR",
-                        "ACRE",
-                        "PLYR",
-                        "TRGT"
-                      ]
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        84,
-                        1278,
-                        11429,
-                        11431
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "actor_base",
                   "codec": "formid",
                   "fields": [
@@ -4328,7 +4324,10 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        9753
+                        84,
+                        1278,
+                        11429,
+                        11431
                       ]
                     }
                   ]
@@ -4352,8 +4351,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        214,
-                        4897
+                        9753
                       ]
                     }
                   ]
@@ -4377,8 +4375,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        72,
-                        246
+                        214,
+                        4897
                       ]
                     }
                   ]
@@ -4398,7 +4396,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        610
+                        72,
+                        246
                       ]
                     }
                   ]
@@ -4422,9 +4421,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        67,
-                        230,
-                        280
+                        610
                       ]
                     }
                   ]
@@ -4448,9 +4445,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        607,
-                        614,
-                        11425
+                        67,
+                        230,
+                        280
                       ]
                     }
                   ]
@@ -4474,9 +4471,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        68,
-                        129,
-                        228
+                        607,
+                        614,
+                        11425
                       ]
                     }
                   ]
@@ -4500,9 +4497,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        223,
-                        555,
-                        6124
+                        68,
+                        129,
+                        228
                       ]
                     }
                   ]
@@ -4528,7 +4525,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        446
+                        223,
+                        555,
+                        6124
                       ]
                     }
                   ]
@@ -4552,15 +4551,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        60,
-                        71,
-                        73,
-                        132,
-                        193,
-                        195,
-                        197,
-                        199,
-                        411
+                        446
                       ]
                     }
                   ]
@@ -4576,6 +4567,38 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "formlink_target": "FACT",
                       "formlink_targets": [
                         "FACT"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        60,
+                        71,
+                        73,
+                        132,
+                        193,
+                        195,
+                        197,
+                        199,
+                        411
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "form_list",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "form_list_form_list",
+                      "kind": "formid",
+                      "display_label": "Form List Form List",
+                      "formlink_target": "FLST",
+                      "formlink_targets": [
+                        "FLST"
                       ]
                     }
                   ],
@@ -4600,30 +4623,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "form_list",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "form_list_form_list",
-                      "kind": "formid",
-                      "display_label": "Form List Form List",
-                      "formlink_target": "FLST",
-                      "formlink_targets": [
-                        "FLST"
-                      ]
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        163
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "furniture",
                   "codec": "formid",
                   "fields": [
@@ -4642,7 +4641,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        74
+                        163
                       ]
                     }
                   ]
@@ -4666,7 +4665,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        451
+                        74
                       ]
                     }
                   ]
@@ -4682,6 +4681,41 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "formlink_target": "IDLE",
                       "formlink_targets": [
                         "IDLE"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        451
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "inventory_object",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "inventory_object_inventory_object",
+                      "kind": "formid",
+                      "display_label": "Inventory Object Inventory Object",
+                      "formlink_targets": [
+                        "ALCH",
+                        "AMMO",
+                        "ARMO",
+                        "BOOK",
+                        "CCRD",
+                        "CHIP",
+                        "CMNY",
+                        "FLST",
+                        "IMOD",
+                        "KEYM",
+                        "MISC",
+                        "NOTE",
+                        "WEAP"
                       ]
                     }
                   ],
@@ -4756,42 +4790,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "inventory_object",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "inventory_object_inventory_object",
-                      "kind": "formid",
-                      "display_label": "Inventory Object Inventory Object",
-                      "formlink_targets": [
-                        "ALCH",
-                        "AMMO",
-                        "ARMO",
-                        "BOOK",
-                        "CCRD",
-                        "CHIP",
-                        "CMNY",
-                        "FLST",
-                        "IMOD",
-                        "KEYM",
-                        "MISC",
-                        "NOTE",
-                        "WEAP"
-                      ]
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        382,
-                        6321
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "note",
                   "codec": "formid",
                   "fields": [
@@ -4810,7 +4808,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        278
+                        382,
+                        6321
                       ]
                     }
                   ]
@@ -4835,7 +4834,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        161
+                        278
                       ]
                     }
                   ]
@@ -4859,9 +4858,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        449,
-                        1475,
-                        1476
+                        161
                       ]
                     }
                   ]
@@ -4877,6 +4874,32 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "formlink_target": "PERK",
                       "formlink_targets": [
                         "PERK"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        449,
+                        1475,
+                        1476
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "quest",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "quest_quest",
+                      "kind": "formid",
+                      "display_label": "Quest Quest",
+                      "formlink_target": "QUST",
+                      "formlink_targets": [
+                        "QUST"
                       ]
                     }
                   ],
@@ -4901,16 +4924,16 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "quest",
+                  "id": "race",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "quest_quest",
+                      "id": "race_race",
                       "kind": "formid",
-                      "display_label": "Quest Quest",
-                      "formlink_target": "QUST",
+                      "display_label": "Race Race",
+                      "formlink_target": "RACE",
                       "formlink_targets": [
-                        "QUST"
+                        "RACE"
                       ]
                     }
                   ],
@@ -4926,16 +4949,22 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "race",
+                  "id": "reference",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "race_race",
+                      "id": "reference_reference",
                       "kind": "formid",
-                      "display_label": "Race Race",
-                      "formlink_target": "RACE",
+                      "display_label": "Reference Reference",
                       "formlink_targets": [
-                        "RACE"
+                        "ACHR",
+                        "ACRE",
+                        "PBEA",
+                        "PGRE",
+                        "PLYR",
+                        "PMIS",
+                        "REFR",
+                        "TRGT"
                       ]
                     }
                   ],
@@ -4971,36 +5000,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "reference",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "reference_reference",
-                      "kind": "formid",
-                      "display_label": "Reference Reference",
-                      "formlink_targets": [
-                        "ACHR",
-                        "ACRE",
-                        "PBEA",
-                        "PGRE",
-                        "PLYR",
-                        "PMIS",
-                        "REFR",
-                        "TRGT"
-                      ]
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        612
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "region",
                   "codec": "formid",
                   "fields": [
@@ -5019,9 +5018,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        573,
-                        574,
-                        575
+                        612
                       ]
                     }
                   ]
@@ -5045,7 +5042,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        427
+                        573,
+                        574,
+                        575
                       ]
                     }
                   ]
@@ -5069,8 +5068,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        11421,
-                        11423
+                        427
                       ]
                     }
                   ]
@@ -5086,6 +5084,31 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "formlink_target": "WEAP",
                       "formlink_targets": [
                         "WEAP"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        11421,
+                        11423
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "weather",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "weather_weather",
+                      "kind": "formid",
+                      "display_label": "Weather Weather",
+                      "formlink_target": "WTHR",
+                      "formlink_targets": [
+                        "WTHR"
                       ]
                     }
                   ],
@@ -5572,8 +5595,30 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "unnamed",
-                  "codec": "uint32",
+                  "id": "none",
+                  "codec": "struct:B,B,B,B",
+                  "fields": [
+                    {
+                      "id": "none_byte_1",
+                      "kind": "uint8",
+                      "display_label": "None Byte 1"
+                    },
+                    {
+                      "id": "none_byte_2",
+                      "kind": "uint8",
+                      "display_label": "None Byte 2"
+                    },
+                    {
+                      "id": "none_byte_3",
+                      "kind": "uint8",
+                      "display_label": "None Byte 3"
+                    },
+                    {
+                      "id": "none_byte_4",
+                      "kind": "uint8",
+                      "display_label": "None Byte 4"
+                    }
+                  ],
                   "conditions": [
                     {
                       "field": "function",
@@ -5999,13 +6044,13 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "float",
-                  "codec": "float32",
+                  "id": "integer",
+                  "codec": "int32",
                   "fields": [
                     {
-                      "id": "float_float",
-                      "kind": "float32",
-                      "display_label": "Float Float"
+                      "id": "integer_integer",
+                      "kind": "int32",
+                      "display_label": "Integer Integer"
                     }
                   ],
                   "conditions": [
@@ -6035,27 +6080,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "integer",
-                  "codec": "int32",
-                  "fields": [
-                    {
-                      "id": "integer_integer",
-                      "kind": "int32",
-                      "display_label": "Integer Integer"
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        420,
-                        421
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "quest_objective",
                   "codec": "int32",
                   "fields": [
@@ -6070,7 +6094,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        59
+                        420,
+                        421
                       ]
                     }
                   ]
@@ -6090,8 +6115,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        53,
-                        79
+                        59
                       ]
                     }
                   ]
@@ -6111,20 +6135,41 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
+                        53,
+                        79
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "vats_value_param",
+                  "codec": "struct:I",
+                  "fields": [
+                    {
+                      "id": "vats_value_param_vats_value_param",
+                      "kind": "uint32",
+                      "display_label": "VATS Value Param VATS Value Param"
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
                         408
                       ]
                     }
                   ]
                 },
                 {
-                  "id": "creature_type",
+                  "id": "crime_type",
                   "codec": "uint32",
                   "fields": [
                     {
-                      "id": "creature_type_creature_type",
+                      "id": "crime_type_crime_type",
                       "kind": "uint32",
-                      "display_label": "Creature Type Creature Type",
-                      "enum_ref": "creature_type_enum"
+                      "display_label": "Crime Type Crime Type",
+                      "enum_ref": "crime_type_enum"
                     }
                   ],
                   "conditions": [
@@ -6138,14 +6183,14 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "equip_type",
+                  "id": "form_type",
                   "codec": "uint32",
                   "fields": [
                     {
-                      "id": "equip_type_equip_type",
+                      "id": "form_type_form_type",
                       "kind": "uint32",
-                      "display_label": "Equip Type Equip Type",
-                      "enum_ref": "equip_type_enum"
+                      "display_label": "Form Type Form Type",
+                      "enum_ref": "form_type_enum"
                     }
                   ],
                   "conditions": [
@@ -6156,38 +6201,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                         1089,
                         1297
                       ]
-                    }
-                  ]
-                },
-                {
-                  "id": "form",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "form_form",
-                      "kind": "formid",
-                      "display_label": "Form Form"
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        60,
-                        1475,
-                        1476
-                      ]
-                    },
-                    {
-                      "field": "type",
-                      "operator": "bit_unset",
-                      "value": 2
-                    },
-                    {
-                      "field": "type",
-                      "operator": "bit_unset",
-                      "value": 8
                     }
                   ]
                 },
@@ -6212,6 +6225,32 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
+                        60,
+                        1475,
+                        1476
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "actor_base",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "actor_base_actor_base",
+                      "kind": "formid",
+                      "display_label": "Actor Base Actor Base",
+                      "formlink_targets": [
+                        "CREA",
+                        "NPC_"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
                         1291,
                         11488
                       ]
@@ -6219,16 +6258,16 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "encounter_zone",
+                  "id": "faction",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "encounter_zone_encounter_zone",
+                      "id": "faction_faction",
                       "kind": "formid",
-                      "display_label": "Encounter Zone Encounter Zone",
-                      "formlink_target": "ECZN",
+                      "display_label": "Faction Faction",
+                      "formlink_target": "FACT",
                       "formlink_targets": [
-                        "ECZN"
+                        "FACT"
                       ]
                     }
                   ],
@@ -6243,16 +6282,27 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "idle",
+                  "id": "inventory_object",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "idle_idle",
+                      "id": "inventory_object_inventory_object",
                       "kind": "formid",
-                      "display_label": "Idle Idle",
-                      "formlink_target": "IDLE",
+                      "display_label": "Inventory Object Inventory Object",
                       "formlink_targets": [
-                        "IDLE"
+                        "ALCH",
+                        "AMMO",
+                        "ARMO",
+                        "BOOK",
+                        "CCRD",
+                        "CHIP",
+                        "CMNY",
+                        "FLST",
+                        "IMOD",
+                        "KEYM",
+                        "MISC",
+                        "NOTE",
+                        "WEAP"
                       ]
                     }
                   ],
@@ -6268,17 +6318,18 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "note",
+                  "id": "owner",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "note_note",
+                      "id": "owner_owner",
                       "kind": "formid",
-                      "display_label": "Note Note",
-                      "formlink_target": "NOTE",
+                      "display_label": "Owner Owner",
                       "formlink_targets": [
-                        "NOTE"
-                      ]
+                        "FACT",
+                        "NPC_"
+                      ],
+                      "null_allowed": true
                     }
                   ],
                   "conditions": [
@@ -6292,16 +6343,22 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "race",
+                  "id": "reference",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "race_race",
+                      "id": "reference_reference",
                       "kind": "formid",
-                      "display_label": "Race Race",
-                      "formlink_target": "RACE",
+                      "display_label": "Reference Reference",
                       "formlink_targets": [
-                        "RACE"
+                        "ACHR",
+                        "ACRE",
+                        "PBEA",
+                        "PGRE",
+                        "PLYR",
+                        "PMIS",
+                        "REFR",
+                        "TRGT"
                       ]
                     }
                   ],
@@ -6312,30 +6369,20 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "values": [
                         230
                       ]
-                    },
-                    {
-                      "field": "type",
-                      "operator": "bit_unset",
-                      "value": 2
-                    },
-                    {
-                      "field": "type",
-                      "operator": "bit_unset",
-                      "value": 8
                     }
                   ]
                 },
                 {
-                  "id": "voice_type",
+                  "id": "weapon",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "voice_type_voice_type",
+                      "id": "weapon_weapon",
                       "kind": "formid",
-                      "display_label": "Voice Type Voice Type",
-                      "formlink_target": "VTYP",
+                      "display_label": "Weapon Weapon",
+                      "formlink_target": "WEAP",
                       "formlink_targets": [
-                        "VTYP"
+                        "WEAP"
                       ]
                     }
                   ],
@@ -13799,6 +13846,42 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
+                        310,
+                        1292
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "none",
+                  "codec": "struct:B,B,B,B",
+                  "fields": [
+                    {
+                      "id": "none_byte_1",
+                      "kind": "uint8",
+                      "display_label": "None Byte 1"
+                    },
+                    {
+                      "id": "none_byte_2",
+                      "kind": "uint8",
+                      "display_label": "None Byte 2"
+                    },
+                    {
+                      "id": "none_byte_3",
+                      "kind": "uint8",
+                      "display_label": "None Byte 3"
+                    },
+                    {
+                      "id": "none_byte_4",
+                      "kind": "uint8",
+                      "display_label": "None Byte 4"
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
                         5,
                         12,
                         18,
@@ -13893,7 +13976,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                         304,
                         306,
                         309,
-                        310,
                         313,
                         314,
                         315,
@@ -13949,7 +14031,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                         1102,
                         1105,
                         1266,
-                        1292,
                         1440,
                         1441,
                         1541,
@@ -14020,28 +14101,13 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "none",
-                  "codec": "struct:B,B,B,B",
+                  "id": "float",
+                  "codec": "float32",
                   "fields": [
                     {
-                      "id": "none_byte_1",
-                      "kind": "uint8",
-                      "display_label": "None Byte 1"
-                    },
-                    {
-                      "id": "none_byte_2",
-                      "kind": "uint8",
-                      "display_label": "None Byte 2"
-                    },
-                    {
-                      "id": "none_byte_3",
-                      "kind": "uint8",
-                      "display_label": "None Byte 3"
-                    },
-                    {
-                      "id": "none_byte_4",
-                      "kind": "uint8",
-                      "display_label": "None Byte 4"
+                      "id": "float_float",
+                      "kind": "float32",
+                      "display_label": "Float Float"
                     }
                   ],
                   "conditions": [
@@ -14060,13 +14126,13 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "float",
-                  "codec": "float32",
+                  "id": "integer",
+                  "codec": "int32",
                   "fields": [
                     {
-                      "id": "float_float",
-                      "kind": "float32",
-                      "display_label": "Float Float"
+                      "id": "integer_integer",
+                      "kind": "int32",
+                      "display_label": "Integer Integer"
                     }
                   ],
                   "conditions": [
@@ -14105,31 +14171,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "vats_value_param",
-                  "codec": "struct:I",
-                  "fields": [
-                    {
-                      "id": "vats_value_param_vats_value_param",
-                      "kind": "uint32",
-                      "display_label": "VATS Value Param VATS Value Param"
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        14,
-                        109,
-                        277,
-                        462,
-                        495,
-                        11509
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "actor_value",
                   "codec": "int32",
                   "fields": [
@@ -14145,7 +14186,12 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        474
+                        14,
+                        109,
+                        277,
+                        462,
+                        495,
+                        11509
                       ]
                     }
                   ]
@@ -14166,10 +14212,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        6,
-                        8,
-                        10,
-                        11
+                        474
                       ]
                     }
                   ]
@@ -14190,7 +14233,10 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        398
+                        6,
+                        8,
+                        10,
+                        11
                       ]
                     }
                   ]
@@ -14211,20 +14257,20 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        438
+                        398
                       ]
                     }
                   ]
                 },
                 {
-                  "id": "crime_type",
+                  "id": "creature_type",
                   "codec": "uint32",
                   "fields": [
                     {
-                      "id": "crime_type_crime_type",
+                      "id": "creature_type_creature_type",
                       "kind": "uint32",
-                      "display_label": "Crime Type Crime Type",
-                      "enum_ref": "crime_type_enum"
+                      "display_label": "Creature Type Creature Type",
+                      "enum_ref": "creature_type_enum"
                     }
                   ],
                   "conditions": [
@@ -14232,7 +14278,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        531
+                        438
                       ]
                     }
                   ]
@@ -14253,7 +14299,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        480
+                        531
                       ]
                     }
                   ]
@@ -14274,12 +14320,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        247,
-                        433,
-                        1029,
-                        1034,
-                        1286,
-                        1288
+                        480
                       ]
                     }
                   ]
@@ -14300,7 +14341,12 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        36
+                        247,
+                        433,
+                        1029,
+                        1034,
+                        1286,
+                        1288
                       ]
                     }
                   ]
@@ -14320,7 +14366,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        312
+                        36
                       ]
                     }
                   ]
@@ -14341,7 +14387,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        368
+                        312
                       ]
                     }
                   ]
@@ -14362,8 +14408,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        70,
-                        131
+                        368
                       ]
                     }
                   ]
@@ -14384,7 +14429,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        408
+                        70,
+                        131
                       ]
                     }
                   ]
@@ -14405,8 +14451,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        4708,
-                        6167
+                        408
                       ]
                     }
                   ]
@@ -14419,6 +14464,33 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "id": "form_form",
                       "kind": "formid",
                       "display_label": "Form Form"
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        4708,
+                        6167
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "actor",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "actor_actor",
+                      "kind": "formid",
+                      "display_label": "Actor Actor",
+                      "formlink_targets": [
+                        "ACHR",
+                        "ACRE",
+                        "PLYR",
+                        "TRGT"
+                      ]
                     }
                   ],
                   "conditions": [
@@ -14449,35 +14521,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "actor",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "actor_actor",
-                      "kind": "formid",
-                      "display_label": "Actor Actor",
-                      "formlink_targets": [
-                        "ACHR",
-                        "ACRE",
-                        "PLYR",
-                        "TRGT"
-                      ]
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        84,
-                        1278,
-                        11429,
-                        11431
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "actor_base",
                   "codec": "formid",
                   "fields": [
@@ -14496,7 +14539,10 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        9753
+                        84,
+                        1278,
+                        11429,
+                        11431
                       ]
                     }
                   ]
@@ -14520,8 +14566,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        214,
-                        4897
+                        9753
                       ]
                     }
                   ]
@@ -14545,8 +14590,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        72,
-                        246
+                        214,
+                        4897
                       ]
                     }
                   ]
@@ -14566,7 +14611,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        610
+                        72,
+                        246
                       ]
                     }
                   ]
@@ -14590,9 +14636,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        67,
-                        230,
-                        280
+                        610
                       ]
                     }
                   ]
@@ -14616,9 +14660,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        607,
-                        614,
-                        11425
+                        67,
+                        230,
+                        280
                       ]
                     }
                   ]
@@ -14642,9 +14686,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        68,
-                        129,
-                        228
+                        607,
+                        614,
+                        11425
                       ]
                     }
                   ]
@@ -14668,9 +14712,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        223,
-                        555,
-                        6124
+                        68,
+                        129,
+                        228
                       ]
                     }
                   ]
@@ -14696,7 +14740,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        446
+                        223,
+                        555,
+                        6124
                       ]
                     }
                   ]
@@ -14720,15 +14766,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        60,
-                        71,
-                        73,
-                        132,
-                        193,
-                        195,
-                        197,
-                        199,
-                        411
+                        446
                       ]
                     }
                   ]
@@ -14744,6 +14782,38 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "formlink_target": "FACT",
                       "formlink_targets": [
                         "FACT"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        60,
+                        71,
+                        73,
+                        132,
+                        193,
+                        195,
+                        197,
+                        199,
+                        411
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "form_list",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "form_list_form_list",
+                      "kind": "formid",
+                      "display_label": "Form List Form List",
+                      "formlink_target": "FLST",
+                      "formlink_targets": [
+                        "FLST"
                       ]
                     }
                   ],
@@ -14768,30 +14838,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "form_list",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "form_list_form_list",
-                      "kind": "formid",
-                      "display_label": "Form List Form List",
-                      "formlink_target": "FLST",
-                      "formlink_targets": [
-                        "FLST"
-                      ]
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        163
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "furniture",
                   "codec": "formid",
                   "fields": [
@@ -14810,7 +14856,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        74
+                        163
                       ]
                     }
                   ]
@@ -14834,7 +14880,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        451
+                        74
                       ]
                     }
                   ]
@@ -14850,6 +14896,41 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "formlink_target": "IDLE",
                       "formlink_targets": [
                         "IDLE"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        451
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "inventory_object",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "inventory_object_inventory_object",
+                      "kind": "formid",
+                      "display_label": "Inventory Object Inventory Object",
+                      "formlink_targets": [
+                        "ALCH",
+                        "AMMO",
+                        "ARMO",
+                        "BOOK",
+                        "CCRD",
+                        "CHIP",
+                        "CMNY",
+                        "FLST",
+                        "IMOD",
+                        "KEYM",
+                        "MISC",
+                        "NOTE",
+                        "WEAP"
                       ]
                     }
                   ],
@@ -14924,42 +15005,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "inventory_object",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "inventory_object_inventory_object",
-                      "kind": "formid",
-                      "display_label": "Inventory Object Inventory Object",
-                      "formlink_targets": [
-                        "ALCH",
-                        "AMMO",
-                        "ARMO",
-                        "BOOK",
-                        "CCRD",
-                        "CHIP",
-                        "CMNY",
-                        "FLST",
-                        "IMOD",
-                        "KEYM",
-                        "MISC",
-                        "NOTE",
-                        "WEAP"
-                      ]
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        382,
-                        6321
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "note",
                   "codec": "formid",
                   "fields": [
@@ -14978,7 +15023,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        278
+                        382,
+                        6321
                       ]
                     }
                   ]
@@ -15003,7 +15049,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        161
+                        278
                       ]
                     }
                   ]
@@ -15027,9 +15073,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        449,
-                        1475,
-                        1476
+                        161
                       ]
                     }
                   ]
@@ -15045,6 +15089,32 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "formlink_target": "PERK",
                       "formlink_targets": [
                         "PERK"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        449,
+                        1475,
+                        1476
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "quest",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "quest_quest",
+                      "kind": "formid",
+                      "display_label": "Quest Quest",
+                      "formlink_target": "QUST",
+                      "formlink_targets": [
+                        "QUST"
                       ]
                     }
                   ],
@@ -15069,16 +15139,16 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "quest",
+                  "id": "race",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "quest_quest",
+                      "id": "race_race",
                       "kind": "formid",
-                      "display_label": "Quest Quest",
-                      "formlink_target": "QUST",
+                      "display_label": "Race Race",
+                      "formlink_target": "RACE",
                       "formlink_targets": [
-                        "QUST"
+                        "RACE"
                       ]
                     }
                   ],
@@ -15094,16 +15164,22 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "race",
+                  "id": "reference",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "race_race",
+                      "id": "reference_reference",
                       "kind": "formid",
-                      "display_label": "Race Race",
-                      "formlink_target": "RACE",
+                      "display_label": "Reference Reference",
                       "formlink_targets": [
-                        "RACE"
+                        "ACHR",
+                        "ACRE",
+                        "PBEA",
+                        "PGRE",
+                        "PLYR",
+                        "PMIS",
+                        "REFR",
+                        "TRGT"
                       ]
                     }
                   ],
@@ -15139,36 +15215,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "reference",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "reference_reference",
-                      "kind": "formid",
-                      "display_label": "Reference Reference",
-                      "formlink_targets": [
-                        "ACHR",
-                        "ACRE",
-                        "PBEA",
-                        "PGRE",
-                        "PLYR",
-                        "PMIS",
-                        "REFR",
-                        "TRGT"
-                      ]
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        612
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "region",
                   "codec": "formid",
                   "fields": [
@@ -15187,9 +15233,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        573,
-                        574,
-                        575
+                        612
                       ]
                     }
                   ]
@@ -15213,7 +15257,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        427
+                        573,
+                        574,
+                        575
                       ]
                     }
                   ]
@@ -15237,8 +15283,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        11421,
-                        11423
+                        427
                       ]
                     }
                   ]
@@ -15254,6 +15299,31 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "formlink_target": "WEAP",
                       "formlink_targets": [
                         "WEAP"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        11421,
+                        11423
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "weather",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "weather_weather",
+                      "kind": "formid",
+                      "display_label": "Weather Weather",
+                      "formlink_target": "WTHR",
+                      "formlink_targets": [
+                        "WTHR"
                       ]
                     }
                   ],
@@ -15740,8 +15810,30 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "unnamed",
-                  "codec": "uint32",
+                  "id": "none",
+                  "codec": "struct:B,B,B,B",
+                  "fields": [
+                    {
+                      "id": "none_byte_1",
+                      "kind": "uint8",
+                      "display_label": "None Byte 1"
+                    },
+                    {
+                      "id": "none_byte_2",
+                      "kind": "uint8",
+                      "display_label": "None Byte 2"
+                    },
+                    {
+                      "id": "none_byte_3",
+                      "kind": "uint8",
+                      "display_label": "None Byte 3"
+                    },
+                    {
+                      "id": "none_byte_4",
+                      "kind": "uint8",
+                      "display_label": "None Byte 4"
+                    }
+                  ],
                   "conditions": [
                     {
                       "field": "function",
@@ -16167,13 +16259,13 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "float",
-                  "codec": "float32",
+                  "id": "integer",
+                  "codec": "int32",
                   "fields": [
                     {
-                      "id": "float_float",
-                      "kind": "float32",
-                      "display_label": "Float Float"
+                      "id": "integer_integer",
+                      "kind": "int32",
+                      "display_label": "Integer Integer"
                     }
                   ],
                   "conditions": [
@@ -16203,27 +16295,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "integer",
-                  "codec": "int32",
-                  "fields": [
-                    {
-                      "id": "integer_integer",
-                      "kind": "int32",
-                      "display_label": "Integer Integer"
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        420,
-                        421
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "quest_objective",
                   "codec": "int32",
                   "fields": [
@@ -16238,7 +16309,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        59
+                        420,
+                        421
                       ]
                     }
                   ]
@@ -16258,8 +16330,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        53,
-                        79
+                        59
                       ]
                     }
                   ]
@@ -16279,20 +16350,41 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
+                        53,
+                        79
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "vats_value_param",
+                  "codec": "struct:I",
+                  "fields": [
+                    {
+                      "id": "vats_value_param_vats_value_param",
+                      "kind": "uint32",
+                      "display_label": "VATS Value Param VATS Value Param"
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
                         408
                       ]
                     }
                   ]
                 },
                 {
-                  "id": "creature_type",
+                  "id": "crime_type",
                   "codec": "uint32",
                   "fields": [
                     {
-                      "id": "creature_type_creature_type",
+                      "id": "crime_type_crime_type",
                       "kind": "uint32",
-                      "display_label": "Creature Type Creature Type",
-                      "enum_ref": "creature_type_enum"
+                      "display_label": "Crime Type Crime Type",
+                      "enum_ref": "crime_type_enum"
                     }
                   ],
                   "conditions": [
@@ -16306,14 +16398,14 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "equip_type",
+                  "id": "form_type",
                   "codec": "uint32",
                   "fields": [
                     {
-                      "id": "equip_type_equip_type",
+                      "id": "form_type_form_type",
                       "kind": "uint32",
-                      "display_label": "Equip Type Equip Type",
-                      "enum_ref": "equip_type_enum"
+                      "display_label": "Form Type Form Type",
+                      "enum_ref": "form_type_enum"
                     }
                   ],
                   "conditions": [
@@ -16324,38 +16416,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                         1089,
                         1297
                       ]
-                    }
-                  ]
-                },
-                {
-                  "id": "form",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "form_form",
-                      "kind": "formid",
-                      "display_label": "Form Form"
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        60,
-                        1475,
-                        1476
-                      ]
-                    },
-                    {
-                      "field": "type",
-                      "operator": "bit_unset",
-                      "value": 2
-                    },
-                    {
-                      "field": "type",
-                      "operator": "bit_unset",
-                      "value": 8
                     }
                   ]
                 },
@@ -16380,6 +16440,32 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
+                        60,
+                        1475,
+                        1476
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "actor_base",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "actor_base_actor_base",
+                      "kind": "formid",
+                      "display_label": "Actor Base Actor Base",
+                      "formlink_targets": [
+                        "CREA",
+                        "NPC_"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
                         1291,
                         11488
                       ]
@@ -16387,16 +16473,16 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "encounter_zone",
+                  "id": "faction",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "encounter_zone_encounter_zone",
+                      "id": "faction_faction",
                       "kind": "formid",
-                      "display_label": "Encounter Zone Encounter Zone",
-                      "formlink_target": "ECZN",
+                      "display_label": "Faction Faction",
+                      "formlink_target": "FACT",
                       "formlink_targets": [
-                        "ECZN"
+                        "FACT"
                       ]
                     }
                   ],
@@ -16411,16 +16497,27 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "idle",
+                  "id": "inventory_object",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "idle_idle",
+                      "id": "inventory_object_inventory_object",
                       "kind": "formid",
-                      "display_label": "Idle Idle",
-                      "formlink_target": "IDLE",
+                      "display_label": "Inventory Object Inventory Object",
                       "formlink_targets": [
-                        "IDLE"
+                        "ALCH",
+                        "AMMO",
+                        "ARMO",
+                        "BOOK",
+                        "CCRD",
+                        "CHIP",
+                        "CMNY",
+                        "FLST",
+                        "IMOD",
+                        "KEYM",
+                        "MISC",
+                        "NOTE",
+                        "WEAP"
                       ]
                     }
                   ],
@@ -16436,17 +16533,18 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "note",
+                  "id": "owner",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "note_note",
+                      "id": "owner_owner",
                       "kind": "formid",
-                      "display_label": "Note Note",
-                      "formlink_target": "NOTE",
+                      "display_label": "Owner Owner",
                       "formlink_targets": [
-                        "NOTE"
-                      ]
+                        "FACT",
+                        "NPC_"
+                      ],
+                      "null_allowed": true
                     }
                   ],
                   "conditions": [
@@ -16460,16 +16558,22 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "race",
+                  "id": "reference",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "race_race",
+                      "id": "reference_reference",
                       "kind": "formid",
-                      "display_label": "Race Race",
-                      "formlink_target": "RACE",
+                      "display_label": "Reference Reference",
                       "formlink_targets": [
-                        "RACE"
+                        "ACHR",
+                        "ACRE",
+                        "PBEA",
+                        "PGRE",
+                        "PLYR",
+                        "PMIS",
+                        "REFR",
+                        "TRGT"
                       ]
                     }
                   ],
@@ -16480,30 +16584,20 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "values": [
                         230
                       ]
-                    },
-                    {
-                      "field": "type",
-                      "operator": "bit_unset",
-                      "value": 2
-                    },
-                    {
-                      "field": "type",
-                      "operator": "bit_unset",
-                      "value": 8
                     }
                   ]
                 },
                 {
-                  "id": "voice_type",
+                  "id": "weapon",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "voice_type_voice_type",
+                      "id": "weapon_weapon",
                       "kind": "formid",
-                      "display_label": "Voice Type Voice Type",
-                      "formlink_target": "VTYP",
+                      "display_label": "Weapon Weapon",
+                      "formlink_target": "WEAP",
                       "formlink_targets": [
-                        "VTYP"
+                        "WEAP"
                       ]
                     }
                   ],
@@ -21070,6 +21164,42 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
+                        310,
+                        1292
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "none",
+                  "codec": "struct:B,B,B,B",
+                  "fields": [
+                    {
+                      "id": "none_byte_1",
+                      "kind": "uint8",
+                      "display_label": "None Byte 1"
+                    },
+                    {
+                      "id": "none_byte_2",
+                      "kind": "uint8",
+                      "display_label": "None Byte 2"
+                    },
+                    {
+                      "id": "none_byte_3",
+                      "kind": "uint8",
+                      "display_label": "None Byte 3"
+                    },
+                    {
+                      "id": "none_byte_4",
+                      "kind": "uint8",
+                      "display_label": "None Byte 4"
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
                         5,
                         12,
                         18,
@@ -21164,7 +21294,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                         304,
                         306,
                         309,
-                        310,
                         313,
                         314,
                         315,
@@ -21220,7 +21349,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                         1102,
                         1105,
                         1266,
-                        1292,
                         1440,
                         1441,
                         1541,
@@ -21291,28 +21419,13 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "none",
-                  "codec": "struct:B,B,B,B",
+                  "id": "float",
+                  "codec": "float32",
                   "fields": [
                     {
-                      "id": "none_byte_1",
-                      "kind": "uint8",
-                      "display_label": "None Byte 1"
-                    },
-                    {
-                      "id": "none_byte_2",
-                      "kind": "uint8",
-                      "display_label": "None Byte 2"
-                    },
-                    {
-                      "id": "none_byte_3",
-                      "kind": "uint8",
-                      "display_label": "None Byte 3"
-                    },
-                    {
-                      "id": "none_byte_4",
-                      "kind": "uint8",
-                      "display_label": "None Byte 4"
+                      "id": "float_float",
+                      "kind": "float32",
+                      "display_label": "Float Float"
                     }
                   ],
                   "conditions": [
@@ -21331,13 +21444,13 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "float",
-                  "codec": "float32",
+                  "id": "integer",
+                  "codec": "int32",
                   "fields": [
                     {
-                      "id": "float_float",
-                      "kind": "float32",
-                      "display_label": "Float Float"
+                      "id": "integer_integer",
+                      "kind": "int32",
+                      "display_label": "Integer Integer"
                     }
                   ],
                   "conditions": [
@@ -21376,31 +21489,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "vats_value_param",
-                  "codec": "struct:I",
-                  "fields": [
-                    {
-                      "id": "vats_value_param_vats_value_param",
-                      "kind": "uint32",
-                      "display_label": "VATS Value Param VATS Value Param"
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        14,
-                        109,
-                        277,
-                        462,
-                        495,
-                        11509
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "actor_value",
                   "codec": "int32",
                   "fields": [
@@ -21416,7 +21504,12 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        474
+                        14,
+                        109,
+                        277,
+                        462,
+                        495,
+                        11509
                       ]
                     }
                   ]
@@ -21437,10 +21530,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        6,
-                        8,
-                        10,
-                        11
+                        474
                       ]
                     }
                   ]
@@ -21461,7 +21551,10 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        398
+                        6,
+                        8,
+                        10,
+                        11
                       ]
                     }
                   ]
@@ -21482,20 +21575,20 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        438
+                        398
                       ]
                     }
                   ]
                 },
                 {
-                  "id": "crime_type",
+                  "id": "creature_type",
                   "codec": "uint32",
                   "fields": [
                     {
-                      "id": "crime_type_crime_type",
+                      "id": "creature_type_creature_type",
                       "kind": "uint32",
-                      "display_label": "Crime Type Crime Type",
-                      "enum_ref": "crime_type_enum"
+                      "display_label": "Creature Type Creature Type",
+                      "enum_ref": "creature_type_enum"
                     }
                   ],
                   "conditions": [
@@ -21503,7 +21596,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        531
+                        438
                       ]
                     }
                   ]
@@ -21524,7 +21617,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        480
+                        531
                       ]
                     }
                   ]
@@ -21545,12 +21638,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        247,
-                        433,
-                        1029,
-                        1034,
-                        1286,
-                        1288
+                        480
                       ]
                     }
                   ]
@@ -21571,7 +21659,12 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        36
+                        247,
+                        433,
+                        1029,
+                        1034,
+                        1286,
+                        1288
                       ]
                     }
                   ]
@@ -21591,7 +21684,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        312
+                        36
                       ]
                     }
                   ]
@@ -21612,7 +21705,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        368
+                        312
                       ]
                     }
                   ]
@@ -21633,8 +21726,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        70,
-                        131
+                        368
                       ]
                     }
                   ]
@@ -21655,7 +21747,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        408
+                        70,
+                        131
                       ]
                     }
                   ]
@@ -21676,8 +21769,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        4708,
-                        6167
+                        408
                       ]
                     }
                   ]
@@ -21690,6 +21782,33 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "id": "form_form",
                       "kind": "formid",
                       "display_label": "Form Form"
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        4708,
+                        6167
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "actor",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "actor_actor",
+                      "kind": "formid",
+                      "display_label": "Actor Actor",
+                      "formlink_targets": [
+                        "ACHR",
+                        "ACRE",
+                        "PLYR",
+                        "TRGT"
+                      ]
                     }
                   ],
                   "conditions": [
@@ -21720,35 +21839,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "actor",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "actor_actor",
-                      "kind": "formid",
-                      "display_label": "Actor Actor",
-                      "formlink_targets": [
-                        "ACHR",
-                        "ACRE",
-                        "PLYR",
-                        "TRGT"
-                      ]
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        84,
-                        1278,
-                        11429,
-                        11431
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "actor_base",
                   "codec": "formid",
                   "fields": [
@@ -21767,7 +21857,10 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        9753
+                        84,
+                        1278,
+                        11429,
+                        11431
                       ]
                     }
                   ]
@@ -21791,8 +21884,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        214,
-                        4897
+                        9753
                       ]
                     }
                   ]
@@ -21816,8 +21908,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        72,
-                        246
+                        214,
+                        4897
                       ]
                     }
                   ]
@@ -21837,7 +21929,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        610
+                        72,
+                        246
                       ]
                     }
                   ]
@@ -21861,9 +21954,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        67,
-                        230,
-                        280
+                        610
                       ]
                     }
                   ]
@@ -21887,9 +21978,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        607,
-                        614,
-                        11425
+                        67,
+                        230,
+                        280
                       ]
                     }
                   ]
@@ -21913,9 +22004,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        68,
-                        129,
-                        228
+                        607,
+                        614,
+                        11425
                       ]
                     }
                   ]
@@ -21939,9 +22030,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        223,
-                        555,
-                        6124
+                        68,
+                        129,
+                        228
                       ]
                     }
                   ]
@@ -21967,7 +22058,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        446
+                        223,
+                        555,
+                        6124
                       ]
                     }
                   ]
@@ -21991,15 +22084,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        60,
-                        71,
-                        73,
-                        132,
-                        193,
-                        195,
-                        197,
-                        199,
-                        411
+                        446
                       ]
                     }
                   ]
@@ -22015,6 +22100,38 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "formlink_target": "FACT",
                       "formlink_targets": [
                         "FACT"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        60,
+                        71,
+                        73,
+                        132,
+                        193,
+                        195,
+                        197,
+                        199,
+                        411
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "form_list",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "form_list_form_list",
+                      "kind": "formid",
+                      "display_label": "Form List Form List",
+                      "formlink_target": "FLST",
+                      "formlink_targets": [
+                        "FLST"
                       ]
                     }
                   ],
@@ -22039,30 +22156,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "form_list",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "form_list_form_list",
-                      "kind": "formid",
-                      "display_label": "Form List Form List",
-                      "formlink_target": "FLST",
-                      "formlink_targets": [
-                        "FLST"
-                      ]
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        163
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "furniture",
                   "codec": "formid",
                   "fields": [
@@ -22081,7 +22174,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        74
+                        163
                       ]
                     }
                   ]
@@ -22105,7 +22198,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        451
+                        74
                       ]
                     }
                   ]
@@ -22121,6 +22214,41 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "formlink_target": "IDLE",
                       "formlink_targets": [
                         "IDLE"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        451
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "inventory_object",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "inventory_object_inventory_object",
+                      "kind": "formid",
+                      "display_label": "Inventory Object Inventory Object",
+                      "formlink_targets": [
+                        "ALCH",
+                        "AMMO",
+                        "ARMO",
+                        "BOOK",
+                        "CCRD",
+                        "CHIP",
+                        "CMNY",
+                        "FLST",
+                        "IMOD",
+                        "KEYM",
+                        "MISC",
+                        "NOTE",
+                        "WEAP"
                       ]
                     }
                   ],
@@ -22195,42 +22323,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "inventory_object",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "inventory_object_inventory_object",
-                      "kind": "formid",
-                      "display_label": "Inventory Object Inventory Object",
-                      "formlink_targets": [
-                        "ALCH",
-                        "AMMO",
-                        "ARMO",
-                        "BOOK",
-                        "CCRD",
-                        "CHIP",
-                        "CMNY",
-                        "FLST",
-                        "IMOD",
-                        "KEYM",
-                        "MISC",
-                        "NOTE",
-                        "WEAP"
-                      ]
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        382,
-                        6321
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "note",
                   "codec": "formid",
                   "fields": [
@@ -22249,7 +22341,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        278
+                        382,
+                        6321
                       ]
                     }
                   ]
@@ -22274,7 +22367,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        161
+                        278
                       ]
                     }
                   ]
@@ -22298,9 +22391,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        449,
-                        1475,
-                        1476
+                        161
                       ]
                     }
                   ]
@@ -22316,6 +22407,32 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "formlink_target": "PERK",
                       "formlink_targets": [
                         "PERK"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        449,
+                        1475,
+                        1476
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "quest",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "quest_quest",
+                      "kind": "formid",
+                      "display_label": "Quest Quest",
+                      "formlink_target": "QUST",
+                      "formlink_targets": [
+                        "QUST"
                       ]
                     }
                   ],
@@ -22340,16 +22457,16 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "quest",
+                  "id": "race",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "quest_quest",
+                      "id": "race_race",
                       "kind": "formid",
-                      "display_label": "Quest Quest",
-                      "formlink_target": "QUST",
+                      "display_label": "Race Race",
+                      "formlink_target": "RACE",
                       "formlink_targets": [
-                        "QUST"
+                        "RACE"
                       ]
                     }
                   ],
@@ -22365,16 +22482,22 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "race",
+                  "id": "reference",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "race_race",
+                      "id": "reference_reference",
                       "kind": "formid",
-                      "display_label": "Race Race",
-                      "formlink_target": "RACE",
+                      "display_label": "Reference Reference",
                       "formlink_targets": [
-                        "RACE"
+                        "ACHR",
+                        "ACRE",
+                        "PBEA",
+                        "PGRE",
+                        "PLYR",
+                        "PMIS",
+                        "REFR",
+                        "TRGT"
                       ]
                     }
                   ],
@@ -22410,36 +22533,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "reference",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "reference_reference",
-                      "kind": "formid",
-                      "display_label": "Reference Reference",
-                      "formlink_targets": [
-                        "ACHR",
-                        "ACRE",
-                        "PBEA",
-                        "PGRE",
-                        "PLYR",
-                        "PMIS",
-                        "REFR",
-                        "TRGT"
-                      ]
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        612
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "region",
                   "codec": "formid",
                   "fields": [
@@ -22458,9 +22551,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        573,
-                        574,
-                        575
+                        612
                       ]
                     }
                   ]
@@ -22484,7 +22575,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        427
+                        573,
+                        574,
+                        575
                       ]
                     }
                   ]
@@ -22508,8 +22601,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        11421,
-                        11423
+                        427
                       ]
                     }
                   ]
@@ -22525,6 +22617,31 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "formlink_target": "WEAP",
                       "formlink_targets": [
                         "WEAP"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        11421,
+                        11423
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "weather",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "weather_weather",
+                      "kind": "formid",
+                      "display_label": "Weather Weather",
+                      "formlink_target": "WTHR",
+                      "formlink_targets": [
+                        "WTHR"
                       ]
                     }
                   ],
@@ -23011,8 +23128,30 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "unnamed",
-                  "codec": "uint32",
+                  "id": "none",
+                  "codec": "struct:B,B,B,B",
+                  "fields": [
+                    {
+                      "id": "none_byte_1",
+                      "kind": "uint8",
+                      "display_label": "None Byte 1"
+                    },
+                    {
+                      "id": "none_byte_2",
+                      "kind": "uint8",
+                      "display_label": "None Byte 2"
+                    },
+                    {
+                      "id": "none_byte_3",
+                      "kind": "uint8",
+                      "display_label": "None Byte 3"
+                    },
+                    {
+                      "id": "none_byte_4",
+                      "kind": "uint8",
+                      "display_label": "None Byte 4"
+                    }
+                  ],
                   "conditions": [
                     {
                       "field": "function",
@@ -23438,13 +23577,13 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "float",
-                  "codec": "float32",
+                  "id": "integer",
+                  "codec": "int32",
                   "fields": [
                     {
-                      "id": "float_float",
-                      "kind": "float32",
-                      "display_label": "Float Float"
+                      "id": "integer_integer",
+                      "kind": "int32",
+                      "display_label": "Integer Integer"
                     }
                   ],
                   "conditions": [
@@ -23474,27 +23613,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "integer",
-                  "codec": "int32",
-                  "fields": [
-                    {
-                      "id": "integer_integer",
-                      "kind": "int32",
-                      "display_label": "Integer Integer"
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        420,
-                        421
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "quest_objective",
                   "codec": "int32",
                   "fields": [
@@ -23509,7 +23627,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        59
+                        420,
+                        421
                       ]
                     }
                   ]
@@ -23529,8 +23648,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        53,
-                        79
+                        59
                       ]
                     }
                   ]
@@ -23550,20 +23668,41 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
+                        53,
+                        79
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "vats_value_param",
+                  "codec": "struct:I",
+                  "fields": [
+                    {
+                      "id": "vats_value_param_vats_value_param",
+                      "kind": "uint32",
+                      "display_label": "VATS Value Param VATS Value Param"
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
                         408
                       ]
                     }
                   ]
                 },
                 {
-                  "id": "creature_type",
+                  "id": "crime_type",
                   "codec": "uint32",
                   "fields": [
                     {
-                      "id": "creature_type_creature_type",
+                      "id": "crime_type_crime_type",
                       "kind": "uint32",
-                      "display_label": "Creature Type Creature Type",
-                      "enum_ref": "creature_type_enum"
+                      "display_label": "Crime Type Crime Type",
+                      "enum_ref": "crime_type_enum"
                     }
                   ],
                   "conditions": [
@@ -23577,14 +23716,14 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "equip_type",
+                  "id": "form_type",
                   "codec": "uint32",
                   "fields": [
                     {
-                      "id": "equip_type_equip_type",
+                      "id": "form_type_form_type",
                       "kind": "uint32",
-                      "display_label": "Equip Type Equip Type",
-                      "enum_ref": "equip_type_enum"
+                      "display_label": "Form Type Form Type",
+                      "enum_ref": "form_type_enum"
                     }
                   ],
                   "conditions": [
@@ -23595,38 +23734,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                         1089,
                         1297
                       ]
-                    }
-                  ]
-                },
-                {
-                  "id": "form",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "form_form",
-                      "kind": "formid",
-                      "display_label": "Form Form"
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        60,
-                        1475,
-                        1476
-                      ]
-                    },
-                    {
-                      "field": "type",
-                      "operator": "bit_unset",
-                      "value": 2
-                    },
-                    {
-                      "field": "type",
-                      "operator": "bit_unset",
-                      "value": 8
                     }
                   ]
                 },
@@ -23651,6 +23758,32 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
+                        60,
+                        1475,
+                        1476
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "actor_base",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "actor_base_actor_base",
+                      "kind": "formid",
+                      "display_label": "Actor Base Actor Base",
+                      "formlink_targets": [
+                        "CREA",
+                        "NPC_"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
                         1291,
                         11488
                       ]
@@ -23658,16 +23791,16 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "encounter_zone",
+                  "id": "faction",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "encounter_zone_encounter_zone",
+                      "id": "faction_faction",
                       "kind": "formid",
-                      "display_label": "Encounter Zone Encounter Zone",
-                      "formlink_target": "ECZN",
+                      "display_label": "Faction Faction",
+                      "formlink_target": "FACT",
                       "formlink_targets": [
-                        "ECZN"
+                        "FACT"
                       ]
                     }
                   ],
@@ -23682,16 +23815,27 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "idle",
+                  "id": "inventory_object",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "idle_idle",
+                      "id": "inventory_object_inventory_object",
                       "kind": "formid",
-                      "display_label": "Idle Idle",
-                      "formlink_target": "IDLE",
+                      "display_label": "Inventory Object Inventory Object",
                       "formlink_targets": [
-                        "IDLE"
+                        "ALCH",
+                        "AMMO",
+                        "ARMO",
+                        "BOOK",
+                        "CCRD",
+                        "CHIP",
+                        "CMNY",
+                        "FLST",
+                        "IMOD",
+                        "KEYM",
+                        "MISC",
+                        "NOTE",
+                        "WEAP"
                       ]
                     }
                   ],
@@ -23707,17 +23851,18 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "note",
+                  "id": "owner",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "note_note",
+                      "id": "owner_owner",
                       "kind": "formid",
-                      "display_label": "Note Note",
-                      "formlink_target": "NOTE",
+                      "display_label": "Owner Owner",
                       "formlink_targets": [
-                        "NOTE"
-                      ]
+                        "FACT",
+                        "NPC_"
+                      ],
+                      "null_allowed": true
                     }
                   ],
                   "conditions": [
@@ -23731,16 +23876,22 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "race",
+                  "id": "reference",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "race_race",
+                      "id": "reference_reference",
                       "kind": "formid",
-                      "display_label": "Race Race",
-                      "formlink_target": "RACE",
+                      "display_label": "Reference Reference",
                       "formlink_targets": [
-                        "RACE"
+                        "ACHR",
+                        "ACRE",
+                        "PBEA",
+                        "PGRE",
+                        "PLYR",
+                        "PMIS",
+                        "REFR",
+                        "TRGT"
                       ]
                     }
                   ],
@@ -23751,30 +23902,20 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "values": [
                         230
                       ]
-                    },
-                    {
-                      "field": "type",
-                      "operator": "bit_unset",
-                      "value": 2
-                    },
-                    {
-                      "field": "type",
-                      "operator": "bit_unset",
-                      "value": 8
                     }
                   ]
                 },
                 {
-                  "id": "voice_type",
+                  "id": "weapon",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "voice_type_voice_type",
+                      "id": "weapon_weapon",
                       "kind": "formid",
-                      "display_label": "Voice Type Voice Type",
-                      "formlink_target": "VTYP",
+                      "display_label": "Weapon Weapon",
+                      "formlink_target": "WEAP",
                       "formlink_targets": [
-                        "VTYP"
+                        "WEAP"
                       ]
                     }
                   ],
@@ -26245,6 +26386,42 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
+                        310,
+                        1292
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "none",
+                  "codec": "struct:B,B,B,B",
+                  "fields": [
+                    {
+                      "id": "none_byte_1",
+                      "kind": "uint8",
+                      "display_label": "None Byte 1"
+                    },
+                    {
+                      "id": "none_byte_2",
+                      "kind": "uint8",
+                      "display_label": "None Byte 2"
+                    },
+                    {
+                      "id": "none_byte_3",
+                      "kind": "uint8",
+                      "display_label": "None Byte 3"
+                    },
+                    {
+                      "id": "none_byte_4",
+                      "kind": "uint8",
+                      "display_label": "None Byte 4"
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
                         5,
                         12,
                         18,
@@ -26339,7 +26516,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                         304,
                         306,
                         309,
-                        310,
                         313,
                         314,
                         315,
@@ -26395,7 +26571,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                         1102,
                         1105,
                         1266,
-                        1292,
                         1440,
                         1441,
                         1541,
@@ -26466,28 +26641,13 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "none",
-                  "codec": "struct:B,B,B,B",
+                  "id": "float",
+                  "codec": "float32",
                   "fields": [
                     {
-                      "id": "none_byte_1",
-                      "kind": "uint8",
-                      "display_label": "None Byte 1"
-                    },
-                    {
-                      "id": "none_byte_2",
-                      "kind": "uint8",
-                      "display_label": "None Byte 2"
-                    },
-                    {
-                      "id": "none_byte_3",
-                      "kind": "uint8",
-                      "display_label": "None Byte 3"
-                    },
-                    {
-                      "id": "none_byte_4",
-                      "kind": "uint8",
-                      "display_label": "None Byte 4"
+                      "id": "float_float",
+                      "kind": "float32",
+                      "display_label": "Float Float"
                     }
                   ],
                   "conditions": [
@@ -26506,13 +26666,13 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "float",
-                  "codec": "float32",
+                  "id": "integer",
+                  "codec": "int32",
                   "fields": [
                     {
-                      "id": "float_float",
-                      "kind": "float32",
-                      "display_label": "Float Float"
+                      "id": "integer_integer",
+                      "kind": "int32",
+                      "display_label": "Integer Integer"
                     }
                   ],
                   "conditions": [
@@ -26551,31 +26711,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "vats_value_param",
-                  "codec": "struct:I",
-                  "fields": [
-                    {
-                      "id": "vats_value_param_vats_value_param",
-                      "kind": "uint32",
-                      "display_label": "VATS Value Param VATS Value Param"
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        14,
-                        109,
-                        277,
-                        462,
-                        495,
-                        11509
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "actor_value",
                   "codec": "int32",
                   "fields": [
@@ -26591,7 +26726,12 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        474
+                        14,
+                        109,
+                        277,
+                        462,
+                        495,
+                        11509
                       ]
                     }
                   ]
@@ -26612,10 +26752,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        6,
-                        8,
-                        10,
-                        11
+                        474
                       ]
                     }
                   ]
@@ -26636,7 +26773,10 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        398
+                        6,
+                        8,
+                        10,
+                        11
                       ]
                     }
                   ]
@@ -26657,20 +26797,20 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        438
+                        398
                       ]
                     }
                   ]
                 },
                 {
-                  "id": "crime_type",
+                  "id": "creature_type",
                   "codec": "uint32",
                   "fields": [
                     {
-                      "id": "crime_type_crime_type",
+                      "id": "creature_type_creature_type",
                       "kind": "uint32",
-                      "display_label": "Crime Type Crime Type",
-                      "enum_ref": "crime_type_enum"
+                      "display_label": "Creature Type Creature Type",
+                      "enum_ref": "creature_type_enum"
                     }
                   ],
                   "conditions": [
@@ -26678,7 +26818,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        531
+                        438
                       ]
                     }
                   ]
@@ -26699,7 +26839,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        480
+                        531
                       ]
                     }
                   ]
@@ -26720,12 +26860,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        247,
-                        433,
-                        1029,
-                        1034,
-                        1286,
-                        1288
+                        480
                       ]
                     }
                   ]
@@ -26746,7 +26881,12 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        36
+                        247,
+                        433,
+                        1029,
+                        1034,
+                        1286,
+                        1288
                       ]
                     }
                   ]
@@ -26766,7 +26906,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        312
+                        36
                       ]
                     }
                   ]
@@ -26787,7 +26927,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        368
+                        312
                       ]
                     }
                   ]
@@ -26808,8 +26948,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        70,
-                        131
+                        368
                       ]
                     }
                   ]
@@ -26830,7 +26969,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        408
+                        70,
+                        131
                       ]
                     }
                   ]
@@ -26851,8 +26991,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        4708,
-                        6167
+                        408
                       ]
                     }
                   ]
@@ -26865,6 +27004,33 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "id": "form_form",
                       "kind": "formid",
                       "display_label": "Form Form"
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        4708,
+                        6167
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "actor",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "actor_actor",
+                      "kind": "formid",
+                      "display_label": "Actor Actor",
+                      "formlink_targets": [
+                        "ACHR",
+                        "ACRE",
+                        "PLYR",
+                        "TRGT"
+                      ]
                     }
                   ],
                   "conditions": [
@@ -26895,35 +27061,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "actor",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "actor_actor",
-                      "kind": "formid",
-                      "display_label": "Actor Actor",
-                      "formlink_targets": [
-                        "ACHR",
-                        "ACRE",
-                        "PLYR",
-                        "TRGT"
-                      ]
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        84,
-                        1278,
-                        11429,
-                        11431
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "actor_base",
                   "codec": "formid",
                   "fields": [
@@ -26942,7 +27079,10 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        9753
+                        84,
+                        1278,
+                        11429,
+                        11431
                       ]
                     }
                   ]
@@ -26966,8 +27106,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        214,
-                        4897
+                        9753
                       ]
                     }
                   ]
@@ -26991,8 +27130,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        72,
-                        246
+                        214,
+                        4897
                       ]
                     }
                   ]
@@ -27012,7 +27151,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        610
+                        72,
+                        246
                       ]
                     }
                   ]
@@ -27036,9 +27176,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        67,
-                        230,
-                        280
+                        610
                       ]
                     }
                   ]
@@ -27062,9 +27200,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        607,
-                        614,
-                        11425
+                        67,
+                        230,
+                        280
                       ]
                     }
                   ]
@@ -27088,9 +27226,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        68,
-                        129,
-                        228
+                        607,
+                        614,
+                        11425
                       ]
                     }
                   ]
@@ -27114,9 +27252,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        223,
-                        555,
-                        6124
+                        68,
+                        129,
+                        228
                       ]
                     }
                   ]
@@ -27142,7 +27280,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        446
+                        223,
+                        555,
+                        6124
                       ]
                     }
                   ]
@@ -27166,15 +27306,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        60,
-                        71,
-                        73,
-                        132,
-                        193,
-                        195,
-                        197,
-                        199,
-                        411
+                        446
                       ]
                     }
                   ]
@@ -27190,6 +27322,38 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "formlink_target": "FACT",
                       "formlink_targets": [
                         "FACT"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        60,
+                        71,
+                        73,
+                        132,
+                        193,
+                        195,
+                        197,
+                        199,
+                        411
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "form_list",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "form_list_form_list",
+                      "kind": "formid",
+                      "display_label": "Form List Form List",
+                      "formlink_target": "FLST",
+                      "formlink_targets": [
+                        "FLST"
                       ]
                     }
                   ],
@@ -27214,30 +27378,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "form_list",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "form_list_form_list",
-                      "kind": "formid",
-                      "display_label": "Form List Form List",
-                      "formlink_target": "FLST",
-                      "formlink_targets": [
-                        "FLST"
-                      ]
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        163
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "furniture",
                   "codec": "formid",
                   "fields": [
@@ -27256,7 +27396,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        74
+                        163
                       ]
                     }
                   ]
@@ -27280,7 +27420,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        451
+                        74
                       ]
                     }
                   ]
@@ -27296,6 +27436,41 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "formlink_target": "IDLE",
                       "formlink_targets": [
                         "IDLE"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        451
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "inventory_object",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "inventory_object_inventory_object",
+                      "kind": "formid",
+                      "display_label": "Inventory Object Inventory Object",
+                      "formlink_targets": [
+                        "ALCH",
+                        "AMMO",
+                        "ARMO",
+                        "BOOK",
+                        "CCRD",
+                        "CHIP",
+                        "CMNY",
+                        "FLST",
+                        "IMOD",
+                        "KEYM",
+                        "MISC",
+                        "NOTE",
+                        "WEAP"
                       ]
                     }
                   ],
@@ -27370,42 +27545,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "inventory_object",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "inventory_object_inventory_object",
-                      "kind": "formid",
-                      "display_label": "Inventory Object Inventory Object",
-                      "formlink_targets": [
-                        "ALCH",
-                        "AMMO",
-                        "ARMO",
-                        "BOOK",
-                        "CCRD",
-                        "CHIP",
-                        "CMNY",
-                        "FLST",
-                        "IMOD",
-                        "KEYM",
-                        "MISC",
-                        "NOTE",
-                        "WEAP"
-                      ]
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        382,
-                        6321
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "note",
                   "codec": "formid",
                   "fields": [
@@ -27424,7 +27563,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        278
+                        382,
+                        6321
                       ]
                     }
                   ]
@@ -27449,7 +27589,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        161
+                        278
                       ]
                     }
                   ]
@@ -27473,9 +27613,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        449,
-                        1475,
-                        1476
+                        161
                       ]
                     }
                   ]
@@ -27491,6 +27629,32 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "formlink_target": "PERK",
                       "formlink_targets": [
                         "PERK"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        449,
+                        1475,
+                        1476
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "quest",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "quest_quest",
+                      "kind": "formid",
+                      "display_label": "Quest Quest",
+                      "formlink_target": "QUST",
+                      "formlink_targets": [
+                        "QUST"
                       ]
                     }
                   ],
@@ -27515,16 +27679,16 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "quest",
+                  "id": "race",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "quest_quest",
+                      "id": "race_race",
                       "kind": "formid",
-                      "display_label": "Quest Quest",
-                      "formlink_target": "QUST",
+                      "display_label": "Race Race",
+                      "formlink_target": "RACE",
                       "formlink_targets": [
-                        "QUST"
+                        "RACE"
                       ]
                     }
                   ],
@@ -27540,16 +27704,22 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "race",
+                  "id": "reference",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "race_race",
+                      "id": "reference_reference",
                       "kind": "formid",
-                      "display_label": "Race Race",
-                      "formlink_target": "RACE",
+                      "display_label": "Reference Reference",
                       "formlink_targets": [
-                        "RACE"
+                        "ACHR",
+                        "ACRE",
+                        "PBEA",
+                        "PGRE",
+                        "PLYR",
+                        "PMIS",
+                        "REFR",
+                        "TRGT"
                       ]
                     }
                   ],
@@ -27585,36 +27755,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "reference",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "reference_reference",
-                      "kind": "formid",
-                      "display_label": "Reference Reference",
-                      "formlink_targets": [
-                        "ACHR",
-                        "ACRE",
-                        "PBEA",
-                        "PGRE",
-                        "PLYR",
-                        "PMIS",
-                        "REFR",
-                        "TRGT"
-                      ]
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        612
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "region",
                   "codec": "formid",
                   "fields": [
@@ -27633,9 +27773,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        573,
-                        574,
-                        575
+                        612
                       ]
                     }
                   ]
@@ -27659,7 +27797,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        427
+                        573,
+                        574,
+                        575
                       ]
                     }
                   ]
@@ -27683,8 +27823,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        11421,
-                        11423
+                        427
                       ]
                     }
                   ]
@@ -27700,6 +27839,31 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "formlink_target": "WEAP",
                       "formlink_targets": [
                         "WEAP"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        11421,
+                        11423
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "weather",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "weather_weather",
+                      "kind": "formid",
+                      "display_label": "Weather Weather",
+                      "formlink_target": "WTHR",
+                      "formlink_targets": [
+                        "WTHR"
                       ]
                     }
                   ],
@@ -28186,8 +28350,30 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "unnamed",
-                  "codec": "uint32",
+                  "id": "none",
+                  "codec": "struct:B,B,B,B",
+                  "fields": [
+                    {
+                      "id": "none_byte_1",
+                      "kind": "uint8",
+                      "display_label": "None Byte 1"
+                    },
+                    {
+                      "id": "none_byte_2",
+                      "kind": "uint8",
+                      "display_label": "None Byte 2"
+                    },
+                    {
+                      "id": "none_byte_3",
+                      "kind": "uint8",
+                      "display_label": "None Byte 3"
+                    },
+                    {
+                      "id": "none_byte_4",
+                      "kind": "uint8",
+                      "display_label": "None Byte 4"
+                    }
+                  ],
                   "conditions": [
                     {
                       "field": "function",
@@ -28613,13 +28799,13 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "float",
-                  "codec": "float32",
+                  "id": "integer",
+                  "codec": "int32",
                   "fields": [
                     {
-                      "id": "float_float",
-                      "kind": "float32",
-                      "display_label": "Float Float"
+                      "id": "integer_integer",
+                      "kind": "int32",
+                      "display_label": "Integer Integer"
                     }
                   ],
                   "conditions": [
@@ -28649,27 +28835,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "integer",
-                  "codec": "int32",
-                  "fields": [
-                    {
-                      "id": "integer_integer",
-                      "kind": "int32",
-                      "display_label": "Integer Integer"
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        420,
-                        421
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "quest_objective",
                   "codec": "int32",
                   "fields": [
@@ -28684,7 +28849,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        59
+                        420,
+                        421
                       ]
                     }
                   ]
@@ -28704,8 +28870,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        53,
-                        79
+                        59
                       ]
                     }
                   ]
@@ -28725,20 +28890,41 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
+                        53,
+                        79
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "vats_value_param",
+                  "codec": "struct:I",
+                  "fields": [
+                    {
+                      "id": "vats_value_param_vats_value_param",
+                      "kind": "uint32",
+                      "display_label": "VATS Value Param VATS Value Param"
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
                         408
                       ]
                     }
                   ]
                 },
                 {
-                  "id": "creature_type",
+                  "id": "crime_type",
                   "codec": "uint32",
                   "fields": [
                     {
-                      "id": "creature_type_creature_type",
+                      "id": "crime_type_crime_type",
                       "kind": "uint32",
-                      "display_label": "Creature Type Creature Type",
-                      "enum_ref": "creature_type_enum"
+                      "display_label": "Crime Type Crime Type",
+                      "enum_ref": "crime_type_enum"
                     }
                   ],
                   "conditions": [
@@ -28752,14 +28938,14 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "equip_type",
+                  "id": "form_type",
                   "codec": "uint32",
                   "fields": [
                     {
-                      "id": "equip_type_equip_type",
+                      "id": "form_type_form_type",
                       "kind": "uint32",
-                      "display_label": "Equip Type Equip Type",
-                      "enum_ref": "equip_type_enum"
+                      "display_label": "Form Type Form Type",
+                      "enum_ref": "form_type_enum"
                     }
                   ],
                   "conditions": [
@@ -28770,38 +28956,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                         1089,
                         1297
                       ]
-                    }
-                  ]
-                },
-                {
-                  "id": "form",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "form_form",
-                      "kind": "formid",
-                      "display_label": "Form Form"
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        60,
-                        1475,
-                        1476
-                      ]
-                    },
-                    {
-                      "field": "type",
-                      "operator": "bit_unset",
-                      "value": 2
-                    },
-                    {
-                      "field": "type",
-                      "operator": "bit_unset",
-                      "value": 8
                     }
                   ]
                 },
@@ -28826,6 +28980,32 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
+                        60,
+                        1475,
+                        1476
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "actor_base",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "actor_base_actor_base",
+                      "kind": "formid",
+                      "display_label": "Actor Base Actor Base",
+                      "formlink_targets": [
+                        "CREA",
+                        "NPC_"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
                         1291,
                         11488
                       ]
@@ -28833,16 +29013,16 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "encounter_zone",
+                  "id": "faction",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "encounter_zone_encounter_zone",
+                      "id": "faction_faction",
                       "kind": "formid",
-                      "display_label": "Encounter Zone Encounter Zone",
-                      "formlink_target": "ECZN",
+                      "display_label": "Faction Faction",
+                      "formlink_target": "FACT",
                       "formlink_targets": [
-                        "ECZN"
+                        "FACT"
                       ]
                     }
                   ],
@@ -28857,16 +29037,27 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "idle",
+                  "id": "inventory_object",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "idle_idle",
+                      "id": "inventory_object_inventory_object",
                       "kind": "formid",
-                      "display_label": "Idle Idle",
-                      "formlink_target": "IDLE",
+                      "display_label": "Inventory Object Inventory Object",
                       "formlink_targets": [
-                        "IDLE"
+                        "ALCH",
+                        "AMMO",
+                        "ARMO",
+                        "BOOK",
+                        "CCRD",
+                        "CHIP",
+                        "CMNY",
+                        "FLST",
+                        "IMOD",
+                        "KEYM",
+                        "MISC",
+                        "NOTE",
+                        "WEAP"
                       ]
                     }
                   ],
@@ -28882,17 +29073,18 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "note",
+                  "id": "owner",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "note_note",
+                      "id": "owner_owner",
                       "kind": "formid",
-                      "display_label": "Note Note",
-                      "formlink_target": "NOTE",
+                      "display_label": "Owner Owner",
                       "formlink_targets": [
-                        "NOTE"
-                      ]
+                        "FACT",
+                        "NPC_"
+                      ],
+                      "null_allowed": true
                     }
                   ],
                   "conditions": [
@@ -28906,16 +29098,22 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "race",
+                  "id": "reference",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "race_race",
+                      "id": "reference_reference",
                       "kind": "formid",
-                      "display_label": "Race Race",
-                      "formlink_target": "RACE",
+                      "display_label": "Reference Reference",
                       "formlink_targets": [
-                        "RACE"
+                        "ACHR",
+                        "ACRE",
+                        "PBEA",
+                        "PGRE",
+                        "PLYR",
+                        "PMIS",
+                        "REFR",
+                        "TRGT"
                       ]
                     }
                   ],
@@ -28926,30 +29124,20 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "values": [
                         230
                       ]
-                    },
-                    {
-                      "field": "type",
-                      "operator": "bit_unset",
-                      "value": 2
-                    },
-                    {
-                      "field": "type",
-                      "operator": "bit_unset",
-                      "value": 8
                     }
                   ]
                 },
                 {
-                  "id": "voice_type",
+                  "id": "weapon",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "voice_type_voice_type",
+                      "id": "weapon_weapon",
                       "kind": "formid",
-                      "display_label": "Voice Type Voice Type",
-                      "formlink_target": "VTYP",
+                      "display_label": "Weapon Weapon",
+                      "formlink_target": "WEAP",
                       "formlink_targets": [
-                        "VTYP"
+                        "WEAP"
                       ]
                     }
                   ],
@@ -32928,6 +33116,42 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
+                        310,
+                        1292
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "none",
+                  "codec": "struct:B,B,B,B",
+                  "fields": [
+                    {
+                      "id": "none_byte_1",
+                      "kind": "uint8",
+                      "display_label": "None Byte 1"
+                    },
+                    {
+                      "id": "none_byte_2",
+                      "kind": "uint8",
+                      "display_label": "None Byte 2"
+                    },
+                    {
+                      "id": "none_byte_3",
+                      "kind": "uint8",
+                      "display_label": "None Byte 3"
+                    },
+                    {
+                      "id": "none_byte_4",
+                      "kind": "uint8",
+                      "display_label": "None Byte 4"
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
                         5,
                         12,
                         18,
@@ -33022,7 +33246,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                         304,
                         306,
                         309,
-                        310,
                         313,
                         314,
                         315,
@@ -33078,7 +33301,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                         1102,
                         1105,
                         1266,
-                        1292,
                         1440,
                         1441,
                         1541,
@@ -33149,28 +33371,13 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "none",
-                  "codec": "struct:B,B,B,B",
+                  "id": "float",
+                  "codec": "float32",
                   "fields": [
                     {
-                      "id": "none_byte_1",
-                      "kind": "uint8",
-                      "display_label": "None Byte 1"
-                    },
-                    {
-                      "id": "none_byte_2",
-                      "kind": "uint8",
-                      "display_label": "None Byte 2"
-                    },
-                    {
-                      "id": "none_byte_3",
-                      "kind": "uint8",
-                      "display_label": "None Byte 3"
-                    },
-                    {
-                      "id": "none_byte_4",
-                      "kind": "uint8",
-                      "display_label": "None Byte 4"
+                      "id": "float_float",
+                      "kind": "float32",
+                      "display_label": "Float Float"
                     }
                   ],
                   "conditions": [
@@ -33189,13 +33396,13 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "float",
-                  "codec": "float32",
+                  "id": "integer",
+                  "codec": "int32",
                   "fields": [
                     {
-                      "id": "float_float",
-                      "kind": "float32",
-                      "display_label": "Float Float"
+                      "id": "integer_integer",
+                      "kind": "int32",
+                      "display_label": "Integer Integer"
                     }
                   ],
                   "conditions": [
@@ -33234,31 +33441,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "vats_value_param",
-                  "codec": "struct:I",
-                  "fields": [
-                    {
-                      "id": "vats_value_param_vats_value_param",
-                      "kind": "uint32",
-                      "display_label": "VATS Value Param VATS Value Param"
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        14,
-                        109,
-                        277,
-                        462,
-                        495,
-                        11509
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "actor_value",
                   "codec": "int32",
                   "fields": [
@@ -33274,7 +33456,12 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        474
+                        14,
+                        109,
+                        277,
+                        462,
+                        495,
+                        11509
                       ]
                     }
                   ]
@@ -33295,10 +33482,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        6,
-                        8,
-                        10,
-                        11
+                        474
                       ]
                     }
                   ]
@@ -33319,7 +33503,10 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        398
+                        6,
+                        8,
+                        10,
+                        11
                       ]
                     }
                   ]
@@ -33340,20 +33527,20 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        438
+                        398
                       ]
                     }
                   ]
                 },
                 {
-                  "id": "crime_type",
+                  "id": "creature_type",
                   "codec": "uint32",
                   "fields": [
                     {
-                      "id": "crime_type_crime_type",
+                      "id": "creature_type_creature_type",
                       "kind": "uint32",
-                      "display_label": "Crime Type Crime Type",
-                      "enum_ref": "crime_type_enum"
+                      "display_label": "Creature Type Creature Type",
+                      "enum_ref": "creature_type_enum"
                     }
                   ],
                   "conditions": [
@@ -33361,7 +33548,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        531
+                        438
                       ]
                     }
                   ]
@@ -33382,7 +33569,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        480
+                        531
                       ]
                     }
                   ]
@@ -33403,12 +33590,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        247,
-                        433,
-                        1029,
-                        1034,
-                        1286,
-                        1288
+                        480
                       ]
                     }
                   ]
@@ -33429,7 +33611,12 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        36
+                        247,
+                        433,
+                        1029,
+                        1034,
+                        1286,
+                        1288
                       ]
                     }
                   ]
@@ -33449,7 +33636,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        312
+                        36
                       ]
                     }
                   ]
@@ -33470,7 +33657,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        368
+                        312
                       ]
                     }
                   ]
@@ -33491,8 +33678,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        70,
-                        131
+                        368
                       ]
                     }
                   ]
@@ -33513,7 +33699,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        408
+                        70,
+                        131
                       ]
                     }
                   ]
@@ -33534,8 +33721,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        4708,
-                        6167
+                        408
                       ]
                     }
                   ]
@@ -33548,6 +33734,33 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "id": "form_form",
                       "kind": "formid",
                       "display_label": "Form Form"
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        4708,
+                        6167
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "actor",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "actor_actor",
+                      "kind": "formid",
+                      "display_label": "Actor Actor",
+                      "formlink_targets": [
+                        "ACHR",
+                        "ACRE",
+                        "PLYR",
+                        "TRGT"
+                      ]
                     }
                   ],
                   "conditions": [
@@ -33578,35 +33791,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "actor",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "actor_actor",
-                      "kind": "formid",
-                      "display_label": "Actor Actor",
-                      "formlink_targets": [
-                        "ACHR",
-                        "ACRE",
-                        "PLYR",
-                        "TRGT"
-                      ]
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        84,
-                        1278,
-                        11429,
-                        11431
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "actor_base",
                   "codec": "formid",
                   "fields": [
@@ -33625,7 +33809,10 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        9753
+                        84,
+                        1278,
+                        11429,
+                        11431
                       ]
                     }
                   ]
@@ -33649,8 +33836,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        214,
-                        4897
+                        9753
                       ]
                     }
                   ]
@@ -33674,8 +33860,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        72,
-                        246
+                        214,
+                        4897
                       ]
                     }
                   ]
@@ -33695,7 +33881,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        610
+                        72,
+                        246
                       ]
                     }
                   ]
@@ -33719,9 +33906,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        67,
-                        230,
-                        280
+                        610
                       ]
                     }
                   ]
@@ -33745,9 +33930,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        607,
-                        614,
-                        11425
+                        67,
+                        230,
+                        280
                       ]
                     }
                   ]
@@ -33771,9 +33956,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        68,
-                        129,
-                        228
+                        607,
+                        614,
+                        11425
                       ]
                     }
                   ]
@@ -33797,9 +33982,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        223,
-                        555,
-                        6124
+                        68,
+                        129,
+                        228
                       ]
                     }
                   ]
@@ -33825,7 +34010,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        446
+                        223,
+                        555,
+                        6124
                       ]
                     }
                   ]
@@ -33849,15 +34036,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        60,
-                        71,
-                        73,
-                        132,
-                        193,
-                        195,
-                        197,
-                        199,
-                        411
+                        446
                       ]
                     }
                   ]
@@ -33873,6 +34052,38 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "formlink_target": "FACT",
                       "formlink_targets": [
                         "FACT"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        60,
+                        71,
+                        73,
+                        132,
+                        193,
+                        195,
+                        197,
+                        199,
+                        411
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "form_list",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "form_list_form_list",
+                      "kind": "formid",
+                      "display_label": "Form List Form List",
+                      "formlink_target": "FLST",
+                      "formlink_targets": [
+                        "FLST"
                       ]
                     }
                   ],
@@ -33897,30 +34108,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "form_list",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "form_list_form_list",
-                      "kind": "formid",
-                      "display_label": "Form List Form List",
-                      "formlink_target": "FLST",
-                      "formlink_targets": [
-                        "FLST"
-                      ]
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        163
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "furniture",
                   "codec": "formid",
                   "fields": [
@@ -33939,7 +34126,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        74
+                        163
                       ]
                     }
                   ]
@@ -33963,7 +34150,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        451
+                        74
                       ]
                     }
                   ]
@@ -33979,6 +34166,41 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "formlink_target": "IDLE",
                       "formlink_targets": [
                         "IDLE"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        451
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "inventory_object",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "inventory_object_inventory_object",
+                      "kind": "formid",
+                      "display_label": "Inventory Object Inventory Object",
+                      "formlink_targets": [
+                        "ALCH",
+                        "AMMO",
+                        "ARMO",
+                        "BOOK",
+                        "CCRD",
+                        "CHIP",
+                        "CMNY",
+                        "FLST",
+                        "IMOD",
+                        "KEYM",
+                        "MISC",
+                        "NOTE",
+                        "WEAP"
                       ]
                     }
                   ],
@@ -34053,42 +34275,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "inventory_object",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "inventory_object_inventory_object",
-                      "kind": "formid",
-                      "display_label": "Inventory Object Inventory Object",
-                      "formlink_targets": [
-                        "ALCH",
-                        "AMMO",
-                        "ARMO",
-                        "BOOK",
-                        "CCRD",
-                        "CHIP",
-                        "CMNY",
-                        "FLST",
-                        "IMOD",
-                        "KEYM",
-                        "MISC",
-                        "NOTE",
-                        "WEAP"
-                      ]
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        382,
-                        6321
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "note",
                   "codec": "formid",
                   "fields": [
@@ -34107,7 +34293,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        278
+                        382,
+                        6321
                       ]
                     }
                   ]
@@ -34132,7 +34319,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        161
+                        278
                       ]
                     }
                   ]
@@ -34156,9 +34343,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        449,
-                        1475,
-                        1476
+                        161
                       ]
                     }
                   ]
@@ -34174,6 +34359,32 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "formlink_target": "PERK",
                       "formlink_targets": [
                         "PERK"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        449,
+                        1475,
+                        1476
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "quest",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "quest_quest",
+                      "kind": "formid",
+                      "display_label": "Quest Quest",
+                      "formlink_target": "QUST",
+                      "formlink_targets": [
+                        "QUST"
                       ]
                     }
                   ],
@@ -34198,16 +34409,16 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "quest",
+                  "id": "race",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "quest_quest",
+                      "id": "race_race",
                       "kind": "formid",
-                      "display_label": "Quest Quest",
-                      "formlink_target": "QUST",
+                      "display_label": "Race Race",
+                      "formlink_target": "RACE",
                       "formlink_targets": [
-                        "QUST"
+                        "RACE"
                       ]
                     }
                   ],
@@ -34223,16 +34434,22 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "race",
+                  "id": "reference",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "race_race",
+                      "id": "reference_reference",
                       "kind": "formid",
-                      "display_label": "Race Race",
-                      "formlink_target": "RACE",
+                      "display_label": "Reference Reference",
                       "formlink_targets": [
-                        "RACE"
+                        "ACHR",
+                        "ACRE",
+                        "PBEA",
+                        "PGRE",
+                        "PLYR",
+                        "PMIS",
+                        "REFR",
+                        "TRGT"
                       ]
                     }
                   ],
@@ -34268,36 +34485,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "reference",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "reference_reference",
-                      "kind": "formid",
-                      "display_label": "Reference Reference",
-                      "formlink_targets": [
-                        "ACHR",
-                        "ACRE",
-                        "PBEA",
-                        "PGRE",
-                        "PLYR",
-                        "PMIS",
-                        "REFR",
-                        "TRGT"
-                      ]
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        612
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "region",
                   "codec": "formid",
                   "fields": [
@@ -34316,9 +34503,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        573,
-                        574,
-                        575
+                        612
                       ]
                     }
                   ]
@@ -34342,7 +34527,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        427
+                        573,
+                        574,
+                        575
                       ]
                     }
                   ]
@@ -34366,8 +34553,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        11421,
-                        11423
+                        427
                       ]
                     }
                   ]
@@ -34383,6 +34569,31 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "formlink_target": "WEAP",
                       "formlink_targets": [
                         "WEAP"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        11421,
+                        11423
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "weather",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "weather_weather",
+                      "kind": "formid",
+                      "display_label": "Weather Weather",
+                      "formlink_target": "WTHR",
+                      "formlink_targets": [
+                        "WTHR"
                       ]
                     }
                   ],
@@ -34869,8 +35080,30 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "unnamed",
-                  "codec": "uint32",
+                  "id": "none",
+                  "codec": "struct:B,B,B,B",
+                  "fields": [
+                    {
+                      "id": "none_byte_1",
+                      "kind": "uint8",
+                      "display_label": "None Byte 1"
+                    },
+                    {
+                      "id": "none_byte_2",
+                      "kind": "uint8",
+                      "display_label": "None Byte 2"
+                    },
+                    {
+                      "id": "none_byte_3",
+                      "kind": "uint8",
+                      "display_label": "None Byte 3"
+                    },
+                    {
+                      "id": "none_byte_4",
+                      "kind": "uint8",
+                      "display_label": "None Byte 4"
+                    }
+                  ],
                   "conditions": [
                     {
                       "field": "function",
@@ -35296,13 +35529,13 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "float",
-                  "codec": "float32",
+                  "id": "integer",
+                  "codec": "int32",
                   "fields": [
                     {
-                      "id": "float_float",
-                      "kind": "float32",
-                      "display_label": "Float Float"
+                      "id": "integer_integer",
+                      "kind": "int32",
+                      "display_label": "Integer Integer"
                     }
                   ],
                   "conditions": [
@@ -35332,27 +35565,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "integer",
-                  "codec": "int32",
-                  "fields": [
-                    {
-                      "id": "integer_integer",
-                      "kind": "int32",
-                      "display_label": "Integer Integer"
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        420,
-                        421
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "quest_objective",
                   "codec": "int32",
                   "fields": [
@@ -35367,7 +35579,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        59
+                        420,
+                        421
                       ]
                     }
                   ]
@@ -35387,8 +35600,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        53,
-                        79
+                        59
                       ]
                     }
                   ]
@@ -35408,20 +35620,41 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
+                        53,
+                        79
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "vats_value_param",
+                  "codec": "struct:I",
+                  "fields": [
+                    {
+                      "id": "vats_value_param_vats_value_param",
+                      "kind": "uint32",
+                      "display_label": "VATS Value Param VATS Value Param"
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
                         408
                       ]
                     }
                   ]
                 },
                 {
-                  "id": "creature_type",
+                  "id": "crime_type",
                   "codec": "uint32",
                   "fields": [
                     {
-                      "id": "creature_type_creature_type",
+                      "id": "crime_type_crime_type",
                       "kind": "uint32",
-                      "display_label": "Creature Type Creature Type",
-                      "enum_ref": "creature_type_enum"
+                      "display_label": "Crime Type Crime Type",
+                      "enum_ref": "crime_type_enum"
                     }
                   ],
                   "conditions": [
@@ -35435,14 +35668,14 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "equip_type",
+                  "id": "form_type",
                   "codec": "uint32",
                   "fields": [
                     {
-                      "id": "equip_type_equip_type",
+                      "id": "form_type_form_type",
                       "kind": "uint32",
-                      "display_label": "Equip Type Equip Type",
-                      "enum_ref": "equip_type_enum"
+                      "display_label": "Form Type Form Type",
+                      "enum_ref": "form_type_enum"
                     }
                   ],
                   "conditions": [
@@ -35453,38 +35686,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                         1089,
                         1297
                       ]
-                    }
-                  ]
-                },
-                {
-                  "id": "form",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "form_form",
-                      "kind": "formid",
-                      "display_label": "Form Form"
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        60,
-                        1475,
-                        1476
-                      ]
-                    },
-                    {
-                      "field": "type",
-                      "operator": "bit_unset",
-                      "value": 2
-                    },
-                    {
-                      "field": "type",
-                      "operator": "bit_unset",
-                      "value": 8
                     }
                   ]
                 },
@@ -35509,6 +35710,32 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
+                        60,
+                        1475,
+                        1476
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "actor_base",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "actor_base_actor_base",
+                      "kind": "formid",
+                      "display_label": "Actor Base Actor Base",
+                      "formlink_targets": [
+                        "CREA",
+                        "NPC_"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
                         1291,
                         11488
                       ]
@@ -35516,16 +35743,16 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "encounter_zone",
+                  "id": "faction",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "encounter_zone_encounter_zone",
+                      "id": "faction_faction",
                       "kind": "formid",
-                      "display_label": "Encounter Zone Encounter Zone",
-                      "formlink_target": "ECZN",
+                      "display_label": "Faction Faction",
+                      "formlink_target": "FACT",
                       "formlink_targets": [
-                        "ECZN"
+                        "FACT"
                       ]
                     }
                   ],
@@ -35540,16 +35767,27 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "idle",
+                  "id": "inventory_object",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "idle_idle",
+                      "id": "inventory_object_inventory_object",
                       "kind": "formid",
-                      "display_label": "Idle Idle",
-                      "formlink_target": "IDLE",
+                      "display_label": "Inventory Object Inventory Object",
                       "formlink_targets": [
-                        "IDLE"
+                        "ALCH",
+                        "AMMO",
+                        "ARMO",
+                        "BOOK",
+                        "CCRD",
+                        "CHIP",
+                        "CMNY",
+                        "FLST",
+                        "IMOD",
+                        "KEYM",
+                        "MISC",
+                        "NOTE",
+                        "WEAP"
                       ]
                     }
                   ],
@@ -35565,17 +35803,18 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "note",
+                  "id": "owner",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "note_note",
+                      "id": "owner_owner",
                       "kind": "formid",
-                      "display_label": "Note Note",
-                      "formlink_target": "NOTE",
+                      "display_label": "Owner Owner",
                       "formlink_targets": [
-                        "NOTE"
-                      ]
+                        "FACT",
+                        "NPC_"
+                      ],
+                      "null_allowed": true
                     }
                   ],
                   "conditions": [
@@ -35589,16 +35828,22 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "race",
+                  "id": "reference",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "race_race",
+                      "id": "reference_reference",
                       "kind": "formid",
-                      "display_label": "Race Race",
-                      "formlink_target": "RACE",
+                      "display_label": "Reference Reference",
                       "formlink_targets": [
-                        "RACE"
+                        "ACHR",
+                        "ACRE",
+                        "PBEA",
+                        "PGRE",
+                        "PLYR",
+                        "PMIS",
+                        "REFR",
+                        "TRGT"
                       ]
                     }
                   ],
@@ -35609,30 +35854,20 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "values": [
                         230
                       ]
-                    },
-                    {
-                      "field": "type",
-                      "operator": "bit_unset",
-                      "value": 2
-                    },
-                    {
-                      "field": "type",
-                      "operator": "bit_unset",
-                      "value": 8
                     }
                   ]
                 },
                 {
-                  "id": "voice_type",
+                  "id": "weapon",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "voice_type_voice_type",
+                      "id": "weapon_weapon",
                       "kind": "formid",
-                      "display_label": "Voice Type Voice Type",
-                      "formlink_target": "VTYP",
+                      "display_label": "Weapon Weapon",
+                      "formlink_target": "WEAP",
                       "formlink_targets": [
-                        "VTYP"
+                        "WEAP"
                       ]
                     }
                   ],
@@ -37297,6 +37532,42 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
+                        310,
+                        1292
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "none",
+                  "codec": "struct:B,B,B,B",
+                  "fields": [
+                    {
+                      "id": "none_byte_1",
+                      "kind": "uint8",
+                      "display_label": "None Byte 1"
+                    },
+                    {
+                      "id": "none_byte_2",
+                      "kind": "uint8",
+                      "display_label": "None Byte 2"
+                    },
+                    {
+                      "id": "none_byte_3",
+                      "kind": "uint8",
+                      "display_label": "None Byte 3"
+                    },
+                    {
+                      "id": "none_byte_4",
+                      "kind": "uint8",
+                      "display_label": "None Byte 4"
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
                         5,
                         12,
                         18,
@@ -37391,7 +37662,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                         304,
                         306,
                         309,
-                        310,
                         313,
                         314,
                         315,
@@ -37447,7 +37717,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                         1102,
                         1105,
                         1266,
-                        1292,
                         1440,
                         1441,
                         1541,
@@ -37518,28 +37787,13 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "none",
-                  "codec": "struct:B,B,B,B",
+                  "id": "float",
+                  "codec": "float32",
                   "fields": [
                     {
-                      "id": "none_byte_1",
-                      "kind": "uint8",
-                      "display_label": "None Byte 1"
-                    },
-                    {
-                      "id": "none_byte_2",
-                      "kind": "uint8",
-                      "display_label": "None Byte 2"
-                    },
-                    {
-                      "id": "none_byte_3",
-                      "kind": "uint8",
-                      "display_label": "None Byte 3"
-                    },
-                    {
-                      "id": "none_byte_4",
-                      "kind": "uint8",
-                      "display_label": "None Byte 4"
+                      "id": "float_float",
+                      "kind": "float32",
+                      "display_label": "Float Float"
                     }
                   ],
                   "conditions": [
@@ -37558,13 +37812,13 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "float",
-                  "codec": "float32",
+                  "id": "integer",
+                  "codec": "int32",
                   "fields": [
                     {
-                      "id": "float_float",
-                      "kind": "float32",
-                      "display_label": "Float Float"
+                      "id": "integer_integer",
+                      "kind": "int32",
+                      "display_label": "Integer Integer"
                     }
                   ],
                   "conditions": [
@@ -37603,31 +37857,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "vats_value_param",
-                  "codec": "struct:I",
-                  "fields": [
-                    {
-                      "id": "vats_value_param_vats_value_param",
-                      "kind": "uint32",
-                      "display_label": "VATS Value Param VATS Value Param"
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        14,
-                        109,
-                        277,
-                        462,
-                        495,
-                        11509
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "actor_value",
                   "codec": "int32",
                   "fields": [
@@ -37643,7 +37872,12 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        474
+                        14,
+                        109,
+                        277,
+                        462,
+                        495,
+                        11509
                       ]
                     }
                   ]
@@ -37664,10 +37898,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        6,
-                        8,
-                        10,
-                        11
+                        474
                       ]
                     }
                   ]
@@ -37688,7 +37919,10 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        398
+                        6,
+                        8,
+                        10,
+                        11
                       ]
                     }
                   ]
@@ -37709,20 +37943,20 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        438
+                        398
                       ]
                     }
                   ]
                 },
                 {
-                  "id": "crime_type",
+                  "id": "creature_type",
                   "codec": "uint32",
                   "fields": [
                     {
-                      "id": "crime_type_crime_type",
+                      "id": "creature_type_creature_type",
                       "kind": "uint32",
-                      "display_label": "Crime Type Crime Type",
-                      "enum_ref": "crime_type_enum"
+                      "display_label": "Creature Type Creature Type",
+                      "enum_ref": "creature_type_enum"
                     }
                   ],
                   "conditions": [
@@ -37730,7 +37964,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        531
+                        438
                       ]
                     }
                   ]
@@ -37751,7 +37985,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        480
+                        531
                       ]
                     }
                   ]
@@ -37772,12 +38006,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        247,
-                        433,
-                        1029,
-                        1034,
-                        1286,
-                        1288
+                        480
                       ]
                     }
                   ]
@@ -37798,7 +38027,12 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        36
+                        247,
+                        433,
+                        1029,
+                        1034,
+                        1286,
+                        1288
                       ]
                     }
                   ]
@@ -37818,7 +38052,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        312
+                        36
                       ]
                     }
                   ]
@@ -37839,7 +38073,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        368
+                        312
                       ]
                     }
                   ]
@@ -37860,8 +38094,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        70,
-                        131
+                        368
                       ]
                     }
                   ]
@@ -37882,7 +38115,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        408
+                        70,
+                        131
                       ]
                     }
                   ]
@@ -37903,8 +38137,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        4708,
-                        6167
+                        408
                       ]
                     }
                   ]
@@ -37917,6 +38150,33 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "id": "form_form",
                       "kind": "formid",
                       "display_label": "Form Form"
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        4708,
+                        6167
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "actor",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "actor_actor",
+                      "kind": "formid",
+                      "display_label": "Actor Actor",
+                      "formlink_targets": [
+                        "ACHR",
+                        "ACRE",
+                        "PLYR",
+                        "TRGT"
+                      ]
                     }
                   ],
                   "conditions": [
@@ -37947,35 +38207,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "actor",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "actor_actor",
-                      "kind": "formid",
-                      "display_label": "Actor Actor",
-                      "formlink_targets": [
-                        "ACHR",
-                        "ACRE",
-                        "PLYR",
-                        "TRGT"
-                      ]
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        84,
-                        1278,
-                        11429,
-                        11431
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "actor_base",
                   "codec": "formid",
                   "fields": [
@@ -37994,7 +38225,10 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        9753
+                        84,
+                        1278,
+                        11429,
+                        11431
                       ]
                     }
                   ]
@@ -38018,8 +38252,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        214,
-                        4897
+                        9753
                       ]
                     }
                   ]
@@ -38043,8 +38276,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        72,
-                        246
+                        214,
+                        4897
                       ]
                     }
                   ]
@@ -38064,7 +38297,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        610
+                        72,
+                        246
                       ]
                     }
                   ]
@@ -38088,9 +38322,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        67,
-                        230,
-                        280
+                        610
                       ]
                     }
                   ]
@@ -38114,9 +38346,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        607,
-                        614,
-                        11425
+                        67,
+                        230,
+                        280
                       ]
                     }
                   ]
@@ -38140,9 +38372,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        68,
-                        129,
-                        228
+                        607,
+                        614,
+                        11425
                       ]
                     }
                   ]
@@ -38166,9 +38398,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        223,
-                        555,
-                        6124
+                        68,
+                        129,
+                        228
                       ]
                     }
                   ]
@@ -38194,7 +38426,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        446
+                        223,
+                        555,
+                        6124
                       ]
                     }
                   ]
@@ -38218,15 +38452,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        60,
-                        71,
-                        73,
-                        132,
-                        193,
-                        195,
-                        197,
-                        199,
-                        411
+                        446
                       ]
                     }
                   ]
@@ -38242,6 +38468,38 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "formlink_target": "FACT",
                       "formlink_targets": [
                         "FACT"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        60,
+                        71,
+                        73,
+                        132,
+                        193,
+                        195,
+                        197,
+                        199,
+                        411
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "form_list",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "form_list_form_list",
+                      "kind": "formid",
+                      "display_label": "Form List Form List",
+                      "formlink_target": "FLST",
+                      "formlink_targets": [
+                        "FLST"
                       ]
                     }
                   ],
@@ -38266,30 +38524,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "form_list",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "form_list_form_list",
-                      "kind": "formid",
-                      "display_label": "Form List Form List",
-                      "formlink_target": "FLST",
-                      "formlink_targets": [
-                        "FLST"
-                      ]
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        163
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "furniture",
                   "codec": "formid",
                   "fields": [
@@ -38308,7 +38542,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        74
+                        163
                       ]
                     }
                   ]
@@ -38332,7 +38566,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        451
+                        74
                       ]
                     }
                   ]
@@ -38348,6 +38582,41 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "formlink_target": "IDLE",
                       "formlink_targets": [
                         "IDLE"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        451
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "inventory_object",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "inventory_object_inventory_object",
+                      "kind": "formid",
+                      "display_label": "Inventory Object Inventory Object",
+                      "formlink_targets": [
+                        "ALCH",
+                        "AMMO",
+                        "ARMO",
+                        "BOOK",
+                        "CCRD",
+                        "CHIP",
+                        "CMNY",
+                        "FLST",
+                        "IMOD",
+                        "KEYM",
+                        "MISC",
+                        "NOTE",
+                        "WEAP"
                       ]
                     }
                   ],
@@ -38422,42 +38691,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "inventory_object",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "inventory_object_inventory_object",
-                      "kind": "formid",
-                      "display_label": "Inventory Object Inventory Object",
-                      "formlink_targets": [
-                        "ALCH",
-                        "AMMO",
-                        "ARMO",
-                        "BOOK",
-                        "CCRD",
-                        "CHIP",
-                        "CMNY",
-                        "FLST",
-                        "IMOD",
-                        "KEYM",
-                        "MISC",
-                        "NOTE",
-                        "WEAP"
-                      ]
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        382,
-                        6321
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "note",
                   "codec": "formid",
                   "fields": [
@@ -38476,7 +38709,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        278
+                        382,
+                        6321
                       ]
                     }
                   ]
@@ -38501,7 +38735,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        161
+                        278
                       ]
                     }
                   ]
@@ -38525,9 +38759,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        449,
-                        1475,
-                        1476
+                        161
                       ]
                     }
                   ]
@@ -38543,6 +38775,32 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "formlink_target": "PERK",
                       "formlink_targets": [
                         "PERK"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        449,
+                        1475,
+                        1476
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "quest",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "quest_quest",
+                      "kind": "formid",
+                      "display_label": "Quest Quest",
+                      "formlink_target": "QUST",
+                      "formlink_targets": [
+                        "QUST"
                       ]
                     }
                   ],
@@ -38567,16 +38825,16 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "quest",
+                  "id": "race",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "quest_quest",
+                      "id": "race_race",
                       "kind": "formid",
-                      "display_label": "Quest Quest",
-                      "formlink_target": "QUST",
+                      "display_label": "Race Race",
+                      "formlink_target": "RACE",
                       "formlink_targets": [
-                        "QUST"
+                        "RACE"
                       ]
                     }
                   ],
@@ -38592,16 +38850,22 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "race",
+                  "id": "reference",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "race_race",
+                      "id": "reference_reference",
                       "kind": "formid",
-                      "display_label": "Race Race",
-                      "formlink_target": "RACE",
+                      "display_label": "Reference Reference",
                       "formlink_targets": [
-                        "RACE"
+                        "ACHR",
+                        "ACRE",
+                        "PBEA",
+                        "PGRE",
+                        "PLYR",
+                        "PMIS",
+                        "REFR",
+                        "TRGT"
                       ]
                     }
                   ],
@@ -38637,36 +38901,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "reference",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "reference_reference",
-                      "kind": "formid",
-                      "display_label": "Reference Reference",
-                      "formlink_targets": [
-                        "ACHR",
-                        "ACRE",
-                        "PBEA",
-                        "PGRE",
-                        "PLYR",
-                        "PMIS",
-                        "REFR",
-                        "TRGT"
-                      ]
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        612
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "region",
                   "codec": "formid",
                   "fields": [
@@ -38685,9 +38919,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        573,
-                        574,
-                        575
+                        612
                       ]
                     }
                   ]
@@ -38711,7 +38943,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        427
+                        573,
+                        574,
+                        575
                       ]
                     }
                   ]
@@ -38735,8 +38969,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        11421,
-                        11423
+                        427
                       ]
                     }
                   ]
@@ -38752,6 +38985,31 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "formlink_target": "WEAP",
                       "formlink_targets": [
                         "WEAP"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        11421,
+                        11423
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "weather",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "weather_weather",
+                      "kind": "formid",
+                      "display_label": "Weather Weather",
+                      "formlink_target": "WTHR",
+                      "formlink_targets": [
+                        "WTHR"
                       ]
                     }
                   ],
@@ -39238,8 +39496,30 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "unnamed",
-                  "codec": "uint32",
+                  "id": "none",
+                  "codec": "struct:B,B,B,B",
+                  "fields": [
+                    {
+                      "id": "none_byte_1",
+                      "kind": "uint8",
+                      "display_label": "None Byte 1"
+                    },
+                    {
+                      "id": "none_byte_2",
+                      "kind": "uint8",
+                      "display_label": "None Byte 2"
+                    },
+                    {
+                      "id": "none_byte_3",
+                      "kind": "uint8",
+                      "display_label": "None Byte 3"
+                    },
+                    {
+                      "id": "none_byte_4",
+                      "kind": "uint8",
+                      "display_label": "None Byte 4"
+                    }
+                  ],
                   "conditions": [
                     {
                       "field": "function",
@@ -39665,13 +39945,13 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "float",
-                  "codec": "float32",
+                  "id": "integer",
+                  "codec": "int32",
                   "fields": [
                     {
-                      "id": "float_float",
-                      "kind": "float32",
-                      "display_label": "Float Float"
+                      "id": "integer_integer",
+                      "kind": "int32",
+                      "display_label": "Integer Integer"
                     }
                   ],
                   "conditions": [
@@ -39701,27 +39981,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "integer",
-                  "codec": "int32",
-                  "fields": [
-                    {
-                      "id": "integer_integer",
-                      "kind": "int32",
-                      "display_label": "Integer Integer"
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        420,
-                        421
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "quest_objective",
                   "codec": "int32",
                   "fields": [
@@ -39736,7 +39995,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        59
+                        420,
+                        421
                       ]
                     }
                   ]
@@ -39756,8 +40016,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        53,
-                        79
+                        59
                       ]
                     }
                   ]
@@ -39777,20 +40036,41 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
+                        53,
+                        79
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "vats_value_param",
+                  "codec": "struct:I",
+                  "fields": [
+                    {
+                      "id": "vats_value_param_vats_value_param",
+                      "kind": "uint32",
+                      "display_label": "VATS Value Param VATS Value Param"
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
                         408
                       ]
                     }
                   ]
                 },
                 {
-                  "id": "creature_type",
+                  "id": "crime_type",
                   "codec": "uint32",
                   "fields": [
                     {
-                      "id": "creature_type_creature_type",
+                      "id": "crime_type_crime_type",
                       "kind": "uint32",
-                      "display_label": "Creature Type Creature Type",
-                      "enum_ref": "creature_type_enum"
+                      "display_label": "Crime Type Crime Type",
+                      "enum_ref": "crime_type_enum"
                     }
                   ],
                   "conditions": [
@@ -39804,14 +40084,14 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "equip_type",
+                  "id": "form_type",
                   "codec": "uint32",
                   "fields": [
                     {
-                      "id": "equip_type_equip_type",
+                      "id": "form_type_form_type",
                       "kind": "uint32",
-                      "display_label": "Equip Type Equip Type",
-                      "enum_ref": "equip_type_enum"
+                      "display_label": "Form Type Form Type",
+                      "enum_ref": "form_type_enum"
                     }
                   ],
                   "conditions": [
@@ -39822,38 +40102,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                         1089,
                         1297
                       ]
-                    }
-                  ]
-                },
-                {
-                  "id": "form",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "form_form",
-                      "kind": "formid",
-                      "display_label": "Form Form"
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        60,
-                        1475,
-                        1476
-                      ]
-                    },
-                    {
-                      "field": "type",
-                      "operator": "bit_unset",
-                      "value": 2
-                    },
-                    {
-                      "field": "type",
-                      "operator": "bit_unset",
-                      "value": 8
                     }
                   ]
                 },
@@ -39878,6 +40126,32 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
+                        60,
+                        1475,
+                        1476
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "actor_base",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "actor_base_actor_base",
+                      "kind": "formid",
+                      "display_label": "Actor Base Actor Base",
+                      "formlink_targets": [
+                        "CREA",
+                        "NPC_"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
                         1291,
                         11488
                       ]
@@ -39885,16 +40159,16 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "encounter_zone",
+                  "id": "faction",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "encounter_zone_encounter_zone",
+                      "id": "faction_faction",
                       "kind": "formid",
-                      "display_label": "Encounter Zone Encounter Zone",
-                      "formlink_target": "ECZN",
+                      "display_label": "Faction Faction",
+                      "formlink_target": "FACT",
                       "formlink_targets": [
-                        "ECZN"
+                        "FACT"
                       ]
                     }
                   ],
@@ -39909,16 +40183,27 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "idle",
+                  "id": "inventory_object",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "idle_idle",
+                      "id": "inventory_object_inventory_object",
                       "kind": "formid",
-                      "display_label": "Idle Idle",
-                      "formlink_target": "IDLE",
+                      "display_label": "Inventory Object Inventory Object",
                       "formlink_targets": [
-                        "IDLE"
+                        "ALCH",
+                        "AMMO",
+                        "ARMO",
+                        "BOOK",
+                        "CCRD",
+                        "CHIP",
+                        "CMNY",
+                        "FLST",
+                        "IMOD",
+                        "KEYM",
+                        "MISC",
+                        "NOTE",
+                        "WEAP"
                       ]
                     }
                   ],
@@ -39934,17 +40219,18 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "note",
+                  "id": "owner",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "note_note",
+                      "id": "owner_owner",
                       "kind": "formid",
-                      "display_label": "Note Note",
-                      "formlink_target": "NOTE",
+                      "display_label": "Owner Owner",
                       "formlink_targets": [
-                        "NOTE"
-                      ]
+                        "FACT",
+                        "NPC_"
+                      ],
+                      "null_allowed": true
                     }
                   ],
                   "conditions": [
@@ -39958,16 +40244,22 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "race",
+                  "id": "reference",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "race_race",
+                      "id": "reference_reference",
                       "kind": "formid",
-                      "display_label": "Race Race",
-                      "formlink_target": "RACE",
+                      "display_label": "Reference Reference",
                       "formlink_targets": [
-                        "RACE"
+                        "ACHR",
+                        "ACRE",
+                        "PBEA",
+                        "PGRE",
+                        "PLYR",
+                        "PMIS",
+                        "REFR",
+                        "TRGT"
                       ]
                     }
                   ],
@@ -39978,30 +40270,20 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "values": [
                         230
                       ]
-                    },
-                    {
-                      "field": "type",
-                      "operator": "bit_unset",
-                      "value": 2
-                    },
-                    {
-                      "field": "type",
-                      "operator": "bit_unset",
-                      "value": 8
                     }
                   ]
                 },
                 {
-                  "id": "voice_type",
+                  "id": "weapon",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "voice_type_voice_type",
+                      "id": "weapon_weapon",
                       "kind": "formid",
-                      "display_label": "Voice Type Voice Type",
-                      "formlink_target": "VTYP",
+                      "display_label": "Weapon Weapon",
+                      "formlink_target": "WEAP",
                       "formlink_targets": [
-                        "VTYP"
+                        "WEAP"
                       ]
                     }
                   ],
@@ -43720,6 +44002,42 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
+                        310,
+                        1292
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "none",
+                  "codec": "struct:B,B,B,B",
+                  "fields": [
+                    {
+                      "id": "none_byte_1",
+                      "kind": "uint8",
+                      "display_label": "None Byte 1"
+                    },
+                    {
+                      "id": "none_byte_2",
+                      "kind": "uint8",
+                      "display_label": "None Byte 2"
+                    },
+                    {
+                      "id": "none_byte_3",
+                      "kind": "uint8",
+                      "display_label": "None Byte 3"
+                    },
+                    {
+                      "id": "none_byte_4",
+                      "kind": "uint8",
+                      "display_label": "None Byte 4"
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
                         5,
                         12,
                         18,
@@ -43814,7 +44132,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                         304,
                         306,
                         309,
-                        310,
                         313,
                         314,
                         315,
@@ -43870,7 +44187,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                         1102,
                         1105,
                         1266,
-                        1292,
                         1440,
                         1441,
                         1541,
@@ -43941,28 +44257,13 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "none",
-                  "codec": "struct:B,B,B,B",
+                  "id": "float",
+                  "codec": "float32",
                   "fields": [
                     {
-                      "id": "none_byte_1",
-                      "kind": "uint8",
-                      "display_label": "None Byte 1"
-                    },
-                    {
-                      "id": "none_byte_2",
-                      "kind": "uint8",
-                      "display_label": "None Byte 2"
-                    },
-                    {
-                      "id": "none_byte_3",
-                      "kind": "uint8",
-                      "display_label": "None Byte 3"
-                    },
-                    {
-                      "id": "none_byte_4",
-                      "kind": "uint8",
-                      "display_label": "None Byte 4"
+                      "id": "float_float",
+                      "kind": "float32",
+                      "display_label": "Float Float"
                     }
                   ],
                   "conditions": [
@@ -43981,13 +44282,13 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "float",
-                  "codec": "float32",
+                  "id": "integer",
+                  "codec": "int32",
                   "fields": [
                     {
-                      "id": "float_float",
-                      "kind": "float32",
-                      "display_label": "Float Float"
+                      "id": "integer_integer",
+                      "kind": "int32",
+                      "display_label": "Integer Integer"
                     }
                   ],
                   "conditions": [
@@ -44026,31 +44327,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "vats_value_param",
-                  "codec": "struct:I",
-                  "fields": [
-                    {
-                      "id": "vats_value_param_vats_value_param",
-                      "kind": "uint32",
-                      "display_label": "VATS Value Param VATS Value Param"
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        14,
-                        109,
-                        277,
-                        462,
-                        495,
-                        11509
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "actor_value",
                   "codec": "int32",
                   "fields": [
@@ -44066,7 +44342,12 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        474
+                        14,
+                        109,
+                        277,
+                        462,
+                        495,
+                        11509
                       ]
                     }
                   ]
@@ -44087,10 +44368,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        6,
-                        8,
-                        10,
-                        11
+                        474
                       ]
                     }
                   ]
@@ -44111,7 +44389,10 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        398
+                        6,
+                        8,
+                        10,
+                        11
                       ]
                     }
                   ]
@@ -44132,20 +44413,20 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        438
+                        398
                       ]
                     }
                   ]
                 },
                 {
-                  "id": "crime_type",
+                  "id": "creature_type",
                   "codec": "uint32",
                   "fields": [
                     {
-                      "id": "crime_type_crime_type",
+                      "id": "creature_type_creature_type",
                       "kind": "uint32",
-                      "display_label": "Crime Type Crime Type",
-                      "enum_ref": "crime_type_enum"
+                      "display_label": "Creature Type Creature Type",
+                      "enum_ref": "creature_type_enum"
                     }
                   ],
                   "conditions": [
@@ -44153,7 +44434,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        531
+                        438
                       ]
                     }
                   ]
@@ -44174,7 +44455,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        480
+                        531
                       ]
                     }
                   ]
@@ -44195,12 +44476,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        247,
-                        433,
-                        1029,
-                        1034,
-                        1286,
-                        1288
+                        480
                       ]
                     }
                   ]
@@ -44221,7 +44497,12 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        36
+                        247,
+                        433,
+                        1029,
+                        1034,
+                        1286,
+                        1288
                       ]
                     }
                   ]
@@ -44241,7 +44522,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        312
+                        36
                       ]
                     }
                   ]
@@ -44262,7 +44543,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        368
+                        312
                       ]
                     }
                   ]
@@ -44283,8 +44564,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        70,
-                        131
+                        368
                       ]
                     }
                   ]
@@ -44305,7 +44585,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        408
+                        70,
+                        131
                       ]
                     }
                   ]
@@ -44326,8 +44607,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        4708,
-                        6167
+                        408
                       ]
                     }
                   ]
@@ -44340,6 +44620,33 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "id": "form_form",
                       "kind": "formid",
                       "display_label": "Form Form"
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        4708,
+                        6167
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "actor",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "actor_actor",
+                      "kind": "formid",
+                      "display_label": "Actor Actor",
+                      "formlink_targets": [
+                        "ACHR",
+                        "ACRE",
+                        "PLYR",
+                        "TRGT"
+                      ]
                     }
                   ],
                   "conditions": [
@@ -44370,35 +44677,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "actor",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "actor_actor",
-                      "kind": "formid",
-                      "display_label": "Actor Actor",
-                      "formlink_targets": [
-                        "ACHR",
-                        "ACRE",
-                        "PLYR",
-                        "TRGT"
-                      ]
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        84,
-                        1278,
-                        11429,
-                        11431
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "actor_base",
                   "codec": "formid",
                   "fields": [
@@ -44417,7 +44695,10 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        9753
+                        84,
+                        1278,
+                        11429,
+                        11431
                       ]
                     }
                   ]
@@ -44441,8 +44722,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        214,
-                        4897
+                        9753
                       ]
                     }
                   ]
@@ -44466,8 +44746,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        72,
-                        246
+                        214,
+                        4897
                       ]
                     }
                   ]
@@ -44487,7 +44767,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        610
+                        72,
+                        246
                       ]
                     }
                   ]
@@ -44511,9 +44792,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        67,
-                        230,
-                        280
+                        610
                       ]
                     }
                   ]
@@ -44537,9 +44816,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        607,
-                        614,
-                        11425
+                        67,
+                        230,
+                        280
                       ]
                     }
                   ]
@@ -44563,9 +44842,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        68,
-                        129,
-                        228
+                        607,
+                        614,
+                        11425
                       ]
                     }
                   ]
@@ -44589,9 +44868,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        223,
-                        555,
-                        6124
+                        68,
+                        129,
+                        228
                       ]
                     }
                   ]
@@ -44617,7 +44896,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        446
+                        223,
+                        555,
+                        6124
                       ]
                     }
                   ]
@@ -44641,15 +44922,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        60,
-                        71,
-                        73,
-                        132,
-                        193,
-                        195,
-                        197,
-                        199,
-                        411
+                        446
                       ]
                     }
                   ]
@@ -44665,6 +44938,38 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "formlink_target": "FACT",
                       "formlink_targets": [
                         "FACT"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        60,
+                        71,
+                        73,
+                        132,
+                        193,
+                        195,
+                        197,
+                        199,
+                        411
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "form_list",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "form_list_form_list",
+                      "kind": "formid",
+                      "display_label": "Form List Form List",
+                      "formlink_target": "FLST",
+                      "formlink_targets": [
+                        "FLST"
                       ]
                     }
                   ],
@@ -44689,30 +44994,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "form_list",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "form_list_form_list",
-                      "kind": "formid",
-                      "display_label": "Form List Form List",
-                      "formlink_target": "FLST",
-                      "formlink_targets": [
-                        "FLST"
-                      ]
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        163
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "furniture",
                   "codec": "formid",
                   "fields": [
@@ -44731,7 +45012,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        74
+                        163
                       ]
                     }
                   ]
@@ -44755,7 +45036,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        451
+                        74
                       ]
                     }
                   ]
@@ -44771,6 +45052,41 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "formlink_target": "IDLE",
                       "formlink_targets": [
                         "IDLE"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        451
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "inventory_object",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "inventory_object_inventory_object",
+                      "kind": "formid",
+                      "display_label": "Inventory Object Inventory Object",
+                      "formlink_targets": [
+                        "ALCH",
+                        "AMMO",
+                        "ARMO",
+                        "BOOK",
+                        "CCRD",
+                        "CHIP",
+                        "CMNY",
+                        "FLST",
+                        "IMOD",
+                        "KEYM",
+                        "MISC",
+                        "NOTE",
+                        "WEAP"
                       ]
                     }
                   ],
@@ -44845,42 +45161,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "inventory_object",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "inventory_object_inventory_object",
-                      "kind": "formid",
-                      "display_label": "Inventory Object Inventory Object",
-                      "formlink_targets": [
-                        "ALCH",
-                        "AMMO",
-                        "ARMO",
-                        "BOOK",
-                        "CCRD",
-                        "CHIP",
-                        "CMNY",
-                        "FLST",
-                        "IMOD",
-                        "KEYM",
-                        "MISC",
-                        "NOTE",
-                        "WEAP"
-                      ]
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        382,
-                        6321
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "note",
                   "codec": "formid",
                   "fields": [
@@ -44899,7 +45179,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        278
+                        382,
+                        6321
                       ]
                     }
                   ]
@@ -44924,7 +45205,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        161
+                        278
                       ]
                     }
                   ]
@@ -44948,9 +45229,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        449,
-                        1475,
-                        1476
+                        161
                       ]
                     }
                   ]
@@ -44966,6 +45245,32 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "formlink_target": "PERK",
                       "formlink_targets": [
                         "PERK"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        449,
+                        1475,
+                        1476
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "quest",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "quest_quest",
+                      "kind": "formid",
+                      "display_label": "Quest Quest",
+                      "formlink_target": "QUST",
+                      "formlink_targets": [
+                        "QUST"
                       ]
                     }
                   ],
@@ -44990,16 +45295,16 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "quest",
+                  "id": "race",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "quest_quest",
+                      "id": "race_race",
                       "kind": "formid",
-                      "display_label": "Quest Quest",
-                      "formlink_target": "QUST",
+                      "display_label": "Race Race",
+                      "formlink_target": "RACE",
                       "formlink_targets": [
-                        "QUST"
+                        "RACE"
                       ]
                     }
                   ],
@@ -45015,16 +45320,22 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "race",
+                  "id": "reference",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "race_race",
+                      "id": "reference_reference",
                       "kind": "formid",
-                      "display_label": "Race Race",
-                      "formlink_target": "RACE",
+                      "display_label": "Reference Reference",
                       "formlink_targets": [
-                        "RACE"
+                        "ACHR",
+                        "ACRE",
+                        "PBEA",
+                        "PGRE",
+                        "PLYR",
+                        "PMIS",
+                        "REFR",
+                        "TRGT"
                       ]
                     }
                   ],
@@ -45060,36 +45371,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "reference",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "reference_reference",
-                      "kind": "formid",
-                      "display_label": "Reference Reference",
-                      "formlink_targets": [
-                        "ACHR",
-                        "ACRE",
-                        "PBEA",
-                        "PGRE",
-                        "PLYR",
-                        "PMIS",
-                        "REFR",
-                        "TRGT"
-                      ]
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        612
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "region",
                   "codec": "formid",
                   "fields": [
@@ -45108,9 +45389,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        573,
-                        574,
-                        575
+                        612
                       ]
                     }
                   ]
@@ -45134,7 +45413,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        427
+                        573,
+                        574,
+                        575
                       ]
                     }
                   ]
@@ -45158,8 +45439,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        11421,
-                        11423
+                        427
                       ]
                     }
                   ]
@@ -45175,6 +45455,31 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "formlink_target": "WEAP",
                       "formlink_targets": [
                         "WEAP"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        11421,
+                        11423
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "weather",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "weather_weather",
+                      "kind": "formid",
+                      "display_label": "Weather Weather",
+                      "formlink_target": "WTHR",
+                      "formlink_targets": [
+                        "WTHR"
                       ]
                     }
                   ],
@@ -45661,8 +45966,30 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "unnamed",
-                  "codec": "uint32",
+                  "id": "none",
+                  "codec": "struct:B,B,B,B",
+                  "fields": [
+                    {
+                      "id": "none_byte_1",
+                      "kind": "uint8",
+                      "display_label": "None Byte 1"
+                    },
+                    {
+                      "id": "none_byte_2",
+                      "kind": "uint8",
+                      "display_label": "None Byte 2"
+                    },
+                    {
+                      "id": "none_byte_3",
+                      "kind": "uint8",
+                      "display_label": "None Byte 3"
+                    },
+                    {
+                      "id": "none_byte_4",
+                      "kind": "uint8",
+                      "display_label": "None Byte 4"
+                    }
+                  ],
                   "conditions": [
                     {
                       "field": "function",
@@ -46088,13 +46415,13 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "float",
-                  "codec": "float32",
+                  "id": "integer",
+                  "codec": "int32",
                   "fields": [
                     {
-                      "id": "float_float",
-                      "kind": "float32",
-                      "display_label": "Float Float"
+                      "id": "integer_integer",
+                      "kind": "int32",
+                      "display_label": "Integer Integer"
                     }
                   ],
                   "conditions": [
@@ -46124,27 +46451,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "integer",
-                  "codec": "int32",
-                  "fields": [
-                    {
-                      "id": "integer_integer",
-                      "kind": "int32",
-                      "display_label": "Integer Integer"
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        420,
-                        421
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "quest_objective",
                   "codec": "int32",
                   "fields": [
@@ -46159,7 +46465,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        59
+                        420,
+                        421
                       ]
                     }
                   ]
@@ -46179,8 +46486,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        53,
-                        79
+                        59
                       ]
                     }
                   ]
@@ -46200,20 +46506,41 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
+                        53,
+                        79
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "vats_value_param",
+                  "codec": "struct:I",
+                  "fields": [
+                    {
+                      "id": "vats_value_param_vats_value_param",
+                      "kind": "uint32",
+                      "display_label": "VATS Value Param VATS Value Param"
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
                         408
                       ]
                     }
                   ]
                 },
                 {
-                  "id": "creature_type",
+                  "id": "crime_type",
                   "codec": "uint32",
                   "fields": [
                     {
-                      "id": "creature_type_creature_type",
+                      "id": "crime_type_crime_type",
                       "kind": "uint32",
-                      "display_label": "Creature Type Creature Type",
-                      "enum_ref": "creature_type_enum"
+                      "display_label": "Crime Type Crime Type",
+                      "enum_ref": "crime_type_enum"
                     }
                   ],
                   "conditions": [
@@ -46227,14 +46554,14 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "equip_type",
+                  "id": "form_type",
                   "codec": "uint32",
                   "fields": [
                     {
-                      "id": "equip_type_equip_type",
+                      "id": "form_type_form_type",
                       "kind": "uint32",
-                      "display_label": "Equip Type Equip Type",
-                      "enum_ref": "equip_type_enum"
+                      "display_label": "Form Type Form Type",
+                      "enum_ref": "form_type_enum"
                     }
                   ],
                   "conditions": [
@@ -46245,38 +46572,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                         1089,
                         1297
                       ]
-                    }
-                  ]
-                },
-                {
-                  "id": "form",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "form_form",
-                      "kind": "formid",
-                      "display_label": "Form Form"
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        60,
-                        1475,
-                        1476
-                      ]
-                    },
-                    {
-                      "field": "type",
-                      "operator": "bit_unset",
-                      "value": 2
-                    },
-                    {
-                      "field": "type",
-                      "operator": "bit_unset",
-                      "value": 8
                     }
                   ]
                 },
@@ -46301,6 +46596,32 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
+                        60,
+                        1475,
+                        1476
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "actor_base",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "actor_base_actor_base",
+                      "kind": "formid",
+                      "display_label": "Actor Base Actor Base",
+                      "formlink_targets": [
+                        "CREA",
+                        "NPC_"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
                         1291,
                         11488
                       ]
@@ -46308,16 +46629,16 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "encounter_zone",
+                  "id": "faction",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "encounter_zone_encounter_zone",
+                      "id": "faction_faction",
                       "kind": "formid",
-                      "display_label": "Encounter Zone Encounter Zone",
-                      "formlink_target": "ECZN",
+                      "display_label": "Faction Faction",
+                      "formlink_target": "FACT",
                       "formlink_targets": [
-                        "ECZN"
+                        "FACT"
                       ]
                     }
                   ],
@@ -46332,16 +46653,27 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "idle",
+                  "id": "inventory_object",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "idle_idle",
+                      "id": "inventory_object_inventory_object",
                       "kind": "formid",
-                      "display_label": "Idle Idle",
-                      "formlink_target": "IDLE",
+                      "display_label": "Inventory Object Inventory Object",
                       "formlink_targets": [
-                        "IDLE"
+                        "ALCH",
+                        "AMMO",
+                        "ARMO",
+                        "BOOK",
+                        "CCRD",
+                        "CHIP",
+                        "CMNY",
+                        "FLST",
+                        "IMOD",
+                        "KEYM",
+                        "MISC",
+                        "NOTE",
+                        "WEAP"
                       ]
                     }
                   ],
@@ -46357,17 +46689,18 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "note",
+                  "id": "owner",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "note_note",
+                      "id": "owner_owner",
                       "kind": "formid",
-                      "display_label": "Note Note",
-                      "formlink_target": "NOTE",
+                      "display_label": "Owner Owner",
                       "formlink_targets": [
-                        "NOTE"
-                      ]
+                        "FACT",
+                        "NPC_"
+                      ],
+                      "null_allowed": true
                     }
                   ],
                   "conditions": [
@@ -46381,16 +46714,22 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "race",
+                  "id": "reference",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "race_race",
+                      "id": "reference_reference",
                       "kind": "formid",
-                      "display_label": "Race Race",
-                      "formlink_target": "RACE",
+                      "display_label": "Reference Reference",
                       "formlink_targets": [
-                        "RACE"
+                        "ACHR",
+                        "ACRE",
+                        "PBEA",
+                        "PGRE",
+                        "PLYR",
+                        "PMIS",
+                        "REFR",
+                        "TRGT"
                       ]
                     }
                   ],
@@ -46401,30 +46740,20 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "values": [
                         230
                       ]
-                    },
-                    {
-                      "field": "type",
-                      "operator": "bit_unset",
-                      "value": 2
-                    },
-                    {
-                      "field": "type",
-                      "operator": "bit_unset",
-                      "value": 8
                     }
                   ]
                 },
                 {
-                  "id": "voice_type",
+                  "id": "weapon",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "voice_type_voice_type",
+                      "id": "weapon_weapon",
                       "kind": "formid",
-                      "display_label": "Voice Type Voice Type",
-                      "formlink_target": "VTYP",
+                      "display_label": "Weapon Weapon",
+                      "formlink_target": "WEAP",
                       "formlink_targets": [
-                        "VTYP"
+                        "WEAP"
                       ]
                     }
                   ],
@@ -50808,6 +51137,42 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
+                        310,
+                        1292
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "none",
+                  "codec": "struct:B,B,B,B",
+                  "fields": [
+                    {
+                      "id": "none_byte_1",
+                      "kind": "uint8",
+                      "display_label": "None Byte 1"
+                    },
+                    {
+                      "id": "none_byte_2",
+                      "kind": "uint8",
+                      "display_label": "None Byte 2"
+                    },
+                    {
+                      "id": "none_byte_3",
+                      "kind": "uint8",
+                      "display_label": "None Byte 3"
+                    },
+                    {
+                      "id": "none_byte_4",
+                      "kind": "uint8",
+                      "display_label": "None Byte 4"
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
                         5,
                         12,
                         18,
@@ -50902,7 +51267,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                         304,
                         306,
                         309,
-                        310,
                         313,
                         314,
                         315,
@@ -50958,7 +51322,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                         1102,
                         1105,
                         1266,
-                        1292,
                         1440,
                         1441,
                         1541,
@@ -51029,28 +51392,13 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "none",
-                  "codec": "struct:B,B,B,B",
+                  "id": "float",
+                  "codec": "float32",
                   "fields": [
                     {
-                      "id": "none_byte_1",
-                      "kind": "uint8",
-                      "display_label": "None Byte 1"
-                    },
-                    {
-                      "id": "none_byte_2",
-                      "kind": "uint8",
-                      "display_label": "None Byte 2"
-                    },
-                    {
-                      "id": "none_byte_3",
-                      "kind": "uint8",
-                      "display_label": "None Byte 3"
-                    },
-                    {
-                      "id": "none_byte_4",
-                      "kind": "uint8",
-                      "display_label": "None Byte 4"
+                      "id": "float_float",
+                      "kind": "float32",
+                      "display_label": "Float Float"
                     }
                   ],
                   "conditions": [
@@ -51069,13 +51417,13 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "float",
-                  "codec": "float32",
+                  "id": "integer",
+                  "codec": "int32",
                   "fields": [
                     {
-                      "id": "float_float",
-                      "kind": "float32",
-                      "display_label": "Float Float"
+                      "id": "integer_integer",
+                      "kind": "int32",
+                      "display_label": "Integer Integer"
                     }
                   ],
                   "conditions": [
@@ -51114,31 +51462,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "vats_value_param",
-                  "codec": "struct:I",
-                  "fields": [
-                    {
-                      "id": "vats_value_param_vats_value_param",
-                      "kind": "uint32",
-                      "display_label": "VATS Value Param VATS Value Param"
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        14,
-                        109,
-                        277,
-                        462,
-                        495,
-                        11509
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "actor_value",
                   "codec": "int32",
                   "fields": [
@@ -51154,7 +51477,12 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        474
+                        14,
+                        109,
+                        277,
+                        462,
+                        495,
+                        11509
                       ]
                     }
                   ]
@@ -51175,10 +51503,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        6,
-                        8,
-                        10,
-                        11
+                        474
                       ]
                     }
                   ]
@@ -51199,7 +51524,10 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        398
+                        6,
+                        8,
+                        10,
+                        11
                       ]
                     }
                   ]
@@ -51220,20 +51548,20 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        438
+                        398
                       ]
                     }
                   ]
                 },
                 {
-                  "id": "crime_type",
+                  "id": "creature_type",
                   "codec": "uint32",
                   "fields": [
                     {
-                      "id": "crime_type_crime_type",
+                      "id": "creature_type_creature_type",
                       "kind": "uint32",
-                      "display_label": "Crime Type Crime Type",
-                      "enum_ref": "crime_type_enum"
+                      "display_label": "Creature Type Creature Type",
+                      "enum_ref": "creature_type_enum"
                     }
                   ],
                   "conditions": [
@@ -51241,7 +51569,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        531
+                        438
                       ]
                     }
                   ]
@@ -51262,7 +51590,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        480
+                        531
                       ]
                     }
                   ]
@@ -51283,12 +51611,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        247,
-                        433,
-                        1029,
-                        1034,
-                        1286,
-                        1288
+                        480
                       ]
                     }
                   ]
@@ -51309,7 +51632,12 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        36
+                        247,
+                        433,
+                        1029,
+                        1034,
+                        1286,
+                        1288
                       ]
                     }
                   ]
@@ -51329,7 +51657,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        312
+                        36
                       ]
                     }
                   ]
@@ -51350,7 +51678,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        368
+                        312
                       ]
                     }
                   ]
@@ -51371,8 +51699,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        70,
-                        131
+                        368
                       ]
                     }
                   ]
@@ -51393,7 +51720,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        408
+                        70,
+                        131
                       ]
                     }
                   ]
@@ -51414,8 +51742,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        4708,
-                        6167
+                        408
                       ]
                     }
                   ]
@@ -51428,6 +51755,33 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "id": "form_form",
                       "kind": "formid",
                       "display_label": "Form Form"
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        4708,
+                        6167
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "actor",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "actor_actor",
+                      "kind": "formid",
+                      "display_label": "Actor Actor",
+                      "formlink_targets": [
+                        "ACHR",
+                        "ACRE",
+                        "PLYR",
+                        "TRGT"
+                      ]
                     }
                   ],
                   "conditions": [
@@ -51458,35 +51812,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "actor",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "actor_actor",
-                      "kind": "formid",
-                      "display_label": "Actor Actor",
-                      "formlink_targets": [
-                        "ACHR",
-                        "ACRE",
-                        "PLYR",
-                        "TRGT"
-                      ]
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        84,
-                        1278,
-                        11429,
-                        11431
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "actor_base",
                   "codec": "formid",
                   "fields": [
@@ -51505,7 +51830,10 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        9753
+                        84,
+                        1278,
+                        11429,
+                        11431
                       ]
                     }
                   ]
@@ -51529,8 +51857,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        214,
-                        4897
+                        9753
                       ]
                     }
                   ]
@@ -51554,8 +51881,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        72,
-                        246
+                        214,
+                        4897
                       ]
                     }
                   ]
@@ -51575,7 +51902,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        610
+                        72,
+                        246
                       ]
                     }
                   ]
@@ -51599,9 +51927,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        67,
-                        230,
-                        280
+                        610
                       ]
                     }
                   ]
@@ -51625,9 +51951,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        607,
-                        614,
-                        11425
+                        67,
+                        230,
+                        280
                       ]
                     }
                   ]
@@ -51651,9 +51977,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        68,
-                        129,
-                        228
+                        607,
+                        614,
+                        11425
                       ]
                     }
                   ]
@@ -51677,9 +52003,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        223,
-                        555,
-                        6124
+                        68,
+                        129,
+                        228
                       ]
                     }
                   ]
@@ -51705,7 +52031,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        446
+                        223,
+                        555,
+                        6124
                       ]
                     }
                   ]
@@ -51729,15 +52057,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        60,
-                        71,
-                        73,
-                        132,
-                        193,
-                        195,
-                        197,
-                        199,
-                        411
+                        446
                       ]
                     }
                   ]
@@ -51753,6 +52073,38 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "formlink_target": "FACT",
                       "formlink_targets": [
                         "FACT"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        60,
+                        71,
+                        73,
+                        132,
+                        193,
+                        195,
+                        197,
+                        199,
+                        411
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "form_list",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "form_list_form_list",
+                      "kind": "formid",
+                      "display_label": "Form List Form List",
+                      "formlink_target": "FLST",
+                      "formlink_targets": [
+                        "FLST"
                       ]
                     }
                   ],
@@ -51777,30 +52129,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "form_list",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "form_list_form_list",
-                      "kind": "formid",
-                      "display_label": "Form List Form List",
-                      "formlink_target": "FLST",
-                      "formlink_targets": [
-                        "FLST"
-                      ]
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        163
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "furniture",
                   "codec": "formid",
                   "fields": [
@@ -51819,7 +52147,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        74
+                        163
                       ]
                     }
                   ]
@@ -51843,7 +52171,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        451
+                        74
                       ]
                     }
                   ]
@@ -51859,6 +52187,41 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "formlink_target": "IDLE",
                       "formlink_targets": [
                         "IDLE"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        451
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "inventory_object",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "inventory_object_inventory_object",
+                      "kind": "formid",
+                      "display_label": "Inventory Object Inventory Object",
+                      "formlink_targets": [
+                        "ALCH",
+                        "AMMO",
+                        "ARMO",
+                        "BOOK",
+                        "CCRD",
+                        "CHIP",
+                        "CMNY",
+                        "FLST",
+                        "IMOD",
+                        "KEYM",
+                        "MISC",
+                        "NOTE",
+                        "WEAP"
                       ]
                     }
                   ],
@@ -51933,42 +52296,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "inventory_object",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "inventory_object_inventory_object",
-                      "kind": "formid",
-                      "display_label": "Inventory Object Inventory Object",
-                      "formlink_targets": [
-                        "ALCH",
-                        "AMMO",
-                        "ARMO",
-                        "BOOK",
-                        "CCRD",
-                        "CHIP",
-                        "CMNY",
-                        "FLST",
-                        "IMOD",
-                        "KEYM",
-                        "MISC",
-                        "NOTE",
-                        "WEAP"
-                      ]
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        382,
-                        6321
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "note",
                   "codec": "formid",
                   "fields": [
@@ -51987,7 +52314,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        278
+                        382,
+                        6321
                       ]
                     }
                   ]
@@ -52012,7 +52340,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        161
+                        278
                       ]
                     }
                   ]
@@ -52036,9 +52364,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        449,
-                        1475,
-                        1476
+                        161
                       ]
                     }
                   ]
@@ -52054,6 +52380,32 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "formlink_target": "PERK",
                       "formlink_targets": [
                         "PERK"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        449,
+                        1475,
+                        1476
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "quest",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "quest_quest",
+                      "kind": "formid",
+                      "display_label": "Quest Quest",
+                      "formlink_target": "QUST",
+                      "formlink_targets": [
+                        "QUST"
                       ]
                     }
                   ],
@@ -52078,16 +52430,16 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "quest",
+                  "id": "race",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "quest_quest",
+                      "id": "race_race",
                       "kind": "formid",
-                      "display_label": "Quest Quest",
-                      "formlink_target": "QUST",
+                      "display_label": "Race Race",
+                      "formlink_target": "RACE",
                       "formlink_targets": [
-                        "QUST"
+                        "RACE"
                       ]
                     }
                   ],
@@ -52103,16 +52455,22 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "race",
+                  "id": "reference",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "race_race",
+                      "id": "reference_reference",
                       "kind": "formid",
-                      "display_label": "Race Race",
-                      "formlink_target": "RACE",
+                      "display_label": "Reference Reference",
                       "formlink_targets": [
-                        "RACE"
+                        "ACHR",
+                        "ACRE",
+                        "PBEA",
+                        "PGRE",
+                        "PLYR",
+                        "PMIS",
+                        "REFR",
+                        "TRGT"
                       ]
                     }
                   ],
@@ -52148,36 +52506,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "reference",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "reference_reference",
-                      "kind": "formid",
-                      "display_label": "Reference Reference",
-                      "formlink_targets": [
-                        "ACHR",
-                        "ACRE",
-                        "PBEA",
-                        "PGRE",
-                        "PLYR",
-                        "PMIS",
-                        "REFR",
-                        "TRGT"
-                      ]
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        612
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "region",
                   "codec": "formid",
                   "fields": [
@@ -52196,9 +52524,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        573,
-                        574,
-                        575
+                        612
                       ]
                     }
                   ]
@@ -52222,7 +52548,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        427
+                        573,
+                        574,
+                        575
                       ]
                     }
                   ]
@@ -52246,8 +52574,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        11421,
-                        11423
+                        427
                       ]
                     }
                   ]
@@ -52263,6 +52590,31 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "formlink_target": "WEAP",
                       "formlink_targets": [
                         "WEAP"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        11421,
+                        11423
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "weather",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "weather_weather",
+                      "kind": "formid",
+                      "display_label": "Weather Weather",
+                      "formlink_target": "WTHR",
+                      "formlink_targets": [
+                        "WTHR"
                       ]
                     }
                   ],
@@ -52749,8 +53101,30 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "unnamed",
-                  "codec": "uint32",
+                  "id": "none",
+                  "codec": "struct:B,B,B,B",
+                  "fields": [
+                    {
+                      "id": "none_byte_1",
+                      "kind": "uint8",
+                      "display_label": "None Byte 1"
+                    },
+                    {
+                      "id": "none_byte_2",
+                      "kind": "uint8",
+                      "display_label": "None Byte 2"
+                    },
+                    {
+                      "id": "none_byte_3",
+                      "kind": "uint8",
+                      "display_label": "None Byte 3"
+                    },
+                    {
+                      "id": "none_byte_4",
+                      "kind": "uint8",
+                      "display_label": "None Byte 4"
+                    }
+                  ],
                   "conditions": [
                     {
                       "field": "function",
@@ -53176,13 +53550,13 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "float",
-                  "codec": "float32",
+                  "id": "integer",
+                  "codec": "int32",
                   "fields": [
                     {
-                      "id": "float_float",
-                      "kind": "float32",
-                      "display_label": "Float Float"
+                      "id": "integer_integer",
+                      "kind": "int32",
+                      "display_label": "Integer Integer"
                     }
                   ],
                   "conditions": [
@@ -53212,27 +53586,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "integer",
-                  "codec": "int32",
-                  "fields": [
-                    {
-                      "id": "integer_integer",
-                      "kind": "int32",
-                      "display_label": "Integer Integer"
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        420,
-                        421
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "quest_objective",
                   "codec": "int32",
                   "fields": [
@@ -53247,7 +53600,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        59
+                        420,
+                        421
                       ]
                     }
                   ]
@@ -53267,8 +53621,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        53,
-                        79
+                        59
                       ]
                     }
                   ]
@@ -53288,20 +53641,41 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
+                        53,
+                        79
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "vats_value_param",
+                  "codec": "struct:I",
+                  "fields": [
+                    {
+                      "id": "vats_value_param_vats_value_param",
+                      "kind": "uint32",
+                      "display_label": "VATS Value Param VATS Value Param"
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
                         408
                       ]
                     }
                   ]
                 },
                 {
-                  "id": "creature_type",
+                  "id": "crime_type",
                   "codec": "uint32",
                   "fields": [
                     {
-                      "id": "creature_type_creature_type",
+                      "id": "crime_type_crime_type",
                       "kind": "uint32",
-                      "display_label": "Creature Type Creature Type",
-                      "enum_ref": "creature_type_enum"
+                      "display_label": "Crime Type Crime Type",
+                      "enum_ref": "crime_type_enum"
                     }
                   ],
                   "conditions": [
@@ -53315,14 +53689,14 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "equip_type",
+                  "id": "form_type",
                   "codec": "uint32",
                   "fields": [
                     {
-                      "id": "equip_type_equip_type",
+                      "id": "form_type_form_type",
                       "kind": "uint32",
-                      "display_label": "Equip Type Equip Type",
-                      "enum_ref": "equip_type_enum"
+                      "display_label": "Form Type Form Type",
+                      "enum_ref": "form_type_enum"
                     }
                   ],
                   "conditions": [
@@ -53333,38 +53707,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                         1089,
                         1297
                       ]
-                    }
-                  ]
-                },
-                {
-                  "id": "form",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "form_form",
-                      "kind": "formid",
-                      "display_label": "Form Form"
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        60,
-                        1475,
-                        1476
-                      ]
-                    },
-                    {
-                      "field": "type",
-                      "operator": "bit_unset",
-                      "value": 2
-                    },
-                    {
-                      "field": "type",
-                      "operator": "bit_unset",
-                      "value": 8
                     }
                   ]
                 },
@@ -53389,6 +53731,32 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
+                        60,
+                        1475,
+                        1476
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "actor_base",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "actor_base_actor_base",
+                      "kind": "formid",
+                      "display_label": "Actor Base Actor Base",
+                      "formlink_targets": [
+                        "CREA",
+                        "NPC_"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
                         1291,
                         11488
                       ]
@@ -53396,16 +53764,16 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "encounter_zone",
+                  "id": "faction",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "encounter_zone_encounter_zone",
+                      "id": "faction_faction",
                       "kind": "formid",
-                      "display_label": "Encounter Zone Encounter Zone",
-                      "formlink_target": "ECZN",
+                      "display_label": "Faction Faction",
+                      "formlink_target": "FACT",
                       "formlink_targets": [
-                        "ECZN"
+                        "FACT"
                       ]
                     }
                   ],
@@ -53420,16 +53788,27 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "idle",
+                  "id": "inventory_object",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "idle_idle",
+                      "id": "inventory_object_inventory_object",
                       "kind": "formid",
-                      "display_label": "Idle Idle",
-                      "formlink_target": "IDLE",
+                      "display_label": "Inventory Object Inventory Object",
                       "formlink_targets": [
-                        "IDLE"
+                        "ALCH",
+                        "AMMO",
+                        "ARMO",
+                        "BOOK",
+                        "CCRD",
+                        "CHIP",
+                        "CMNY",
+                        "FLST",
+                        "IMOD",
+                        "KEYM",
+                        "MISC",
+                        "NOTE",
+                        "WEAP"
                       ]
                     }
                   ],
@@ -53445,17 +53824,18 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "note",
+                  "id": "owner",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "note_note",
+                      "id": "owner_owner",
                       "kind": "formid",
-                      "display_label": "Note Note",
-                      "formlink_target": "NOTE",
+                      "display_label": "Owner Owner",
                       "formlink_targets": [
-                        "NOTE"
-                      ]
+                        "FACT",
+                        "NPC_"
+                      ],
+                      "null_allowed": true
                     }
                   ],
                   "conditions": [
@@ -53469,16 +53849,22 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "race",
+                  "id": "reference",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "race_race",
+                      "id": "reference_reference",
                       "kind": "formid",
-                      "display_label": "Race Race",
-                      "formlink_target": "RACE",
+                      "display_label": "Reference Reference",
                       "formlink_targets": [
-                        "RACE"
+                        "ACHR",
+                        "ACRE",
+                        "PBEA",
+                        "PGRE",
+                        "PLYR",
+                        "PMIS",
+                        "REFR",
+                        "TRGT"
                       ]
                     }
                   ],
@@ -53489,30 +53875,20 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "values": [
                         230
                       ]
-                    },
-                    {
-                      "field": "type",
-                      "operator": "bit_unset",
-                      "value": 2
-                    },
-                    {
-                      "field": "type",
-                      "operator": "bit_unset",
-                      "value": 8
                     }
                   ]
                 },
                 {
-                  "id": "voice_type",
+                  "id": "weapon",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "voice_type_voice_type",
+                      "id": "weapon_weapon",
                       "kind": "formid",
-                      "display_label": "Voice Type Voice Type",
-                      "formlink_target": "VTYP",
+                      "display_label": "Weapon Weapon",
+                      "formlink_target": "WEAP",
                       "formlink_targets": [
-                        "VTYP"
+                        "WEAP"
                       ]
                     }
                   ],
@@ -56480,6 +56856,42 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
+                        310,
+                        1292
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "none",
+                  "codec": "struct:B,B,B,B",
+                  "fields": [
+                    {
+                      "id": "none_byte_1",
+                      "kind": "uint8",
+                      "display_label": "None Byte 1"
+                    },
+                    {
+                      "id": "none_byte_2",
+                      "kind": "uint8",
+                      "display_label": "None Byte 2"
+                    },
+                    {
+                      "id": "none_byte_3",
+                      "kind": "uint8",
+                      "display_label": "None Byte 3"
+                    },
+                    {
+                      "id": "none_byte_4",
+                      "kind": "uint8",
+                      "display_label": "None Byte 4"
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
                         5,
                         12,
                         18,
@@ -56574,7 +56986,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                         304,
                         306,
                         309,
-                        310,
                         313,
                         314,
                         315,
@@ -56630,7 +57041,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                         1102,
                         1105,
                         1266,
-                        1292,
                         1440,
                         1441,
                         1541,
@@ -56701,28 +57111,13 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "none",
-                  "codec": "struct:B,B,B,B",
+                  "id": "float",
+                  "codec": "float32",
                   "fields": [
                     {
-                      "id": "none_byte_1",
-                      "kind": "uint8",
-                      "display_label": "None Byte 1"
-                    },
-                    {
-                      "id": "none_byte_2",
-                      "kind": "uint8",
-                      "display_label": "None Byte 2"
-                    },
-                    {
-                      "id": "none_byte_3",
-                      "kind": "uint8",
-                      "display_label": "None Byte 3"
-                    },
-                    {
-                      "id": "none_byte_4",
-                      "kind": "uint8",
-                      "display_label": "None Byte 4"
+                      "id": "float_float",
+                      "kind": "float32",
+                      "display_label": "Float Float"
                     }
                   ],
                   "conditions": [
@@ -56741,13 +57136,13 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "float",
-                  "codec": "float32",
+                  "id": "integer",
+                  "codec": "int32",
                   "fields": [
                     {
-                      "id": "float_float",
-                      "kind": "float32",
-                      "display_label": "Float Float"
+                      "id": "integer_integer",
+                      "kind": "int32",
+                      "display_label": "Integer Integer"
                     }
                   ],
                   "conditions": [
@@ -56786,31 +57181,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "vats_value_param",
-                  "codec": "struct:I",
-                  "fields": [
-                    {
-                      "id": "vats_value_param_vats_value_param",
-                      "kind": "uint32",
-                      "display_label": "VATS Value Param VATS Value Param"
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        14,
-                        109,
-                        277,
-                        462,
-                        495,
-                        11509
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "actor_value",
                   "codec": "int32",
                   "fields": [
@@ -56826,7 +57196,12 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        474
+                        14,
+                        109,
+                        277,
+                        462,
+                        495,
+                        11509
                       ]
                     }
                   ]
@@ -56847,10 +57222,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        6,
-                        8,
-                        10,
-                        11
+                        474
                       ]
                     }
                   ]
@@ -56871,7 +57243,10 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        398
+                        6,
+                        8,
+                        10,
+                        11
                       ]
                     }
                   ]
@@ -56892,20 +57267,20 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        438
+                        398
                       ]
                     }
                   ]
                 },
                 {
-                  "id": "crime_type",
+                  "id": "creature_type",
                   "codec": "uint32",
                   "fields": [
                     {
-                      "id": "crime_type_crime_type",
+                      "id": "creature_type_creature_type",
                       "kind": "uint32",
-                      "display_label": "Crime Type Crime Type",
-                      "enum_ref": "crime_type_enum"
+                      "display_label": "Creature Type Creature Type",
+                      "enum_ref": "creature_type_enum"
                     }
                   ],
                   "conditions": [
@@ -56913,7 +57288,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        531
+                        438
                       ]
                     }
                   ]
@@ -56934,7 +57309,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        480
+                        531
                       ]
                     }
                   ]
@@ -56955,12 +57330,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        247,
-                        433,
-                        1029,
-                        1034,
-                        1286,
-                        1288
+                        480
                       ]
                     }
                   ]
@@ -56981,7 +57351,12 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        36
+                        247,
+                        433,
+                        1029,
+                        1034,
+                        1286,
+                        1288
                       ]
                     }
                   ]
@@ -57001,7 +57376,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        312
+                        36
                       ]
                     }
                   ]
@@ -57022,7 +57397,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        368
+                        312
                       ]
                     }
                   ]
@@ -57043,8 +57418,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        70,
-                        131
+                        368
                       ]
                     }
                   ]
@@ -57065,7 +57439,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        408
+                        70,
+                        131
                       ]
                     }
                   ]
@@ -57086,8 +57461,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        4708,
-                        6167
+                        408
                       ]
                     }
                   ]
@@ -57100,6 +57474,33 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "id": "form_form",
                       "kind": "formid",
                       "display_label": "Form Form"
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        4708,
+                        6167
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "actor",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "actor_actor",
+                      "kind": "formid",
+                      "display_label": "Actor Actor",
+                      "formlink_targets": [
+                        "ACHR",
+                        "ACRE",
+                        "PLYR",
+                        "TRGT"
+                      ]
                     }
                   ],
                   "conditions": [
@@ -57130,35 +57531,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "actor",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "actor_actor",
-                      "kind": "formid",
-                      "display_label": "Actor Actor",
-                      "formlink_targets": [
-                        "ACHR",
-                        "ACRE",
-                        "PLYR",
-                        "TRGT"
-                      ]
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        84,
-                        1278,
-                        11429,
-                        11431
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "actor_base",
                   "codec": "formid",
                   "fields": [
@@ -57177,7 +57549,10 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        9753
+                        84,
+                        1278,
+                        11429,
+                        11431
                       ]
                     }
                   ]
@@ -57201,8 +57576,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        214,
-                        4897
+                        9753
                       ]
                     }
                   ]
@@ -57226,8 +57600,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        72,
-                        246
+                        214,
+                        4897
                       ]
                     }
                   ]
@@ -57247,7 +57621,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        610
+                        72,
+                        246
                       ]
                     }
                   ]
@@ -57271,9 +57646,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        67,
-                        230,
-                        280
+                        610
                       ]
                     }
                   ]
@@ -57297,9 +57670,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        607,
-                        614,
-                        11425
+                        67,
+                        230,
+                        280
                       ]
                     }
                   ]
@@ -57323,9 +57696,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        68,
-                        129,
-                        228
+                        607,
+                        614,
+                        11425
                       ]
                     }
                   ]
@@ -57349,9 +57722,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        223,
-                        555,
-                        6124
+                        68,
+                        129,
+                        228
                       ]
                     }
                   ]
@@ -57377,7 +57750,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        446
+                        223,
+                        555,
+                        6124
                       ]
                     }
                   ]
@@ -57401,15 +57776,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        60,
-                        71,
-                        73,
-                        132,
-                        193,
-                        195,
-                        197,
-                        199,
-                        411
+                        446
                       ]
                     }
                   ]
@@ -57425,6 +57792,38 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "formlink_target": "FACT",
                       "formlink_targets": [
                         "FACT"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        60,
+                        71,
+                        73,
+                        132,
+                        193,
+                        195,
+                        197,
+                        199,
+                        411
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "form_list",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "form_list_form_list",
+                      "kind": "formid",
+                      "display_label": "Form List Form List",
+                      "formlink_target": "FLST",
+                      "formlink_targets": [
+                        "FLST"
                       ]
                     }
                   ],
@@ -57449,30 +57848,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "form_list",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "form_list_form_list",
-                      "kind": "formid",
-                      "display_label": "Form List Form List",
-                      "formlink_target": "FLST",
-                      "formlink_targets": [
-                        "FLST"
-                      ]
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        163
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "furniture",
                   "codec": "formid",
                   "fields": [
@@ -57491,7 +57866,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        74
+                        163
                       ]
                     }
                   ]
@@ -57515,7 +57890,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        451
+                        74
                       ]
                     }
                   ]
@@ -57531,6 +57906,41 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "formlink_target": "IDLE",
                       "formlink_targets": [
                         "IDLE"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        451
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "inventory_object",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "inventory_object_inventory_object",
+                      "kind": "formid",
+                      "display_label": "Inventory Object Inventory Object",
+                      "formlink_targets": [
+                        "ALCH",
+                        "AMMO",
+                        "ARMO",
+                        "BOOK",
+                        "CCRD",
+                        "CHIP",
+                        "CMNY",
+                        "FLST",
+                        "IMOD",
+                        "KEYM",
+                        "MISC",
+                        "NOTE",
+                        "WEAP"
                       ]
                     }
                   ],
@@ -57605,42 +58015,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "inventory_object",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "inventory_object_inventory_object",
-                      "kind": "formid",
-                      "display_label": "Inventory Object Inventory Object",
-                      "formlink_targets": [
-                        "ALCH",
-                        "AMMO",
-                        "ARMO",
-                        "BOOK",
-                        "CCRD",
-                        "CHIP",
-                        "CMNY",
-                        "FLST",
-                        "IMOD",
-                        "KEYM",
-                        "MISC",
-                        "NOTE",
-                        "WEAP"
-                      ]
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        382,
-                        6321
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "note",
                   "codec": "formid",
                   "fields": [
@@ -57659,7 +58033,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        278
+                        382,
+                        6321
                       ]
                     }
                   ]
@@ -57684,7 +58059,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        161
+                        278
                       ]
                     }
                   ]
@@ -57708,9 +58083,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        449,
-                        1475,
-                        1476
+                        161
                       ]
                     }
                   ]
@@ -57726,6 +58099,32 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "formlink_target": "PERK",
                       "formlink_targets": [
                         "PERK"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        449,
+                        1475,
+                        1476
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "quest",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "quest_quest",
+                      "kind": "formid",
+                      "display_label": "Quest Quest",
+                      "formlink_target": "QUST",
+                      "formlink_targets": [
+                        "QUST"
                       ]
                     }
                   ],
@@ -57750,16 +58149,16 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "quest",
+                  "id": "race",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "quest_quest",
+                      "id": "race_race",
                       "kind": "formid",
-                      "display_label": "Quest Quest",
-                      "formlink_target": "QUST",
+                      "display_label": "Race Race",
+                      "formlink_target": "RACE",
                       "formlink_targets": [
-                        "QUST"
+                        "RACE"
                       ]
                     }
                   ],
@@ -57775,16 +58174,22 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "race",
+                  "id": "reference",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "race_race",
+                      "id": "reference_reference",
                       "kind": "formid",
-                      "display_label": "Race Race",
-                      "formlink_target": "RACE",
+                      "display_label": "Reference Reference",
                       "formlink_targets": [
-                        "RACE"
+                        "ACHR",
+                        "ACRE",
+                        "PBEA",
+                        "PGRE",
+                        "PLYR",
+                        "PMIS",
+                        "REFR",
+                        "TRGT"
                       ]
                     }
                   ],
@@ -57820,36 +58225,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "reference",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "reference_reference",
-                      "kind": "formid",
-                      "display_label": "Reference Reference",
-                      "formlink_targets": [
-                        "ACHR",
-                        "ACRE",
-                        "PBEA",
-                        "PGRE",
-                        "PLYR",
-                        "PMIS",
-                        "REFR",
-                        "TRGT"
-                      ]
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        612
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "region",
                   "codec": "formid",
                   "fields": [
@@ -57868,9 +58243,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        573,
-                        574,
-                        575
+                        612
                       ]
                     }
                   ]
@@ -57894,7 +58267,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        427
+                        573,
+                        574,
+                        575
                       ]
                     }
                   ]
@@ -57918,8 +58293,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        11421,
-                        11423
+                        427
                       ]
                     }
                   ]
@@ -57935,6 +58309,31 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "formlink_target": "WEAP",
                       "formlink_targets": [
                         "WEAP"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        11421,
+                        11423
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "weather",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "weather_weather",
+                      "kind": "formid",
+                      "display_label": "Weather Weather",
+                      "formlink_target": "WTHR",
+                      "formlink_targets": [
+                        "WTHR"
                       ]
                     }
                   ],
@@ -58421,8 +58820,30 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "unnamed",
-                  "codec": "uint32",
+                  "id": "none",
+                  "codec": "struct:B,B,B,B",
+                  "fields": [
+                    {
+                      "id": "none_byte_1",
+                      "kind": "uint8",
+                      "display_label": "None Byte 1"
+                    },
+                    {
+                      "id": "none_byte_2",
+                      "kind": "uint8",
+                      "display_label": "None Byte 2"
+                    },
+                    {
+                      "id": "none_byte_3",
+                      "kind": "uint8",
+                      "display_label": "None Byte 3"
+                    },
+                    {
+                      "id": "none_byte_4",
+                      "kind": "uint8",
+                      "display_label": "None Byte 4"
+                    }
+                  ],
                   "conditions": [
                     {
                       "field": "function",
@@ -58848,13 +59269,13 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "float",
-                  "codec": "float32",
+                  "id": "integer",
+                  "codec": "int32",
                   "fields": [
                     {
-                      "id": "float_float",
-                      "kind": "float32",
-                      "display_label": "Float Float"
+                      "id": "integer_integer",
+                      "kind": "int32",
+                      "display_label": "Integer Integer"
                     }
                   ],
                   "conditions": [
@@ -58884,27 +59305,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "integer",
-                  "codec": "int32",
-                  "fields": [
-                    {
-                      "id": "integer_integer",
-                      "kind": "int32",
-                      "display_label": "Integer Integer"
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        420,
-                        421
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "quest_objective",
                   "codec": "int32",
                   "fields": [
@@ -58919,7 +59319,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        59
+                        420,
+                        421
                       ]
                     }
                   ]
@@ -58939,8 +59340,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        53,
-                        79
+                        59
                       ]
                     }
                   ]
@@ -58960,20 +59360,41 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
+                        53,
+                        79
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "vats_value_param",
+                  "codec": "struct:I",
+                  "fields": [
+                    {
+                      "id": "vats_value_param_vats_value_param",
+                      "kind": "uint32",
+                      "display_label": "VATS Value Param VATS Value Param"
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
                         408
                       ]
                     }
                   ]
                 },
                 {
-                  "id": "creature_type",
+                  "id": "crime_type",
                   "codec": "uint32",
                   "fields": [
                     {
-                      "id": "creature_type_creature_type",
+                      "id": "crime_type_crime_type",
                       "kind": "uint32",
-                      "display_label": "Creature Type Creature Type",
-                      "enum_ref": "creature_type_enum"
+                      "display_label": "Crime Type Crime Type",
+                      "enum_ref": "crime_type_enum"
                     }
                   ],
                   "conditions": [
@@ -58987,14 +59408,14 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "equip_type",
+                  "id": "form_type",
                   "codec": "uint32",
                   "fields": [
                     {
-                      "id": "equip_type_equip_type",
+                      "id": "form_type_form_type",
                       "kind": "uint32",
-                      "display_label": "Equip Type Equip Type",
-                      "enum_ref": "equip_type_enum"
+                      "display_label": "Form Type Form Type",
+                      "enum_ref": "form_type_enum"
                     }
                   ],
                   "conditions": [
@@ -59005,38 +59426,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                         1089,
                         1297
                       ]
-                    }
-                  ]
-                },
-                {
-                  "id": "form",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "form_form",
-                      "kind": "formid",
-                      "display_label": "Form Form"
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        60,
-                        1475,
-                        1476
-                      ]
-                    },
-                    {
-                      "field": "type",
-                      "operator": "bit_unset",
-                      "value": 2
-                    },
-                    {
-                      "field": "type",
-                      "operator": "bit_unset",
-                      "value": 8
                     }
                   ]
                 },
@@ -59061,6 +59450,32 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
+                        60,
+                        1475,
+                        1476
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "actor_base",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "actor_base_actor_base",
+                      "kind": "formid",
+                      "display_label": "Actor Base Actor Base",
+                      "formlink_targets": [
+                        "CREA",
+                        "NPC_"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
                         1291,
                         11488
                       ]
@@ -59068,16 +59483,16 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "encounter_zone",
+                  "id": "faction",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "encounter_zone_encounter_zone",
+                      "id": "faction_faction",
                       "kind": "formid",
-                      "display_label": "Encounter Zone Encounter Zone",
-                      "formlink_target": "ECZN",
+                      "display_label": "Faction Faction",
+                      "formlink_target": "FACT",
                       "formlink_targets": [
-                        "ECZN"
+                        "FACT"
                       ]
                     }
                   ],
@@ -59092,16 +59507,27 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "idle",
+                  "id": "inventory_object",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "idle_idle",
+                      "id": "inventory_object_inventory_object",
                       "kind": "formid",
-                      "display_label": "Idle Idle",
-                      "formlink_target": "IDLE",
+                      "display_label": "Inventory Object Inventory Object",
                       "formlink_targets": [
-                        "IDLE"
+                        "ALCH",
+                        "AMMO",
+                        "ARMO",
+                        "BOOK",
+                        "CCRD",
+                        "CHIP",
+                        "CMNY",
+                        "FLST",
+                        "IMOD",
+                        "KEYM",
+                        "MISC",
+                        "NOTE",
+                        "WEAP"
                       ]
                     }
                   ],
@@ -59117,17 +59543,18 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "note",
+                  "id": "owner",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "note_note",
+                      "id": "owner_owner",
                       "kind": "formid",
-                      "display_label": "Note Note",
-                      "formlink_target": "NOTE",
+                      "display_label": "Owner Owner",
                       "formlink_targets": [
-                        "NOTE"
-                      ]
+                        "FACT",
+                        "NPC_"
+                      ],
+                      "null_allowed": true
                     }
                   ],
                   "conditions": [
@@ -59141,16 +59568,22 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "race",
+                  "id": "reference",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "race_race",
+                      "id": "reference_reference",
                       "kind": "formid",
-                      "display_label": "Race Race",
-                      "formlink_target": "RACE",
+                      "display_label": "Reference Reference",
                       "formlink_targets": [
-                        "RACE"
+                        "ACHR",
+                        "ACRE",
+                        "PBEA",
+                        "PGRE",
+                        "PLYR",
+                        "PMIS",
+                        "REFR",
+                        "TRGT"
                       ]
                     }
                   ],
@@ -59161,30 +59594,20 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "values": [
                         230
                       ]
-                    },
-                    {
-                      "field": "type",
-                      "operator": "bit_unset",
-                      "value": 2
-                    },
-                    {
-                      "field": "type",
-                      "operator": "bit_unset",
-                      "value": 8
                     }
                   ]
                 },
                 {
-                  "id": "voice_type",
+                  "id": "weapon",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "voice_type_voice_type",
+                      "id": "weapon_weapon",
                       "kind": "formid",
-                      "display_label": "Voice Type Voice Type",
-                      "formlink_target": "VTYP",
+                      "display_label": "Weapon Weapon",
+                      "formlink_target": "WEAP",
                       "formlink_targets": [
-                        "VTYP"
+                        "WEAP"
                       ]
                     }
                   ],
@@ -60005,6 +60428,42 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
+                        310,
+                        1292
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "none",
+                  "codec": "struct:B,B,B,B",
+                  "fields": [
+                    {
+                      "id": "none_byte_1",
+                      "kind": "uint8",
+                      "display_label": "None Byte 1"
+                    },
+                    {
+                      "id": "none_byte_2",
+                      "kind": "uint8",
+                      "display_label": "None Byte 2"
+                    },
+                    {
+                      "id": "none_byte_3",
+                      "kind": "uint8",
+                      "display_label": "None Byte 3"
+                    },
+                    {
+                      "id": "none_byte_4",
+                      "kind": "uint8",
+                      "display_label": "None Byte 4"
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
                         5,
                         12,
                         18,
@@ -60099,7 +60558,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                         304,
                         306,
                         309,
-                        310,
                         313,
                         314,
                         315,
@@ -60155,7 +60613,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                         1102,
                         1105,
                         1266,
-                        1292,
                         1440,
                         1441,
                         1541,
@@ -60226,28 +60683,13 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "none",
-                  "codec": "struct:B,B,B,B",
+                  "id": "float",
+                  "codec": "float32",
                   "fields": [
                     {
-                      "id": "none_byte_1",
-                      "kind": "uint8",
-                      "display_label": "None Byte 1"
-                    },
-                    {
-                      "id": "none_byte_2",
-                      "kind": "uint8",
-                      "display_label": "None Byte 2"
-                    },
-                    {
-                      "id": "none_byte_3",
-                      "kind": "uint8",
-                      "display_label": "None Byte 3"
-                    },
-                    {
-                      "id": "none_byte_4",
-                      "kind": "uint8",
-                      "display_label": "None Byte 4"
+                      "id": "float_float",
+                      "kind": "float32",
+                      "display_label": "Float Float"
                     }
                   ],
                   "conditions": [
@@ -60266,13 +60708,13 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "float",
-                  "codec": "float32",
+                  "id": "integer",
+                  "codec": "int32",
                   "fields": [
                     {
-                      "id": "float_float",
-                      "kind": "float32",
-                      "display_label": "Float Float"
+                      "id": "integer_integer",
+                      "kind": "int32",
+                      "display_label": "Integer Integer"
                     }
                   ],
                   "conditions": [
@@ -60311,31 +60753,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "vats_value_param",
-                  "codec": "struct:I",
-                  "fields": [
-                    {
-                      "id": "vats_value_param_vats_value_param",
-                      "kind": "uint32",
-                      "display_label": "VATS Value Param VATS Value Param"
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        14,
-                        109,
-                        277,
-                        462,
-                        495,
-                        11509
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "actor_value",
                   "codec": "int32",
                   "fields": [
@@ -60351,7 +60768,12 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        474
+                        14,
+                        109,
+                        277,
+                        462,
+                        495,
+                        11509
                       ]
                     }
                   ]
@@ -60372,10 +60794,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        6,
-                        8,
-                        10,
-                        11
+                        474
                       ]
                     }
                   ]
@@ -60396,7 +60815,10 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        398
+                        6,
+                        8,
+                        10,
+                        11
                       ]
                     }
                   ]
@@ -60417,20 +60839,20 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        438
+                        398
                       ]
                     }
                   ]
                 },
                 {
-                  "id": "crime_type",
+                  "id": "creature_type",
                   "codec": "uint32",
                   "fields": [
                     {
-                      "id": "crime_type_crime_type",
+                      "id": "creature_type_creature_type",
                       "kind": "uint32",
-                      "display_label": "Crime Type Crime Type",
-                      "enum_ref": "crime_type_enum"
+                      "display_label": "Creature Type Creature Type",
+                      "enum_ref": "creature_type_enum"
                     }
                   ],
                   "conditions": [
@@ -60438,7 +60860,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        531
+                        438
                       ]
                     }
                   ]
@@ -60459,7 +60881,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        480
+                        531
                       ]
                     }
                   ]
@@ -60480,12 +60902,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        247,
-                        433,
-                        1029,
-                        1034,
-                        1286,
-                        1288
+                        480
                       ]
                     }
                   ]
@@ -60506,7 +60923,12 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        36
+                        247,
+                        433,
+                        1029,
+                        1034,
+                        1286,
+                        1288
                       ]
                     }
                   ]
@@ -60526,7 +60948,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        312
+                        36
                       ]
                     }
                   ]
@@ -60547,7 +60969,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        368
+                        312
                       ]
                     }
                   ]
@@ -60568,8 +60990,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        70,
-                        131
+                        368
                       ]
                     }
                   ]
@@ -60590,7 +61011,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        408
+                        70,
+                        131
                       ]
                     }
                   ]
@@ -60611,8 +61033,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        4708,
-                        6167
+                        408
                       ]
                     }
                   ]
@@ -60625,6 +61046,33 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "id": "form_form",
                       "kind": "formid",
                       "display_label": "Form Form"
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        4708,
+                        6167
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "actor",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "actor_actor",
+                      "kind": "formid",
+                      "display_label": "Actor Actor",
+                      "formlink_targets": [
+                        "ACHR",
+                        "ACRE",
+                        "PLYR",
+                        "TRGT"
+                      ]
                     }
                   ],
                   "conditions": [
@@ -60655,35 +61103,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "actor",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "actor_actor",
-                      "kind": "formid",
-                      "display_label": "Actor Actor",
-                      "formlink_targets": [
-                        "ACHR",
-                        "ACRE",
-                        "PLYR",
-                        "TRGT"
-                      ]
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        84,
-                        1278,
-                        11429,
-                        11431
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "actor_base",
                   "codec": "formid",
                   "fields": [
@@ -60702,7 +61121,10 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        9753
+                        84,
+                        1278,
+                        11429,
+                        11431
                       ]
                     }
                   ]
@@ -60726,8 +61148,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        214,
-                        4897
+                        9753
                       ]
                     }
                   ]
@@ -60751,8 +61172,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        72,
-                        246
+                        214,
+                        4897
                       ]
                     }
                   ]
@@ -60772,7 +61193,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        610
+                        72,
+                        246
                       ]
                     }
                   ]
@@ -60796,9 +61218,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        67,
-                        230,
-                        280
+                        610
                       ]
                     }
                   ]
@@ -60822,9 +61242,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        607,
-                        614,
-                        11425
+                        67,
+                        230,
+                        280
                       ]
                     }
                   ]
@@ -60848,9 +61268,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        68,
-                        129,
-                        228
+                        607,
+                        614,
+                        11425
                       ]
                     }
                   ]
@@ -60874,9 +61294,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        223,
-                        555,
-                        6124
+                        68,
+                        129,
+                        228
                       ]
                     }
                   ]
@@ -60902,7 +61322,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        446
+                        223,
+                        555,
+                        6124
                       ]
                     }
                   ]
@@ -60926,15 +61348,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        60,
-                        71,
-                        73,
-                        132,
-                        193,
-                        195,
-                        197,
-                        199,
-                        411
+                        446
                       ]
                     }
                   ]
@@ -60950,6 +61364,38 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "formlink_target": "FACT",
                       "formlink_targets": [
                         "FACT"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        60,
+                        71,
+                        73,
+                        132,
+                        193,
+                        195,
+                        197,
+                        199,
+                        411
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "form_list",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "form_list_form_list",
+                      "kind": "formid",
+                      "display_label": "Form List Form List",
+                      "formlink_target": "FLST",
+                      "formlink_targets": [
+                        "FLST"
                       ]
                     }
                   ],
@@ -60974,30 +61420,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "form_list",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "form_list_form_list",
-                      "kind": "formid",
-                      "display_label": "Form List Form List",
-                      "formlink_target": "FLST",
-                      "formlink_targets": [
-                        "FLST"
-                      ]
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        163
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "furniture",
                   "codec": "formid",
                   "fields": [
@@ -61016,7 +61438,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        74
+                        163
                       ]
                     }
                   ]
@@ -61040,7 +61462,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        451
+                        74
                       ]
                     }
                   ]
@@ -61056,6 +61478,41 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "formlink_target": "IDLE",
                       "formlink_targets": [
                         "IDLE"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        451
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "inventory_object",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "inventory_object_inventory_object",
+                      "kind": "formid",
+                      "display_label": "Inventory Object Inventory Object",
+                      "formlink_targets": [
+                        "ALCH",
+                        "AMMO",
+                        "ARMO",
+                        "BOOK",
+                        "CCRD",
+                        "CHIP",
+                        "CMNY",
+                        "FLST",
+                        "IMOD",
+                        "KEYM",
+                        "MISC",
+                        "NOTE",
+                        "WEAP"
                       ]
                     }
                   ],
@@ -61130,42 +61587,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "inventory_object",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "inventory_object_inventory_object",
-                      "kind": "formid",
-                      "display_label": "Inventory Object Inventory Object",
-                      "formlink_targets": [
-                        "ALCH",
-                        "AMMO",
-                        "ARMO",
-                        "BOOK",
-                        "CCRD",
-                        "CHIP",
-                        "CMNY",
-                        "FLST",
-                        "IMOD",
-                        "KEYM",
-                        "MISC",
-                        "NOTE",
-                        "WEAP"
-                      ]
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        382,
-                        6321
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "note",
                   "codec": "formid",
                   "fields": [
@@ -61184,7 +61605,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        278
+                        382,
+                        6321
                       ]
                     }
                   ]
@@ -61209,7 +61631,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        161
+                        278
                       ]
                     }
                   ]
@@ -61233,9 +61655,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        449,
-                        1475,
-                        1476
+                        161
                       ]
                     }
                   ]
@@ -61251,6 +61671,32 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "formlink_target": "PERK",
                       "formlink_targets": [
                         "PERK"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        449,
+                        1475,
+                        1476
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "quest",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "quest_quest",
+                      "kind": "formid",
+                      "display_label": "Quest Quest",
+                      "formlink_target": "QUST",
+                      "formlink_targets": [
+                        "QUST"
                       ]
                     }
                   ],
@@ -61275,16 +61721,16 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "quest",
+                  "id": "race",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "quest_quest",
+                      "id": "race_race",
                       "kind": "formid",
-                      "display_label": "Quest Quest",
-                      "formlink_target": "QUST",
+                      "display_label": "Race Race",
+                      "formlink_target": "RACE",
                       "formlink_targets": [
-                        "QUST"
+                        "RACE"
                       ]
                     }
                   ],
@@ -61300,16 +61746,22 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "race",
+                  "id": "reference",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "race_race",
+                      "id": "reference_reference",
                       "kind": "formid",
-                      "display_label": "Race Race",
-                      "formlink_target": "RACE",
+                      "display_label": "Reference Reference",
                       "formlink_targets": [
-                        "RACE"
+                        "ACHR",
+                        "ACRE",
+                        "PBEA",
+                        "PGRE",
+                        "PLYR",
+                        "PMIS",
+                        "REFR",
+                        "TRGT"
                       ]
                     }
                   ],
@@ -61345,36 +61797,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "reference",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "reference_reference",
-                      "kind": "formid",
-                      "display_label": "Reference Reference",
-                      "formlink_targets": [
-                        "ACHR",
-                        "ACRE",
-                        "PBEA",
-                        "PGRE",
-                        "PLYR",
-                        "PMIS",
-                        "REFR",
-                        "TRGT"
-                      ]
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        612
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "region",
                   "codec": "formid",
                   "fields": [
@@ -61393,9 +61815,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        573,
-                        574,
-                        575
+                        612
                       ]
                     }
                   ]
@@ -61419,7 +61839,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        427
+                        573,
+                        574,
+                        575
                       ]
                     }
                   ]
@@ -61443,8 +61865,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        11421,
-                        11423
+                        427
                       ]
                     }
                   ]
@@ -61460,6 +61881,31 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "formlink_target": "WEAP",
                       "formlink_targets": [
                         "WEAP"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        11421,
+                        11423
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "weather",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "weather_weather",
+                      "kind": "formid",
+                      "display_label": "Weather Weather",
+                      "formlink_target": "WTHR",
+                      "formlink_targets": [
+                        "WTHR"
                       ]
                     }
                   ],
@@ -61946,8 +62392,30 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "unnamed",
-                  "codec": "uint32",
+                  "id": "none",
+                  "codec": "struct:B,B,B,B",
+                  "fields": [
+                    {
+                      "id": "none_byte_1",
+                      "kind": "uint8",
+                      "display_label": "None Byte 1"
+                    },
+                    {
+                      "id": "none_byte_2",
+                      "kind": "uint8",
+                      "display_label": "None Byte 2"
+                    },
+                    {
+                      "id": "none_byte_3",
+                      "kind": "uint8",
+                      "display_label": "None Byte 3"
+                    },
+                    {
+                      "id": "none_byte_4",
+                      "kind": "uint8",
+                      "display_label": "None Byte 4"
+                    }
+                  ],
                   "conditions": [
                     {
                       "field": "function",
@@ -62373,13 +62841,13 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "float",
-                  "codec": "float32",
+                  "id": "integer",
+                  "codec": "int32",
                   "fields": [
                     {
-                      "id": "float_float",
-                      "kind": "float32",
-                      "display_label": "Float Float"
+                      "id": "integer_integer",
+                      "kind": "int32",
+                      "display_label": "Integer Integer"
                     }
                   ],
                   "conditions": [
@@ -62409,27 +62877,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "integer",
-                  "codec": "int32",
-                  "fields": [
-                    {
-                      "id": "integer_integer",
-                      "kind": "int32",
-                      "display_label": "Integer Integer"
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        420,
-                        421
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "quest_objective",
                   "codec": "int32",
                   "fields": [
@@ -62444,7 +62891,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        59
+                        420,
+                        421
                       ]
                     }
                   ]
@@ -62464,8 +62912,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        53,
-                        79
+                        59
                       ]
                     }
                   ]
@@ -62485,20 +62932,41 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
+                        53,
+                        79
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "vats_value_param",
+                  "codec": "struct:I",
+                  "fields": [
+                    {
+                      "id": "vats_value_param_vats_value_param",
+                      "kind": "uint32",
+                      "display_label": "VATS Value Param VATS Value Param"
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
                         408
                       ]
                     }
                   ]
                 },
                 {
-                  "id": "creature_type",
+                  "id": "crime_type",
                   "codec": "uint32",
                   "fields": [
                     {
-                      "id": "creature_type_creature_type",
+                      "id": "crime_type_crime_type",
                       "kind": "uint32",
-                      "display_label": "Creature Type Creature Type",
-                      "enum_ref": "creature_type_enum"
+                      "display_label": "Crime Type Crime Type",
+                      "enum_ref": "crime_type_enum"
                     }
                   ],
                   "conditions": [
@@ -62512,14 +62980,14 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "equip_type",
+                  "id": "form_type",
                   "codec": "uint32",
                   "fields": [
                     {
-                      "id": "equip_type_equip_type",
+                      "id": "form_type_form_type",
                       "kind": "uint32",
-                      "display_label": "Equip Type Equip Type",
-                      "enum_ref": "equip_type_enum"
+                      "display_label": "Form Type Form Type",
+                      "enum_ref": "form_type_enum"
                     }
                   ],
                   "conditions": [
@@ -62530,38 +62998,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                         1089,
                         1297
                       ]
-                    }
-                  ]
-                },
-                {
-                  "id": "form",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "form_form",
-                      "kind": "formid",
-                      "display_label": "Form Form"
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        60,
-                        1475,
-                        1476
-                      ]
-                    },
-                    {
-                      "field": "type",
-                      "operator": "bit_unset",
-                      "value": 2
-                    },
-                    {
-                      "field": "type",
-                      "operator": "bit_unset",
-                      "value": 8
                     }
                   ]
                 },
@@ -62586,6 +63022,32 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
+                        60,
+                        1475,
+                        1476
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "actor_base",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "actor_base_actor_base",
+                      "kind": "formid",
+                      "display_label": "Actor Base Actor Base",
+                      "formlink_targets": [
+                        "CREA",
+                        "NPC_"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
                         1291,
                         11488
                       ]
@@ -62593,16 +63055,16 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "encounter_zone",
+                  "id": "faction",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "encounter_zone_encounter_zone",
+                      "id": "faction_faction",
                       "kind": "formid",
-                      "display_label": "Encounter Zone Encounter Zone",
-                      "formlink_target": "ECZN",
+                      "display_label": "Faction Faction",
+                      "formlink_target": "FACT",
                       "formlink_targets": [
-                        "ECZN"
+                        "FACT"
                       ]
                     }
                   ],
@@ -62617,16 +63079,27 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "idle",
+                  "id": "inventory_object",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "idle_idle",
+                      "id": "inventory_object_inventory_object",
                       "kind": "formid",
-                      "display_label": "Idle Idle",
-                      "formlink_target": "IDLE",
+                      "display_label": "Inventory Object Inventory Object",
                       "formlink_targets": [
-                        "IDLE"
+                        "ALCH",
+                        "AMMO",
+                        "ARMO",
+                        "BOOK",
+                        "CCRD",
+                        "CHIP",
+                        "CMNY",
+                        "FLST",
+                        "IMOD",
+                        "KEYM",
+                        "MISC",
+                        "NOTE",
+                        "WEAP"
                       ]
                     }
                   ],
@@ -62642,17 +63115,18 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "note",
+                  "id": "owner",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "note_note",
+                      "id": "owner_owner",
                       "kind": "formid",
-                      "display_label": "Note Note",
-                      "formlink_target": "NOTE",
+                      "display_label": "Owner Owner",
                       "formlink_targets": [
-                        "NOTE"
-                      ]
+                        "FACT",
+                        "NPC_"
+                      ],
+                      "null_allowed": true
                     }
                   ],
                   "conditions": [
@@ -62666,16 +63140,22 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "race",
+                  "id": "reference",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "race_race",
+                      "id": "reference_reference",
                       "kind": "formid",
-                      "display_label": "Race Race",
-                      "formlink_target": "RACE",
+                      "display_label": "Reference Reference",
                       "formlink_targets": [
-                        "RACE"
+                        "ACHR",
+                        "ACRE",
+                        "PBEA",
+                        "PGRE",
+                        "PLYR",
+                        "PMIS",
+                        "REFR",
+                        "TRGT"
                       ]
                     }
                   ],
@@ -62686,30 +63166,20 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "values": [
                         230
                       ]
-                    },
-                    {
-                      "field": "type",
-                      "operator": "bit_unset",
-                      "value": 2
-                    },
-                    {
-                      "field": "type",
-                      "operator": "bit_unset",
-                      "value": 8
                     }
                   ]
                 },
                 {
-                  "id": "voice_type",
+                  "id": "weapon",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "voice_type_voice_type",
+                      "id": "weapon_weapon",
                       "kind": "formid",
-                      "display_label": "Voice Type Voice Type",
-                      "formlink_target": "VTYP",
+                      "display_label": "Weapon Weapon",
+                      "formlink_target": "WEAP",
                       "formlink_targets": [
-                        "VTYP"
+                        "WEAP"
                       ]
                     }
                   ],
@@ -66429,6 +66899,42 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
+                        310,
+                        1292
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "none",
+                  "codec": "struct:B,B,B,B",
+                  "fields": [
+                    {
+                      "id": "none_byte_1",
+                      "kind": "uint8",
+                      "display_label": "None Byte 1"
+                    },
+                    {
+                      "id": "none_byte_2",
+                      "kind": "uint8",
+                      "display_label": "None Byte 2"
+                    },
+                    {
+                      "id": "none_byte_3",
+                      "kind": "uint8",
+                      "display_label": "None Byte 3"
+                    },
+                    {
+                      "id": "none_byte_4",
+                      "kind": "uint8",
+                      "display_label": "None Byte 4"
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
                         5,
                         12,
                         18,
@@ -66523,7 +67029,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                         304,
                         306,
                         309,
-                        310,
                         313,
                         314,
                         315,
@@ -66579,7 +67084,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                         1102,
                         1105,
                         1266,
-                        1292,
                         1440,
                         1441,
                         1541,
@@ -66650,28 +67154,13 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "none",
-                  "codec": "struct:B,B,B,B",
+                  "id": "float",
+                  "codec": "float32",
                   "fields": [
                     {
-                      "id": "none_byte_1",
-                      "kind": "uint8",
-                      "display_label": "None Byte 1"
-                    },
-                    {
-                      "id": "none_byte_2",
-                      "kind": "uint8",
-                      "display_label": "None Byte 2"
-                    },
-                    {
-                      "id": "none_byte_3",
-                      "kind": "uint8",
-                      "display_label": "None Byte 3"
-                    },
-                    {
-                      "id": "none_byte_4",
-                      "kind": "uint8",
-                      "display_label": "None Byte 4"
+                      "id": "float_float",
+                      "kind": "float32",
+                      "display_label": "Float Float"
                     }
                   ],
                   "conditions": [
@@ -66690,13 +67179,13 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "float",
-                  "codec": "float32",
+                  "id": "integer",
+                  "codec": "int32",
                   "fields": [
                     {
-                      "id": "float_float",
-                      "kind": "float32",
-                      "display_label": "Float Float"
+                      "id": "integer_integer",
+                      "kind": "int32",
+                      "display_label": "Integer Integer"
                     }
                   ],
                   "conditions": [
@@ -66735,31 +67224,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "vats_value_param",
-                  "codec": "struct:I",
-                  "fields": [
-                    {
-                      "id": "vats_value_param_vats_value_param",
-                      "kind": "uint32",
-                      "display_label": "VATS Value Param VATS Value Param"
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        14,
-                        109,
-                        277,
-                        462,
-                        495,
-                        11509
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "actor_value",
                   "codec": "int32",
                   "fields": [
@@ -66775,7 +67239,12 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        474
+                        14,
+                        109,
+                        277,
+                        462,
+                        495,
+                        11509
                       ]
                     }
                   ]
@@ -66796,10 +67265,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        6,
-                        8,
-                        10,
-                        11
+                        474
                       ]
                     }
                   ]
@@ -66820,7 +67286,10 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        398
+                        6,
+                        8,
+                        10,
+                        11
                       ]
                     }
                   ]
@@ -66841,20 +67310,20 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        438
+                        398
                       ]
                     }
                   ]
                 },
                 {
-                  "id": "crime_type",
+                  "id": "creature_type",
                   "codec": "uint32",
                   "fields": [
                     {
-                      "id": "crime_type_crime_type",
+                      "id": "creature_type_creature_type",
                       "kind": "uint32",
-                      "display_label": "Crime Type Crime Type",
-                      "enum_ref": "crime_type_enum"
+                      "display_label": "Creature Type Creature Type",
+                      "enum_ref": "creature_type_enum"
                     }
                   ],
                   "conditions": [
@@ -66862,7 +67331,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        531
+                        438
                       ]
                     }
                   ]
@@ -66883,7 +67352,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        480
+                        531
                       ]
                     }
                   ]
@@ -66904,12 +67373,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        247,
-                        433,
-                        1029,
-                        1034,
-                        1286,
-                        1288
+                        480
                       ]
                     }
                   ]
@@ -66930,7 +67394,12 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        36
+                        247,
+                        433,
+                        1029,
+                        1034,
+                        1286,
+                        1288
                       ]
                     }
                   ]
@@ -66950,7 +67419,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        312
+                        36
                       ]
                     }
                   ]
@@ -66971,7 +67440,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        368
+                        312
                       ]
                     }
                   ]
@@ -66992,8 +67461,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        70,
-                        131
+                        368
                       ]
                     }
                   ]
@@ -67014,7 +67482,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        408
+                        70,
+                        131
                       ]
                     }
                   ]
@@ -67035,8 +67504,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        4708,
-                        6167
+                        408
                       ]
                     }
                   ]
@@ -67049,6 +67517,33 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "id": "form_form",
                       "kind": "formid",
                       "display_label": "Form Form"
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        4708,
+                        6167
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "actor",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "actor_actor",
+                      "kind": "formid",
+                      "display_label": "Actor Actor",
+                      "formlink_targets": [
+                        "ACHR",
+                        "ACRE",
+                        "PLYR",
+                        "TRGT"
+                      ]
                     }
                   ],
                   "conditions": [
@@ -67079,35 +67574,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "actor",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "actor_actor",
-                      "kind": "formid",
-                      "display_label": "Actor Actor",
-                      "formlink_targets": [
-                        "ACHR",
-                        "ACRE",
-                        "PLYR",
-                        "TRGT"
-                      ]
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        84,
-                        1278,
-                        11429,
-                        11431
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "actor_base",
                   "codec": "formid",
                   "fields": [
@@ -67126,7 +67592,10 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        9753
+                        84,
+                        1278,
+                        11429,
+                        11431
                       ]
                     }
                   ]
@@ -67150,8 +67619,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        214,
-                        4897
+                        9753
                       ]
                     }
                   ]
@@ -67175,8 +67643,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        72,
-                        246
+                        214,
+                        4897
                       ]
                     }
                   ]
@@ -67196,7 +67664,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        610
+                        72,
+                        246
                       ]
                     }
                   ]
@@ -67220,9 +67689,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        67,
-                        230,
-                        280
+                        610
                       ]
                     }
                   ]
@@ -67246,9 +67713,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        607,
-                        614,
-                        11425
+                        67,
+                        230,
+                        280
                       ]
                     }
                   ]
@@ -67272,9 +67739,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        68,
-                        129,
-                        228
+                        607,
+                        614,
+                        11425
                       ]
                     }
                   ]
@@ -67298,9 +67765,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        223,
-                        555,
-                        6124
+                        68,
+                        129,
+                        228
                       ]
                     }
                   ]
@@ -67326,7 +67793,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        446
+                        223,
+                        555,
+                        6124
                       ]
                     }
                   ]
@@ -67350,15 +67819,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        60,
-                        71,
-                        73,
-                        132,
-                        193,
-                        195,
-                        197,
-                        199,
-                        411
+                        446
                       ]
                     }
                   ]
@@ -67374,6 +67835,38 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "formlink_target": "FACT",
                       "formlink_targets": [
                         "FACT"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        60,
+                        71,
+                        73,
+                        132,
+                        193,
+                        195,
+                        197,
+                        199,
+                        411
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "form_list",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "form_list_form_list",
+                      "kind": "formid",
+                      "display_label": "Form List Form List",
+                      "formlink_target": "FLST",
+                      "formlink_targets": [
+                        "FLST"
                       ]
                     }
                   ],
@@ -67398,30 +67891,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "form_list",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "form_list_form_list",
-                      "kind": "formid",
-                      "display_label": "Form List Form List",
-                      "formlink_target": "FLST",
-                      "formlink_targets": [
-                        "FLST"
-                      ]
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        163
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "furniture",
                   "codec": "formid",
                   "fields": [
@@ -67440,7 +67909,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        74
+                        163
                       ]
                     }
                   ]
@@ -67464,7 +67933,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        451
+                        74
                       ]
                     }
                   ]
@@ -67480,6 +67949,41 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "formlink_target": "IDLE",
                       "formlink_targets": [
                         "IDLE"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        451
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "inventory_object",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "inventory_object_inventory_object",
+                      "kind": "formid",
+                      "display_label": "Inventory Object Inventory Object",
+                      "formlink_targets": [
+                        "ALCH",
+                        "AMMO",
+                        "ARMO",
+                        "BOOK",
+                        "CCRD",
+                        "CHIP",
+                        "CMNY",
+                        "FLST",
+                        "IMOD",
+                        "KEYM",
+                        "MISC",
+                        "NOTE",
+                        "WEAP"
                       ]
                     }
                   ],
@@ -67554,42 +68058,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "inventory_object",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "inventory_object_inventory_object",
-                      "kind": "formid",
-                      "display_label": "Inventory Object Inventory Object",
-                      "formlink_targets": [
-                        "ALCH",
-                        "AMMO",
-                        "ARMO",
-                        "BOOK",
-                        "CCRD",
-                        "CHIP",
-                        "CMNY",
-                        "FLST",
-                        "IMOD",
-                        "KEYM",
-                        "MISC",
-                        "NOTE",
-                        "WEAP"
-                      ]
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        382,
-                        6321
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "note",
                   "codec": "formid",
                   "fields": [
@@ -67608,7 +68076,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        278
+                        382,
+                        6321
                       ]
                     }
                   ]
@@ -67633,7 +68102,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        161
+                        278
                       ]
                     }
                   ]
@@ -67657,9 +68126,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        449,
-                        1475,
-                        1476
+                        161
                       ]
                     }
                   ]
@@ -67675,6 +68142,32 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "formlink_target": "PERK",
                       "formlink_targets": [
                         "PERK"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        449,
+                        1475,
+                        1476
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "quest",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "quest_quest",
+                      "kind": "formid",
+                      "display_label": "Quest Quest",
+                      "formlink_target": "QUST",
+                      "formlink_targets": [
+                        "QUST"
                       ]
                     }
                   ],
@@ -67699,16 +68192,16 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "quest",
+                  "id": "race",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "quest_quest",
+                      "id": "race_race",
                       "kind": "formid",
-                      "display_label": "Quest Quest",
-                      "formlink_target": "QUST",
+                      "display_label": "Race Race",
+                      "formlink_target": "RACE",
                       "formlink_targets": [
-                        "QUST"
+                        "RACE"
                       ]
                     }
                   ],
@@ -67724,16 +68217,22 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "race",
+                  "id": "reference",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "race_race",
+                      "id": "reference_reference",
                       "kind": "formid",
-                      "display_label": "Race Race",
-                      "formlink_target": "RACE",
+                      "display_label": "Reference Reference",
                       "formlink_targets": [
-                        "RACE"
+                        "ACHR",
+                        "ACRE",
+                        "PBEA",
+                        "PGRE",
+                        "PLYR",
+                        "PMIS",
+                        "REFR",
+                        "TRGT"
                       ]
                     }
                   ],
@@ -67769,36 +68268,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "reference",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "reference_reference",
-                      "kind": "formid",
-                      "display_label": "Reference Reference",
-                      "formlink_targets": [
-                        "ACHR",
-                        "ACRE",
-                        "PBEA",
-                        "PGRE",
-                        "PLYR",
-                        "PMIS",
-                        "REFR",
-                        "TRGT"
-                      ]
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        612
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "region",
                   "codec": "formid",
                   "fields": [
@@ -67817,9 +68286,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        573,
-                        574,
-                        575
+                        612
                       ]
                     }
                   ]
@@ -67843,7 +68310,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        427
+                        573,
+                        574,
+                        575
                       ]
                     }
                   ]
@@ -67867,8 +68336,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        11421,
-                        11423
+                        427
                       ]
                     }
                   ]
@@ -67884,6 +68352,31 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "formlink_target": "WEAP",
                       "formlink_targets": [
                         "WEAP"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        11421,
+                        11423
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "weather",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "weather_weather",
+                      "kind": "formid",
+                      "display_label": "Weather Weather",
+                      "formlink_target": "WTHR",
+                      "formlink_targets": [
+                        "WTHR"
                       ]
                     }
                   ],
@@ -68370,8 +68863,30 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "unnamed",
-                  "codec": "uint32",
+                  "id": "none",
+                  "codec": "struct:B,B,B,B",
+                  "fields": [
+                    {
+                      "id": "none_byte_1",
+                      "kind": "uint8",
+                      "display_label": "None Byte 1"
+                    },
+                    {
+                      "id": "none_byte_2",
+                      "kind": "uint8",
+                      "display_label": "None Byte 2"
+                    },
+                    {
+                      "id": "none_byte_3",
+                      "kind": "uint8",
+                      "display_label": "None Byte 3"
+                    },
+                    {
+                      "id": "none_byte_4",
+                      "kind": "uint8",
+                      "display_label": "None Byte 4"
+                    }
+                  ],
                   "conditions": [
                     {
                       "field": "function",
@@ -68797,13 +69312,13 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "float",
-                  "codec": "float32",
+                  "id": "integer",
+                  "codec": "int32",
                   "fields": [
                     {
-                      "id": "float_float",
-                      "kind": "float32",
-                      "display_label": "Float Float"
+                      "id": "integer_integer",
+                      "kind": "int32",
+                      "display_label": "Integer Integer"
                     }
                   ],
                   "conditions": [
@@ -68833,27 +69348,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "integer",
-                  "codec": "int32",
-                  "fields": [
-                    {
-                      "id": "integer_integer",
-                      "kind": "int32",
-                      "display_label": "Integer Integer"
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        420,
-                        421
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "quest_objective",
                   "codec": "int32",
                   "fields": [
@@ -68868,7 +69362,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        59
+                        420,
+                        421
                       ]
                     }
                   ]
@@ -68888,8 +69383,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        53,
-                        79
+                        59
                       ]
                     }
                   ]
@@ -68909,20 +69403,41 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
+                        53,
+                        79
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "vats_value_param",
+                  "codec": "struct:I",
+                  "fields": [
+                    {
+                      "id": "vats_value_param_vats_value_param",
+                      "kind": "uint32",
+                      "display_label": "VATS Value Param VATS Value Param"
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
                         408
                       ]
                     }
                   ]
                 },
                 {
-                  "id": "creature_type",
+                  "id": "crime_type",
                   "codec": "uint32",
                   "fields": [
                     {
-                      "id": "creature_type_creature_type",
+                      "id": "crime_type_crime_type",
                       "kind": "uint32",
-                      "display_label": "Creature Type Creature Type",
-                      "enum_ref": "creature_type_enum"
+                      "display_label": "Crime Type Crime Type",
+                      "enum_ref": "crime_type_enum"
                     }
                   ],
                   "conditions": [
@@ -68936,14 +69451,14 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "equip_type",
+                  "id": "form_type",
                   "codec": "uint32",
                   "fields": [
                     {
-                      "id": "equip_type_equip_type",
+                      "id": "form_type_form_type",
                       "kind": "uint32",
-                      "display_label": "Equip Type Equip Type",
-                      "enum_ref": "equip_type_enum"
+                      "display_label": "Form Type Form Type",
+                      "enum_ref": "form_type_enum"
                     }
                   ],
                   "conditions": [
@@ -68954,38 +69469,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                         1089,
                         1297
                       ]
-                    }
-                  ]
-                },
-                {
-                  "id": "form",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "form_form",
-                      "kind": "formid",
-                      "display_label": "Form Form"
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        60,
-                        1475,
-                        1476
-                      ]
-                    },
-                    {
-                      "field": "type",
-                      "operator": "bit_unset",
-                      "value": 2
-                    },
-                    {
-                      "field": "type",
-                      "operator": "bit_unset",
-                      "value": 8
                     }
                   ]
                 },
@@ -69010,6 +69493,32 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
+                        60,
+                        1475,
+                        1476
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "actor_base",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "actor_base_actor_base",
+                      "kind": "formid",
+                      "display_label": "Actor Base Actor Base",
+                      "formlink_targets": [
+                        "CREA",
+                        "NPC_"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
                         1291,
                         11488
                       ]
@@ -69017,16 +69526,16 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "encounter_zone",
+                  "id": "faction",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "encounter_zone_encounter_zone",
+                      "id": "faction_faction",
                       "kind": "formid",
-                      "display_label": "Encounter Zone Encounter Zone",
-                      "formlink_target": "ECZN",
+                      "display_label": "Faction Faction",
+                      "formlink_target": "FACT",
                       "formlink_targets": [
-                        "ECZN"
+                        "FACT"
                       ]
                     }
                   ],
@@ -69041,16 +69550,27 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "idle",
+                  "id": "inventory_object",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "idle_idle",
+                      "id": "inventory_object_inventory_object",
                       "kind": "formid",
-                      "display_label": "Idle Idle",
-                      "formlink_target": "IDLE",
+                      "display_label": "Inventory Object Inventory Object",
                       "formlink_targets": [
-                        "IDLE"
+                        "ALCH",
+                        "AMMO",
+                        "ARMO",
+                        "BOOK",
+                        "CCRD",
+                        "CHIP",
+                        "CMNY",
+                        "FLST",
+                        "IMOD",
+                        "KEYM",
+                        "MISC",
+                        "NOTE",
+                        "WEAP"
                       ]
                     }
                   ],
@@ -69066,17 +69586,18 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "note",
+                  "id": "owner",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "note_note",
+                      "id": "owner_owner",
                       "kind": "formid",
-                      "display_label": "Note Note",
-                      "formlink_target": "NOTE",
+                      "display_label": "Owner Owner",
                       "formlink_targets": [
-                        "NOTE"
-                      ]
+                        "FACT",
+                        "NPC_"
+                      ],
+                      "null_allowed": true
                     }
                   ],
                   "conditions": [
@@ -69090,16 +69611,22 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "race",
+                  "id": "reference",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "race_race",
+                      "id": "reference_reference",
                       "kind": "formid",
-                      "display_label": "Race Race",
-                      "formlink_target": "RACE",
+                      "display_label": "Reference Reference",
                       "formlink_targets": [
-                        "RACE"
+                        "ACHR",
+                        "ACRE",
+                        "PBEA",
+                        "PGRE",
+                        "PLYR",
+                        "PMIS",
+                        "REFR",
+                        "TRGT"
                       ]
                     }
                   ],
@@ -69110,30 +69637,20 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "values": [
                         230
                       ]
-                    },
-                    {
-                      "field": "type",
-                      "operator": "bit_unset",
-                      "value": 2
-                    },
-                    {
-                      "field": "type",
-                      "operator": "bit_unset",
-                      "value": 8
                     }
                   ]
                 },
                 {
-                  "id": "voice_type",
+                  "id": "weapon",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "voice_type_voice_type",
+                      "id": "weapon_weapon",
                       "kind": "formid",
-                      "display_label": "Voice Type Voice Type",
-                      "formlink_target": "VTYP",
+                      "display_label": "Weapon Weapon",
+                      "formlink_target": "WEAP",
                       "formlink_targets": [
-                        "VTYP"
+                        "WEAP"
                       ]
                     }
                   ],
@@ -69811,6 +70328,42 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
+                        310,
+                        1292
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "none",
+                  "codec": "struct:B,B,B,B",
+                  "fields": [
+                    {
+                      "id": "none_byte_1",
+                      "kind": "uint8",
+                      "display_label": "None Byte 1"
+                    },
+                    {
+                      "id": "none_byte_2",
+                      "kind": "uint8",
+                      "display_label": "None Byte 2"
+                    },
+                    {
+                      "id": "none_byte_3",
+                      "kind": "uint8",
+                      "display_label": "None Byte 3"
+                    },
+                    {
+                      "id": "none_byte_4",
+                      "kind": "uint8",
+                      "display_label": "None Byte 4"
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
                         5,
                         12,
                         18,
@@ -69905,7 +70458,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                         304,
                         306,
                         309,
-                        310,
                         313,
                         314,
                         315,
@@ -69961,7 +70513,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                         1102,
                         1105,
                         1266,
-                        1292,
                         1440,
                         1441,
                         1541,
@@ -70032,28 +70583,13 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "none",
-                  "codec": "struct:B,B,B,B",
+                  "id": "float",
+                  "codec": "float32",
                   "fields": [
                     {
-                      "id": "none_byte_1",
-                      "kind": "uint8",
-                      "display_label": "None Byte 1"
-                    },
-                    {
-                      "id": "none_byte_2",
-                      "kind": "uint8",
-                      "display_label": "None Byte 2"
-                    },
-                    {
-                      "id": "none_byte_3",
-                      "kind": "uint8",
-                      "display_label": "None Byte 3"
-                    },
-                    {
-                      "id": "none_byte_4",
-                      "kind": "uint8",
-                      "display_label": "None Byte 4"
+                      "id": "float_float",
+                      "kind": "float32",
+                      "display_label": "Float Float"
                     }
                   ],
                   "conditions": [
@@ -70072,13 +70608,13 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "float",
-                  "codec": "float32",
+                  "id": "integer",
+                  "codec": "int32",
                   "fields": [
                     {
-                      "id": "float_float",
-                      "kind": "float32",
-                      "display_label": "Float Float"
+                      "id": "integer_integer",
+                      "kind": "int32",
+                      "display_label": "Integer Integer"
                     }
                   ],
                   "conditions": [
@@ -70117,31 +70653,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "vats_value_param",
-                  "codec": "struct:I",
-                  "fields": [
-                    {
-                      "id": "vats_value_param_vats_value_param",
-                      "kind": "uint32",
-                      "display_label": "VATS Value Param VATS Value Param"
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        14,
-                        109,
-                        277,
-                        462,
-                        495,
-                        11509
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "actor_value",
                   "codec": "int32",
                   "fields": [
@@ -70157,7 +70668,12 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        474
+                        14,
+                        109,
+                        277,
+                        462,
+                        495,
+                        11509
                       ]
                     }
                   ]
@@ -70178,10 +70694,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        6,
-                        8,
-                        10,
-                        11
+                        474
                       ]
                     }
                   ]
@@ -70202,7 +70715,10 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        398
+                        6,
+                        8,
+                        10,
+                        11
                       ]
                     }
                   ]
@@ -70223,20 +70739,20 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        438
+                        398
                       ]
                     }
                   ]
                 },
                 {
-                  "id": "crime_type",
+                  "id": "creature_type",
                   "codec": "uint32",
                   "fields": [
                     {
-                      "id": "crime_type_crime_type",
+                      "id": "creature_type_creature_type",
                       "kind": "uint32",
-                      "display_label": "Crime Type Crime Type",
-                      "enum_ref": "crime_type_enum"
+                      "display_label": "Creature Type Creature Type",
+                      "enum_ref": "creature_type_enum"
                     }
                   ],
                   "conditions": [
@@ -70244,7 +70760,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        531
+                        438
                       ]
                     }
                   ]
@@ -70265,7 +70781,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        480
+                        531
                       ]
                     }
                   ]
@@ -70286,12 +70802,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        247,
-                        433,
-                        1029,
-                        1034,
-                        1286,
-                        1288
+                        480
                       ]
                     }
                   ]
@@ -70312,7 +70823,12 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        36
+                        247,
+                        433,
+                        1029,
+                        1034,
+                        1286,
+                        1288
                       ]
                     }
                   ]
@@ -70332,7 +70848,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        312
+                        36
                       ]
                     }
                   ]
@@ -70353,7 +70869,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        368
+                        312
                       ]
                     }
                   ]
@@ -70374,8 +70890,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        70,
-                        131
+                        368
                       ]
                     }
                   ]
@@ -70396,7 +70911,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        408
+                        70,
+                        131
                       ]
                     }
                   ]
@@ -70417,8 +70933,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        4708,
-                        6167
+                        408
                       ]
                     }
                   ]
@@ -70431,6 +70946,33 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "id": "form_form",
                       "kind": "formid",
                       "display_label": "Form Form"
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        4708,
+                        6167
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "actor",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "actor_actor",
+                      "kind": "formid",
+                      "display_label": "Actor Actor",
+                      "formlink_targets": [
+                        "ACHR",
+                        "ACRE",
+                        "PLYR",
+                        "TRGT"
+                      ]
                     }
                   ],
                   "conditions": [
@@ -70461,35 +71003,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "actor",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "actor_actor",
-                      "kind": "formid",
-                      "display_label": "Actor Actor",
-                      "formlink_targets": [
-                        "ACHR",
-                        "ACRE",
-                        "PLYR",
-                        "TRGT"
-                      ]
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        84,
-                        1278,
-                        11429,
-                        11431
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "actor_base",
                   "codec": "formid",
                   "fields": [
@@ -70508,7 +71021,10 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        9753
+                        84,
+                        1278,
+                        11429,
+                        11431
                       ]
                     }
                   ]
@@ -70532,8 +71048,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        214,
-                        4897
+                        9753
                       ]
                     }
                   ]
@@ -70557,8 +71072,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        72,
-                        246
+                        214,
+                        4897
                       ]
                     }
                   ]
@@ -70578,7 +71093,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        610
+                        72,
+                        246
                       ]
                     }
                   ]
@@ -70602,9 +71118,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        67,
-                        230,
-                        280
+                        610
                       ]
                     }
                   ]
@@ -70628,9 +71142,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        607,
-                        614,
-                        11425
+                        67,
+                        230,
+                        280
                       ]
                     }
                   ]
@@ -70654,9 +71168,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        68,
-                        129,
-                        228
+                        607,
+                        614,
+                        11425
                       ]
                     }
                   ]
@@ -70680,9 +71194,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        223,
-                        555,
-                        6124
+                        68,
+                        129,
+                        228
                       ]
                     }
                   ]
@@ -70708,7 +71222,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        446
+                        223,
+                        555,
+                        6124
                       ]
                     }
                   ]
@@ -70732,15 +71248,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        60,
-                        71,
-                        73,
-                        132,
-                        193,
-                        195,
-                        197,
-                        199,
-                        411
+                        446
                       ]
                     }
                   ]
@@ -70756,6 +71264,38 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "formlink_target": "FACT",
                       "formlink_targets": [
                         "FACT"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        60,
+                        71,
+                        73,
+                        132,
+                        193,
+                        195,
+                        197,
+                        199,
+                        411
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "form_list",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "form_list_form_list",
+                      "kind": "formid",
+                      "display_label": "Form List Form List",
+                      "formlink_target": "FLST",
+                      "formlink_targets": [
+                        "FLST"
                       ]
                     }
                   ],
@@ -70780,30 +71320,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "form_list",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "form_list_form_list",
-                      "kind": "formid",
-                      "display_label": "Form List Form List",
-                      "formlink_target": "FLST",
-                      "formlink_targets": [
-                        "FLST"
-                      ]
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        163
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "furniture",
                   "codec": "formid",
                   "fields": [
@@ -70822,7 +71338,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        74
+                        163
                       ]
                     }
                   ]
@@ -70846,7 +71362,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        451
+                        74
                       ]
                     }
                   ]
@@ -70862,6 +71378,41 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "formlink_target": "IDLE",
                       "formlink_targets": [
                         "IDLE"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        451
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "inventory_object",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "inventory_object_inventory_object",
+                      "kind": "formid",
+                      "display_label": "Inventory Object Inventory Object",
+                      "formlink_targets": [
+                        "ALCH",
+                        "AMMO",
+                        "ARMO",
+                        "BOOK",
+                        "CCRD",
+                        "CHIP",
+                        "CMNY",
+                        "FLST",
+                        "IMOD",
+                        "KEYM",
+                        "MISC",
+                        "NOTE",
+                        "WEAP"
                       ]
                     }
                   ],
@@ -70936,42 +71487,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "inventory_object",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "inventory_object_inventory_object",
-                      "kind": "formid",
-                      "display_label": "Inventory Object Inventory Object",
-                      "formlink_targets": [
-                        "ALCH",
-                        "AMMO",
-                        "ARMO",
-                        "BOOK",
-                        "CCRD",
-                        "CHIP",
-                        "CMNY",
-                        "FLST",
-                        "IMOD",
-                        "KEYM",
-                        "MISC",
-                        "NOTE",
-                        "WEAP"
-                      ]
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        382,
-                        6321
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "note",
                   "codec": "formid",
                   "fields": [
@@ -70990,7 +71505,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        278
+                        382,
+                        6321
                       ]
                     }
                   ]
@@ -71015,7 +71531,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        161
+                        278
                       ]
                     }
                   ]
@@ -71039,9 +71555,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        449,
-                        1475,
-                        1476
+                        161
                       ]
                     }
                   ]
@@ -71057,6 +71571,32 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "formlink_target": "PERK",
                       "formlink_targets": [
                         "PERK"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        449,
+                        1475,
+                        1476
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "quest",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "quest_quest",
+                      "kind": "formid",
+                      "display_label": "Quest Quest",
+                      "formlink_target": "QUST",
+                      "formlink_targets": [
+                        "QUST"
                       ]
                     }
                   ],
@@ -71081,16 +71621,16 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "quest",
+                  "id": "race",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "quest_quest",
+                      "id": "race_race",
                       "kind": "formid",
-                      "display_label": "Quest Quest",
-                      "formlink_target": "QUST",
+                      "display_label": "Race Race",
+                      "formlink_target": "RACE",
                       "formlink_targets": [
-                        "QUST"
+                        "RACE"
                       ]
                     }
                   ],
@@ -71106,16 +71646,22 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "race",
+                  "id": "reference",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "race_race",
+                      "id": "reference_reference",
                       "kind": "formid",
-                      "display_label": "Race Race",
-                      "formlink_target": "RACE",
+                      "display_label": "Reference Reference",
                       "formlink_targets": [
-                        "RACE"
+                        "ACHR",
+                        "ACRE",
+                        "PBEA",
+                        "PGRE",
+                        "PLYR",
+                        "PMIS",
+                        "REFR",
+                        "TRGT"
                       ]
                     }
                   ],
@@ -71151,36 +71697,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "reference",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "reference_reference",
-                      "kind": "formid",
-                      "display_label": "Reference Reference",
-                      "formlink_targets": [
-                        "ACHR",
-                        "ACRE",
-                        "PBEA",
-                        "PGRE",
-                        "PLYR",
-                        "PMIS",
-                        "REFR",
-                        "TRGT"
-                      ]
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        612
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "region",
                   "codec": "formid",
                   "fields": [
@@ -71199,9 +71715,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        573,
-                        574,
-                        575
+                        612
                       ]
                     }
                   ]
@@ -71225,7 +71739,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        427
+                        573,
+                        574,
+                        575
                       ]
                     }
                   ]
@@ -71249,8 +71765,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        11421,
-                        11423
+                        427
                       ]
                     }
                   ]
@@ -71266,6 +71781,31 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "formlink_target": "WEAP",
                       "formlink_targets": [
                         "WEAP"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        11421,
+                        11423
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "weather",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "weather_weather",
+                      "kind": "formid",
+                      "display_label": "Weather Weather",
+                      "formlink_target": "WTHR",
+                      "formlink_targets": [
+                        "WTHR"
                       ]
                     }
                   ],
@@ -71752,8 +72292,30 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "unnamed",
-                  "codec": "uint32",
+                  "id": "none",
+                  "codec": "struct:B,B,B,B",
+                  "fields": [
+                    {
+                      "id": "none_byte_1",
+                      "kind": "uint8",
+                      "display_label": "None Byte 1"
+                    },
+                    {
+                      "id": "none_byte_2",
+                      "kind": "uint8",
+                      "display_label": "None Byte 2"
+                    },
+                    {
+                      "id": "none_byte_3",
+                      "kind": "uint8",
+                      "display_label": "None Byte 3"
+                    },
+                    {
+                      "id": "none_byte_4",
+                      "kind": "uint8",
+                      "display_label": "None Byte 4"
+                    }
+                  ],
                   "conditions": [
                     {
                       "field": "function",
@@ -72179,13 +72741,13 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "float",
-                  "codec": "float32",
+                  "id": "integer",
+                  "codec": "int32",
                   "fields": [
                     {
-                      "id": "float_float",
-                      "kind": "float32",
-                      "display_label": "Float Float"
+                      "id": "integer_integer",
+                      "kind": "int32",
+                      "display_label": "Integer Integer"
                     }
                   ],
                   "conditions": [
@@ -72215,27 +72777,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "integer",
-                  "codec": "int32",
-                  "fields": [
-                    {
-                      "id": "integer_integer",
-                      "kind": "int32",
-                      "display_label": "Integer Integer"
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        420,
-                        421
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "quest_objective",
                   "codec": "int32",
                   "fields": [
@@ -72250,7 +72791,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        59
+                        420,
+                        421
                       ]
                     }
                   ]
@@ -72270,8 +72812,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        53,
-                        79
+                        59
                       ]
                     }
                   ]
@@ -72291,20 +72832,41 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
+                        53,
+                        79
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "vats_value_param",
+                  "codec": "struct:I",
+                  "fields": [
+                    {
+                      "id": "vats_value_param_vats_value_param",
+                      "kind": "uint32",
+                      "display_label": "VATS Value Param VATS Value Param"
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
                         408
                       ]
                     }
                   ]
                 },
                 {
-                  "id": "creature_type",
+                  "id": "crime_type",
                   "codec": "uint32",
                   "fields": [
                     {
-                      "id": "creature_type_creature_type",
+                      "id": "crime_type_crime_type",
                       "kind": "uint32",
-                      "display_label": "Creature Type Creature Type",
-                      "enum_ref": "creature_type_enum"
+                      "display_label": "Crime Type Crime Type",
+                      "enum_ref": "crime_type_enum"
                     }
                   ],
                   "conditions": [
@@ -72318,14 +72880,14 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "equip_type",
+                  "id": "form_type",
                   "codec": "uint32",
                   "fields": [
                     {
-                      "id": "equip_type_equip_type",
+                      "id": "form_type_form_type",
                       "kind": "uint32",
-                      "display_label": "Equip Type Equip Type",
-                      "enum_ref": "equip_type_enum"
+                      "display_label": "Form Type Form Type",
+                      "enum_ref": "form_type_enum"
                     }
                   ],
                   "conditions": [
@@ -72336,38 +72898,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                         1089,
                         1297
                       ]
-                    }
-                  ]
-                },
-                {
-                  "id": "form",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "form_form",
-                      "kind": "formid",
-                      "display_label": "Form Form"
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        60,
-                        1475,
-                        1476
-                      ]
-                    },
-                    {
-                      "field": "type",
-                      "operator": "bit_unset",
-                      "value": 2
-                    },
-                    {
-                      "field": "type",
-                      "operator": "bit_unset",
-                      "value": 8
                     }
                   ]
                 },
@@ -72392,6 +72922,32 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
+                        60,
+                        1475,
+                        1476
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "actor_base",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "actor_base_actor_base",
+                      "kind": "formid",
+                      "display_label": "Actor Base Actor Base",
+                      "formlink_targets": [
+                        "CREA",
+                        "NPC_"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
                         1291,
                         11488
                       ]
@@ -72399,16 +72955,16 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "encounter_zone",
+                  "id": "faction",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "encounter_zone_encounter_zone",
+                      "id": "faction_faction",
                       "kind": "formid",
-                      "display_label": "Encounter Zone Encounter Zone",
-                      "formlink_target": "ECZN",
+                      "display_label": "Faction Faction",
+                      "formlink_target": "FACT",
                       "formlink_targets": [
-                        "ECZN"
+                        "FACT"
                       ]
                     }
                   ],
@@ -72423,16 +72979,27 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "idle",
+                  "id": "inventory_object",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "idle_idle",
+                      "id": "inventory_object_inventory_object",
                       "kind": "formid",
-                      "display_label": "Idle Idle",
-                      "formlink_target": "IDLE",
+                      "display_label": "Inventory Object Inventory Object",
                       "formlink_targets": [
-                        "IDLE"
+                        "ALCH",
+                        "AMMO",
+                        "ARMO",
+                        "BOOK",
+                        "CCRD",
+                        "CHIP",
+                        "CMNY",
+                        "FLST",
+                        "IMOD",
+                        "KEYM",
+                        "MISC",
+                        "NOTE",
+                        "WEAP"
                       ]
                     }
                   ],
@@ -72448,17 +73015,18 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "note",
+                  "id": "owner",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "note_note",
+                      "id": "owner_owner",
                       "kind": "formid",
-                      "display_label": "Note Note",
-                      "formlink_target": "NOTE",
+                      "display_label": "Owner Owner",
                       "formlink_targets": [
-                        "NOTE"
-                      ]
+                        "FACT",
+                        "NPC_"
+                      ],
+                      "null_allowed": true
                     }
                   ],
                   "conditions": [
@@ -72472,16 +73040,22 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "race",
+                  "id": "reference",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "race_race",
+                      "id": "reference_reference",
                       "kind": "formid",
-                      "display_label": "Race Race",
-                      "formlink_target": "RACE",
+                      "display_label": "Reference Reference",
                       "formlink_targets": [
-                        "RACE"
+                        "ACHR",
+                        "ACRE",
+                        "PBEA",
+                        "PGRE",
+                        "PLYR",
+                        "PMIS",
+                        "REFR",
+                        "TRGT"
                       ]
                     }
                   ],
@@ -72492,30 +73066,20 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "values": [
                         230
                       ]
-                    },
-                    {
-                      "field": "type",
-                      "operator": "bit_unset",
-                      "value": 2
-                    },
-                    {
-                      "field": "type",
-                      "operator": "bit_unset",
-                      "value": 8
                     }
                   ]
                 },
                 {
-                  "id": "voice_type",
+                  "id": "weapon",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "voice_type_voice_type",
+                      "id": "weapon_weapon",
                       "kind": "formid",
-                      "display_label": "Voice Type Voice Type",
-                      "formlink_target": "VTYP",
+                      "display_label": "Weapon Weapon",
+                      "formlink_target": "WEAP",
                       "formlink_targets": [
-                        "VTYP"
+                        "WEAP"
                       ]
                     }
                   ],
@@ -73512,6 +74076,42 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
+                        310,
+                        1292
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "none",
+                  "codec": "struct:B,B,B,B",
+                  "fields": [
+                    {
+                      "id": "none_byte_1",
+                      "kind": "uint8",
+                      "display_label": "None Byte 1"
+                    },
+                    {
+                      "id": "none_byte_2",
+                      "kind": "uint8",
+                      "display_label": "None Byte 2"
+                    },
+                    {
+                      "id": "none_byte_3",
+                      "kind": "uint8",
+                      "display_label": "None Byte 3"
+                    },
+                    {
+                      "id": "none_byte_4",
+                      "kind": "uint8",
+                      "display_label": "None Byte 4"
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
                         5,
                         12,
                         18,
@@ -73606,7 +74206,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                         304,
                         306,
                         309,
-                        310,
                         313,
                         314,
                         315,
@@ -73662,7 +74261,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                         1102,
                         1105,
                         1266,
-                        1292,
                         1440,
                         1441,
                         1541,
@@ -73733,28 +74331,13 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "none",
-                  "codec": "struct:B,B,B,B",
+                  "id": "float",
+                  "codec": "float32",
                   "fields": [
                     {
-                      "id": "none_byte_1",
-                      "kind": "uint8",
-                      "display_label": "None Byte 1"
-                    },
-                    {
-                      "id": "none_byte_2",
-                      "kind": "uint8",
-                      "display_label": "None Byte 2"
-                    },
-                    {
-                      "id": "none_byte_3",
-                      "kind": "uint8",
-                      "display_label": "None Byte 3"
-                    },
-                    {
-                      "id": "none_byte_4",
-                      "kind": "uint8",
-                      "display_label": "None Byte 4"
+                      "id": "float_float",
+                      "kind": "float32",
+                      "display_label": "Float Float"
                     }
                   ],
                   "conditions": [
@@ -73773,13 +74356,13 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "float",
-                  "codec": "float32",
+                  "id": "integer",
+                  "codec": "int32",
                   "fields": [
                     {
-                      "id": "float_float",
-                      "kind": "float32",
-                      "display_label": "Float Float"
+                      "id": "integer_integer",
+                      "kind": "int32",
+                      "display_label": "Integer Integer"
                     }
                   ],
                   "conditions": [
@@ -73818,31 +74401,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "vats_value_param",
-                  "codec": "struct:I",
-                  "fields": [
-                    {
-                      "id": "vats_value_param_vats_value_param",
-                      "kind": "uint32",
-                      "display_label": "VATS Value Param VATS Value Param"
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        14,
-                        109,
-                        277,
-                        462,
-                        495,
-                        11509
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "actor_value",
                   "codec": "int32",
                   "fields": [
@@ -73858,7 +74416,12 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        474
+                        14,
+                        109,
+                        277,
+                        462,
+                        495,
+                        11509
                       ]
                     }
                   ]
@@ -73879,10 +74442,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        6,
-                        8,
-                        10,
-                        11
+                        474
                       ]
                     }
                   ]
@@ -73903,7 +74463,10 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        398
+                        6,
+                        8,
+                        10,
+                        11
                       ]
                     }
                   ]
@@ -73924,20 +74487,20 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        438
+                        398
                       ]
                     }
                   ]
                 },
                 {
-                  "id": "crime_type",
+                  "id": "creature_type",
                   "codec": "uint32",
                   "fields": [
                     {
-                      "id": "crime_type_crime_type",
+                      "id": "creature_type_creature_type",
                       "kind": "uint32",
-                      "display_label": "Crime Type Crime Type",
-                      "enum_ref": "crime_type_enum"
+                      "display_label": "Creature Type Creature Type",
+                      "enum_ref": "creature_type_enum"
                     }
                   ],
                   "conditions": [
@@ -73945,7 +74508,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        531
+                        438
                       ]
                     }
                   ]
@@ -73966,7 +74529,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        480
+                        531
                       ]
                     }
                   ]
@@ -73987,12 +74550,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        247,
-                        433,
-                        1029,
-                        1034,
-                        1286,
-                        1288
+                        480
                       ]
                     }
                   ]
@@ -74013,7 +74571,12 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        36
+                        247,
+                        433,
+                        1029,
+                        1034,
+                        1286,
+                        1288
                       ]
                     }
                   ]
@@ -74033,7 +74596,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        312
+                        36
                       ]
                     }
                   ]
@@ -74054,7 +74617,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        368
+                        312
                       ]
                     }
                   ]
@@ -74075,8 +74638,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        70,
-                        131
+                        368
                       ]
                     }
                   ]
@@ -74097,7 +74659,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        408
+                        70,
+                        131
                       ]
                     }
                   ]
@@ -74118,8 +74681,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        4708,
-                        6167
+                        408
                       ]
                     }
                   ]
@@ -74132,6 +74694,33 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "id": "form_form",
                       "kind": "formid",
                       "display_label": "Form Form"
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        4708,
+                        6167
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "actor",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "actor_actor",
+                      "kind": "formid",
+                      "display_label": "Actor Actor",
+                      "formlink_targets": [
+                        "ACHR",
+                        "ACRE",
+                        "PLYR",
+                        "TRGT"
+                      ]
                     }
                   ],
                   "conditions": [
@@ -74162,35 +74751,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "actor",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "actor_actor",
-                      "kind": "formid",
-                      "display_label": "Actor Actor",
-                      "formlink_targets": [
-                        "ACHR",
-                        "ACRE",
-                        "PLYR",
-                        "TRGT"
-                      ]
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        84,
-                        1278,
-                        11429,
-                        11431
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "actor_base",
                   "codec": "formid",
                   "fields": [
@@ -74209,7 +74769,10 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        9753
+                        84,
+                        1278,
+                        11429,
+                        11431
                       ]
                     }
                   ]
@@ -74233,8 +74796,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        214,
-                        4897
+                        9753
                       ]
                     }
                   ]
@@ -74258,8 +74820,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        72,
-                        246
+                        214,
+                        4897
                       ]
                     }
                   ]
@@ -74279,7 +74841,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        610
+                        72,
+                        246
                       ]
                     }
                   ]
@@ -74303,9 +74866,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        67,
-                        230,
-                        280
+                        610
                       ]
                     }
                   ]
@@ -74329,9 +74890,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        607,
-                        614,
-                        11425
+                        67,
+                        230,
+                        280
                       ]
                     }
                   ]
@@ -74355,9 +74916,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        68,
-                        129,
-                        228
+                        607,
+                        614,
+                        11425
                       ]
                     }
                   ]
@@ -74381,9 +74942,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        223,
-                        555,
-                        6124
+                        68,
+                        129,
+                        228
                       ]
                     }
                   ]
@@ -74409,7 +74970,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        446
+                        223,
+                        555,
+                        6124
                       ]
                     }
                   ]
@@ -74433,15 +74996,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        60,
-                        71,
-                        73,
-                        132,
-                        193,
-                        195,
-                        197,
-                        199,
-                        411
+                        446
                       ]
                     }
                   ]
@@ -74457,6 +75012,38 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "formlink_target": "FACT",
                       "formlink_targets": [
                         "FACT"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        60,
+                        71,
+                        73,
+                        132,
+                        193,
+                        195,
+                        197,
+                        199,
+                        411
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "form_list",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "form_list_form_list",
+                      "kind": "formid",
+                      "display_label": "Form List Form List",
+                      "formlink_target": "FLST",
+                      "formlink_targets": [
+                        "FLST"
                       ]
                     }
                   ],
@@ -74481,30 +75068,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "form_list",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "form_list_form_list",
-                      "kind": "formid",
-                      "display_label": "Form List Form List",
-                      "formlink_target": "FLST",
-                      "formlink_targets": [
-                        "FLST"
-                      ]
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        163
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "furniture",
                   "codec": "formid",
                   "fields": [
@@ -74523,7 +75086,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        74
+                        163
                       ]
                     }
                   ]
@@ -74547,7 +75110,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        451
+                        74
                       ]
                     }
                   ]
@@ -74563,6 +75126,41 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "formlink_target": "IDLE",
                       "formlink_targets": [
                         "IDLE"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        451
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "inventory_object",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "inventory_object_inventory_object",
+                      "kind": "formid",
+                      "display_label": "Inventory Object Inventory Object",
+                      "formlink_targets": [
+                        "ALCH",
+                        "AMMO",
+                        "ARMO",
+                        "BOOK",
+                        "CCRD",
+                        "CHIP",
+                        "CMNY",
+                        "FLST",
+                        "IMOD",
+                        "KEYM",
+                        "MISC",
+                        "NOTE",
+                        "WEAP"
                       ]
                     }
                   ],
@@ -74637,42 +75235,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "inventory_object",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "inventory_object_inventory_object",
-                      "kind": "formid",
-                      "display_label": "Inventory Object Inventory Object",
-                      "formlink_targets": [
-                        "ALCH",
-                        "AMMO",
-                        "ARMO",
-                        "BOOK",
-                        "CCRD",
-                        "CHIP",
-                        "CMNY",
-                        "FLST",
-                        "IMOD",
-                        "KEYM",
-                        "MISC",
-                        "NOTE",
-                        "WEAP"
-                      ]
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        382,
-                        6321
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "note",
                   "codec": "formid",
                   "fields": [
@@ -74691,7 +75253,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        278
+                        382,
+                        6321
                       ]
                     }
                   ]
@@ -74716,7 +75279,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        161
+                        278
                       ]
                     }
                   ]
@@ -74740,9 +75303,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        449,
-                        1475,
-                        1476
+                        161
                       ]
                     }
                   ]
@@ -74758,6 +75319,32 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "formlink_target": "PERK",
                       "formlink_targets": [
                         "PERK"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        449,
+                        1475,
+                        1476
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "quest",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "quest_quest",
+                      "kind": "formid",
+                      "display_label": "Quest Quest",
+                      "formlink_target": "QUST",
+                      "formlink_targets": [
+                        "QUST"
                       ]
                     }
                   ],
@@ -74782,16 +75369,16 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "quest",
+                  "id": "race",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "quest_quest",
+                      "id": "race_race",
                       "kind": "formid",
-                      "display_label": "Quest Quest",
-                      "formlink_target": "QUST",
+                      "display_label": "Race Race",
+                      "formlink_target": "RACE",
                       "formlink_targets": [
-                        "QUST"
+                        "RACE"
                       ]
                     }
                   ],
@@ -74807,16 +75394,22 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "race",
+                  "id": "reference",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "race_race",
+                      "id": "reference_reference",
                       "kind": "formid",
-                      "display_label": "Race Race",
-                      "formlink_target": "RACE",
+                      "display_label": "Reference Reference",
                       "formlink_targets": [
-                        "RACE"
+                        "ACHR",
+                        "ACRE",
+                        "PBEA",
+                        "PGRE",
+                        "PLYR",
+                        "PMIS",
+                        "REFR",
+                        "TRGT"
                       ]
                     }
                   ],
@@ -74852,36 +75445,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "reference",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "reference_reference",
-                      "kind": "formid",
-                      "display_label": "Reference Reference",
-                      "formlink_targets": [
-                        "ACHR",
-                        "ACRE",
-                        "PBEA",
-                        "PGRE",
-                        "PLYR",
-                        "PMIS",
-                        "REFR",
-                        "TRGT"
-                      ]
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        612
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "region",
                   "codec": "formid",
                   "fields": [
@@ -74900,9 +75463,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        573,
-                        574,
-                        575
+                        612
                       ]
                     }
                   ]
@@ -74926,7 +75487,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        427
+                        573,
+                        574,
+                        575
                       ]
                     }
                   ]
@@ -74950,8 +75513,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        11421,
-                        11423
+                        427
                       ]
                     }
                   ]
@@ -74967,6 +75529,31 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "formlink_target": "WEAP",
                       "formlink_targets": [
                         "WEAP"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        11421,
+                        11423
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "weather",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "weather_weather",
+                      "kind": "formid",
+                      "display_label": "Weather Weather",
+                      "formlink_target": "WTHR",
+                      "formlink_targets": [
+                        "WTHR"
                       ]
                     }
                   ],
@@ -75453,8 +76040,30 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "unnamed",
-                  "codec": "uint32",
+                  "id": "none",
+                  "codec": "struct:B,B,B,B",
+                  "fields": [
+                    {
+                      "id": "none_byte_1",
+                      "kind": "uint8",
+                      "display_label": "None Byte 1"
+                    },
+                    {
+                      "id": "none_byte_2",
+                      "kind": "uint8",
+                      "display_label": "None Byte 2"
+                    },
+                    {
+                      "id": "none_byte_3",
+                      "kind": "uint8",
+                      "display_label": "None Byte 3"
+                    },
+                    {
+                      "id": "none_byte_4",
+                      "kind": "uint8",
+                      "display_label": "None Byte 4"
+                    }
+                  ],
                   "conditions": [
                     {
                       "field": "function",
@@ -75880,13 +76489,13 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "float",
-                  "codec": "float32",
+                  "id": "integer",
+                  "codec": "int32",
                   "fields": [
                     {
-                      "id": "float_float",
-                      "kind": "float32",
-                      "display_label": "Float Float"
+                      "id": "integer_integer",
+                      "kind": "int32",
+                      "display_label": "Integer Integer"
                     }
                   ],
                   "conditions": [
@@ -75916,27 +76525,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "integer",
-                  "codec": "int32",
-                  "fields": [
-                    {
-                      "id": "integer_integer",
-                      "kind": "int32",
-                      "display_label": "Integer Integer"
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        420,
-                        421
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "quest_objective",
                   "codec": "int32",
                   "fields": [
@@ -75951,7 +76539,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        59
+                        420,
+                        421
                       ]
                     }
                   ]
@@ -75971,8 +76560,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        53,
-                        79
+                        59
                       ]
                     }
                   ]
@@ -75992,20 +76580,41 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
+                        53,
+                        79
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "vats_value_param",
+                  "codec": "struct:I",
+                  "fields": [
+                    {
+                      "id": "vats_value_param_vats_value_param",
+                      "kind": "uint32",
+                      "display_label": "VATS Value Param VATS Value Param"
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
                         408
                       ]
                     }
                   ]
                 },
                 {
-                  "id": "creature_type",
+                  "id": "crime_type",
                   "codec": "uint32",
                   "fields": [
                     {
-                      "id": "creature_type_creature_type",
+                      "id": "crime_type_crime_type",
                       "kind": "uint32",
-                      "display_label": "Creature Type Creature Type",
-                      "enum_ref": "creature_type_enum"
+                      "display_label": "Crime Type Crime Type",
+                      "enum_ref": "crime_type_enum"
                     }
                   ],
                   "conditions": [
@@ -76019,14 +76628,14 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "equip_type",
+                  "id": "form_type",
                   "codec": "uint32",
                   "fields": [
                     {
-                      "id": "equip_type_equip_type",
+                      "id": "form_type_form_type",
                       "kind": "uint32",
-                      "display_label": "Equip Type Equip Type",
-                      "enum_ref": "equip_type_enum"
+                      "display_label": "Form Type Form Type",
+                      "enum_ref": "form_type_enum"
                     }
                   ],
                   "conditions": [
@@ -76037,38 +76646,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                         1089,
                         1297
                       ]
-                    }
-                  ]
-                },
-                {
-                  "id": "form",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "form_form",
-                      "kind": "formid",
-                      "display_label": "Form Form"
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        60,
-                        1475,
-                        1476
-                      ]
-                    },
-                    {
-                      "field": "type",
-                      "operator": "bit_unset",
-                      "value": 2
-                    },
-                    {
-                      "field": "type",
-                      "operator": "bit_unset",
-                      "value": 8
                     }
                   ]
                 },
@@ -76093,6 +76670,32 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
+                        60,
+                        1475,
+                        1476
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "actor_base",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "actor_base_actor_base",
+                      "kind": "formid",
+                      "display_label": "Actor Base Actor Base",
+                      "formlink_targets": [
+                        "CREA",
+                        "NPC_"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
                         1291,
                         11488
                       ]
@@ -76100,16 +76703,16 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "encounter_zone",
+                  "id": "faction",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "encounter_zone_encounter_zone",
+                      "id": "faction_faction",
                       "kind": "formid",
-                      "display_label": "Encounter Zone Encounter Zone",
-                      "formlink_target": "ECZN",
+                      "display_label": "Faction Faction",
+                      "formlink_target": "FACT",
                       "formlink_targets": [
-                        "ECZN"
+                        "FACT"
                       ]
                     }
                   ],
@@ -76124,16 +76727,27 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "idle",
+                  "id": "inventory_object",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "idle_idle",
+                      "id": "inventory_object_inventory_object",
                       "kind": "formid",
-                      "display_label": "Idle Idle",
-                      "formlink_target": "IDLE",
+                      "display_label": "Inventory Object Inventory Object",
                       "formlink_targets": [
-                        "IDLE"
+                        "ALCH",
+                        "AMMO",
+                        "ARMO",
+                        "BOOK",
+                        "CCRD",
+                        "CHIP",
+                        "CMNY",
+                        "FLST",
+                        "IMOD",
+                        "KEYM",
+                        "MISC",
+                        "NOTE",
+                        "WEAP"
                       ]
                     }
                   ],
@@ -76149,17 +76763,18 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "note",
+                  "id": "owner",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "note_note",
+                      "id": "owner_owner",
                       "kind": "formid",
-                      "display_label": "Note Note",
-                      "formlink_target": "NOTE",
+                      "display_label": "Owner Owner",
                       "formlink_targets": [
-                        "NOTE"
-                      ]
+                        "FACT",
+                        "NPC_"
+                      ],
+                      "null_allowed": true
                     }
                   ],
                   "conditions": [
@@ -76173,16 +76788,22 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "race",
+                  "id": "reference",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "race_race",
+                      "id": "reference_reference",
                       "kind": "formid",
-                      "display_label": "Race Race",
-                      "formlink_target": "RACE",
+                      "display_label": "Reference Reference",
                       "formlink_targets": [
-                        "RACE"
+                        "ACHR",
+                        "ACRE",
+                        "PBEA",
+                        "PGRE",
+                        "PLYR",
+                        "PMIS",
+                        "REFR",
+                        "TRGT"
                       ]
                     }
                   ],
@@ -76193,30 +76814,20 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "values": [
                         230
                       ]
-                    },
-                    {
-                      "field": "type",
-                      "operator": "bit_unset",
-                      "value": 2
-                    },
-                    {
-                      "field": "type",
-                      "operator": "bit_unset",
-                      "value": 8
                     }
                   ]
                 },
                 {
-                  "id": "voice_type",
+                  "id": "weapon",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "voice_type_voice_type",
+                      "id": "weapon_weapon",
                       "kind": "formid",
-                      "display_label": "Voice Type Voice Type",
-                      "formlink_target": "VTYP",
+                      "display_label": "Weapon Weapon",
+                      "formlink_target": "WEAP",
                       "formlink_targets": [
-                        "VTYP"
+                        "WEAP"
                       ]
                     }
                   ],
@@ -77933,6 +78544,42 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
+                        310,
+                        1292
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "none",
+                  "codec": "struct:B,B,B,B",
+                  "fields": [
+                    {
+                      "id": "none_byte_1",
+                      "kind": "uint8",
+                      "display_label": "None Byte 1"
+                    },
+                    {
+                      "id": "none_byte_2",
+                      "kind": "uint8",
+                      "display_label": "None Byte 2"
+                    },
+                    {
+                      "id": "none_byte_3",
+                      "kind": "uint8",
+                      "display_label": "None Byte 3"
+                    },
+                    {
+                      "id": "none_byte_4",
+                      "kind": "uint8",
+                      "display_label": "None Byte 4"
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
                         5,
                         12,
                         18,
@@ -78027,7 +78674,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                         304,
                         306,
                         309,
-                        310,
                         313,
                         314,
                         315,
@@ -78083,7 +78729,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                         1102,
                         1105,
                         1266,
-                        1292,
                         1440,
                         1441,
                         1541,
@@ -78154,28 +78799,13 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "none",
-                  "codec": "struct:B,B,B,B",
+                  "id": "float",
+                  "codec": "float32",
                   "fields": [
                     {
-                      "id": "none_byte_1",
-                      "kind": "uint8",
-                      "display_label": "None Byte 1"
-                    },
-                    {
-                      "id": "none_byte_2",
-                      "kind": "uint8",
-                      "display_label": "None Byte 2"
-                    },
-                    {
-                      "id": "none_byte_3",
-                      "kind": "uint8",
-                      "display_label": "None Byte 3"
-                    },
-                    {
-                      "id": "none_byte_4",
-                      "kind": "uint8",
-                      "display_label": "None Byte 4"
+                      "id": "float_float",
+                      "kind": "float32",
+                      "display_label": "Float Float"
                     }
                   ],
                   "conditions": [
@@ -78194,13 +78824,13 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "float",
-                  "codec": "float32",
+                  "id": "integer",
+                  "codec": "int32",
                   "fields": [
                     {
-                      "id": "float_float",
-                      "kind": "float32",
-                      "display_label": "Float Float"
+                      "id": "integer_integer",
+                      "kind": "int32",
+                      "display_label": "Integer Integer"
                     }
                   ],
                   "conditions": [
@@ -78239,31 +78869,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "vats_value_param",
-                  "codec": "struct:I",
-                  "fields": [
-                    {
-                      "id": "vats_value_param_vats_value_param",
-                      "kind": "uint32",
-                      "display_label": "VATS Value Param VATS Value Param"
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        14,
-                        109,
-                        277,
-                        462,
-                        495,
-                        11509
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "actor_value",
                   "codec": "int32",
                   "fields": [
@@ -78279,7 +78884,12 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        474
+                        14,
+                        109,
+                        277,
+                        462,
+                        495,
+                        11509
                       ]
                     }
                   ]
@@ -78300,10 +78910,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        6,
-                        8,
-                        10,
-                        11
+                        474
                       ]
                     }
                   ]
@@ -78324,7 +78931,10 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        398
+                        6,
+                        8,
+                        10,
+                        11
                       ]
                     }
                   ]
@@ -78345,20 +78955,20 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        438
+                        398
                       ]
                     }
                   ]
                 },
                 {
-                  "id": "crime_type",
+                  "id": "creature_type",
                   "codec": "uint32",
                   "fields": [
                     {
-                      "id": "crime_type_crime_type",
+                      "id": "creature_type_creature_type",
                       "kind": "uint32",
-                      "display_label": "Crime Type Crime Type",
-                      "enum_ref": "crime_type_enum"
+                      "display_label": "Creature Type Creature Type",
+                      "enum_ref": "creature_type_enum"
                     }
                   ],
                   "conditions": [
@@ -78366,7 +78976,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        531
+                        438
                       ]
                     }
                   ]
@@ -78387,7 +78997,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        480
+                        531
                       ]
                     }
                   ]
@@ -78408,12 +79018,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        247,
-                        433,
-                        1029,
-                        1034,
-                        1286,
-                        1288
+                        480
                       ]
                     }
                   ]
@@ -78434,7 +79039,12 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        36
+                        247,
+                        433,
+                        1029,
+                        1034,
+                        1286,
+                        1288
                       ]
                     }
                   ]
@@ -78454,7 +79064,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        312
+                        36
                       ]
                     }
                   ]
@@ -78475,7 +79085,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        368
+                        312
                       ]
                     }
                   ]
@@ -78496,8 +79106,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        70,
-                        131
+                        368
                       ]
                     }
                   ]
@@ -78518,7 +79127,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        408
+                        70,
+                        131
                       ]
                     }
                   ]
@@ -78539,8 +79149,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        4708,
-                        6167
+                        408
                       ]
                     }
                   ]
@@ -78553,6 +79162,33 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "id": "form_form",
                       "kind": "formid",
                       "display_label": "Form Form"
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        4708,
+                        6167
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "actor",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "actor_actor",
+                      "kind": "formid",
+                      "display_label": "Actor Actor",
+                      "formlink_targets": [
+                        "ACHR",
+                        "ACRE",
+                        "PLYR",
+                        "TRGT"
+                      ]
                     }
                   ],
                   "conditions": [
@@ -78583,35 +79219,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "actor",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "actor_actor",
-                      "kind": "formid",
-                      "display_label": "Actor Actor",
-                      "formlink_targets": [
-                        "ACHR",
-                        "ACRE",
-                        "PLYR",
-                        "TRGT"
-                      ]
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        84,
-                        1278,
-                        11429,
-                        11431
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "actor_base",
                   "codec": "formid",
                   "fields": [
@@ -78630,7 +79237,10 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        9753
+                        84,
+                        1278,
+                        11429,
+                        11431
                       ]
                     }
                   ]
@@ -78654,8 +79264,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        214,
-                        4897
+                        9753
                       ]
                     }
                   ]
@@ -78679,8 +79288,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        72,
-                        246
+                        214,
+                        4897
                       ]
                     }
                   ]
@@ -78700,7 +79309,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        610
+                        72,
+                        246
                       ]
                     }
                   ]
@@ -78724,9 +79334,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        67,
-                        230,
-                        280
+                        610
                       ]
                     }
                   ]
@@ -78750,9 +79358,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        607,
-                        614,
-                        11425
+                        67,
+                        230,
+                        280
                       ]
                     }
                   ]
@@ -78776,9 +79384,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        68,
-                        129,
-                        228
+                        607,
+                        614,
+                        11425
                       ]
                     }
                   ]
@@ -78802,9 +79410,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        223,
-                        555,
-                        6124
+                        68,
+                        129,
+                        228
                       ]
                     }
                   ]
@@ -78830,7 +79438,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        446
+                        223,
+                        555,
+                        6124
                       ]
                     }
                   ]
@@ -78854,15 +79464,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        60,
-                        71,
-                        73,
-                        132,
-                        193,
-                        195,
-                        197,
-                        199,
-                        411
+                        446
                       ]
                     }
                   ]
@@ -78878,6 +79480,38 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "formlink_target": "FACT",
                       "formlink_targets": [
                         "FACT"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        60,
+                        71,
+                        73,
+                        132,
+                        193,
+                        195,
+                        197,
+                        199,
+                        411
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "form_list",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "form_list_form_list",
+                      "kind": "formid",
+                      "display_label": "Form List Form List",
+                      "formlink_target": "FLST",
+                      "formlink_targets": [
+                        "FLST"
                       ]
                     }
                   ],
@@ -78902,30 +79536,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "form_list",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "form_list_form_list",
-                      "kind": "formid",
-                      "display_label": "Form List Form List",
-                      "formlink_target": "FLST",
-                      "formlink_targets": [
-                        "FLST"
-                      ]
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        163
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "furniture",
                   "codec": "formid",
                   "fields": [
@@ -78944,7 +79554,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        74
+                        163
                       ]
                     }
                   ]
@@ -78968,7 +79578,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        451
+                        74
                       ]
                     }
                   ]
@@ -78984,6 +79594,41 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "formlink_target": "IDLE",
                       "formlink_targets": [
                         "IDLE"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        451
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "inventory_object",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "inventory_object_inventory_object",
+                      "kind": "formid",
+                      "display_label": "Inventory Object Inventory Object",
+                      "formlink_targets": [
+                        "ALCH",
+                        "AMMO",
+                        "ARMO",
+                        "BOOK",
+                        "CCRD",
+                        "CHIP",
+                        "CMNY",
+                        "FLST",
+                        "IMOD",
+                        "KEYM",
+                        "MISC",
+                        "NOTE",
+                        "WEAP"
                       ]
                     }
                   ],
@@ -79058,42 +79703,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "inventory_object",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "inventory_object_inventory_object",
-                      "kind": "formid",
-                      "display_label": "Inventory Object Inventory Object",
-                      "formlink_targets": [
-                        "ALCH",
-                        "AMMO",
-                        "ARMO",
-                        "BOOK",
-                        "CCRD",
-                        "CHIP",
-                        "CMNY",
-                        "FLST",
-                        "IMOD",
-                        "KEYM",
-                        "MISC",
-                        "NOTE",
-                        "WEAP"
-                      ]
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        382,
-                        6321
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "note",
                   "codec": "formid",
                   "fields": [
@@ -79112,7 +79721,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        278
+                        382,
+                        6321
                       ]
                     }
                   ]
@@ -79137,7 +79747,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        161
+                        278
                       ]
                     }
                   ]
@@ -79161,9 +79771,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        449,
-                        1475,
-                        1476
+                        161
                       ]
                     }
                   ]
@@ -79179,6 +79787,32 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "formlink_target": "PERK",
                       "formlink_targets": [
                         "PERK"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        449,
+                        1475,
+                        1476
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "quest",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "quest_quest",
+                      "kind": "formid",
+                      "display_label": "Quest Quest",
+                      "formlink_target": "QUST",
+                      "formlink_targets": [
+                        "QUST"
                       ]
                     }
                   ],
@@ -79203,16 +79837,16 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "quest",
+                  "id": "race",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "quest_quest",
+                      "id": "race_race",
                       "kind": "formid",
-                      "display_label": "Quest Quest",
-                      "formlink_target": "QUST",
+                      "display_label": "Race Race",
+                      "formlink_target": "RACE",
                       "formlink_targets": [
-                        "QUST"
+                        "RACE"
                       ]
                     }
                   ],
@@ -79228,16 +79862,22 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "race",
+                  "id": "reference",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "race_race",
+                      "id": "reference_reference",
                       "kind": "formid",
-                      "display_label": "Race Race",
-                      "formlink_target": "RACE",
+                      "display_label": "Reference Reference",
                       "formlink_targets": [
-                        "RACE"
+                        "ACHR",
+                        "ACRE",
+                        "PBEA",
+                        "PGRE",
+                        "PLYR",
+                        "PMIS",
+                        "REFR",
+                        "TRGT"
                       ]
                     }
                   ],
@@ -79273,36 +79913,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "reference",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "reference_reference",
-                      "kind": "formid",
-                      "display_label": "Reference Reference",
-                      "formlink_targets": [
-                        "ACHR",
-                        "ACRE",
-                        "PBEA",
-                        "PGRE",
-                        "PLYR",
-                        "PMIS",
-                        "REFR",
-                        "TRGT"
-                      ]
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        612
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "region",
                   "codec": "formid",
                   "fields": [
@@ -79321,9 +79931,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        573,
-                        574,
-                        575
+                        612
                       ]
                     }
                   ]
@@ -79347,7 +79955,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        427
+                        573,
+                        574,
+                        575
                       ]
                     }
                   ]
@@ -79371,8 +79981,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        11421,
-                        11423
+                        427
                       ]
                     }
                   ]
@@ -79388,6 +79997,31 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "formlink_target": "WEAP",
                       "formlink_targets": [
                         "WEAP"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        11421,
+                        11423
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "weather",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "weather_weather",
+                      "kind": "formid",
+                      "display_label": "Weather Weather",
+                      "formlink_target": "WTHR",
+                      "formlink_targets": [
+                        "WTHR"
                       ]
                     }
                   ],
@@ -79874,8 +80508,30 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "unnamed",
-                  "codec": "uint32",
+                  "id": "none",
+                  "codec": "struct:B,B,B,B",
+                  "fields": [
+                    {
+                      "id": "none_byte_1",
+                      "kind": "uint8",
+                      "display_label": "None Byte 1"
+                    },
+                    {
+                      "id": "none_byte_2",
+                      "kind": "uint8",
+                      "display_label": "None Byte 2"
+                    },
+                    {
+                      "id": "none_byte_3",
+                      "kind": "uint8",
+                      "display_label": "None Byte 3"
+                    },
+                    {
+                      "id": "none_byte_4",
+                      "kind": "uint8",
+                      "display_label": "None Byte 4"
+                    }
+                  ],
                   "conditions": [
                     {
                       "field": "function",
@@ -80301,13 +80957,13 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "float",
-                  "codec": "float32",
+                  "id": "integer",
+                  "codec": "int32",
                   "fields": [
                     {
-                      "id": "float_float",
-                      "kind": "float32",
-                      "display_label": "Float Float"
+                      "id": "integer_integer",
+                      "kind": "int32",
+                      "display_label": "Integer Integer"
                     }
                   ],
                   "conditions": [
@@ -80337,27 +80993,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "integer",
-                  "codec": "int32",
-                  "fields": [
-                    {
-                      "id": "integer_integer",
-                      "kind": "int32",
-                      "display_label": "Integer Integer"
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        420,
-                        421
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "quest_objective",
                   "codec": "int32",
                   "fields": [
@@ -80372,7 +81007,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        59
+                        420,
+                        421
                       ]
                     }
                   ]
@@ -80392,8 +81028,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        53,
-                        79
+                        59
                       ]
                     }
                   ]
@@ -80413,20 +81048,41 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
+                        53,
+                        79
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "vats_value_param",
+                  "codec": "struct:I",
+                  "fields": [
+                    {
+                      "id": "vats_value_param_vats_value_param",
+                      "kind": "uint32",
+                      "display_label": "VATS Value Param VATS Value Param"
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
                         408
                       ]
                     }
                   ]
                 },
                 {
-                  "id": "creature_type",
+                  "id": "crime_type",
                   "codec": "uint32",
                   "fields": [
                     {
-                      "id": "creature_type_creature_type",
+                      "id": "crime_type_crime_type",
                       "kind": "uint32",
-                      "display_label": "Creature Type Creature Type",
-                      "enum_ref": "creature_type_enum"
+                      "display_label": "Crime Type Crime Type",
+                      "enum_ref": "crime_type_enum"
                     }
                   ],
                   "conditions": [
@@ -80440,14 +81096,14 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "equip_type",
+                  "id": "form_type",
                   "codec": "uint32",
                   "fields": [
                     {
-                      "id": "equip_type_equip_type",
+                      "id": "form_type_form_type",
                       "kind": "uint32",
-                      "display_label": "Equip Type Equip Type",
-                      "enum_ref": "equip_type_enum"
+                      "display_label": "Form Type Form Type",
+                      "enum_ref": "form_type_enum"
                     }
                   ],
                   "conditions": [
@@ -80458,38 +81114,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                         1089,
                         1297
                       ]
-                    }
-                  ]
-                },
-                {
-                  "id": "form",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "form_form",
-                      "kind": "formid",
-                      "display_label": "Form Form"
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        60,
-                        1475,
-                        1476
-                      ]
-                    },
-                    {
-                      "field": "type",
-                      "operator": "bit_unset",
-                      "value": 2
-                    },
-                    {
-                      "field": "type",
-                      "operator": "bit_unset",
-                      "value": 8
                     }
                   ]
                 },
@@ -80514,6 +81138,32 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
+                        60,
+                        1475,
+                        1476
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "actor_base",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "actor_base_actor_base",
+                      "kind": "formid",
+                      "display_label": "Actor Base Actor Base",
+                      "formlink_targets": [
+                        "CREA",
+                        "NPC_"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
                         1291,
                         11488
                       ]
@@ -80521,16 +81171,16 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "encounter_zone",
+                  "id": "faction",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "encounter_zone_encounter_zone",
+                      "id": "faction_faction",
                       "kind": "formid",
-                      "display_label": "Encounter Zone Encounter Zone",
-                      "formlink_target": "ECZN",
+                      "display_label": "Faction Faction",
+                      "formlink_target": "FACT",
                       "formlink_targets": [
-                        "ECZN"
+                        "FACT"
                       ]
                     }
                   ],
@@ -80545,16 +81195,27 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "idle",
+                  "id": "inventory_object",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "idle_idle",
+                      "id": "inventory_object_inventory_object",
                       "kind": "formid",
-                      "display_label": "Idle Idle",
-                      "formlink_target": "IDLE",
+                      "display_label": "Inventory Object Inventory Object",
                       "formlink_targets": [
-                        "IDLE"
+                        "ALCH",
+                        "AMMO",
+                        "ARMO",
+                        "BOOK",
+                        "CCRD",
+                        "CHIP",
+                        "CMNY",
+                        "FLST",
+                        "IMOD",
+                        "KEYM",
+                        "MISC",
+                        "NOTE",
+                        "WEAP"
                       ]
                     }
                   ],
@@ -80570,17 +81231,18 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "note",
+                  "id": "owner",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "note_note",
+                      "id": "owner_owner",
                       "kind": "formid",
-                      "display_label": "Note Note",
-                      "formlink_target": "NOTE",
+                      "display_label": "Owner Owner",
                       "formlink_targets": [
-                        "NOTE"
-                      ]
+                        "FACT",
+                        "NPC_"
+                      ],
+                      "null_allowed": true
                     }
                   ],
                   "conditions": [
@@ -80594,16 +81256,22 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "race",
+                  "id": "reference",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "race_race",
+                      "id": "reference_reference",
                       "kind": "formid",
-                      "display_label": "Race Race",
-                      "formlink_target": "RACE",
+                      "display_label": "Reference Reference",
                       "formlink_targets": [
-                        "RACE"
+                        "ACHR",
+                        "ACRE",
+                        "PBEA",
+                        "PGRE",
+                        "PLYR",
+                        "PMIS",
+                        "REFR",
+                        "TRGT"
                       ]
                     }
                   ],
@@ -80614,30 +81282,20 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "values": [
                         230
                       ]
-                    },
-                    {
-                      "field": "type",
-                      "operator": "bit_unset",
-                      "value": 2
-                    },
-                    {
-                      "field": "type",
-                      "operator": "bit_unset",
-                      "value": 8
                     }
                   ]
                 },
                 {
-                  "id": "voice_type",
+                  "id": "weapon",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "voice_type_voice_type",
+                      "id": "weapon_weapon",
                       "kind": "formid",
-                      "display_label": "Voice Type Voice Type",
-                      "formlink_target": "VTYP",
+                      "display_label": "Weapon Weapon",
+                      "formlink_target": "WEAP",
                       "formlink_targets": [
-                        "VTYP"
+                        "WEAP"
                       ]
                     }
                   ],
@@ -85303,6 +85961,42 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
+                        310,
+                        1292
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "none",
+                  "codec": "struct:B,B,B,B",
+                  "fields": [
+                    {
+                      "id": "none_byte_1",
+                      "kind": "uint8",
+                      "display_label": "None Byte 1"
+                    },
+                    {
+                      "id": "none_byte_2",
+                      "kind": "uint8",
+                      "display_label": "None Byte 2"
+                    },
+                    {
+                      "id": "none_byte_3",
+                      "kind": "uint8",
+                      "display_label": "None Byte 3"
+                    },
+                    {
+                      "id": "none_byte_4",
+                      "kind": "uint8",
+                      "display_label": "None Byte 4"
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
                         5,
                         12,
                         18,
@@ -85397,7 +86091,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                         304,
                         306,
                         309,
-                        310,
                         313,
                         314,
                         315,
@@ -85453,7 +86146,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                         1102,
                         1105,
                         1266,
-                        1292,
                         1440,
                         1441,
                         1541,
@@ -85524,28 +86216,13 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "none",
-                  "codec": "struct:B,B,B,B",
+                  "id": "float",
+                  "codec": "float32",
                   "fields": [
                     {
-                      "id": "none_byte_1",
-                      "kind": "uint8",
-                      "display_label": "None Byte 1"
-                    },
-                    {
-                      "id": "none_byte_2",
-                      "kind": "uint8",
-                      "display_label": "None Byte 2"
-                    },
-                    {
-                      "id": "none_byte_3",
-                      "kind": "uint8",
-                      "display_label": "None Byte 3"
-                    },
-                    {
-                      "id": "none_byte_4",
-                      "kind": "uint8",
-                      "display_label": "None Byte 4"
+                      "id": "float_float",
+                      "kind": "float32",
+                      "display_label": "Float Float"
                     }
                   ],
                   "conditions": [
@@ -85564,13 +86241,13 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "float",
-                  "codec": "float32",
+                  "id": "integer",
+                  "codec": "int32",
                   "fields": [
                     {
-                      "id": "float_float",
-                      "kind": "float32",
-                      "display_label": "Float Float"
+                      "id": "integer_integer",
+                      "kind": "int32",
+                      "display_label": "Integer Integer"
                     }
                   ],
                   "conditions": [
@@ -85609,31 +86286,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "vats_value_param",
-                  "codec": "struct:I",
-                  "fields": [
-                    {
-                      "id": "vats_value_param_vats_value_param",
-                      "kind": "uint32",
-                      "display_label": "VATS Value Param VATS Value Param"
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        14,
-                        109,
-                        277,
-                        462,
-                        495,
-                        11509
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "actor_value",
                   "codec": "int32",
                   "fields": [
@@ -85649,7 +86301,12 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        474
+                        14,
+                        109,
+                        277,
+                        462,
+                        495,
+                        11509
                       ]
                     }
                   ]
@@ -85670,10 +86327,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        6,
-                        8,
-                        10,
-                        11
+                        474
                       ]
                     }
                   ]
@@ -85694,7 +86348,10 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        398
+                        6,
+                        8,
+                        10,
+                        11
                       ]
                     }
                   ]
@@ -85715,20 +86372,20 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        438
+                        398
                       ]
                     }
                   ]
                 },
                 {
-                  "id": "crime_type",
+                  "id": "creature_type",
                   "codec": "uint32",
                   "fields": [
                     {
-                      "id": "crime_type_crime_type",
+                      "id": "creature_type_creature_type",
                       "kind": "uint32",
-                      "display_label": "Crime Type Crime Type",
-                      "enum_ref": "crime_type_enum"
+                      "display_label": "Creature Type Creature Type",
+                      "enum_ref": "creature_type_enum"
                     }
                   ],
                   "conditions": [
@@ -85736,7 +86393,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        531
+                        438
                       ]
                     }
                   ]
@@ -85757,7 +86414,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        480
+                        531
                       ]
                     }
                   ]
@@ -85778,12 +86435,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        247,
-                        433,
-                        1029,
-                        1034,
-                        1286,
-                        1288
+                        480
                       ]
                     }
                   ]
@@ -85804,7 +86456,12 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        36
+                        247,
+                        433,
+                        1029,
+                        1034,
+                        1286,
+                        1288
                       ]
                     }
                   ]
@@ -85824,7 +86481,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        312
+                        36
                       ]
                     }
                   ]
@@ -85845,7 +86502,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        368
+                        312
                       ]
                     }
                   ]
@@ -85866,8 +86523,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        70,
-                        131
+                        368
                       ]
                     }
                   ]
@@ -85888,7 +86544,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        408
+                        70,
+                        131
                       ]
                     }
                   ]
@@ -85909,8 +86566,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        4708,
-                        6167
+                        408
                       ]
                     }
                   ]
@@ -85923,6 +86579,33 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "id": "form_form",
                       "kind": "formid",
                       "display_label": "Form Form"
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        4708,
+                        6167
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "actor",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "actor_actor",
+                      "kind": "formid",
+                      "display_label": "Actor Actor",
+                      "formlink_targets": [
+                        "ACHR",
+                        "ACRE",
+                        "PLYR",
+                        "TRGT"
+                      ]
                     }
                   ],
                   "conditions": [
@@ -85953,35 +86636,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "actor",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "actor_actor",
-                      "kind": "formid",
-                      "display_label": "Actor Actor",
-                      "formlink_targets": [
-                        "ACHR",
-                        "ACRE",
-                        "PLYR",
-                        "TRGT"
-                      ]
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        84,
-                        1278,
-                        11429,
-                        11431
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "actor_base",
                   "codec": "formid",
                   "fields": [
@@ -86000,7 +86654,10 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        9753
+                        84,
+                        1278,
+                        11429,
+                        11431
                       ]
                     }
                   ]
@@ -86024,8 +86681,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        214,
-                        4897
+                        9753
                       ]
                     }
                   ]
@@ -86049,8 +86705,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        72,
-                        246
+                        214,
+                        4897
                       ]
                     }
                   ]
@@ -86070,7 +86726,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        610
+                        72,
+                        246
                       ]
                     }
                   ]
@@ -86094,9 +86751,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        67,
-                        230,
-                        280
+                        610
                       ]
                     }
                   ]
@@ -86120,9 +86775,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        607,
-                        614,
-                        11425
+                        67,
+                        230,
+                        280
                       ]
                     }
                   ]
@@ -86146,9 +86801,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        68,
-                        129,
-                        228
+                        607,
+                        614,
+                        11425
                       ]
                     }
                   ]
@@ -86172,9 +86827,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        223,
-                        555,
-                        6124
+                        68,
+                        129,
+                        228
                       ]
                     }
                   ]
@@ -86200,7 +86855,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        446
+                        223,
+                        555,
+                        6124
                       ]
                     }
                   ]
@@ -86224,15 +86881,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        60,
-                        71,
-                        73,
-                        132,
-                        193,
-                        195,
-                        197,
-                        199,
-                        411
+                        446
                       ]
                     }
                   ]
@@ -86248,6 +86897,38 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "formlink_target": "FACT",
                       "formlink_targets": [
                         "FACT"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        60,
+                        71,
+                        73,
+                        132,
+                        193,
+                        195,
+                        197,
+                        199,
+                        411
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "form_list",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "form_list_form_list",
+                      "kind": "formid",
+                      "display_label": "Form List Form List",
+                      "formlink_target": "FLST",
+                      "formlink_targets": [
+                        "FLST"
                       ]
                     }
                   ],
@@ -86272,30 +86953,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "form_list",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "form_list_form_list",
-                      "kind": "formid",
-                      "display_label": "Form List Form List",
-                      "formlink_target": "FLST",
-                      "formlink_targets": [
-                        "FLST"
-                      ]
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        163
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "furniture",
                   "codec": "formid",
                   "fields": [
@@ -86314,7 +86971,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        74
+                        163
                       ]
                     }
                   ]
@@ -86338,7 +86995,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        451
+                        74
                       ]
                     }
                   ]
@@ -86354,6 +87011,41 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "formlink_target": "IDLE",
                       "formlink_targets": [
                         "IDLE"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        451
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "inventory_object",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "inventory_object_inventory_object",
+                      "kind": "formid",
+                      "display_label": "Inventory Object Inventory Object",
+                      "formlink_targets": [
+                        "ALCH",
+                        "AMMO",
+                        "ARMO",
+                        "BOOK",
+                        "CCRD",
+                        "CHIP",
+                        "CMNY",
+                        "FLST",
+                        "IMOD",
+                        "KEYM",
+                        "MISC",
+                        "NOTE",
+                        "WEAP"
                       ]
                     }
                   ],
@@ -86428,42 +87120,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "inventory_object",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "inventory_object_inventory_object",
-                      "kind": "formid",
-                      "display_label": "Inventory Object Inventory Object",
-                      "formlink_targets": [
-                        "ALCH",
-                        "AMMO",
-                        "ARMO",
-                        "BOOK",
-                        "CCRD",
-                        "CHIP",
-                        "CMNY",
-                        "FLST",
-                        "IMOD",
-                        "KEYM",
-                        "MISC",
-                        "NOTE",
-                        "WEAP"
-                      ]
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        382,
-                        6321
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "note",
                   "codec": "formid",
                   "fields": [
@@ -86482,7 +87138,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        278
+                        382,
+                        6321
                       ]
                     }
                   ]
@@ -86507,7 +87164,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        161
+                        278
                       ]
                     }
                   ]
@@ -86531,9 +87188,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        449,
-                        1475,
-                        1476
+                        161
                       ]
                     }
                   ]
@@ -86549,6 +87204,32 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "formlink_target": "PERK",
                       "formlink_targets": [
                         "PERK"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        449,
+                        1475,
+                        1476
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "quest",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "quest_quest",
+                      "kind": "formid",
+                      "display_label": "Quest Quest",
+                      "formlink_target": "QUST",
+                      "formlink_targets": [
+                        "QUST"
                       ]
                     }
                   ],
@@ -86573,16 +87254,16 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "quest",
+                  "id": "race",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "quest_quest",
+                      "id": "race_race",
                       "kind": "formid",
-                      "display_label": "Quest Quest",
-                      "formlink_target": "QUST",
+                      "display_label": "Race Race",
+                      "formlink_target": "RACE",
                       "formlink_targets": [
-                        "QUST"
+                        "RACE"
                       ]
                     }
                   ],
@@ -86598,16 +87279,22 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "race",
+                  "id": "reference",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "race_race",
+                      "id": "reference_reference",
                       "kind": "formid",
-                      "display_label": "Race Race",
-                      "formlink_target": "RACE",
+                      "display_label": "Reference Reference",
                       "formlink_targets": [
-                        "RACE"
+                        "ACHR",
+                        "ACRE",
+                        "PBEA",
+                        "PGRE",
+                        "PLYR",
+                        "PMIS",
+                        "REFR",
+                        "TRGT"
                       ]
                     }
                   ],
@@ -86643,36 +87330,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "reference",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "reference_reference",
-                      "kind": "formid",
-                      "display_label": "Reference Reference",
-                      "formlink_targets": [
-                        "ACHR",
-                        "ACRE",
-                        "PBEA",
-                        "PGRE",
-                        "PLYR",
-                        "PMIS",
-                        "REFR",
-                        "TRGT"
-                      ]
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        612
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "region",
                   "codec": "formid",
                   "fields": [
@@ -86691,9 +87348,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        573,
-                        574,
-                        575
+                        612
                       ]
                     }
                   ]
@@ -86717,7 +87372,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        427
+                        573,
+                        574,
+                        575
                       ]
                     }
                   ]
@@ -86741,8 +87398,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        11421,
-                        11423
+                        427
                       ]
                     }
                   ]
@@ -86758,6 +87414,31 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "formlink_target": "WEAP",
                       "formlink_targets": [
                         "WEAP"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        11421,
+                        11423
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "weather",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "weather_weather",
+                      "kind": "formid",
+                      "display_label": "Weather Weather",
+                      "formlink_target": "WTHR",
+                      "formlink_targets": [
+                        "WTHR"
                       ]
                     }
                   ],
@@ -87244,8 +87925,30 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "unnamed",
-                  "codec": "uint32",
+                  "id": "none",
+                  "codec": "struct:B,B,B,B",
+                  "fields": [
+                    {
+                      "id": "none_byte_1",
+                      "kind": "uint8",
+                      "display_label": "None Byte 1"
+                    },
+                    {
+                      "id": "none_byte_2",
+                      "kind": "uint8",
+                      "display_label": "None Byte 2"
+                    },
+                    {
+                      "id": "none_byte_3",
+                      "kind": "uint8",
+                      "display_label": "None Byte 3"
+                    },
+                    {
+                      "id": "none_byte_4",
+                      "kind": "uint8",
+                      "display_label": "None Byte 4"
+                    }
+                  ],
                   "conditions": [
                     {
                       "field": "function",
@@ -87671,13 +88374,13 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "float",
-                  "codec": "float32",
+                  "id": "integer",
+                  "codec": "int32",
                   "fields": [
                     {
-                      "id": "float_float",
-                      "kind": "float32",
-                      "display_label": "Float Float"
+                      "id": "integer_integer",
+                      "kind": "int32",
+                      "display_label": "Integer Integer"
                     }
                   ],
                   "conditions": [
@@ -87707,27 +88410,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "integer",
-                  "codec": "int32",
-                  "fields": [
-                    {
-                      "id": "integer_integer",
-                      "kind": "int32",
-                      "display_label": "Integer Integer"
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        420,
-                        421
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "quest_objective",
                   "codec": "int32",
                   "fields": [
@@ -87742,7 +88424,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        59
+                        420,
+                        421
                       ]
                     }
                   ]
@@ -87762,8 +88445,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        53,
-                        79
+                        59
                       ]
                     }
                   ]
@@ -87783,20 +88465,41 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
+                        53,
+                        79
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "vats_value_param",
+                  "codec": "struct:I",
+                  "fields": [
+                    {
+                      "id": "vats_value_param_vats_value_param",
+                      "kind": "uint32",
+                      "display_label": "VATS Value Param VATS Value Param"
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
                         408
                       ]
                     }
                   ]
                 },
                 {
-                  "id": "creature_type",
+                  "id": "crime_type",
                   "codec": "uint32",
                   "fields": [
                     {
-                      "id": "creature_type_creature_type",
+                      "id": "crime_type_crime_type",
                       "kind": "uint32",
-                      "display_label": "Creature Type Creature Type",
-                      "enum_ref": "creature_type_enum"
+                      "display_label": "Crime Type Crime Type",
+                      "enum_ref": "crime_type_enum"
                     }
                   ],
                   "conditions": [
@@ -87810,14 +88513,14 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "equip_type",
+                  "id": "form_type",
                   "codec": "uint32",
                   "fields": [
                     {
-                      "id": "equip_type_equip_type",
+                      "id": "form_type_form_type",
                       "kind": "uint32",
-                      "display_label": "Equip Type Equip Type",
-                      "enum_ref": "equip_type_enum"
+                      "display_label": "Form Type Form Type",
+                      "enum_ref": "form_type_enum"
                     }
                   ],
                   "conditions": [
@@ -87828,38 +88531,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                         1089,
                         1297
                       ]
-                    }
-                  ]
-                },
-                {
-                  "id": "form",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "form_form",
-                      "kind": "formid",
-                      "display_label": "Form Form"
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        60,
-                        1475,
-                        1476
-                      ]
-                    },
-                    {
-                      "field": "type",
-                      "operator": "bit_unset",
-                      "value": 2
-                    },
-                    {
-                      "field": "type",
-                      "operator": "bit_unset",
-                      "value": 8
                     }
                   ]
                 },
@@ -87884,6 +88555,32 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
+                        60,
+                        1475,
+                        1476
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "actor_base",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "actor_base_actor_base",
+                      "kind": "formid",
+                      "display_label": "Actor Base Actor Base",
+                      "formlink_targets": [
+                        "CREA",
+                        "NPC_"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
                         1291,
                         11488
                       ]
@@ -87891,16 +88588,16 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "encounter_zone",
+                  "id": "faction",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "encounter_zone_encounter_zone",
+                      "id": "faction_faction",
                       "kind": "formid",
-                      "display_label": "Encounter Zone Encounter Zone",
-                      "formlink_target": "ECZN",
+                      "display_label": "Faction Faction",
+                      "formlink_target": "FACT",
                       "formlink_targets": [
-                        "ECZN"
+                        "FACT"
                       ]
                     }
                   ],
@@ -87915,16 +88612,27 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "idle",
+                  "id": "inventory_object",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "idle_idle",
+                      "id": "inventory_object_inventory_object",
                       "kind": "formid",
-                      "display_label": "Idle Idle",
-                      "formlink_target": "IDLE",
+                      "display_label": "Inventory Object Inventory Object",
                       "formlink_targets": [
-                        "IDLE"
+                        "ALCH",
+                        "AMMO",
+                        "ARMO",
+                        "BOOK",
+                        "CCRD",
+                        "CHIP",
+                        "CMNY",
+                        "FLST",
+                        "IMOD",
+                        "KEYM",
+                        "MISC",
+                        "NOTE",
+                        "WEAP"
                       ]
                     }
                   ],
@@ -87940,17 +88648,18 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "note",
+                  "id": "owner",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "note_note",
+                      "id": "owner_owner",
                       "kind": "formid",
-                      "display_label": "Note Note",
-                      "formlink_target": "NOTE",
+                      "display_label": "Owner Owner",
                       "formlink_targets": [
-                        "NOTE"
-                      ]
+                        "FACT",
+                        "NPC_"
+                      ],
+                      "null_allowed": true
                     }
                   ],
                   "conditions": [
@@ -87964,16 +88673,22 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "race",
+                  "id": "reference",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "race_race",
+                      "id": "reference_reference",
                       "kind": "formid",
-                      "display_label": "Race Race",
-                      "formlink_target": "RACE",
+                      "display_label": "Reference Reference",
                       "formlink_targets": [
-                        "RACE"
+                        "ACHR",
+                        "ACRE",
+                        "PBEA",
+                        "PGRE",
+                        "PLYR",
+                        "PMIS",
+                        "REFR",
+                        "TRGT"
                       ]
                     }
                   ],
@@ -87984,30 +88699,20 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "values": [
                         230
                       ]
-                    },
-                    {
-                      "field": "type",
-                      "operator": "bit_unset",
-                      "value": 2
-                    },
-                    {
-                      "field": "type",
-                      "operator": "bit_unset",
-                      "value": 8
                     }
                   ]
                 },
                 {
-                  "id": "voice_type",
+                  "id": "weapon",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "voice_type_voice_type",
+                      "id": "weapon_weapon",
                       "kind": "formid",
-                      "display_label": "Voice Type Voice Type",
-                      "formlink_target": "VTYP",
+                      "display_label": "Weapon Weapon",
+                      "formlink_target": "WEAP",
                       "formlink_targets": [
-                        "VTYP"
+                        "WEAP"
                       ]
                     }
                   ],
@@ -90042,6 +90747,42 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
+                        310,
+                        1292
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "none",
+                  "codec": "struct:B,B,B,B",
+                  "fields": [
+                    {
+                      "id": "none_byte_1",
+                      "kind": "uint8",
+                      "display_label": "None Byte 1"
+                    },
+                    {
+                      "id": "none_byte_2",
+                      "kind": "uint8",
+                      "display_label": "None Byte 2"
+                    },
+                    {
+                      "id": "none_byte_3",
+                      "kind": "uint8",
+                      "display_label": "None Byte 3"
+                    },
+                    {
+                      "id": "none_byte_4",
+                      "kind": "uint8",
+                      "display_label": "None Byte 4"
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
                         5,
                         12,
                         18,
@@ -90136,7 +90877,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                         304,
                         306,
                         309,
-                        310,
                         313,
                         314,
                         315,
@@ -90192,7 +90932,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                         1102,
                         1105,
                         1266,
-                        1292,
                         1440,
                         1441,
                         1541,
@@ -90263,28 +91002,13 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "none",
-                  "codec": "struct:B,B,B,B",
+                  "id": "float",
+                  "codec": "float32",
                   "fields": [
                     {
-                      "id": "none_byte_1",
-                      "kind": "uint8",
-                      "display_label": "None Byte 1"
-                    },
-                    {
-                      "id": "none_byte_2",
-                      "kind": "uint8",
-                      "display_label": "None Byte 2"
-                    },
-                    {
-                      "id": "none_byte_3",
-                      "kind": "uint8",
-                      "display_label": "None Byte 3"
-                    },
-                    {
-                      "id": "none_byte_4",
-                      "kind": "uint8",
-                      "display_label": "None Byte 4"
+                      "id": "float_float",
+                      "kind": "float32",
+                      "display_label": "Float Float"
                     }
                   ],
                   "conditions": [
@@ -90303,13 +91027,13 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "float",
-                  "codec": "float32",
+                  "id": "integer",
+                  "codec": "int32",
                   "fields": [
                     {
-                      "id": "float_float",
-                      "kind": "float32",
-                      "display_label": "Float Float"
+                      "id": "integer_integer",
+                      "kind": "int32",
+                      "display_label": "Integer Integer"
                     }
                   ],
                   "conditions": [
@@ -90348,31 +91072,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "vats_value_param",
-                  "codec": "struct:I",
-                  "fields": [
-                    {
-                      "id": "vats_value_param_vats_value_param",
-                      "kind": "uint32",
-                      "display_label": "VATS Value Param VATS Value Param"
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        14,
-                        109,
-                        277,
-                        462,
-                        495,
-                        11509
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "actor_value",
                   "codec": "int32",
                   "fields": [
@@ -90388,7 +91087,12 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        474
+                        14,
+                        109,
+                        277,
+                        462,
+                        495,
+                        11509
                       ]
                     }
                   ]
@@ -90409,10 +91113,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        6,
-                        8,
-                        10,
-                        11
+                        474
                       ]
                     }
                   ]
@@ -90433,7 +91134,10 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        398
+                        6,
+                        8,
+                        10,
+                        11
                       ]
                     }
                   ]
@@ -90454,20 +91158,20 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        438
+                        398
                       ]
                     }
                   ]
                 },
                 {
-                  "id": "crime_type",
+                  "id": "creature_type",
                   "codec": "uint32",
                   "fields": [
                     {
-                      "id": "crime_type_crime_type",
+                      "id": "creature_type_creature_type",
                       "kind": "uint32",
-                      "display_label": "Crime Type Crime Type",
-                      "enum_ref": "crime_type_enum"
+                      "display_label": "Creature Type Creature Type",
+                      "enum_ref": "creature_type_enum"
                     }
                   ],
                   "conditions": [
@@ -90475,7 +91179,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        531
+                        438
                       ]
                     }
                   ]
@@ -90496,7 +91200,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        480
+                        531
                       ]
                     }
                   ]
@@ -90517,12 +91221,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        247,
-                        433,
-                        1029,
-                        1034,
-                        1286,
-                        1288
+                        480
                       ]
                     }
                   ]
@@ -90543,7 +91242,12 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        36
+                        247,
+                        433,
+                        1029,
+                        1034,
+                        1286,
+                        1288
                       ]
                     }
                   ]
@@ -90563,7 +91267,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        312
+                        36
                       ]
                     }
                   ]
@@ -90584,7 +91288,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        368
+                        312
                       ]
                     }
                   ]
@@ -90605,8 +91309,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        70,
-                        131
+                        368
                       ]
                     }
                   ]
@@ -90627,7 +91330,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        408
+                        70,
+                        131
                       ]
                     }
                   ]
@@ -90648,8 +91352,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        4708,
-                        6167
+                        408
                       ]
                     }
                   ]
@@ -90662,6 +91365,33 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "id": "form_form",
                       "kind": "formid",
                       "display_label": "Form Form"
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        4708,
+                        6167
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "actor",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "actor_actor",
+                      "kind": "formid",
+                      "display_label": "Actor Actor",
+                      "formlink_targets": [
+                        "ACHR",
+                        "ACRE",
+                        "PLYR",
+                        "TRGT"
+                      ]
                     }
                   ],
                   "conditions": [
@@ -90692,35 +91422,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "actor",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "actor_actor",
-                      "kind": "formid",
-                      "display_label": "Actor Actor",
-                      "formlink_targets": [
-                        "ACHR",
-                        "ACRE",
-                        "PLYR",
-                        "TRGT"
-                      ]
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        84,
-                        1278,
-                        11429,
-                        11431
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "actor_base",
                   "codec": "formid",
                   "fields": [
@@ -90739,7 +91440,10 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        9753
+                        84,
+                        1278,
+                        11429,
+                        11431
                       ]
                     }
                   ]
@@ -90763,8 +91467,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        214,
-                        4897
+                        9753
                       ]
                     }
                   ]
@@ -90788,8 +91491,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        72,
-                        246
+                        214,
+                        4897
                       ]
                     }
                   ]
@@ -90809,7 +91512,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        610
+                        72,
+                        246
                       ]
                     }
                   ]
@@ -90833,9 +91537,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        67,
-                        230,
-                        280
+                        610
                       ]
                     }
                   ]
@@ -90859,9 +91561,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        607,
-                        614,
-                        11425
+                        67,
+                        230,
+                        280
                       ]
                     }
                   ]
@@ -90885,9 +91587,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        68,
-                        129,
-                        228
+                        607,
+                        614,
+                        11425
                       ]
                     }
                   ]
@@ -90911,9 +91613,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        223,
-                        555,
-                        6124
+                        68,
+                        129,
+                        228
                       ]
                     }
                   ]
@@ -90939,7 +91641,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        446
+                        223,
+                        555,
+                        6124
                       ]
                     }
                   ]
@@ -90963,15 +91667,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        60,
-                        71,
-                        73,
-                        132,
-                        193,
-                        195,
-                        197,
-                        199,
-                        411
+                        446
                       ]
                     }
                   ]
@@ -90987,6 +91683,38 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "formlink_target": "FACT",
                       "formlink_targets": [
                         "FACT"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        60,
+                        71,
+                        73,
+                        132,
+                        193,
+                        195,
+                        197,
+                        199,
+                        411
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "form_list",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "form_list_form_list",
+                      "kind": "formid",
+                      "display_label": "Form List Form List",
+                      "formlink_target": "FLST",
+                      "formlink_targets": [
+                        "FLST"
                       ]
                     }
                   ],
@@ -91011,30 +91739,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "form_list",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "form_list_form_list",
-                      "kind": "formid",
-                      "display_label": "Form List Form List",
-                      "formlink_target": "FLST",
-                      "formlink_targets": [
-                        "FLST"
-                      ]
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        163
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "furniture",
                   "codec": "formid",
                   "fields": [
@@ -91053,7 +91757,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        74
+                        163
                       ]
                     }
                   ]
@@ -91077,7 +91781,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        451
+                        74
                       ]
                     }
                   ]
@@ -91093,6 +91797,41 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "formlink_target": "IDLE",
                       "formlink_targets": [
                         "IDLE"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        451
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "inventory_object",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "inventory_object_inventory_object",
+                      "kind": "formid",
+                      "display_label": "Inventory Object Inventory Object",
+                      "formlink_targets": [
+                        "ALCH",
+                        "AMMO",
+                        "ARMO",
+                        "BOOK",
+                        "CCRD",
+                        "CHIP",
+                        "CMNY",
+                        "FLST",
+                        "IMOD",
+                        "KEYM",
+                        "MISC",
+                        "NOTE",
+                        "WEAP"
                       ]
                     }
                   ],
@@ -91167,42 +91906,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "inventory_object",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "inventory_object_inventory_object",
-                      "kind": "formid",
-                      "display_label": "Inventory Object Inventory Object",
-                      "formlink_targets": [
-                        "ALCH",
-                        "AMMO",
-                        "ARMO",
-                        "BOOK",
-                        "CCRD",
-                        "CHIP",
-                        "CMNY",
-                        "FLST",
-                        "IMOD",
-                        "KEYM",
-                        "MISC",
-                        "NOTE",
-                        "WEAP"
-                      ]
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        382,
-                        6321
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "note",
                   "codec": "formid",
                   "fields": [
@@ -91221,7 +91924,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        278
+                        382,
+                        6321
                       ]
                     }
                   ]
@@ -91246,7 +91950,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        161
+                        278
                       ]
                     }
                   ]
@@ -91270,9 +91974,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        449,
-                        1475,
-                        1476
+                        161
                       ]
                     }
                   ]
@@ -91288,6 +91990,32 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "formlink_target": "PERK",
                       "formlink_targets": [
                         "PERK"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        449,
+                        1475,
+                        1476
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "quest",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "quest_quest",
+                      "kind": "formid",
+                      "display_label": "Quest Quest",
+                      "formlink_target": "QUST",
+                      "formlink_targets": [
+                        "QUST"
                       ]
                     }
                   ],
@@ -91312,16 +92040,16 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "quest",
+                  "id": "race",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "quest_quest",
+                      "id": "race_race",
                       "kind": "formid",
-                      "display_label": "Quest Quest",
-                      "formlink_target": "QUST",
+                      "display_label": "Race Race",
+                      "formlink_target": "RACE",
                       "formlink_targets": [
-                        "QUST"
+                        "RACE"
                       ]
                     }
                   ],
@@ -91337,16 +92065,22 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "race",
+                  "id": "reference",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "race_race",
+                      "id": "reference_reference",
                       "kind": "formid",
-                      "display_label": "Race Race",
-                      "formlink_target": "RACE",
+                      "display_label": "Reference Reference",
                       "formlink_targets": [
-                        "RACE"
+                        "ACHR",
+                        "ACRE",
+                        "PBEA",
+                        "PGRE",
+                        "PLYR",
+                        "PMIS",
+                        "REFR",
+                        "TRGT"
                       ]
                     }
                   ],
@@ -91382,36 +92116,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "reference",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "reference_reference",
-                      "kind": "formid",
-                      "display_label": "Reference Reference",
-                      "formlink_targets": [
-                        "ACHR",
-                        "ACRE",
-                        "PBEA",
-                        "PGRE",
-                        "PLYR",
-                        "PMIS",
-                        "REFR",
-                        "TRGT"
-                      ]
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        612
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "region",
                   "codec": "formid",
                   "fields": [
@@ -91430,9 +92134,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        573,
-                        574,
-                        575
+                        612
                       ]
                     }
                   ]
@@ -91456,7 +92158,9 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        427
+                        573,
+                        574,
+                        575
                       ]
                     }
                   ]
@@ -91480,8 +92184,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        11421,
-                        11423
+                        427
                       ]
                     }
                   ]
@@ -91497,6 +92200,31 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "formlink_target": "WEAP",
                       "formlink_targets": [
                         "WEAP"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
+                        11421,
+                        11423
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "weather",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "weather_weather",
+                      "kind": "formid",
+                      "display_label": "Weather Weather",
+                      "formlink_target": "WTHR",
+                      "formlink_targets": [
+                        "WTHR"
                       ]
                     }
                   ],
@@ -91983,8 +92711,30 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "unnamed",
-                  "codec": "uint32",
+                  "id": "none",
+                  "codec": "struct:B,B,B,B",
+                  "fields": [
+                    {
+                      "id": "none_byte_1",
+                      "kind": "uint8",
+                      "display_label": "None Byte 1"
+                    },
+                    {
+                      "id": "none_byte_2",
+                      "kind": "uint8",
+                      "display_label": "None Byte 2"
+                    },
+                    {
+                      "id": "none_byte_3",
+                      "kind": "uint8",
+                      "display_label": "None Byte 3"
+                    },
+                    {
+                      "id": "none_byte_4",
+                      "kind": "uint8",
+                      "display_label": "None Byte 4"
+                    }
+                  ],
                   "conditions": [
                     {
                       "field": "function",
@@ -92410,13 +93160,13 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "float",
-                  "codec": "float32",
+                  "id": "integer",
+                  "codec": "int32",
                   "fields": [
                     {
-                      "id": "float_float",
-                      "kind": "float32",
-                      "display_label": "Float Float"
+                      "id": "integer_integer",
+                      "kind": "int32",
+                      "display_label": "Integer Integer"
                     }
                   ],
                   "conditions": [
@@ -92446,27 +93196,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "integer",
-                  "codec": "int32",
-                  "fields": [
-                    {
-                      "id": "integer_integer",
-                      "kind": "int32",
-                      "display_label": "Integer Integer"
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        420,
-                        421
-                      ]
-                    }
-                  ]
-                },
-                {
                   "id": "quest_objective",
                   "codec": "int32",
                   "fields": [
@@ -92481,7 +93210,8 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        59
+                        420,
+                        421
                       ]
                     }
                   ]
@@ -92501,8 +93231,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
-                        53,
-                        79
+                        59
                       ]
                     }
                   ]
@@ -92522,20 +93251,41 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
+                        53,
+                        79
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "vats_value_param",
+                  "codec": "struct:I",
+                  "fields": [
+                    {
+                      "id": "vats_value_param_vats_value_param",
+                      "kind": "uint32",
+                      "display_label": "VATS Value Param VATS Value Param"
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
                         408
                       ]
                     }
                   ]
                 },
                 {
-                  "id": "creature_type",
+                  "id": "crime_type",
                   "codec": "uint32",
                   "fields": [
                     {
-                      "id": "creature_type_creature_type",
+                      "id": "crime_type_crime_type",
                       "kind": "uint32",
-                      "display_label": "Creature Type Creature Type",
-                      "enum_ref": "creature_type_enum"
+                      "display_label": "Crime Type Crime Type",
+                      "enum_ref": "crime_type_enum"
                     }
                   ],
                   "conditions": [
@@ -92549,14 +93299,14 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "equip_type",
+                  "id": "form_type",
                   "codec": "uint32",
                   "fields": [
                     {
-                      "id": "equip_type_equip_type",
+                      "id": "form_type_form_type",
                       "kind": "uint32",
-                      "display_label": "Equip Type Equip Type",
-                      "enum_ref": "equip_type_enum"
+                      "display_label": "Form Type Form Type",
+                      "enum_ref": "form_type_enum"
                     }
                   ],
                   "conditions": [
@@ -92567,38 +93317,6 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                         1089,
                         1297
                       ]
-                    }
-                  ]
-                },
-                {
-                  "id": "form",
-                  "codec": "formid",
-                  "fields": [
-                    {
-                      "id": "form_form",
-                      "kind": "formid",
-                      "display_label": "Form Form"
-                    }
-                  ],
-                  "conditions": [
-                    {
-                      "field": "function",
-                      "operator": "in",
-                      "values": [
-                        60,
-                        1475,
-                        1476
-                      ]
-                    },
-                    {
-                      "field": "type",
-                      "operator": "bit_unset",
-                      "value": 2
-                    },
-                    {
-                      "field": "type",
-                      "operator": "bit_unset",
-                      "value": 8
                     }
                   ]
                 },
@@ -92623,6 +93341,32 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "field": "function",
                       "operator": "in",
                       "values": [
+                        60,
+                        1475,
+                        1476
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "actor_base",
+                  "codec": "formid",
+                  "fields": [
+                    {
+                      "id": "actor_base_actor_base",
+                      "kind": "formid",
+                      "display_label": "Actor Base Actor Base",
+                      "formlink_targets": [
+                        "CREA",
+                        "NPC_"
+                      ]
+                    }
+                  ],
+                  "conditions": [
+                    {
+                      "field": "function",
+                      "operator": "in",
+                      "values": [
                         1291,
                         11488
                       ]
@@ -92630,16 +93374,16 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "encounter_zone",
+                  "id": "faction",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "encounter_zone_encounter_zone",
+                      "id": "faction_faction",
                       "kind": "formid",
-                      "display_label": "Encounter Zone Encounter Zone",
-                      "formlink_target": "ECZN",
+                      "display_label": "Faction Faction",
+                      "formlink_target": "FACT",
                       "formlink_targets": [
-                        "ECZN"
+                        "FACT"
                       ]
                     }
                   ],
@@ -92654,16 +93398,27 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "idle",
+                  "id": "inventory_object",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "idle_idle",
+                      "id": "inventory_object_inventory_object",
                       "kind": "formid",
-                      "display_label": "Idle Idle",
-                      "formlink_target": "IDLE",
+                      "display_label": "Inventory Object Inventory Object",
                       "formlink_targets": [
-                        "IDLE"
+                        "ALCH",
+                        "AMMO",
+                        "ARMO",
+                        "BOOK",
+                        "CCRD",
+                        "CHIP",
+                        "CMNY",
+                        "FLST",
+                        "IMOD",
+                        "KEYM",
+                        "MISC",
+                        "NOTE",
+                        "WEAP"
                       ]
                     }
                   ],
@@ -92679,17 +93434,18 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "note",
+                  "id": "owner",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "note_note",
+                      "id": "owner_owner",
                       "kind": "formid",
-                      "display_label": "Note Note",
-                      "formlink_target": "NOTE",
+                      "display_label": "Owner Owner",
                       "formlink_targets": [
-                        "NOTE"
-                      ]
+                        "FACT",
+                        "NPC_"
+                      ],
+                      "null_allowed": true
                     }
                   ],
                   "conditions": [
@@ -92703,16 +93459,22 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                   ]
                 },
                 {
-                  "id": "race",
+                  "id": "reference",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "race_race",
+                      "id": "reference_reference",
                       "kind": "formid",
-                      "display_label": "Race Race",
-                      "formlink_target": "RACE",
+                      "display_label": "Reference Reference",
                       "formlink_targets": [
-                        "RACE"
+                        "ACHR",
+                        "ACRE",
+                        "PBEA",
+                        "PGRE",
+                        "PLYR",
+                        "PMIS",
+                        "REFR",
+                        "TRGT"
                       ]
                     }
                   ],
@@ -92723,30 +93485,20 @@ pub const AUTHORING_SCHEMA_JSON: &str = r#"{
                       "values": [
                         230
                       ]
-                    },
-                    {
-                      "field": "type",
-                      "operator": "bit_unset",
-                      "value": 2
-                    },
-                    {
-                      "field": "type",
-                      "operator": "bit_unset",
-                      "value": 8
                     }
                   ]
                 },
                 {
-                  "id": "voice_type",
+                  "id": "weapon",
                   "codec": "formid",
                   "fields": [
                     {
-                      "id": "voice_type_voice_type",
+                      "id": "weapon_weapon",
                       "kind": "formid",
-                      "display_label": "Voice Type Voice Type",
-                      "formlink_target": "VTYP",
+                      "display_label": "Weapon Weapon",
+                      "formlink_target": "WEAP",
                       "formlink_targets": [
-                        "VTYP"
+                        "WEAP"
                       ]
                     }
                   ],

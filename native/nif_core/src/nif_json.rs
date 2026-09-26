@@ -848,6 +848,13 @@ fn parse_json_value(
         }
     }
     if field.length.is_some() {
+        if field.type_name == "byte"
+            && field.template.is_none()
+            && field.width.is_none()
+            && let Some(text) = json_text(value)
+        {
+            return parse_hex_bytes(text).map(NifValue::Bytes);
+        }
         let values = value
             .as_array()
             .ok_or_else(|| format!("{} must be an array", field.name))?;
@@ -1204,6 +1211,40 @@ mod tests {
             Some(NifValue::Color4([1.0, 128.0 / 255.0, 0.0, 1.0]))
         );
         assert_eq!(parse_hex_bytes("00, 0A; FF").unwrap(), vec![0, 10, 255]);
+    }
+
+    #[test]
+    fn nif_json_byte_array_hex_round_trip_preserves_binary() {
+        for (payload, expected_json) in [
+            (&[][..], ""),
+            (&[0, 1, 127, 128, 254, 255][..], "00 01 7F 80 FE FF"),
+        ] {
+            let mut nif = NifFile::new("fo4");
+            nif.add_block(
+                "bhkPhysicsSystem",
+                Some(IndexMap::from([(
+                    "Binary Data".to_string(),
+                    crate::cloth::bytes_to_byte_array(payload),
+                )])),
+            );
+            let expected = nif.to_bytes().unwrap();
+
+            let json = nif_to_json(&nif, 8, false);
+            assert_eq!(
+                json["1 bhkPhysicsSystem"]["Binary Data"]["Data"],
+                expected_json
+            );
+            let mut rebuilt = nif_from_json(&json, false).unwrap();
+            let NifValue::Struct(binary_data) = rebuilt.blocks[1].get_field("Binary Data").unwrap()
+            else {
+                panic!("expected ByteArray struct");
+            };
+            assert_eq!(
+                binary_data.get("Data"),
+                Some(&NifValue::Bytes(payload.to_vec()))
+            );
+            assert_eq!(rebuilt.to_bytes().unwrap(), expected);
+        }
     }
 
     #[test]

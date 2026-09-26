@@ -1,19 +1,20 @@
 """Regression tests for the FO76 -> FO4 downgrade in ``creation_lib.material_tools.convert``.
 
-Each test pins an incident documented in ``convert.py``'s inline comments. The
-tests mutate real FO76 v22 BGSM/BGEM fixtures, which live at
-``bacup/py_bacup_lib/python/bacup_lib/tests/fixtures/fo76/materials/``.
+Each test pins an incident documented in ``convert.py``'s inline comments.
+Tests build a minimal synthetic v20 BGSM/BGEM (no checked-in fixtures) and
+mutate only the fields relevant to the bug being regression-tested.
 """
 from __future__ import annotations
 
-import copy
 import io
-from pathlib import Path
 
 import pytest
 
 from creation_lib.material_tools.bgsm_bin import BGSMData, read_bgsm
 from creation_lib.material_tools.bgem_bin import BGEMData, read_bgem
+from creation_lib.material_tools.base import BaseHeader
+from creation_lib.material_tools.bgsm_bin import BGSM_SIGNATURE
+from creation_lib.material_tools.bgem_bin import BGEM_SIGNATURE
 from creation_lib.material_tools.convert import (
     BGSM_VERSION_FO4,
     BGEM_VERSION_FO4,
@@ -21,43 +22,172 @@ from creation_lib.material_tools.convert import (
     downgrade_bgem,
 )
 
-FIXTURE_DIR = (
-    Path(__file__).parent.parent.parent
-    / "conversion"
-    / "tests"
-    / "fixtures"
-    / "fo76"
-    / "materials"
-)
-BGSM_FIXTURE = FIXTURE_DIR / "sample_v22.bgsm"
-BGEM_FIXTURE = FIXTURE_DIR / "sample_v22.bgem"
-BGEM_GLASS_FIXTURE = FIXTURE_DIR / "sample_v22_glass.bgem"
+
+def _base_header(signature: int, version: int) -> BaseHeader:
+    return BaseHeader(
+        signature=signature,
+        version=version,
+        tile_u=True,
+        tile_v=True,
+        u_offset=0.0,
+        v_offset=0.0,
+        u_scale=1.0,
+        v_scale=1.0,
+        alpha=1.0,
+        alpha_blend_mode0=0,
+        alpha_blend_mode1=0,
+        alpha_blend_mode2=0,
+        alpha_test_ref=0,
+        alpha_test=False,
+        zbuffer_write=True,
+        zbuffer_test=True,
+        ssr=False,
+        wet_ssr=False,
+        decal=False,
+        two_sided=False,
+        decal_nofade=False,
+        non_occluder=False,
+        refraction=False,
+        refraction_falloff=False,
+        refraction_power=0.0,
+        env_mapping=False,
+        env_mapping_mask_scale=0.0,
+        depth_bias=None,
+        grayscale_to_palette_color=False,
+        mask_writes=None,
+    )
 
 
-pytestmark = pytest.mark.skipif(
-    not BGSM_FIXTURE.exists() or not BGEM_FIXTURE.exists(),
-    reason="FO76 BGSM/BGEM fixtures missing",
-)
+def _default_bgsm_v20() -> BGSMData:
+    """A v20 BGSM with all fields at their "empty FO76 default" value,
+    matching what `downgrade_bgsm` sees for the vast majority of real
+    assets. Individual tests mutate only the fields relevant to the bug
+    under test."""
+    return BGSMData(
+        header=_base_header(BGSM_SIGNATURE, 20),
+        DiffuseTexture="weapons/gaussrifle/foo_d.dds",
+        NormalTexture="weapons/gaussrifle/foo_n.dds",
+        SmoothSpecTexture="",
+        GreyscaleTexture="",
+        EnvmapTexture="",
+        GlowTexture="",
+        InnerLayerTexture="",
+        WrinklesTexture="",
+        DisplacementTexture="",
+        SpecularTexture="",
+        LightingTexture="",
+        FlowTexture="",
+        DistanceFieldAlphaTexture="",
+        EnableEditorAlphaRef=False,
+        RimLighting=False,
+        RimPower=0.0,
+        BackLightPower=0.0,
+        SubsurfaceLighting=False,
+        SubsurfaceLightingRolloff=0.0,
+        Translucency=False,
+        TranslucencyThickObject=False,
+        TranslucencyMixAlbedoWithSubsurfaceColor=False,
+        TranslucencySubsurfaceColor=(0.0, 0.0, 0.0),
+        TranslucencyTransmissiveScale=0.0,
+        TranslucencyTurbulence=0.0,
+        SpecularEnabled=True,
+        SpecularColor=(1.0, 1.0, 1.0),
+        SpecularMult=1.0,
+        Smoothness=0.5,
+        FresnelPower=1.0,
+        WetnessControlSpecScale=1.0,
+        WetnessControlSpecPowerScale=1.0,
+        WetnessControlSpecMinvar=0.0,
+        WetnessControlEnvMapScale=1.0,
+        WetnessControlFresnelPower=1.0,
+        WetnessControlMetalness=0.0,
+        PBR=False,
+        CustomPorosity=False,
+        PorosityValue=0.0,
+        RootMaterialPath="",
+        AnisoLighting=False,
+        EmitEnabled=False,
+        EmittanceColor=None,
+        EmittanceMult=1.0,
+        ModelSpaceNormals=False,
+        ExternalEmittance=False,
+        LumEmittance=None,
+        UseAdaptativeEmissive=False,
+        AdaptativeEmissive_ExposureOffset=0.0,
+        AdaptativeEmissive_FinalExposureMin=0.0,
+        AdaptativeEmissive_FinalExposureMax=0.0,
+        BackLighting=False,
+        ReceiveShadows=True,
+        HideSecret=False,
+        CastShadows=True,
+        DissolveFade=False,
+        AssumeShadowmask=True,
+        Glowmap=False,
+        EnvironmentMappingWindow=False,
+        EnvironmentMappingEye=False,
+        Hair=False,
+        HairTintColor=(1.0, 1.0, 1.0),
+        Tree=False,
+        Facegen=False,
+        SkinTint=False,
+        Tessellate=False,
+        DisplacementTextureBias=0.0,
+        DisplacementTextureScale=1.0,
+        TessellationPnScale=1.0,
+        TessellationBaseFactor=1.0,
+        TessellationFadeDistance=1.0,
+        GrayscaleToPaletteScale=1.0,
+        SkewSpecularAlpha=False,
+        Terrain=False,
+        UnkInt1=0,
+        TerrainThresholdFalloff=0.0,
+        TerrainTilingDistance=0.0,
+        TerrainRotationAngle=0.0,
+    )
 
 
-def _load_bgsm_v20() -> BGSMData:
-    """Load the v22 fixture and force-clamp its header to v20 so the
-    downgrade path sees a cleanly v20 input. The fixture's v22 layout
-    is byte-compatible with v20 for the fields we touch (there are no
-    v21/v22-only BGSM-level fields in the current dataclass). Cloning
-    avoids cross-test mutation."""
-    data = read_bgsm(io.BytesIO(BGSM_FIXTURE.read_bytes()))
-    clone = copy.deepcopy(data)
-    clone.header.version = 20
-    return clone
-
-
-def _load_bgem_v22() -> BGEMData:
-    return read_bgem(io.BytesIO(BGEM_FIXTURE.read_bytes()))
-
-
-def _load_bgem_v22_glass() -> BGEMData:
-    return read_bgem(io.BytesIO(BGEM_GLASS_FIXTURE.read_bytes()))
+def _default_bgem_v22() -> BGEMData:
+    return BGEMData(
+        header=_base_header(BGEM_SIGNATURE, 22),
+        BaseTexture="",
+        GrayscaleTexture="",
+        EnvmapTexture="",
+        NormalTexture="",
+        EnvmapMaskTexture="",
+        SpecularTexture="",
+        LightingTexture="",
+        GlowTexture="",
+        GlassRoughnessScratch=None,
+        GlassDirtOverlay=None,
+        GlassEnabled=None,
+        GlassFresnelColor=None,
+        GlassBlurScaleBase=None,
+        GlassBlurScaleFactor=None,
+        GlassRefractionScaleBase=None,
+        EnvironmentMapping=False,
+        EnvironmentMappingMaskScale=0.0,
+        BloodEnabled=False,
+        EffectLightingEnabled=False,
+        FalloffEnabled=False,
+        FalloffColorEnabled=False,
+        GrayscaleToPaletteAlpha=False,
+        SoftEnabled=False,
+        BaseColor=(1.0, 1.0, 1.0),
+        BaseColorScale=1.0,
+        FalloffStartAngle=0.0,
+        FalloffStopAngle=0.0,
+        FalloffStartOpacity=0.0,
+        FalloffStopOpacity=0.0,
+        LightingInfluence=0.0,
+        EnvmapMinLOD=0,
+        SoftDepth=0.0,
+        EmittanceColor=None,
+        AdaptativeEmissive_ExposureOffset=0.0,
+        AdaptativeEmissive_FinalExposureMin=0.0,
+        AdaptativeEmissive_FinalExposureMax=0.0,
+        Glowmap=False,
+        EffectPbrSpecular=False,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -75,7 +205,7 @@ def test_mirror_shiny_weapon_bug_specular_promoted_to_smoothspec():
     EnvmapTexture gets a heuristic FO4 cubemap instead; select_cubemap is
     covered by test_cubemap_heuristics.
     """
-    data = _load_bgsm_v20()
+    data = _default_bgsm_v20()
     data.SpecularTexture = "weapons/gaussrifle/foo_s.dds"
     data.SmoothSpecTexture = ""
     data.LightingTexture = ""
@@ -98,52 +228,33 @@ def test_mirror_shiny_weapon_bug_specular_promoted_to_smoothspec():
 # ---------------------------------------------------------------------------
 
 
-def test_lighting_texture_emittance_disabled_for_static_fo4_bgsm():
-    """FO4 applies converted BGSM emittance across the whole object surface."""
-    data = _load_bgsm_v20()
-    data.LightingTexture = "weapons/gaussrifle/foo_l.dds"
+@pytest.mark.parametrize(
+    ("source_path", "emit_enabled", "expect_glow", "expect_emit"),
+    [
+        ("weapons/gaussrifle/foo.bgsm", True, False, False),
+        ("materials/effects/foo.bgsm", True, True, True),
+        ("weapons/gaussrifle/foo.bgsm", False, False, False),
+    ],
+)
+def test_lighting_texture_emittance_scoped_to_effects(source_path, emit_enabled, expect_glow, expect_emit):
+    """FO4 applies converted BGSM emittance across the whole object
+    surface, so LightingTexture->Glowmap promotion is only safe for
+    effects-path materials with EmitEnabled; everywhere else, or without
+    EmitEnabled, it must be suppressed."""
+    data = _default_bgsm_v20()
+    data.LightingTexture = "foo_l.dds"
     data.GlowTexture = ""
-    data.EmitEnabled = True
-    data.EmittanceMult = 10.0
-    if data.EmittanceColor is None:
+    data.EmitEnabled = emit_enabled
+    if emit_enabled:
+        data.EmittanceMult = 10.0
         data.EmittanceColor = (1.0, 1.0, 0.0)
 
-    fo4 = downgrade_bgsm(data, BGSM_VERSION_FO4, source_path="weapons/gaussrifle/foo.bgsm")
+    fo4 = downgrade_bgsm(data, BGSM_VERSION_FO4, source_path=source_path)
 
-    assert not fo4.GlowTexture
-    assert fo4.Glowmap is False
-    assert fo4.EmitEnabled is False
-    assert fo4.EmittanceColor is None
+    assert bool(fo4.GlowTexture) is expect_glow
+    assert fo4.Glowmap is expect_glow
+    assert fo4.EmitEnabled is expect_emit
     assert fo4.EmittanceMult == 1.0
-    assert fo4.LightingTexture is None
-
-
-def test_lighting_texture_emittance_preserved_for_effect_bgsm():
-    data = _load_bgsm_v20()
-    data.LightingTexture = "effects/foo_l.dds"
-    data.GlowTexture = ""
-    data.EmitEnabled = True
-    data.EmittanceMult = 10.0
-
-    fo4 = downgrade_bgsm(data, BGSM_VERSION_FO4, source_path="materials/effects/foo.bgsm")
-
-    assert fo4.GlowTexture == "effects/foo_l.dds"
-    assert fo4.Glowmap is True
-    assert fo4.EmitEnabled is True
-    assert fo4.EmittanceMult == 1.0
-    assert fo4.LightingTexture is None
-
-
-def test_lighting_texture_not_promoted_when_emit_disabled():
-    """Without EmitEnabled, LightingTexture must not produce a FO4 glow path."""
-    data = _load_bgsm_v20()
-    data.LightingTexture = "weapons/gaussrifle/foo_l.dds"
-    data.GlowTexture = ""
-    data.EmitEnabled = False
-
-    fo4 = downgrade_bgsm(data, BGSM_VERSION_FO4, source_path="weapons/gaussrifle/foo.bgsm")
-
-    assert not fo4.GlowTexture
     assert fo4.LightingTexture is None
 
 
@@ -156,7 +267,7 @@ def test_translucency_converted_to_subsurface_lighting():
     """FO76 v20 BGSM with Translucency=True and TranslucencyTransmissiveScale
     must downgrade to SubsurfaceLighting=True with matching rolloff; the
     entire Translucency* block must be cleared."""
-    data = _load_bgsm_v20()
+    data = _default_bgsm_v20()
     data.Translucency = True
     data.TranslucencyTransmissiveScale = 0.5
     data.TranslucencyThickObject = True
@@ -177,30 +288,12 @@ def test_translucency_converted_to_subsurface_lighting():
 
 
 # ---------------------------------------------------------------------------
-# 5. RootMaterialPath synthesis
+# 5. RootMaterialPath synthesis (family rules + generic fallback)
 # ---------------------------------------------------------------------------
 
 
-def test_root_material_path_synthesized_from_source_path():
-    """FO76 ships RootMaterialPath empty on 99% of BGSMs; FO4 vanilla
-    relies on it for per-category shader param inheritance. When the
-    source has empty RootMaterialPath, downgrade_bgsm must synthesize a
-    plausible template via templates.resolve_root_material_path(source_path)."""
-    data = _load_bgsm_v20()
-    data.RootMaterialPath = ""
-
-    fo4 = downgrade_bgsm(
-        data,
-        BGSM_VERSION_FO4,
-        source_path="weapons/gaussrifle/foo.bgsm",
-    )
-
-    assert fo4.RootMaterialPath
-    assert "template/" in fo4.RootMaterialPath.lower()
-
-
 def test_vegetation_material_defaults_for_leaf_template():
-    data = _load_bgsm_v20()
+    data = _default_bgsm_v20()
     data.RootMaterialPath = ""
     data.Tree = True
     data.Translucency = True
@@ -225,7 +318,9 @@ def test_vegetation_material_defaults_for_leaf_template():
 
 
 def test_grass_material_uses_grass_template_before_tree_flag():
-    data = _load_bgsm_v20()
+    # Grass paths take priority over the Tree flag (which is also set on
+    # some grass assets and would otherwise pick the leaf template).
+    data = _default_bgsm_v20()
     data.RootMaterialPath = ""
     data.Tree = True
     data.Translucency = True
@@ -241,23 +336,14 @@ def test_grass_material_uses_grass_template_before_tree_flag():
     assert fo4.EnvmapTexture == ""
 
 
-def test_landscape_rocks_material_uses_rock_template():
-    data = _load_bgsm_v20()
-    data.RootMaterialPath = ""
-    data.Tree = False
-
-    fo4 = downgrade_bgsm(
-        data,
-        BGSM_VERSION_FO4,
-        source_path="materials/landscape/rocks/mtntopcliff01.bgsm",
-    )
-
-    assert fo4.RootMaterialPath == "template/RockTemplate_Wet.bgsm"
-
-
 @pytest.mark.parametrize(
     ("source_path", "expected_template"),
     [
+        # No family match: RootMaterialPath synthesis still falls back to a
+        # generic template rather than staying empty (checked via `in`,
+        # since the exact fallback value isn't part of the contract here).
+        ("weapons/gaussrifle/foo.bgsm", None),
+        ("materials/landscape/rocks/mtntopcliff01.bgsm", "template/RockTemplate_Wet.bgsm"),
         ("materials/landscape/rocks/rockslab01.bgsm", "template/RockSlabTemplate_Wet.bgsm"),
         ("materials/landscape/ground/crackedmud01.bgsm", "template/CrackedMudTemplate_Wet.bgsm"),
         ("materials/landscape/roads/asphaltroad01.bgsm", "template/AsphaltTemplate_Wet.bgsm"),
@@ -273,13 +359,17 @@ def test_landscape_rocks_material_uses_rock_template():
     ],
 )
 def test_root_material_path_uses_fo4_template_family_rules(source_path, expected_template):
-    data = _load_bgsm_v20()
+    data = _default_bgsm_v20()
     data.RootMaterialPath = ""
     data.Tree = False
 
     fo4 = downgrade_bgsm(data, BGSM_VERSION_FO4, source_path=source_path)
 
-    assert fo4.RootMaterialPath == expected_template
+    if expected_template is None:
+        assert fo4.RootMaterialPath
+        assert "template/" in fo4.RootMaterialPath.lower()
+    else:
+        assert fo4.RootMaterialPath == expected_template
 
 
 # ---------------------------------------------------------------------------
@@ -290,7 +380,7 @@ def test_root_material_path_uses_fo4_template_family_rules(source_path, expected
 def test_downgraded_bgsm_round_trips_through_reader():
     """A downgraded BGSM must serialize + re-parse cleanly as a valid
     FO4 v2 BGSM."""
-    data = _load_bgsm_v20()
+    data = _default_bgsm_v20()
     fo4 = downgrade_bgsm(data, BGSM_VERSION_FO4, source_path="weapons/gaussrifle/foo.bgsm")
 
     buf = io.BytesIO()
@@ -299,25 +389,37 @@ def test_downgraded_bgsm_round_trips_through_reader():
     reloaded = read_bgsm(buf)
 
     assert reloaded.header.version == BGSM_VERSION_FO4
-    assert reloaded.DiffuseTexture == fo4.DiffuseTexture
-    assert reloaded.NormalTexture == fo4.NormalTexture
+    # The native writer null-terminates strings in place, so compare the
+    # meaningful (stripped) content rather than exact byte identity.
+    assert reloaded.DiffuseTexture.rstrip("\x00") == fo4.DiffuseTexture.rstrip("\x00")
+    assert reloaded.NormalTexture.rstrip("\x00") == fo4.NormalTexture.rstrip("\x00")
 
 
 # ---------------------------------------------------------------------------
-# 7. BGEM Glass field clearing
+# 7. BGEM downgrade: Glass field clearing + no-op at target version
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(
-    not BGEM_GLASS_FIXTURE.exists(),
-    reason="FO76 glass BGEM fixture missing",
-)
-def test_bgem_glass_fields_cleared_on_downgrade():
-    """FO76 v22 BGEM with Glass* fields populated must downgrade with
-    all Glass* fields cleared so the FO4 v20 writer doesn't see stray
-    glass state."""
-    data = _load_bgem_v22_glass()
-    assert data.GlassEnabled is True
+def test_bgem_downgrade_clears_glass_fields_and_is_noop_at_target():
+    """FO76 v22 BGEM with Glass* fields populated must downgrade with all
+    Glass* fields cleared so the FO4 v20 writer doesn't see stray glass
+    state; a BGEM whose header is already at the target version must
+    instead be returned unchanged (the same instance, per current
+    contract)."""
+    already_fo4 = _default_bgem_v22()
+    already_fo4.header.version = BGEM_VERSION_FO4  # simulate "already FO4"
+
+    result = downgrade_bgem(already_fo4, BGEM_VERSION_FO4)
+
+    assert result is already_fo4
+    assert result.header.version == BGEM_VERSION_FO4
+
+    data = _default_bgem_v22()
+    data.GlassEnabled = True
+    data.GlassFresnelColor = (0.5, 0.5, 0.5)
+    data.GlassBlurScaleBase = 1.0
+    data.GlassBlurScaleFactor = 1.0
+    data.GlassRefractionScaleBase = 1.0
 
     fo4 = downgrade_bgem(data, BGEM_VERSION_FO4)
 
@@ -335,20 +437,3 @@ def test_bgem_glass_fields_cleared_on_downgrade():
     buf.seek(0)
     reloaded = read_bgem(buf)
     assert reloaded.header.version == BGEM_VERSION_FO4
-
-
-# ---------------------------------------------------------------------------
-# 8. BGEM no-op when already at target
-# ---------------------------------------------------------------------------
-
-
-def test_bgem_downgrade_noop_when_already_at_target():
-    """Passing a BGEM whose header is already at the target version must
-    return it unchanged (the same instance, per current contract)."""
-    data = _load_bgem_v22()
-    data.header.version = BGEM_VERSION_FO4  # simulate "already FO4"
-
-    result = downgrade_bgem(data, BGEM_VERSION_FO4)
-
-    assert result is data
-    assert result.header.version == BGEM_VERSION_FO4

@@ -151,12 +151,8 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn crc_uses_the_ogg_polynomial_without_reflection() {
-        assert_eq!(ogg_crc(b"123456789"), 0x89A1_897F);
-    }
-
-    #[test]
     fn first_page_begins_the_stream_with_lacing_and_granule() {
+        assert_eq!(ogg_crc(b"123456789"), 0x89A1_897F);
         let mut writer = OggWriter::new(0x1234);
         writer.packet(&[7; 300], 5);
         writer.flush();
@@ -169,7 +165,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn packet_longer_than_a_page_continues_onto_the_next() {
+    fn page_boundaries_set_continuation_and_end_flags() {
         let mut writer = OggWriter::new(1);
         writer.packet(&vec![1; 255 * 255 + 10], 9);
         let pages = read_pages(&writer.finish());
@@ -183,20 +179,14 @@ pub(crate) mod tests {
             (0x05, 9, 1)
         );
         assert_eq!(pages[1].lacing, vec![10]);
-    }
 
-    #[test]
-    fn final_packet_filling_a_page_still_ends_the_stream_on_that_page() {
         let mut writer = OggWriter::new(1);
         writer.packet(&[0; 100], 3);
         writer.packet(&[0; 5000], 7);
         let pages = read_pages(&writer.finish());
-        assert_eq!(pages.len(), 1);
+        assert_eq!(pages.len(), 1, "final packet filling a page ends the stream there");
         assert_eq!((pages[0].flags, pages[0].granule), (0x06, 7));
-    }
 
-    #[test]
-    fn packet_ending_on_a_full_page_does_not_mark_the_next_page_continued() {
         let mut writer = OggWriter::new(1);
         for _ in 0..255 {
             writer.packet(&[1], 3);
@@ -204,6 +194,10 @@ pub(crate) mod tests {
         writer.packet(&[2], 4);
         let pages = read_pages(&writer.finish());
         assert_eq!((pages[0].flags, pages[0].granule), (0x02, 3));
-        assert_eq!((pages[1].flags, pages[1].granule), (0x04, 4));
+        assert_eq!(
+            (pages[1].flags, pages[1].granule),
+            (0x04, 4),
+            "packet ending on a full page does not mark the next continued"
+        );
     }
 }

@@ -14,6 +14,8 @@ def test_run_preprocess_reports_invalid_game_lines():
         "preprocess_nifs.py",
         "--game",
         "notagame",
+        "--db-path",
+        "unused.db",
         on_line=lines.append,
     )
 

@@ -33,130 +33,40 @@ fn fixture_str(relative: &str) -> String {
     })
 }
 
-// ---------------------------------------------------------------------------
-// Gate 1: HKX → XML → HKX parse equivalence
-// ---------------------------------------------------------------------------
-
-#[test]
-fn hkx_to_xml_returns_valid_tagxml_string() {
-    let hkx_bytes = fixture_bytes("native/havok/tests/fixtures/skeleton.hkx");
-
-    let xml = havok_hkx_to_xml(&hkx_bytes).expect("hkx_to_xml should succeed");
-
-    assert!(
-        xml.contains("<hkpackfile"),
-        "output must be TagXML with hkpackfile root"
-    );
-    assert!(xml.contains("<hksection"), "output must contain hksection");
-    assert!(
-        xml.contains("<hkobject"),
-        "output must contain at least one hkobject"
-    );
+fn class_names(file: &havok_native::hkx::HkxFile) -> Vec<&str> {
+    file.objects()
+        .iter()
+        .map(|o| o.class_name.as_str())
+        .collect()
 }
 
 #[test]
-fn hkx_to_xml_to_hkx_parse_equivalent() {
+fn hkx_to_xml_to_hkx_is_parse_equivalent() {
     let hkx_bytes = fixture_bytes("native/havok/tests/fixtures/skeleton.hkx");
-
     let original = read_packfile(&hkx_bytes).expect("parse original HKX");
     let xml = havok_hkx_to_xml(&hkx_bytes).expect("hkx_to_xml should succeed");
-    let roundtrip_bytes = havok_xml_to_hkx(&xml).expect("xml_to_hkx should succeed");
-    let roundtrip = read_packfile(&roundtrip_bytes).expect("parse round-tripped HKX");
-
-    assert_eq!(
-        roundtrip.contents_version(),
-        original.contents_version(),
-        "contents_version must survive round-trip"
-    );
-    assert_eq!(
-        roundtrip.objects().len(),
-        original.objects().len(),
-        "object count must survive round-trip"
-    );
-
-    // Class names must be preserved for all objects.
-    for (i, (orig_obj, rt_obj)) in original
-        .objects()
-        .iter()
-        .zip(roundtrip.objects())
-        .enumerate()
-    {
-        assert_eq!(
-            rt_obj.class_name, orig_obj.class_name,
-            "object[{i}] class_name mismatch"
-        );
+    for needle in ["<hkpackfile", "<hksection", "<hkobject"] {
+        assert!(xml.contains(needle), "{needle}");
     }
-}
 
-// ---------------------------------------------------------------------------
-// Gate 2: XML → HKX → XML parse equivalence
-// ---------------------------------------------------------------------------
-
-#[test]
-fn xml_to_hkx_produces_valid_packfile_magic() {
-    let xml = fixture_str("native/havok/tests/fixtures/skeleton.xml");
-
-    let hkx_bytes = havok_xml_to_hkx(&xml).expect("xml_to_hkx should succeed");
-
-    // Packfile magic: first 8 bytes 57 E0 E0 57 10 C0 C0 10
-    const PACKFILE_MAGIC: &[u8; 8] = b"\x57\xE0\xE0\x57\x10\xC0\xC0\x10";
-    assert!(
-        hkx_bytes.len() >= 8 && &hkx_bytes[0..8] == PACKFILE_MAGIC,
-        "xml_to_hkx must produce a valid packfile (magic check failed)"
-    );
+    let roundtrip = read_packfile(&havok_xml_to_hkx(&xml).expect("xml_to_hkx should succeed"))
+        .expect("parse round-tripped HKX");
+    assert_eq!(roundtrip.contents_version(), original.contents_version());
+    assert_eq!(class_names(&roundtrip), class_names(&original));
 }
 
 #[test]
-fn xml_to_hkx_to_xml_parse_equivalent() {
+fn xml_to_hkx_to_xml_is_parse_equivalent_and_rejects_garbage() {
     let xml = fixture_str("native/havok/tests/fixtures/skeleton.xml");
-
     let original = read_tagxml_string(&xml).expect("parse original XML");
     let hkx_bytes = havok_xml_to_hkx(&xml).expect("xml_to_hkx should succeed");
+    assert_eq!(&hkx_bytes[0..8], b"\x57\xE0\xE0\x57\x10\xC0\xC0\x10");
+
     let roundtrip_xml = havok_hkx_to_xml(&hkx_bytes).expect("hkx_to_xml should succeed");
     let roundtrip = read_tagxml_string(&roundtrip_xml).expect("parse round-tripped XML");
+    assert_eq!(roundtrip.contents_version(), original.contents_version());
+    assert_eq!(class_names(&roundtrip), class_names(&original));
 
-    assert_eq!(
-        roundtrip.contents_version(),
-        original.contents_version(),
-        "contents_version must survive round-trip"
-    );
-    assert_eq!(
-        roundtrip.objects().len(),
-        original.objects().len(),
-        "object count must survive round-trip"
-    );
-    for (i, (orig_obj, rt_obj)) in original
-        .objects()
-        .iter()
-        .zip(roundtrip.objects())
-        .enumerate()
-    {
-        assert_eq!(
-            rt_obj.class_name, orig_obj.class_name,
-            "object[{i}] class_name mismatch"
-        );
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Error cases
-// ---------------------------------------------------------------------------
-
-#[test]
-fn hkx_to_xml_rejects_garbage_bytes() {
-    let error = havok_hkx_to_xml(b"not a havok file").expect_err("should reject garbage");
-    assert!(
-        !error.to_string().is_empty(),
-        "error message must be non-empty"
-    );
-}
-
-#[test]
-fn xml_to_hkx_rejects_malformed_xml() {
-    let error =
-        havok_xml_to_hkx("<broken>no closing tag").expect_err("should reject malformed XML");
-    assert!(
-        !error.to_string().is_empty(),
-        "error message must be non-empty"
-    );
+    assert!(havok_hkx_to_xml(b"not a havok file").is_err());
+    assert!(havok_xml_to_hkx("<broken>no closing tag").is_err());
 }

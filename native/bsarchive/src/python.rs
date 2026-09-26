@@ -240,6 +240,33 @@ struct ExtractionBuffers {
     directories: HashSet<PathBuf>,
 }
 
+/// Attempts per file. Antivirus scanning a file we just created, or another
+/// worker writing a path two archives both carry, denies the write for a few
+/// milliseconds; aborting the archive over that loses every later file in it.
+const WRITE_ATTEMPTS: u32 = 3;
+
+fn write_with_retries(
+    out_path: &Path,
+    mut write: impl FnMut() -> std::io::Result<()>,
+) -> Result<(), String> {
+    let mut attempt = 1;
+    loop {
+        let Err(err) = write() else { return Ok(()) };
+        if attempt == WRITE_ATTEMPTS {
+            // A failed write has already truncated the file, and an empty
+            // .hkx/.nif reads downstream as a real asset rather than a
+            // missing one. Leave nothing behind instead.
+            let _ = fs::remove_file(out_path);
+            return Err(format!(
+                "{}: {err} (after {attempt} attempts)",
+                out_path.display()
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20 * u64::from(attempt)));
+        attempt += 1;
+    }
+}
+
 fn write_extracted_file(
     output_dir: &Path,
     rel: &str,
@@ -248,11 +275,11 @@ fn write_extracted_file(
     let out_path = output_dir.join(rel.replace('/', "\\"));
     if let Some(parent) = out_path.parent() {
         if !buffers.directories.contains(parent) {
-            fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+            fs::create_dir_all(parent).map_err(|err| format!("{}: {err}", parent.display()))?;
             buffers.directories.insert(parent.to_owned());
         }
     }
-    fs::write(&out_path, &buffers.bytes).map_err(|err| err.to_string())
+    write_with_retries(&out_path, || fs::write(&out_path, &buffers.bytes))
 }
 
 fn report_extract_progress(
@@ -550,6 +577,7 @@ fn parse_pack_mod_config(config: &Bound<'_, PyDict>) -> PyResult<PackModConfig> 
         xbox: required_config_item(config, "xbox")?.extract::<bool>()?,
         archive_workers: required_config_item(config, "archive_workers")?.extract::<usize>()?,
         manifest_path,
+        fo4_og: optional_config_bool(config, "fo4_og", false)?,
         dry_run: optional_config_bool(config, "dry_run", false)?,
     })
 }
@@ -911,4 +939,48 @@ pub(crate) fn plan_archives(
         out.append(item)?;
     }
     Ok(out.into_any().unbind())
+}
+
+#[cfg(test)]
+mod write_retry_tests {
+    use super::*;
+
+    #[test]
+    fn transient_failures_are_retried_until_the_write_lands() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("wpnreload.hkx");
+        let mut attempts = 0;
+        let result = write_with_retries(&path, || {
+            attempts += 1;
+            if attempts < WRITE_ATTEMPTS {
+                // ERROR_SHARING_VIOLATION: what an antivirus hold looks like.
+                return Err(std::io::Error::from_raw_os_error(32));
+            }
+            fs::write(&path, b"payload")
+        });
+
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(attempts, WRITE_ATTEMPTS);
+        assert_eq!(fs::read(&path).unwrap(), b"payload");
+    }
+
+    #[test]
+    fn an_exhausted_write_leaves_no_empty_file_and_names_the_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("wpnreload.hkx");
+        let mut attempts = 0;
+        let error = write_with_retries(&path, || {
+            attempts += 1;
+            // fs::write truncates before it writes, so every failed attempt
+            // leaves an empty file at the real name.
+            fs::write(&path, b"")?;
+            Err(std::io::Error::from_raw_os_error(32))
+        })
+        .unwrap_err();
+
+        assert_eq!(attempts, WRITE_ATTEMPTS);
+        assert!(error.contains("wpnreload.hkx"), "{error}");
+        assert!(error.contains("after 3 attempts"), "{error}");
+        assert!(!path.exists(), "a zero-byte file must not survive: {error}");
+    }
 }

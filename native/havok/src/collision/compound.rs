@@ -133,9 +133,6 @@ const COMPOUND_FLAGS: u8 = 0x04;
 const COMPOUND_DISPATCH: u8 = 0x02;
 
 // hknpConvexPolytopeShape flags / dispatch observed in vanilla
-const POLYTOPE_FLAGS: u8 = 0x43;
-const POLYTOPE_DISPATCH: u16 = 0x0100;
-
 // hknpShapeInstance flag bits (hknpShapeInstance.h::FlagsEnum).
 // Stored in `hkVector4::setInt24W(flags)` → float bits = 0x3F000000 | flags.
 // See hknpShapeInstance.inl::setFlags / getFlags.
@@ -1067,14 +1064,6 @@ mod tests {
         CompoundChild::identity_transform()
     }
 
-    fn read_row3_w(inst_bytes: &[u8]) -> u32 {
-        u32::from_le_bytes(inst_bytes[0x3C..0x40].try_into().unwrap())
-    }
-
-    fn read_row2_w(inst_bytes: &[u8]) -> u32 {
-        u32::from_le_bytes(inst_bytes[0x2C..0x30].try_into().unwrap())
-    }
-
     fn tetra_child(x: f32) -> CompoundChild {
         CompoundChild {
             transform: identity(),
@@ -1110,31 +1099,62 @@ mod tests {
         }
     }
 
+    fn write_source(shape: &SourcePolytopeShape) -> (Vec<u8>, usize, usize) {
+        let mut data = Vec::new();
+        let mut fixups = FixupBuilder::new();
+        let (shape_rel, refprop_rel) = write_source_polytope_objects(
+            shape,
+            0.0,
+            0,
+            &std::collections::HashMap::new(),
+            &mut fixups,
+            &mut data,
+        )
+        .expect("write source polytope");
+        (data, shape_rel, refprop_rel)
+    }
+
+    fn source_compound_data(transform: [[f32; 4]; 4]) -> Vec<u8> {
+        let children = vec![CompoundChild {
+            transform,
+            kind: CompoundChildKind::SourcePolytope {
+                shape: source_tetrahedron(),
+            },
+        }];
+        build_compound_data_section(
+            &children,
+            &std::collections::HashMap::new(),
+            &BuildOptions::default(),
+        )
+        .expect("build source compound")
+        .0
+    }
+
+    const COMPOUND_SHAPE_REL: usize = 0x80 + 0x50 + 0x60 + 0x10;
+
+    fn f32_at(bytes: &[u8], offset: usize) -> f32 {
+        f32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
+    }
+
+    fn u32_at(bytes: &[u8], offset: usize) -> u32 {
+        u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
+    }
+
     #[test]
-    fn shape_instance_row3_encodes_low_24_bits_of_tree_node_idx() {
-        // The high byte of row3.w carries Havok flag bits (0x3F constant);
-        // the remaining 24 bits hold the leaf index.
-        let bytes = build_shape_instance(&identity(), 0x000123_AB, 0);
-        let row3_w = read_row3_w(&bytes);
-        // Top byte preserves the 0x3F flag pattern.
-        assert_eq!(row3_w >> 24, 0x3F, "row3.w top byte must remain 0x3F");
-        // Low 24 bits must hold the full leaf index.
+    fn shape_instance_layout() {
+        // row3.w: top byte keeps Havok's 0x3F flag pattern, low 24 bits hold the
+        // leaf index (299 must not truncate to 43).
+        for index in [0x000123_AB, 299] {
+            let row3_w = u32_at(&build_shape_instance(&identity(), index, 0), 0x3C);
+            assert_eq!(row3_w >> 24, 0x3F);
+            assert_eq!(row3_w & 0x00FF_FFFF, index as u32);
+        }
         assert_eq!(
-            row3_w & 0x00FF_FFFF,
-            0x000123_AB,
-            "row3.w low 24 bits must hold tree_node_idx (got 0x{:06X})",
-            row3_w & 0xFFFFFF
+            u32_at(&build_shape_instance(&identity(), 1, 0x190), 0x2C),
+            0x3f00_0190,
+            "row2.w carries the child shape size"
         );
-    }
 
-    #[test]
-    fn shape_instance_row2_encodes_child_shape_size() {
-        let bytes = build_shape_instance(&identity(), 1, 0x190);
-        assert_eq!(read_row2_w(&bytes), 0x3f00_0190);
-    }
-
-    #[test]
-    fn shape_instance_serializes_column_major_transform_and_flags() {
         let transform = [
             [0.0, -1.0, 0.0, 5.0],
             [1.0, 0.0, 0.0, 6.0],
@@ -1142,85 +1162,89 @@ mod tests {
             [0.0, 0.0, 0.0, 1.0],
         ];
         let bytes = build_shape_instance(&transform, 1, 0x190);
-        let read_f32 = |offset| f32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
-        let read_u32 = |offset| u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
-
+        let row = |offset: usize| {
+            [
+                f32_at(&bytes, offset),
+                f32_at(&bytes, offset + 4),
+                f32_at(&bytes, offset + 8),
+            ]
+        };
+        assert_eq!(row(0x00), [0.0, 1.0, 0.0], "column-major");
+        assert_eq!(row(0x10), [-1.0, 0.0, 0.0]);
+        assert_eq!(row(0x20), [0.0, 0.0, 1.0]);
+        assert_eq!(row(0x30), [5.0, 6.0, 7.0]);
         assert_eq!(
-            [read_f32(0x00), read_f32(0x04), read_f32(0x08)],
-            [0.0, 1.0, 0.0]
-        );
-        assert_eq!(
-            [read_f32(0x10), read_f32(0x14), read_f32(0x18)],
-            [-1.0, 0.0, 0.0]
-        );
-        assert_eq!(
-            [read_f32(0x20), read_f32(0x24), read_f32(0x28)],
-            [0.0, 0.0, 1.0]
-        );
-        assert_eq!(
-            [read_f32(0x30), read_f32(0x34), read_f32(0x38)],
-            [5.0, 6.0, 7.0]
-        );
-        assert_eq!(
-            read_u32(0x0c) & 0x00ff_ffff,
+            u32_at(&bytes, 0x0c) & 0x00ff_ffff,
             SHAPE_INST_IS_ENABLED | SHAPE_INST_HAS_TRANSLATION | SHAPE_INST_HAS_ROTATION
         );
+
+        let allocated = build_shape_instance(&identity(), 0, 0);
+        assert_eq!(allocated[0x5C], 0, "m_isEmpty");
+        assert_eq!(u32_at(&allocated, 0x60), 0, "m_nextEmptyElement");
     }
 
     #[test]
-    fn shape_instance_supports_indices_above_255() {
-        // The tightest regression: index 299 must round-trip without being
-        // truncated to (299 & 0xFF) = 43.
-        let bytes = build_shape_instance(&identity(), 299, 0);
-        let row3_w = read_row3_w(&bytes);
-        assert_eq!(row3_w & 0x00FF_FFFF, 299);
-    }
+    fn compound_shape_header_matches_vanilla() {
+        let aabb = Aabb {
+            min: [-1.0; 3],
+            max: [1.0; 3],
+        };
+        for (count, expected_bits) in [(2, 2), (3, 2), (4, 3), (6, 3), (8, 4), (11, 4)] {
+            let buf = build_compound_shape_header(count, &aabb, 0);
+            assert_eq!(buf[0x12], expected_bits, "numShapeKeyBits for {count}");
+            assert_eq!(buf[0x13], COMPOUND_DISPATCH, "dispatchType");
+        }
 
-    #[test]
-    fn shape_instance_writes_freelist_metadata() {
-        let bytes = build_shape_instance(&identity(), 0, 0);
+        let buf = build_compound_shape_header(6, &aabb, 0);
+        assert_eq!(u32_at(&buf, 0x30), u32::MAX, "secondaryKeyMask");
+        assert_eq!(u32_at(&buf, 0x34), 0, "sencondaryKeyBits");
+        assert!(buf[0x38..0x40].iter().all(|&byte| byte == 0));
+        assert_eq!(u32_at(&buf, 0x40), 0, "primaryKeyToIndex size");
         assert_eq!(
-            bytes[0x5C], 0,
-            "m_isEmpty must be 0 (this slot is allocated)"
+            u32_at(&buf, 0x44),
+            0x8000_0000,
+            "primaryKeyToIndex capacity"
         );
-        let next_empty = u32::from_le_bytes(bytes[0x60..0x64].try_into().unwrap());
+        assert!(buf[0x48..0x50].iter().all(|&byte| byte == 0));
+        assert_eq!(u32_at(&buf, 0x50), 0, "valueAndSecondaryKeys size");
         assert_eq!(
-            next_empty, 0,
-            "m_nextEmptyElement must be 0 for allocated slots"
+            u32_at(&buf, 0x54),
+            0x8000_0000,
+            "valueAndSecondaryKeys capacity"
+        );
+        assert_eq!(u32_at(&buf, 0x58), u32::MAX, "shapeTagCodecInfo");
+        assert_eq!(
+            u32_at(&buf, 0x70),
+            0xFFFF_FFFF,
+            "instances m_firstFree = -1"
         );
     }
 
     #[test]
-    fn source_compound_child_preserves_face_min_half_angles() {
+    fn source_polytope_child_preserves_source_data() {
         let shape = source_tetrahedron();
-        let expected = shape.faces.iter().map(|face| face.2).collect::<Vec<_>>();
-        let mut data = Vec::new();
-        let mut fixups = FixupBuilder::new();
-        let (shape_rel, _) = write_source_polytope_objects(
-            &shape,
-            0.0,
-            0,
-            &std::collections::HashMap::new(),
-            &mut fixups,
-            &mut data,
-        )
-        .expect("write source compound child");
+        let (data, shape_rel, refprop_rel) = write_source(&shape);
         let face_count =
             u16::from_le_bytes(data[shape_rel + 0x44..shape_rel + 0x46].try_into().unwrap());
         let face_rel =
             u16::from_le_bytes(data[shape_rel + 0x46..shape_rel + 0x48].try_into().unwrap());
         let faces_abs = shape_rel + 0x44 + usize::from(face_rel);
-        let actual = (0..usize::from(face_count))
+        let half_angles: Vec<u8> = (0..usize::from(face_count))
             .map(|index| data[faces_abs + index * 4 + 3])
-            .collect::<Vec<_>>();
+            .collect();
+        assert_eq!(
+            half_angles,
+            shape.faces.iter().map(|f| f.2).collect::<Vec<_>>()
+        );
 
-        assert_eq!(actual, expected);
-    }
+        let packed_size = u32_at(
+            &source_compound_data(identity()),
+            COMPOUND_SHAPE_REL + COMPOUND_HDR_SIZE + 0x2c,
+        );
+        assert_eq!(packed_size & 0x00ff_ffff, (refprop_rel - shape_rel) as u32);
 
-    #[test]
-    fn source_compound_child_carries_source_mass_properties_verbatim() {
-        let mut shape = source_tetrahedron();
-        shape.mass_properties = Some(
+        let mut with_mass = source_tetrahedron();
+        with_mass.mass_properties = Some(
             crate::collision::mass_properties::CompressedMassProperties {
                 center_of_mass: [23241, 0, 0, 8832],
                 inertia: [29172, 11849, 30893, 11136],
@@ -1229,76 +1253,47 @@ mod tests {
                 volume: 0.038964,
             },
         );
-        let mut data = Vec::new();
-        let mut fixups = FixupBuilder::new();
-        let (_, refprop_rel) = write_source_polytope_objects(
-            &shape,
-            0.0,
-            0,
-            &std::collections::HashMap::new(),
-            &mut fixups,
-            &mut data,
-        )
-        .expect("write source compound child");
-        // hknpShapeMassProperties block starts after the 0x20-byte
-        // hkRefCountedProperties object.
+        let (data, _, refprop_rel) = write_source(&with_mass);
+        // hknpShapeMassProperties follows the 0x20-byte hkRefCountedProperties.
         let mp = refprop_rel + 0x20;
-        let read_i16x4 = |offset: usize| {
-            let mut out = [0i16; 4];
-            for (i, slot) in out.iter_mut().enumerate() {
-                *slot = i16::from_le_bytes(
-                    data[offset + i * 2..offset + i * 2 + 2].try_into().unwrap(),
+        let i16x4 = |offset: usize| -> [i16; 4] {
+            std::array::from_fn(|i| {
+                i16::from_le_bytes(data[offset + i * 2..offset + i * 2 + 2].try_into().unwrap())
+            })
+        };
+        assert_eq!(i16x4(mp + 0x10), [23241, 0, 0, 8832]);
+        assert_eq!(i16x4(mp + 0x18), [29172, 11849, 30893, 11136]);
+        assert_eq!(i16x4(mp + 0x20), [-32768, -32768, -32768, -2768]);
+        assert_eq!(f32_at(&data, mp + 0x28), 0.038964);
+        assert_eq!(f32_at(&data, mp + 0x2C), 0.038964);
+    }
+
+    #[test]
+    fn source_compound_bounds_include_radius_and_transform() {
+        let radius = source_tetrahedron().convex_radius;
+        let mut translated = identity();
+        translated[0][3] = 5.0;
+        translated[1][3] = 6.0;
+        translated[2][3] = 7.0;
+        for (transform, offset) in [(identity(), [0.0, 0.0, 0.0]), (translated, [5.0, 6.0, 7.0])] {
+            let data = source_compound_data(transform);
+            for axis in 0..3 {
+                let min = f32_at(&data, COMPOUND_SHAPE_REL + 0x80 + axis * 4);
+                let max = f32_at(&data, COMPOUND_SHAPE_REL + 0x90 + axis * 4);
+                assert!(
+                    (min - (offset[axis] - radius)).abs() < 1e-6,
+                    "min[{axis}] {min}"
+                );
+                assert!(
+                    (max - (offset[axis] + 1.0 + radius)).abs() < 1e-6,
+                    "max[{axis}] {max}"
                 );
             }
-            out
-        };
-        assert_eq!(read_i16x4(mp + 0x10), [23241, 0, 0, 8832]);
-        assert_eq!(read_i16x4(mp + 0x18), [29172, 11849, 30893, 11136]);
-        assert_eq!(read_i16x4(mp + 0x20), [-32768, -32768, -32768, -2768]);
-        let mass = f32::from_le_bytes(data[mp + 0x28..mp + 0x2C].try_into().unwrap());
-        let volume = f32::from_le_bytes(data[mp + 0x2C..mp + 0x30].try_into().unwrap());
-        assert_eq!(mass, 0.038964);
-        assert_eq!(volume, 0.038964);
+        }
     }
 
     #[test]
-    fn source_compound_instance_uses_serialized_polytope_size() {
-        let shape = source_tetrahedron();
-        let mut shape_data = Vec::new();
-        let mut shape_fixups = FixupBuilder::new();
-        let (shape_rel, refprop_rel) = write_source_polytope_objects(
-            &shape,
-            0.0,
-            0,
-            &std::collections::HashMap::new(),
-            &mut shape_fixups,
-            &mut shape_data,
-        )
-        .expect("write source polytope");
-        let expected_size = refprop_rel - shape_rel;
-        let children = vec![CompoundChild {
-            transform: identity(),
-            kind: CompoundChildKind::SourcePolytope { shape },
-        }];
-        let (data, _) = build_compound_data_section(
-            &children,
-            &std::collections::HashMap::new(),
-            &BuildOptions::default(),
-        )
-        .expect("build source compound");
-        let compound_shape_rel = 0x80 + 0x50 + 0x60 + 0x10;
-        let instance_rel = compound_shape_rel + COMPOUND_HDR_SIZE;
-        let packed_size = u32::from_le_bytes(
-            data[instance_rel + 0x2c..instance_rel + 0x30]
-                .try_into()
-                .unwrap(),
-        );
-
-        assert_eq!(packed_size & 0x00ff_ffff, expected_size as u32);
-    }
-
-    #[test]
-    fn dynamic_compound_tree_metadata_uses_dynamic_storage16_layout() {
+    fn dynamic_compound_tree_metadata_and_instance_capacity() {
         let children = vec![tetra_child(0.0), tetra_child(2.0)];
         let (data, _) = build_compound_data_section(
             &children,
@@ -1322,25 +1317,27 @@ mod tests {
             .expect("serialized tree nodes should be present");
         let tree_rel = nodes_rel - 0x30;
 
-        let first_free =
-            u16::from_le_bytes(data[tree_rel + 0x10..tree_rel + 0x12].try_into().unwrap());
-        let first_free_padding = &data[tree_rel + 0x12..tree_rel + 0x18];
-        let num_leaves =
-            u32::from_le_bytes(data[tree_rel + 0x18..tree_rel + 0x1c].try_into().unwrap());
-        let path = u32::from_le_bytes(data[tree_rel + 0x1c..tree_rel + 0x20].try_into().unwrap());
-        let root = u16::from_le_bytes(data[tree_rel + 0x20..tree_rel + 0x22].try_into().unwrap());
-        let root_padding = &data[tree_rel + 0x22..tree_rel + 0x30];
+        let u16_at =
+            |offset: usize| u16::from_le_bytes(data[offset..offset + 2].try_into().unwrap());
+        assert_eq!(
+            u16_at(tree_rel + 0x10),
+            4,
+            "firstFree is the spare free-list node"
+        );
+        assert!(
+            data[tree_rel + 0x12..tree_rel + 0x18]
+                .iter()
+                .all(|&b| b == 0)
+        );
+        assert_eq!(u32_at(&data, tree_rel + 0x18), 2, "numLeaves");
+        assert_eq!(u32_at(&data, tree_rel + 0x1c), 0, "path");
+        assert_eq!(u16_at(tree_rel + 0x20), 1, "root");
+        assert!(
+            data[tree_rel + 0x22..tree_rel + 0x30]
+                .iter()
+                .all(|&b| b == 0)
+        );
 
-        assert_eq!(first_free, 4, "firstFree is the spare free-list node");
-        assert!(first_free_padding.iter().all(|&byte| byte == 0));
-        assert_eq!(num_leaves, 2);
-        assert_eq!(path, 0);
-        assert_eq!(root, 1);
-        assert!(root_padding.iter().all(|&byte| byte == 0));
-    }
-
-    #[test]
-    fn compound_rejects_shape_instance_handle_overflow() {
         let too_many = (0..=SHAPE_INSTANCE_MAX_COUNT)
             .map(|_| CompoundChild {
                 transform: identity(),
@@ -1353,133 +1350,6 @@ mod tests {
         assert!(
             matches!(err, crate::error::HavokError::InvalidInput(ref message) if message.contains("hknpShapeInstanceId handle capacity")),
             "unexpected error: {err}"
-        );
-    }
-
-    #[test]
-    fn compound_shape_header_writes_first_free_sentinel() {
-        // Per hkFreeListArrayhknpShapeInstance...xml: m_firstFree is hkInt32
-        // at offset 16 of the array (relative to the array's hkArray header).
-        // In the compound shape header, the instances array starts at +0x60
-        // so m_firstFree lives at +0x70.  Empty list → -1 = 0xFFFFFFFF.
-        let aabb = Aabb {
-            min: [-1.0; 3],
-            max: [1.0; 3],
-        };
-        let buf = build_compound_shape_header(2, &aabb, 0);
-        let first_free = u32::from_le_bytes(buf[0x70..0x74].try_into().unwrap());
-        assert_eq!(
-            first_free, 0xFFFF_FFFF,
-            "compound instances m_firstFree must be -1 (empty free list)"
-        );
-    }
-
-    #[test]
-    fn source_compound_bounds_include_child_convex_radius() {
-        let shape = source_tetrahedron();
-        let radius = shape.convex_radius;
-        let children = vec![CompoundChild {
-            transform: identity(),
-            kind: CompoundChildKind::SourcePolytope { shape },
-        }];
-        let (data, _) = build_compound_data_section(
-            &children,
-            &std::collections::HashMap::new(),
-            &BuildOptions::default(),
-        )
-        .expect("build source compound");
-        let compound_shape_rel = 0x80 + 0x50 + 0x60 + 0x10;
-        let read_f32 = |offset| f32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
-
-        assert!((read_f32(compound_shape_rel + 0x80) + radius).abs() < 1e-6);
-        assert!((read_f32(compound_shape_rel + 0x84) + radius).abs() < 1e-6);
-        assert!((read_f32(compound_shape_rel + 0x88) + radius).abs() < 1e-6);
-        assert!((read_f32(compound_shape_rel + 0x90) - (1.0 + radius)).abs() < 1e-6);
-        assert!((read_f32(compound_shape_rel + 0x94) - (1.0 + radius)).abs() < 1e-6);
-        assert!((read_f32(compound_shape_rel + 0x98) - (1.0 + radius)).abs() < 1e-6);
-    }
-
-    #[test]
-    fn source_compound_bounds_apply_child_transform() {
-        let shape = source_tetrahedron();
-        let radius = shape.convex_radius;
-        let mut transform = identity();
-        transform[0][3] = 5.0;
-        transform[1][3] = 6.0;
-        transform[2][3] = 7.0;
-        let children = vec![CompoundChild {
-            transform,
-            kind: CompoundChildKind::SourcePolytope { shape },
-        }];
-        let (data, _) = build_compound_data_section(
-            &children,
-            &std::collections::HashMap::new(),
-            &BuildOptions::default(),
-        )
-        .expect("build transformed source compound");
-        let compound_shape_rel = 0x80 + 0x50 + 0x60 + 0x10;
-        let read_f32 = |offset| f32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
-
-        assert!((read_f32(compound_shape_rel + 0x80) - (5.0 - radius)).abs() < 1e-6);
-        assert!((read_f32(compound_shape_rel + 0x84) - (6.0 - radius)).abs() < 1e-6);
-        assert!((read_f32(compound_shape_rel + 0x88) - (7.0 - radius)).abs() < 1e-6);
-        assert!((read_f32(compound_shape_rel + 0x90) - (6.0 + radius)).abs() < 1e-6);
-        assert!((read_f32(compound_shape_rel + 0x94) - (7.0 + radius)).abs() < 1e-6);
-        assert!((read_f32(compound_shape_rel + 0x98) - (8.0 + radius)).abs() < 1e-6);
-    }
-
-    #[test]
-    fn compound_shape_header_writes_empty_edge_welding_map() {
-        let aabb = Aabb {
-            min: [-1.0; 3],
-            max: [1.0; 3],
-        };
-        let buf = build_compound_shape_header(2, &aabb, 0);
-        let read_u32 = |offset| u32::from_le_bytes(buf[offset..offset + 4].try_into().unwrap());
-
-        assert_eq!(read_u32(0x30), u32::MAX, "secondaryKeyMask");
-        assert_eq!(read_u32(0x34), 0, "sencondaryKeyBits");
-        assert!(buf[0x38..0x40].iter().all(|&byte| byte == 0));
-        assert_eq!(read_u32(0x40), 0, "primaryKeyToIndex size");
-        assert_eq!(read_u32(0x44), 0x8000_0000, "primaryKeyToIndex capacity");
-        assert!(buf[0x48..0x50].iter().all(|&byte| byte == 0));
-        assert_eq!(read_u32(0x50), 0, "valueAndSecondaryKeys size");
-        assert_eq!(
-            read_u32(0x54),
-            0x8000_0000,
-            "valueAndSecondaryKeys capacity"
-        );
-    }
-
-    #[test]
-    fn compound_shape_header_matches_vanilla_shape_key_bits() {
-        let aabb = Aabb {
-            min: [-1.0; 3],
-            max: [1.0; 3],
-        };
-
-        for (count, expected_bits) in [(2, 2), (3, 2), (4, 3), (6, 3), (8, 4), (11, 4)] {
-            let buf = build_compound_shape_header(count, &aabb, 0);
-            assert_eq!(
-                buf[0x12], expected_bits,
-                "numShapeKeyBits for {count} compound child instance(s)"
-            );
-            assert_eq!(buf[0x13], COMPOUND_DISPATCH, "dispatchType");
-        }
-    }
-
-    #[test]
-    fn compound_shape_header_writes_vanilla_shape_tag_codec_info() {
-        let aabb = Aabb {
-            min: [-1.0; 3],
-            max: [1.0; 3],
-        };
-        let buf = build_compound_shape_header(6, &aabb, 0);
-        let codec = u32::from_le_bytes(buf[0x58..0x5c].try_into().unwrap());
-        assert_eq!(
-            codec,
-            u32::MAX,
-            "hknpCompositeShape.shapeTagCodecInfo must match vanilla FO4 compound shapes"
         );
     }
 }

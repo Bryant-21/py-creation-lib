@@ -244,24 +244,14 @@ mod tests {
     }
 
     #[test]
-    fn non_riff_input_is_rejected() {
-        let error = wem_to_ogg(b"OggS", &empty_table()).err().unwrap();
-        assert!(error.contains("RIFF"), "{error}");
-    }
-
-    #[test]
-    fn codecs_other_than_wwise_vorbis_are_rejected() {
-        let error = wem_to_ogg(&wem(0xFFFE, 0xB0), &empty_table())
-            .err()
-            .unwrap();
-        assert!(error.contains("0xFFFE"), "{error}");
-    }
-
-    #[test]
-    fn streams_with_unmodified_packet_headers_are_rejected() {
-        let error = wem_to_ogg(&wem(0xFFFF, 0x4A), &empty_table())
-            .err()
-            .unwrap();
-        assert!(error.contains("packet"), "{error}");
+    fn unsupported_inputs_are_rejected() {
+        for (input, needle) in [
+            (b"OggS".to_vec(), "RIFF"),
+            (wem(0xFFFE, 0xB0), "0xFFFE"),
+            (wem(0xFFFF, 0x4A), "packet"),
+        ] {
+            let error = wem_to_ogg(&input, &empty_table()).err().unwrap();
+            assert!(error.contains(needle), "{error}");
+        }
     }
 }

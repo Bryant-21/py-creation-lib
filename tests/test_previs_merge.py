@@ -37,35 +37,25 @@ def _patch_native(monkeypatch: pytest.MonkeyPatch) -> list[tuple]:
     return calls
 
 
-def test_merge_precombined_passes_only_combined_esp(tmp_path, monkeypatch):
+def test_merge_precombined_and_previs_pass_only_their_own_esp(tmp_path, monkeypatch):
     mods_dir, previs_tmp = _make_mod(tmp_path)
     combined = previs_tmp / "CombinedObjects.esp"
     combined.write_bytes(b"combined")
-    calls = _patch_native(monkeypatch)
-
-    previs_merge.merge_precombined("B21_Test", mods_dir=mods_dir)
-
-    assert len(calls) == 1
-    assert calls[0][1] == str(combined)
-    assert calls[0][2] is None
-
-
-def test_merge_previs_can_run_previs_only(tmp_path, monkeypatch):
-    mods_dir, previs_tmp = _make_mod(tmp_path)
     previs = previs_tmp / "PreVis.esp"
     previs.write_bytes(b"previs")
     calls = _patch_native(monkeypatch)
 
-    previs_merge.merge_previs(
-        "B21_Test",
-        mods_dir=mods_dir,
-        include_combined=False,
-        include_previs=True,
-    )
-
+    previs_merge.merge_precombined("B21_Test", mods_dir=mods_dir)
     assert len(calls) == 1
-    assert calls[0][1] is None
-    assert calls[0][2] == str(previs)
+    assert calls[0][1] == str(combined)
+    assert calls[0][2] is None
+
+    previs_merge.merge_previs(
+        "B21_Test", mods_dir=mods_dir, include_combined=False, include_previs=True,
+    )
+    assert len(calls) == 2
+    assert calls[1][1] is None
+    assert calls[1][2] == str(previs)
 
 
 def test_merge_previs_rejects_no_enabled_phases(tmp_path):
@@ -73,8 +63,5 @@ def test_merge_previs_rejects_no_enabled_phases(tmp_path):
 
     with pytest.raises(ValueError, match="at least one merge phase"):
         previs_merge.merge_previs(
-            "B21_Test",
-            mods_dir=mods_dir,
-            include_combined=False,
-            include_previs=False,
+            "B21_Test", mods_dir=mods_dir, include_combined=False, include_previs=False,
         )

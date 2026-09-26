@@ -1,33 +1,14 @@
 """Tests for SWF shape record parsing and writing."""
 from __future__ import annotations
 
-import pytest
-
-from creation_lib.swf.types import BitReader, BitWriter, RGBA, FillStyle, LineStyle
+from creation_lib.swf.types import BitReader, BitWriter, RGBA, FillStyle
 from creation_lib.swf.shapes import (
     ShapeDef, StraightEdge, CurvedEdge, StyleChange, EndShape,
     parse_shape_records, write_shape_records,
 )
 
 
-class TestStraightEdge:
-    def test_horizontal_line(self):
-        edge = StraightEdge(dx=100, dy=0)
-        assert edge.dx == 100
-        assert edge.dy == 0
-
-    def test_diagonal_line(self):
-        edge = StraightEdge(dx=50, dy=-30)
-        assert edge.dx == 50
-        assert edge.dy == -30
-
-
 class TestCurvedEdge:
-    def test_quadratic_bezier(self):
-        edge = CurvedEdge(cx=50, cy=0, ax=50, ay=50)
-        assert edge.cx == 50  # control point delta
-        assert edge.ax == 50  # anchor point delta
-
     def test_to_cubic(self):
         """Quadratic->cubic elevation is lossless."""
         edge = CurvedEdge(cx=60, cy=0, ax=60, ay=60)
@@ -38,20 +19,6 @@ class TestCurvedEdge:
         end_y = 0 + edge.cy + edge.ay
         assert cubic[4] == end_x  # endpoint x
         assert cubic[5] == end_y  # endpoint y
-
-
-class TestStyleChange:
-    def test_move_to(self):
-        sc = StyleChange(move_x=100, move_y=200)
-        assert sc.move_x == 100
-        assert sc.move_y == 200
-        assert sc.fill0 is None
-        assert sc.fill1 is None
-
-    def test_fill_change(self):
-        sc = StyleChange(fill0=1, fill1=2)
-        assert sc.fill0 == 1
-        assert sc.fill1 == 2
 
 
 class TestShapeDef:

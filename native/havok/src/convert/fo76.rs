@@ -6,6 +6,10 @@ use crate::hkx::{HkxFile, HkxMember, HkxObject, Tagfile};
 #[path = "fo76_bone_weights.rs"]
 mod bone_weights;
 
+#[cfg(test)]
+#[path = "fo76_human_idle_tests.rs"]
+mod human_idle_tests;
+
 pub const FO76_TO_FO4_ROUTE: &str = "tag0-fo76-to-fo4";
 
 const HK_INTERLEAVED_ANIMATION_TYPE: i32 = 1;
@@ -676,41 +680,6 @@ fn bool_or_int_to_event_sentinel(value: &HkxValue) -> Option<i32> {
         _ => None,
     }
 }
-
-/// Sample `::`-nested class names used as test-fixture assertions. The transform
-/// flattens ANY class name containing `::`, not just these.
-#[cfg(test)]
-const KNOWN_NESTED_CLASS_RENAMES: &[(&str, &str)] = &[
-    ("hkbStateMachine::StateInfo", "hkbStateMachineStateInfo"),
-    (
-        "hkbStateMachine::TransitionInfoArray",
-        "hkbStateMachineTransitionInfoArray",
-    ),
-    (
-        "hkbStateMachine::EventPropertyArray",
-        "hkbStateMachineEventPropertyArray",
-    ),
-    (
-        "hkbStateMachine::TransitionInfo",
-        "hkbStateMachineTransitionInfo",
-    ),
-    (
-        "hkbStateMachine::TimeInterval",
-        "hkbStateMachineTimeInterval",
-    ),
-    (
-        "hkbVariableBindingSet::Binding",
-        "hkbVariableBindingSetBinding",
-    ),
-    (
-        "hkRootLevelContainer::NamedVariant",
-        "hkRootLevelContainerNamedVariant",
-    ),
-    (
-        "hkbHandIkControlsModifier::Hand",
-        "hkbHandIkControlsModifierHand",
-    ),
-];
 
 /// Rename FO76 `::`-nested class names (e.g. `hkbStateMachine::StateInfo`) to
 /// FO4's flat form (`hkbStateMachineStateInfo`). FO4's classxml uses flat names;
@@ -7232,22 +7201,11 @@ fn remap_human_character_property_bone_indices(hkx: &mut HkxFile) {
     }
 }
 
-#[cfg(test)]
-fn auto_fix_human_bone_tracks_is_noop(hkx: &HkxFile) -> bool {
-    !hkx.objects().iter().any(|object| {
-        is_real_animation_class(&object.class_name)
-            || object
-                .members
-                .iter()
-                .any(|member| member.name == "numberOfTransformTracks")
-    })
-}
-
 /// Convert FO76 human-skeleton animation tracks to FO4 bone order.
 ///
-/// For 96-track spline: decompress → strip AimSource (track 12) → reorder to FO4
+/// For 96/97-track spline: strip AimSource and optional trailing Jaw, reorder to FO4
 /// bone order → recompress, then set identity bone indices on the binding.
-/// For 96-track interleaved: same strip+reorder directly (no decompress/recompress).
+/// For 96/97-track interleaved: same strip+reorder directly (no decompress/recompress).
 /// For 90-95 track spline with non-identity indices: decompress → reorder → recompress,
 /// set identity indices.
 /// For 90-95 track interleaved with non-identity indices: remap indices in-place.
@@ -7295,9 +7253,20 @@ fn auto_fix_human_bone_tracks(hkx: &mut HkxFile) {
             None => continue,
         };
 
+        // Wastelanders human clips append Jaw to the legacy 96-bone rig.
+        let has_jaw = num_tracks == 97
+            && binding_by_anim_name.get(&obj.name).is_some_and(|&bidx| {
+                let binding = &hkx.objects()[bidx];
+                binding.members.iter().any(|member| {
+                    member.name == "originalSkeletonName"
+                        && matches!(&member.value, HkxValue::String { value, .. } if value == "Root")
+                }) && !needs_fo76_remap(binding, num_tracks)
+            });
         match obj.class_name.as_str() {
-            "hkaSplineCompressedAnimation" if num_tracks == 96 => strip_spline.push(i),
-            "hkaInterleavedUncompressedAnimation" if num_tracks == 96 => strip_interleaved.push(i),
+            "hkaSplineCompressedAnimation" if num_tracks == 96 || has_jaw => strip_spline.push(i),
+            "hkaInterleavedUncompressedAnimation" if num_tracks == 96 || has_jaw => {
+                strip_interleaved.push(i)
+            }
             "hkaSplineCompressedAnimation" if (90..=95).contains(&num_tracks) => {
                 let binding_idx = binding_by_anim_name.get(&obj.name).copied();
                 if let Some(bidx) = binding_idx {
@@ -7449,7 +7418,7 @@ fn strip_and_reorder_interleaved(obj: &mut HkxObject, strip_idx: usize, bone_map
         _ => return,
     };
 
-    let expected = num_tracks - 1;
+    let expected = bone_mapping.len();
 
     // --- Strip transforms ---
     if let Some(m) = obj.members.iter_mut().find(|m| m.name == "transforms") {
@@ -7458,7 +7427,7 @@ fn strip_and_reorder_interleaved(obj: &mut HkxObject, strip_idx: usize, bone_map
             if total % num_tracks == 0 {
                 let mut kept = Vec::with_capacity(total - total / num_tracks);
                 for (flat_idx, val) in transforms.drain(..).enumerate() {
-                    if flat_idx % num_tracks != strip_idx {
+                    if flat_idx % num_tracks != strip_idx && flat_idx % num_tracks < expected + 1 {
                         kept.push(val);
                     }
                 }
@@ -7475,6 +7444,7 @@ fn strip_and_reorder_interleaved(obj: &mut HkxObject, strip_idx: usize, bone_map
     {
         if let HkxValue::Array(ref mut tracks) = m.value {
             if tracks.len() == num_tracks {
+                tracks.truncate(expected + 1);
                 tracks.remove(strip_idx);
             }
         }
@@ -7603,7 +7573,8 @@ fn remap_annotation_tracks_member(
 
     let mut tracks = src_tracks.clone();
     if let Some(strip_idx) = strip_idx {
-        if tracks.len() == num_tracks_out + 1 && strip_idx < tracks.len() {
+        if tracks.len() >= num_tracks_out + 1 && strip_idx < num_tracks_out + 1 {
+            tracks.truncate(num_tracks_out + 1);
             tracks.remove(strip_idx);
         }
     }
@@ -7624,7 +7595,7 @@ fn remap_annotation_tracks_member(
 
 /// Decompress spline animations at `targets`, apply strip-or-reorder, recompress.
 ///
-/// `targets`: `(object_index, is_strip_96)` — true = 96-track strip+reorder,
+/// `targets`: `(object_index, is_strip)` — true = 96/97-track strip+reorder,
 /// false = 90-95-track reorder only.
 fn decompress_then_mutate_recompress(
     hkx: &mut HkxFile,
@@ -7766,12 +7737,13 @@ fn decompress_then_mutate_recompress(
         };
 
         let (num_tracks_out, bone_indices_out, annotation_tracks_out) = if is_strip {
-            // 96-track: strip AimSource, reorder to FO4 bone order.
+            // The optional Jaw follows the legacy rig; FO4 has neither it nor AimSource.
             const STRIP_IDX: usize = 12;
+            let expected = bone_mapping96.len();
             for frame in &mut frames {
+                frame.transforms.truncate(expected + 1);
                 frame.transforms.remove(STRIP_IDX);
             }
-            let expected = num_tracks_orig - 1;
             // Reorder frame transforms using bone_mapping96 inverse.
             let mut inverse = vec![0usize; expected];
             for (src, &fo4_idx) in bone_mapping96.iter().enumerate() {
@@ -9809,76 +9781,6 @@ mod tests {
     }
 
     #[test]
-    fn rename_variant_renames_merged_animation_container_without_physics() {
-        let mut animation_hkx = HkxFile::from_tagxml(
-            11,
-            "hk_2015.1.0-r1",
-            vec![object(
-                "hkRootLevelContainer",
-                vec![member(
-                    "namedVariants",
-                    HkxValue::Array(vec![named_variant(
-                        "Merged Animation Container",
-                        "hkaAnimationContainer",
-                        Some(1),
-                    )]),
-                )],
-            )],
-        );
-        let mut physics_hkx = HkxFile::from_tagxml(
-            11,
-            "hk_2015.1.0-r1",
-            vec![
-                object(
-                    "hkRootLevelContainer",
-                    vec![member(
-                        "namedVariants",
-                        HkxValue::Array(vec![named_variant(
-                            "Merged Animation Container",
-                            "hkaAnimationContainer",
-                            Some(1),
-                        )]),
-                    )],
-                ),
-                object("hknpRagdollData", vec![]),
-            ],
-        );
-
-        rename_variant(&mut animation_hkx);
-        rename_variant(&mut physics_hkx);
-
-        let HkxValue::Array(animation_variants) = &animation_hkx.objects()[0].members[0].value
-        else {
-            panic!("namedVariants should be an array");
-        };
-        let HkxValue::Object(animation_members) = &animation_variants[0] else {
-            panic!("namedVariants entry should be an object");
-        };
-        assert_eq!(animation_members[0].value, string("Animation Container"));
-
-        let HkxValue::Array(physics_variants) = &physics_hkx.objects()[0].members[0].value else {
-            panic!("namedVariants should be an array");
-        };
-        let HkxValue::Object(physics_members) = &physics_variants[0] else {
-            panic!("namedVariants entry should be an object");
-        };
-        assert_eq!(
-            physics_members[0].value,
-            string("Merged Animation Container")
-        );
-    }
-
-    #[test]
-    fn fix_version_metadata_sets_fo4_metadata() {
-        let mut hkx = HkxFile::from_tagxml(12, "hk_2015.1.0-r1", vec![]);
-
-        fix_version_metadata(&mut hkx);
-
-        assert_eq!(hkx.class_version(), 11);
-        assert_eq!(hkx.contents_version(), "hk_2014.1.0-r1");
-    }
-
-    #[test]
     fn remap_human_character_property_bone_indices_uses_fo4_skeleton_order() {
         let properties = [
             ("DirectAtWeaponBoneIndex", 29),
@@ -9938,48 +9840,6 @@ mod tests {
     }
 
     #[test]
-    fn remap_human_character_property_bone_indices_skips_custom_rigs() {
-        let properties = [("DirectAtWeaponBoneIndex", 29), ("WeaponGripBoneIndex", 30)];
-        let mut hkx = character_property_file(
-            "hk_2015.1.0-r1",
-            r"CharacterAssets\skeleton.hkt",
-            &properties,
-        );
-
-        remap_human_character_property_bone_indices(&mut hkx);
-
-        assert_eq!(character_property_values(&hkx), [29, 30]);
-    }
-
-    #[test]
-    fn remap_human_character_property_bone_indices_skips_fo4_files() {
-        let properties = [("DirectAtWeaponBoneIndex", 28), ("WeaponGripBoneIndex", 82)];
-        let mut hkx = character_property_file(
-            "hk_2014.1.0-r1",
-            r"..\Character\CharacterAssets\skeleton.HKT",
-            &properties,
-        );
-
-        remap_human_character_property_bone_indices(&mut hkx);
-
-        assert_eq!(character_property_values(&hkx), [28, 82]);
-    }
-
-    #[test]
-    fn stamp_fo76_schema_versions_covers_all_fo4_class_versions() {
-        for &(class_name, expected_sig) in FO4_CLASS_VERSIONS {
-            let mut hkx =
-                HkxFile::from_tagxml(12, "hk_2015.1.0-r1", vec![object(class_name, vec![])]);
-            stamp_fo76_schema_versions(&mut hkx);
-            assert_eq!(
-                hkx.objects()[0].signature,
-                expected_sig,
-                "expected {class_name}.signature = {expected_sig}"
-            );
-        }
-    }
-
-    #[test]
     fn fix_sphere_dispatch_type_rewrites_i32_two_to_one_in_same_variant() {
         let mut hkx = HkxFile::from_tagxml(
             11,
@@ -9996,54 +9856,6 @@ mod tests {
     }
 
     #[test]
-    fn fix_sphere_dispatch_type_rewrites_u8_two_to_one_in_same_variant() {
-        let mut hkx = HkxFile::from_tagxml(
-            11,
-            "hk_2014.1.0-r1",
-            vec![object(
-                "hknpSphereShape",
-                vec![member("dispatchType", HkxValue::U8(2))],
-            )],
-        );
-
-        fix_sphere_dispatch_type(&mut hkx);
-
-        assert_eq!(hkx.objects()[0].members[0].value, HkxValue::U8(1));
-    }
-
-    #[test]
-    fn fix_sphere_dispatch_type_is_idempotent_when_already_one() {
-        let mut hkx = HkxFile::from_tagxml(
-            11,
-            "hk_2014.1.0-r1",
-            vec![object(
-                "hknpSphereShape",
-                vec![member("dispatchType", HkxValue::I32(1))],
-            )],
-        );
-
-        fix_sphere_dispatch_type(&mut hkx);
-
-        assert_eq!(hkx.objects()[0].members[0].value, HkxValue::I32(1));
-    }
-
-    #[test]
-    fn fix_sphere_dispatch_type_leaves_non_sphere_classes_untouched() {
-        let mut hkx = HkxFile::from_tagxml(
-            11,
-            "hk_2014.1.0-r1",
-            vec![object(
-                "hknpCapsuleShape",
-                vec![member("dispatchType", HkxValue::I32(2))],
-            )],
-        );
-
-        fix_sphere_dispatch_type(&mut hkx);
-
-        assert_eq!(hkx.objects()[0].members[0].value, HkxValue::I32(2));
-    }
-
-    #[test]
     fn fix_polytope_dispatch_type_rewrites_composite_to_convex() {
         let mut hkx = HkxFile::from_tagxml(
             11,
@@ -10057,22 +9869,6 @@ mod tests {
         fix_polytope_dispatch_type(&mut hkx);
 
         assert_eq!(hkx.objects()[0].members[0].value, HkxValue::U8(1));
-    }
-
-    #[test]
-    fn fix_polytope_dispatch_type_is_idempotent_when_already_convex() {
-        let mut hkx = HkxFile::from_tagxml(
-            11,
-            "hk_2014.1.0-r1",
-            vec![object(
-                "hknpConvexPolytopeShape",
-                vec![member("dispatchType", HkxValue::I32(1))],
-            )],
-        );
-
-        fix_polytope_dispatch_type(&mut hkx);
-
-        assert_eq!(hkx.objects()[0].members[0].value, HkxValue::I32(1));
     }
 
     #[test]
@@ -10141,117 +9937,6 @@ mod tests {
         assert_eq!(shape_member_f32(shape_members, "capsuleRadius"), Some(0.4));
         assert_eq!(shape_member_value(shape_members, "fileName"), Some(""));
         assert_eq!(shape_member_value(shape_members, "type"), Some("CAPSULE"));
-    }
-
-    #[test]
-    fn apply_implemented_transforms_does_not_overwrite_existing_or_non_empty_shape_setup() {
-        let existing_shape = HkxValue::Object(vec![
-            member("class", string("hkbShapeSetup")),
-            member("capsuleHeight", HkxValue::F32(9.0)),
-        ]);
-        let mut with_existing = HkxFile::from_tagxml(
-            12,
-            "hk_2015.1.0-r1",
-            vec![character_data_with_rigid_body_setup(vec![
-                member("shapeSetup", existing_shape.clone()),
-                member("collisionShapeProfiles", HkxValue::Array(vec![])),
-            ])],
-        );
-        let mut non_empty_profiles = HkxFile::from_tagxml(
-            12,
-            "hk_2015.1.0-r1",
-            vec![character_data_with_rigid_body_setup(vec![member(
-                "collisionShapeProfiles",
-                HkxValue::Array(vec![HkxValue::I32(7)]),
-            )])],
-        );
-
-        let existing_last = apply_for_test(&mut with_existing);
-        let non_empty_last = apply_for_test(&mut non_empty_profiles);
-
-        assert_eq!(
-            ALWAYS_ON_TRANSFORMS[existing_last],
-            "_fix_behavior_variable_infos"
-        );
-        assert_eq!(
-            ALWAYS_ON_TRANSFORMS[non_empty_last],
-            "_fix_behavior_variable_infos"
-        );
-        let existing_members = rigid_body_setup_members(&with_existing);
-        assert_eq!(
-            existing_members
-                .iter()
-                .filter(|member| member.name == "shapeSetup")
-                .count(),
-            1
-        );
-        assert_eq!(
-            existing_members
-                .iter()
-                .find(|member| member.name == "shapeSetup")
-                .map(|member| &member.value),
-            Some(&existing_shape)
-        );
-        let non_empty_members = rigid_body_setup_members(&non_empty_profiles);
-        assert!(
-            non_empty_members
-                .iter()
-                .all(|member| member.name != "shapeSetup")
-        );
-        assert_eq!(
-            non_empty_members
-                .iter()
-                .find(|member| member.name == "collisionShapeProfiles")
-                .map(|member| &member.value),
-            Some(&HkxValue::Array(vec![HkxValue::I32(7)]))
-        );
-    }
-
-    #[test]
-    fn apply_implemented_transforms_stops_before_physics_noops_for_physics_payloads() {
-        // All cases run to the behavior tail (41): transforms 19–21 are no-ops on
-        // this minimal fixture (no hknpRagdollData/hknpPhysicsSystemData), and
-        // nothing else halts the pipeline.
-        struct Case {
-            class_name: &'static str,
-            stops_at: usize,
-        }
-        let cases = [
-            Case {
-                class_name: "hkcdSimdTreeNode",
-                stops_at: 41,
-            },
-            Case {
-                class_name: "hkBitField",
-                stops_at: 41,
-            },
-            Case {
-                class_name: "hkCompressedMassProperties",
-                stops_at: 41,
-            },
-            Case {
-                class_name: "hkpLimitedHingeConstraintData",
-                stops_at: 41,
-            },
-        ];
-        for case in &cases {
-            let mut hkx = HkxFile::from_tagxml(
-                12,
-                "hk_2015.1.0-r1",
-                vec![
-                    object("hkbCharacterData", vec![]),
-                    object(case.class_name, vec![]),
-                ],
-            );
-
-            let last_applied = apply_for_test(&mut hkx);
-
-            assert_eq!(
-                last_applied, case.stops_at,
-                "{}: pipeline last_applied mismatch",
-                case.class_name
-            );
-        }
     }
 
     fn character_data_with_rigid_body_setup(rigid_body_members: Vec<HkxMember>) -> HkxObject {
@@ -10343,152 +10028,6 @@ mod tests {
     }
 
     #[test]
-    fn synthesize_memory_resource_container_is_idempotent() {
-        let mut hkx = HkxFile::from_tagxml(
-            11,
-            "hk_2014.1.0-r1",
-            vec![
-                object(
-                    "hkRootLevelContainer",
-                    vec![member("namedVariants", HkxValue::Array(vec![]))],
-                ),
-                object("hkaAnimationBinding", vec![]),
-                object("hkMemoryResourceContainer", vec![]),
-            ],
-        );
-
-        synthesize_memory_resource_container(&mut hkx);
-
-        assert_eq!(hkx.objects().len(), 3);
-        let containers = hkx
-            .objects()
-            .iter()
-            .filter(|object| object.class_name == "hkMemoryResourceContainer")
-            .count();
-        assert_eq!(containers, 1);
-        assert_eq!(hkx.objects()[0].members[0].value, HkxValue::Array(vec![]));
-    }
-
-    #[test]
-    fn synthesize_memory_resource_container_skips_non_array_named_variants() {
-        let mut hkx = HkxFile::from_tagxml(
-            11,
-            "hk_2014.1.0-r1",
-            vec![
-                object(
-                    "hkRootLevelContainer",
-                    vec![
-                        member("namedVariants", HkxValue::I32(7)),
-                        member("namedVariants", HkxValue::Array(vec![])),
-                    ],
-                ),
-                object("hkaAnimationBinding", vec![]),
-            ],
-        );
-
-        synthesize_memory_resource_container(&mut hkx);
-
-        assert_eq!(hkx.objects().len(), 3);
-        assert_eq!(hkx.objects()[2].class_name, "hkMemoryResourceContainer");
-        assert_eq!(hkx.objects()[0].members[0].value, HkxValue::I32(7));
-        let HkxValue::Array(variants) = &hkx.objects()[0].members[1].value else {
-            panic!("second namedVariants should be an array");
-        };
-        assert_eq!(
-            variants,
-            &vec![named_variant(
-                "Resource Data",
-                "hkMemoryResourceContainer",
-                Some(2)
-            )]
-        );
-    }
-
-    #[test]
-    fn synthesize_memory_resource_container_does_not_orphan_without_named_variants_array() {
-        let mut hkx = HkxFile::from_tagxml(
-            11,
-            "hk_2014.1.0-r1",
-            vec![
-                object(
-                    "hkRootLevelContainer",
-                    vec![member("namedVariants", HkxValue::I32(7))],
-                ),
-                object("hkaAnimationBinding", vec![]),
-            ],
-        );
-
-        synthesize_memory_resource_container(&mut hkx);
-
-        assert_eq!(hkx.objects().len(), 2);
-        assert!(
-            !hkx.objects()
-                .iter()
-                .any(|object| object.class_name == "hkMemoryResourceContainer")
-        );
-        assert_eq!(hkx.objects()[0].members[0].value, HkxValue::I32(7));
-    }
-
-    #[test]
-    fn synthesize_memory_resource_container_keeps_existing_container_parity() {
-        let mut hkx = HkxFile::from_tagxml(
-            11,
-            "hk_2014.1.0-r1",
-            vec![
-                object(
-                    "hkRootLevelContainer",
-                    vec![member(
-                        "namedVariants",
-                        HkxValue::Array(vec![named_variant(
-                            "Animation Container",
-                            "hkaAnimationContainer",
-                            Some(1),
-                        )]),
-                    )],
-                ),
-                object("hkaAnimationContainer", vec![]),
-                object("hkaAnimationBinding", vec![]),
-                object("hkMemoryResourceContainer", vec![]),
-            ],
-        );
-
-        synthesize_memory_resource_container(&mut hkx);
-
-        assert_eq!(hkx.objects().len(), 4);
-        let containers = hkx
-            .objects()
-            .iter()
-            .filter(|object| object.class_name == "hkMemoryResourceContainer")
-            .count();
-        assert_eq!(containers, 1);
-        assert_eq!(
-            hkx.objects()[0].members[0].value,
-            HkxValue::Array(vec![named_variant(
-                "Animation Container",
-                "hkaAnimationContainer",
-                Some(1),
-            )])
-        );
-    }
-
-    #[test]
-    fn synthesize_memory_resource_container_skips_non_animation_files() {
-        let mut hkx = HkxFile::from_tagxml(
-            11,
-            "hk_2014.1.0-r1",
-            vec![object(
-                "hkRootLevelContainer",
-                vec![member("namedVariants", HkxValue::Array(vec![]))],
-            )],
-        );
-
-        synthesize_memory_resource_container(&mut hkx);
-
-        assert_eq!(hkx.objects().len(), 1);
-        assert_eq!(hkx.objects()[0].members[0].value, HkxValue::Array(vec![]));
-    }
-
-    #[test]
     fn flatten_nested_class_names_renames_top_level_known_classes() {
         let mut hkx = HkxFile::from_tagxml(
             11,
@@ -10527,128 +10066,6 @@ mod tests {
                 "hkRootLevelContainer",
             ]
         );
-    }
-
-    #[test]
-    fn flatten_nested_class_names_does_not_recurse_into_inline_objects() {
-        let nested_named_variant = HkxValue::Array(vec![HkxValue::Object(vec![
-            member("name", string("Animation Container")),
-            member("className", string("hkbStateMachine::StateInfo")),
-            member("variant", HkxValue::Pointer(Some(1))),
-        ])]);
-        let mut hkx = HkxFile::from_tagxml(
-            11,
-            "hk_2014.1.0-r1",
-            vec![object(
-                "hkRootLevelContainer",
-                vec![member("namedVariants", nested_named_variant.clone())],
-            )],
-        );
-
-        flatten_nested_class_names(&mut hkx);
-
-        assert_eq!(hkx.objects()[0].class_name, "hkRootLevelContainer");
-        assert_eq!(hkx.objects()[0].members[0].name, "namedVariants");
-        assert_eq!(hkx.objects()[0].members[0].value, nested_named_variant);
-    }
-
-    #[test]
-    fn reclassify_fo76_hkb_layer_handles_int_off_event_id_sentinel_0xff() {
-        let mut hkx = HkxFile::from_tagxml(
-            11,
-            "hk_2014.1.0-r1",
-            vec![object(
-                "hkbBoneWeightArray",
-                vec![
-                    member("generator", HkxValue::Pointer(Some(0))),
-                    member(
-                        "blendingControlData",
-                        HkxValue::Object(vec![
-                            member("onEventId", HkxValue::U8(0xFF)),
-                            member("offEventId", HkxValue::I32(7)),
-                        ]),
-                    ),
-                ],
-            )],
-        );
-
-        reclassify_fo76_hkb_layer(&mut hkx);
-
-        let obj = &hkx.objects()[0];
-        assert_eq!(obj.class_name, "hkbLayer");
-        assert_eq!(
-            obj.members
-                .iter()
-                .find(|m| m.name == "onEventId")
-                .map(|m| &m.value),
-            Some(&HkxValue::I32(-1))
-        );
-        assert_eq!(
-            obj.members
-                .iter()
-                .find(|m| m.name == "offEventId")
-                .map(|m| &m.value),
-            Some(&HkxValue::I32(7))
-        );
-    }
-
-    #[test]
-    fn bool_or_int_to_event_sentinel_handles_signed_minus_one_sentinel() {
-        // i8/i16 carry the "none" sentinel as -1 (the signed representation of 0xFF).
-        // The cast-to-i64 comparison is unreachable for signed types; check *v == -1.
-        assert_eq!(bool_or_int_to_event_sentinel(&HkxValue::I8(-1)), Some(-1));
-        assert_eq!(bool_or_int_to_event_sentinel(&HkxValue::I16(-1)), Some(-1));
-        // Non-sentinel values pass through unchanged.
-        assert_eq!(bool_or_int_to_event_sentinel(&HkxValue::I8(7)), Some(7));
-        assert_eq!(bool_or_int_to_event_sentinel(&HkxValue::I16(7)), Some(7));
-        // Unsigned 0xFF still maps to -1 (the sentinel is the bit pattern, not sign).
-        assert_eq!(bool_or_int_to_event_sentinel(&HkxValue::U8(0xFF)), Some(-1));
-    }
-
-    #[test]
-    fn reclassify_fo76_hkb_layer_handles_missing_blending_control_data() {
-        let mut hkx = HkxFile::from_tagxml(
-            11,
-            "hk_2014.1.0-r1",
-            vec![object(
-                "hkbBoneWeightArray",
-                vec![
-                    member("generator", HkxValue::Pointer(Some(0))),
-                    member("name", string("LeftArm")),
-                ],
-            )],
-        );
-
-        reclassify_fo76_hkb_layer(&mut hkx);
-
-        let obj = &hkx.objects()[0];
-        assert_eq!(obj.class_name, "hkbLayer");
-        assert_eq!(obj.members.len(), 2);
-        assert_eq!(obj.members[0].name, "generator");
-        assert_eq!(obj.members[0].value, HkxValue::Pointer(Some(0)));
-        assert_eq!(obj.members[1].name, "name");
-        assert_eq!(obj.members[1].value, string("LeftArm"));
-    }
-
-    #[test]
-    fn reclassify_fo76_hkb_layer_skips_real_bone_weight_array_without_generator() {
-        let bone_weights = HkxValue::Array(vec![HkxValue::F32(1.0), HkxValue::F32(0.5)]);
-        let mut hkx = HkxFile::from_tagxml(
-            11,
-            "hk_2014.1.0-r1",
-            vec![object(
-                "hkbBoneWeightArray",
-                vec![member("boneWeights", bone_weights.clone())],
-            )],
-        );
-
-        reclassify_fo76_hkb_layer(&mut hkx);
-
-        let obj = &hkx.objects()[0];
-        assert_eq!(obj.class_name, "hkbBoneWeightArray");
-        assert_eq!(obj.members.len(), 1);
-        assert_eq!(obj.members[0].name, "boneWeights");
-        assert_eq!(obj.members[0].value, bone_weights);
     }
 
     #[test]
@@ -10737,152 +10154,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn reclassify_fo76_hkb_layer_updates_only_its_binding_paths() {
-        fn bindings() -> HkxObject {
-            object(
-                "hkbVariableBindingSet",
-                vec![member(
-                    "bindings",
-                    HkxValue::Array(
-                        [
-                            "blendingControlData/weight",
-                            "blendingControlData/onByDefault",
-                            "boneWeights",
-                        ]
-                        .into_iter()
-                        .enumerate()
-                        .map(|(index, path)| {
-                            HkxValue::Object(vec![
-                                member(
-                                    "memberPath",
-                                    HkxValue::String {
-                                        value: path.to_string(),
-                                        is_null: false,
-                                    },
-                                ),
-                                member("variableIndex", HkxValue::I32(index as i32)),
-                            ])
-                        })
-                        .collect(),
-                    ),
-                )],
-            )
-        }
-        let mut hkx = HkxFile::from_tagxml(
-            11,
-            "hk_2015.1.0-r1",
-            vec![
-                object(
-                    "hkbLayer",
-                    vec![
-                        member("generator", HkxValue::Pointer(None)),
-                        member("variableBindingSet", HkxValue::Pointer(Some(1))),
-                        member(
-                            "blendingControlData",
-                            HkxValue::Object(vec![member("weight", HkxValue::F32(1.0))]),
-                        ),
-                    ],
-                ),
-                bindings(),
-                object(
-                    "hkbModifier",
-                    vec![member("variableBindingSet", HkxValue::Pointer(Some(3)))],
-                ),
-                bindings(),
-            ],
-        );
-        let unrelated = hkx.objects()[3].members.clone();
-        reclassify_fo76_hkb_layer(&mut hkx);
-        let HkxValue::Array(entries) = &hkx.objects()[1].members[0].value else {
-            panic!()
-        };
-        for (index, expected) in ["weight", "onByDefault", "boneWeights"]
-            .into_iter()
-            .enumerate()
-        {
-            let HkxValue::Object(members) = &entries[index] else {
-                panic!()
-            };
-            assert_eq!(string_member_value(members, "memberPath"), Some(expected));
-            assert_eq!(members[1].value, HkxValue::I32(index as i32));
-        }
-        assert_eq!(hkx.objects()[3].members, unrelated);
-        reclassify_fo76_hkb_layer(&mut hkx);
-        let HkxValue::Array(entries) = &hkx.objects()[1].members[0].value else {
-            panic!()
-        };
-        let HkxValue::Object(members) = &entries[0] else {
-            panic!()
-        };
-        assert_eq!(string_member_value(members, "memberPath"), Some("weight"));
-    }
-
-    #[test]
-    fn reclassify_fo76_hkb_layer_preserves_each_real_layer_enabled_state() {
-        fn layer(generator: usize, on_by_default: bool) -> HkxObject {
-            object(
-                "hkbLayer",
-                vec![
-                    member("generator", HkxValue::Pointer(Some(generator))),
-                    member(
-                        "blendingControlData",
-                        HkxValue::Object(vec![member(
-                            "onByDefault",
-                            HkxValue::Bool(on_by_default),
-                        )]),
-                    ),
-                ],
-            )
-        }
-
-        let mut hkx = HkxFile::from_tagxml(
-            11,
-            "hk_2015.1.0-r1",
-            vec![
-                object(
-                    "hkbLayerGenerator",
-                    vec![member(
-                        "layers",
-                        HkxValue::Array(vec![
-                            HkxValue::Pointer(Some(1)),
-                            HkxValue::Pointer(Some(2)),
-                            HkxValue::Pointer(Some(3)),
-                        ]),
-                    )],
-                ),
-                layer(4, true),
-                layer(5, true),
-                layer(6, false),
-                object("hkbStateMachine", vec![]),
-                object("hkbStateMachine", vec![]),
-                object("hkbStateMachine", vec![]),
-            ],
-        );
-
-        reclassify_fo76_hkb_layer(&mut hkx);
-        apply_classxml_defaults(&mut hkx);
-
-        for (layer_index, expected) in [(1, true), (2, true), (3, false)] {
-            let layer = &hkx.objects()[layer_index];
-            assert_eq!(layer.signature, 1);
-            assert!(
-                layer
-                    .members
-                    .iter()
-                    .all(|member| member.name != "blendingControlData")
-            );
-            assert_eq!(
-                layer
-                    .members
-                    .iter()
-                    .find(|member| member.name == "onByDefault")
-                    .map(|member| &member.value),
-                Some(&HkxValue::Bool(expected))
-            );
-        }
-    }
-
     // ── strip_runtime_members tests ──────────────────────────────────────────
 
     #[test]
@@ -10969,102 +10240,6 @@ mod tests {
     }
 
     #[test]
-    fn strip_runtime_members_retypes_pointer_field_from_direct_zero() {
-        // rootGenerator has vtype=TYPE_POINTER in classxml; if the existing value is I32(0),
-        // it should be retyped to Pointer(None).
-        let mut hkx = HkxFile::from_tagxml(
-            11,
-            "hk_2014.1.0-r1",
-            vec![object(
-                "hkbBehaviorGraph",
-                vec![
-                    member("rootGenerator", HkxValue::I32(0)),
-                    member("data", HkxValue::I32(0)),
-                ],
-            )],
-        );
-        let mut registry = DescriptorRegistry::new();
-
-        strip_runtime_members(&mut hkx, &mut registry);
-
-        let obj = &hkx.objects()[0];
-        let root_gen = obj.members.iter().find(|m| m.name == "rootGenerator");
-        assert_eq!(
-            root_gen.map(|m| &m.value),
-            Some(&HkxValue::Pointer(None)),
-            "I32(0) pointer field should be retyped to Pointer(None)"
-        );
-    }
-
-    #[test]
-    fn strip_runtime_members_leaves_unknown_class_untouched() {
-        let mut hkx = HkxFile::from_tagxml(
-            11,
-            "hk_2014.1.0-r1",
-            vec![object(
-                "hkUnknownNonExistent",
-                vec![member("runtimeJunk", HkxValue::I32(42))],
-            )],
-        );
-        let mut registry = DescriptorRegistry::new();
-
-        strip_runtime_members(&mut hkx, &mut registry);
-
-        // Unknown class — members left untouched
-        let obj = &hkx.objects()[0];
-        assert_eq!(obj.members.len(), 1);
-        assert_eq!(obj.members[0].name, "runtimeJunk");
-        assert_eq!(obj.members[0].value, HkxValue::I32(42));
-    }
-
-    #[test]
-    fn strip_runtime_members_recurses_into_inline_struct_arrays() {
-        // hkbStateMachine has member `states` (vtype=TYPE_ARRAY, ctype=hkbStateMachineStateInfo).
-        // hkbStateMachineStateInfo has SERIALIZE_IGNORED `hasEventlessTransitions`.
-        // We put that member in an inline struct entry; verify it gets stripped.
-        let inline_state = HkxValue::Object(vec![
-            member("stateId", HkxValue::I32(0)),
-            member(
-                "name",
-                HkxValue::String {
-                    value: "Idle".to_string(),
-                    is_null: false,
-                },
-            ),
-            member("enable", HkxValue::Bool(true)),
-            // SERIALIZE_IGNORED — should be stripped from inline struct
-            member("hasEventlessTransitions", HkxValue::Bool(false)),
-        ]);
-        let mut hkx = HkxFile::from_tagxml(
-            11,
-            "hk_2014.1.0-r1",
-            vec![object(
-                "hkbStateMachine",
-                vec![member("states", HkxValue::Array(vec![inline_state]))],
-            )],
-        );
-        let mut registry = DescriptorRegistry::new();
-
-        strip_runtime_members(&mut hkx, &mut registry);
-
-        let obj = &hkx.objects()[0];
-        let states_member = obj.members.iter().find(|m| m.name == "states").unwrap();
-        let HkxValue::Array(states) = &states_member.value else {
-            panic!("states should be an array");
-        };
-        assert_eq!(states.len(), 1, "inline struct entry should be preserved");
-        let HkxValue::Object(state_members) = &states[0] else {
-            panic!("inline struct entry should be an object");
-        };
-        let member_names: Vec<&str> = state_members.iter().map(|m| m.name.as_str()).collect();
-        assert!(
-            !member_names.contains(&"hasEventlessTransitions"),
-            "SERIALIZE_IGNORED member should be stripped from inline struct"
-        );
-        assert!(member_names.contains(&"stateId"), "stateId should be kept");
-    }
-
-    #[test]
     fn strip_runtime_members_flattens_hknp_constraint_body_handles() {
         let constraint = HkxValue::Object(vec![
             member("constraintData", HkxValue::Pointer(Some(1))),
@@ -11115,61 +10290,6 @@ mod tests {
     }
 
     // ── Behavior-graph cleanup transforms (28..=34) ───────────────────────────
-
-    #[test]
-    fn compact_null_blender_children_drops_null_pointers_in_children() {
-        let mut hkx = HkxFile::from_tagxml(
-            11,
-            "hk_2014.1.0-r1",
-            vec![
-                object("hkbBlenderGeneratorChild", vec![]),
-                object(
-                    "hkbBlenderGenerator",
-                    vec![member(
-                        "children",
-                        HkxValue::Array(vec![
-                            HkxValue::Pointer(Some(0)),
-                            HkxValue::Pointer(None),
-                            HkxValue::Pointer(Some(0)),
-                            HkxValue::Pointer(None),
-                        ]),
-                    )],
-                ),
-                // Unrelated class — must be untouched.
-                object(
-                    "hkbManualSelectorGenerator",
-                    vec![member(
-                        "children",
-                        HkxValue::Array(vec![HkxValue::Pointer(None)]),
-                    )],
-                ),
-            ],
-        );
-
-        compact_null_blender_children(&mut hkx);
-
-        let blender = &hkx.objects()[1];
-        let HkxValue::Array(children) = &blender.members[0].value else {
-            panic!("children should be an array");
-        };
-        assert_eq!(children.len(), 2, "null slots should be dropped");
-        assert!(
-            children
-                .iter()
-                .all(|v| matches!(v, HkxValue::Pointer(Some(_))))
-        );
-
-        // hkbManualSelectorGenerator.children should be untouched by this transform.
-        let unrelated = &hkx.objects()[2];
-        let HkxValue::Array(unrelated_children) = &unrelated.members[0].value else {
-            panic!("children should be an array");
-        };
-        assert_eq!(
-            unrelated_children.len(),
-            1,
-            "unrelated class should be untouched"
-        );
-    }
 
     #[test]
     fn compact_null_blender_children_compacts_every_generator_not_just_first() {
@@ -11282,60 +10402,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn compact_null_state_machine_states_drops_null_pointers_in_states() {
-        let mut hkx = HkxFile::from_tagxml(
-            11,
-            "hk_2014.1.0-r1",
-            vec![
-                object("hkbStateMachineStateInfo", vec![]),
-                object(
-                    "hkbStateMachine",
-                    vec![member(
-                        "states",
-                        HkxValue::Array(vec![
-                            HkxValue::Pointer(Some(0)),
-                            HkxValue::Pointer(None),
-                            HkxValue::Pointer(Some(0)),
-                        ]),
-                    )],
-                ),
-                // Unrelated class — must be untouched.
-                object(
-                    "hkbBlenderGenerator",
-                    vec![member(
-                        "states",
-                        HkxValue::Array(vec![HkxValue::Pointer(None)]),
-                    )],
-                ),
-            ],
-        );
-
-        compact_null_state_machine_states(&mut hkx);
-
-        let sm = &hkx.objects()[1];
-        let HkxValue::Array(states) = &sm.members[0].value else {
-            panic!("states should be an array");
-        };
-        assert_eq!(states.len(), 2, "null slots should be dropped");
-        assert!(
-            states
-                .iter()
-                .all(|v| matches!(v, HkxValue::Pointer(Some(_))))
-        );
-
-        // hkbBlenderGenerator.states should be untouched.
-        let unrelated = &hkx.objects()[2];
-        let HkxValue::Array(unrelated_states) = &unrelated.members[0].value else {
-            panic!("states should be an array");
-        };
-        assert_eq!(
-            unrelated_states.len(),
-            1,
-            "unrelated class should be untouched"
-        );
-    }
-
     fn state_info(name: &str, state_id: i32) -> HkxObject {
         object(
             "hkbStateMachineStateInfo",
@@ -11429,100 +10495,6 @@ mod tests {
     }
 
     #[test]
-    fn compact_null_state_machine_states_orders_same_id_orphans_deterministically() {
-        let mut hkx = HkxFile::from_tagxml(
-            11,
-            "hk_2014.1.0-r1",
-            vec![
-                object("hkRootLevelContainer", vec![]),
-                state_info("OwnedRoot", 0),
-                state_info("ZetaRoot", 1),
-                state_info("AlphaRoot", 1),
-                object(
-                    "hkbStateMachine",
-                    vec![
-                        member("name", string("Root_SM")),
-                        member(
-                            "states",
-                            HkxValue::Array(vec![
-                                HkxValue::Pointer(Some(1)),
-                                HkxValue::Pointer(None),
-                                HkxValue::Pointer(None),
-                            ]),
-                        ),
-                    ],
-                ),
-            ],
-        );
-
-        compact_null_state_machine_states(&mut hkx);
-
-        let sm = &hkx.objects()[4];
-        let states_member = sm.members.iter().find(|m| m.name == "states").unwrap();
-        let HkxValue::Array(arr) = &states_member.value else {
-            panic!("states should be an array");
-        };
-        let pointer_targets: Vec<usize> = arr
-            .iter()
-            .filter_map(|v| {
-                if let HkxValue::Pointer(Some(i)) = v {
-                    Some(*i)
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        assert_eq!(pointer_targets, vec![1, 3, 2]);
-    }
-
-    #[test]
-    fn compact_null_state_machine_states_strips_nulls_for_nif_embedded_files() {
-        // NIF-embedded behavior blob (no hkRootLevelContainer) with orphan
-        // StateInfos must NOT recover them — strip nulls only.
-        let mut hkx = HkxFile::from_tagxml(
-            11,
-            "hk_2014.1.0-r1",
-            vec![
-                state_info("Owned", 0),
-                state_info("Orphan", 1),
-                object(
-                    "hkbStateMachine",
-                    vec![
-                        member("name", string("Embedded_SM")),
-                        member(
-                            "states",
-                            HkxValue::Array(vec![
-                                HkxValue::Pointer(Some(0)),
-                                HkxValue::Pointer(None),
-                            ]),
-                        ),
-                    ],
-                ),
-            ],
-        );
-
-        compact_null_state_machine_states(&mut hkx);
-
-        let sm = &hkx.objects()[2];
-        let HkxValue::Array(arr) = &sm
-            .members
-            .iter()
-            .find(|m| m.name == "states")
-            .unwrap()
-            .value
-        else {
-            panic!("states should be an array");
-        };
-        assert_eq!(
-            arr.len(),
-            1,
-            "nif-embedded path strips nulls without recovery"
-        );
-        assert!(matches!(arr[0], HkxValue::Pointer(Some(0))));
-    }
-
-    #[test]
     fn compact_null_pointer_arrays_drops_nulls_in_known_class_members() {
         let mut hkx = HkxFile::from_tagxml(
             11,
@@ -11582,63 +10554,6 @@ mod tests {
         assert_eq!(
             unrelated_mods.len(),
             1,
-            "unrelated class should be untouched"
-        );
-    }
-
-    #[test]
-    fn fix_state_machine_typed_refs_replaces_bool_with_negative_one_int32() {
-        let mut hkx = HkxFile::from_tagxml(
-            11,
-            "hk_2014.1.0-r1",
-            vec![
-                object(
-                    "hkbStateMachine",
-                    vec![
-                        member("returnToPreviousStateEventId", HkxValue::Bool(true)),
-                        member("syncVariableIndex", HkxValue::Bool(false)),
-                        // Already an int32 — must be left alone.
-                        member("randomTransitionEventId", HkxValue::I32(5)),
-                    ],
-                ),
-                // Unrelated class — untouched.
-                object(
-                    "hkbBlenderGenerator",
-                    vec![member("returnToPreviousStateEventId", HkxValue::Bool(true))],
-                ),
-            ],
-        );
-
-        fix_state_machine_typed_refs(&mut hkx);
-
-        let sm = &hkx.objects()[0];
-        assert_eq!(
-            sm.members
-                .iter()
-                .find(|m| m.name == "returnToPreviousStateEventId")
-                .map(|m| &m.value),
-            Some(&HkxValue::I32(-1))
-        );
-        assert_eq!(
-            sm.members
-                .iter()
-                .find(|m| m.name == "syncVariableIndex")
-                .map(|m| &m.value),
-            Some(&HkxValue::I32(-1))
-        );
-        // Already-int32 value must not be mutated.
-        assert_eq!(
-            sm.members
-                .iter()
-                .find(|m| m.name == "randomTransitionEventId")
-                .map(|m| &m.value),
-            Some(&HkxValue::I32(5))
-        );
-        // Unrelated class: Bool value must not be changed.
-        let unrelated = &hkx.objects()[1];
-        assert_eq!(
-            unrelated.members[0].value,
-            HkxValue::Bool(true),
             "unrelated class should be untouched"
         );
     }
@@ -11884,22 +10799,6 @@ mod tests {
     }
 
     #[test]
-    fn fix_clip_generator_defaults_sets_animation_binding_index_to_negative_one() {
-        let mut hkx = HkxFile::from_tagxml(
-            11,
-            "hk_2015.1.0-r1",
-            vec![object(
-                "hkbClipGenerator",
-                vec![member("animationBindingIndex", HkxValue::I16(0))],
-            )],
-        );
-
-        fix_clip_generator_defaults(&mut hkx);
-
-        assert_eq!(hkx.objects()[0].members[0].value, HkxValue::I16(-1));
-    }
-
-    #[test]
     fn fix_clip_generator_defaults_injects_when_member_missing() {
         let mut hkx = HkxFile::from_tagxml(
             11,
@@ -11951,71 +10850,6 @@ mod tests {
     }
 
     #[test]
-    fn apply_classxml_defaults_sets_first_layer_on_by_default_true() {
-        let mut hkx = HkxFile::from_tagxml(
-            11,
-            "hk_2015.1.0-r1",
-            vec![
-                object(
-                    "hkbLayer",
-                    vec![member("onByDefault", HkxValue::Bool(false))],
-                ),
-                object(
-                    "hkbLayerGenerator",
-                    vec![member(
-                        "layers",
-                        HkxValue::Array(vec![HkxValue::Pointer(Some(0))]),
-                    )],
-                ),
-            ],
-        );
-
-        apply_classxml_defaults(&mut hkx);
-
-        assert_eq!(
-            hkx.objects()[0]
-                .members
-                .iter()
-                .find(|m| m.name == "onByDefault")
-                .map(|m| &m.value),
-            Some(&HkxValue::Bool(true))
-        );
-    }
-
-    #[test]
-    fn reorder_behavior_metadata_to_end_moves_metadata_classes_in_canonical_order() {
-        let mut hkx = HkxFile::from_tagxml(
-            11,
-            "hk_2015.1.0-r1",
-            vec![
-                object("hkbBehaviorGraphData", vec![]),
-                object("hkbStateMachine", vec![]),
-                object("hkbVariableValueSet", vec![]),
-                object("hkbBehaviorGraphStringData", vec![]),
-                object("hkbRootLevelContainer", vec![]),
-            ],
-        );
-
-        reorder_behavior_metadata_to_end(&mut hkx);
-
-        let class_names: Vec<&str> = hkx
-            .objects()
-            .iter()
-            .map(|o| o.class_name.as_str())
-            .collect();
-        assert_eq!(
-            class_names,
-            vec![
-                "hkbStateMachine",
-                "hkbRootLevelContainer",
-                "hkbBehaviorGraphData",
-                "hkbVariableValueSet",
-                "hkbBehaviorGraphStringData",
-            ]
-        );
-    }
-
-    #[test]
     fn reorder_behavior_metadata_to_end_remaps_pointers_correctly() {
         let mut hkx = HkxFile::from_tagxml(
             11,
@@ -12039,43 +10873,6 @@ mod tests {
             hkx.objects()[0].members[0].value,
             HkxValue::Pointer(Some(1))
         );
-    }
-
-    #[test]
-    fn populate_event_property_arrays_is_a_no_op() {
-        let mut hkx = HkxFile::from_tagxml(
-            11,
-            "hk_2015.1.0-r1",
-            vec![object(
-                "hkbStateMachineEventPropertyArray",
-                vec![member("events", HkxValue::Array(vec![]))],
-            )],
-        );
-        let before = hkx.objects().to_vec();
-
-        populate_event_property_arrays(&mut hkx);
-
-        assert_eq!(hkx.objects(), before.as_slice());
-    }
-
-    #[test]
-    fn fix_behavior_variable_infos_is_a_no_op() {
-        let mut hkx = HkxFile::from_tagxml(
-            11,
-            "hk_2015.1.0-r1",
-            vec![object(
-                "hkbBehaviorGraphData",
-                vec![member(
-                    "variableInfos",
-                    HkxValue::Array(vec![HkxValue::I32(3)]),
-                )],
-            )],
-        );
-        let before = hkx.objects().to_vec();
-
-        fix_behavior_variable_infos(&mut hkx);
-
-        assert_eq!(hkx.objects(), before.as_slice());
     }
 
     #[test]
@@ -12205,83 +11002,6 @@ mod tests {
         assert!(warnings
             .iter()
             .any(|warning| warning.contains("converted unsupported BSLocomotionBlendGenerator")));
-    }
-
-    /// Most FO76 graphs name the int walk/jog/run tier `iLocomotionSpeed`, not
-    /// `iSyncLocomotionSpeed`. Without it `startStateId` stays unbound and the
-    /// selector freezes in its default state (no jog or run). Ground truth:
-    /// `pioneercorebehavior.hkx` (Liberator) exposes only `iLocomotionSpeed`
-    /// (int, index 14) and ships with `variableBindingSet = null`.
-    #[test]
-    fn locomotion_blend_binds_start_state_to_ilocomotionspeed_variable() {
-        let mut hkx = HkxFile::from_tagxml(
-            11,
-            "hk_2015.1.0-r1",
-            vec![
-                object(
-                    "hkbBehaviorGraphStringData",
-                    vec![
-                        member(
-                            "variableNames",
-                            HkxValue::Array(
-                                ["Speed", "Direction", "iLocomotionSpeed"]
-                                    .into_iter()
-                                    .map(string)
-                                    .collect(),
-                            ),
-                        ),
-                        member(
-                            "eventNames",
-                            HkxValue::Array(
-                                ["Jog", "Run", "Walk"].into_iter().map(string).collect(),
-                            ),
-                        ),
-                    ],
-                ),
-                object(
-                    "hkbBlenderGenerator",
-                    vec![member("name", string("WalkBlend"))],
-                ),
-                object(
-                    "hkbBlenderGenerator",
-                    vec![member("name", string("JogBlend"))],
-                ),
-                object(
-                    "hkbBlenderGenerator",
-                    vec![member("name", string("RunBlend"))],
-                ),
-                test_binding_set("fDirectionParameter", 1),
-                object(
-                    "BSLocomotionBlendGenerator",
-                    vec![
-                        member("variableBindingSet", HkxValue::Pointer(Some(4))),
-                        member("name", string("BSLocomotionBlendGenerator")),
-                        member("pRunBlendGenerator", HkxValue::Pointer(Some(3))),
-                        member("pJogBlendGenerator", HkxValue::Pointer(Some(2))),
-                        member("pWalkBlendGenerator", HkxValue::Pointer(Some(1))),
-                        member("fTransitionDuration", HkxValue::F32(0.2)),
-                    ],
-                ),
-            ],
-        );
-        let mut warnings = Vec::new();
-
-        migrate_unsupported_behavior_nodes(&mut hkx, &mut warnings);
-
-        let state_machine = &hkx.objects()[5];
-        assert_eq!(state_machine.class_name, "hkbStateMachine");
-        let state_binding = pointer_member_value(&state_machine.members, "variableBindingSet")
-            .expect("startStateId must be bound, not left null");
-        assert_eq!(
-            binding_variable_index(&hkx, state_binding, "startStateId"),
-            Some(2),
-            "startStateId must bind to iLocomotionSpeed"
-        );
-        assert!(
-            !warnings
-                .iter()
-                .any(|warning| warning.contains("left startStateId unbound"))
-        );
     }
 
     #[test]
@@ -12527,161 +11247,6 @@ mod tests {
     }
 
     #[test]
-    fn all_zero_bone_weight_mask_collapses_without_a_zeroweights_name() {
-        let mut hkx = HkxFile::from_tagxml(
-            11,
-            "hk_2015.1.0-r1",
-            vec![
-                object(
-                    "hkbLayerGenerator",
-                    vec![
-                        member("name", string("Floater_LayerGenerator")),
-                        member(
-                            "layers",
-                            HkxValue::Array(vec![
-                                HkxValue::Pointer(Some(1)),
-                                HkxValue::Pointer(Some(2)),
-                            ]),
-                        ),
-                        member("indexOfSyncMasterChild", HkxValue::U16(1)),
-                    ],
-                ),
-                object(
-                    "hkbLayer",
-                    vec![
-                        member("generator", HkxValue::Pointer(Some(3))),
-                        member("onByDefault", HkxValue::Bool(true)),
-                    ],
-                ),
-                object(
-                    "hkbLayer",
-                    vec![
-                        member("generator", HkxValue::Pointer(Some(4))),
-                        member("onByDefault", HkxValue::Bool(true)),
-                        member("useMotion", HkxValue::Bool(true)),
-                    ],
-                ),
-                object(
-                    "hkbStateMachine",
-                    vec![member("name", string("StandingLocomotion_SM"))],
-                ),
-                object(
-                    "hkbStateMachine",
-                    vec![
-                        member("name", string("Action_SM")),
-                        member("states", HkxValue::Array(vec![HkxValue::Pointer(Some(5))])),
-                    ],
-                ),
-                object(
-                    "hkbStateMachineStateInfo",
-                    vec![
-                        member("name", string("DefaultState")),
-                        member("generator", HkxValue::Pointer(Some(6))),
-                    ],
-                ),
-                object(
-                    "hkbModifierGenerator",
-                    vec![
-                        member("name", string("DefaultState_MG")),
-                        member("modifier", HkxValue::Pointer(Some(7))),
-                        member("generator", HkxValue::Pointer(Some(9))),
-                    ],
-                ),
-                object(
-                    "hkbModifierList",
-                    vec![
-                        member("name", string("DefaultState_ML")),
-                        member(
-                            "modifiers",
-                            HkxValue::Array(vec![HkxValue::Pointer(Some(8))]),
-                        ),
-                    ],
-                ),
-                object(
-                    "BSAssignBoneWeightsModifier",
-                    vec![
-                        member("name", string("AssignBoneWeights_Zero")),
-                        member("boneWeights1", HkxValue::Pointer(Some(10))),
-                    ],
-                ),
-                object(
-                    "hkbReferencePoseGenerator",
-                    vec![member("name", string("ReferencePoseGenerator"))],
-                ),
-                object(
-                    "hkbBoneWeightArray",
-                    vec![member(
-                        "boneWeights",
-                        HkxValue::Array(vec![
-                            HkxValue::F32(0.0),
-                            HkxValue::F32(0.0),
-                            HkxValue::F32(0.0),
-                        ]),
-                    )],
-                ),
-            ],
-        );
-        let mut warnings = Vec::new();
-
-        migrate_unsupported_behavior_nodes(&mut hkx, &mut warnings);
-
-        let layer_generator = hkx
-            .objects()
-            .iter()
-            .find(|object| {
-                string_member_value(&object.members, "name") == Some("Floater_LayerGenerator")
-            })
-            .expect("layer generator survives");
-        assert_eq!(
-            pointer_array_member_values(&layer_generator.members, "layers")
-                .expect("layer array survives")
-                .len(),
-            1
-        );
-
-        // Without the collapse the idle state points straight at the reference
-        // pose, which then plays unmasked at full weight — the T-pose.
-        let idle_wrapper = hkx
-            .objects()
-            .iter()
-            .find(|object| string_member_value(&object.members, "name") == Some("DefaultState_MG"))
-            .expect("idle wrapper survives");
-        let idle_child = &hkx.objects()
-            [pointer_member_value(&idle_wrapper.members, "generator").expect("idle child")];
-        assert_eq!(
-            string_member_value(&idle_child.members, "name"),
-            Some("StandingLocomotion_SM")
-        );
-        assert!(warnings.iter().any(|warning| warning.contains(
-            "collapsed zero-weight action state machine Action_SM over base generator StandingLocomotion_SM"
-        )));
-    }
-
-    #[test]
-    fn empty_bone_weight_mask_is_not_treated_as_a_zero_assignment() {
-        let mut hkx = HkxFile::from_tagxml(
-            11,
-            "hk_2015.1.0-r1",
-            vec![
-                object(
-                    "BSAssignBoneWeightsModifier",
-                    vec![
-                        member("name", string("AssignBoneWeights_FullBody")),
-                        member("boneWeights1", HkxValue::Pointer(Some(1))),
-                    ],
-                ),
-                object(
-                    "hkbBoneWeightArray",
-                    vec![member("boneWeights", HkxValue::Array(Vec::new()))],
-                ),
-            ],
-        );
-        let modifier = &hkx.objects()[0];
-
-        assert!(!is_zero_weight_assignment(&hkx, modifier));
-    }
-
-    #[test]
     fn removes_bs_assign_bone_weights_modifier_referenced_from_modifier_list() {
         let mut hkx = HkxFile::from_tagxml(
             11,
@@ -12739,59 +11304,6 @@ mod tests {
                 "removed unsupported BSAssignBoneWeightsModifier ListBoneWeightModifier"
             ))
         );
-    }
-
-    #[test]
-    fn bypasses_bs_assign_bone_weights_modifier_without_empty_object() {
-        let mut hkx = HkxFile::from_tagxml(
-            11,
-            "hk_2015.1.0-r1",
-            vec![
-                object(
-                    "hkbReferencePoseGenerator",
-                    vec![member("name", string("Child"))],
-                ),
-                object(
-                    "BSAssignBoneWeightsModifier",
-                    vec![member("name", string("BoneWeightModifier"))],
-                ),
-                object(
-                    "hkbModifierGenerator",
-                    vec![
-                        member("name", string("Wrapper")),
-                        member("modifier", HkxValue::Pointer(Some(1))),
-                        member("generator", HkxValue::Pointer(Some(0))),
-                    ],
-                ),
-                object(
-                    "hkbStateMachineStateInfo",
-                    vec![member("generator", HkxValue::Pointer(Some(2)))],
-                ),
-            ],
-        );
-        let mut warnings = Vec::new();
-
-        migrate_unsupported_behavior_nodes(&mut hkx, &mut warnings);
-
-        assert!(
-            hkx.objects()
-                .iter()
-                .all(|object| object.class_name != "BSAssignBoneWeightsModifier")
-        );
-        assert!(
-            hkx.objects()
-                .iter()
-                .all(|object| object.class_name != "hkbModifierGenerator")
-        );
-        let state = hkx
-            .objects()
-            .iter()
-            .find(|object| object.class_name == "hkbStateMachineStateInfo")
-            .expect("state survives");
-        assert_eq!(pointer_member_value(&state.members, "generator"), Some(0));
-        assert!(warnings
-            .iter()
-            .any(|warning| warning.contains("bypassed unsupported BSAssignBoneWeightsModifier")));
     }
 
     #[test]
@@ -13039,78 +11551,6 @@ mod tests {
     }
 
     #[test]
-    fn migrate_skeleton_physics_keeps_ball_and_socket_without_a_ragdoll_sibling() {
-        let mut hkx =
-            HkxFile::from_tagxml(12, "hk_2015.1.0-r1", vec![ball_and_socket_constraint()]);
-        migrate_skeleton_physics(&mut hkx);
-
-        // FO4 registers hkpBallAndSocketConstraintData, so keeping the class
-        // beats emitting a ragdoll constraint with no atom layout to copy.
-        assert_eq!(
-            hkx.objects()[0].class_name,
-            "hkpBallAndSocketConstraintData"
-        );
-        assert_eq!(hkx.objects()[0].members.len(), 1);
-        assert_eq!(hkx.objects()[0].members[0].name, "atoms");
-    }
-
-    #[test]
-    fn inject_ragdoll_motors_wires_constraints_the_source_left_null() {
-        let mut null_motors = ragdoll_constraint_template();
-        if let Some(motors) = null_motors
-            .members
-            .iter_mut()
-            .find(|m| m.name == "atoms")
-            .and_then(|m| m.value.as_object_members_mut())
-            .and_then(|atoms| atoms.iter_mut().find(|m| m.name == "ragdollMotors"))
-            .and_then(|m| m.value.as_object_members_mut())
-            .and_then(|rm| rm.iter_mut().find(|m| m.name == "motors"))
-        {
-            motors.value = HkxValue::Array(vec![HkxValue::Pointer(None); 3]);
-        }
-        let mut hkx = HkxFile::from_tagxml(
-            12,
-            "hk_2015.1.0-r1",
-            vec![ragdoll_constraint_template(), null_motors],
-        );
-        inject_ragdoll_motors(&mut hkx);
-
-        // A populated sibling must not stop the null one from being wired.
-        let HkxValue::Array(motors) = atom_field(&hkx, 1, "ragdollMotors", "motors") else {
-            panic!("motors is not an array");
-        };
-        assert!(
-            motors
-                .iter()
-                .all(|m| matches!(m, HkxValue::Pointer(Some(_))))
-        );
-        // The already-populated constraint keeps its own pointer.
-        assert_eq!(
-            atom_field(&hkx, 0, "ragdollMotors", "motors"),
-            HkxValue::Array(vec![HkxValue::Pointer(Some(7)); 3])
-        );
-    }
-
-    #[test]
-    fn migrate_skeleton_physics_renames_compressed_mesh_tree() {
-        // Gate requires a physics-trigger class — pair tree with PSD root.
-        let mut hkx = HkxFile::from_tagxml(
-            12,
-            "hk_2015.1.0-r1",
-            vec![
-                object("hknpPhysicsSystemData", vec![]),
-                object(
-                    "hknpCompressedMeshShapeTree",
-                    vec![member("memSizeAndFlags", HkxValue::U32(0))],
-                ),
-            ],
-        );
-        migrate_skeleton_physics(&mut hkx);
-        assert_eq!(hkx.objects()[1].class_name, "hknpCompressedMeshShapeData");
-        assert!(hkx.objects()[1].members.is_empty());
-    }
-
-    #[test]
     fn migrate_skeleton_physics_promotes_convex_shape_to_sphere() {
         let mut hkx = HkxFile::from_tagxml(
             12,
@@ -13144,82 +11584,6 @@ mod tests {
             .unwrap();
         assert_eq!(dispatch.value, HkxValue::I32(1));
         assert!(obj.members.iter().all(|m| m.name != "type"));
-    }
-
-    #[test]
-    fn migrate_skeleton_physics_keeps_true_generic_convex_shape() {
-        let mut hkx = HkxFile::from_tagxml(
-            12,
-            "hk_2015.1.0-r1",
-            vec![
-                object("hknpPhysicsSystemData", vec![]),
-                object(
-                    "hknpConvexShape",
-                    vec![
-                        member("flags", HkxValue::I32(1)),
-                        member("dispatchType", HkxValue::I32(2)),
-                        member("convexRadius", HkxValue::F32(0.0)),
-                        member(
-                            "vertices",
-                            HkxValue::Array(vec![
-                                HkxValue::F32List(vec![-1.0, 0.0, 0.0, 0.5]),
-                                HkxValue::F32List(vec![1.0, 0.0, 0.0, 0.5]),
-                            ]),
-                        ),
-                    ],
-                ),
-            ],
-        );
-        migrate_skeleton_physics(&mut hkx);
-        assert_eq!(hkx.objects()[1].class_name, "hknpConvexShape");
-    }
-
-    #[test]
-    fn migrate_skeleton_physics_normalizes_capsule_for_embedded_blob() {
-        // No hkRootLevelContainer = embedded blob => target_w = 1.0
-        let mut hkx = HkxFile::from_tagxml(
-            12,
-            "hk_2015.1.0-r1",
-            vec![object(
-                "hknpCapsuleShape",
-                vec![
-                    member("a", HkxValue::F32List(vec![1.0, 0.0, 0.0, 0.5])),
-                    member("b", HkxValue::F32List(vec![0.0, 1.0, 0.0, 0.5])),
-                    member("flags", HkxValue::I32(515)),
-                    member("dispatchType", HkxValue::I32(2)),
-                    member(
-                        "planes",
-                        HkxValue::Array(vec![
-                            HkxValue::F32List(vec![1.0, 0.0, 0.0, 0.0]),
-                            HkxValue::F32List(vec![-1.0, 0.0, 0.0, 0.0]),
-                            HkxValue::F32List(vec![0.0, 1.0, 0.0, 0.0]),
-                            HkxValue::F32List(vec![0.0, -1.0, 0.0, 0.0]),
-                            HkxValue::F32List(vec![0.0, 0.0, 1.0, 0.0]),
-                            HkxValue::F32List(vec![0.0, 0.0, -1.0, 0.0]),
-                        ]),
-                    ),
-                ],
-            )],
-        );
-        migrate_skeleton_physics(&mut hkx);
-        let obj = &hkx.objects()[0];
-        let HkxValue::F32List(a) = &obj.members.iter().find(|m| m.name == "a").unwrap().value
-        else {
-            panic!("a missing");
-        };
-        assert_eq!(a[3], 1.0);
-        let flags = obj.members.iter().find(|m| m.name == "flags").unwrap();
-        assert_eq!(flags.value, HkxValue::I32(451));
-        let HkxValue::Array(planes) = &obj
-            .members
-            .iter()
-            .find(|m| m.name == "planes")
-            .unwrap()
-            .value
-        else {
-            panic!();
-        };
-        assert_eq!(planes.len(), 8);
     }
 
     #[test]
@@ -13302,20 +11666,6 @@ mod tests {
     }
 
     #[test]
-    fn reclassify_fo76_physics_system_data_skips_referenced_object_without_body_cinfos() {
-        let mut hkx = HkxFile::from_tagxml(
-            12,
-            "hk_2015.1.0-r1",
-            vec![object(
-                "hkReferencedObject",
-                vec![member("name", HkxValue::I32(0))],
-            )],
-        );
-        reclassify_fo76_physics_system_data(&mut hkx);
-        assert_eq!(hkx.objects()[0].class_name, "hkReferencedObject");
-    }
-
-    #[test]
     fn reclassify_mass_distributions_renames_uint16_with_mass_fields() {
         let mut hkx = HkxFile::from_tagxml(
             12,
@@ -13387,32 +11737,6 @@ mod tests {
             vertices[0],
             HkxValue::F32List(vec![-0.0, -0.109804, -0.062091, 0.5])
         );
-    }
-
-    #[test]
-    fn normalize_sphere_support_vertices_pads_compact_sphere_to_fo4_width() {
-        let support = HkxValue::F32List(vec![0.049218, 0.011694, -0.000945, 0.5]);
-        let mut hkx = HkxFile::from_tagxml(
-            12,
-            "hk_2015.1.0-r1",
-            vec![object(
-                "hknpSphereShape",
-                vec![member("vertices", HkxValue::Array(vec![support.clone()]))],
-            )],
-        );
-
-        normalize_sphere_support_vertices(&mut hkx);
-
-        let HkxValue::Array(vertices) = &hkx.objects()[0]
-            .members
-            .iter()
-            .find(|member| member.name == "vertices")
-            .expect("sphere vertices")
-            .value
-        else {
-            panic!("sphere vertices must be an array");
-        };
-        assert_eq!(vertices, &vec![support; 4]);
     }
 
     #[test]
@@ -13605,55 +11929,6 @@ mod tests {
     }
 
     #[test]
-    fn convert_polytope_to_capsule_skips_standalone_skeleton_files() {
-        let mut hkx = HkxFile::from_tagxml(
-            12,
-            "hk_2015.1.0-r1",
-            vec![
-                object("hkRootLevelContainer", vec![]),
-                object("hknpPhysicsSystemData", vec![]),
-                object(
-                    "hknpConvexPolytopeShape",
-                    vec![member(
-                        "vertices",
-                        HkxValue::Array(vec![HkxValue::F32List(vec![0.0; 4])]),
-                    )],
-                ),
-            ],
-        );
-        convert_polytope_to_capsule(&mut hkx);
-        // Standalone skeleton.hkx polytopes left untouched.
-        assert_eq!(hkx.objects()[2].class_name, "hknpConvexPolytopeShape");
-    }
-
-    #[test]
-    fn strip_fo76_skeleton_classes_keeps_fo4_supported_properties_objects() {
-        let mut hkx = HkxFile::from_tagxml(
-            12,
-            "hk_2015.1.0-r1",
-            vec![
-                // Survives; hkRefCountedProperties exists in FO4 classxml.
-                object(
-                    "hknpCapsuleShape",
-                    vec![
-                        member("a", HkxValue::F32List(vec![0.0; 4])),
-                        member("properties", HkxValue::Pointer(Some(1))),
-                    ],
-                ),
-                object("hkRefCountedProperties", vec![]),
-                // Also FO76-only.
-                object("hkBitField", vec![]),
-            ],
-        );
-        strip_fo76_skeleton_classes(&mut hkx);
-        assert_eq!(hkx.objects().len(), 2);
-        let obj = &hkx.objects()[0];
-        assert_eq!(obj.class_name, "hknpCapsuleShape");
-        assert!(obj.members.iter().all(|m| m.name != "properties"));
-        assert_eq!(hkx.objects()[1].class_name, "hkRefCountedProperties");
-    }
-
-    #[test]
     fn strip_fo76_skeleton_classes_removes_unsupported_cloth_dependency_graph() {
         let mut hkx = HkxFile::from_tagxml(
             12,
@@ -13726,83 +12001,6 @@ mod tests {
         fix_physics_referenced_objects(&mut hkx);
         let psd = &hkx.objects()[0];
         let refs = psd
-            .members
-            .iter()
-            .find(|m| m.name == "referencedObjects")
-            .unwrap();
-        assert_eq!(
-            refs.value,
-            HkxValue::Array(vec![HkxValue::Pointer(Some(2)), HkxValue::Pointer(Some(3))])
-        );
-    }
-
-    #[test]
-    fn fix_physics_referenced_objects_preserves_constraint_cinfos_data_pointers() {
-        let body0 = HkxValue::Object(vec![member("shape", HkxValue::Pointer(Some(2)))]);
-        let constraint0 = HkxValue::Object(vec![member("data", HkxValue::Pointer(Some(3)))]);
-        let mut hkx = HkxFile::from_tagxml(
-            12,
-            "hk_2015.1.0-r1",
-            vec![
-                object(
-                    "hknpPhysicsSystemData",
-                    vec![
-                        member("bodyCinfos", HkxValue::Array(vec![body0])),
-                        member("constraintCinfos", HkxValue::Array(vec![constraint0])),
-                        member("referencedObjects", HkxValue::Array(vec![])),
-                    ],
-                ),
-                object("hknpFiller", vec![]),
-                object("hknpCapsuleShape", vec![]),
-                object("hkpRagdollConstraintData", vec![]),
-            ],
-        );
-        fix_physics_referenced_objects(&mut hkx);
-        let psd = &hkx.objects()[0];
-        let refs = psd
-            .members
-            .iter()
-            .find(|m| m.name == "referencedObjects")
-            .unwrap();
-        // both shape (idx 2) and constraint data (idx 3) must appear
-        assert_eq!(
-            refs.value,
-            HkxValue::Array(vec![HkxValue::Pointer(Some(2)), HkxValue::Pointer(Some(3))])
-        );
-    }
-
-    #[test]
-    fn fix_physics_referenced_objects_rebuilds_ragdoll_shape_refs_without_nulls() {
-        let body0 = HkxValue::Object(vec![member("shape", HkxValue::Pointer(Some(3)))]);
-        let body1 = HkxValue::Object(vec![member("shape", HkxValue::Pointer(Some(2)))]);
-        let mut hkx = HkxFile::from_tagxml(
-            12,
-            "hk_2015.1.0-r1",
-            vec![
-                object(
-                    "hknpRagdollData",
-                    vec![
-                        member("bodyCinfos", HkxValue::Array(vec![body0, body1])),
-                        member(
-                            "referencedObjects",
-                            HkxValue::Array(vec![
-                                HkxValue::Pointer(Some(3)),
-                                HkxValue::Pointer(None),
-                                HkxValue::Pointer(Some(2)),
-                                HkxValue::Pointer(None),
-                            ]),
-                        ),
-                    ],
-                ),
-                object("hknpFiller", vec![]),
-                object("hknpCapsuleShape", vec![]),
-                object("hknpSphereShape", vec![]),
-            ],
-        );
-
-        fix_physics_referenced_objects(&mut hkx);
-
-        let refs = hkx.objects()[0]
             .members
             .iter()
             .find(|m| m.name == "referencedObjects")
@@ -13894,124 +12092,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn still_invalidates_motion_id_for_bumper_without_motion() {
-        // Genuine bumper PSD: body0 motionId=0 but no resolvable dynamic motion
-        // (inverseMass=0 → infinite mass / keyframed bumper).
-        let body = HkxValue::Object(vec![member("motionId", HkxValue::U32(0))]);
-        let motion = HkxValue::Object(vec![member("inverseMass", HkxValue::F32(0.0))]);
-        let mut hkx = HkxFile::from_tagxml(
-            12,
-            "hk_2015.1.0-r1",
-            vec![object(
-                "hknpPhysicsSystemData",
-                vec![
-                    member("bodyCinfos", HkxValue::Array(vec![body])),
-                    member("motionCinfos", HkxValue::Array(vec![motion])),
-                ],
-            )],
-        );
-        normalize_bumper_body_cinfos(&mut hkx);
-        assert_eq!(
-            body0_motion_id(&hkx),
-            0x7FFF_FFFF,
-            "motionless bumper still gets INVALID"
-        );
-    }
-
-    #[test]
-    fn blend_hint_survives_the_route_unchanged() {
-        // ADDITIVE_DEPRECATED (1) and ADDITIVE (2) are distinct additive
-        // conventions in both games' schema, so promoting 1→2 silently reframes
-        // the delta from parent space to bone-local space.
-        let mut hkx = HkxFile::from_tagxml(
-            12,
-            "hk_2015.1.0-r1",
-            vec![
-                object(
-                    "hkaAnimationBinding",
-                    vec![member("blendHint", HkxValue::I32(1))],
-                ),
-                object(
-                    "hkaAnimationBinding",
-                    vec![member("blendHint", HkxValue::I32(2))],
-                ),
-                object(
-                    "hkaAnimationBinding",
-                    vec![member("blendHint", HkxValue::I32(0))],
-                ),
-            ],
-        );
-        apply_for_test(&mut hkx);
-        let hints: Vec<Option<i32>> = hkx
-            .objects()
-            .iter()
-            .filter(|object| object.class_name == "hkaAnimationBinding")
-            .map(|object| {
-                object
-                    .members
-                    .iter()
-                    .find(|member| member.name == "blendHint")
-                    .and_then(|member| extract_int(&member.value))
-            })
-            .collect();
-        assert_eq!(hints, vec![Some(1), Some(2), Some(0)]);
-    }
-
     // ── Pipeline-progression tests ────────────────────────────────────────────
 
-    #[test]
-    fn apply_implemented_transforms_reports_writer_blocker_after_character_fixture_noops() {
-        let mut hkx = HkxFile::from_tagxml(
-            12,
-            "hk_2015.1.0-r1",
-            vec![object("hkbCharacterData", vec![])],
-        );
-
-        let last_applied = apply_for_test(&mut hkx);
-
-        assert_eq!(last_applied, 41);
-        assert_eq!(
-            ALWAYS_ON_TRANSFORMS[last_applied],
-            "_fix_behavior_variable_infos"
-        );
-    }
-
     // ── Compound-shape / capsule transform tests ─────────────────────────────
-
-    #[test]
-    fn compute_capsule_endpoints_returns_endpoints_for_unit_box_planes() {
-        // 6 axis-aligned planes forming a 2x2x2 cube centered at origin.
-        let planes: Vec<[f32; 4]> = vec![
-            [1.0, 0.0, 0.0, -1.0],
-            [-1.0, 0.0, 0.0, -1.0],
-            [0.0, 1.0, 0.0, -1.0],
-            [0.0, -1.0, 0.0, -1.0],
-            [0.0, 0.0, 1.0, -1.0],
-            [0.0, 0.0, -1.0, -1.0],
-        ];
-        let result = compute_capsule_endpoints(&planes);
-        assert!(result.is_some());
-        let (a, b) = result.unwrap();
-        // Symmetric across origin along the longest axis.
-        for i in 0..3 {
-            assert!(
-                (a[i] + b[i]).abs() < 1e-5,
-                "should be symmetric on axis {i}"
-            );
-        }
-    }
-
-    #[test]
-    fn compute_capsule_endpoints_returns_none_for_unbalanced_planes() {
-        // Only 3 planes — no opposing pairs.
-        let planes: Vec<[f32; 4]> = vec![
-            [1.0, 0.0, 0.0, -1.0],
-            [0.0, 1.0, 0.0, -1.0],
-            [0.0, 0.0, 1.0, -1.0],
-        ];
-        assert!(compute_capsule_endpoints(&planes).is_none());
-    }
 
     #[test]
     fn compute_capsule_endpoints_picks_longest_axis() {
@@ -14153,32 +12236,6 @@ mod tests {
     }
 
     #[test]
-    fn flatten_compound_shapes_in_psd_skips_files_with_root_container() {
-        let mut hkx = HkxFile::from_tagxml(
-            12,
-            "hk_2015.1.0-r1",
-            vec![
-                object("hkRootLevelContainer", vec![]),
-                object(
-                    "hknpPhysicsSystemData",
-                    vec![member(
-                        "bodyCinfos",
-                        HkxValue::Array(vec![HkxValue::Object(vec![member(
-                            "shape",
-                            HkxValue::Pointer(Some(2)),
-                        )])]),
-                    )],
-                ),
-                object("hknpDynamicCompoundShape", vec![]),
-                object("hknpCapsuleShape", vec![]),
-            ],
-        );
-        let before = hkx.objects().len();
-        flatten_compound_shapes_in_psd(&mut hkx);
-        assert_eq!(hkx.objects().len(), before, "skeleton blob untouched");
-    }
-
-    #[test]
     fn migrate_compound_shape_to_physics_system_wraps_polytopes_in_psd() {
         // Source: 2 polytope shapes, no PSD root.
         let mut hkx = HkxFile::from_tagxml(
@@ -14225,33 +12282,6 @@ mod tests {
             assert!(idx > 0 && idx < hkx.objects().len());
             assert_eq!(hkx.objects()[idx].class_name, "hknpConvexPolytopeShape");
         }
-    }
-
-    #[test]
-    fn migrate_compound_shape_to_physics_system_skips_files_with_existing_psd() {
-        let mut hkx = HkxFile::from_tagxml(
-            12,
-            "hk_2015.1.0-r1",
-            vec![
-                object("hknpPhysicsSystemData", vec![]),
-                object("hknpConvexPolytopeShape", vec![]),
-            ],
-        );
-        let before = hkx.objects().len();
-        migrate_compound_shape_to_physics_system(&mut hkx);
-        assert_eq!(hkx.objects().len(), before);
-    }
-
-    #[test]
-    fn migrate_compound_shape_to_physics_system_skips_files_with_no_polytope() {
-        let mut hkx = HkxFile::from_tagxml(
-            12,
-            "hk_2015.1.0-r1",
-            vec![object("hknpCapsuleShape", vec![])],
-        );
-        let before = hkx.objects().len();
-        migrate_compound_shape_to_physics_system(&mut hkx);
-        assert_eq!(hkx.objects().len(), before);
     }
 
     #[test]
@@ -14368,102 +12398,6 @@ mod tests {
         assert_eq!(array_len(1, "bodyCinfos"), 2);
     }
 
-    #[test]
-    fn ragdoll_controller_bodies_are_preserved_as_static_without_motions() {
-        let body = |name: &str, motion_properties_id: u16| {
-            HkxValue::Object(vec![
-                member(
-                    "name",
-                    HkxValue::String {
-                        value: name.to_string(),
-                        is_null: false,
-                    },
-                ),
-                member("flags", HkxValue::U32(0)),
-                member("motionId", HkxValue::U32(99)),
-                member("reservedBodyId", HkxValue::U32(0)),
-                member("motionPropertiesId", HkxValue::U16(motion_properties_id)),
-                member("mass", HkxValue::F32(2.0)),
-                member("position", HkxValue::F32List(vec![0.0, 0.0, 0.0, 0.0])),
-                member("orientation", HkxValue::F32List(vec![0.0, 0.0, 0.0, 1.0])),
-            ])
-        };
-        let mut hkx = HkxFile::from_tagxml(
-            12,
-            "hk_2015.1.0-r1",
-            vec![object(
-                "hknpRagdollData",
-                vec![
-                    member(
-                        "boneToBodyMap",
-                        HkxValue::Array(vec![HkxValue::I32(0), HkxValue::I32(1)]),
-                    ),
-                    member(
-                        "bodyCinfos",
-                        HkxValue::Array(vec![
-                            body("Ragdoll_COM", 2),
-                            body("Ragdoll_Head", 3),
-                            body("CharacterBumper", 0),
-                            body("CharacterController", 1),
-                        ]),
-                    ),
-                    member(
-                        "motionProperties",
-                        HkxValue::Array(vec![
-                            HkxValue::Object(vec![]),
-                            HkxValue::Object(vec![]),
-                            HkxValue::Object(vec![]),
-                            HkxValue::Object(vec![]),
-                        ]),
-                    ),
-                ],
-            )],
-        );
-
-        normalize_ragdoll_body_cinfos(&mut hkx);
-        synthesize_motion_cinfos(&mut hkx, &std::collections::HashMap::new());
-
-        let ragdoll = &hkx.objects()[0];
-        let bodies = ragdoll
-            .members
-            .iter()
-            .find(|member| member.name == "bodyCinfos")
-            .unwrap();
-        let HkxValue::Array(bodies) = &bodies.value else {
-            panic!("bodyCinfos must be an array")
-        };
-        assert_eq!(bodies.len(), 4);
-
-        let motion_ids: Vec<i32> = bodies
-            .iter()
-            .map(|body| {
-                body.as_object_members()
-                    .and_then(|members| members.iter().find(|member| member.name == "motionId"))
-                    .and_then(|member| extract_int(&member.value))
-                    .expect("motionId")
-            })
-            .collect();
-        assert_eq!(motion_ids, vec![0, 1, 0x7FFF_FFFF, 0x7FFF_FFFF]);
-
-        for body in &bodies[2..] {
-            let flags = body
-                .as_object_members()
-                .and_then(|members| members.iter().find(|member| member.name == "flags"))
-                .and_then(|member| extract_int(&member.value));
-            assert_eq!(flags, Some(1));
-        }
-
-        let motions = ragdoll
-            .members
-            .iter()
-            .find(|member| member.name == "motionCinfos")
-            .expect("motionCinfos");
-        let HkxValue::Array(motions) = &motions.value else {
-            panic!("motionCinfos must be an array")
-        };
-        assert_eq!(motions.len(), 2);
-    }
-
     // ── normalize_ragdoll_body_cinfos ───────────────────────────
 
     #[test]
@@ -14530,159 +12464,6 @@ mod tests {
                 .unwrap()
                 .value,
             HkxValue::U32(0x7FFF_FFFF)
-        );
-    }
-
-    #[test]
-    fn normalize_ragdoll_body_cinfos_preserves_valid_source_orientation() {
-        let skeleton = HkxObject {
-            name: Some("#skel".to_string()),
-            offset: 0,
-            signature: 0,
-            class_name: "hkaSkeleton".to_string(),
-            members: vec![member(
-                "referencePose",
-                HkxValue::Array(vec![
-                    HkxValue::F32List(vec![
-                        0.0, 0.0, 0.0, 0.0, //
-                        0.0, 0.0, 0.0, 1.0, //
-                        1.0, 1.0, 1.0, 0.0,
-                    ]),
-                    HkxValue::F32List(vec![
-                        0.0, 0.0, 0.0, 0.0, //
-                        0.0, 0.0, -0.433327, 0.901237, //
-                        1.0, 1.0, 1.0, 0.0,
-                    ]),
-                ]),
-            )],
-        };
-        let body0 = HkxValue::Object(vec![member(
-            "orientation",
-            HkxValue::F32List(vec![0.0, 0.0, 0.0, 1.0]),
-        )]);
-        let body1 = HkxValue::Object(vec![member(
-            "orientation",
-            HkxValue::F32List(vec![-0.179972, 0.620723, -0.246546, 0.722169]),
-        )]);
-        let ragdoll = object(
-            "hknpRagdollData",
-            vec![
-                member("skeleton", HkxValue::Pointer(Some(0))),
-                member(
-                    "boneToBodyMap",
-                    HkxValue::Array(vec![HkxValue::I32(0), HkxValue::I32(1)]),
-                ),
-                member("bodyCinfos", HkxValue::Array(vec![body0, body1])),
-            ],
-        );
-        let mut hkx = HkxFile::from_tagxml(12, "hk_2015.1.0-r1", vec![skeleton, ragdoll]);
-
-        normalize_ragdoll_body_cinfos(&mut hkx);
-
-        let rd = &hkx.objects()[1];
-        let bodies = rd.members.iter().find(|m| m.name == "bodyCinfos").unwrap();
-        let HkxValue::Array(bodies) = &bodies.value else {
-            panic!()
-        };
-        let HkxValue::Object(body1_members) = &bodies[1] else {
-            panic!()
-        };
-        assert_eq!(
-            body1_members
-                .iter()
-                .find(|m| m.name == "orientation")
-                .unwrap()
-                .value,
-            HkxValue::F32List(vec![-0.179972, 0.620723, -0.246546, 0.722169])
-        );
-    }
-
-    #[test]
-    fn normalize_ragdoll_body_cinfos_skips_hknp_physics_system_data() {
-        // Must not touch hknpPhysicsSystemData — that's normalize_bumper_body_cinfos.
-        let body = HkxValue::Object(vec![member("motionId", HkxValue::U32(0))]);
-        let mut hkx = HkxFile::from_tagxml(
-            12,
-            "hk_2015.1.0-r1",
-            vec![object(
-                "hknpPhysicsSystemData",
-                vec![member("bodyCinfos", HkxValue::Array(vec![body]))],
-            )],
-        );
-        let before = hkx.objects().to_vec();
-        normalize_ragdoll_body_cinfos(&mut hkx);
-        // motionId should still be 0 — bumper transform (not ragdoll) handles PSD.
-        assert_eq!(hkx.objects(), before.as_slice());
-    }
-
-    #[test]
-    fn normalize_ragdoll_body_position_w_preserves_motion_center_lane() {
-        let body = HkxValue::Object(vec![member(
-            "position",
-            HkxValue::F32List(vec![0.1, -0.7, 0.3, -0.089]),
-        )]);
-        let motion = HkxValue::TypedObject {
-            class_name: "hknpMotionCinfo".to_string(),
-            members: vec![member(
-                "centerOfMassWorld",
-                HkxValue::F32List(vec![0.2, -0.7, 0.3, -0.089]),
-            )],
-        };
-        let mut hkx = HkxFile::from_tagxml(
-            12,
-            "hk_2015.1.0-r1",
-            vec![object(
-                "hknpRagdollData",
-                vec![
-                    member("bodyCinfos", HkxValue::Array(vec![body])),
-                    member("motionCinfos", HkxValue::Array(vec![motion])),
-                ],
-            )],
-        );
-
-        normalize_ragdoll_body_position_w(&mut hkx);
-
-        let ragdoll = &hkx.objects()[0];
-        let HkxValue::Array(bodies) = &ragdoll
-            .members
-            .iter()
-            .find(|m| m.name == "bodyCinfos")
-            .unwrap()
-            .value
-        else {
-            panic!("bodyCinfos should be an array");
-        };
-        let Some(body_members) = bodies[0].as_object_members() else {
-            panic!("body cinfo should be an object");
-        };
-        assert_eq!(
-            body_members
-                .iter()
-                .find(|m| m.name == "position")
-                .unwrap()
-                .value,
-            HkxValue::F32List(vec![0.1, -0.7, 0.3, 0.0])
-        );
-
-        let HkxValue::Array(motions) = &ragdoll
-            .members
-            .iter()
-            .find(|m| m.name == "motionCinfos")
-            .unwrap()
-            .value
-        else {
-            panic!("motionCinfos should be an array");
-        };
-        let Some(motion_members) = motions[0].as_object_members() else {
-            panic!("motion cinfo should be an object");
-        };
-        assert_eq!(
-            motion_members
-                .iter()
-                .find(|m| m.name == "centerOfMassWorld")
-                .unwrap()
-                .value,
-            HkxValue::F32List(vec![0.2, -0.7, 0.3, -0.089])
         );
     }
 
@@ -14802,18 +12583,6 @@ mod tests {
         assert_eq!(tau.value, HkxValue::F32(0.8));
     }
 
-    #[test]
-    fn inject_ragdoll_motors_is_noop_when_no_constraints_present() {
-        let mut hkx = HkxFile::from_tagxml(
-            12,
-            "hk_2015.1.0-r1",
-            vec![object("hknpRagdollData", vec![])],
-        );
-        let before_len = hkx.objects().len();
-        inject_ragdoll_motors(&mut hkx);
-        assert_eq!(hkx.objects().len(), before_len);
-    }
-
     // ── synthesize_motion_cinfos ───────────────────────────────
 
     #[test]
@@ -14889,258 +12658,6 @@ mod tests {
             .find(|m| m.name == "centerOfMassWorld")
             .unwrap();
         assert_eq!(com.value, HkxValue::F32List(vec![1.0, 2.0, 3.0, 0.0]));
-    }
-
-    #[test]
-    fn synthesize_motion_cinfos_preserves_nonsequential_motion_properties_ids() {
-        let bodies = [0_u16, 3, 1]
-            .into_iter()
-            .map(|motion_properties_id| {
-                HkxValue::Object(vec![member(
-                    "motionPropertiesId",
-                    HkxValue::U16(motion_properties_id),
-                )])
-            })
-            .collect();
-        let motion_properties = (0..4).map(|_| HkxValue::Object(vec![])).collect();
-        let mut hkx = HkxFile::from_tagxml(
-            12,
-            "hk_2015.1.0-r1",
-            vec![object(
-                "hknpRagdollData",
-                vec![
-                    member("motionProperties", HkxValue::Array(motion_properties)),
-                    member("bodyCinfos", HkxValue::Array(bodies)),
-                ],
-            )],
-        );
-
-        synthesize_motion_cinfos(&mut hkx, &std::collections::HashMap::new());
-
-        let motion_arr = hkx.objects()[0]
-            .members
-            .iter()
-            .find(|m| m.name == "motionCinfos")
-            .expect("motionCinfos must be created");
-        let HkxValue::Array(entries) = &motion_arr.value else {
-            panic!()
-        };
-        let ids: Vec<i32> = entries
-            .iter()
-            .map(|entry| {
-                let HkxValue::TypedObject { members, .. } = entry else {
-                    panic!("entry must be TypedObject")
-                };
-                members
-                    .iter()
-                    .find(|m| m.name == "motionPropertiesId")
-                    .and_then(|m| extract_int(&m.value))
-                    .expect("motionPropertiesId must be present")
-            })
-            .collect();
-        assert_eq!(ids, vec![0, 3, 1]);
-    }
-
-    #[test]
-    fn synthesize_motion_cinfos_skips_non_dynamic_psd_bodies() {
-        // flags=16 (bumper) → no dynamic body → motionCinfos should stay empty.
-        let body = HkxValue::Object(vec![
-            member("flags", HkxValue::I32(16)),
-            member("mass", HkxValue::F32(1.0)),
-        ]);
-        let mut hkx = HkxFile::from_tagxml(
-            12,
-            "hk_2015.1.0-r1",
-            vec![object(
-                "hknpPhysicsSystemData",
-                vec![member("bodyCinfos", HkxValue::Array(vec![body]))],
-            )],
-        );
-        synthesize_motion_cinfos(&mut hkx, &std::collections::HashMap::new());
-        // motionCinfos should not have been inserted.
-        let has_motion_arr = hkx.objects()[0]
-            .members
-            .iter()
-            .any(|m| m.name == "motionCinfos");
-        assert!(
-            !has_motion_arr,
-            "non-dynamic PSD bodies must not get motionCinfos"
-        );
-    }
-
-    #[test]
-    fn synthesize_motion_cinfos_ragdoll_always_synthesizes() {
-        // hknpRagdollData always gets motionCinfos regardless of flags.
-        let body = HkxValue::Object(vec![
-            member("flags", HkxValue::I32(16)), // would skip for PSD
-            member("mass", HkxValue::F32(2.0)),
-            member("position", HkxValue::F32List(vec![0.0, 0.0, 0.0, 0.0])),
-            member("orientation", HkxValue::F32List(vec![0.0, 0.0, 0.0, 1.0])),
-            member(
-                "linearVelocity",
-                HkxValue::F32List(vec![0.0, 0.0, 0.0, 0.0]),
-            ),
-            member(
-                "angularVelocity",
-                HkxValue::F32List(vec![0.0, 0.0, 0.0, 0.0]),
-            ),
-        ]);
-        let mut hkx = HkxFile::from_tagxml(
-            12,
-            "hk_2015.1.0-r1",
-            vec![object(
-                "hknpRagdollData",
-                vec![
-                    member("motionProperties", HkxValue::Array(vec![])),
-                    member("bodyCinfos", HkxValue::Array(vec![body])),
-                ],
-            )],
-        );
-        synthesize_motion_cinfos(&mut hkx, &std::collections::HashMap::new());
-        let ragdoll = &hkx.objects()[0];
-        let motion_properties = ragdoll
-            .members
-            .iter()
-            .find(|m| m.name == "motionProperties")
-            .expect("motionProperties must be populated");
-        let HkxValue::Array(properties) = &motion_properties.value else {
-            panic!()
-        };
-        assert_eq!(properties.len(), 1);
-
-        let motion_arr = ragdoll
-            .members
-            .iter()
-            .find(|m| m.name == "motionCinfos")
-            .expect("hknpRagdollData always needs motionCinfos");
-        let HkxValue::Array(entries) = &motion_arr.value else {
-            panic!()
-        };
-        assert_eq!(entries.len(), 1);
-    }
-
-    /// When the source `hknpRefMassDistribution` carries a non-identity
-    /// `majorAxisSpace`, the synthesized `hknpMotionCinfo.orientation` must
-    /// compose `body_orientation * majorAxisSpace` so the principal-axis
-    /// inverse inertia is correctly rotated into world space.
-    #[test]
-    fn synthesize_motion_cinfos_composes_source_major_axis_into_orientation() {
-        // 90° rotation around Z, in (x,y,z,w) form: (0, 0, sin45, cos45).
-        let s45 = std::f32::consts::FRAC_1_SQRT_2;
-        let major_axis_q = vec![0.0_f32, 0.0, s45, s45];
-
-        // Build the mass distribution object first; its index will be 0.
-        let mass_dist = HkxObject {
-            name: Some("#massdist".to_string()),
-            offset: 0,
-            signature: 0,
-            class_name: "hknpRefMassDistribution".to_string(),
-            members: vec![member(
-                "massDistribution",
-                HkxValue::Object(vec![
-                    member(
-                        "centerOfMassAndVolume",
-                        HkxValue::F32List(vec![0.0, 0.0, 0.0, 0.5]),
-                    ),
-                    member("inertiaTensor", HkxValue::F32List(vec![2.0, 5.0, 8.0, 0.0])),
-                    member("majorAxisSpace", HkxValue::F32List(major_axis_q.clone())),
-                ]),
-            )],
-        };
-        let body = HkxValue::Object(vec![
-            member("flags", HkxValue::I32(128)), // dynamic
-            member("mass", HkxValue::F32(4.0)),
-            member("position", HkxValue::F32List(vec![0.0, 0.0, 0.0, 0.0])),
-            // Body orientation = identity → composed should equal majorAxisSpace.
-            member("orientation", HkxValue::F32List(vec![0.0, 0.0, 0.0, 1.0])),
-            member("massDistribution", HkxValue::Pointer(Some(0))),
-            member(
-                "linearVelocity",
-                HkxValue::F32List(vec![0.0, 0.0, 0.0, 0.0]),
-            ),
-            member(
-                "angularVelocity",
-                HkxValue::F32List(vec![0.0, 0.0, 0.0, 0.0]),
-            ),
-        ]);
-        let psd = object(
-            "hknpPhysicsSystemData",
-            vec![member("bodyCinfos", HkxValue::Array(vec![body]))],
-        );
-        let root = object("hkRootLevelContainer", vec![]);
-        let mut hkx = HkxFile::from_tagxml(12, "hk_2015.1.0-r1", vec![mass_dist, psd, root]);
-
-        synthesize_motion_cinfos(&mut hkx, &std::collections::HashMap::new());
-
-        // After synth the hknpRefMassDistribution is dropped → PSD is at index 0.
-        let psd = &hkx.objects()[0];
-        assert_eq!(psd.class_name, "hknpPhysicsSystemData");
-        let motion_arr = psd
-            .members
-            .iter()
-            .find(|m| m.name == "motionCinfos")
-            .expect("motionCinfos was not created");
-        let HkxValue::Array(entries) = &motion_arr.value else {
-            panic!("motionCinfos must be Array");
-        };
-        assert_eq!(entries.len(), 1);
-        let HkxValue::TypedObject { members, .. } = &entries[0] else {
-            panic!("entry must be TypedObject");
-        };
-        let orient = members
-            .iter()
-            .find(|m| m.name == "orientation")
-            .expect("orientation field missing");
-        let HkxValue::F32List(v) = &orient.value else {
-            panic!("orientation must be F32List");
-        };
-        assert_eq!(v.len(), 4);
-        // identity * majorAxisSpace = majorAxisSpace (xyzw order).
-        for i in 0..4 {
-            assert!(
-                (v[i] - major_axis_q[i]).abs() < 1e-5,
-                "orientation[{}] = {}, expected {}",
-                i,
-                v[i],
-                major_axis_q[i]
-            );
-        }
-
-        let mass_factor = members
-            .iter()
-            .find(|m| m.name == "massFactor")
-            .expect("massFactor field missing");
-        assert_eq!(mass_factor.value, HkxValue::F32(8.0));
-
-        // Inverse inertia should be (1/I_i) * inv_mass for each principal axis.
-        let inv_mass = 0.25_f32;
-        let inv_inertia = members
-            .iter()
-            .find(|m| m.name == "inverseInertiaLocal")
-            .expect("inverseInertiaLocal field missing");
-        let HkxValue::F32List(ii) = &inv_inertia.value else {
-            panic!("inverseInertiaLocal must be F32List");
-        };
-        assert_eq!(ii.len(), 4);
-        let expected = [
-            (1.0_f32 / 2.0) * inv_mass,
-            (1.0_f32 / 5.0) * inv_mass,
-            (1.0_f32 / 8.0) * inv_mass,
-        ];
-        for i in 0..3 {
-            assert!(
-                (ii[i] - expected[i]).abs() < 1e-5,
-                "inv_inertia[{}] = {}, expected {}",
-                i,
-                ii[i],
-                expected[i]
-            );
-        }
-        assert!(
-            ii[3].abs() < 1e-5,
-            "inverseInertiaLocal[3] = {}, expected 0",
-            ii[3]
-        );
     }
 
     #[test]
@@ -15247,94 +12764,6 @@ mod tests {
                 .value,
             HkxValue::F32(4.0)
         );
-    }
-
-    #[test]
-    fn synthesize_motion_cinfos_uses_embedded_inverse_inertia_w_one() {
-        let body = HkxValue::Object(vec![
-            member("flags", HkxValue::I32(128)),
-            member("mass", HkxValue::F32(1.0)),
-            member("position", HkxValue::F32List(vec![0.0, 0.0, 0.0, 0.0])),
-            member("orientation", HkxValue::F32List(vec![0.0, 0.0, 0.0, 1.0])),
-        ]);
-        let mut hkx = HkxFile::from_tagxml(
-            12,
-            "hk_2015.1.0-r1",
-            vec![object(
-                "hknpRagdollData",
-                vec![member("bodyCinfos", HkxValue::Array(vec![body]))],
-            )],
-        );
-
-        synthesize_motion_cinfos(&mut hkx, &std::collections::HashMap::new());
-
-        let motion_arr = hkx.objects()[0]
-            .members
-            .iter()
-            .find(|m| m.name == "motionCinfos")
-            .expect("motionCinfos must be created");
-        let HkxValue::Array(entries) = &motion_arr.value else {
-            panic!()
-        };
-        let HkxValue::TypedObject { members, .. } = &entries[0] else {
-            panic!("entry must be TypedObject");
-        };
-        let inv_inertia = members
-            .iter()
-            .find(|m| m.name == "inverseInertiaLocal")
-            .expect("inverseInertiaLocal field missing");
-        let HkxValue::F32List(ii) = &inv_inertia.value else {
-            panic!("inverseInertiaLocal must be F32List");
-        };
-        assert_eq!(ii[3], 1.0);
-    }
-
-    #[test]
-    fn synthesize_motion_cinfos_uses_ragdoll_inverse_inertia_w_one_with_root_container() {
-        let body = HkxValue::Object(vec![
-            member("flags", HkxValue::I32(128)),
-            member("mass", HkxValue::F32(1.0)),
-            member("position", HkxValue::F32List(vec![0.0, 0.0, 0.0, 0.0])),
-            member("orientation", HkxValue::F32List(vec![0.0, 0.0, 0.0, 1.0])),
-        ]);
-        let mut hkx = HkxFile::from_tagxml(
-            12,
-            "hk_2015.1.0-r1",
-            vec![
-                object("hkRootLevelContainer", vec![]),
-                object(
-                    "hknpRagdollData",
-                    vec![member("bodyCinfos", HkxValue::Array(vec![body]))],
-                ),
-            ],
-        );
-
-        synthesize_motion_cinfos(&mut hkx, &std::collections::HashMap::new());
-
-        let ragdoll = hkx
-            .objects()
-            .iter()
-            .find(|object| object.class_name == "hknpRagdollData")
-            .expect("ragdoll must remain present");
-        let motion_arr = ragdoll
-            .members
-            .iter()
-            .find(|m| m.name == "motionCinfos")
-            .expect("motionCinfos must be created");
-        let HkxValue::Array(entries) = &motion_arr.value else {
-            panic!()
-        };
-        let HkxValue::TypedObject { members, .. } = &entries[0] else {
-            panic!("entry must be TypedObject");
-        };
-        let inv_inertia = members
-            .iter()
-            .find(|m| m.name == "inverseInertiaLocal")
-            .expect("inverseInertiaLocal field missing");
-        let HkxValue::F32List(ii) = &inv_inertia.value else {
-            panic!("inverseInertiaLocal must be F32List");
-        };
-        assert_eq!(ii[3], 1.0);
     }
 
     /// Build a `HkxValue::Array([I16;4])` from an 8-byte packed-vector block
@@ -15552,86 +12981,6 @@ mod tests {
     }
 
     #[test]
-    fn match_epa_rule_case_insensitive() {
-        let signals = vec!["weapForceEquipInstant".to_string()];
-        let actions = match_epa_rule(&signals).expect("matches forceequip");
-        // forceequip → enter weapondraw + enter enablebumper
-        assert_eq!(actions.len(), 2);
-        assert!(
-            actions
-                .iter()
-                .any(|(d, n, _)| *d == EpaDir::Enter && *n == "weapondraw")
-        );
-        assert!(
-            actions
-                .iter()
-                .any(|(d, n, _)| *d == EpaDir::Enter && *n == "enablebumper")
-        );
-    }
-
-    #[test]
-    fn match_epa_rule_returns_none_when_no_keyword_matches() {
-        let signals = vec!["unrelatedEvent".to_string(), "moveStop".to_string()];
-        assert!(match_epa_rule(&signals).is_none());
-    }
-
-    #[test]
-    fn create_event_property_array_appends_top_level_object() {
-        let mut hkx = HkxFile::from_tagxml(11, "hk_2014.1.0-r1", vec![]);
-        let events = vec![HkxValue::TypedObject {
-            class_name: "hkbEventProperty".to_string(),
-            members: vec![
-                member("id", HkxValue::I32(48)),
-                member("payload", HkxValue::Pointer(None)),
-            ],
-        }];
-        let idx = create_event_property_array(&mut hkx, events);
-        assert_eq!(idx, 0);
-        let obj = &hkx.objects()[0];
-        assert_eq!(obj.class_name, "hkbStateMachineEventPropertyArray");
-        assert_eq!(obj.name.as_deref(), Some("#0001"));
-        let events_member = obj
-            .members
-            .iter()
-            .find(|m| m.name == "events")
-            .expect("events array");
-        let HkxValue::Array(items) = &events_member.value else {
-            panic!("events should be Array");
-        };
-        assert_eq!(items.len(), 1);
-        let HkxValue::TypedObject { class_name, .. } = &items[0] else {
-            panic!("event should be TypedObject hkbEventProperty");
-        };
-        assert_eq!(class_name, "hkbEventProperty");
-    }
-
-    #[test]
-    fn find_or_create_string_payload_caches_and_appends() {
-        let mut hkx = HkxFile::from_tagxml(11, "hk_2014.1.0-r1", vec![]);
-        let mut cache = std::collections::HashMap::new();
-
-        let idx1 = find_or_create_string_payload(&mut hkx, &mut cache, "Enter");
-        let idx2 = find_or_create_string_payload(&mut hkx, &mut cache, "Enter");
-        assert_eq!(idx1, idx2, "same payload should be reused");
-        assert_eq!(hkx.objects().len(), 1);
-
-        let idx3 = find_or_create_string_payload(&mut hkx, &mut cache, "Exit");
-        assert_ne!(idx1, idx3);
-        assert_eq!(hkx.objects().len(), 2);
-        assert_eq!(hkx.objects()[1].class_name, "hkbStringEventPayload");
-        let data_member = hkx.objects()[1]
-            .members
-            .iter()
-            .find(|m| m.name == "data")
-            .unwrap();
-        if let HkxValue::String { value, .. } = &data_member.value {
-            assert_eq!(value, "Exit");
-        } else {
-            panic!("data should be String");
-        }
-    }
-
-    #[test]
     fn populate_event_property_arrays_creates_epa_for_stagger_state() {
         // Layout:
         //   #0 hkbBehaviorGraphStringData (eventNames: [moveStart, staggerStart, staggerStop])
@@ -15726,166 +13075,6 @@ mod tests {
             .find(|m| m.name == "enterNotifyEvents")
             .unwrap();
         assert_eq!(enter_ptr.value, HkxValue::Pointer(None));
-    }
-
-    #[test]
-    fn populate_event_property_arrays_keeps_child_events_off_state_machine_wrapper() {
-        let existing_exit_epa = object(
-            "hkbStateMachineEventPropertyArray",
-            vec![member(
-                "events",
-                HkxValue::Array(vec![HkxValue::TypedObject {
-                    class_name: "hkbEventProperty".to_string(),
-                    members: vec![
-                        member("id", HkxValue::I32(3)),
-                        member("payload", HkxValue::Pointer(None)),
-                    ],
-                }]),
-            )],
-        );
-        let inner_state = object(
-            "hkbStateMachineStateInfo",
-            vec![
-                member("stateId", HkxValue::I32(5)),
-                member("enterNotifyEvents", HkxValue::Pointer(None)),
-                member("exitNotifyEvents", HkxValue::Pointer(None)),
-                member("transitions", HkxValue::Pointer(None)),
-                member("generator", HkxValue::Pointer(None)),
-            ],
-        );
-        let inner_transitions = object(
-            "hkbStateMachineTransitionInfoArray",
-            vec![member(
-                "transitions",
-                HkxValue::Array(vec![HkxValue::Object(vec![
-                    member("toStateId", HkxValue::I32(5)),
-                    member("eventId", HkxValue::I32(0)),
-                ])]),
-            )],
-        );
-        let inner_state_machine = object(
-            "hkbStateMachine",
-            vec![
-                member("states", HkxValue::Array(vec![HkxValue::Pointer(Some(2))])),
-                member("wildcardTransitions", HkxValue::Pointer(Some(3))),
-            ],
-        );
-        let outer_state = object(
-            "hkbStateMachineStateInfo",
-            vec![
-                member("stateId", HkxValue::I32(8)),
-                member("enterNotifyEvents", HkxValue::Pointer(None)),
-                member("exitNotifyEvents", HkxValue::Pointer(Some(1))),
-                member("transitions", HkxValue::Pointer(None)),
-                member("generator", HkxValue::Pointer(Some(4))),
-            ],
-        );
-        let outer_state_machine = object(
-            "hkbStateMachine",
-            vec![
-                member("states", HkxValue::Array(vec![HkxValue::Pointer(Some(5))])),
-                member("wildcardTransitions", HkxValue::Pointer(None)),
-            ],
-        );
-        let mut hkx = HkxFile::from_tagxml(
-            11,
-            "hk_2014.1.0-r1",
-            vec![
-                behavior_string_data(&[
-                    "Ragdoll",
-                    "RemoveCharacterControllerFromWorld",
-                    "EnterFullyRagdoll",
-                    "GetUpEnd",
-                ]),
-                existing_exit_epa,
-                inner_state,
-                inner_transitions,
-                inner_state_machine,
-                outer_state,
-                outer_state_machine,
-            ],
-        );
-
-        let pre_count = hkx.objects().len();
-        populate_event_property_arrays(&mut hkx);
-
-        assert_eq!(hkx.objects().len(), pre_count + 1);
-        let outer_enter = hkx.objects()[5]
-            .members
-            .iter()
-            .find(|member| member.name == "enterNotifyEvents")
-            .unwrap();
-        assert_eq!(outer_enter.value, HkxValue::Pointer(None));
-        let inner_enter = hkx.objects()[2]
-            .members
-            .iter()
-            .find(|member| member.name == "enterNotifyEvents")
-            .unwrap();
-        assert_eq!(inner_enter.value, HkxValue::Pointer(Some(pre_count)));
-    }
-
-    #[test]
-    fn populate_event_property_arrays_requires_source_epa_for_getup_exit() {
-        for (name, exit_epa) in [("DeathBackward", None), ("RagdollAndGetUp", Some(3))] {
-            let state = object(
-                "hkbStateMachineStateInfo",
-                vec![
-                    member("name", string(name)),
-                    member("enterNotifyEvents", HkxValue::Pointer(None)),
-                    member("exitNotifyEvents", HkxValue::Pointer(exit_epa)),
-                    member("generator", HkxValue::Pointer(Some(1))),
-                ],
-            );
-            let mut hkx = HkxFile::from_tagxml(
-                11,
-                "hk_2014.1.0-r1",
-                vec![
-                    behavior_string_data(&["GetUpEnd"]),
-                    object("hkbStateMachine", vec![]),
-                    state.clone(),
-                    object(
-                        "hkbStateMachineEventPropertyArray",
-                        vec![member("events", HkxValue::Array(vec![]))],
-                    ),
-                ],
-            );
-
-            populate_event_property_arrays(&mut hkx);
-
-            assert_eq!(hkx.objects().len(), 4, "{name}");
-            assert_eq!(hkx.objects()[2], state, "{name}");
-            let HkxValue::Array(events) = &hkx.objects()[3].members[0].value else {
-                panic!("expected exit event array");
-            };
-            if exit_epa.is_some() {
-                assert_eq!(events.len(), 1);
-                let HkxValue::TypedObject { members, .. } = &events[0] else {
-                    panic!("expected event property");
-                };
-                assert_eq!(
-                    members
-                        .iter()
-                        .find(|member| member.name == "id")
-                        .unwrap()
-                        .value,
-                    HkxValue::I32(0)
-                );
-            } else {
-                assert!(events.is_empty());
-            }
-        }
-    }
-
-    #[test]
-    fn populate_event_property_arrays_no_op_for_non_behavior_file() {
-        let mut hkx = HkxFile::from_tagxml(
-            11,
-            "hk_2014.1.0-r1",
-            vec![object("hkRootLevelContainer", vec![])],
-        );
-        let pre_count = hkx.objects().len();
-        populate_event_property_arrays(&mut hkx);
-        assert_eq!(hkx.objects().len(), pre_count, "should not add objects");
     }
 
     /// Rule 2 unit test: a ReferencePoseGenerator state with both enter+exit
@@ -16175,10 +13364,6 @@ mod tests {
         HkxFile::from_tagxml(11, "hk_2015.1.0-r1", vec![anim_obj, binding_obj])
     }
 
-    fn make_96track_spline_hkx() -> HkxFile {
-        make_spline_hkx(96)
-    }
-
     #[test]
     fn auto_fix_human_bone_tracks_96track_interleaved_strips_and_reorders() {
         let mut hkx = make_96track_interleaved_hkx();
@@ -16295,93 +13480,6 @@ mod tests {
     }
 
     #[test]
-    fn auto_fix_human_bone_tracks_no_animation_objects_is_noop() {
-        let mut hkx = HkxFile::from_tagxml(
-            11,
-            "hk_2015.1.0-r1",
-            vec![object("hkbStateMachine", vec![])],
-        );
-        // Should not panic; no animation classes so noop.
-        auto_fix_human_bone_tracks(&mut hkx);
-        assert_eq!(hkx.objects().len(), 1);
-    }
-
-    #[test]
-    fn auto_fix_human_bone_tracks_96track_interleaved_annotation_tracks_stripped() {
-        let mut hkx = make_96track_interleaved_hkx();
-
-        auto_fix_human_bone_tracks(&mut hkx);
-
-        let anim = &hkx.objects()[0];
-        let annotation_len = anim
-            .members
-            .iter()
-            .find(|m| m.name == "annotationTracks")
-            .and_then(|m| {
-                if let HkxValue::Array(a) = &m.value {
-                    Some(a.len())
-                } else {
-                    None
-                }
-            });
-        assert_eq!(
-            annotation_len,
-            Some(95),
-            "annotationTracks should have 95 entries after stripping AimSource"
-        );
-    }
-
-    #[test]
-    fn auto_fix_human_bone_tracks_96track_spline_annotation_tracks_stripped() {
-        let mut hkx = make_96track_spline_hkx();
-
-        auto_fix_human_bone_tracks(&mut hkx);
-
-        let anim = &hkx.objects()[0];
-        let num_tracks = anim
-            .members
-            .iter()
-            .find(|m| m.name == "numberOfTransformTracks")
-            .and_then(|m| direct_member_as_i32(&m.value));
-        assert_eq!(num_tracks, Some(95));
-
-        let annotation_len = anim
-            .members
-            .iter()
-            .find(|m| m.name == "annotationTracks")
-            .and_then(|m| {
-                if let HkxValue::Array(a) = &m.value {
-                    Some(a.len())
-                } else {
-                    None
-                }
-            });
-        assert_eq!(
-            annotation_len,
-            Some(95),
-            "spline annotationTracks should follow the stripped transform tracks"
-        );
-    }
-
-    #[test]
-    fn auto_fix_human_bone_tracks_spline_keeps_serializable_animation_type() {
-        let mut hkx = make_96track_spline_hkx();
-
-        auto_fix_human_bone_tracks(&mut hkx);
-
-        let animation_type = hkx.objects()[0]
-            .members
-            .iter()
-            .find(|member| member.name == "type")
-            .map(|member| &member.value);
-        assert_eq!(
-            animation_type,
-            Some(&HkxValue::I32(HK_SPLINE_COMPRESSED_ANIMATION_TYPE)),
-            "hkaAnimation.AnimationType must remain the numeric spline enum"
-        );
-    }
-
-    #[test]
     fn opt_in_spline_rewrite_preserves_94_track_binding_and_annotations() {
         let input = make_spline_hkx(94);
 
@@ -16449,49 +13547,6 @@ mod tests {
                     _ => None,
                 }),
             Some(94)
-        );
-    }
-
-    #[test]
-    fn flatten_nested_class_names_flattens_any_double_colon() {
-        // Any class name with :: is flattened (not just the original 8 hard-coded names).
-        let mut hkx = HkxFile::from_tagxml(
-            12,
-            "hk_2015.1.0-r1",
-            vec![object("hkbStateMachine::EventInfo", vec![])],
-        );
-        flatten_nested_class_names(&mut hkx);
-        assert_eq!(hkx.objects()[0].class_name, "hkbStateMachineEventInfo");
-    }
-
-    #[test]
-    fn flatten_nested_class_names_covers_all_known_renames() {
-        for (old, expected) in KNOWN_NESTED_CLASS_RENAMES {
-            let mut hkx = HkxFile::from_tagxml(12, "hk_2015.1.0-r1", vec![object(old, vec![])]);
-            flatten_nested_class_names(&mut hkx);
-            assert_eq!(
-                hkx.objects()[0].class_name,
-                *expected,
-                "expected {old} -> {expected}"
-            );
-        }
-    }
-
-    #[test]
-    fn auto_fix_human_bone_tracks_pipeline_advances_past_transform_6() {
-        // Verify apply_implemented_transforms advances past index 6 for anim-free files.
-        let mut hkx = HkxFile::from_tagxml(
-            11,
-            "hk_2015.1.0-r1",
-            vec![object(
-                "hkRootLevelContainer",
-                vec![member("namedVariants", HkxValue::Array(vec![]))],
-            )],
-        );
-        let last = apply_for_test(&mut hkx);
-        assert!(
-            last > 6,
-            "pipeline should advance past transform 6, got {last}"
         );
     }
 

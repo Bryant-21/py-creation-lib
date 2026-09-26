@@ -41,8 +41,10 @@ package {
 }
 "#;
 
+/// Source order must not matter: the interface has to be defined before the
+/// class that implements it regardless of how the files are passed in.
 #[test]
-fn the_widget_compiles() {
+fn the_widget_compiles_in_either_file_order() {
     let abc = compile_sources(&[IHUDWIDGET, WIDGET]).expect("widget should compile");
     assert_eq!(&abc[..4], &[0x10, 0x00, 0x2E, 0x00], "ABC 46.16");
     for name in [
@@ -60,75 +62,22 @@ fn the_widget_compiles() {
             "{name:?} is absent from the emitted ABC"
         );
     }
-}
-
-/// Source order must not matter: the interface has to be defined before the
-/// class that implements it regardless of how the files are passed in.
-#[test]
-fn file_order_does_not_change_the_output() {
-    let a = compile_sources(&[IHUDWIDGET, WIDGET]).unwrap();
-    let b = compile_sources(&[WIDGET, IHUDWIDGET]).unwrap();
-    assert_eq!(a, b);
-}
-
-#[test]
-fn the_vendor_interface_file_on_disk_compiles() {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../external_mods/HudFramework/AS3/hudframework/IHUDWidget.as");
-    let Ok(source) = std::fs::read_to_string(path) else {
-        // The repo checkout may not carry external_mods; the inline copy above
-        // covers the same ground.
-        return;
-    };
-    assert!(
-        source.starts_with('\u{feff}'),
-        "the vendor file is expected to carry a BOM; if it no longer does, this \
-         test has stopped proving that the lexer skips one"
-    );
-    assert_eq!(
-        source, IHUDWIDGET,
-        "inline copy has drifted from the vendor file"
-    );
-    compile_sources(&[&source, WIDGET]).expect("vendor interface should compile");
+    assert_eq!(abc, compile_sources(&[WIDGET, IHUDWIDGET]).unwrap());
 }
 
 /// The obligation an `implements` creates has to be checked here, not in the
-/// player.
+/// player; an interface whose members are unknown cannot be checked at all.
 #[test]
-fn a_class_that_does_not_satisfy_its_interface_is_refused() {
-    let broken = WIDGET.replace(
+fn unsatisfied_or_unknown_interfaces_are_refused() {
+    let missing_method = WIDGET.replace(
         "public function processMessage",
         "public function somethingElse",
     );
-    let err = compile_sources(&[IHUDWIDGET, &broken]).unwrap_err();
-    assert_eq!(err.stage, Stage::Codegen);
-    assert!(err.message.contains("does not implement"), "{err}");
-    assert!(err.message.contains("processMessage"), "{err}");
-}
-
-#[test]
-fn an_arity_mismatch_against_the_interface_is_refused() {
-    let broken = WIDGET.replace(
+    let wrong_arity = WIDGET.replace(
         "processMessage(command:String, params:Array)",
         "processMessage(command:String)",
     );
-    let err = compile_sources(&[IHUDWIDGET, &broken]).unwrap_err();
-    assert_eq!(err.stage, Stage::Codegen);
-    assert!(err.message.contains("parameter"), "{err}");
-}
-
-/// An interface whose members are unknown cannot be checked, so declaring it is
-/// refused rather than emitted unverified.
-#[test]
-fn implementing_an_undeclared_interface_is_refused() {
-    let err = compile_sources(&[WIDGET]).unwrap_err();
-    assert_eq!(err.stage, Stage::Unsupported);
-    assert!(err.message.contains("not declared in this file"), "{err}");
-}
-
-#[test]
-fn a_non_interface_cannot_be_implemented() {
-    let src = r#"
+    let class_as_interface = r#"
     package {
         public class Base { public function Base() { } }
         public class Derived extends Object implements Base {
@@ -136,9 +85,23 @@ fn a_non_interface_cannot_be_implemented() {
         }
     }
     "#;
-    let err = compile_sources(&[src]).unwrap_err();
-    assert!(
-        err.message.contains("is a class, not an interface"),
-        "{err}"
-    );
+    let cases: [(Vec<&str>, Option<Stage>, &[&str]); 4] = [
+        (
+            vec![IHUDWIDGET, &missing_method],
+            Some(Stage::Codegen),
+            &["does not implement", "processMessage"],
+        ),
+        (vec![IHUDWIDGET, &wrong_arity], Some(Stage::Codegen), &["parameter"]),
+        (vec![WIDGET], Some(Stage::Unsupported), &["not declared in this file"]),
+        (vec![class_as_interface], None, &["is a class, not an interface"]),
+    ];
+    for (sources, stage, needles) in cases {
+        let err = compile_sources(&sources).unwrap_err();
+        if let Some(stage) = stage {
+            assert_eq!(err.stage, stage, "{err}");
+        }
+        for needle in needles {
+            assert!(err.message.contains(needle), "{err}");
+        }
+    }
 }

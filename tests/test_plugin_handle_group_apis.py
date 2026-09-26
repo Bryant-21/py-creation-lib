@@ -19,42 +19,32 @@ def _make_fake_module(**fns: Any) -> SimpleNamespace:
     return SimpleNamespace(**fns)
 
 
-def test_group_signatures_returns_label_count_pairs(
+def test_group_signatures_and_record_summaries_return_wrapped_results(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    raw_pairs = [("WEAP", 42), ("ARMO", 100)]
-
     def fake_plugin_handle_group_signatures(handle_id: int) -> list[tuple[str, int]]:
         assert handle_id == 99
-        return raw_pairs
-
-    module = _make_fake_module(plugin_handle_group_signatures=fake_plugin_handle_group_signatures)
-    monkeypatch.setattr(native_runtime, "load_native_module", lambda: module)
-
-    result = native_runtime.plugin_handle_group_signatures(99)
-
-    assert result == [("WEAP", 42), ("ARMO", 100)]
-    for label, count in result:
-        assert isinstance(label, str)
-        assert isinstance(count, int)
-
-
-def test_group_record_summaries_return_record_summary_objects(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    raw_items = [(0x12345, "WEAP", "NativeWeapon")]
+        return [("WEAP", 42), ("ARMO", 100)]
 
     def fake_plugin_handle_group_record_summaries(handle_id: int, sig: str) -> list[tuple[int, str, str]]:
         assert handle_id == 7
         assert sig == "WEAP"
-        return raw_items
+        return [(0x12345, "WEAP", "NativeWeapon")]
 
-    module = _make_fake_module(plugin_handle_group_record_summaries=fake_plugin_handle_group_record_summaries)
+    module = _make_fake_module(
+        plugin_handle_group_signatures=fake_plugin_handle_group_signatures,
+        plugin_handle_group_record_summaries=fake_plugin_handle_group_record_summaries,
+    )
     monkeypatch.setattr(native_runtime, "load_native_module", lambda: module)
 
-    result = native_runtime.plugin_handle_group_record_summaries(7, "WEAP")
+    sig_result = native_runtime.plugin_handle_group_signatures(99)
+    assert sig_result == [("WEAP", 42), ("ARMO", 100)]
+    for label, count in sig_result:
+        assert isinstance(label, str)
+        assert isinstance(count, int)
 
-    assert result == [native_runtime.RecordSummary(0x12345, "WEAP", "NativeWeapon")]
+    summary_result = native_runtime.plugin_handle_group_record_summaries(7, "WEAP")
+    assert summary_result == [native_runtime.RecordSummary(0x12345, "WEAP", "NativeWeapon")]
 
 
 def test_group_record_summaries_empty_for_unknown_signature(
@@ -66,8 +56,7 @@ def test_group_record_summaries_empty_for_unknown_signature(
     module = _make_fake_module(plugin_handle_group_record_summaries=fake_plugin_handle_group_record_summaries)
     monkeypatch.setattr(native_runtime, "load_native_module", lambda: module)
 
-    result = native_runtime.plugin_handle_group_record_summaries(1, "XXXX")
-    assert result == []
+    assert native_runtime.plugin_handle_group_record_summaries(1, "XXXX") == []
 
 
 def _try_load_native() -> Any | None:
@@ -81,24 +70,13 @@ _NATIVE_AVAILABLE = _try_load_native() is not None
 
 
 @pytest.mark.skipif(not _NATIVE_AVAILABLE, reason="esp_authoring_core not installed")
-def test_integration_group_signatures_empty_on_new_plugin() -> None:
+def test_integration_group_apis_empty_on_new_plugin() -> None:
     native_runtime._NATIVE_MODULE = None
     native_runtime._NATIVE_IMPORT_ATTEMPTED = False
 
-    handle = native_runtime.plugin_handle_new("GroupSigTest", "fo4")
+    handle = native_runtime.plugin_handle_new("GroupApiTest", "fo4")
     try:
         assert native_runtime.plugin_handle_group_signatures(handle) == []
-    finally:
-        native_runtime.plugin_handle_close(handle)
-
-
-@pytest.mark.skipif(not _NATIVE_AVAILABLE, reason="esp_authoring_core not installed")
-def test_integration_group_record_summaries_empty_on_new_plugin() -> None:
-    native_runtime._NATIVE_MODULE = None
-    native_runtime._NATIVE_IMPORT_ATTEMPTED = False
-
-    handle = native_runtime.plugin_handle_new("GroupRecTest", "fo4")
-    try:
         assert native_runtime.plugin_handle_group_record_summaries(handle, "WEAP") == []
     finally:
         native_runtime.plugin_handle_close(handle)

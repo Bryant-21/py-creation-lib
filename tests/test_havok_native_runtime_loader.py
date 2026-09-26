@@ -22,39 +22,27 @@ def restore_native_runtime_state():
         os.environ["CREATION_LIB_RESOURCE_DIR"] = old_resource_dir
 
 
-def test_configure_native_resources_uses_packaged_resource_dir(monkeypatch, tmp_path):
+def test_configure_native_resources_uses_packaged_dir_unless_overridden(monkeypatch, tmp_path):
     from creation_lib.havok import native_runtime
 
     resource_dir = tmp_path / "creation_lib" / "resources"
     monkeypatch.delenv("CREATION_LIB_RESOURCE_DIR", raising=False)
     monkeypatch.setattr("creation_lib.paths.get_resource_dir", lambda: resource_dir)
-
     native_runtime.configure_native_resources()
-
     assert Path(os.environ["CREATION_LIB_RESOURCE_DIR"]) == resource_dir
-
-
-def test_configure_native_resources_preserves_explicit_override(monkeypatch, tmp_path):
-    from creation_lib.havok import native_runtime
 
     explicit_dir = tmp_path / "explicit"
     monkeypatch.setenv("CREATION_LIB_RESOURCE_DIR", str(explicit_dir))
-    monkeypatch.setattr(
-        "creation_lib.paths.get_resource_dir",
-        lambda: tmp_path / "packaged",
-    )
-
+    monkeypatch.setattr("creation_lib.paths.get_resource_dir", lambda: tmp_path / "packaged")
     native_runtime.configure_native_resources()
-
     assert Path(os.environ["CREATION_LIB_RESOURCE_DIR"]) == explicit_dir
 
 
-def test_load_native_module_falls_back_to_umbrella_submodule(monkeypatch):
+def test_load_native_module_falls_back_to_umbrella_then_gives_up(monkeypatch):
     from creation_lib.havok import native_runtime
 
     native_runtime._NATIVE_MODULE = None
     native_runtime._NATIVE_IMPORT_ATTEMPTED = False
-
     umbrella_module = SimpleNamespace(
         havok_native=SimpleNamespace(hkx_roundtrip_bytes=lambda data: data),
     )
@@ -69,62 +57,21 @@ def test_load_native_module_falls_back_to_umbrella_submodule(monkeypatch):
         raise ImportError(name)
 
     monkeypatch.setattr(native_runtime, "import_module", _fake_import)
-
     module = native_runtime.load_native_module()
-
     assert module is umbrella_module.havok_native
     assert calls == ["havok_native", "creation_lib._native"]
 
-
-def test_load_native_module_falls_back_to_umbrella_extension(monkeypatch):
-    from creation_lib.havok import native_runtime
-
     native_runtime._NATIVE_MODULE = None
     native_runtime._NATIVE_IMPORT_ATTEMPTED = False
+    calls.clear()
 
-    extension_module = SimpleNamespace(
-        havok_native=SimpleNamespace(hkx_roundtrip_bytes=lambda data: data),
-    )
-    calls: list[str] = []
-
-    def _fake_import(name: str):
-        calls.append(name)
-        if name in {"havok_native", "havok_native.havok_native"}:
-            raise ImportError(name)
-        if name == "creation_lib._native":
-            return extension_module
-        raise ImportError(name)
-
-    monkeypatch.setattr(native_runtime, "import_module", _fake_import)
-
-    module = native_runtime.load_native_module()
-
-    assert module is extension_module.havok_native
-    assert calls == [
-        "havok_native",
-        "creation_lib._native",
-    ]
-
-
-def test_load_native_module_tries_umbrella_fallback_once(monkeypatch):
-    from creation_lib.havok import native_runtime
-
-    native_runtime._NATIVE_MODULE = None
-    native_runtime._NATIVE_IMPORT_ATTEMPTED = False
-
-    calls: list[str] = []
-
-    def _fake_import(name: str):
+    def _always_fails(name: str):
         calls.append(name)
         raise ImportError(name)
 
-    monkeypatch.setattr(native_runtime, "import_module", _fake_import)
-
+    monkeypatch.setattr(native_runtime, "import_module", _always_fails)
     assert native_runtime.load_native_module() is None
-    assert calls == [
-        "havok_native",
-        "creation_lib._native",
-    ]
+    assert calls == ["havok_native", "creation_lib._native"]
 
 
 def test_raw_helpers_forward_to_native_functions(monkeypatch):
@@ -138,6 +85,17 @@ def test_raw_helpers_forward_to_native_functions(monkeypatch):
 
     assert native_runtime.hkx_detect_format_raw(b"\x57abc") == "packfile"
     assert native_runtime.hkx_roundtrip_bytes_raw(b"abc") == b"rt:abc"
+
+    native_runtime._NATIVE_MODULE = SimpleNamespace(
+        hkx_detect_format=lambda data: ("packfile", "hk_2014.1.0-r1"),
+        hkx_roundtrip_bytes=lambda data: data,
+    )
+    assert native_runtime.hkx_detect_format_raw(b"abc") == "packfile"
+
+    native_runtime._NATIVE_MODULE = None
+    native_runtime._NATIVE_IMPORT_ATTEMPTED = True
+    with pytest.raises(RuntimeError, match="havok_native is not available"):
+        native_runtime.hkx_roundtrip_bytes_raw(b"abc")
 
 
 def test_collision_blob_builders_normalize_numpy_vertices(monkeypatch):
@@ -181,76 +139,28 @@ def test_collision_blob_builders_normalize_numpy_vertices(monkeypatch):
     ]
 
 
-def test_hkx_detect_format_raw_unwraps_native_tuple(monkeypatch):
-    from creation_lib.havok import native_runtime
-
-    native_runtime._NATIVE_MODULE = SimpleNamespace(
-        hkx_detect_format=lambda data: ("packfile", "hk_2014.1.0-r1"),
-        hkx_roundtrip_bytes=lambda data: data,
-    )
-    native_runtime._NATIVE_IMPORT_ATTEMPTED = True
-
-    assert native_runtime.hkx_detect_format_raw(b"abc") == "packfile"
-
-
-def test_walk_meshes_dir_native_passes_source(monkeypatch):
+def test_json_forwarding_helpers_encode_payloads(monkeypatch):
+    """walk_meshes_dir/build_manifests/write_animation_xml all JSON-encode their args before
+    calling into the native extension; verify each does so correctly."""
     from creation_lib.havok import native_runtime
 
     calls = []
-
-    def walk_meshes_dir(root_path, source):
-        calls.append((root_path, source))
-        return '[{"rel_path": "a.hkx"}]'
-
     native_runtime._NATIVE_MODULE = SimpleNamespace(
         hkx_roundtrip_bytes=lambda data: data,
-        walk_meshes_dir=walk_meshes_dir,
+        walk_meshes_dir=lambda root_path, source: calls.append(("walk", root_path, source)) or '[{"rel_path": "a.hkx"}]',
+        build_manifests=lambda entries_json, character_data_json, source: calls.append(("manifests", entries_json, character_data_json, source)) or "[]",
+        havok_write_animation_xml=lambda clip_json, bone_names: calls.append(("anim", clip_json, bone_names)) or "<hkpackfile />",
     )
     native_runtime._NATIVE_IMPORT_ATTEMPTED = True
 
     assert native_runtime.walk_meshes_dir_native("Meshes", "fo4") == [{"rel_path": "a.hkx"}]
-    assert calls == [("Meshes", "fo4")]
-
-
-def test_build_manifests_native_json_encodes_payloads(monkeypatch):
-    from creation_lib.havok import native_runtime
-
-    calls = []
-
-    def build_manifests(entries_json, character_data_json, source):
-        calls.append((entries_json, character_data_json, source))
-        return "[]"
-
-    native_runtime._NATIVE_MODULE = SimpleNamespace(
-        hkx_roundtrip_bytes=lambda data: data,
-        build_manifests=build_manifests,
-    )
-    native_runtime._NATIVE_IMPORT_ATTEMPTED = True
-
     assert native_runtime.build_manifests_native([{"rel_path": "a.hkx"}], {}, "fo4") == []
-    assert calls == [('[{"rel_path": "a.hkx"}]', "{}", "fo4")]
-
-
-def test_write_animation_xml_native_matches_native_signature(monkeypatch):
-    from creation_lib.havok import native_runtime
-
-    calls = []
-
-    def havok_write_animation_xml(clip_json, skeleton_bone_names):
-        calls.append((clip_json, skeleton_bone_names))
-        return "<hkpackfile />"
-
-    native_runtime._NATIVE_MODULE = SimpleNamespace(
-        hkx_roundtrip_bytes=lambda data: data,
-        havok_write_animation_xml=havok_write_animation_xml,
-    )
-    native_runtime._NATIVE_IMPORT_ATTEMPTED = True
-
-    assert (
-        native_runtime.write_animation_xml_native({"name": "clip"}, ["Root"])
-        == "<hkpackfile />"
-    )
-    assert calls == [('{"name": "clip"}', ["Root"])]
+    assert native_runtime.write_animation_xml_native({"name": "clip"}, ["Root"]) == "<hkpackfile />"
+    assert calls == [
+        ("walk", "Meshes", "fo4"),
+        ("manifests", '[{"rel_path": "a.hkx"}]', "{}", "fo4"),
+        ("anim", '{"name": "clip"}', ["Root"]),
+    ]
 
 
 def test_decompress_spline_native_expands_param_dict(monkeypatch):
@@ -283,29 +193,4 @@ def test_decompress_spline_native_expands_param_dict(monkeypatch):
     }
 
     assert native_runtime.decompress_spline_native(b"blob", params) == []
-    assert calls == [
-        (
-            b"blob",
-            1,
-            2,
-            3,
-            4,
-            5,
-            [6],
-            [7],
-            8,
-            9.0,
-            10.0,
-            11.0,
-        )
-    ]
-
-
-def test_missing_native_module_raises_runtime_error(monkeypatch):
-    from creation_lib.havok import native_runtime
-
-    native_runtime._NATIVE_MODULE = None
-    native_runtime._NATIVE_IMPORT_ATTEMPTED = True
-
-    with pytest.raises(RuntimeError, match="havok_native is not available"):
-        native_runtime.hkx_roundtrip_bytes_raw(b"abc")
+    assert calls == [(b"blob", 1, 2, 3, 4, 5, [6], [7], 8, 9.0, 10.0, 11.0)]

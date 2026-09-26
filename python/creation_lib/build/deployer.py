@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import errno
 import hashlib
+import json
 import logging
 import os
 import shutil
@@ -17,7 +18,7 @@ from pathlib import Path
 from creation_lib.core.game_profiles import get_profile
 from creation_lib.esp.validate import validate_authoring
 from creation_lib.mod.patches import list_patches, get_patch_yaml_dir, get_patch_plugin_name
-from creation_lib.build.archive_plan import discover_mod_archives
+from creation_lib.build.archive_plan import discover_mod_archives, precombine_sidecar_names
 from creation_lib.build.packer import pack_mod
 from creation_lib.esp.authoring import deserialize
 from creation_lib.build.plugin_source import resolve_plugin_source
@@ -57,6 +58,42 @@ _AUX_LOOSE_DIRS: tuple[str, ...] = ("PrismaUI_F4", "FO4CS")
 # so these are mirrored only on the no-esp path. Materials/ covers renderer mods
 # that ship .bgsm/.bgem next to their DLL.
 _XSE_LOOSE_DATA_DIRS: tuple[str, ...] = ("Meshes", "Textures", "Materials", "MCM")
+
+
+# Mod-provided {"files": {"<Data-relative target>": "<mod-relative source>"}}. Listed files deploy
+# loose in every mode: some assets (e.g. a first MainMenu movie) are read before plugin archives mount.
+ALWAYS_LOOSE_NAME = "deploy_always_loose.json"
+
+
+def always_loose_files(mod_dir: Path) -> dict[Path, Path]:
+    listing = mod_dir / ALWAYS_LOOSE_NAME
+    if not listing.is_file():
+        return {}
+    root = mod_dir.resolve()
+    files: dict[Path, Path] = {}
+    for target, source in json.loads(listing.read_text(encoding="utf-8")).get("files", {}).items():
+        relative = Path(str(target).replace("\\", "/"))
+        resolved = (mod_dir / str(source)).resolve()
+        if (not relative.parts or relative.is_absolute() or ".." in relative.parts
+                or not resolved.is_relative_to(root)):
+            raise ValueError(f"{listing}: unsafe always-loose entry {target!r} -> {source!r}")
+        files[relative] = resolved
+    return files
+
+
+def _compiled_script_files(mod_dir: Path) -> list[tuple[Path, Path]]:
+    scripts: dict[str, tuple[Path, Path]] = {}
+    # Fresh compiler output in data/Scripts takes precedence over installed staging.
+    for root in (mod_dir / "Scripts", mod_dir / "data" / "Scripts"):
+        for path in sorted(root.rglob("*")):
+            if not path.is_file() or path.suffix.casefold() != ".pex":
+                continue
+            relative = path.relative_to(root)
+            if any(part.casefold() == "source" for part in relative.parts[:-1]):
+                continue
+            destination = Path("Scripts") / relative
+            scripts[destination.as_posix().casefold()] = (path, destination)
+    return [scripts[key] for key in sorted(scripts)]
 
 
 def _file_sha256(path: Path) -> str:
@@ -196,6 +233,15 @@ def _transfer_archive(src: Path, dest: Path, mode: str) -> None:
     raise ValueError(f"unsupported archive_transfer_mode: {mode}")
 
 
+def _plugin_string_files(plugin: Path) -> list[Path]:
+    directory = plugin.parent / "Strings"
+    if not directory.is_dir():
+        return []
+    return sorted(path for path in directory.iterdir() if path.is_file()
+                  and path.name.casefold().startswith(plugin.stem.casefold() + "_")
+                  and path.suffix.casefold() in {".strings", ".dlstrings", ".ilstrings"})
+
+
 def _remove_loose_string_sidecars(
     game_data_dir: Path,
     mod_name: str,
@@ -203,6 +249,7 @@ def _remove_loose_string_sidecars(
     *,
     stale: bool = False,
     dry_run: bool = False,
+    keep: set[str] | None = None,
 ) -> list[str]:
     strings_dir = game_data_dir / "Strings"
     if not strings_dir.is_dir():
@@ -214,6 +261,7 @@ def _remove_loose_string_sidecars(
         name_key = strfile.name.lower()
         if (
             not strfile.is_file()
+            or name_key in (keep or set())
             or not name_key.endswith("strings")
             or not (
                 name_key.startswith(f"{mod_key}_")
@@ -301,6 +349,17 @@ def compile_papyrus(
         base_candidates[0],
     )
     import_parts = [str(source_dir)]
+    imports_file = mod_dir / ".papyrus-imports.json"
+    if imports_file.is_file():
+        configured_imports = json.loads(imports_file.read_text(encoding="utf-8-sig"))
+        if not isinstance(configured_imports, list) or not all(isinstance(part, str) and part.strip() for part in configured_imports):
+            raise ValueError(f"{imports_file} must contain an array of source directory paths")
+        for part in configured_imports:
+            import_dir = (mod_dir / part).resolve()
+            if not import_dir.is_dir():
+                raise ValueError(f"Papyrus import directory does not exist: {import_dir}")
+            if str(import_dir) not in import_parts:
+                import_parts.append(str(import_dir))
     if game_user_dir.is_dir():
         import_parts.append(str(game_user_dir))
     if scripts_base.is_dir():
@@ -342,18 +401,36 @@ def compile_papyrus(
                 flags_arg = str(candidate)
                 break
 
-    if verify_stock:
+    stock_file = mod_dir / ".papyrus-stock.json"
+    stock_paths = set()
+    if stock_file.is_file():
+        stock_names = json.loads(stock_file.read_text(encoding="utf-8-sig"))
+        if not isinstance(stock_names, list) or not all(isinstance(name, str) for name in stock_names):
+            raise ValueError(f"{stock_file} must contain an array of paths relative to Scripts/Source/User")
+        stock_paths = {(source_dir / name).resolve() for name in stock_names}
+        unknown = stock_paths - {path.resolve() for path in psc_files}
+        if unknown:
+            raise ValueError(f"Stock compiler selection contains unknown mod sources: {sorted(map(str, unknown))}")
+    stock_outputs = {}
+    if verify_stock or stock_paths:
         from creation_lib.build.papyrus_verification import verify_stock_sources
         if not profile.papyrus_compiler_dir:
             raise ValueError(f"No stock Papyrus compiler is configured for {game}")
-        verify_stock_sources(psc_files, compiler=game_data_dir.parent / profile.papyrus_compiler_dir / "PapyrusCompiler.exe",
-                             game_root=game_data_dir.parent, imports=import_parts, flags=flags_arg, on_progress=_emit)
+        selected = psc_files if verify_stock else [path for path in psc_files if path.resolve() in stock_paths]
+        stock_outputs = verify_stock_sources(selected, compiler=game_data_dir.parent / profile.papyrus_compiler_dir / "PapyrusCompiler.exe",
+                                              game_root=game_data_dir.parent, imports=import_parts, flags=flags_arg, on_progress=_emit)
     output_dir.mkdir(parents=True, exist_ok=True)
-    _emit(f"  [compile] native-compiling {len(psc_files)} script(s)")
+    _emit(f"  [compile] native-compiling {len(psc_files) - len(stock_paths)} script(s)")
+    if stock_paths:
+        _emit(f"  [compile] retaining stock output for {len(stock_paths)} script(s)")
     failures: list[str] = []
     for psc_path in psc_files:
         rel_path = psc_path.relative_to(source_dir)
         output_pex = (output_dir / rel_path).with_suffix(".pex")
+        if psc_path.resolve() in stock_paths:
+            output_pex.parent.mkdir(parents=True, exist_ok=True)
+            output_pex.write_bytes(stock_outputs[psc_path.resolve()])
+            continue
         if output_pex.is_file():
             output_pex.unlink()
         try:
@@ -395,6 +472,35 @@ def compile_papyrus(
 # ---------------------------------------------------------------------------
 # Deploy
 # ---------------------------------------------------------------------------
+
+def deploy_xse_files(
+    mod_dir: Path,
+    target_data_dir: Path,
+    *,
+    game: str,
+    preserve_xse_inis: bool = False,
+    on_progress: Callable[[str], None] | None = None,
+) -> tuple[int, list[str]]:
+    ext_dir = xse_plugin_dir_for(game)
+    xse_dir = Path(mod_dir) / ext_dir
+    copied, preserved = 0, []
+    for source in sorted(xse_dir.rglob("*")):
+        if not source.is_file():
+            continue
+        relative = Path(ext_dir) / source.relative_to(xse_dir)
+        destination = Path(target_data_dir) / relative
+        if preserve_xse_inis and source.suffix.casefold() == ".ini" and destination.is_file():
+            preserved.append(relative.as_posix())
+            if on_progress:
+                on_progress(f"  Preserved existing INI: {relative}")
+            continue
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        _copy2_fast(source, destination)
+        copied += 1
+        if on_progress:
+            on_progress(f"  Copied: {relative}")
+    return copied, preserved
+
 
 def deploy_mod(
     mod_name: str,
@@ -442,9 +548,8 @@ def deploy_mod(
             inside the mod folder. Relative paths resolve from that folder.
         preserve_xse_inis: Keep existing destination XSE .ini files; install missing ones.
         esp_only: Deploy only the .esp (no archives or loose files).
-        no_esp: Mod has no .esp (e.g. XSE-plugin-only). Skips the build/pack
-            pipeline and just copies whatever is under ``mods/<name>/<XSE>/``,
-            where ``<XSE>`` is one of F4SE/SKSE/SFSE/NVSE/FOSE per the mod's game.
+        no_esp: Mod has no .esp (e.g. XSE-plugin-only). Compiles Papyrus unless
+            skipped, then deploys the XSE tree, loose assets and compiled scripts.
         pc_max_res: Max texture resolution for PC archives (0 = unlimited).
         xbox_max_res: Max texture resolution for Xbox archives.
         ps_max_res: Max texture resolution for PlayStation archives (0 = unlimited).
@@ -489,22 +594,12 @@ def deploy_mod(
                     f"Build/install your {ext_dir} plugin first (e.g. xmake install -y)."
                 )
             return 0
-        copied = 0
-        for srcfile in xse_dir.rglob("*"):
-            if not srcfile.is_file():
-                continue
-            relpath = srcfile.relative_to(xse_dir)
-            destdir = target_data_dir / ext_dir / relpath.parent
-            destination = destdir / srcfile.name
-            if preserve_xse_inis and srcfile.suffix.casefold() == ".ini" and destination.is_file():
-                result.preserved_xse_inis.append(f"{ext_dir}/{relpath.as_posix()}")
-                _emit(f"  Preserved existing INI: {ext_dir}/{relpath}")
-                continue
-            destdir.mkdir(parents=True, exist_ok=True)
-            _copy2_fast(srcfile, destination)
-            result.loose_files_deployed += 1
-            copied += 1
-            _emit(f"  Copied: {ext_dir}/{relpath}")
+        copied, preserved = deploy_xse_files(
+            mod_dir, target_data_dir, game=game, preserve_xse_inis=preserve_xse_inis,
+            on_progress=_emit,
+        )
+        result.preserved_xse_inis.extend(preserved)
+        result.loose_files_deployed += copied
         return copied
 
     def _deploy_loose_dir(subdir: str) -> int:
@@ -525,14 +620,65 @@ def deploy_mod(
             _emit(f"  Copied: {subdir}/{relpath}")
         return copied
 
+    def _deploy_strings(plugin: Path, *, packed: bool = False) -> None:
+        # A freshly packed archive already carries mods/<Mod>/Strings at
+        # strings/; deploying the same tables loose would shadow the archive
+        # and hide a packing failure behind byte-identical copies.
+        files = [] if packed else _plugin_string_files(plugin)
+        if not files and not packed:
+            return
+        if files:
+            destination = target_data_dir / "Strings"
+            destination.mkdir(parents=True, exist_ok=True)
+            for source_file in files:
+                _verified_copy(source_file, destination / source_file.name, _emit)
+                result.strings_deployed += 1
+                _emit(f"  Copied: Strings/{source_file.name}")
+        _remove_loose_string_sidecars(target_data_dir, plugin.stem, _emit, stale=True,
+                                     keep={path.name.casefold() for path in files})
+
+    def _deploy_precombine_sidecars(plugin: Path) -> int:
+        """Copy the precombine sidecars (`precombine_sidecar_names`) loose beside
+        the deployed plugin. The game, and Tales for the exterior index, only read
+        them loose next to the plugin — never from a BA2 — so, like the plugin
+        and its strings, they deploy in every mode (archive or loose). A
+        deployed copy the mod no longer ships is
+        removed so a stale precombine index never outlives its plugin.
+        """
+        deployed = 0
+        for name in precombine_sidecar_names(plugin.name):
+            source = next(
+                (root / name for root in (plugin.parent, data_dir) if (root / name).is_file()),
+                None,
+            )
+            destination = target_data_dir / name
+            if source is not None:
+                _verified_copy(source, destination, _emit)
+                result.loose_files_deployed += 1
+                deployed += 1
+                _emit(f"  Copied: {name}")
+            elif destination.is_file():
+                destination.unlink()
+                _emit(f"  Removed stale precombine sidecar: {name}")
+        return deployed
+
     # ── No-esp path: XSE-plugin-only mod ────────────────────────────
     if no_esp:
         _emit(f"Deploying {xse_plugin_dir_for(game)}-only mod {mod_name} to {target_data_dir}...")
+        if not skip_papyrus_compile:
+            compile_papyrus(mod_dir, game, game_data_dir, on_progress=on_progress)
         copied = _deploy_xse_tree(strict=True)
         for aux in _AUX_LOOSE_DIRS:
             copied += _deploy_loose_dir(aux)
         for data_tree in _XSE_LOOSE_DATA_DIRS:
             copied += _deploy_loose_dir(data_tree)
+        for srcfile, relative in _compiled_script_files(mod_dir):
+            destination = target_data_dir / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            _copy2_fast(srcfile, destination)
+            result.loose_files_deployed += 1
+            copied += 1
+            _emit(f"  Copied: {relative}")
         if copied == 0 and not result.preserved_xse_inis:
             _emit(f"  WARNING: No files found under mods/{mod_name}/{xse_plugin_dir_for(game)}/")
         _emit(f"=== Deploy complete === ({copied} file(s))")
@@ -607,6 +753,7 @@ def deploy_mod(
             _emit("[3/5] No .psc files found — skipping")
 
     # ── Step 4: Pack BA2 archives ───────────────────────────────────
+    archives_packed = False
     archives_packed_in_target = False
     if esp_only or skip_pack:
         _emit("[4/5] Skipping BA2 packing")
@@ -643,6 +790,7 @@ def deploy_mod(
             archive_output_dir=archive_output_dir,
             plugin_base_name=archive_base,
         )
+        archives_packed = True
         archives_packed_in_target = archive_output_dir is not None
 
     # ── Step 5: Deploy to game Data ─────────────────────────────────
@@ -658,6 +806,16 @@ def deploy_mod(
     _verified_copy(esp, dest_esp, _emit)
     result.plugin_deployed = esp.name
     _emit(f"  Copied: {esp.name}")
+    _deploy_strings(esp, packed=archives_packed)
+    _deploy_precombine_sidecars(esp)
+    for relative, source in always_loose_files(mod_dir).items():
+        if not source.is_file():
+            _emit(f"  WARNING: always-loose source missing: {source}")
+            continue
+        (target_data_dir / relative).parent.mkdir(parents=True, exist_ok=True)
+        _verified_copy(source, target_data_dir / relative, _emit)
+        result.loose_files_deployed += 1
+        _emit(f"  Copied (always loose): {relative.as_posix()}")
 
     if not esp_only:
         if archives_packed_in_target:
@@ -686,7 +844,13 @@ def deploy_mod(
         else:
             _emit("  Skipping BA2 deploy; archives already in deploy target")
 
-        _remove_loose_string_sidecars(target_data_dir, archive_base, _emit, stale=True)
+        # Older loose script hotfixes take precedence over the newly deployed archive.
+        for srcfile, relative in _compiled_script_files(mod_dir):
+            destination = target_data_dir / relative
+            if destination.is_file():
+                _verified_copy(srcfile, destination, _emit)
+                result.loose_files_deployed += 1
+                _emit(f"  Refreshed loose script override: {relative}")
 
         # Deploy loose Meshes/ files (everything except .xml source files)
         if meshes_dir.is_dir():
@@ -764,6 +928,7 @@ def deploy_mod(
 
                 # Deploy patch ESP
                 _copy2_fast(patch_esp, target_data_dir / plugin_file)
+                _deploy_strings(patch_esp)
                 result.patches_deployed.append(plugin_file)
                 _emit(f"  Deployed: {plugin_file}")
 
@@ -868,6 +1033,13 @@ def undeploy_mod(
             _undeploy_loose_dir(aux)
         for data_tree in _XSE_LOOSE_DATA_DIRS:
             _undeploy_loose_dir(data_tree)
+        for _, relative in _compiled_script_files(mod_dir):
+            deployed = game_data_dir / relative
+            if deployed.is_file():
+                if not dry_run:
+                    deployed.unlink()
+                removed.append(relative.as_posix())
+                _emit(f"Removed: {relative}")
         if removed:
             _emit(f"=== Undeploy complete === ({len(removed)} file(s) removed)")
         else:
@@ -897,6 +1069,24 @@ def undeploy_mod(
             archive.unlink()
         removed.append(archive.name)
         _emit(f"Removed: {archive.name}")
+
+    # Precombine sidecars (- Geometry.csg / .cdx) — loose beside the plugin,
+    # like the plugin itself.
+    for name in precombine_sidecar_names(plugin_base):
+        f = game_data_dir / name
+        if f.is_file():
+            if not dry_run:
+                f.unlink()
+            removed.append(f.name)
+            _emit(f"Removed: {f.name}")
+
+    for relative in always_loose_files(mod_dir):
+        f = game_data_dir / relative
+        if f.is_file():
+            if not dry_run:
+                f.unlink()
+            removed.append(relative.as_posix())
+            _emit(f"Removed: {relative.as_posix()}")
 
     # String files
     removed.extend(_remove_loose_string_sidecars(game_data_dir, plugin_base, _emit, dry_run=dry_run))

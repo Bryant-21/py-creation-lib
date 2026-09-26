@@ -37,64 +37,47 @@ def _obj(name="Widget", parent="Form", functions=(), properties=(), structs=(), 
     )
 
 
-def test_scriptname_and_parent_are_emitted():
+def test_scriptname_parent_and_root_extends():
     assert emit_header(_obj(), _MANIFEST).startswith("Scriptname Widget Extends Form")
 
-
-def test_root_script_has_no_extends():
     header = emit_header(_obj(name="ScriptObject", parent=""), _MANIFEST)
     assert header.startswith("Scriptname ScriptObject\n")
     assert "Extends" not in header
 
 
-def test_default_parameter_values_come_from_the_manifest():
-    """Without these every optional parameter becomes required."""
+def test_function_and_event_signatures():
+    """Without manifest defaults every optional parameter becomes required;
+    events must stay Events since the compiler validates them against
+    inherited signatures."""
     fn = _fn("AddItem", params=(("akItem", "Form"), ("aiCount", "Int"), ("abSilent", "Bool")))
     header = emit_header(_obj(functions=[fn]), _MANIFEST)
-
     assert "Function AddItem(Form akItem, Int aiCount = 1, Bool abSilent = false)" in header
 
-
-def test_events_are_emitted_as_events_not_functions():
-    """The compiler validates overriding events against inherited signatures."""
     header = emit_header(
         _obj(functions=[_fn("OnInit", is_native=False)]), _MANIFEST
     )
-
     assert "Event OnInit()" in header
     assert "EndEvent" in header
     assert "Function OnInit" not in header
 
-
-def test_unlisted_callable_is_emitted_as_a_function():
     header = emit_header(_obj(functions=[_fn("GetFormID", return_type="Int")]), _MANIFEST)
-
     assert "Int Function GetFormID() Native" in header
 
-
-def test_void_functions_omit_a_return_type():
     header = emit_header(_obj(functions=[_fn("Reset")]), _MANIFEST)
-
     assert "Function Reset() Native" in header
     assert "None Function" not in header
 
-
-def test_global_functions_keep_the_global_keyword():
-    """Globals compile to CALLSTATIC, so the keyword is load-bearing."""
+    # Globals compile to CALLSTATIC, so the keyword is load-bearing.
     fn = _fn("RandomFloat", return_type="Float", is_global=True)
     header = emit_header(_obj(name="Utility", functions=[fn]), _MANIFEST)
-
     assert "Float Function RandomFloat() Global Native" in header
 
 
-def test_properties_are_emitted_with_their_type():
+def test_properties_and_structs_carry_types():
     prop = SimpleNamespace(name="Health", type="Float", flags=7, auto_var="::Health_var")
     header = emit_header(_obj(properties=[prop]), _MANIFEST)
-
     assert "Float Property Health Auto" in header
 
-
-def test_structs_are_emitted_with_typed_members():
     struct = SimpleNamespace(
         name="StatAchievement",
         members=[
@@ -103,7 +86,6 @@ def test_structs_are_emitted_with_typed_members():
         ],
     )
     header = emit_header(_obj(structs=[struct]), _MANIFEST)
-
     assert "Struct StatAchievement" in header
     assert "    String StatName" in header
     assert "    Int Threshold" in header
@@ -130,7 +112,7 @@ def test_emitting_without_a_manifest_entry_still_produces_a_valid_header():
     assert "Function Go() Native" in header
 
 
-def test_struct_types_use_source_spelling_not_pex_spelling():
+def test_struct_type_spelling_is_source_legal():
     """`.pex` writes `script#struct`; `#` is a parse error in source.
 
     One bad declaration takes down the whole header, so the resolver caches a
@@ -146,11 +128,9 @@ def test_struct_types_use_source_spelling_not_pex_spelling():
     # Inside its own declaring script the struct is referenced bare.
     assert "queststage questStageToCheck" in header
 
-
-def test_struct_type_from_another_script_is_colon_qualified():
+    # A struct type from another script is colon-qualified.
     fn = _fn("Take", params=(("data", "other#payload"),))
     header = emit_header(_obj(name="Widget", functions=[fn]), _MANIFEST)
-
     assert "other:payload data" in header
 
 

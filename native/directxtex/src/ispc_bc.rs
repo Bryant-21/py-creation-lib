@@ -162,13 +162,7 @@ mod tests {
             assert_eq!(bc5.len(), w.div_ceil(4) * h.div_ceil(4) * 16);
             assert_eq!(bc7.len(), w.div_ceil(4) * h.div_ceil(4) * 16);
         }
-    }
-
-    #[test]
-    fn bc7_profile_selection_is_alpha_keyed() {
-        let opaque = checkerboard(4, 4, 255);
-        let translucent = checkerboard(4, 4, 128);
-        assert_eq!(bc7_production_settings(&opaque).channels, 3);
-        assert_eq!(bc7_production_settings(&translucent).channels, 4);
+        assert_eq!(bc7_production_settings(&checkerboard(4, 4, 255)).channels, 3);
+        assert_eq!(bc7_production_settings(&checkerboard(4, 4, 128)).channels, 4);
     }
 }

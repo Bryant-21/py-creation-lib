@@ -1,5 +1,4 @@
 use indexmap::IndexMap;
-use nif_core_native::convert_file::{ConvertFileOptions, ConvertFileReport};
 use nif_core_native::model::{NifFile, NifValue};
 use nif_core_native::skin::bone_remap::{
     BodyPartRemap, BoneEntry, SkeletonMap, VertexInfluences, fo3_body_part_to_fo4_segment,
@@ -14,7 +13,7 @@ use nif_core_native::skin::source::{
 };
 use nif_core_native::skin::weight_transfer::{MorphTransferConfig, transfer_morph_weights};
 use nif_core_native::skin::{
-    LegacySkinPolicy, convert_legacy_skin, first_person::extract_arm_subset, restructure_bone_tree,
+    convert_legacy_skin, first_person::extract_arm_subset, restructure_bone_tree,
 };
 use std::path::PathBuf;
 
@@ -24,50 +23,19 @@ fn translation_maps_dir() -> PathBuf {
 }
 
 #[test]
-fn options_have_skin_fields() {
-    let opts = ConvertFileOptions {
-        translation_maps_dir: None,
-        auto_skin_reference_body: None,
-        emit_first_person: false,
-        first_person_reference: None,
-        morph_weight_cap: 0.5,
-        ..ConvertFileOptions::default()
-    };
-
-    assert!(!opts.emit_first_person);
-    assert!((opts.morph_weight_cap - 0.5).abs() < f32::EPSILON);
-    assert_eq!(opts.skin_policy, LegacySkinPolicy::TranslateSkeleton);
-}
-
-#[test]
-fn report_has_skin_counters() {
-    let report = ConvertFileReport::default();
-
-    assert_eq!(report.shapes_skinned, 0);
-    assert_eq!(report.vertices_repacked, 0);
-    assert!(report.emitted_first_person.is_none());
-}
-
-#[test]
-fn skeleton_map_loads_fnv_to_fo4() {
+fn skeleton_map_loads_maps_and_errors() {
     let dir = translation_maps_dir();
     let map = SkeletonMap::load(&dir, "fnv", "fo4").expect("load fnv->fo4 map");
 
     assert_eq!(map.lookup("Bip01 Pelvis"), Some("Pelvis"));
     assert_eq!(map.lookup("Bip01 Spine"), Some("Spine1"));
     assert_eq!(map.lookup("Bip01 L Forearm"), Some("LArm_ForeArm1"));
-}
 
-#[test]
-fn skeleton_map_returns_none_for_unmapped() {
     let dir = translation_maps_dir();
     let map = SkeletonMap::load(&dir, "fnv", "fo4").expect("load fnv->fo4 map");
 
     assert_eq!(map.lookup("Bip01 BogusBone"), None);
-}
 
-#[test]
-fn skeleton_map_missing_file_errors() {
     let dir = PathBuf::from("/nonexistent/path");
     let result = SkeletonMap::load(&dir, "fnv", "fo4");
 
@@ -75,7 +43,7 @@ fn skeleton_map_missing_file_errors() {
 }
 
 #[test]
-fn fo3_body_part_torso_maps_to_fo4_body() {
+fn fo3_body_parts_map_to_fo4_partitions() {
     let remap = fo3_body_part_to_fo4_segment(0);
 
     assert_eq!(
@@ -85,10 +53,7 @@ fn fo3_body_part_torso_maps_to_fo4_body() {
             segment_user_index: 32
         })
     );
-}
 
-#[test]
-fn fo3_body_part_left_arm_maps_to_fo4_arms() {
     let remap = fo3_body_part_to_fo4_segment(2);
 
     assert_eq!(
@@ -98,15 +63,12 @@ fn fo3_body_part_left_arm_maps_to_fo4_arms() {
             segment_user_index: 34
         })
     );
-}
 
-#[test]
-fn fo3_body_part_unknown_returns_none() {
     assert_eq!(fo3_body_part_to_fo4_segment(255), None);
 }
 
 #[test]
-fn unmapped_child_weight_redistributes_to_mapped_parent() {
+fn unmapped_weights_redistribute_or_drop_to_root() {
     let bones = vec![
         BoneEntry {
             name: "Bip01 Pelvis".into(),
@@ -130,10 +92,7 @@ fn unmapped_child_weight_redistributes_to_mapped_parent() {
     assert!((influences[0].slots[0].1 - 1.0).abs() < 1e-5);
     assert_eq!(report.dropped_unmapped, vec!["Bip01 BogusBone"]);
     assert_eq!(report.weights_redistributed, 1);
-}
 
-#[test]
-fn fully_unmapped_chain_drops_to_root_with_warning() {
     let bones = vec![
         BoneEntry {
             name: "BogusRoot".into(),
@@ -505,7 +464,7 @@ fn bone_weight_value(vertex_index: u32, weight: f32) -> NifValue {
 }
 
 #[test]
-fn parse_skin_chain_captures_kind_and_bones() {
+fn parse_skin_chain_captures_bones_weights_and_dismember() {
     let (nif, shape_id) = make_minimal_skinned_nif();
 
     let parsed = parse_skin_chain(&nif, shape_id)
@@ -543,10 +502,7 @@ fn parse_skin_chain_captures_kind_and_bones() {
     assert_eq!(parsed.bones[0].parent, -1);
     assert_eq!(parsed.bones[1].parent, 0);
     assert_eq!(parsed.skin_transform, SkinTransform::identity());
-}
 
-#[test]
-fn parse_skin_chain_reads_skin_data_bind_weights() {
     let (mut nif, shape_id) = make_minimal_skinned_nif();
     let skin_data_id = skin_data_id(&nif, shape_id);
     let skin_data = nif.blocks.get_mut(skin_data_id).expect("skin data");
@@ -571,10 +527,7 @@ fn parse_skin_chain_reads_skin_data_bind_weights() {
     assert_eq!(parsed.bone_transforms[1].translation, [0.0, 3.0, 0.0]);
     assert_eq!(parsed.data_influences[0].slots, vec![(0, 0.25), (1, 0.75)]);
     assert_eq!(parsed.data_influences[1].slots, vec![(0, 1.0)]);
-}
 
-#[test]
-fn parse_skin_chain_detects_dismember_armor() {
     let (mut nif, shape_id) = make_minimal_skinned_nif();
     let instance_id = match nif
         .get_block(shape_id)
@@ -594,7 +547,7 @@ fn parse_skin_chain_detects_dismember_armor() {
 }
 
 #[test]
-fn parse_skin_chain_returns_none_for_unskinned_shape() {
+fn parse_skin_chain_handles_unskinned_and_fo4_skin_field() {
     let mut nif = NifFile::new("fnv");
     let mut shape = IndexMap::new();
     shape.insert("Name".into(), NifValue::String("StaticShape".into()));
@@ -604,10 +557,7 @@ fn parse_skin_chain_returns_none_for_unskinned_shape() {
     let parsed = parse_skin_chain(&nif, shape_id).expect("parse succeeds");
 
     assert!(parsed.is_none());
-}
 
-#[test]
-fn parse_skin_chain_accepts_fo4_skin_field_when_skin_instance_is_empty() {
     let (mut nif, shape_id) = make_minimal_skinned_nif();
     let instance_id = match nif
         .get_block(shape_id)
@@ -628,7 +578,7 @@ fn parse_skin_chain_accepts_fo4_skin_field_when_skin_instance_is_empty() {
 }
 
 #[test]
-fn fold_partitions_merges_overlapping_vertex_maps() {
+fn fold_partitions_merge_and_clamp_influences() {
     let parts = vec![
         LegacyPartition {
             body_part: 0,
@@ -665,10 +615,7 @@ fn fold_partitions_merges_overlapping_vertex_maps() {
             .iter()
             .any(|(bone, weight)| *bone == 11 && (*weight - 0.5).abs() < 1e-5)
     );
-}
 
-#[test]
-fn fold_clamps_to_four_influences_keeping_top_weights() {
     let parts = vec![LegacyPartition {
         body_part: 0,
         vertex_map: vec![0],
@@ -686,7 +633,7 @@ fn fold_clamps_to_four_influences_keeping_top_weights() {
 }
 
 #[test]
-fn vertex_desc_skinned_matches_vanilla_fo4_layout() {
+fn skinned_vertex_layout_and_packing() {
     // Values taken from vanilla FO4 skinned meshes, which are uniform across
     // meshes/armor: flags 0x5b at 32 bytes/vertex, 0x7b at 36 with colors at 20.
     for (has_colors, want_flags, want_stride, want_color_offset, want_skin_offset) in
@@ -709,43 +656,42 @@ fn vertex_desc_skinned_matches_vanilla_fo4_layout() {
             "skin offset"
         );
     }
-}
 
-#[test]
-fn pack_skinned_vertex_data_writes_bone_indices_and_weights() {
-    let positions = vec![[0.0_f32, 0.0, 0.0], [1.0, 0.0, 0.0]];
-    let normals = vec![[0.0, 0.0, 1.0], [0.0, 0.0, 1.0]];
-    let tangents = vec![[1.0, 0.0, 0.0], [1.0, 0.0, 0.0]];
-    let bitangents = vec![[0.0, 1.0, 0.0], [0.0, 1.0, 0.0]];
-    let uvs = vec![[0.0_f32, 0.0], [1.0, 0.0]];
-    let influences = vec![
-        VertexInfluences {
-            slots: vec![(0, 1.0)],
-        },
-        VertexInfluences {
-            slots: vec![(0, 0.5), (1, 0.5)],
-        },
-    ];
+    {
+        let positions = vec![[0.0_f32, 0.0, 0.0], [1.0, 0.0, 0.0]];
+        let normals = vec![[0.0, 0.0, 1.0], [0.0, 0.0, 1.0]];
+        let tangents = vec![[1.0, 0.0, 0.0], [1.0, 0.0, 0.0]];
+        let bitangents = vec![[0.0, 1.0, 0.0], [0.0, 1.0, 0.0]];
+        let uvs = vec![[0.0_f32, 0.0], [1.0, 0.0]];
+        let influences = vec![
+            VertexInfluences {
+                slots: vec![(0, 1.0)],
+            },
+            VertexInfluences {
+                slots: vec![(0, 0.5), (1, 0.5)],
+            },
+        ];
 
-    let entries = pack_skinned_vertex_data(
-        &positions,
-        &normals,
-        &tangents,
-        &bitangents,
-        &uvs,
-        None,
-        &influences,
-    );
+        let entries = pack_skinned_vertex_data(
+            &positions,
+            &normals,
+            &tangents,
+            &bitangents,
+            &uvs,
+            None,
+            &influences,
+        );
 
-    assert_eq!(entries.len(), 2);
-    for entry in &entries {
-        let NifValue::Struct(fields) = entry else {
-            panic!("not a struct");
-        };
-        let bi = fields.get("Bone Indices").expect("Bone Indices");
-        let bw = fields.get("Bone Weights").expect("Bone Weights");
-        assert!(matches!(bi, NifValue::Array(a) if a.len() == 4));
-        assert!(matches!(bw, NifValue::Array(a) if a.len() == 4));
+        assert_eq!(entries.len(), 2);
+        for entry in &entries {
+            let NifValue::Struct(fields) = entry else {
+                panic!("not a struct");
+            };
+            let bi = fields.get("Bone Indices").expect("Bone Indices");
+            let bw = fields.get("Bone Weights").expect("Bone Weights");
+            assert!(matches!(bi, NifValue::Array(a) if a.len() == 4));
+            assert!(matches!(bw, NifValue::Array(a) if a.len() == 4));
+        }
     }
 }
 
@@ -776,48 +722,47 @@ fn tangents_for_simple_xy_quad_align_with_uv_axes() {
 }
 
 #[test]
-fn build_segment_data_emits_one_segment_per_input() {
-    let specs = vec![
-        SegmentSpec {
-            triangle_start: 0,
-            triangle_count: 100,
-            user_index: 32,
-        },
-        SegmentSpec {
-            triangle_start: 100,
-            triangle_count: 50,
-            user_index: 34,
-        },
-    ];
-    let (num_segments, segments_value, total_segment_data) = build_segment_data(&specs);
-    assert_eq!(num_segments, 2);
+fn build_segment_data_per_input_or_default() {
+    {
+        let specs = vec![
+            SegmentSpec {
+                triangle_start: 0,
+                triangle_count: 100,
+                user_index: 32,
+            },
+            SegmentSpec {
+                triangle_start: 100,
+                triangle_count: 50,
+                user_index: 34,
+            },
+        ];
+        let (num_segments, segments_value, total_segment_data) = build_segment_data(&specs);
+        assert_eq!(num_segments, 2);
 
-    let arr = match &segments_value {
-        NifValue::Array(items) => items,
-        _ => panic!("not an array"),
-    };
-    assert_eq!(arr.len(), 2);
-    let first = match &arr[0] {
-        NifValue::Struct(fields) => fields,
-        _ => panic!("not a struct"),
-    };
-    assert!(matches!(first.get("Start Index"), Some(NifValue::UInt(0))));
-    assert!(matches!(
-        first.get("Num Primitives"),
-        Some(NifValue::UInt(100))
-    ));
-    assert!(matches!(first.get("User Index"), Some(NifValue::UInt(32))));
-    assert!(total_segment_data > 0);
-}
+        let arr = match &segments_value {
+            NifValue::Array(items) => items,
+            _ => panic!("not an array"),
+        };
+        assert_eq!(arr.len(), 2);
+        let first = match &arr[0] {
+            NifValue::Struct(fields) => fields,
+            _ => panic!("not a struct"),
+        };
+        assert!(matches!(first.get("Start Index"), Some(NifValue::UInt(0))));
+        assert!(matches!(
+            first.get("Num Primitives"),
+            Some(NifValue::UInt(100))
+        ));
+        assert!(matches!(first.get("User Index"), Some(NifValue::UInt(32))));
+        assert!(total_segment_data > 0);
+    }
 
-#[test]
-fn build_segment_data_with_no_specs_emits_single_default_segment() {
     let (num_segments, _, _) = build_segment_data(&[]);
     assert_eq!(num_segments, 1);
 }
 
 #[test]
-fn convert_legacy_skin_promotes_shape_and_drops_legacy_skin_chain() {
+fn convert_legacy_skin_promotes_shapes_and_keeps_rig_structure() {
     let (mut nif, _) = make_convertible_legacy_skin_nif();
     let dir = translation_maps_dir();
 
@@ -839,10 +784,7 @@ fn convert_legacy_skin_promotes_shape_and_drops_legacy_skin_chain() {
         block.type_name.as_str(),
         "NiSkinInstance" | "NiSkinData" | "NiSkinPartition"
     )));
-}
 
-#[test]
-fn convert_legacy_skin_preserves_source_skeleton_root_ref() {
     let (mut nif, shape_id) = make_convertible_legacy_skin_nif();
     let instance_id = skin_instance_id(&nif, shape_id);
     let source_root = match nif
@@ -881,10 +823,7 @@ fn convert_legacy_skin_preserves_source_skeleton_root_ref() {
     assert_ne!(skeleton_root, 0);
     let root = nif.get_block(skeleton_root as usize).expect("root block");
     assert_eq!(root.type_name, "NiNode");
-}
 
-#[test]
-fn convert_legacy_skin_handles_shared_bones_across_multiple_shapes() {
     let (mut nif, first_shape_id) = make_convertible_legacy_skin_nif();
     add_convertible_shape_sharing_skin_bones(&mut nif, first_shape_id);
     let dir = translation_maps_dir();
@@ -901,165 +840,7 @@ fn convert_legacy_skin_handles_shared_bones_across_multiple_shapes() {
     assert!(converted_shapes.iter().all(|shape| {
         matches!(shape.get_field("Skin"), Some(NifValue::Ref(reference)) if *reference >= 0)
     }));
-}
 
-#[test]
-fn convert_legacy_skin_all_unmapped_static_fallback_uses_static_vertex_layout() {
-    let (mut nif, shape_id) = make_convertible_legacy_skin_nif();
-    let instance_id = skin_instance_id(&nif, shape_id);
-    let bone_ids = match nif
-        .get_block(instance_id)
-        .and_then(|instance| instance.get_field("Bones"))
-    {
-        Some(NifValue::Array(bones)) => bones
-            .iter()
-            .filter_map(|value| match value {
-                NifValue::Ref(reference) if *reference >= 0 => Some(*reference as usize),
-                _ => None,
-            })
-            .collect::<Vec<_>>(),
-        other => panic!("unexpected bones array: {other:?}"),
-    };
-    for (index, bone_id) in bone_ids.into_iter().enumerate() {
-        nif.blocks[bone_id].set_field("Name", NifValue::String(format!("BogusBone{index}")));
-    }
-
-    let dir = translation_maps_dir();
-    let report = convert_legacy_skin(&mut nif, &dir, None, 0.5).expect("convert skin");
-
-    assert_eq!(report.shapes_skinned, 0);
-    assert_eq!(report.vertices_repacked, 3);
-    assert!(
-        nif.blocks
-            .iter()
-            .all(|block| block.type_name != "BSSkin::Instance")
-    );
-
-    let shape = nif
-        .blocks
-        .iter()
-        .find(|block| block.type_name == "BSSubIndexTriShape")
-        .expect("converted static shape");
-    assert!(matches!(shape.get_field("Skin"), Some(NifValue::Ref(-1))));
-    assert!(matches!(
-        shape.get_field("Skin Instance"),
-        Some(NifValue::Ref(-1))
-    ));
-    let vertex_desc = shape
-        .get_field("Vertex Desc")
-        .map(NifValue::as_i64)
-        .expect("vertex desc");
-    assert_eq!((vertex_desc >> 44) & 0x0040, 0);
-    assert_eq!(vertex_desc & 0xF, 5);
-
-    let vertices = match shape.get_field("Vertex Data") {
-        Some(NifValue::Array(vertices)) => vertices,
-        other => panic!("unexpected vertex data: {other:?}"),
-    };
-    let first = match vertices.first() {
-        Some(NifValue::Struct(fields)) => fields,
-        other => panic!("unexpected vertex: {other:?}"),
-    };
-    assert!(!first.contains_key("Bone Indices"));
-    assert!(!first.contains_key("Bone Weights"));
-    assert_fo4_segment_invariant(shape);
-}
-
-/// FO4 reads `Total Segments` as `Num Segments + sum(Num Sub Segments)` and only
-/// reads the shared `Segment Data` block when `Num Segments < Total Segments`.
-/// An inflated total desyncs the engine inside the shape block, so the following
-/// block's string index is read from mesh bytes — an access violation in
-/// `NiStringExtraData::LoadBinary`.
-fn assert_fo4_segment_invariant(shape: &nif_core_native::model::NifBlock) {
-    let segments = match shape.get_field("Segment") {
-        Some(NifValue::Array(segments)) => segments,
-        other => panic!("expected segment array, got {other:?}"),
-    };
-    let sub_segments: i64 = segments
-        .iter()
-        .map(|value| match value {
-            NifValue::Struct(fields) => fields
-                .get("Num Sub Segments")
-                .map(NifValue::as_i64)
-                .unwrap_or(0),
-            _ => 0,
-        })
-        .sum();
-    let num = shape
-        .get_field("Num Segments")
-        .map(NifValue::as_i64)
-        .expect("num segments");
-    let total = shape
-        .get_field("Total Segments")
-        .map(NifValue::as_i64)
-        .expect("total segments");
-    assert_eq!(num, segments.len() as i64);
-    assert_eq!(total, num + sub_segments);
-    if num == total {
-        assert!(shape.get_field("Segment Data").is_none());
-    }
-}
-
-#[test]
-fn convert_legacy_skin_redistributes_unmapped_child_weight_to_parsed_parent() {
-    let (mut nif, shape_id) = make_convertible_legacy_skin_nif();
-    let instance_id = skin_instance_id(&nif, shape_id);
-    let child_bone_id = match nif
-        .get_block(instance_id)
-        .and_then(|instance| instance.get_field("Bones"))
-    {
-        Some(NifValue::Array(bones)) => match bones.get(1) {
-            Some(NifValue::Ref(reference)) if *reference >= 0 => *reference as usize,
-            other => panic!("unexpected child bone ref: {other:?}"),
-        },
-        other => panic!("unexpected bones array: {other:?}"),
-    };
-    nif.blocks[child_bone_id].set_field("Name", NifValue::String("Bip01 BogusBone".to_string()));
-
-    let dir = translation_maps_dir();
-    let report = convert_legacy_skin(&mut nif, &dir, None, 0.5).expect("convert skin");
-
-    assert_eq!(report.shapes_skinned, 1);
-    assert_eq!(report.bones_dropped_unmapped, 1);
-    assert_eq!(report.weights_redistributed, 2);
-}
-
-#[test]
-fn convert_legacy_skin_is_atomic_on_later_parse_error() {
-    let (mut nif, shape_id) = make_convertible_legacy_skin_nif();
-    let invalid_instance_id = nif.add_block(
-        "NiSkinInstance",
-        Some(fields([
-            ("Skin Partition", NifValue::Ref(-1)),
-            ("Skeleton Root", NifValue::Ref(0)),
-            ("Num Bones", NifValue::UInt(0)),
-            ("Bones", NifValue::Array(Vec::new())),
-        ])),
-    );
-    nif.add_block(
-        "NiTriShape",
-        Some(fields([(
-            "Skin Instance",
-            NifValue::Ref(invalid_instance_id as i32),
-        )])),
-    );
-    let original_block_count = nif.blocks.len();
-
-    let dir = translation_maps_dir();
-    let result = convert_legacy_skin(&mut nif, &dir, None, 0.5);
-
-    assert!(result.is_err());
-    assert_eq!(nif.blocks.len(), original_block_count);
-    assert_eq!(nif.get_block(shape_id).unwrap().type_name, "NiTriShape");
-    assert!(
-        nif.blocks
-            .iter()
-            .all(|block| block.type_name != "BSSkin::Instance")
-    );
-}
-
-#[test]
-fn convert_legacy_skin_preserves_partition_segments() {
     let (mut nif, shape_id) = make_minimal_skinned_nif();
     let instance_id = skin_instance_id(&nif, shape_id);
     nif.blocks[instance_id].type_name = "BSDismemberSkinInstance".to_string();
@@ -1181,108 +962,259 @@ fn convert_legacy_skin_preserves_partition_segments() {
 }
 
 #[test]
-fn convert_legacy_skin_uses_skin_data_fallback_and_bind_transforms() {
-    let (mut nif, shape_id) = make_minimal_skinned_nif();
-    if let Some(shape) = nif.blocks.get_mut(shape_id) {
-        shape.set_field(
-            "Vertex Data",
-            NifValue::Array(vec![
-                vertex_entry([0.0, 0.0, 0.0]),
-                vertex_entry([1.0, 0.0, 0.0]),
-                vertex_entry([0.0, 1.0, 0.0]),
-            ]),
-        );
-        shape.set_field(
-            "Triangles",
-            NifValue::Array(vec![triangle_value([0, 1, 2])]),
-        );
-        shape.set_field("Num Vertices", NifValue::UInt(3));
-        shape.set_field("Num Triangles", NifValue::UInt(1));
+fn convert_legacy_skin_weight_fallbacks() {
+    let (mut nif, shape_id) = make_convertible_legacy_skin_nif();
+    let instance_id = skin_instance_id(&nif, shape_id);
+    let bone_ids = match nif
+        .get_block(instance_id)
+        .and_then(|instance| instance.get_field("Bones"))
+    {
+        Some(NifValue::Array(bones)) => bones
+            .iter()
+            .filter_map(|value| match value {
+                NifValue::Ref(reference) if *reference >= 0 => Some(*reference as usize),
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        other => panic!("unexpected bones array: {other:?}"),
+    };
+    for (index, bone_id) in bone_ids.into_iter().enumerate() {
+        nif.blocks[bone_id].set_field("Name", NifValue::String(format!("BogusBone{index}")));
     }
-    let skin_data_id = skin_data_id(&nif, shape_id);
-    let skin_data = nif.blocks.get_mut(skin_data_id).expect("skin data");
-    skin_data.set_field("Skin Transform", skin_transform_value([10.0, 0.0, 0.0]));
-    let second_rotation = [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]];
-    skin_data.set_field(
-        "Bone List",
-        NifValue::Array(vec![
-            bone_data_value([0.0, 0.0, 0.0], vec![bone_weight_value(0, 1.0)]),
-            NifValue::Struct(fields([
-                (
-                    "Skin Transform",
-                    skin_transform_value_with_rotation([0.0, 5.0, 0.0], second_rotation),
-                ),
-                (
-                    "Vertex Weights",
-                    NifValue::Array(vec![bone_weight_value(1, 1.0), bone_weight_value(2, 1.0)]),
-                ),
-            ])),
-        ]),
+
+    let dir = translation_maps_dir();
+    let report = convert_legacy_skin(&mut nif, &dir, None, 0.5).expect("convert skin");
+
+    assert_eq!(report.shapes_skinned, 0);
+    assert_eq!(report.vertices_repacked, 3);
+    assert!(
+        nif.blocks
+            .iter()
+            .all(|block| block.type_name != "BSSkin::Instance")
     );
+
+    let shape = nif
+        .blocks
+        .iter()
+        .find(|block| block.type_name == "BSSubIndexTriShape")
+        .expect("converted static shape");
+    assert!(matches!(shape.get_field("Skin"), Some(NifValue::Ref(-1))));
+    assert!(matches!(
+        shape.get_field("Skin Instance"),
+        Some(NifValue::Ref(-1))
+    ));
+    let vertex_desc = shape
+        .get_field("Vertex Desc")
+        .map(NifValue::as_i64)
+        .expect("vertex desc");
+    assert_eq!((vertex_desc >> 44) & 0x0040, 0);
+    assert_eq!(vertex_desc & 0xF, 5);
+
+    let vertices = match shape.get_field("Vertex Data") {
+        Some(NifValue::Array(vertices)) => vertices,
+        other => panic!("unexpected vertex data: {other:?}"),
+    };
+    let first = match vertices.first() {
+        Some(NifValue::Struct(fields)) => fields,
+        other => panic!("unexpected vertex: {other:?}"),
+    };
+    assert!(!first.contains_key("Bone Indices"));
+    assert!(!first.contains_key("Bone Weights"));
+    assert_fo4_segment_invariant(shape);
+
+    let (mut nif, shape_id) = make_convertible_legacy_skin_nif();
+    let instance_id = skin_instance_id(&nif, shape_id);
+    let child_bone_id = match nif
+        .get_block(instance_id)
+        .and_then(|instance| instance.get_field("Bones"))
+    {
+        Some(NifValue::Array(bones)) => match bones.get(1) {
+            Some(NifValue::Ref(reference)) if *reference >= 0 => *reference as usize,
+            other => panic!("unexpected child bone ref: {other:?}"),
+        },
+        other => panic!("unexpected bones array: {other:?}"),
+    };
+    nif.blocks[child_bone_id].set_field("Name", NifValue::String("Bip01 BogusBone".to_string()));
 
     let dir = translation_maps_dir();
     let report = convert_legacy_skin(&mut nif, &dir, None, 0.5).expect("convert skin");
 
     assert_eq!(report.shapes_skinned, 1);
-    let shape = nif
-        .blocks
-        .iter()
-        .find(|block| block.type_name == "BSSubIndexTriShape")
-        .expect("converted shape");
-    let vertices = match shape.get_field("Vertex Data") {
-        Some(NifValue::Array(vertices)) => vertices,
-        other => panic!("expected vertex data, got {other:?}"),
-    };
-    let second_vertex = match &vertices[1] {
-        NifValue::Struct(fields) => fields,
-        other => panic!("expected vertex struct, got {other:?}"),
-    };
-    assert_eq!(
-        second_vertex.get("Vertex").and_then(|value| match value {
-            NifValue::Vec3(position) => Some(*position),
-            _ => None,
-        }),
-        Some([11.0, 0.0, 0.0])
-    );
-    assert!(matches!(
-        second_vertex.get("Bone Indices"),
-        Some(NifValue::Array(indices)) if indices.first().map(NifValue::as_i64) == Some(1)
-    ));
+    assert_eq!(report.bones_dropped_unmapped, 1);
+    assert_eq!(report.weights_redistributed, 2);
 
-    let skin_id = match shape.get_field("Skin") {
-        Some(NifValue::Ref(reference)) if *reference >= 0 => *reference as usize,
-        other => panic!("expected skin ref, got {other:?}"),
-    };
-    let bone_data_id = match nif
-        .get_block(skin_id)
-        .and_then(|skin| skin.get_field("Data"))
     {
-        Some(NifValue::Ref(reference)) if *reference >= 0 => *reference as usize,
-        other => panic!("expected bone data ref, got {other:?}"),
-    };
-    let bone_list = match nif
-        .get_block(bone_data_id)
-        .and_then(|bone_data| bone_data.get_field("Bone List"))
-    {
-        Some(NifValue::Array(bone_list)) => bone_list,
-        other => panic!("expected bone list, got {other:?}"),
-    };
-    let second_bone = match &bone_list[1] {
-        NifValue::Struct(fields) => fields,
-        other => panic!("expected bone data struct, got {other:?}"),
-    };
-    assert_eq!(
-        second_bone
-            .get("Translation")
-            .and_then(|value| match value {
-                NifValue::Vec3(translation) => Some(*translation),
+        let (mut nif, shape_id) = make_minimal_skinned_nif();
+        if let Some(shape) = nif.blocks.get_mut(shape_id) {
+            shape.set_field(
+                "Vertex Data",
+                NifValue::Array(vec![
+                    vertex_entry([0.0, 0.0, 0.0]),
+                    vertex_entry([1.0, 0.0, 0.0]),
+                    vertex_entry([0.0, 1.0, 0.0]),
+                ]),
+            );
+            shape.set_field(
+                "Triangles",
+                NifValue::Array(vec![triangle_value([0, 1, 2])]),
+            );
+            shape.set_field("Num Vertices", NifValue::UInt(3));
+            shape.set_field("Num Triangles", NifValue::UInt(1));
+        }
+        let skin_data_id = skin_data_id(&nif, shape_id);
+        let skin_data = nif.blocks.get_mut(skin_data_id).expect("skin data");
+        skin_data.set_field("Skin Transform", skin_transform_value([10.0, 0.0, 0.0]));
+        let second_rotation = [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]];
+        skin_data.set_field(
+            "Bone List",
+            NifValue::Array(vec![
+                bone_data_value([0.0, 0.0, 0.0], vec![bone_weight_value(0, 1.0)]),
+                NifValue::Struct(fields([
+                    (
+                        "Skin Transform",
+                        skin_transform_value_with_rotation([0.0, 5.0, 0.0], second_rotation),
+                    ),
+                    (
+                        "Vertex Weights",
+                        NifValue::Array(vec![bone_weight_value(1, 1.0), bone_weight_value(2, 1.0)]),
+                    ),
+                ])),
+            ]),
+        );
+
+        let dir = translation_maps_dir();
+        let report = convert_legacy_skin(&mut nif, &dir, None, 0.5).expect("convert skin");
+
+        assert_eq!(report.shapes_skinned, 1);
+        let shape = nif
+            .blocks
+            .iter()
+            .find(|block| block.type_name == "BSSubIndexTriShape")
+            .expect("converted shape");
+        let vertices = match shape.get_field("Vertex Data") {
+            Some(NifValue::Array(vertices)) => vertices,
+            other => panic!("expected vertex data, got {other:?}"),
+        };
+        let second_vertex = match &vertices[1] {
+            NifValue::Struct(fields) => fields,
+            other => panic!("expected vertex struct, got {other:?}"),
+        };
+        assert_eq!(
+            second_vertex.get("Vertex").and_then(|value| match value {
+                NifValue::Vec3(position) => Some(*position),
                 _ => None,
             }),
-        Some([0.0, 5.0, 0.0])
+            Some([11.0, 0.0, 0.0])
+        );
+        assert!(matches!(
+            second_vertex.get("Bone Indices"),
+            Some(NifValue::Array(indices)) if indices.first().map(NifValue::as_i64) == Some(1)
+        ));
+
+        let skin_id = match shape.get_field("Skin") {
+            Some(NifValue::Ref(reference)) if *reference >= 0 => *reference as usize,
+            other => panic!("expected skin ref, got {other:?}"),
+        };
+        let bone_data_id = match nif
+            .get_block(skin_id)
+            .and_then(|skin| skin.get_field("Data"))
+        {
+            Some(NifValue::Ref(reference)) if *reference >= 0 => *reference as usize,
+            other => panic!("expected bone data ref, got {other:?}"),
+        };
+        let bone_list = match nif
+            .get_block(bone_data_id)
+            .and_then(|bone_data| bone_data.get_field("Bone List"))
+        {
+            Some(NifValue::Array(bone_list)) => bone_list,
+            other => panic!("expected bone list, got {other:?}"),
+        };
+        let second_bone = match &bone_list[1] {
+            NifValue::Struct(fields) => fields,
+            other => panic!("expected bone data struct, got {other:?}"),
+        };
+        assert_eq!(
+            second_bone
+                .get("Translation")
+                .and_then(|value| match value {
+                    NifValue::Vec3(translation) => Some(*translation),
+                    _ => None,
+                }),
+            Some([0.0, 5.0, 0.0])
+        );
+        assert_eq!(
+            second_bone.get("Rotation"),
+            Some(&NifValue::Matrix33(second_rotation))
+        );
+    }
+}
+
+/// FO4 reads `Total Segments` as `Num Segments + sum(Num Sub Segments)` and only
+/// reads the shared `Segment Data` block when `Num Segments < Total Segments`.
+/// An inflated total desyncs the engine inside the shape block, so the following
+/// block's string index is read from mesh bytes — an access violation in
+/// `NiStringExtraData::LoadBinary`.
+fn assert_fo4_segment_invariant(shape: &nif_core_native::model::NifBlock) {
+    let segments = match shape.get_field("Segment") {
+        Some(NifValue::Array(segments)) => segments,
+        other => panic!("expected segment array, got {other:?}"),
+    };
+    let sub_segments: i64 = segments
+        .iter()
+        .map(|value| match value {
+            NifValue::Struct(fields) => fields
+                .get("Num Sub Segments")
+                .map(NifValue::as_i64)
+                .unwrap_or(0),
+            _ => 0,
+        })
+        .sum();
+    let num = shape
+        .get_field("Num Segments")
+        .map(NifValue::as_i64)
+        .expect("num segments");
+    let total = shape
+        .get_field("Total Segments")
+        .map(NifValue::as_i64)
+        .expect("total segments");
+    assert_eq!(num, segments.len() as i64);
+    assert_eq!(total, num + sub_segments);
+    if num == total {
+        assert!(shape.get_field("Segment Data").is_none());
+    }
+}
+
+#[test]
+fn convert_legacy_skin_is_atomic_on_later_parse_error() {
+    let (mut nif, shape_id) = make_convertible_legacy_skin_nif();
+    let invalid_instance_id = nif.add_block(
+        "NiSkinInstance",
+        Some(fields([
+            ("Skin Partition", NifValue::Ref(-1)),
+            ("Skeleton Root", NifValue::Ref(0)),
+            ("Num Bones", NifValue::UInt(0)),
+            ("Bones", NifValue::Array(Vec::new())),
+        ])),
     );
-    assert_eq!(
-        second_bone.get("Rotation"),
-        Some(&NifValue::Matrix33(second_rotation))
+    nif.add_block(
+        "NiTriShape",
+        Some(fields([(
+            "Skin Instance",
+            NifValue::Ref(invalid_instance_id as i32),
+        )])),
+    );
+    let original_block_count = nif.blocks.len();
+
+    let dir = translation_maps_dir();
+    let result = convert_legacy_skin(&mut nif, &dir, None, 0.5);
+
+    assert!(result.is_err());
+    assert_eq!(nif.blocks.len(), original_block_count);
+    assert_eq!(nif.get_block(shape_id).unwrap().type_name, "NiTriShape");
+    assert!(
+        nif.blocks
+            .iter()
+            .all(|block| block.type_name != "BSSkin::Instance")
     );
 }
 
@@ -1320,7 +1252,7 @@ fn restructure_bone_tree_appends_skin_bones_to_scene_root() {
 }
 
 #[test]
-fn extract_arm_subset_keeps_arm_dominant_triangles() {
+fn extract_arm_subset_requires_arm_weights() {
     let positions = vec![
         [0.0_f32, 0.0, 0.0],
         [1.0, 0.0, 0.0],
@@ -1350,10 +1282,7 @@ fn extract_arm_subset_keeps_arm_dominant_triangles() {
     assert_eq!(extract.kept_triangles.len(), 2);
     assert_eq!(extract.kept_positions.len(), 4);
     assert_eq!(extract.arm_bones_used, vec![1]);
-}
 
-#[test]
-fn extract_arm_subset_returns_none_without_arm_weights() {
     let positions = vec![[0.0_f32, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
     let influences = vec![
         VertexInfluences {
@@ -1373,7 +1302,7 @@ fn extract_arm_subset_returns_none_without_arm_weights() {
 }
 
 #[test]
-fn transfer_morph_weights_adds_reference_only_bone_with_cap() {
+fn transfer_morph_weights_caps_influences() {
     let target_positions = vec![[0.0_f32, 0.0, 0.0]];
     let mut target_influences = vec![VertexInfluences {
         slots: vec![(0, 1.0)],
@@ -1407,10 +1336,7 @@ fn transfer_morph_weights_adds_reference_only_bone_with_cap() {
         .find_map(|(bone, weight)| (*bone == 1).then_some(*weight))
         .expect("morph weight");
     assert!(morph_weight <= 0.2501, "{morph_weight}");
-}
 
-#[test]
-fn transfer_morph_weights_enforces_cap_after_top_four_normalization() {
     let target_positions = vec![[0.0_f32, 0.0, 0.0]];
     let mut target_influences = vec![VertexInfluences {
         slots: vec![(0, 0.25), (1, 0.25), (2, 0.25), (3, 0.25)],

@@ -198,6 +198,9 @@ def test_extract_voice_line_uses_native_archive_backend(tmp_path: Path, monkeypa
         return b"FUZ"
 
     monkeypatch.setattr("creation_lib.audio.voice_reference.native_runtime.extract_one", _extract_one)
+    archive_path = tmp_path / "Voices.ba2"
+    archive_path.write_bytes(b"archive")
+    out_dir = tmp_path / "out"
     line = VoiceLine(
         game="fo4",
         plugin="Fallout4.esm",
@@ -205,12 +208,12 @@ def test_extract_voice_line_uses_native_archive_backend(tmp_path: Path, monkeypa
         response_number=1,
         response_text="Test",
         response_filename="00001234_1.fuz",
-        archive_path="Voices.ba2",
+        archive_path=str(archive_path),
         member_path="sound/voice/fallout4.esm/male/00001234_1.fuz",
     )
 
-    written = extract_voice_line(line, tmp_path)
+    written = extract_voice_line(line, out_dir)
 
-    assert written == tmp_path / "00001234_1.fuz"
+    assert written == out_dir / "00001234_1.fuz"
     assert written.read_bytes() == b"FUZ"
-    assert calls == [("Voices.ba2", "sound/voice/fallout4.esm/male/00001234_1.fuz")]
+    assert calls == [(str(archive_path), "sound/voice/fallout4.esm/male/00001234_1.fuz")]

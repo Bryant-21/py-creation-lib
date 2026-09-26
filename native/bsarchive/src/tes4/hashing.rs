@@ -161,92 +161,43 @@ mod tests {
     use bstr::ByteSlice as _;
 
     #[test]
-    fn validate_directory_hashes() {
-        let h = |path: &[u8]| tes4::hash_directory(path.as_bstr()).0.numeric();
-        assert_eq!(
-            h(b"textures/armor/amuletsandrings/elder council"),
-            0x04BC422C742C696C
-        );
-        assert_eq!(
-            h(b"sound/voice/skyrim.esm/maleuniquedbguardian"),
-            0x594085AC732B616E
-        );
-        assert_eq!(h(b"textures/architecture/windhelm"), 0xC1D97EBE741E6C6D);
+    fn known_hashes_match_archive_tool() {
+        let d = |path: &[u8]| tes4::hash_directory(path.as_bstr()).0.numeric();
+        let f = |path: &[u8]| tes4::hash_file(path.as_bstr()).0.numeric();
+        for (path, expected) in [
+            (&b"textures/armor/amuletsandrings/elder council"[..], 0x04BC422C742C696C),
+            (b"sound/voice/skyrim.esm/maleuniquedbguardian", 0x594085AC732B616E),
+            (b"textures/architecture/windhelm", 0xC1D97EBE741E6C6D),
+        ] {
+            assert_eq!(d(path), expected);
+        }
+        for (path, expected) in [
+            (&b"darkbrotherhood__0007469a_1.fuz"[..], 0x011F11B0641B5F31),
+            (b"elder_council_amulet_n.dds", 0xDC531E2F6516DFEE),
+            (b"testtoddquest_testtoddhappy_00027fa2_1.mp3", 0xDE0301EE74265F31),
+            (b"Mar\xEDa_F.fuz", 0x690E07826D075F66),
+        ] {
+            assert_eq!(f(path), expected);
+        }
     }
 
     #[test]
-    fn validate_file_hashes() {
-        let h = |path: &[u8]| tes4::hash_file(path.as_bstr()).0.numeric();
-        assert_eq!(h(b"darkbrotherhood__0007469a_1.fuz"), 0x011F11B0641B5F31);
-        assert_eq!(h(b"elder_council_amulet_n.dds"), 0xDC531E2F6516DFEE);
-        assert_eq!(
-            h(b"testtoddquest_testtoddhappy_00027fa2_1.mp3"),
-            0xDE0301EE74265F31
-        );
-        assert_eq!(h(b"Mar\xEDa_F.fuz"), 0x690E07826D075F66);
-    }
+    fn hashing_edge_cases() {
+        let d = |path: &[u8]| tes4::hash_directory(path.as_bstr()).0;
+        let f = |path: &[u8]| tes4::hash_file(path.as_bstr()).0;
 
-    #[test]
-    fn empty_path_equivalent_to_current_path() {
-        let empty = tes4::hash_directory(b"".as_bstr());
-        let current = tes4::hash_directory(b".".as_bstr());
-        assert_eq!(empty, current);
-    }
+        assert_eq!(d(b""), d(b"."));
+        assert_eq!(d(&[0u8; 260]), d(b""));
+        assert_ne!(d(b"C:\\foo\\bar\\baz"), d(b"foo/bar/baz"));
+        assert_ne!(d(b"C:\\foo\\bar\\baz"), d(b"foo\\bar\\baz"));
 
-    #[test]
-    fn archive_tool_detects_file_extensions_incorrectly() {
-        let gitignore = tes4::hash_file(b".gitignore".as_bstr()).0;
-        let gitmodules = tes4::hash_file(b".gitmodules".as_bstr()).0;
-        assert_eq!(gitignore, gitmodules);
-        assert_eq!(gitignore.first, b'\0');
-        assert_eq!(gitignore.last2, b'\0');
-        assert_eq!(gitignore.last, b'\0');
-        assert_eq!(gitignore.length, 0);
-        assert_eq!(gitignore.crc, 0);
+        let gitignore = f(b".gitignore");
+        assert_eq!(gitignore, f(b".gitmodules"));
         assert_eq!(gitignore.numeric(), 0);
-    }
-
-    #[test]
-    fn root_paths_are_included_in_hashes() {
-        let h1 = tes4::hash_directory(b"C:\\foo\\bar\\baz".as_bstr()).0;
-        let h2 = tes4::hash_directory(b"foo/bar/baz".as_bstr()).0;
-        assert_ne!(h1, h2);
-    }
-
-    #[test]
-    fn directories_longer_than_259_chars_are_equivalent_to_empty_path() {
-        let long = tes4::hash_directory([0u8; 260].as_bstr()).0;
-        let empty = tes4::hash_directory(b"".as_bstr()).0;
-        assert_eq!(long, empty);
-    }
-
-    #[test]
-    fn files_longer_than_259_chars_will_fail() {
-        let good = tes4::hash_file([0u8; 259].as_bstr()).0;
-        let bad = tes4::hash_file([0u8; 260].as_bstr()).0;
-        assert_ne!(good.numeric(), 0);
-        assert_eq!(bad.numeric(), 0)
-    }
-
-    #[test]
-    fn file_extensions_longer_than_14_chars_will_fail() {
-        let good = tes4::hash_file(b"test.123456789ABCDE".as_bstr()).0;
-        let bad = tes4::hash_file(b"test.123456789ABCDEF".as_bstr()).0;
-        assert_ne!(good.numeric(), 0);
-        assert_eq!(bad.numeric(), 0);
-    }
-
-    #[test]
-    fn root_paths_are_included_in_directory_names() {
-        let h1 = tes4::hash_directory(b"C:\\foo\\bar\\baz".as_bstr()).0;
-        let h2 = tes4::hash_directory(b"foo\\bar\\baz".as_bstr()).0;
-        assert_ne!(h1, h2);
-    }
-
-    #[test]
-    fn parent_directories_are_not_included_in_file_names() {
-        let h1 = tes4::hash_file(b"users/john/test.txt".as_bstr()).0;
-        let h2 = tes4::hash_file(b"test.txt".as_bstr()).0;
-        assert_eq!(h1, h2);
+        assert_eq!(f(b"users/john/test.txt"), f(b"test.txt"));
+        assert_ne!(f(&[0u8; 259]).numeric(), 0);
+        assert_eq!(f(&[0u8; 260]).numeric(), 0);
+        assert_ne!(f(b"test.123456789ABCDE").numeric(), 0);
+        assert_eq!(f(b"test.123456789ABCDEF").numeric(), 0);
     }
 }

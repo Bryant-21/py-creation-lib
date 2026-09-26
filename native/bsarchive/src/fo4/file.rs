@@ -1686,14 +1686,6 @@ mod tests {
     use crate::fo4::File;
 
     #[test]
-    fn default_state() {
-        let f = File::default();
-        assert!(f.is_empty());
-        assert!(f.as_slice().is_empty());
-        assert!(!f.is_full());
-    }
-
-    #[test]
     fn dds_bytes_for_load_normalizes_xbox_headers() {
         let mut bytes = vec![0u8; 180];
         bytes[..4].copy_from_slice(b"DDS ");

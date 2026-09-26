@@ -59,10 +59,7 @@ GetPlayer:
 "#;
     let err = FunctionMap::from_yaml(invented).unwrap_err();
     assert!(err.to_string().contains("declares 0 argument"));
-}
 
-#[test]
-fn rejects_malformed_placeholders_and_unknown_argument_kinds() {
     let malformed = r#"
 Activate:
   papyrus: "{argx}.Activate({self})"

@@ -380,7 +380,7 @@ mod tests {
     }
 
     #[test]
-    fn capsule_blob_parses_as_capsule_shape() {
+    fn capsule_build_parse_and_rejection() {
         let blob = z_capsule();
         let file = HkxFile::read(&blob).expect("parse capsule packfile");
         let classes: Vec<&str> = file
@@ -397,10 +397,6 @@ mod tests {
             "sphere template shape must be fully morphed away"
         );
         assert!(classes.contains(&"hknpPhysicsSystemData"));
-    }
-
-    #[test]
-    fn capsule_carries_endpoints_radius_and_hull() {
         let blob = z_capsule();
         let file = HkxFile::read(&blob).expect("parse");
         let shape = file
@@ -447,10 +443,6 @@ mod tests {
             HkxValue::Array(v) => assert_eq!(v.len(), 24),
             other => panic!("indices: {other:?}"),
         }
-    }
-
-    #[test]
-    fn capsule_blob_round_trips_through_writer() {
         // Build -> read -> re-save -> read again must be stable (the morphed
         // PSD/body/material from the sphere template must serialize cleanly).
         let blob = z_capsule();
@@ -464,10 +456,6 @@ mod tests {
                 .iter()
                 .any(|o| o.class_name == "hknpCapsuleShape")
         );
-    }
-
-    #[test]
-    fn degenerate_capsule_is_rejected() {
         // |a.w| - convexRadius == 0 -> no hull.
         let a = [0.0, 0.0, 0.5, 0.05];
         let b = [0.0, 0.0, 0.0, 0.05];

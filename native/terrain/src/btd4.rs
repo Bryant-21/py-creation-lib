@@ -69,116 +69,190 @@ pub struct CellChannels {
 // Writer
 // ---------------------------------------------------------------------------
 
+/// Header + one 88-byte index row per cell precede the channel chunks.
+const INDEX_ENTRY_BYTES: usize = 8 + 5 * 16;
+
+struct IndexRow {
+    x: i32,
+    y: i32,
+    channels: [(u64, u64); 5],
+}
+
+/// Where compressed channel chunks wait until `finish` knows the index size.
+/// Full Appalachia is ~40k cells, so production writers spill to disk and only
+/// keep the 88-byte index rows resident.
+enum ChunkSink {
+    Memory(Vec<u8>),
+    Spill {
+        writer: std::io::BufWriter<std::fs::File>,
+        path: std::path::PathBuf,
+        len: u64,
+    },
+}
+
+impl ChunkSink {
+    fn append(&mut self, bytes: &[u8]) -> Result<u64, String> {
+        match self {
+            ChunkSink::Memory(buffer) => {
+                let offset = buffer.len() as u64;
+                buffer.extend_from_slice(bytes);
+                Ok(offset)
+            }
+            ChunkSink::Spill { writer, len, .. } => {
+                let offset = *len;
+                writer
+                    .write_all(bytes)
+                    .map_err(|e| format!("btd4 write: spill chunk: {e}"))?;
+                *len += bytes.len() as u64;
+                Ok(offset)
+            }
+        }
+    }
+}
+
 pub struct Btd4Writer {
     header: Btd4Header,
-    cells: Vec<(i32, i32, CellChannels)>,
+    rows: Vec<IndexRow>,
+    seen: std::collections::HashSet<(i32, i32)>,
+    sink: ChunkSink,
+    finished: bool,
 }
 
 impl Btd4Writer {
+    /// Keeps compressed chunks in memory; for small outputs and tests.
     pub fn new(header: Btd4Header) -> Self {
+        Self::with_sink(header, ChunkSink::Memory(Vec::new()))
+    }
+
+    /// Streams compressed chunks to `spill_path` so resident memory stays at the
+    /// index size regardless of worldspace size. The spill file is removed by
+    /// `finish` or when the writer is dropped unfinished.
+    pub fn with_spill_file(header: Btd4Header, spill_path: &Path) -> Result<Self, String> {
+        if let Some(parent) = spill_path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("btd4 write: create spill dir: {e}"))?;
+        }
+        let file = std::fs::File::create(spill_path)
+            .map_err(|e| format!("btd4 write: create spill {}: {e}", spill_path.display()))?;
+        Ok(Self::with_sink(
+            header,
+            ChunkSink::Spill {
+                writer: std::io::BufWriter::with_capacity(1 << 20, file),
+                path: spill_path.to_path_buf(),
+                len: 0,
+            },
+        ))
+    }
+
+    fn with_sink(header: Btd4Header, sink: ChunkSink) -> Self {
         assert_eq!(
             header.version, BTD4_VERSION,
             "Btd4Writer only emits the v2 contract"
         );
         Self {
             header,
-            cells: Vec::new(),
+            rows: Vec::new(),
+            seen: std::collections::HashSet::new(),
+            sink,
+            finished: false,
         }
     }
 
+    pub fn cell_count(&self) -> usize {
+        self.rows.len()
+    }
+
+    /// Compresses the cell immediately; the raw channels are not retained.
     pub fn add_cell(&mut self, x: i32, y: i32, channels: CellChannels) -> Result<(), String> {
         validate_channels(&channels)?;
-        self.cells.push((x, y, channels));
+        self.validate_against_reader_contract(x, y, &channels)?;
+        let mut slots = [(0u64, 0u64); 5];
+        let payloads: [Option<Vec<u8>>; 5] = [
+            channels.heights.as_deref().map(encode_hgts),
+            channels.alphas.as_deref().map(encode_alph),
+            channels.layers.as_deref().map(encode_layr),
+            channels.gcvr.as_ref().map(encode_gcvr),
+            channels.colors,
+        ];
+        for (slot, payload) in slots.iter_mut().zip(payloads) {
+            if let Some(raw) = payload {
+                let compressed = zlib_compress(&raw)?;
+                let offset = self.sink.append(&compressed)?;
+                *slot = (offset, compressed.len() as u64);
+            }
+        }
+        self.seen.insert((x, y));
+        self.rows.push(IndexRow { x, y, channels: slots });
+        Ok(())
+    }
+
+    /// Every rule `Btd4Reader::open` and the Tales runtime reader enforce, so a
+    /// written file can never be rejected at load.
+    fn validate_against_reader_contract(
+        &self,
+        x: i32,
+        y: i32,
+        channels: &CellChannels,
+    ) -> Result<(), String> {
+        let h = &self.header;
+        if x < h.cell_min_x || x > h.cell_max_x || y < h.cell_min_y || y > h.cell_max_y {
+            return Err(format!(
+                "btd4 cell ({x},{y}) is outside header bounds ({},{})..({},{})",
+                h.cell_min_x, h.cell_min_y, h.cell_max_x, h.cell_max_y
+            ));
+        }
+        if self.seen.contains(&(x, y)) {
+            return Err(format!("btd4 cell ({x},{y}) was added twice"));
+        }
+        if channels.heights.is_none() {
+            return Err(format!("btd4 cell ({x},{y}) has no HGTS channel"));
+        }
+        if channels.alphas.is_some() && channels.layers.is_none() {
+            return Err(format!("btd4 cell ({x},{y}) has ALPH without its LAYR table"));
+        }
+        let plugin_count = h.plugin_names.len();
+        if let Some(layers) = &channels.layers {
+            for (slot, layer) in layers.iter().enumerate() {
+                let empty = layer.plugin_index == u8::MAX && layer.object_id == 0;
+                if !empty
+                    && (layer.plugin_index as usize >= plugin_count
+                        || layer.object_id == 0
+                        || layer.kind != 0)
+                {
+                    return Err(format!(
+                        "btd4 cell ({x},{y}) LAYR slot {slot} is not a valid plugin-local LTEX reference"
+                    ));
+                }
+            }
+        }
+        if let Some(gcvr) = &channels.gcvr {
+            for entry in &gcvr.entries {
+                if entry.plugin_index as usize >= plugin_count || entry.object_id == 0 {
+                    return Err(format!(
+                        "btd4 cell ({x},{y}) GCVR entry {:06X} is not a valid plugin-local GRAS reference",
+                        entry.object_id
+                    ));
+                }
+            }
+        }
         Ok(())
     }
 
     pub fn finish(mut self, path: &Path) -> Result<(), String> {
-        // Sort cells ascending by (y, x) — matching C++ reader expectation.
-        self.cells.sort_by_key(|(x, y, _)| (*y, *x));
+        // Index rows ascend by (y, x), the order readers expect. Chunk bytes stay in
+        // add order; offsets are absolute, so no reader depends on chunk order.
+        self.rows.sort_by_key(|row| (row.y, row.x));
 
-        let cell_count = self.cells.len() as u32;
-
-        // --- Pass 1: build header bytes + empty index placeholders ---
-        let mut buf: Vec<u8> = Vec::new();
-
-        write_header_bytes(&mut buf, &self.header, cell_count);
-
-        // Cell index starts here; record offset so we can back-patch.
-        let index_start = buf.len();
-
-        // Emit placeholder index: x, y, then 5 × (u64 offset + u64 len) = 8 + 5*16 = 88 bytes per cell.
-        const ENTRY_BYTES: usize = 8 + 5 * 16; // x(4)+y(4) + 5*(8+8)
-        let index_size = self.cells.len() * ENTRY_BYTES;
-        buf.resize(index_start + index_size, 0u8);
-
-        // --- Pass 2: emit compressed chunks and record offsets/lengths ---
-        // Each cell has up to 5 channel slots: HGTS, ALPH, LAYR, GCVR, CLRS.
-        let mut cell_offsets: Vec<[Option<(u64, u64)>; 5]> = Vec::with_capacity(self.cells.len());
-
-        for (_, _, channels) in &self.cells {
-            let mut slots: [Option<(u64, u64)>; 5] = [None; 5];
-
-            // Channel 0: HGTS
-            if let Some(heights) = &channels.heights {
-                let raw = encode_hgts(heights);
-                let compressed = zlib_compress(&raw)?;
-                let off = buf.len() as u64;
-                let len = compressed.len() as u64;
-                buf.extend_from_slice(&compressed);
-                slots[0] = Some((off, len));
-            }
-            // Channel 1: ALPH
-            if let Some(alphas) = &channels.alphas {
-                let raw = encode_alph(alphas);
-                let compressed = zlib_compress(&raw)?;
-                let off = buf.len() as u64;
-                let len = compressed.len() as u64;
-                buf.extend_from_slice(&compressed);
-                slots[1] = Some((off, len));
-            }
-            // Channel 2: LAYR
-            if let Some(layers) = &channels.layers {
-                let raw = encode_layr(layers);
-                let compressed = zlib_compress(&raw)?;
-                let off = buf.len() as u64;
-                let len = compressed.len() as u64;
-                buf.extend_from_slice(&compressed);
-                slots[2] = Some((off, len));
-            }
-            // Channel 3: GCVR
-            if let Some(gcvr) = &channels.gcvr {
-                let raw = encode_gcvr(gcvr);
-                let compressed = zlib_compress(&raw)?;
-                let off = buf.len() as u64;
-                let len = compressed.len() as u64;
-                buf.extend_from_slice(&compressed);
-                slots[3] = Some((off, len));
-            }
-            // Channel 4: CLRS
-            if let Some(colors) = &channels.colors {
-                let compressed = zlib_compress(colors)?;
-                let off = buf.len() as u64;
-                let len = compressed.len() as u64;
-                buf.extend_from_slice(&compressed);
-                slots[4] = Some((off, len));
-            }
-
-            cell_offsets.push(slots);
-        }
-
-        // --- Pass 3: back-patch the cell index ---
-        let mut ipos = index_start;
-        for (i, (x, y, _)) in self.cells.iter().enumerate() {
-            write_i32_le(&mut buf[ipos..ipos + 4], *x);
-            ipos += 4;
-            write_i32_le(&mut buf[ipos..ipos + 4], *y);
-            ipos += 4;
-            for slot in &cell_offsets[i] {
-                let (off, len) = slot.unwrap_or((0, 0));
-                write_u64_le(&mut buf[ipos..ipos + 8], off);
-                ipos += 8;
-                write_u64_le(&mut buf[ipos..ipos + 8], len);
-                ipos += 8;
+        let mut head: Vec<u8> = Vec::new();
+        write_header_bytes(&mut head, &self.header, self.rows.len() as u32);
+        let data_start = (head.len() + self.rows.len() * INDEX_ENTRY_BYTES) as u64;
+        for row in &self.rows {
+            head.extend_from_slice(&row.x.to_le_bytes());
+            head.extend_from_slice(&row.y.to_le_bytes());
+            for &(offset, len) in &row.channels {
+                let absolute = if len == 0 { 0 } else { data_start + offset };
+                head.extend_from_slice(&absolute.to_le_bytes());
+                head.extend_from_slice(&len.to_le_bytes());
             }
         }
 
@@ -186,9 +260,71 @@ impl Btd4Writer {
             std::fs::create_dir_all(parent)
                 .map_err(|e| format!("btd4 write: create parent dir: {e}"))?;
         }
-        std::fs::write(path, &buf).map_err(|e| format!("btd4 write: {e}"))?;
+        let partial = partial_output_path(path);
+        let result = self.write_output(&partial, &head).and_then(|()| {
+            std::fs::rename(&partial, path).map_err(|e| format!("btd4 write: rename: {e}"))
+        });
+        if result.is_err() {
+            let _ = std::fs::remove_file(&partial);
+        }
+        self.finished = true;
+        self.remove_spill();
+        result
+    }
+
+    fn write_output(&mut self, partial: &Path, head: &[u8]) -> Result<(), String> {
+        let file = std::fs::File::create(partial).map_err(|e| format!("btd4 write: {e}"))?;
+        let mut out = std::io::BufWriter::with_capacity(1 << 20, file);
+        out.write_all(head).map_err(|e| format!("btd4 write: {e}"))?;
+        match &mut self.sink {
+            ChunkSink::Memory(buffer) => {
+                out.write_all(buffer).map_err(|e| format!("btd4 write: {e}"))?;
+            }
+            ChunkSink::Spill { writer, path, .. } => {
+                writer
+                    .flush()
+                    .map_err(|e| format!("btd4 write: flush spill: {e}"))?;
+                let mut spill = std::fs::File::open(&*path)
+                    .map_err(|e| format!("btd4 write: reopen spill: {e}"))?;
+                std::io::copy(&mut spill, &mut out)
+                    .map_err(|e| format!("btd4 write: copy spill: {e}"))?;
+            }
+        }
+        out.flush().map_err(|e| format!("btd4 write: {e}"))?;
         Ok(())
     }
+
+    fn remove_spill(&mut self) {
+        if let ChunkSink::Spill { path, .. } = &self.sink {
+            let path = path.clone();
+            // Dropping the BufWriter closes the handle before the delete.
+            self.sink = ChunkSink::Memory(Vec::new());
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+impl Drop for Btd4Writer {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.remove_spill();
+        }
+    }
+}
+
+/// The complete file is renamed into place only after its last byte is written,
+/// so a failed run never leaves a truncated sidecar for the runtime to load.
+fn partial_output_path(path: &Path) -> std::path::PathBuf {
+    let mut name = path.file_name().map(|n| n.to_os_string()).unwrap_or_default();
+    name.push(".partial");
+    path.with_file_name(name)
+}
+
+/// Spill file for [`Btd4Writer::with_spill_file`], beside the output.
+pub fn spill_path_for(path: &Path) -> std::path::PathBuf {
+    let mut name = path.file_name().map(|n| n.to_os_string()).unwrap_or_default();
+    name.push(".chunks.tmp");
+    path.with_file_name(name)
 }
 
 // ---------------------------------------------------------------------------
@@ -636,14 +772,6 @@ fn write_pascal_string(buf: &mut Vec<u8>, s: &str) {
     buf.extend_from_slice(bytes);
 }
 
-fn write_i32_le(dst: &mut [u8], v: i32) {
-    dst[..4].copy_from_slice(&v.to_le_bytes());
-}
-
-fn write_u64_le(dst: &mut [u8], v: u64) {
-    dst[..8].copy_from_slice(&v.to_le_bytes());
-}
-
 // ---------------------------------------------------------------------------
 // Read helpers (for Btd4Reader::open)
 // ---------------------------------------------------------------------------
@@ -850,44 +978,17 @@ mod tests {
 
         // non-existent cell
         assert!(reader.cell(9, 9).is_none());
-    }
 
-    /// The terrain phase emits to `mods/<out>/Terrain/<EDID>.btd4` and the
-    /// Terrain/ dir may not exist yet — finish must create missing parents.
-    #[test]
-    fn finish_creates_missing_parent_dirs() {
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("Terrain").join("APPALACHIA.btd4");
+        let tmp2 = NamedTempFile::new().unwrap();
         let mut writer = Btd4Writer::new(make_header());
-        writer.add_cell(0, 0, hgts_only_channels()).unwrap();
-        writer.finish(&path).unwrap();
-        assert!(path.is_file());
-    }
-
-    #[test]
-    fn validation_wrong_height_size() {
-        let mut writer = Btd4Writer::new(make_header());
-        let ch = CellChannels {
-            heights: Some(vec![0u16; 100]), // wrong size
-            alphas: None,
-            layers: None,
-            gcvr: None,
-            colors: None,
-        };
-        assert!(writer.add_cell(0, 0, ch).is_err());
-    }
-
-    #[test]
-    fn validation_wrong_alpha_plane_count() {
-        let mut writer = Btd4Writer::new(make_header());
-        let ch = CellChannels {
-            heights: None,
-            alphas: Some(vec![vec![0u8; ALPH_PLANE_LEN]; 19]), // 19 != ALPH_PLANE_COUNT (20)
-            layers: None,
-            gcvr: None,
-            colors: None,
-        };
-        assert!(writer.add_cell(0, 0, ch).is_err());
+        writer.add_cell(0, 0, full.clone()).unwrap();
+        writer.add_cell(1, 2, hgts_only.clone()).unwrap();
+        writer.finish(tmp2.path()).unwrap();
+        assert_eq!(
+            std::fs::read(path).unwrap(),
+            std::fs::read(tmp2.path()).unwrap(),
+            "two identical writes must produce identical bytes"
+        );
     }
 
     #[test]
@@ -943,120 +1044,76 @@ mod tests {
     }
 
     #[test]
-    fn determinism() {
-        let tmp1 = NamedTempFile::new().unwrap();
-        let tmp2 = NamedTempFile::new().unwrap();
+    fn spill_writer_matches_memory_writer_and_cleans_up() {
+        let dir = tempfile::tempdir().unwrap();
+        // Terrain/ may not exist yet: finish must create missing parents.
+        let memory_path = dir.path().join("Terrain").join("memory.btd4");
+        let spill_path = dir.path().join("Terrain").join("spill.btd4");
+        let spill = spill_path_for(&spill_path);
 
-        let write = |path: &std::path::Path| {
-            let mut writer = Btd4Writer::new(make_header());
-            writer.add_cell(0, 0, full_channels()).unwrap();
+        let mut memory = Btd4Writer::new(make_header());
+        let mut streamed = Btd4Writer::with_spill_file(make_header(), &spill).unwrap();
+        for writer in [&mut memory, &mut streamed] {
+            // Added out of (y, x) order: the index must still be sorted.
             writer.add_cell(1, 2, hgts_only_channels()).unwrap();
-            writer.finish(path).unwrap();
-            std::fs::read(path).unwrap()
-        };
+            writer.add_cell(0, 0, full_channels()).unwrap();
+        }
+        assert!(spill.is_file());
+        memory.finish(&memory_path).unwrap();
+        streamed.finish(&spill_path).unwrap();
 
-        let b1 = write(tmp1.path());
-        let b2 = write(tmp2.path());
-        assert_eq!(b1, b2, "two identical writes must produce identical bytes");
+        assert!(!spill.exists());
+        assert!(!partial_output_path(&spill_path).exists());
+        assert_eq!(std::fs::read(&memory_path).unwrap(), std::fs::read(&spill_path).unwrap());
+        let reader = Btd4Reader::open(&spill_path).unwrap();
+        assert_eq!(reader.cell(0, 0).unwrap().colors, full_channels().colors);
+        assert_eq!(reader.cell(1, 2).unwrap().heights, hgts_only_channels().heights);
+
+        let dropped = spill_path_for(&dir.path().join("w.btd4"));
+        {
+            let mut writer = Btd4Writer::with_spill_file(make_header(), &dropped).unwrap();
+            writer.add_cell(0, 0, hgts_only_channels()).unwrap();
+        }
+        assert!(!dropped.exists(), "dropped spill writer removes its spill file");
     }
 
-    // ---------------------------------------------------------------------------
-    // Cross-language fixture generator for the C++ host-test consumer.
-    // Run with: cargo test -p terrain_native -- btd4::tests::write_cpp_fixture --ignored
-    // ---------------------------------------------------------------------------
-
-    /// Writes a deterministic 2-cell .btd4 fixture for C++ host tests.
-    ///
-    /// # Exact documented values (the C++ host test must mirror these constants)
-    ///
-    /// Header:
-    ///   version = 2, density = 128
-    ///   height_min = 0.0_f32, height_scale = 0.5_f32
-    ///   worldspace_editor_id = "B21TestWorld"
-    ///   plugin_names = ["B21_Test.esp", "Fallout4.esm"]   (index 0 = producer)
-    ///   cell bounds: min(0,0) max(1,1)
-    ///   cell_count = 2
-    ///
-    /// Cell (0, 0) — all 5 channels:
-    ///   HGTS: heights[i] = (i % 1000) as u16  for i in 0..16641
-    ///   ALPH: ALPH_PLANE_COUNT (20) planes of ALPH_PLANE_LEN (4225) u8
-    ///     plane p, texel k: ((p*31 + k) % 256) as u8   (p in 0..20, k in 0..4225)
-    ///   LAYR: 24 ordered rows (4 quadrants × base+5 alpha); first two populated
-    ///     row 0: plugin_index=0, object_id=0x000800, kind=0
-    ///     row 1: plugin_index=1, object_id=0x0001A7, kind=0
-    ///   GCVR: one entry: plugin_index=0, object_id=0x000810,
-    ///         mask[i] = (i % 251) as u8  for i in 0..16384
-    ///   CLRS: colors[i] = (i % 256) as u8  for i in 0..49923
-    ///
-    /// Cell (1, 1) — HGTS only:
-    ///   HGTS: heights[i] = 4096  (constant, all elements)
-    #[cfg(test)]
-    fn write_synthetic_two_cell_file(path: &Path) {
-        let header = Btd4Header {
-            version: BTD4_VERSION,
-            density: 128,
-            height_min: 0.0,
-            height_scale: 0.5,
-            worldspace_editor_id: "B21TestWorld".into(),
-            plugin_names: vec!["B21_Test.esp".into(), "Fallout4.esm".into()],
-            cell_min_x: 0,
-            cell_min_y: 0,
-            cell_max_x: 1,
-            cell_max_y: 1,
-        };
-
-        let mut layers = vec![
-            LayerRef {
-                plugin_index: u8::MAX,
-                object_id: 0,
-                kind: 0,
-            };
-            24
-        ];
-        layers[0] = LayerRef {
-            plugin_index: 0,
-            object_id: 0x000800,
-            kind: 0,
-        };
-        layers[1] = LayerRef {
-            plugin_index: 1,
-            object_id: 0x0001A7,
-            kind: 0,
-        };
-        let cell00 = CellChannels {
-            heights: Some((0u32..16641u32).map(|i| (i % 1000) as u16).collect()),
-            alphas: Some(synthetic_alpha_planes()),
-            layers: Some(layers),
-            gcvr: Some(GcvrChunk {
-                entries: vec![GcvrEntry {
-                    plugin_index: 0,
-                    object_id: 0x000810,
-                    mask: (0u32..16384u32).map(|i| (i % 251) as u8).collect(),
-                }],
-            }),
-            colors: Some((0u32..49923u32).map(|i| (i % 256) as u8).collect()),
-        };
-
-        let cell11 = CellChannels {
-            heights: Some(vec![4096u16; 16641]),
-            alphas: None,
+    #[test]
+    fn writer_rejects_what_the_reader_would_reject() {
+        let mut writer = Btd4Writer::new(make_header());
+        let mut wrong_height_size = hgts_only_channels();
+        wrong_height_size.heights = Some(vec![0u16; 100]);
+        assert!(writer.add_cell(0, 0, wrong_height_size).is_err(), "HGTS size");
+        let wrong_plane_count = CellChannels {
+            heights: None,
+            alphas: Some(vec![vec![0u8; ALPH_PLANE_LEN]; ALPH_PLANE_COUNT - 1]),
             layers: None,
             gcvr: None,
             colors: None,
         };
+        assert!(writer.add_cell(0, 0, wrong_plane_count).is_err(), "ALPH plane count");
+        writer.add_cell(0, 0, hgts_only_channels()).unwrap();
+        assert!(writer.add_cell(0, 0, hgts_only_channels()).is_err(), "duplicate");
+        assert!(writer.add_cell(2, 0, hgts_only_channels()).is_err(), "outside bounds");
 
-        let mut writer = Btd4Writer::new(header);
-        writer.add_cell(0, 0, cell00).unwrap();
-        writer.add_cell(1, 1, cell11).unwrap();
-        writer.finish(path).unwrap();
-    }
+        let mut no_heights = full_channels();
+        no_heights.heights = None;
+        assert!(writer.add_cell(1, 0, no_heights).is_err(), "no HGTS");
 
-    #[test]
-    #[ignore = "writes the cross-language fixture for B21_SmoothTerrain host tests"]
-    fn write_cpp_fixture() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../mods/B21_SmoothTerrain/tests/fixtures/mini_v2.btd4");
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        write_synthetic_two_cell_file(&path);
+        let mut alpha_only = hgts_only_channels();
+        alpha_only.alphas = Some(synthetic_alpha_planes());
+        assert!(writer.add_cell(1, 0, alpha_only).is_err(), "ALPH without LAYR");
+
+        let mut bad_layer = full_channels();
+        bad_layer.layers.as_mut().unwrap()[2] = LayerRef {
+            plugin_index: 7,
+            object_id: 0x10,
+            kind: 0,
+        };
+        assert!(writer.add_cell(1, 0, bad_layer).is_err(), "LAYR plugin out of table");
+
+        let mut bad_grass = full_channels();
+        bad_grass.gcvr.as_mut().unwrap().entries[0].object_id = 0;
+        assert!(writer.add_cell(1, 0, bad_grass).is_err(), "GCVR null form");
+        assert_eq!(writer.cell_count(), 1);
     }
 }

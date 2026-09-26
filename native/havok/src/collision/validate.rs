@@ -563,7 +563,7 @@ mod tests {
     use crate::hkx::model::{HkxMember, HkxObject};
     use crate::hkx::types::HkxValue;
 
-    pub(super) fn obj(class_name: &str, members: Vec<HkxMember>) -> HkxObject {
+    fn obj(class_name: &str, members: Vec<HkxMember>) -> HkxObject {
         HkxObject {
             name: None,
             offset: 0,
@@ -572,13 +572,13 @@ mod tests {
             members,
         }
     }
-    pub(super) fn mem(name: &str, value: HkxValue) -> HkxMember {
+    fn mem(name: &str, value: HkxValue) -> HkxMember {
         HkxMember {
             name: name.into(),
             value,
         }
     }
-    pub(super) fn psd(bodies: Vec<HkxValue>, motions: Vec<HkxValue>) -> Vec<HkxObject> {
+    fn psd(bodies: Vec<HkxValue>, motions: Vec<HkxValue>) -> Vec<HkxObject> {
         vec![obj(
             "hknpPhysicsSystemData",
             vec![
@@ -587,72 +587,9 @@ mod tests {
             ],
         )]
     }
-
-    fn default_invariants() -> Invariants {
-        serde_json::from_str("{}").unwrap()
-    }
-
-    #[test]
-    fn no_physics_system_data_reports_error() {
-        let objects = vec![obj("hknpConvexPolytopeShape", vec![])];
-        let v = validate_objects(&objects, &default_invariants());
-        assert_eq!(v.len(), 1);
-        assert_eq!(v[0].rule_id, "missing_physics_system_data");
-        assert_eq!(v[0].severity, Severity::Error);
-    }
-
-    #[test]
-    fn empty_bodies_no_violations() {
-        let objects = psd(vec![], vec![]);
-        assert!(validate_objects(&objects, &default_invariants()).is_empty());
-    }
-
-    #[test]
-    fn invariants_defaults_from_empty_json() {
-        let inv = default_invariants();
-        assert_eq!(inv.dynamic_flag_bit, 128);
-        assert_eq!(inv.invalid_motion_id, 0x7FFF_FFFF);
-        assert_eq!(inv.min_hull_vertices, 4);
-    }
-
     fn f32list(values: &[f32]) -> HkxValue {
         HkxValue::F32List(values.to_vec())
     }
-
-    #[test]
-    fn compressed_shape_data_count_mismatch_is_error() {
-        // One compressed shape but zero shape-data objects.
-        let mut objects = psd(vec![], vec![]);
-        objects.push(obj("hknpCompressedMeshShape", vec![]));
-        let v = validate_objects(&objects, &serde_json::from_str("{}").unwrap());
-        assert!(
-            v.iter()
-                .any(|x| x.rule_id == "compressed_shape_data_count_mismatch"
-                    && x.severity == Severity::Error)
-        );
-    }
-
-    #[test]
-    fn non_finite_position_is_error() {
-        let body = HkxValue::Object(vec![mem("position", f32list(&[f32::NAN, 0.0, 0.0, 0.0]))]);
-        let objects = psd(vec![body], vec![]);
-        let v = validate_objects(&objects, &serde_json::from_str("{}").unwrap());
-        assert!(v.iter().any(|x| x.rule_id == "non_finite_position"
-            && x.severity == Severity::Error
-            && x.body_index == Some(0)));
-    }
-
-    #[test]
-    fn finite_position_no_finiteness_violation() {
-        let body = HkxValue::Object(vec![
-            mem("position", f32list(&[1.0, 2.0, 3.0, 0.0])),
-            mem("orientation", f32list(&[0.0, 0.0, 0.0, 1.0])),
-        ]);
-        let objects = psd(vec![body], vec![]);
-        let v = validate_objects(&objects, &serde_json::from_str("{}").unwrap());
-        assert!(!v.iter().any(|x| x.rule_id.starts_with("non_finite")));
-    }
-
     fn body(motion_id: i64, flags: i64, cfi: u32) -> HkxValue {
         HkxValue::Object(vec![
             mem("motionId", HkxValue::I32(motion_id as i32)),
@@ -660,264 +597,277 @@ mod tests {
             mem("collisionFilterInfo", HkxValue::U32(cfi)),
         ])
     }
-
-    #[test]
-    fn dynamic_body_with_bad_motion_id_is_error() {
-        // flags has dynamic bit (128) but motionId is out of range (no motions).
-        let objects = psd(vec![body(5, 128, 1)], vec![]);
-        let v = validate_objects(&objects, &serde_json::from_str("{}").unwrap());
-        assert!(v.iter().any(
-            |x| x.rule_id == "dynamic_body_invalid_motion_id" && x.severity == Severity::Error
-        ));
-    }
-
-    #[test]
-    fn dynamic_body_with_infinite_mass_is_error() {
-        // dynamic bit set, motionId valid (one motion), but the motion's inverseMass
-        // is 0 ⇒ infinite mass (the documented physics-freeze case).
-        let motion = HkxValue::Object(vec![mem("inverseMass", HkxValue::F32(0.0))]);
-        let objects = psd(vec![body(0, 128, 1)], vec![motion]);
-        let v = validate_objects(&objects, &serde_json::from_str("{}").unwrap());
-        assert!(
-            v.iter()
-                .any(|x| x.rule_id == "dynamic_body_nonpositive_mass"
-                    && x.severity == Severity::Error)
-        );
-    }
-
-    #[test]
-    fn dynamic_body_with_positive_inverse_mass_is_clean() {
-        // dynamic bit set, motionId valid, motion has a real positive inverseMass.
-        let motion = HkxValue::Object(vec![mem("inverseMass", HkxValue::F32(0.5))]);
-        let objects = psd(vec![body(0, 128, 1)], vec![motion]);
-        let v = validate_objects(&objects, &serde_json::from_str("{}").unwrap());
-        assert!(
-            !v.iter()
-                .any(|x| x.rule_id == "dynamic_body_nonpositive_mass")
-        );
-    }
-
-    #[test]
-    fn non_finite_motion_inverse_mass_is_error() {
-        let motion = HkxValue::TypedObject {
+    fn motion(members: Vec<HkxMember>) -> HkxValue {
+        HkxValue::TypedObject {
             class_name: "hknpMotionCinfo".into(),
-            members: vec![mem("inverseMass", HkxValue::F32(f32::NAN))],
-        };
-        let objects = psd(vec![], vec![motion]);
-        let v = validate_objects(&objects, &serde_json::from_str("{}").unwrap());
-        assert!(
-            v.iter()
-                .any(|x| x.rule_id == "non_finite_motion_mass" && x.severity == Severity::Error)
-        );
+            members,
+        }
     }
-
-    #[test]
-    fn non_finite_motion_inertia_and_com_are_errors() {
-        let motion = HkxValue::TypedObject {
-            class_name: "hknpMotionCinfo".into(),
-            members: vec![
-                mem("inverseInertiaLocal", f32list(&[f32::NAN, 0.0, 0.0, 0.0])),
-                mem(
-                    "centerOfMassWorld",
-                    f32list(&[0.0, f32::INFINITY, 0.0, 0.0]),
-                ),
-            ],
-        };
-        let objects = psd(vec![], vec![motion]);
-        let v = validate_objects(&objects, &serde_json::from_str("{}").unwrap());
-        assert!(
-            v.iter()
-                .any(|x| x.rule_id == "non_finite_motion_inertia" && x.severity == Severity::Error)
-        );
-        assert!(
-            v.iter()
-                .any(|x| x.rule_id == "non_finite_center_of_mass" && x.severity == Severity::Error)
-        );
-    }
-
-    #[test]
-    fn static_body_with_invalid_motion_id_is_clean() {
-        // static (flags=0), motionId = HK_INVALID, layer in domain.
-        let objects = psd(vec![body(0x7FFF_FFFF, 0, 1)], vec![]);
-        let inv: Invariants = serde_json::from_str(r#"{"layers":[1],"flags":[0]}"#).unwrap();
-        let v = validate_objects(&objects, &inv);
-        assert!(!v.iter().any(|x| x.severity == Severity::Error));
-    }
-
-    #[test]
-    fn layer_outside_domain_is_warning() {
-        let objects = psd(vec![body(0x7FFF_FFFF, 0, 200)], vec![]);
-        let inv: Invariants = serde_json::from_str(r#"{"layers":[1,2,3],"flags":[0]}"#).unwrap();
-        let v = validate_objects(&objects, &inv);
-        assert!(v.iter().any(
-            |x| x.rule_id == "layer_outside_vanilla_domain" && x.severity == Severity::Warning
-        ));
-    }
-
-    fn body_with_shape(shape_idx: usize) -> HkxValue {
-        HkxValue::Object(vec![
-            mem("motionId", HkxValue::I32(0x7FFF_FFFF)),
-            mem("flags", HkxValue::I32(0)),
-            mem("shape", HkxValue::Pointer(Some(shape_idx))),
-        ])
-    }
-
-    fn polytope(vertices: &[[f32; 3]]) -> HkxObject {
+    fn body_with_polytope(vertices: &[[f32; 3]]) -> Vec<HkxObject> {
         let verts: Vec<HkxValue> = vertices
             .iter()
             .map(|p| HkxValue::F32List(vec![p[0], p[1], p[2], 0.0]))
             .collect();
-        obj(
+        let body = HkxValue::Object(vec![
+            mem("motionId", HkxValue::I32(0x7FFF_FFFF)),
+            mem("flags", HkxValue::I32(0)),
+            mem("shape", HkxValue::Pointer(Some(1))),
+        ]);
+        let mut objects = psd(vec![body], vec![]);
+        objects.push(obj(
             "hknpConvexPolytopeShape",
             vec![mem("vertices", HkxValue::Array(verts))],
+        ));
+        objects
+    }
+    fn ragdoll(bodies: Vec<HkxValue>, motions: Vec<HkxValue>) -> Vec<HkxObject> {
+        vec![obj(
+            "hknpRagdollData",
+            vec![
+                mem("bodyCinfos", HkxValue::Array(bodies)),
+                mem("motionProperties", HkxValue::Array(vec![])),
+                mem("motionCinfos", HkxValue::Array(motions)),
+            ],
+        )]
+    }
+    fn ragdoll_with_motion_properties_id(id: u16) -> Vec<HkxObject> {
+        ragdoll(
+            vec![HkxValue::Object(vec![])],
+            vec![motion(vec![mem("motionPropertiesId", HkxValue::U16(id))])],
         )
     }
 
     #[test]
-    fn single_thin_axis_hull_is_warning_not_error() {
-        // A flat panel: extents [1, 1, 0] — one collapsed axis, real area. Vanilla
-        // ships these (barricade walls), so it must NOT be an error.
-        let shape = polytope(&[
-            [0.0, 0.0, 0.0],
-            [1.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0],
-            [1.0, 1.0, 0.0],
-        ]);
-        let mut objects = psd(vec![body_with_shape(1)], vec![]);
-        objects.push(shape);
-        let v = validate_objects(&objects, &serde_json::from_str("{}").unwrap());
-        assert!(!v.iter().any(|x| x.severity == Severity::Error));
-        assert!(
-            v.iter()
-                .any(|x| x.rule_id == "degenerate_hull_thin" && x.severity == Severity::Warning)
+    fn validator_rules_table() {
+        use Severity::{Error, Warning};
+        let defaults: Invariants = serde_json::from_str("{}").unwrap();
+        assert_eq!(defaults.dynamic_flag_bit, 128);
+        assert_eq!(defaults.invalid_motion_id, 0x7FFF_FFFF);
+        assert_eq!(defaults.min_hull_vertices, 4);
+
+        let mut compressed_without_data = psd(vec![], vec![]);
+        compressed_without_data.push(obj("hknpCompressedMeshShape", vec![]));
+
+        // (label, objects, invariants json, required (rule, severity), forbidden rule prefixes).
+        // A case without a required Error must produce no Error at all.
+        type Case = (
+            &'static str,
+            Vec<HkxObject>,
+            &'static str,
+            Vec<(&'static str, Severity)>,
+            Vec<&'static str>,
         );
-    }
-
-    #[test]
-    fn needle_hull_two_collapsed_axes_is_not_error() {
-        // A vanilla needle: extents [0.77, 4e-5, 3.5e-5] — two collapsed axes but a
-        // real largest extent (mirrors BOSLPLeftArmPart04). Must NOT be an error.
-        let shape = polytope(&[
-            [0.387, -1e-5, 1e-5],
-            [0.387, 1e-5, -1e-5],
-            [-0.387, 1e-5, 1e-5],
-            [-0.387, -1e-5, -1e-5],
-        ]);
-        let mut objects = psd(vec![body_with_shape(1)], vec![]);
-        objects.push(shape);
-        let v = validate_objects(&objects, &serde_json::from_str("{}").unwrap());
-        assert!(!v.iter().any(|x| x.severity == Severity::Error));
-    }
-
-    #[test]
-    fn collapsed_to_point_hull_is_error() {
-        // All three axes near-zero → a point → genuinely non-buildable. Vanilla never
-        // ships this, so it is an ERROR.
-        let shape = polytope(&[
-            [0.0, 0.0, 0.0],
-            [1e-6, 0.0, 0.0],
-            [0.0, 1e-6, 0.0],
-            [0.0, 0.0, 1e-6],
-        ]);
-        let mut objects = psd(vec![body_with_shape(1)], vec![]);
-        objects.push(shape);
-        let v = validate_objects(&objects, &serde_json::from_str("{}").unwrap());
-        assert!(
-            v.iter()
-                .any(|x| x.rule_id == "degenerate_hull_collapsed" && x.severity == Severity::Error)
-        );
-    }
-
-    #[test]
-    fn too_few_vertices_is_error() {
-        let shape = polytope(&[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]);
-        let mut objects = psd(vec![body_with_shape(1)], vec![]);
-        objects.push(shape);
-        let v = validate_objects(&objects, &serde_json::from_str("{}").unwrap());
-        assert!(
-            v.iter()
-                .any(|x| x.rule_id == "degenerate_hull_too_few_vertices"
-                    && x.severity == Severity::Error)
-        );
-    }
-
-    #[test]
-    fn solid_hull_is_clean() {
-        let shape = polytope(&[
-            [0.0, 0.0, 0.0],
-            [1.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0],
-            [0.0, 0.0, 1.0],
-        ]);
-        let mut objects = psd(vec![body_with_shape(1)], vec![]);
-        objects.push(shape);
-        let v = validate_objects(&objects, &serde_json::from_str("{}").unwrap());
-        assert!(!v.iter().any(|x| x.rule_id.starts_with("degenerate_hull")));
-    }
-
-    #[test]
-    fn ragdoll_data_root_is_accepted() {
-        // A blob rooted at hknpRagdollData (bhkRagdollSystem) must not emit a spurious
-        // missing_physics_system_data error.
-        let objects = vec![obj(
-            "hknpRagdollData",
-            vec![
-                mem("bodyCinfos", HkxValue::Array(vec![])),
-                mem("motionCinfos", HkxValue::Array(vec![])),
-            ],
-        )];
-        let v = validate_objects(&objects, &default_invariants());
-        assert!(!v.iter().any(|x| x.rule_id == "missing_physics_system_data"));
-    }
-
-    #[test]
-    fn motion_properties_id_out_of_range_is_error() {
-        let motion = HkxValue::TypedObject {
-            class_name: "hknpMotionCinfo".into(),
-            members: vec![mem("motionPropertiesId", HkxValue::U16(0))],
-        };
-        let objects = vec![obj(
-            "hknpRagdollData",
-            vec![
-                mem(
-                    "bodyCinfos",
-                    HkxValue::Array(vec![HkxValue::Object(vec![])]),
+        let cases: Vec<Case> = vec![
+            (
+                "no physics system",
+                vec![obj("hknpConvexPolytopeShape", vec![])],
+                "{}",
+                vec![("missing_physics_system_data", Error)],
+                vec![],
+            ),
+            ("empty bodies", psd(vec![], vec![]), "{}", vec![], vec![""]),
+            (
+                "ragdoll root",
+                ragdoll(vec![], vec![]),
+                "{}",
+                vec![],
+                vec!["missing_physics_system_data"],
+            ),
+            (
+                "compressed data mismatch",
+                compressed_without_data,
+                "{}",
+                vec![("compressed_shape_data_count_mismatch", Error)],
+                vec![],
+            ),
+            (
+                "nan position",
+                psd(
+                    vec![HkxValue::Object(vec![mem(
+                        "position",
+                        f32list(&[f32::NAN, 0.0, 0.0, 0.0]),
+                    )])],
+                    vec![],
                 ),
-                mem("motionProperties", HkxValue::Array(vec![])),
-                mem("motionCinfos", HkxValue::Array(vec![motion])),
-            ],
-        )];
-
-        let violations = validate_objects(&objects, &default_invariants());
-        assert!(violations.iter().any(|violation| {
-            violation.rule_id == "motion_properties_id_out_of_range"
-                && violation.severity == Severity::Error
-        }));
-    }
-
-    #[test]
-    fn invalid_motion_properties_sentinel_is_accepted() {
-        let motion = HkxValue::TypedObject {
-            class_name: "hknpMotionCinfo".into(),
-            members: vec![mem("motionPropertiesId", HkxValue::U16(u16::MAX))],
-        };
-        let objects = vec![obj(
-            "hknpRagdollData",
-            vec![
-                mem(
-                    "bodyCinfos",
-                    HkxValue::Array(vec![HkxValue::Object(vec![])]),
+                "{}",
+                vec![("non_finite_position", Error)],
+                vec![],
+            ),
+            (
+                "finite position",
+                psd(
+                    vec![HkxValue::Object(vec![
+                        mem("position", f32list(&[1.0, 2.0, 3.0, 0.0])),
+                        mem("orientation", f32list(&[0.0, 0.0, 0.0, 1.0])),
+                    ])],
+                    vec![],
                 ),
-                mem("motionProperties", HkxValue::Array(vec![])),
-                mem("motionCinfos", HkxValue::Array(vec![motion])),
-            ],
-        )];
+                "{}",
+                vec![],
+                vec!["non_finite"],
+            ),
+            (
+                "dynamic bad motion id",
+                psd(vec![body(5, 128, 1)], vec![]),
+                "{}",
+                vec![("dynamic_body_invalid_motion_id", Error)],
+                vec![],
+            ),
+            (
+                "dynamic infinite mass",
+                psd(
+                    vec![body(0, 128, 1)],
+                    vec![HkxValue::Object(vec![mem(
+                        "inverseMass",
+                        HkxValue::F32(0.0),
+                    )])],
+                ),
+                "{}",
+                vec![("dynamic_body_nonpositive_mass", Error)],
+                vec![],
+            ),
+            (
+                "dynamic real mass",
+                psd(
+                    vec![body(0, 128, 1)],
+                    vec![HkxValue::Object(vec![mem(
+                        "inverseMass",
+                        HkxValue::F32(0.5),
+                    )])],
+                ),
+                "{}",
+                vec![],
+                vec!["dynamic_body_nonpositive_mass"],
+            ),
+            (
+                "non-finite motion",
+                psd(
+                    vec![],
+                    vec![motion(vec![
+                        mem("inverseMass", HkxValue::F32(f32::NAN)),
+                        mem("inverseInertiaLocal", f32list(&[f32::NAN, 0.0, 0.0, 0.0])),
+                        mem(
+                            "centerOfMassWorld",
+                            f32list(&[0.0, f32::INFINITY, 0.0, 0.0]),
+                        ),
+                    ])],
+                ),
+                "{}",
+                vec![
+                    ("non_finite_motion_mass", Error),
+                    ("non_finite_motion_inertia", Error),
+                    ("non_finite_center_of_mass", Error),
+                ],
+                vec![],
+            ),
+            (
+                "static invalid motion id",
+                psd(vec![body(0x7FFF_FFFF, 0, 1)], vec![]),
+                r#"{"layers":[1],"flags":[0]}"#,
+                vec![],
+                vec![],
+            ),
+            (
+                "layer outside domain",
+                psd(vec![body(0x7FFF_FFFF, 0, 200)], vec![]),
+                r#"{"layers":[1,2,3],"flags":[0]}"#,
+                vec![("layer_outside_vanilla_domain", Warning)],
+                vec![],
+            ),
+            (
+                "flat panel hull (vanilla barricade)",
+                body_with_polytope(&[
+                    [0.0, 0.0, 0.0],
+                    [1.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0],
+                    [1.0, 1.0, 0.0],
+                ]),
+                "{}",
+                vec![("degenerate_hull_thin", Warning)],
+                vec![],
+            ),
+            (
+                "needle hull (vanilla BOSLP)",
+                body_with_polytope(&[
+                    [0.387, -1e-5, 1e-5],
+                    [0.387, 1e-5, -1e-5],
+                    [-0.387, 1e-5, 1e-5],
+                    [-0.387, -1e-5, -1e-5],
+                ]),
+                "{}",
+                vec![],
+                vec![],
+            ),
+            (
+                "point hull",
+                body_with_polytope(&[
+                    [0.0, 0.0, 0.0],
+                    [1e-6, 0.0, 0.0],
+                    [0.0, 1e-6, 0.0],
+                    [0.0, 0.0, 1e-6],
+                ]),
+                "{}",
+                vec![("degenerate_hull_collapsed", Error)],
+                vec![],
+            ),
+            (
+                "three-vertex hull",
+                body_with_polytope(&[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]),
+                "{}",
+                vec![("degenerate_hull_too_few_vertices", Error)],
+                vec![],
+            ),
+            (
+                "solid hull",
+                body_with_polytope(&[
+                    [0.0, 0.0, 0.0],
+                    [1.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0],
+                    [0.0, 0.0, 1.0],
+                ]),
+                "{}",
+                vec![],
+                vec!["degenerate_hull"],
+            ),
+            (
+                "motion properties id out of range",
+                ragdoll_with_motion_properties_id(0),
+                "{}",
+                vec![("motion_properties_id_out_of_range", Error)],
+                vec![],
+            ),
+            (
+                "invalid motion properties sentinel",
+                ragdoll_with_motion_properties_id(u16::MAX),
+                "{}",
+                vec![],
+                vec!["motion_properties_id_out_of_range"],
+            ),
+        ];
 
-        let violations = validate_objects(&objects, &default_invariants());
-        assert!(
-            !violations
-                .iter()
-                .any(|violation| violation.rule_id == "motion_properties_id_out_of_range")
-        );
+        for (label, objects, inv_json, required, forbidden) in cases {
+            let inv: Invariants = serde_json::from_str(inv_json).unwrap();
+            let violations = validate_objects(&objects, &inv);
+            for (rule, severity) in &required {
+                assert!(
+                    violations
+                        .iter()
+                        .any(|v| v.rule_id == *rule && v.severity == *severity),
+                    "{label}: expected {rule} {severity:?}, got {violations:?}"
+                );
+            }
+            for prefix in &forbidden {
+                assert!(
+                    !violations.iter().any(|v| v.rule_id.starts_with(prefix)),
+                    "{label}: unexpected {prefix:?} violation in {violations:?}"
+                );
+            }
+            if !required.iter().any(|(_, s)| *s == Error) {
+                assert!(
+                    !violations.iter().any(|v| v.severity == Error),
+                    "{label}: unexpected error in {violations:?}"
+                );
+            }
+        }
     }
 }

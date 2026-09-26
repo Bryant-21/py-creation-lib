@@ -55,7 +55,7 @@ def _minimal_payload() -> dict:
     }
 
 
-def test_pex_file_from_payload_rebuilds_existing_dataclasses():
+def test_pex_file_from_payload_rebuilds_dataclasses_and_normalizes_bools():
     from creation_lib.pex.native_runtime import pex_file_from_payload
 
     result = pex_file_from_payload(_minimal_payload())
@@ -69,10 +69,6 @@ def test_pex_file_from_payload_rebuilds_existing_dataclasses():
     assert fn.name == "DoIt"
     assert fn.instructions[0].opcode == PexOpcode.RETURN
     assert fn.instructions[0].args[0].type == ValueType.NONE
-
-
-def test_pex_file_from_payload_normalizes_numeric_bool_values():
-    from creation_lib.pex.native_runtime import pex_file_from_payload
 
     payload = _minimal_payload()
     payload["objects"][0]["variables"].extend(
@@ -92,7 +88,7 @@ def test_pex_file_from_payload_normalizes_numeric_bool_values():
     assert falsy.data is False
 
 
-def test_parse_pex_bytes_native_uses_loaded_native_module(monkeypatch):
+def test_native_runtime_dispatches_to_loaded_native_module(monkeypatch, tmp_path):
     import creation_lib.pex.native_runtime as runtime
 
     class FakeNative:
@@ -107,14 +103,10 @@ def test_parse_pex_bytes_native_uses_loaded_native_module(monkeypatch):
     assert result.source_filename == "test.psc"
     assert result.objects[0].states[0].functions[0].name == "DoIt"
 
-
-def test_parse_pex_file_native_uses_native_file_parser_when_available(monkeypatch, tmp_path):
-    import creation_lib.pex.native_runtime as runtime
-
     pex_path = tmp_path / "test.pex"
     pex_path.write_bytes(b"pex-bytes")
 
-    class FakeNative:
+    class FakeNativeWithFileParser:
         def parse_pex_bytes(self, data: bytes) -> str:
             raise AssertionError("parse_pex_bytes should not be used when parse_pex_file is available")
 
@@ -122,30 +114,27 @@ def test_parse_pex_file_native_uses_native_file_parser_when_available(monkeypatc
             assert path == str(pex_path)
             return json.dumps(_minimal_payload())
 
-    monkeypatch.setattr(runtime, "load_native_module", lambda: FakeNative())
+    monkeypatch.setattr(runtime, "load_native_module", lambda: FakeNativeWithFileParser())
 
     result = runtime.parse_pex_file_native(pex_path)
 
     assert result.source_filename == "test.psc"
 
 
-def test_load_native_module_requires_file_parser(monkeypatch):
+def test_native_module_absence_is_handled_by_loader_and_callers(monkeypatch):
+    import pytest
     import creation_lib.pex.native_runtime as runtime
 
     class FakeNative:
         def parse_pex_bytes(self, data: bytes) -> str:
             return json.dumps(_minimal_payload())
 
+    # A native module missing the file-path parser is treated as unavailable.
     monkeypatch.setattr(runtime.importlib, "import_module", lambda name: FakeNative())
-
     assert runtime.load_native_module() is None
 
-
-def test_parse_pex_bytes_native_raises_when_native_missing(monkeypatch):
-    import pytest
-    import creation_lib.pex.native_runtime as runtime
-
+    # Callers surface a clear error rather than crashing when the module is
+    # unavailable entirely.
     monkeypatch.setattr(runtime, "load_native_module", lambda: None)
-
     with pytest.raises(RuntimeError, match="papyrus_core native PEX parser is not available"):
         runtime.parse_pex_bytes_native(b"pex-bytes")

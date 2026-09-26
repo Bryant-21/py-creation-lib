@@ -61,6 +61,13 @@ pub struct ConvertedTerrainGrass {
     pub wave_period: f32,
     #[serde(default)]
     pub flags: Vec<String>,
+    /// Source GCVR records that place this grass (BACUP manifest); keys the `.btd4` GCVR channel.
+    #[serde(default)]
+    pub source_gcvr_form_keys: Vec<String>,
+    /// Target-game record this grass resolves to (`0BA520:Fallout4.esm`). BACUP's terrain
+    /// import drops the emitted GRAS in favour of it, so `.btd4` references must use it.
+    #[serde(default)]
+    pub target_form_key: Option<String>,
 }
 
 #[derive(Debug, Clone)]

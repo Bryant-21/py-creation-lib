@@ -20,21 +20,17 @@ def _make_shape_nif() -> NifFile:
     ])
     shape.set_field("Triangles", [{"v1": 0, "v2": 1, "v3": 2}])
     nif.blocks.append(shape)
-    # Stub find_blocks for testing
     nif.find_blocks = lambda t: [b for b in nif.blocks if b.type_name == t]
     return nif
 
 
-def test_fix_normals_succeeds():
+def test_fix_normals_succeeds_and_flip_negates():
     nif = _make_shape_nif()
     result = fix_normals(nif)
     assert result.success
     assert len(result.modified_block_ids) == 1
 
-
-def test_flip_normals_negates():
-    nif = _make_shape_nif()
-    result = flip_normals(nif)
-    assert result.success
+    flip_result = flip_normals(nif)
+    assert flip_result.success
     vd = nif.blocks[1].get_field("Vertex Data")
     assert vd[0]["Normal"]["z"] == -1.0

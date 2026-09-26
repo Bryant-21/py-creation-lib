@@ -10,9 +10,13 @@ use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 
 pub mod abc;
+pub mod abc_edit;
+pub mod abc_inspect;
+pub mod abc_rename;
 pub mod class_abc;
 pub mod container;
 pub mod inject;
+pub mod render;
 pub mod symbolclass;
 
 use container::{Signature, assemble, decompress, split_tags};
@@ -241,7 +245,24 @@ fn inject_symbols_renamed_into<'py>(
     Ok(PyBytes::new(py, &bytes))
 }
 
+#[pyfunction]
+fn render_symbol_png<'py>(
+    py: Python<'py>,
+    data: &[u8],
+    name: &str,
+    frame: u16,
+    scale: f32,
+) -> PyResult<Bound<'py, PyBytes>> {
+    let png = render::render_symbol_png(data, name, frame, scale).map_err(PyValueError::new_err)?;
+    Ok(PyBytes::new(py, &png))
+}
+
 pub fn register_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(replace_as3_classes, m)?)?;
+    m.add_function(wrap_pyfunction!(augment_as3_classes, m)?)?;
+    m.add_function(wrap_pyfunction!(patch_as3_method, m)?)?;
+    m.add_function(wrap_pyfunction!(rename_as3_classes, m)?)?;
+    m.add_function(wrap_pyfunction!(render_symbol_png, m)?)?;
     m.add_function(wrap_pyfunction!(swf_info, m)?)?;
     m.add_function(wrap_pyfunction!(list_symbols, m)?)?;
     m.add_function(wrap_pyfunction!(tag_histogram, m)?)?;
@@ -254,7 +275,83 @@ pub fn register_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(compile_as3_class_names, m)?)?;
     m.add_function(wrap_pyfunction!(inject_symbols_into, m)?)?;
     m.add_function(wrap_pyfunction!(inject_symbols_renamed_into, m)?)?;
+    m.add_function(wrap_pyfunction!(abc_class_outline, m)?)?;
+    m.add_function(wrap_pyfunction!(abc_disassemble, m)?)?;
+    m.add_function(wrap_pyfunction!(abc_class_references, m)?)?;
     Ok(())
+}
+
+#[pyfunction]
+fn replace_as3_classes<'py>(
+    py: Python<'py>,
+    data: &[u8],
+    sources: std::collections::BTreeMap<String, String>,
+    dependencies: Vec<Vec<u8>>,
+) -> PyResult<Bound<'py, PyBytes>> {
+    let result =
+        abc_edit::replace_classes(data, &sources, &dependencies).map_err(PyValueError::new_err)?;
+    Ok(PyBytes::new(py, &result))
+}
+
+#[pyfunction]
+fn augment_as3_classes<'py>(
+    py: Python<'py>,
+    data: &[u8],
+    sources: std::collections::BTreeMap<String, String>,
+    dependencies: Vec<Vec<u8>>,
+) -> PyResult<Bound<'py, PyBytes>> {
+    let result =
+        abc_edit::augment_classes(data, &sources, &dependencies).map_err(PyValueError::new_err)?;
+    Ok(PyBytes::new(py, &result))
+}
+
+#[pyfunction]
+fn rename_as3_classes<'py>(
+    py: Python<'py>,
+    data: &[u8],
+    prefix: &str,
+    keep: Vec<String>,
+) -> PyResult<Bound<'py, PyBytes>> {
+    let result = abc_rename::rename_classes(data, prefix, &keep).map_err(PyValueError::new_err)?;
+    Ok(PyBytes::new(py, &result))
+}
+
+#[pyfunction]
+#[pyo3(signature = (data, class_name, method_name, pattern, replacement, expected_matches=1))]
+fn patch_as3_method<'py>(
+    py: Python<'py>,
+    data: &[u8],
+    class_name: &str,
+    method_name: &str,
+    pattern: &str,
+    replacement: &str,
+    expected_matches: usize,
+) -> PyResult<Bound<'py, PyBytes>> {
+    let result = abc_edit::patch_method_count(data, class_name, method_name, pattern, replacement, expected_matches)
+        .map_err(PyValueError::new_err)?;
+    Ok(PyBytes::new(py, &result))
+}
+
+#[pyfunction]
+fn abc_class_outline(data: &[u8], class_name: &str) -> PyResult<String> {
+    abc_inspect::class_outline(data, class_name)
+        .map(|v| v.to_string())
+        .map_err(PyValueError::new_err)
+}
+
+#[pyfunction]
+#[pyo3(signature = (data, class_name, method=None))]
+fn abc_disassemble(data: &[u8], class_name: &str, method: Option<&str>) -> PyResult<String> {
+    abc_inspect::disassemble(data, class_name, method)
+        .map(|v| v.to_string())
+        .map_err(PyValueError::new_err)
+}
+
+#[pyfunction]
+fn abc_class_references(data: &[u8], class_name: &str, transitive: bool) -> PyResult<String> {
+    abc_inspect::class_references(data, class_name, transitive)
+        .map(|v| v.to_string())
+        .map_err(PyValueError::new_err)
 }
 
 #[pymodule]

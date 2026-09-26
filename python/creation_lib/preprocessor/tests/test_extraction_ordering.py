@@ -10,10 +10,11 @@ def _touch_archives(data_dir: Path, names: list[str]) -> None:
         (data_dir / name).write_bytes(b"archive")
 
 
-def test_numbered_update_archives_sort_after_base_archives(tmp_path: Path) -> None:
-    data_dir = tmp_path / "Data"
+def test_numbered_update_archives_sort_and_form_ordered_parallel_phases(tmp_path: Path) -> None:
+    # Phase 1: numbered update archives sort after base archives
+    sort_dir = tmp_path / "sort" / "Data"
     _touch_archives(
-        data_dir,
+        sort_dir,
         [
             "SeventySix - 13UpdateMain.ba2",
             "SeventySix - 03UpdateVoices.ba2",
@@ -27,7 +28,7 @@ def test_numbered_update_archives_sort_after_base_archives(tmp_path: Path) -> No
         ],
     )
 
-    assert [archive.name for archive in find_archives(data_dir, "ba2")] == [
+    assert [archive.name for archive in find_archives(sort_dir, "ba2")] == [
         "SeventySix - Materials.ba2",
         "SeventySix - Textures01.ba2",
         "SeventySix - Textures10.ba2",
@@ -39,11 +40,10 @@ def test_numbered_update_archives_sort_after_base_archives(tmp_path: Path) -> No
         "SeventySix - 14UpdateMaterials.ba2",
     ]
 
-
-def test_update_archives_form_ordered_parallel_phases(tmp_path: Path) -> None:
-    data_dir = tmp_path / "Data"
+    # Phase 2: update archives form ordered parallel phases
+    phase_dir = tmp_path / "phases" / "Data"
     _touch_archives(
-        data_dir,
+        phase_dir,
         [
             "SeventySix - 02UpdateTextures.ba2",
             "SeventySix - Textures02.ba2",
@@ -54,7 +54,7 @@ def test_update_archives_form_ordered_parallel_phases(tmp_path: Path) -> None:
         ],
     )
 
-    groups = group_archives_by_update_phase(find_archives(data_dir, "ba2"))
+    groups = group_archives_by_update_phase(find_archives(phase_dir, "ba2"))
 
     assert [[archive.name for archive in group] for group in groups] == [
         ["SeventySix - Textures01.ba2", "SeventySix - Textures02.ba2"],
@@ -65,10 +65,13 @@ def test_update_archives_form_ordered_parallel_phases(tmp_path: Path) -> None:
     ]
 
 
-def test_archive_batches_respect_total_worker_budget(tmp_path: Path, monkeypatch) -> None:
-    data_dir = tmp_path / "Data"
+def test_archive_batches_respect_worker_budget_and_large_archives_get_full_budget(
+    tmp_path: Path, monkeypatch
+) -> None:
+    # Phase 1: mixed-size archives split into budget-respecting batches
+    budget_dir = tmp_path / "budget" / "Data"
     _touch_archives(
-        data_dir,
+        budget_dir,
         [
             "SmallA.ba2",
             "HugeMeshes.ba2",
@@ -88,7 +91,7 @@ def test_archive_batches_respect_total_worker_budget(tmp_path: Path, monkeypatch
         lambda archive: counts[archive.name],
     )
 
-    batches = extraction.plan_archive_extraction_batches(find_archives(data_dir, "ba2"), 8)
+    batches = extraction.plan_archive_extraction_batches(find_archives(budget_dir, "ba2"), 8)
 
     assert [[task.archive.name for task in batch] for batch in batches] == [
         ["HugeMeshes.ba2"],
@@ -100,11 +103,10 @@ def test_archive_batches_respect_total_worker_budget(tmp_path: Path, monkeypatch
     ]
     assert all(sum(task.file_workers for task in batch) <= 8 for batch in batches)
 
-
-def test_large_archives_receive_the_full_worker_budget(tmp_path: Path, monkeypatch) -> None:
-    data_dir = tmp_path / "Data"
+    # Phase 2: large archives each receive the full worker budget
+    large_dir = tmp_path / "large" / "Data"
     _touch_archives(
-        data_dir,
+        large_dir,
         [
             "Textures01.ba2",
             "Textures02.ba2",
@@ -118,7 +120,7 @@ def test_large_archives_receive_the_full_worker_budget(tmp_path: Path, monkeypat
     )
 
     batches = extraction.plan_archive_extraction_batches(
-        find_archives(data_dir, "ba2"),
+        find_archives(large_dir, "ba2"),
         8,
     )
 
@@ -129,7 +131,7 @@ def test_large_archives_receive_the_full_worker_budget(tmp_path: Path, monkeypat
     assert [[task.file_workers for task in batch] for batch in batches] == [[8], [8]]
 
 
-def test_planning_reads_header_counts_without_parsing_members(tmp_path, monkeypatch):
+def test_planning_reads_header_counts_and_falls_back_on_invalid_header(tmp_path, monkeypatch):
     archive = tmp_path / "Main.ba2"
     archive.write_bytes(b"archive")
     monkeypatch.setattr(extraction.native_runtime, "archive_entry_count", lambda _path: 25_000)
@@ -142,8 +144,6 @@ def test_planning_reads_header_counts_without_parsing_members(tmp_path, monkeypa
     assert batches[0][0].file_count == 25_000
     assert batches[0][0].file_workers == 3
 
-
-def test_planning_keeps_size_budget_when_header_is_invalid(tmp_path, monkeypatch):
     def invalid_header(_path):
         raise RuntimeError("invalid archive header")
 

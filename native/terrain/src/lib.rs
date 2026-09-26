@@ -4,6 +4,7 @@ use pyo3::prelude::*;
 pub mod authoring_emit;
 pub mod btd;
 pub mod btd4;
+pub mod btd4_verify;
 pub mod btd_write;
 mod diagnostics;
 pub mod fo4_frame;
@@ -67,7 +68,21 @@ fn write_water_manifest(py: Python<'_>, options_json: &str) -> PyResult<String> 
     })
 }
 
+#[pyfunction]
+fn verify_btd4(py: Python<'_>, path: &str, options_json: &str) -> PyResult<String> {
+    let path = path.to_owned();
+    let options_json = options_json.to_owned();
+    py.detach(move || {
+        let options: btd4_verify::VerifyOptions =
+            serde_json::from_str(&options_json).map_err(terrain_error)?;
+        let report = btd4_verify::verify_btd4(std::path::Path::new(&path), &options)
+            .map_err(PyRuntimeError::new_err)?;
+        serde_json::to_string(&report).map_err(terrain_error)
+    })
+}
+
 pub fn register_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(verify_btd4, m)?)?;
     m.add_function(wrap_pyfunction!(read_btd_header, m)?)?;
     m.add_function(wrap_pyfunction!(probe_btd_cell, m)?)?;
     m.add_function(wrap_pyfunction!(convert_btd_to_fo4_land, m)?)?;

@@ -280,6 +280,10 @@ impl<T> FormKeyIndex<T> {
         self.entries.values()
     }
 
+    pub fn into_values(self) -> impl Iterator<Item = T> {
+        self.entries.into_values()
+    }
+
     pub fn len(&self) -> usize {
         self.entries.len()
     }
@@ -698,6 +702,14 @@ pub fn resolve_form_id_to_form_key(
         return FormKey::raw(raw_form_id);
     };
     FormKey::new(plugin_name, object_id)
+}
+
+pub fn form_key_for_raw_form_id(
+    raw_form_id: u32,
+    own_plugin_name: &Arc<str>,
+    masters: &[String],
+) -> FormKey {
+    form_key_for_record(raw_form_id, own_plugin_name, masters).0
 }
 
 fn form_key_for_record(

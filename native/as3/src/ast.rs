@@ -38,6 +38,7 @@ pub enum TypeRef {
     Any,
     Void,
     Named(DottedName),
+    Vector(Box<TypeRef>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -157,9 +158,18 @@ pub struct Block {
 pub enum Stmt {
     Empty,
     Expr(Expr),
+    InitializeField {
+        name: String,
+        value: Expr,
+    },
     /// A `var`/`const` declaration inside a function body.
     Var(Box<VarDecl>),
     Return(Option<Expr>),
+    Throw(Expr),
+    Try {
+        body: Block,
+        catches: Vec<(String, TypeRef, Block)>,
+    },
     If {
         cond: Expr,
         then: Box<Stmt>,
@@ -167,6 +177,18 @@ pub enum Stmt {
     },
     While {
         cond: Expr,
+        body: Box<Stmt>,
+    },
+    For {
+        init: Box<Stmt>,
+        cond: Option<Expr>,
+        update: Option<Expr>,
+        body: Box<Stmt>,
+    },
+    ForIn {
+        variable: Box<VarDecl>,
+        iterable: Expr,
+        each: bool,
         body: Box<Stmt>,
     },
     Block(Block),
@@ -281,6 +303,25 @@ pub enum Expr {
         items: Vec<Expr>,
         span: Span,
     },
+    ObjectLit {
+        entries: Vec<(String, Expr)>,
+        span: Span,
+    },
+    VectorLit {
+        item_type: TypeRef,
+        items: Vec<Expr>,
+        span: Span,
+    },
+    TypeApply {
+        base: Box<Expr>,
+        item_type: TypeRef,
+        span: Span,
+    },
+    Postfix {
+        target: Box<Expr>,
+        increment: bool,
+        span: Span,
+    },
 }
 
 impl Expr {
@@ -302,6 +343,10 @@ impl Expr {
             | Expr::Binary { span, .. }
             | Expr::Assign { span, .. }
             | Expr::Conditional { span, .. }
+            | Expr::ObjectLit { span, .. }
+            | Expr::VectorLit { span, .. }
+            | Expr::TypeApply { span, .. }
+            | Expr::Postfix { span, .. }
             | Expr::ArrayLit { span, .. } => *span,
         }
     }

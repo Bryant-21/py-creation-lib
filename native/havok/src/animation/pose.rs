@@ -284,34 +284,34 @@ mod tests {
     }
 
     #[test]
-    fn pose_from_reference_model_space() {
-        let skel = two_bone_skeleton();
-        let mut pose = Pose::from_reference(skel);
-        let root_model = pose.model_at(0);
-        assert_eq!(root_model.translation, [0.0, 0.0, 0.0]);
-        let child_model = pose.model_at(1);
-        assert!((child_model.translation[0] - 1.0).abs() < 1e-5);
-    }
-
-    #[test]
-    fn set_local_invalidates_descendant_cache() {
-        let skel = two_bone_skeleton();
-        let mut pose = Pose::from_reference(skel);
-        // Prime cache
-        let _ = pose.model_at(1);
-        assert!(pose.model_cache[1].is_some());
-        // Mutate root
-        pose.set_local(
-            0,
-            QsTransform {
-                translation: [5.0, 0.0, 0.0],
-                ..QsTransform::IDENTITY
-            },
-        );
-        assert!(pose.model_cache[0].is_none());
-        assert!(pose.model_cache[1].is_none());
-        // Recompute
-        let child = pose.model_at(1);
-        assert!((child.translation[0] - 6.0).abs() < 1e-5);
+    fn pose_model_space_and_cache_invalidation() {
+        {
+            let skel = two_bone_skeleton();
+            let mut pose = Pose::from_reference(skel);
+            let root_model = pose.model_at(0);
+            assert_eq!(root_model.translation, [0.0, 0.0, 0.0]);
+            let child_model = pose.model_at(1);
+            assert!((child_model.translation[0] - 1.0).abs() < 1e-5);
+        }
+        {
+            let skel = two_bone_skeleton();
+            let mut pose = Pose::from_reference(skel);
+            // Prime cache
+            let _ = pose.model_at(1);
+            assert!(pose.model_cache[1].is_some());
+            // Mutate root
+            pose.set_local(
+                0,
+                QsTransform {
+                    translation: [5.0, 0.0, 0.0],
+                    ..QsTransform::IDENTITY
+                },
+            );
+            assert!(pose.model_cache[0].is_none());
+            assert!(pose.model_cache[1].is_none());
+            // Recompute
+            let child = pose.model_at(1);
+            assert!((child.translation[0] - 6.0).abs() < 1e-5);
+        }
     }
 }

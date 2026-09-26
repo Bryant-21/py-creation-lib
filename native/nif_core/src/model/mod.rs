@@ -312,6 +312,25 @@ impl NifFile {
         Ok(nif)
     }
 
+    /// Parse a NIF for inspection, keeping its bulk payloads as their serialized
+    /// bytes (`NifValue::Bytes`): `Vertex Data` (`BSVertexData`), `Triangles`
+    /// (`Triangle`) and `ByteArray` data such as a `bhkPhysicsSystem` packfile.
+    /// The writer rejects the raw geometry arrays, so edit a NIF loaded with
+    /// [`Self::from_bytes`]. Big-endian geometry is decoded as usual.
+    pub fn from_bytes_raw_arrays(
+        bytes: &[u8],
+        path: Option<PathBuf>,
+    ) -> Result<Self, crate::io::ReadError> {
+        let schema = &*crate::schema::SCHEMA;
+        let mut nif = crate::io::NifReader::read_with_options(
+            bytes,
+            schema,
+            crate::io::reader::NifReadOptions::raw_arrays_lean(),
+        )?;
+        nif.path = path;
+        Ok(nif)
+    }
+
     /// Read a NIF file from disk via [`crate::io::NifReader`].
     pub fn load(path: impl Into<PathBuf>) -> Result<Self, crate::io::ReadError> {
         let path: PathBuf = path.into();
@@ -345,7 +364,14 @@ impl NifFile {
             || source_header.user_version != target_header.user_version
             || source_header.bs_version != target_header.bs_version;
         if will_retarget {
-            Self::from_bytes_lean(&bytes, Some(path))
+            let schema = &*crate::schema::SCHEMA;
+            let mut nif = crate::io::NifReader::read_with_options(
+                &bytes,
+                schema,
+                crate::io::reader::NifReadOptions::compact_lean(),
+            )?;
+            nif.path = Some(path);
+            Ok(nif)
         } else {
             Self::from_bytes(&bytes, Some(path))
         }
@@ -1083,7 +1109,7 @@ mod tests {
     use crate::schema::SCHEMA;
 
     #[test]
-    fn get_field_bare_name_fallback() {
+    fn suffixed_field_slots_are_read_and_updated() {
         let mut block = NifBlock::new(0, "NiObjectNET");
         block
             .fields
@@ -1092,10 +1118,21 @@ mod tests {
             Some(NifValue::String(s)) => assert_eq!(s, "foo"),
             other => panic!("expected String, got {:?}", other),
         }
+
+        let mut block = NifBlock::new(0, "NiObjectNET");
+        block
+            .fields
+            .insert("Name:5".to_string(), NifValue::String("old".to_string()));
+        block.set_field("Name", NifValue::String("new".to_string()));
+        match block.fields.get("Name:5") {
+            Some(NifValue::String(s)) => assert_eq!(s, "new"),
+            other => panic!("expected updated slot, got {:?}", other),
+        }
+        assert!(block.fields.get("Name").is_none());
     }
 
     #[test]
-    fn referenced_asset_paths_extracts_absolute_material_without_data_segment() {
+    fn referenced_asset_paths_collect_materials_and_textures() {
         let mut nif = NifFile::new("fo76");
         let mut shader = NifBlock::new(0, "BSLightingShaderProperty");
         shader.fields.insert(
@@ -1113,24 +1150,7 @@ mod tests {
             refs.materials,
             vec!["materials/landscape/rocks/mtntopcliff_tiled01.bgsm"]
         );
-    }
 
-    #[test]
-    fn set_field_updates_suffixed_slot() {
-        let mut block = NifBlock::new(0, "NiObjectNET");
-        block
-            .fields
-            .insert("Name:5".to_string(), NifValue::String("old".to_string()));
-        block.set_field("Name", NifValue::String("new".to_string()));
-        match block.fields.get("Name:5") {
-            Some(NifValue::String(s)) => assert_eq!(s, "new"),
-            other => panic!("expected updated slot, got {:?}", other),
-        }
-        assert!(block.fields.get("Name").is_none());
-    }
-
-    #[test]
-    fn referenced_asset_paths_collects_textures_and_material_name() {
         let mut nif = NifFile::default();
 
         let mut shader = NifBlock::new(0, "BSLightingShaderProperty");
@@ -1171,10 +1191,7 @@ mod tests {
                 "textures/landscape/rock01_s.dds".to_string(),
             ]
         );
-    }
 
-    #[test]
-    fn referenced_asset_paths_collects_fnv_tall_grass_texture() {
         let mut nif = NifFile::new("fnv");
         let mut shader = NifBlock::new(0, "TallGrassShaderProperty");
         shader.set_field(
@@ -1189,10 +1206,7 @@ mod tests {
             refs.textures,
             vec!["textures/landscape/grass/grasswastelandcomp01.dds"]
         );
-    }
 
-    #[test]
-    fn referenced_asset_paths_collects_fnv_no_lighting_texture() {
         let mut nif = NifFile::new("fnv");
         let mut shader = NifBlock::new(0, "BSShaderNoLightingProperty");
         shader.set_field(
@@ -1207,7 +1221,7 @@ mod tests {
     }
 
     #[test]
-    fn add_block_updates_header() {
+    fn add_block_updates_header_and_populates_schema_defaults() {
         let mut nif = NifFile::default();
         nif.header.version_packed = 0x14020007;
         let bid1 = nif.add_block("NiNode", None);
@@ -1222,10 +1236,7 @@ mod tests {
             vec!["NiNode".to_string(), "BSTriShape".to_string()]
         );
         assert_eq!(nif.header.block_type_index, vec![0u16, 0u16, 1u16]);
-    }
 
-    #[test]
-    fn add_block_populates_schema_defaults_before_overrides() {
         let mut nif = NifFile::default();
         let mut overrides = IndexMap::new();
         overrides.insert("Name".to_string(), NifValue::String("Custom".to_string()));
@@ -1248,7 +1259,7 @@ mod tests {
     }
 
     #[test]
-    fn remove_blocks_remaps_refs() {
+    fn remove_blocks_remaps_and_clears_refs() {
         let mut nif = NifFile::default();
         nif.add_block("NiNode", None); // 0 - keep
         nif.add_block("NiNode", None); // 1 - remove
@@ -1266,10 +1277,7 @@ mod tests {
             Some(NifValue::Ref(r)) => assert_eq!(*r, 1),
             other => panic!("expected Ref(1), got {:?}", other),
         }
-    }
 
-    #[test]
-    fn remap_refs_rewrites_removed_to_neg1() {
         let mut nif = NifFile::default();
         nif.add_block("NiNode", None);
         nif.add_block("NiNode", None);
@@ -1286,7 +1294,7 @@ mod tests {
     }
 
     #[test]
-    fn find_blocks_honors_subtypes() {
+    fn block_queries_follow_schema_and_refs() {
         let mut nif = NifFile::default();
         nif.add_block("BSFadeNode", None); // subtype of NiNode
         nif.add_block("NiNode", None);
@@ -1297,25 +1305,42 @@ mod tests {
         assert!(hits.contains(&0));
         assert!(hits.contains(&1));
         assert!(!hits.contains(&2));
-    }
 
-    #[test]
-    fn get_block_in_range() {
         let mut nif = NifFile::default();
         nif.add_block("NiNode", None);
         assert!(nif.get_block(0).is_some());
         assert!(nif.get_block(99).is_none());
-    }
 
-    #[test]
-    fn new_fo4_creates_fade_node_root() {
-        let nif = NifFile::new("fo4");
-        assert_eq!(nif.blocks.len(), 1);
-        assert_eq!(nif.blocks[0].type_name, "BSFadeNode");
-        assert_eq!(nif.header.version, (20, 2, 0, 7));
-        assert_eq!(nif.header.user_version, 12);
-        assert_eq!(nif.header.bs_version, 130);
-        assert_eq!(nif.header.endian_type, 1);
+        let mut nif = NifFile::default();
+        nif.add_block("NiNode", None);
+        nif.add_block("NiNode", None);
+        nif.blocks[0]
+            .fields
+            .insert("Controller".to_string(), NifValue::Ref(1));
+        let h = nif.get_hierarchy();
+        assert_eq!(h.get(&0).map(|v| v.clone()).unwrap_or_default(), vec![1]);
+        assert_eq!(
+            h.get(&1).map(|v| v.clone()).unwrap_or_default(),
+            Vec::<i32>::new()
+        );
+
+        let mut block = NifBlock::new(0, "NiNode");
+        block
+            .fields
+            .insert("Controller".to_string(), NifValue::Ref(5));
+        block
+            .fields
+            .insert("Name".to_string(), NifValue::String("x".to_string()));
+        block.fields.insert(
+            "Children".to_string(),
+            NifValue::Array(vec![NifValue::Ref(2), NifValue::Ref(3)]),
+        );
+        let schema = &*SCHEMA;
+        let refs = block.get_all_ref_fields(schema);
+        let names: Vec<&str> = refs.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(names.contains(&"Controller"));
+        assert!(names.contains(&"Children"));
+        assert!(!names.contains(&"Name"));
     }
 
     #[test]
@@ -1374,6 +1399,13 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("fo76_source.nif");
         let mut source = NifFile::new("fo76");
+        source.add_block(
+            "bhkPhysicsSystem",
+            Some(IndexMap::from([(
+                "Binary Data".to_string(),
+                crate::cloth::bytes_to_byte_array(&[0, 1, 127, 255]),
+            )])),
+        );
         std::fs::write(&path, source.to_bytes().unwrap()).unwrap();
 
         let parsed = NifFile::load_for_header_retarget(&path, "fo4").unwrap();
@@ -1384,43 +1416,16 @@ mod tests {
                 .iter()
                 .all(|block| block.original_content_hash.is_none())
         );
-    }
-
-    #[test]
-    fn get_hierarchy_returns_refs_per_block() {
-        let mut nif = NifFile::default();
-        nif.add_block("NiNode", None);
-        nif.add_block("NiNode", None);
-        nif.blocks[0]
-            .fields
-            .insert("Controller".to_string(), NifValue::Ref(1));
-        let h = nif.get_hierarchy();
-        assert_eq!(h.get(&0).map(|v| v.clone()).unwrap_or_default(), vec![1]);
-        assert_eq!(
-            h.get(&1).map(|v| v.clone()).unwrap_or_default(),
-            Vec::<i32>::new()
-        );
-    }
-
-    #[test]
-    fn get_all_ref_fields_lists_only_refs() {
-        let mut block = NifBlock::new(0, "NiNode");
-        block
-            .fields
-            .insert("Controller".to_string(), NifValue::Ref(5));
-        block
-            .fields
-            .insert("Name".to_string(), NifValue::String("x".to_string()));
-        block.fields.insert(
-            "Children".to_string(),
-            NifValue::Array(vec![NifValue::Ref(2), NifValue::Ref(3)]),
-        );
-        let schema = &*SCHEMA;
-        let refs = block.get_all_ref_fields(schema);
-        let names: Vec<&str> = refs.iter().map(|(n, _)| n.as_str()).collect();
-        assert!(names.contains(&"Controller"));
-        assert!(names.contains(&"Children"));
-        assert!(!names.contains(&"Name"));
+        let binary_data = parsed
+            .blocks
+            .iter()
+            .find(|block| block.type_name == "bhkPhysicsSystem")
+            .and_then(|block| block.get_field("Binary Data"))
+            .expect("Binary Data");
+        assert!(matches!(
+            binary_data,
+            NifValue::Struct(fields) if matches!(fields.get("Data"), Some(NifValue::Bytes(data)) if data == &[0, 1, 127, 255])
+        ));
     }
 
     #[test]

@@ -53,148 +53,83 @@ def test_load_native_module_falls_back_to_umbrella_submodule(
     assert calls == ["creation_lib._native"]
 
 
-def test_plugin_handle_load_forwards_to_function_entrypoint(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls: list[tuple[object, ...]] = []
-    handle = object()
-
-    def plugin_handle_load(*args: object) -> object:
-        calls.append(args)
-        return handle
-
-    monkeypatch.setattr(
-        native_runtime,
-        "load_native_module",
-        lambda: SimpleNamespace(plugin_handle_load=plugin_handle_load),
-    )
-
-    result = native_runtime.plugin_handle_load(
-        "Example.esp",
-        game="fo4",
-        strings_dir="Strings",
-        language="en",
-        eager_compressed=False,
-    )
-
-    assert result is handle
-    assert calls == [("Example.esp", "fo4", "Strings", "en", False)]
-
-
-def test_plugin_handle_new_forwards_to_function_entrypoint(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls: list[tuple[object, ...]] = []
-    handle = object()
-
-    def plugin_handle_new(*args: object) -> object:
-        calls.append(args)
-        return handle
-
-    monkeypatch.setattr(
-        native_runtime,
-        "load_native_module",
-        lambda: SimpleNamespace(plugin_handle_new=plugin_handle_new),
-    )
-
-    result = native_runtime.plugin_handle_new("NewPlugin.esp", "fo4")
-
-    assert result is handle
-    assert calls == [("NewPlugin.esp", "fo4")]
-
-
-def test_plugin_handle_from_bytes_forwards_to_function_entrypoint(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls: list[tuple[object, ...]] = []
-    handle = object()
-
-    def plugin_handle_from_bytes(*args: object) -> object:
-        calls.append(args)
-        return handle
-
-    monkeypatch.setattr(
-        native_runtime,
-        "load_native_module",
-        lambda: SimpleNamespace(plugin_handle_from_bytes=plugin_handle_from_bytes),
-    )
-
-    result = native_runtime.plugin_handle_from_bytes(
-        b"TES4",
-        plugin_name="Bytes.esp",
-        game="fo4",
-        auto_load_strings=True,
-        strings_dir="Strings",
-        language="en",
-        file_path="Bytes.esp",
-    )
-
-    assert result is handle
-    assert calls == [(b"TES4", "Bytes.esp", "fo4", True, "Strings", "en", "Bytes.esp")]
-
-
-def test_plugin_handle_collect_cell_children_preserves_raw_form_id(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls: list[tuple[object, ...]] = []
-
-    def plugin_handle_collect_cell_children(*args: object) -> list[dict[str, object]]:
-        calls.append(args)
-        return []
-
-    monkeypatch.setattr(
-        native_runtime,
-        "load_native_module",
-        lambda: SimpleNamespace(
-            plugin_handle_collect_cell_children=plugin_handle_collect_cell_children
+@pytest.mark.parametrize(
+    ("wrapper_name", "native_attr", "call_args", "call_kwargs", "expected_call"),
+    [
+        (
+            "plugin_handle_load",
+            "plugin_handle_load",
+            ("Example.esp",),
+            {"game": "fo4", "strings_dir": "Strings", "language": "en", "eager_compressed": False},
+            ("Example.esp", "fo4", "Strings", "en", False),
         ),
-    )
-
-    assert native_runtime.plugin_handle_collect_cell_children(7, 0x01000800) == []
-    assert calls == [(7, 0x01000800)]
-
-
-def test_plugin_handle_import_text_forwards_to_function_entrypoint(
+        ("plugin_handle_new", "plugin_handle_new", ("NewPlugin.esp", "fo4"), {}, ("NewPlugin.esp", "fo4")),
+        (
+            "plugin_handle_from_bytes",
+            "plugin_handle_from_bytes",
+            (b"TES4",),
+            {
+                "plugin_name": "Bytes.esp",
+                "game": "fo4",
+                "auto_load_strings": True,
+                "strings_dir": "Strings",
+                "language": "en",
+                "file_path": "Bytes.esp",
+            },
+            (b"TES4", "Bytes.esp", "fo4", True, "Strings", "en", "Bytes.esp"),
+        ),
+        (
+            "plugin_handle_collect_cell_children",
+            "plugin_handle_collect_cell_children",
+            (7, 0x01000800),
+            {},
+            (7, 0x01000800),
+        ),
+        (
+            "plugin_handle_import_text",
+            "plugin_handle_import_text",
+            ("{}",),
+            {"format": "json", "game": "fo4"},
+            ("{}", "json", "fo4"),
+        ),
+        ("plugin_handle_close", "plugin_handle_close", (99,), {}, (99,)),
+    ],
+)
+def test_plugin_handle_wrappers_forward_to_function_entrypoints(
+    wrapper_name: str,
+    native_attr: str,
+    call_args: tuple[object, ...],
+    call_kwargs: dict[str, object],
+    expected_call: tuple[object, ...],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[tuple[object, ...]] = []
-    handle = object()
+    sentinel = object()
+    # plugin_handle_close coerces to bool and plugin_handle_collect_cell_children
+    # iterates+rewraps each entry as a dict, so neither can pass an opaque sentinel through.
+    native_return_value = {
+        "plugin_handle_close": True,
+        "plugin_handle_collect_cell_children": [],
+    }.get(wrapper_name, sentinel)
 
-    def plugin_handle_import_text(*args: object) -> object:
+    def recorder(*args: object) -> object:
         calls.append(args)
-        return handle
+        return native_return_value
 
     monkeypatch.setattr(
         native_runtime,
         "load_native_module",
-        lambda: SimpleNamespace(plugin_handle_import_text=plugin_handle_import_text),
+        lambda: SimpleNamespace(**{native_attr: recorder}),
     )
 
-    result = native_runtime.plugin_handle_import_text("{}", format="json", game="fo4")
+    wrapper = getattr(native_runtime, wrapper_name)
+    result = wrapper(*call_args, **call_kwargs)
 
-    assert result is handle
-    assert calls == [("{}", "json", "fo4")]
-
-
-def test_plugin_handle_close_forwards_to_function_entrypoint(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls: list[tuple[object, ...]] = []
-
-    def plugin_handle_close(*args: object) -> bool:
-        calls.append(args)
-        return True
-
-    monkeypatch.setattr(
-        native_runtime,
-        "load_native_module",
-        lambda: SimpleNamespace(plugin_handle_close=plugin_handle_close),
-    )
-
-    result = native_runtime.plugin_handle_close(99)
-
-    assert result is True
-    assert calls == [(99,)]
+    if native_return_value is sentinel:
+        assert result is sentinel
+    else:
+        assert result == native_return_value
+    assert calls == [expected_call]
 
 
 def test_plugin_handle_collect_assets_reads_workshop_wire_point(
@@ -363,7 +298,7 @@ def test_plugin_handle_get_reads_metadata_for_handle_ids(
         "localized_string_table_types": {1: "strings"},
     }
 
-    def plugin_handle_get_meta(handle_id: int) -> dict[str, object]:
+    def plugin_handle_get_meta(handle_id: int, include_record_count: bool = True) -> dict[str, object]:
         meta_calls.append(handle_id)
         return metadata
 
@@ -423,7 +358,7 @@ def test_plugin_from_native_handle_fetches_strings_lazily(
         },
     }
 
-    def plugin_handle_get_meta(handle_id: int) -> dict[str, object]:
+    def plugin_handle_get_meta(handle_id: int, include_record_count: bool = True) -> dict[str, object]:
         meta_calls.append(handle_id)
         return metadata
 
@@ -451,10 +386,10 @@ def test_plugin_from_native_handle_fetches_strings_lazily(
     assert string_calls == []
     assert plugin.localized_strings_by_language == {"en": {1: "Name"}}
     assert string_calls == [(42, None)]
-    assert meta_calls == [42, 42, 42, 42, 42, 42]
+    assert meta_calls == [42, 42, 42, 42, 42]
 
 
-def test_plugin_handle_call_routes_handle_ids_to_function_entrypoints(
+def test_plugin_handle_call_routes_to_function_entrypoints(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[tuple[object, ...]] = []
@@ -474,38 +409,6 @@ def test_plugin_handle_call_routes_handle_ids_to_function_entrypoints(
         calls.append(("to_bytes", *args))
         return b"TES4"
 
-    monkeypatch.setattr(
-        native_runtime,
-        "load_native_module",
-        lambda: SimpleNamespace(
-            plugin_handle_save=plugin_handle_save,
-            plugin_handle_export_plugin_text=plugin_handle_export_plugin_text,
-            plugin_handle_export_record_text=plugin_handle_export_record_text,
-            plugin_handle_to_bytes=plugin_handle_to_bytes,
-        ),
-    )
-
-    native_runtime.plugin_handle_call(77, "save", "out.esp")
-    text = native_runtime.plugin_handle_call(77, "export_plugin_text", "lossless", "json")
-    record_text = native_runtime.plugin_handle_call(77, "export_record_text", 0x01001234, "yaml")
-    data = native_runtime.plugin_handle_call(77, "to_bytes")
-
-    assert text == '{"plugin":"HandleId.esp"}'
-    assert record_text == '{"record":"HandleId.Record"}'
-    assert data == b"TES4"
-    assert calls == [
-        ("save", 77, "out.esp"),
-        ("export", 77, "lossless", "json"),
-        ("export_record", 77, 0x01001234, "yaml"),
-        ("to_bytes", 77),
-    ]
-
-
-def test_plugin_handle_call_routes_formkey_index_apis(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls: list[tuple[object, ...]] = []
-
     def plugin_handle_record_eid_index(*args: object) -> dict[str, list[str]]:
         calls.append(("eid_index", *args))
         return {"nativerecord": ["Native.esp:000800"]}
@@ -522,24 +425,35 @@ def test_plugin_handle_call_routes_formkey_index_apis(
         native_runtime,
         "load_native_module",
         lambda: SimpleNamespace(
+            plugin_handle_save=plugin_handle_save,
+            plugin_handle_export_plugin_text=plugin_handle_export_plugin_text,
+            plugin_handle_export_record_text=plugin_handle_export_record_text,
+            plugin_handle_to_bytes=plugin_handle_to_bytes,
             plugin_handle_record_eid_index=plugin_handle_record_eid_index,
             plugin_handle_get_referenced_form_keys=plugin_handle_get_referenced_form_keys,
             plugin_handle_index_stats=plugin_handle_index_stats,
         ),
     )
 
+    native_runtime.plugin_handle_call(77, "save", "out.esp")
+    text = native_runtime.plugin_handle_call(77, "export_plugin_text", "lossless", "json")
+    record_text = native_runtime.plugin_handle_call(77, "export_record_text", 0x01001234, "yaml")
+    data = native_runtime.plugin_handle_call(77, "to_bytes")
     eid_index = native_runtime.plugin_handle_call(88, "record_eid_index")
-    refs = native_runtime.plugin_handle_call(
-        88,
-        "get_referenced_form_keys",
-        "Native.esp:000800",
-    )
+    refs = native_runtime.plugin_handle_call(88, "get_referenced_form_keys", "Native.esp:000800")
     stats = native_runtime.plugin_handle_call(88, "index_stats")
 
+    assert text == '{"plugin":"HandleId.esp"}'
+    assert record_text == '{"record":"HandleId.Record"}'
+    assert data == b"TES4"
     assert eid_index == {"nativerecord": ["Native.esp:000800"]}
     assert refs == ["Native.esp:000801"]
     assert stats == {"record_count": 1}
     assert calls == [
+        ("save", 77, "out.esp"),
+        ("export", 77, "lossless", "json"),
+        ("export_record", 77, 0x01001234, "yaml"),
+        ("to_bytes", 77),
         ("eid_index", 88),
         ("refs", 88, "Native.esp:000800"),
         ("stats", 88),
@@ -590,20 +504,19 @@ def test_should_use_native_backend_uses_capability_when_available(monkeypatch: p
     assert native_runtime.should_use_native_backend("auto", "load_plugin_native") is True
 
 
-def test_should_use_native_backend_raises_for_auto_without_module(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize(
+    ("requested_backend", "fake_module"),
+    [("auto", None), ("native", SimpleNamespace())],
+    ids=["auto-without-module", "native-without-capability"],
+)
+def test_should_use_native_backend_raises_when_capability_is_missing(
+    monkeypatch: pytest.MonkeyPatch, requested_backend: str, fake_module: object | None
+) -> None:
     monkeypatch.setattr(native_runtime, "native_function_available", lambda name: False)
-    monkeypatch.setattr(native_runtime, "load_native_module", lambda: None)
+    monkeypatch.setattr(native_runtime, "load_native_module", lambda: fake_module)
 
     with pytest.raises(RuntimeError, match=r"missing required function load_plugin_native\(\)"):
-        native_runtime.should_use_native_backend("auto", "load_plugin_native")
-
-
-def test_should_use_native_backend_raises_for_native_without_capability(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(native_runtime, "native_function_available", lambda name: False)
-    monkeypatch.setattr(native_runtime, "load_native_module", lambda: SimpleNamespace())
-
-    with pytest.raises(RuntimeError, match=r"missing required function load_plugin_native\(\)"):
-        native_runtime.should_use_native_backend("native", "load_plugin_native")
+        native_runtime.should_use_native_backend(requested_backend, "load_plugin_native")
 
 
 @pytest.mark.parametrize(
@@ -643,64 +556,19 @@ def test_should_use_native_backend_raises_for_native_without_capability(monkeypa
         ),
     ],
 )
-def test_native_wrappers_raise_runtime_error_when_extension_is_missing(
-    wrapper_name: str,
-    call_args: tuple[object, ...],
-    call_kwargs: dict[str, object],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(native_runtime, "load_native_module", lambda: None)
-
-    wrapper = getattr(native_runtime, wrapper_name)
-
-    with pytest.raises(RuntimeError, match="missing required"):
-        wrapper(*call_args, **call_kwargs)
-
-
 @pytest.mark.parametrize(
-    ("wrapper_name", "call_args", "call_kwargs"),
-    [
-        (
-            "load_plugin_native",
-            ("Example.esp",),
-            {"game": "fo4", "jobs": 2, "strings_dir": "Strings", "language": "en"},
-        ),
-        (
-            "save_plugin_native",
-            (PLUGIN_SENTINEL, "Example.esp"),
-            {"game": "fo4"},
-        ),
-        ("supported_games_native", (), {}),
-        ("schema_json_for_game_native", ("fo4",), {}),
-        (
-            "export_authoring_dir_native",
-            ("Example.esp", "authoring"),
-            {"game": "fo4", "format": "yaml", "jobs": 4},
-        ),
-        (
-            "build_authoring_dir_streaming_native",
-            ("authoring", "Example.esp"),
-            {"game": "fo4", "jobs": 2},
-        ),
-        (
-            "export_plugin_text_native",
-            ("Example.esp", "Example.yaml"),
-            {"game": "fo4", "mode": "authoring", "format": "yaml"},
-        ),
-        (
-            "import_plugin_text_native",
-            ("Example.yaml", "Example.esp"),
-            {"game": "fo4", "format": "yaml"},
-        ),
-    ],
+    "fake_module_factory",
+    [lambda: None, SimpleNamespace],
+    ids=["extension-missing", "entrypoint-missing"],
 )
-def test_native_wrappers_raise_runtime_error_for_missing_entrypoints(
+def test_native_wrappers_raise_runtime_error_when_capability_is_missing(
     wrapper_name: str,
     call_args: tuple[object, ...],
     call_kwargs: dict[str, object],
+    fake_module_factory,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(native_runtime, "load_native_module", lambda: SimpleNamespace())
+    monkeypatch.setattr(native_runtime, "load_native_module", fake_module_factory)
 
     wrapper = getattr(native_runtime, wrapper_name)
 

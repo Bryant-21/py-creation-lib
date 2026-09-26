@@ -34,15 +34,27 @@ struct NamespaceEntry {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum MultinameEntry {
+    TypeName {
+        base: u32,
+        item: u32,
+    },
     /// `QName`: a fully-resolved `namespace::name`.
-    QName { ns: u32, name: u32 },
+    QName {
+        ns: u32,
+        name: u32,
+    },
     /// `Multiname`: a name plus the set of namespaces to search, which is what
     /// an unqualified reference compiles to when resolution is left to runtime.
-    Multiname { name: u32, ns_set: u32 },
+    Multiname {
+        name: u32,
+        ns_set: u32,
+    },
     /// `MultinameL`: like `Multiname`, but the *name* is taken off the operand
     /// stack instead of the pool. This is what `a[i]` compiles to, and it is
     /// why an indexed access pops one more operand than a named one.
-    MultinameL { ns_set: u32 },
+    MultinameL {
+        ns_set: u32,
+    },
 }
 
 const KIND_QNAME: u8 = 0x07;
@@ -103,6 +115,13 @@ fn intern<T: Clone + std::hash::Hash + Eq>(
 }
 
 impl ConstantPool {
+    pub fn type_name(&mut self, base: u32, item: u32) -> u32 {
+        intern(
+            &mut self.multinames,
+            &mut self.multiname_index,
+            MultinameEntry::TypeName { base, item },
+        )
+    }
     pub fn new() -> Self {
         Self::default()
     }
@@ -244,6 +263,12 @@ impl ConstantPool {
         write_u30(out, Self::section_count(self.multinames.len()));
         for mn in &self.multinames {
             match *mn {
+                MultinameEntry::TypeName { base, item } => {
+                    out.push(0x1D);
+                    write_u30(out, base);
+                    write_u30(out, 1);
+                    write_u30(out, item);
+                }
                 MultinameEntry::QName { ns, name } => {
                     out.push(KIND_QNAME);
                     write_u30(out, ns);

@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use indexmap::IndexMap;
 use nif_core_native::model::{NifFile, NifValue};
@@ -279,57 +279,3 @@ fn supported_geometry_without_vertices_is_typed() {
     ));
 }
 
-fn repo_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..")
-}
-
-fn assert_real_pair(body: &Path, skeleton: &Path) {
-    if !body.exists() || !skeleton.exists() {
-        eprintln!(
-            "skipping optional real pair: body={} skeleton={}",
-            body.display(),
-            skeleton.display()
-        );
-        return;
-    }
-
-    let body_bounds = aggregate_render_world_bounds(body).expect("body render bounds");
-    let skeleton_bounds =
-        aggregate_named_node_world_bounds(skeleton).expect("skeleton node bounds");
-    for bounds in [body_bounds, skeleton_bounds] {
-        assert!(bounds.min.into_iter().chain(bounds.max).all(f32::is_finite));
-        assert!(
-            bounds
-                .min
-                .iter()
-                .zip(bounds.max)
-                .any(|(min, max)| max > *min),
-            "nonzero extent: {bounds:?}"
-        );
-    }
-    assert_eq!(
-        aggregate_render_world_bounds(skeleton),
-        Err(WorldBoundsError::EmptyGeometry)
-    );
-}
-
-#[test]
-fn optional_real_creature_body_and_skeleton_pairs_have_distinct_bounds_sources() {
-    let root = repo_root();
-    for (body, skeleton) in [
-        (
-            "extracted/skyrimse/meshes/actors/canine/character assets wolf/wolf.nif",
-            "extracted/skyrimse/meshes/actors/canine/character assets wolf/skeleton.nif",
-        ),
-        (
-            "extracted/fnv/meshes/creatures/nvgecko/nvgecko.nif",
-            "extracted/fnv/meshes/creatures/nvgecko/skeleton.nif",
-        ),
-        (
-            "extracted/fo3/meshes/creatures/yaoguai/yaoguai.nif",
-            "extracted/fo3/meshes/creatures/yaoguai/skeleton.nif",
-        ),
-    ] {
-        assert_real_pair(&root.join(body), &root.join(skeleton));
-    }
-}

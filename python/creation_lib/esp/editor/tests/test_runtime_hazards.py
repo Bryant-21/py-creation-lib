@@ -151,7 +151,7 @@ def _fo4_imad_dnam(*, count_overrides: dict[str, int] | None = None) -> bytes:
     return bytes(data)
 
 
-def test_flags_qust_event_alias_fill_after_alias_table_anchor():
+def test_qust_event_alias_fill_flagged_only_after_alias_table_anchor():
     record = _record(
         0x0710E201,
         _subrecord("EDID", b"TW002\0"),
@@ -174,8 +174,6 @@ def test_flags_qust_event_alias_fill_after_alias_table_anchor():
     assert hazard.path == "QUST.Alias[3].ALFD"
     assert "TW002" in hazard.message
 
-
-def test_ignores_qust_event_alias_fill_before_alias_table_anchor():
     record = _record(
         0x0710E201,
         _subrecord("EDID", b"TW002\0"),
@@ -193,7 +191,7 @@ def test_ignores_qust_event_alias_fill_before_alias_table_anchor():
     assert report.hazards == []
 
 
-def test_flags_empty_imad_runtime_data():
+def test_imad_runtime_arrays_and_dnam_counts():
     record = _record(
         0x076E908E,
         _subrecord("EDID", b"Storm_MQ08_HallucGasImod\0"),
@@ -213,8 +211,6 @@ def test_flags_empty_imad_runtime_data():
     assert hazard.path == "IMAD.TNAM"
     assert "Storm_MQ08_HallucGasImod" in hazard.message
 
-
-def test_flags_missing_and_bad_stride_imad_runtime_arrays():
     record = _record(
         0x076E908F,
         *_valid_fo4_imad_runtime_subrecords(
@@ -236,8 +232,6 @@ def test_flags_missing_and_bad_stride_imad_runtime_arrays():
     ]
     assert [hazard.path for hazard in report.hazards] == ["IMAD.TNAM", "IMAD.NAM6"]
 
-
-def test_flags_imad_dnam_array_count_mismatch_from_skyrim_crash():
     record = _record(
         0x0810FDE4,
         _subrecord("EDID", b"ChargenImod\0"),
@@ -269,8 +263,6 @@ def test_flags_imad_dnam_array_count_mismatch_from_skyrim_crash():
         for hazard in report.hazards
     )
 
-
-def test_accepts_imad_arrays_when_dnam_counts_match():
     record = _record(
         0x0003F1FF,
         _subrecord("DNAM", _fo4_imad_dnam()),
@@ -419,7 +411,7 @@ def test_runtime_hazard_profile_is_fo4_only():
     assert report.hazards == []
 
 
-def test_flags_fo4_proj_missing_required_dnam():
+def test_proj_shape_rules():
     record = _record(
         0x070BEDF6,
         _subrecord("EDID", b"FlameProjectileANT\0"),
@@ -439,8 +431,6 @@ def test_flags_fo4_proj_missing_required_dnam():
     assert hazard.path == "PROJ.DNAM"
     assert "FlameProjectileANT" in hazard.message
 
-
-def test_flags_every_wrong_sized_fo4_proj_dnam_with_occurrences():
     record = _record(
         0x070BEDF6,
         _subrecord("DATA", b""),
@@ -464,8 +454,6 @@ def test_flags_every_wrong_sized_fo4_proj_dnam_with_occurrences():
         "PROJ.DNAM[1]",
     ]
 
-
-def test_flags_every_nonempty_fo4_proj_data_but_allows_empty_marker():
     record = _record(
         0x070BEDF6,
         _subrecord("DATA", b""),
@@ -485,8 +473,6 @@ def test_flags_every_nonempty_fo4_proj_data_but_allows_empty_marker():
     assert hazard.rule_id == "fo4-loader-proj-nonempty-data"
     assert hazard.path == "PROJ.DATA[1]"
 
-
-def test_flags_actual_fnv_proj_source_layout_nam2_at_fo4_v131():
     assert len(_FNV_PROJ_NAM2) == 48
     record = _record(
         0x070BEDF6,
@@ -508,8 +494,6 @@ def test_flags_actual_fnv_proj_source_layout_nam2_at_fo4_v131():
     assert hazard.path == "PROJ.NAM2[0]"
     assert "counter_count" in hazard.message
 
-
-def test_accepts_valid_fo4_proj_shape_and_model_info():
     valid_model_info = (4).to_bytes(4, "little") + b"\0" * 16
     record = _record(
         0x01001004,
@@ -527,8 +511,6 @@ def test_accepts_valid_fo4_proj_shape_and_model_info():
 
     assert report.hazards == []
 
-
-def test_proj_shape_gate_is_fo4_only():
     record = _record(
         0x000BEDF6,
         _subrecord("DATA", b"source"),
@@ -571,7 +553,7 @@ def test_session_scan_includes_proj_records(monkeypatch):
     ]
 
 
-def test_flags_fnv_term_snam_at_fo4_v131_row_stride():
+def test_term_snam_row_stride():
     record = _record(
         0x0717B7A0,
         _subrecord("EDID", b"P04CompanionFireTerminal\0"),
@@ -591,8 +573,6 @@ def test_flags_fnv_term_snam_at_fo4_v131_row_stride():
     assert hazard.path == "TERM.SNAM[0]"
     assert "4-byte SNAM" in hazard.message
 
-
-def test_accepts_fo4_term_snam_rows_and_ignores_pre_v125_layouts():
     valid = _record(
         0x01001000,
         _subrecord("SNAM", b"\0" * 48),
@@ -614,7 +594,7 @@ def test_accepts_fo4_term_snam_rows_and_ignores_pre_v125_layouts():
     assert report.hazards == []
 
 
-def test_flags_actual_skyrim_debr_legacy_modt():
+def test_model_info_family_and_legacy_modt_variants():
     assert len(_SKYRIM_DEBR_MODT) == 72
     record = _record(
         0x070DEDC9,
@@ -636,8 +616,6 @@ def test_flags_actual_skyrim_debr_legacy_modt():
     assert "counter_count" in hazard.message
     assert "IceFormDebris14" in hazard.message
 
-
-def test_flags_actual_fnv_debr_legacy_modt():
     assert len(_FNV_DEBR_MODT) == 72
     record = _record(
         0x070B8FF4,
@@ -655,8 +633,6 @@ def test_flags_actual_fnv_debr_legacy_modt():
     assert len(report.hazards) == 1
     assert report.hazards[0].rule_id == "fo4-loader-invalid-model-info"
 
-
-def test_accepts_actual_fo4_encoded_modt_in_any_record_context():
     record = _record(
         0x00048280,
         _subrecord("MODT", _FO4_STAT_MODT),
@@ -671,8 +647,6 @@ def test_accepts_actual_fo4_encoded_modt_in_any_record_context():
 
     assert report.hazards == []
 
-
-def test_ignores_pre_v131_fo4_three_counter_model_info_layout():
     record = _record(
         0x001E48E0,
         _subrecord("MODT", bytes.fromhex("03000000000000000000000000000000")),
@@ -688,8 +662,6 @@ def test_ignores_pre_v131_fo4_three_counter_model_info_layout():
 
     assert report.hazards == []
 
-
-def test_flags_every_fo4_model_info_subrecord_family():
     model_info_sigs = ("MODT", "MO2T", "MO3T", "MO4T", "MO5T", "DMDT")
     record = _record(
         0x01001003,
@@ -708,8 +680,6 @@ def test_flags_every_fo4_model_info_subrecord_family():
         f"ARMO.{signature}[0]" for signature in model_info_sigs
     ]
 
-
-def test_flags_model_info_counts_that_exceed_payload_without_allocating():
     malformed = (
         (4).to_bytes(4, "little") + (0xFFFFFFFF).to_bytes(4, "little") + b"\0" * 12
     )
@@ -729,7 +699,7 @@ def test_flags_model_info_counts_that_exceed_payload_without_allocating():
     assert "texture count 4294967295 exceeds" in report.hazards[0].message
 
 
-def test_flags_legacy_refr_xloc_but_not_unrelated_cell_xcll():
+def test_refr_xloc_size():
     refr = _record(
         0x07001000,
         _subrecord("XLOC", b"\0" * 12),
@@ -753,8 +723,6 @@ def test_flags_legacy_refr_xloc_but_not_unrelated_cell_xcll():
     assert report.hazards[0].path == "REFR.XLOC[0]"
     assert "12-byte XLOC" in report.hazards[0].message
 
-
-def test_accepts_exact_fo4_refr_xloc():
     record = _record(
         0x01001000,
         _subrecord("XLOC", b"\0" * 16),
@@ -770,7 +738,7 @@ def test_accepts_exact_fo4_refr_xloc():
     assert report.hazards == []
 
 
-def test_flags_source_layout_efsh_contract():
+def test_efsh_contract():
     record = _record(
         0x07002000,
         _subrecord("DATA", b"\0" * 400),
@@ -797,8 +765,6 @@ def test_flags_source_layout_efsh_contract():
     }
     assert all(hazard.severity == "error" for hazard in report.hazards)
 
-
-def test_accepts_current_and_proven_legacy_fo4_efsh_variants():
     current = _record(
         0x01002000,
         _subrecord("ICON", b"\0"),
@@ -827,8 +793,6 @@ def test_accepts_current_and_proven_legacy_fo4_efsh_variants():
 
     assert report.hazards == []
 
-
-def test_flags_invalid_efsh_icon_zstring():
     record = _record(
         0x07002002,
         _subrecord("ICON", b"Effects\\Fill.dds"),
@@ -850,7 +814,7 @@ def test_flags_invalid_efsh_icon_zstring():
     ]
 
 
-def test_flags_source_layout_wthr_fields_and_dalc_rows():
+def test_wthr_field_and_row_shape_rules():
     record = _record(
         0x07003000,
         _subrecord("DATA", b"\0" * 15),
@@ -881,8 +845,6 @@ def test_flags_source_layout_wthr_fields_and_dalc_rows():
         sum(h.rule_id == "fo4-loader-wthr-dalc-row-size" for h in report.hazards) == 8
     )
 
-
-def test_flags_wthr_cloud_table_mismatch_and_bad_dalc_count():
     record = _record(
         0x07003001,
         *_valid_fo4_wthr_subrecords(
@@ -905,8 +867,6 @@ def test_flags_wthr_cloud_table_mismatch_and_bad_dalc_count():
         "fo4-loader-wthr-dalc-row-count",
     }
 
-
-def test_accepts_valid_fo4_wthr_target_shape():
     record = _record(
         0x01003000,
         *_valid_fo4_wthr_subrecords(),
@@ -922,7 +882,7 @@ def test_accepts_valid_fo4_wthr_target_shape():
     assert report.hazards == []
 
 
-def test_accepts_missing_wthr_wgdr():
+def test_wthr_wgdr_and_nam0_shape():
     record = _record(
         0x07003006,
         *_valid_fo4_wthr_subrecords(omit=frozenset({"WGDR"})),
@@ -937,8 +897,6 @@ def test_accepts_missing_wthr_wgdr():
 
     assert report.hazards == []
 
-
-def test_flags_wrong_sized_wthr_wgdr():
     record = _record(
         0x07003007,
         *_valid_fo4_wthr_subrecords(size_overrides={"WGDR": 31}),
@@ -956,8 +914,6 @@ def test_flags_wrong_sized_wthr_wgdr():
     ]
     assert report.hazards[0].path == "WTHR.WGDR[0]"
 
-
-def test_accepts_32_byte_wthr_wgdr():
     record = _record(
         0x07003008,
         *_valid_fo4_wthr_subrecords(size_overrides={"WGDR": 32}),
@@ -972,8 +928,6 @@ def test_accepts_32_byte_wthr_wgdr():
 
     assert report.hazards == []
 
-
-def test_flags_missing_and_wrong_sized_wthr_nam0():
     missing = _record(
         0x07003002,
         *_valid_fo4_wthr_subrecords(omit=frozenset({"NAM0"})),
@@ -998,7 +952,7 @@ def test_flags_missing_and_wrong_sized_wthr_nam0():
     assert [hazard.form_id for hazard in report.hazards] == [0x07003002, 0x07003003]
 
 
-def test_flags_missing_wthr_required_companions():
+def test_wthr_required_companion_subrecords():
     missing = frozenset(
         {
             "LNAM",
@@ -1030,8 +984,6 @@ def test_flags_missing_wthr_required_companions():
         "fo4-loader-wthr-missing-target-subrecord"
     }
 
-
-def test_flags_wrong_sized_wthr_required_companions():
     record = _record(
         0x07003005,
         *_valid_fo4_wthr_subrecords(
@@ -1075,7 +1027,7 @@ def test_flags_wrong_sized_wthr_required_companions():
     }
 
 
-def test_flags_legacy_navi_nver11_and_source_nvmi_shape():
+def test_navi_navm_pathing_shape_and_crc_dedup():
     malformed_nvmi = bytearray(_valid_fo4_nvmi())
     malformed_nvmi[24:28] = (0xFFFFFFFF).to_bytes(4, "little")
     record = _record(
@@ -1098,8 +1050,6 @@ def test_flags_legacy_navi_nver11_and_source_nvmi_shape():
     ]
     assert "edge links rows exceed payload" in report.hazards[2].message
 
-
-def test_flags_noncanonical_fo4_navi_record_formid():
     record = _record(
         0x00014B92,
         _subrecord("NVER", (15).to_bytes(4, "little")),
@@ -1119,8 +1069,6 @@ def test_flags_noncanonical_fo4_navi_record_formid():
     assert "00014B92" in report.hazards[0].message
     assert "00000FF1" in report.hazards[0].message
 
-
-def test_flags_zero_fo4_navi_pathing_cell_crc_once_for_multiple_rows():
     zero_crc_nvmi = bytearray(_valid_fo4_nvmi())
     zero_crc_nvmi[-12:-8] = b"\0" * 4
     record = _record(
@@ -1144,8 +1092,6 @@ def test_flags_zero_fo4_navi_pathing_cell_crc_once_for_multiple_rows():
     assert "00000000" in report.hazards[0].message
     assert "A5E9A03C" in report.hazards[0].message
 
-
-def test_flags_zero_fo4_navm_pathing_cell_crc_once_for_multiple_records():
     zero_crc_nvnm = (15).to_bytes(4, "little") + b"\0" * 4
     records = [
         _record(0x00000800, _subrecord("NVNM", zero_crc_nvnm), signature="NAVM"),
@@ -1165,8 +1111,6 @@ def test_flags_zero_fo4_navm_pathing_cell_crc_once_for_multiple_records():
     assert "00000000" in report.hazards[0].message
     assert "A5E9A03C" in report.hazards[0].message
 
-
-def test_accepts_fo4_navm_pathing_cell_crc():
     nvnm = (15).to_bytes(4, "little") + _FO4_PATHING_CELL_CRC_HASH.to_bytes(
         4, "little"
     )
@@ -1180,8 +1124,6 @@ def test_accepts_fo4_navm_pathing_cell_crc():
 
     assert report.hazards == []
 
-
-def test_accepts_fo4_navi_v15_nvmi_shapes_with_and_without_island_data():
     record = _record(
         0x00000FF1,
         _subrecord("NVER", (15).to_bytes(4, "little")),
@@ -1199,7 +1141,7 @@ def test_accepts_fo4_navi_v15_nvmi_shapes_with_and_without_island_data():
     assert report.hazards == []
 
 
-def test_flags_disallowed_and_misplaced_distant_lod_mnam():
+def test_disallowed_and_illegal_distant_lod_mnam():
     acti = _record(
         0x07005000,
         _subrecord("MNAM", b"\0" * 1040),
@@ -1233,8 +1175,6 @@ def test_flags_disallowed_and_misplaced_distant_lod_mnam():
         "ACHR.MNAM[0]",
     ]
 
-
-def test_accepts_stat_distant_lod_mnam():
     record = _record(
         0x01005000,
         _subrecord("MNAM", b"\0" * 1040),

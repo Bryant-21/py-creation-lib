@@ -2505,13 +2505,6 @@ fn require_class_count(
     Ok(())
 }
 
-fn class_count(file: &HkxFile, class_name: &str) -> usize {
-    file.objects()
-        .iter()
-        .filter(|object| object.class_name == class_name)
-        .count()
-}
-
 fn unique_object<'a>(
     file: &'a HkxFile,
     class_name: &str,

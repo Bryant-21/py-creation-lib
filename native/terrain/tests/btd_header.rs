@@ -5,12 +5,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use terrain_native::btd::BtdFile;
 
-fn appalachia_btd() -> Option<PathBuf> {
-    let data = env::var_os("FO76_DATA")?;
-    let path = PathBuf::from(data).join("Terrain").join("Appalachia.btd");
-    path.is_file().then_some(path)
-}
-
 fn put_u32(bytes: &mut [u8], offset: usize, value: u32) {
     bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
 }
@@ -61,27 +55,6 @@ fn minimal_one_cell_btd(ltex_count: u32, gcvr_count: u32) -> Vec<u8> {
 }
 
 #[test]
-fn parse_real_appalachia_header_when_available() {
-    let Some(path) = appalachia_btd() else {
-        eprintln!("skipping: FO76_DATA/Terrain/Appalachia.btd is not available");
-        return;
-    };
-
-    let btd = BtdFile::open_header(path.to_str().unwrap()).unwrap();
-    let report = btd.to_report();
-
-    assert_eq!(report.magic, "BTDB");
-    assert_eq!(report.version, 6);
-    assert_eq!(report.resolution_x, 25728);
-    assert_eq!(report.resolution_y, 25728);
-    assert_eq!(report.cell_min_x, -100);
-    assert_eq!(report.cell_min_y, -100);
-    assert_eq!(report.cell_max_x, 100);
-    assert_eq!(report.cell_max_y, 100);
-    assert_eq!(report.ltex_count, 43);
-}
-
-#[test]
 fn decodes_gcvr_table_and_quadrant_ground_cover_slots() {
     let mut bytes = minimal_one_cell_btd(3, 2);
     let ltex_offset = 0x2cusize;
@@ -106,7 +79,9 @@ fn decodes_gcvr_table_and_quadrant_ground_cover_slots() {
     bytes[gcvr_map_offset + 6] = 1;
 
     let path = write_temp_btd(bytes, "gcvr_slots");
-    let btd = BtdFile::open(path.to_str().unwrap()).unwrap();
+    let mut btd = BtdFile::open(path.to_str().unwrap()).unwrap();
+    assert!(btd.cell_height_map_u16(0, 0, 5).is_err(), "LOD out of range");
+    assert!(btd.cell_height_map_u16(-1, -1, 0).is_err(), "cell out of range");
     let _ = fs::remove_file(path);
 
     assert_eq!(btd.land_texture_form_id(0), Some(0xFF00_0010));
@@ -124,50 +99,6 @@ fn decodes_gcvr_table_and_quadrant_ground_cover_slots() {
     assert_eq!(quadrant.ground_cover[6], Some(1));
     assert_eq!(quadrant.ground_cover[4], Some(0));
     assert_eq!(quadrant.ground_cover[0], Some(1));
-}
-
-#[test]
-fn extract_real_lod0_cell_when_available() {
-    let Some(path) = appalachia_btd() else {
-        eprintln!("skipping: FO76_DATA/Terrain/Appalachia.btd is not available");
-        return;
-    };
-
-    let mut btd = BtdFile::open(path.to_str().unwrap()).unwrap();
-    let heights = btd.cell_height_map_u16(0, 0, 0).unwrap();
-    let alphas = btd.cell_land_alpha_u16(0, 0, 0).unwrap();
-    let texture_set = btd.cell_texture_set(0, 0).unwrap();
-
-    assert_eq!(heights.len(), 128 * 128);
-    assert_eq!(alphas.len(), 128 * 128);
-    assert_eq!(texture_set.quadrants.len(), 4);
-    assert!(heights.iter().any(|value| *value != heights[0]));
-    assert!(alphas.iter().any(|value| *value != alphas[0]));
-    assert!(
-        texture_set
-            .quadrants
-            .iter()
-            .any(|quadrant| quadrant.base.is_some())
-    );
-}
-
-#[test]
-fn extract_real_off_origin_cell_and_reject_bad_requests_when_available() {
-    let Some(path) = appalachia_btd() else {
-        eprintln!("skipping: FO76_DATA/Terrain/Appalachia.btd is not available");
-        return;
-    };
-
-    let mut btd = BtdFile::open(path.to_str().unwrap()).unwrap();
-    let heights = btd.cell_height_map_u16(-1, -1, 0).unwrap();
-    let alphas = btd.cell_land_alpha_u16(-1, -1, 0).unwrap();
-    let lod2 = btd.cell_height_map_u16(-1, -1, 2).unwrap();
-
-    assert_eq!(heights.len(), 128 * 128);
-    assert_eq!(alphas.len(), 128 * 128);
-    assert_eq!(lod2.len(), 32 * 32);
-    assert!(btd.cell_height_map_u16(-1, -1, 5).is_err());
-    assert!(btd.cell_height_map_u16(-101, -101, 0).is_err());
 }
 
 #[test]

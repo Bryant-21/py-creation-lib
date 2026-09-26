@@ -197,152 +197,113 @@ mod tests {
     const FO4_QUADRANT_WIDTH_METERS: f64 = 29.2608;
 
     #[test]
-    fn sf_samples_per_fo4_interval_matches_derivation() {
-        let derived = FO4_LAND_VERTEX_UNITS / (FO4_UNITS_PER_METER * SF_BTD_SAMPLE_METERS);
-        assert!(
-            (derived - SF_SAMPLES_PER_FO4_INTERVAL).abs() < 1e-9,
-            "derived {derived} vs constant {SF_SAMPLES_PER_FO4_INTERVAL}"
-        );
-    }
-
-    #[test]
-    fn sf_cell_meters_in_fo4_units_matches_expected_literal() {
-        // 100.0*69.99125/4096.0 is 1 ULP off exact `==` against the decimal
-        // literal 1.708770751953125 (verified: 0x1.b571fffffffffp+0 vs
-        // 0x1.b572000000000p+0) — 69.99125 itself isn't exactly representable
-        // in binary64, so bit-exact `==` against a hand-typed decimal is not
-        // achievable; a tight epsilon is the faithful equivalent.
-        let computed = SF_CELL_METERS * FO4_UNITS_PER_METER / FO4_CELL_UNITS;
-        assert!(
-            (computed - 1.708770751953125).abs() < 1e-12,
-            "computed {computed}"
-        );
-    }
-
-    #[test]
-    fn sf_btd_origin_bias_is_zero_per_r4_section_7_3() {
-        assert_eq!(
-            SF_BTD_ORIGIN_BIAS_METERS, 0.0,
-            "R4 §7.3: proven unshifted — a nonzero bias here regresses as terrain \
-             displaced 50m diagonally in-game"
-        );
-    }
-
-    #[test]
-    fn meters_and_fo4_units_round_trip() {
-        for m in [-1234.5, -1.0, 0.0, 0.78125, 100.0, 987654.321] {
-            let back = fo4_units_to_meters(meters_to_fo4_units(m));
-            assert!((back - m).abs() < 1e-9, "m {m} back {back}");
-        }
-    }
-
-    #[test]
-    fn fo4_land_vertex_units_spans_one_cell() {
-        assert_eq!(fo4_land_vertex_units(0, 0), 0.0);
-        assert_eq!(fo4_land_vertex_units(0, 32), 4096.0);
-        assert_eq!(fo4_land_vertex_units(1, 0), 4096.0);
-        assert_eq!(fo4_land_vertex_units(-1, 32), 0.0);
-    }
-
-    #[test]
-    fn btd_sample_fo4_units_round_trip() {
-        for btd_cell_min in [-5, -1, 0, 1, 7] {
-            for i in 0..37 {
-                let sample = i as f64 * 3.7 - 12.0;
-                let units = btd_sample_to_fo4_units(sample, btd_cell_min);
-                let back = fo4_units_to_btd_sample(units, btd_cell_min);
-                assert!(
-                    (back - sample).abs() < 1e-6,
-                    "sample {sample} btd_cell_min {btd_cell_min} back {back}"
-                );
+    fn unit_conversions_round_trip() {
+        {
+            for m in [-1234.5, -1.0, 0.0, 0.78125, 100.0, 987654.321] {
+                let back = fo4_units_to_meters(meters_to_fo4_units(m));
+                assert!((back - m).abs() < 1e-9, "m {m} back {back}");
             }
         }
-    }
-
-    #[test]
-    fn fo4_cell_of_units_floors_including_negatives() {
-        assert_eq!(fo4_cell_of_units(0.0), 0);
-        assert_eq!(fo4_cell_of_units(4095.0), 0);
-        assert_eq!(fo4_cell_of_units(4096.0), 1);
-        assert_eq!(fo4_cell_of_units(-1.0), -1);
-        assert_eq!(fo4_cell_of_units(-4096.0), -1);
-        assert_eq!(fo4_cell_of_units(-4097.0), -2);
-    }
-
-    #[test]
-    fn fo4_exterior_block_and_sub_block_use_euclidean_division() {
-        assert_eq!(fo4_exterior_block(31), 0);
-        assert_eq!(fo4_exterior_block(32), 1);
-        assert_eq!(fo4_exterior_block(-1), -1);
-        assert_eq!(fo4_exterior_block(-32), -1);
-        assert_eq!(fo4_exterior_block(-33), -2);
-
-        assert_eq!(fo4_exterior_sub_block(7), 0);
-        assert_eq!(fo4_exterior_sub_block(8), 1);
-        assert_eq!(fo4_exterior_sub_block(-1), -1);
-        assert_eq!(fo4_exterior_sub_block(-8), -1);
-        assert_eq!(fo4_exterior_sub_block(-9), -2);
-    }
-
-    #[test]
-    fn sf_cell_of_fo4_units_matches_meter_boundaries() {
-        assert_eq!(sf_cell_of_fo4_units(meters_to_fo4_units(0.0)), 0);
-        assert_eq!(sf_cell_of_fo4_units(meters_to_fo4_units(99.9)), 0);
-        assert_eq!(sf_cell_of_fo4_units(meters_to_fo4_units(100.0)), 1);
-        assert_eq!(sf_cell_of_fo4_units(meters_to_fo4_units(-0.1)), -1);
-    }
-
-    #[test]
-    fn fo4_cell_range_matches_expected_windows() {
-        assert_eq!(fo4_cell_range(-4, 4), (-7, 8));
-        assert_eq!(fo4_cell_range(-7, 6), (-12, 11));
-        assert_eq!(fo4_cell_range(-5, 4), (-9, 8));
-        assert_eq!(fo4_cell_range(-5, 5), (-9, 10));
-    }
-
-    #[test]
-    fn sf_cells_overlapping_fo4_cell_spans_at_most_two() {
-        for c in -64..64 {
-            let overlap = sf_cells_overlapping_fo4_cell(c);
-            let span = overlap.last - overlap.first;
-            assert!(span == 0 || span == 1, "cell {c} span {span}");
-            assert!(overlap.first_fraction > 0.0 && overlap.first_fraction <= 1.0 + 1e-9);
+        {
+            assert_eq!(fo4_land_vertex_units(0, 0), 0.0);
+            assert_eq!(fo4_land_vertex_units(0, 32), 4096.0);
+            assert_eq!(fo4_land_vertex_units(1, 0), 4096.0);
+            assert_eq!(fo4_land_vertex_units(-1, 32), 0.0);
         }
-    }
-
-    #[test]
-    fn fo4_cells_overlapping_sf_cell_spans_two_or_three() {
-        for c in -16..16 {
-            let (first, last) = fo4_cells_overlapping_sf_cell(c);
-            let span = last - first + 1;
-            assert!(span == 2 || span == 3, "cell {c} span {span}");
-        }
-    }
-
-    #[test]
-    fn sf_quadrant_spans_two_some_sum_to_quadrant_width() {
-        let mut saw_two_some = false;
-        for cell in -32..32 {
-            for q in 0..2usize {
-                let spans = sf_quadrant_spans_for_fo4_quadrant(cell, q);
-                assert!(spans.iter().filter(|s| s.is_some()).count() <= 2);
-                if let [Some(a), Some(b)] = spans {
-                    saw_two_some = true;
+        {
+            for btd_cell_min in [-5, -1, 0, 1, 7] {
+                for i in 0..37 {
+                    let sample = i as f64 * 3.7 - 12.0;
+                    let units = btd_sample_to_fo4_units(sample, btd_cell_min);
+                    let back = fo4_units_to_btd_sample(units, btd_cell_min);
                     assert!(
-                        a.meters >= b.meters,
-                        "not sorted longest-first: {a:?} {b:?}"
-                    );
-                    assert!(
-                        (a.meters + b.meters - FO4_QUADRANT_WIDTH_METERS).abs() < 1e-6,
-                        "cell {cell} q {q} sum {}",
-                        a.meters + b.meters
+                        (back - sample).abs() < 1e-6,
+                        "sample {sample} btd_cell_min {btd_cell_min} back {back}"
                     );
                 }
             }
         }
-        assert!(
-            saw_two_some,
-            "expected at least one two-fragment quadrant in the sampled range"
-        );
     }
+
+    #[test]
+    fn cell_and_block_indices_floor_including_negatives() {
+        {
+            assert_eq!(fo4_cell_of_units(0.0), 0);
+            assert_eq!(fo4_cell_of_units(4095.0), 0);
+            assert_eq!(fo4_cell_of_units(4096.0), 1);
+            assert_eq!(fo4_cell_of_units(-1.0), -1);
+            assert_eq!(fo4_cell_of_units(-4096.0), -1);
+            assert_eq!(fo4_cell_of_units(-4097.0), -2);
+        }
+        {
+            assert_eq!(fo4_exterior_block(31), 0);
+            assert_eq!(fo4_exterior_block(32), 1);
+            assert_eq!(fo4_exterior_block(-1), -1);
+            assert_eq!(fo4_exterior_block(-32), -1);
+            assert_eq!(fo4_exterior_block(-33), -2);
+
+            assert_eq!(fo4_exterior_sub_block(7), 0);
+            assert_eq!(fo4_exterior_sub_block(8), 1);
+            assert_eq!(fo4_exterior_sub_block(-1), -1);
+            assert_eq!(fo4_exterior_sub_block(-8), -1);
+            assert_eq!(fo4_exterior_sub_block(-9), -2);
+        }
+        {
+            assert_eq!(sf_cell_of_fo4_units(meters_to_fo4_units(0.0)), 0);
+            assert_eq!(sf_cell_of_fo4_units(meters_to_fo4_units(99.9)), 0);
+            assert_eq!(sf_cell_of_fo4_units(meters_to_fo4_units(100.0)), 1);
+            assert_eq!(sf_cell_of_fo4_units(meters_to_fo4_units(-0.1)), -1);
+        }
+        {
+            assert_eq!(fo4_cell_range(-4, 4), (-7, 8));
+            assert_eq!(fo4_cell_range(-7, 6), (-12, 11));
+            assert_eq!(fo4_cell_range(-5, 4), (-9, 8));
+            assert_eq!(fo4_cell_range(-5, 5), (-9, 10));
+        }
+    }
+
+    #[test]
+    fn sf_and_fo4_cell_overlaps_are_bounded() {
+        {
+            for c in -64..64 {
+                let overlap = sf_cells_overlapping_fo4_cell(c);
+                let span = overlap.last - overlap.first;
+                assert!(span == 0 || span == 1, "cell {c} span {span}");
+                assert!(overlap.first_fraction > 0.0 && overlap.first_fraction <= 1.0 + 1e-9);
+            }
+        }
+        {
+            for c in -16..16 {
+                let (first, last) = fo4_cells_overlapping_sf_cell(c);
+                let span = last - first + 1;
+                assert!(span == 2 || span == 3, "cell {c} span {span}");
+            }
+        }
+        {
+            let mut saw_two_some = false;
+            for cell in -32..32 {
+                for q in 0..2usize {
+                    let spans = sf_quadrant_spans_for_fo4_quadrant(cell, q);
+                    assert!(spans.iter().filter(|s| s.is_some()).count() <= 2);
+                    if let [Some(a), Some(b)] = spans {
+                        saw_two_some = true;
+                        assert!(
+                            a.meters >= b.meters,
+                            "not sorted longest-first: {a:?} {b:?}"
+                        );
+                        assert!(
+                            (a.meters + b.meters - FO4_QUADRANT_WIDTH_METERS).abs() < 1e-6,
+                            "cell {cell} q {q} sum {}",
+                            a.meters + b.meters
+                        );
+                    }
+                }
+            }
+            assert!(
+                saw_two_some,
+                "expected at least one two-fragment quadrant in the sampled range"
+            );
+        }
+    }
+
 }

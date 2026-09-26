@@ -99,47 +99,45 @@ mod tests {
     }
 
     #[test]
-    fn diff_identical_poses_is_zero() {
-        let mut a = Pose::from_reference(single_bone_skel());
-        let mut b = Pose::from_reference(single_bone_skel());
-        let diff = pose_diff(&mut a, &mut b);
-        assert!(diff.max_position_delta < 1e-6);
-        assert!(diff.max_rotation_angle < 1e-6);
-    }
-
-    #[test]
-    fn diff_translated_pose() {
-        let skel = single_bone_skel();
-        let mut a = Pose::from_reference(skel.clone());
-        let mut b = Pose::from_local(
-            skel,
-            vec![QsTransform {
-                translation: [1.0, 0.0, 0.0],
-                rotation: [0.0, 0.0, 0.0, 1.0],
-                scale: [1.0, 1.0, 1.0],
-            }],
-        );
-        let diff = pose_diff(&mut a, &mut b);
-        assert!((diff.max_position_delta - 1.0).abs() < 1e-5);
-        assert!(diff.max_rotation_angle < 1e-5);
-    }
-
-    #[test]
-    fn diff_rotated_pose() {
-        let skel = single_bone_skel();
-        let mut a = Pose::from_reference(skel.clone());
-        // 90° rotation around Z.
-        let half = std::f32::consts::FRAC_PI_4;
-        let mut b = Pose::from_local(
-            skel,
-            vec![QsTransform {
-                translation: [0.0, 0.0, 0.0],
-                rotation: [0.0, 0.0, half.sin(), half.cos()],
-                scale: [1.0, 1.0, 1.0],
-            }],
-        );
-        let diff = pose_diff(&mut a, &mut b);
-        // 90° rotation angle.
-        assert!((diff.max_rotation_angle - std::f32::consts::FRAC_PI_2).abs() < 0.01);
+    fn pose_diff_identity_translation_rotation() {
+        {
+            let mut a = Pose::from_reference(single_bone_skel());
+            let mut b = Pose::from_reference(single_bone_skel());
+            let diff = pose_diff(&mut a, &mut b);
+            assert!(diff.max_position_delta < 1e-6);
+            assert!(diff.max_rotation_angle < 1e-6);
+        }
+        {
+            let skel = single_bone_skel();
+            let mut a = Pose::from_reference(skel.clone());
+            let mut b = Pose::from_local(
+                skel,
+                vec![QsTransform {
+                    translation: [1.0, 0.0, 0.0],
+                    rotation: [0.0, 0.0, 0.0, 1.0],
+                    scale: [1.0, 1.0, 1.0],
+                }],
+            );
+            let diff = pose_diff(&mut a, &mut b);
+            assert!((diff.max_position_delta - 1.0).abs() < 1e-5);
+            assert!(diff.max_rotation_angle < 1e-5);
+        }
+        {
+            let skel = single_bone_skel();
+            let mut a = Pose::from_reference(skel.clone());
+            // 90° rotation around Z.
+            let half = std::f32::consts::FRAC_PI_4;
+            let mut b = Pose::from_local(
+                skel,
+                vec![QsTransform {
+                    translation: [0.0, 0.0, 0.0],
+                    rotation: [0.0, 0.0, half.sin(), half.cos()],
+                    scale: [1.0, 1.0, 1.0],
+                }],
+            );
+            let diff = pose_diff(&mut a, &mut b);
+            // 90° rotation angle.
+            assert!((diff.max_rotation_angle - std::f32::consts::FRAC_PI_2).abs() < 0.01);
+        }
     }
 }

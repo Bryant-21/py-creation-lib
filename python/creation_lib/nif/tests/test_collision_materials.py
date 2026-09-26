@@ -8,22 +8,19 @@ from creation_lib.nif.operations.collision_materials import (
 )
 
 
-def test_collision_material_resolves_fo4_names_and_labels():
+def test_collision_material_names_options_and_maxscript_defs():
+    # Phase 1: name/label resolution round-trip.
     assert resolve_collision_material("MaterialWeaponPistol") == 4146539321
     assert resolve_collision_material("WeaponPistol") == 4146539321
     assert resolve_collision_material("Generic") == 186875565
     assert default_collision_material() == 186875565
 
-
-def test_collision_material_options_include_weapon_pistol():
     options = get_collision_material_options()
     assert {"name": "MaterialWeaponPistol", "label": "WeaponPistol", "value": 4146539321} in options
     assert format_collision_material(4146539321) == "WeaponPistol (4146539321)"
     assert collision_material_type_name(4146539321) == "MaterialWeaponPistol"
 
-
-def test_collision_material_options_pin_null_and_generic_then_sort_by_label():
-    options = get_collision_material_options()
+    # Phase 2: options list pins Null/Generic first, then sorts the rest by label.
     assert [option["label"] for option in options[:2]] == ["NullMaterial", "Generic"]
     assert int(options[1]["value"]) == default_collision_material()
 
@@ -33,8 +30,7 @@ def test_collision_material_options_pin_null_and_generic_then_sort_by_label():
         key=lambda option: (str(option["label"]).casefold(), str(option["name"]).casefold()),
     )
 
-
-def test_collision_material_maxscript_defs_use_shared_order():
+    # Phase 3: MaxScript defs use the same shared order.
     script = build_maxscript_collision_material_defs()
     assert "global MB21_NIF_COLLISION_MATERIAL_LABELS" in script
     assert 'MB21_NIF_COLLISION_MATERIAL_LABELS = #("NullMaterial", "Generic", "ActorArmored"' in script

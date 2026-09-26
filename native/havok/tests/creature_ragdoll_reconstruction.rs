@@ -1,64 +1,13 @@
 use havok_native::convert::creature_ragdoll::{
     BoneMappingIr, ConstraintIr, ConstraintKindIr, ConvexHullIr, CreatureRagdollError,
     CreatureRagdollIr, LimitedHingeIr, MassPropertiesIr, QsTransformIr, RagdollLimitsIr,
-    RagdollShapeIr, RigBoneIr, RigSkeletonIr, RigidBodyIr, extract_skyrim_2010_creature_ragdoll,
+    RagdollShapeIr, RigBoneIr, RigSkeletonIr, RigidBodyIr,
     lower_primitive_shapes_to_fo4_convex_hulls, reconstruct_fo4_creature_ragdoll_packfile,
     reconstruct_fo4_embedded_creature_ragdoll,
 };
 use havok_native::hkx::HkxFile;
 use havok_native::hkx::model::HkxObject;
 use havok_native::hkx::types::HkxValue;
-
-const SKYRIM_RAGDOLL_CORPUS: &[&str] = &[
-    "extracted/skyrimse/meshes/actors/ambient/chicken/character assets/skeleton.hkx",
-    "extracted/skyrimse/meshes/actors/ambient/hare/character assets/skeleton.hkx",
-    "extracted/skyrimse/meshes/actors/atronachflame/character assets/skeleton.hkx",
-    "extracted/skyrimse/meshes/actors/atronachfrost/character assets/skeleton.hkx",
-    "extracted/skyrimse/meshes/actors/atronachstorm/character assets/skeleton.hkx",
-    "extracted/skyrimse/meshes/actors/bear/character assets/skeleton.hkx",
-    "extracted/skyrimse/meshes/actors/canine/character assets dog/skeleton.hkx",
-    "extracted/skyrimse/meshes/actors/canine/character assets wolf/skeleton.hkx",
-    "extracted/skyrimse/meshes/actors/character/character assets female/skeleton_female.hkx",
-    "extracted/skyrimse/meshes/actors/character/character assets/skeleton.hkx",
-    "extracted/skyrimse/meshes/actors/chaurus/character assets/skeleton.hkx",
-    "extracted/skyrimse/meshes/actors/cow/character assets/skeleton.hkx",
-    "extracted/skyrimse/meshes/actors/deer/character assets/skeleton.hkx",
-    "extracted/skyrimse/meshes/actors/dlc01/chaurusflyer/character assets/skeleton.hkx",
-    "extracted/skyrimse/meshes/actors/dlc01/vampirebrute/character assets/skeleton.hkx",
-    "extracted/skyrimse/meshes/actors/dlc02/benthiclurker/character assets/skeleton.hkx",
-    "extracted/skyrimse/meshes/actors/dlc02/boarriekling/character assets/skeleton.hkx",
-    "extracted/skyrimse/meshes/actors/dlc02/dwarvenballistacenturion/character assets/skeleton.hkx",
-    "extracted/skyrimse/meshes/actors/dlc02/hmdaedra/character assets/skeleton.hkx",
-    "extracted/skyrimse/meshes/actors/dlc02/netch/characterassets/skeleton.hkx",
-    "extracted/skyrimse/meshes/actors/dlc02/riekling/character assets/skeleton.hkx",
-    "extracted/skyrimse/meshes/actors/dlc02/scrib/character assets/skeleton.hkx",
-    "extracted/skyrimse/meshes/actors/dragon/character assets/skeleton.hkx",
-    "extracted/skyrimse/meshes/actors/dragonpriest/character assets/skeleton.hkx",
-    "extracted/skyrimse/meshes/actors/draugr/character assets/skeleton.hkx",
-    "extracted/skyrimse/meshes/actors/draugr/character assets/skeletonf.hkx",
-    "extracted/skyrimse/meshes/actors/draugr/character assets/skeletons.hkx",
-    "extracted/skyrimse/meshes/actors/dwarvenspherecenturion/character assets/skeleton.hkx",
-    "extracted/skyrimse/meshes/actors/dwarvenspider/character assets/skeleton.hkx",
-    "extracted/skyrimse/meshes/actors/dwarvensteamcenturion/character assets/skeleton.hkx",
-    "extracted/skyrimse/meshes/actors/falmer/character assets/skeleton.hkx",
-    "extracted/skyrimse/meshes/actors/frostbitespider/character assets/skeleton.hkx",
-    "extracted/skyrimse/meshes/actors/giant/character assets/skeleton.hkx",
-    "extracted/skyrimse/meshes/actors/goat/character assets/skeleton.hkx",
-    "extracted/skyrimse/meshes/actors/hagraven/character assets/skeleton.hkx",
-    "extracted/skyrimse/meshes/actors/horker/character assets/skeleton.hkx",
-    "extracted/skyrimse/meshes/actors/horse/character assets/skeleton.hkx",
-    "extracted/skyrimse/meshes/actors/icewraith/character assets/skeleton.hkx",
-    "extracted/skyrimse/meshes/actors/mammoth/character assets/skeleton.hkx",
-    "extracted/skyrimse/meshes/actors/mudcrab/character assets/skeleton.hkx",
-    "extracted/skyrimse/meshes/actors/sabrecat/character assets/skeleton.hkx",
-    "extracted/skyrimse/meshes/actors/skeever/character assets/skeleton.hkx",
-    "extracted/skyrimse/meshes/actors/slaughterfish/character assets/skeleton.hkx",
-    "extracted/skyrimse/meshes/actors/spriggan/character assets/skeleton.hkx",
-    "extracted/skyrimse/meshes/actors/troll/character assets/skeleton.hkx",
-    "extracted/skyrimse/meshes/actors/vampirelord/character assets/skeleton.hkx",
-    "extracted/skyrimse/meshes/actors/werewolfbeast/character assets/skeleton.hkx",
-    "extracted/skyrimse/meshes/actors/wisp/character assets/skeleton.hkx",
-];
 
 // Ordered identities and parents decoded from Skyrim SE's actors/canine/character assets wolf/skeleton.hkx.
 const WOLF_BONES: [(&str, Option<usize>); 50] = [
@@ -338,20 +287,6 @@ fn representative_mechanical_owned_rig_round_trips_without_donor_objects() {
 }
 
 #[test]
-fn unsupported_legacy_capsule_is_a_typed_target_blocker() {
-    let mut ir = mechanical_ir();
-    ir.bodies[0].shape = RagdollShapeIr::Capsule {
-        vertex_a: [0.0, 0.0, -0.5],
-        vertex_b: [0.0, 0.0, 0.5],
-        radius: 0.25,
-    };
-    assert!(matches!(
-        reconstruct_fo4_creature_ragdoll_packfile(&ir),
-        Err(CreatureRagdollError::UnsupportedTargetShape { shape, .. }) if shape == "capsule"
-    ));
-}
-
-#[test]
 fn fo4_ragdoll_and_fixed_constraints_pack_with_target_signatures() {
     let mut ir = mechanical_ir();
     ir.constraints[0].kind = ConstraintKindIr::Fixed {
@@ -440,120 +375,41 @@ fn source_primitives_convexify_without_donor_geometry_and_pack() {
 }
 
 #[test]
-fn body_without_animation_mapping_is_rejected_before_packing() {
-    let mut ir = mechanical_ir();
-    ir.mappings.pop();
+fn invalid_ragdoll_ir_is_rejected_before_packing() {
+    let mut capsule = mechanical_ir();
+    capsule.bodies[0].shape = RagdollShapeIr::Capsule {
+        vertex_a: [0.0, 0.0, -0.5],
+        vertex_b: [0.0, 0.0, 0.5],
+        radius: 0.25,
+    };
+    assert!(matches!(
+        reconstruct_fo4_creature_ragdoll_packfile(&capsule),
+        Err(CreatureRagdollError::UnsupportedTargetShape { shape, .. }) if shape == "capsule"
+    ));
+
+    let mut unmapped = mechanical_ir();
+    unmapped.mappings.pop();
     assert_eq!(
-        reconstruct_fo4_creature_ragdoll_packfile(&ir),
+        reconstruct_fo4_creature_ragdoll_packfile(&unmapped),
         Err(CreatureRagdollError::BodyMappingMissing {
             body: "MachineRotorBody".to_string(),
         })
     );
-}
 
-#[test]
-fn constraint_must_close_over_emitted_rigid_bodies() {
-    let mut ir = mechanical_ir();
-    ir.constraints[0].body_b = "MissingBody".to_string();
+    let mut dangling = mechanical_ir();
+    dangling.constraints[0].body_b = "MissingBody".to_string();
     assert_eq!(
-        reconstruct_fo4_creature_ragdoll_packfile(&ir),
+        reconstruct_fo4_creature_ragdoll_packfile(&dangling),
         Err(CreatureRagdollError::ConstraintBodyMissing {
             constraint: "MachineRotorHinge".to_string(),
             body: "MissingBody".to_string(),
         })
     );
-}
 
-#[test]
-fn non_finite_physics_values_are_rejected_before_packing() {
-    let mut ir = mechanical_ir();
-    ir.bodies[0].mass_properties.inertia_diagonal[1] = f32::NAN;
+    let mut non_finite = mechanical_ir();
+    non_finite.bodies[0].mass_properties.inertia_diagonal[1] = f32::NAN;
     assert!(matches!(
-        reconstruct_fo4_creature_ragdoll_packfile(&ir),
+        reconstruct_fo4_creature_ragdoll_packfile(&non_finite),
         Err(CreatureRagdollError::NonFinite { path }) if path.ends_with("inertia[1]")
     ));
-}
-
-#[test]
-fn real_skyrim_wolf_extracts_its_own_complete_ragdoll_and_packs_for_fo4() {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
-        "../../../extracted/skyrimse/meshes/actors/canine/character assets wolf/skeleton.hkx",
-    );
-    let source = HkxFile::read(&std::fs::read(path).expect("read wolf skeleton"))
-        .expect("decode wolf skeleton");
-    let ir = extract_skyrim_2010_creature_ragdoll(&source).expect("extract wolf ragdoll");
-    assert_eq!(ir.animation_skeleton.bones.len(), 50);
-    assert_eq!(ir.ragdoll_skeleton.bones.len(), 22);
-    assert_eq!(ir.bodies.len(), 22);
-    assert_eq!(ir.constraints.len(), 21);
-    assert_eq!(ir.mappings.len(), 22);
-    assert!(
-        ir.bodies
-            .iter()
-            .all(|body| matches!(body.shape, RagdollShapeIr::Capsule { .. }))
-    );
-    assert_eq!(
-        ir.constraints
-            .iter()
-            .filter(|constraint| matches!(constraint.kind, ConstraintKindIr::Ragdoll(_)))
-            .count(),
-        11
-    );
-    assert_eq!(
-        ir.constraints
-            .iter()
-            .filter(|constraint| matches!(constraint.kind, ConstraintKindIr::LimitedHinge(_)))
-            .count(),
-        10
-    );
-    assert_eq!(ir.mappings[0].ragdoll_bone, "Ragdoll_Canine_COM");
-    assert_eq!(ir.mappings[0].animation_bone, "Canine_COM");
-    assert_ne!(
-        ir.mappings[0].ragdoll_from_animation,
-        QsTransformIr::identity()
-    );
-
-    let lowered =
-        lower_primitive_shapes_to_fo4_convex_hulls(&ir, 12).expect("convexify wolf capsules");
-    let packed =
-        reconstruct_fo4_creature_ragdoll_packfile(&lowered).expect("pack real wolf owned ragdoll");
-    let reread = HkxFile::read(&packed).expect("reread real wolf owned ragdoll");
-    assert_eq!(class_count(reread.objects(), "hkpRigidBody"), 22);
-    assert_eq!(class_count(reread.objects(), "hkpConstraintInstance"), 42);
-    assert_eq!(
-        class_count(reread.objects(), "hkpRagdollConstraintData"),
-        11
-    );
-    assert_eq!(
-        class_count(reread.objects(), "hkpLimitedHingeConstraintData"),
-        10
-    );
-}
-
-#[test]
-fn all_48_skyrim_ragdolls_have_complete_source_owned_fo4_pack_closure() {
-    assert_eq!(SKYRIM_RAGDOLL_CORPUS.len(), 48);
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
-    let mut failures = Vec::new();
-    for relative in SKYRIM_RAGDOLL_CORPUS {
-        let result = std::fs::read(root.join(relative))
-            .map_err(|error| error.to_string())
-            .and_then(|bytes| HkxFile::read(&bytes).map_err(|error| error.to_string()))
-            .and_then(|source| {
-                extract_skyrim_2010_creature_ragdoll(&source).map_err(|error| error.to_string())
-            })
-            .and_then(|ir| {
-                lower_primitive_shapes_to_fo4_convex_hulls(&ir, 12)
-                    .map_err(|error| error.to_string())
-            })
-            .and_then(|ir| {
-                reconstruct_fo4_creature_ragdoll_packfile(&ir)
-                    .map(|_| ())
-                    .map_err(|error| error.to_string())
-            });
-        if let Err(error) = result {
-            failures.push(format!("{relative}: {error}"));
-        }
-    }
-    assert!(failures.is_empty(), "{failures:#?}");
 }

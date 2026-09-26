@@ -145,38 +145,39 @@ mod tests {
     use super::*;
 
     #[test]
-    fn source_quadrant_is_opposite_corner_of_positive_neighbor() {
-        assert_eq!(source_quadrant(0, 0), ((0, 0), (1, 1)));
-        assert_eq!(source_quadrant(1, 0), ((1, 0), (0, 1)));
-        assert_eq!(source_quadrant(0, 1), ((0, 1), (1, 0)));
-        assert_eq!(source_quadrant(1, 1), ((1, 1), (0, 0)));
+    fn assemble_grid_stitches_opposite_quadrants() {
+        {
+            assert_eq!(source_quadrant(0, 0), ((0, 0), (1, 1)));
+            assert_eq!(source_quadrant(1, 0), ((1, 0), (0, 1)));
+            assert_eq!(source_quadrant(0, 1), ((0, 1), (1, 0)));
+            assert_eq!(source_quadrant(1, 1), ((1, 1), (0, 0)));
+        }
+        {
+            // Each synthetic neighbor cell is filled with a marker encoding
+            // (cell dx, cell dy, quadrant) so we can assert exact provenance.
+            let fetch = |cx: i32, cy: i32| -> Result<Vec<u16>, BtdError> {
+                let mut v = vec![0u16; CELL_SAMPLES * CELL_SAMPLES];
+                for y in 0..CELL_SAMPLES {
+                    for x in 0..CELL_SAMPLES {
+                        let q = ((y / HALF_CELL_SAMPLES) << 1) | (x / HALF_CELL_SAMPLES);
+                        v[y * CELL_SAMPLES + x] = ((cx as u16) << 8) | ((cy as u16) << 4) | q as u16;
+                    }
+                }
+                Ok(v)
+            };
+            let out = assemble_cell_grid(fetch, 0, 0, None).unwrap();
+            // FO4 quadrant (0,0) = neighbor (0,0) quadrant (1,1) => marker q=3.
+            assert_eq!(out[0], 0x0003);
+            // FO4 quadrant (1,0) = neighbor (1,0) quadrant (0,1) => cx=1, q=2.
+            assert_eq!(out[HALF_CELL_SAMPLES], 0x0102);
+            // FO4 quadrant (0,1) = neighbor (0,1) quadrant (1,0) => cy=1, q=1.
+            assert_eq!(out[HALF_CELL_SAMPLES * CELL_SAMPLES], 0x0011);
+            // FO4 quadrant (1,1) = neighbor (1,1) quadrant (0,0) => cx=1, cy=1, q=0.
+            assert_eq!(
+                out[HALF_CELL_SAMPLES * CELL_SAMPLES + HALF_CELL_SAMPLES],
+                0x0110
+            );
+        }
     }
 
-    #[test]
-    fn assemble_grid_stitches_opposite_quadrants() {
-        // Each synthetic neighbor cell is filled with a marker encoding
-        // (cell dx, cell dy, quadrant) so we can assert exact provenance.
-        let fetch = |cx: i32, cy: i32| -> Result<Vec<u16>, BtdError> {
-            let mut v = vec![0u16; CELL_SAMPLES * CELL_SAMPLES];
-            for y in 0..CELL_SAMPLES {
-                for x in 0..CELL_SAMPLES {
-                    let q = ((y / HALF_CELL_SAMPLES) << 1) | (x / HALF_CELL_SAMPLES);
-                    v[y * CELL_SAMPLES + x] = ((cx as u16) << 8) | ((cy as u16) << 4) | q as u16;
-                }
-            }
-            Ok(v)
-        };
-        let out = assemble_cell_grid(fetch, 0, 0, None).unwrap();
-        // FO4 quadrant (0,0) = neighbor (0,0) quadrant (1,1) => marker q=3.
-        assert_eq!(out[0], 0x0003);
-        // FO4 quadrant (1,0) = neighbor (1,0) quadrant (0,1) => cx=1, q=2.
-        assert_eq!(out[HALF_CELL_SAMPLES], 0x0102);
-        // FO4 quadrant (0,1) = neighbor (0,1) quadrant (1,0) => cy=1, q=1.
-        assert_eq!(out[HALF_CELL_SAMPLES * CELL_SAMPLES], 0x0011);
-        // FO4 quadrant (1,1) = neighbor (1,1) quadrant (0,0) => cx=1, cy=1, q=0.
-        assert_eq!(
-            out[HALF_CELL_SAMPLES * CELL_SAMPLES + HALF_CELL_SAMPLES],
-            0x0110
-        );
-    }
 }

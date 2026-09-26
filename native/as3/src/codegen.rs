@@ -28,6 +28,8 @@ struct Resolver {
     wildcards: Vec<String>,
     /// Simple name → qualified name, for classes declared in this same file.
     declared: HashMap<String, String>,
+    package: String,
+    ancestors: HashMap<String, String>,
 }
 
 impl Resolver {
@@ -67,6 +69,8 @@ impl Resolver {
             imports,
             wildcards,
             declared,
+            package: package.name.clone(),
+            ancestors: HashMap::new(),
         })
     }
 
@@ -85,7 +89,7 @@ impl Resolver {
                 format!("{pkg}.{simple}")
             });
         }
-        if TOP_LEVEL_TYPES.contains(&simple) {
+        if TOP_LEVEL_TYPES.contains(&simple) || self.ancestors.contains_key(simple) {
             return Ok(simple.to_string());
         }
         let hint = if self.wildcards.is_empty() {
@@ -115,7 +119,7 @@ impl Resolver {
 /// list *is* the class's captured scope depth minus the global scope.
 fn ancestor_chain(
     qualified: &str,
-    declared: &HashMap<String, ClassDecl>,
+    _declared: &HashMap<String, ClassDecl>,
     resolver: &Resolver,
     span: Span,
 ) -> Result<Vec<String>> {
@@ -134,11 +138,8 @@ fn ancestor_chain(
         }
         let next = if let Some(sup) = builtin_super(&at) {
             sup.to_string()
-        } else if let Some(decl) = declared.get(&at) {
-            match &decl.extends {
-                Some(name) => resolver.resolve(name)?,
-                None => "Object".to_string(),
-            }
+        } else if let Some(parent) = resolver.ancestors.get(&at) {
+            parent.clone()
         } else {
             return Err(Diagnostic::unsupported(
                 format!(
@@ -332,10 +333,13 @@ struct ClassPlan<'a> {
     /// Scope depth captured at `newclass`.
     captured: u32,
     /// Namespace instance method traits are declared in.
-    member_ns: u32,
     /// Names of every member declared on this class, for resolving a bare
     /// identifier in a method body to `this.<name>`.
     members: HashSet<String>,
+    member_names: HashMap<String, u32>,
+    static_members: HashSet<String>,
+    lookup_namespaces: Vec<u32>,
+    protected_ns: Option<u32>,
 }
 
 pub fn compile_unit(unit: &CompilationUnit) -> Result<Vec<u8>> {
@@ -349,6 +353,13 @@ pub fn compile_unit(unit: &CompilationUnit) -> Result<Vec<u8>> {
 /// package per file. `WeaponCND.swf` is built the same way — one ABC holding
 /// both `hudframework.IHUDWidget` and `Main`.
 pub fn compile_units(units: &[CompilationUnit]) -> Result<Vec<u8>> {
+    compile_units_with_types(units, &HashMap::new())
+}
+
+pub fn compile_units_with_types(
+    units: &[CompilationUnit],
+    external_types: &HashMap<String, String>,
+) -> Result<Vec<u8>> {
     let mut packages: Vec<&Package> = Vec::new();
     for unit in units {
         if unit.packages.len() != 1 {
@@ -369,7 +380,7 @@ pub fn compile_units(units: &[CompilationUnit]) -> Result<Vec<u8>> {
     }
 
     // Imports are per-file, so each package resolves names with its own table.
-    let resolvers: Vec<Resolver> = packages
+    let mut resolvers: Vec<Resolver> = packages
         .iter()
         .map(|p| Resolver::build(p))
         .collect::<Result<Vec<_>>>()?;
@@ -379,6 +390,28 @@ pub fn compile_units(units: &[CompilationUnit]) -> Result<Vec<u8>> {
         for class in &package.classes {
             declared.insert(qualify(package, &class.name), class.clone());
         }
+    }
+
+    for resolver in &mut resolvers {
+        for name in declared.keys().chain(external_types.keys()) {
+            let (pkg, simple) = split_qualified(name);
+            if pkg == resolver.package {
+                resolver.declared.insert(simple.to_string(), name.clone());
+            }
+        }
+    }
+    let mut ancestors = external_types.clone();
+    for (index, package) in packages.iter().enumerate() {
+        for class in &package.classes {
+            let parent = match &class.extends {
+                Some(name) => resolvers[index].resolve(name)?,
+                None => "Object".into(),
+            };
+            ancestors.insert(qualify(package, &class.name), parent);
+        }
+    }
+    for resolver in &mut resolvers {
+        resolver.ancestors = ancestors.clone();
     }
 
     // Every class paired with the file it came from, so it keeps that file's
@@ -421,7 +454,7 @@ pub fn compile_units(units: &[CompilationUnit]) -> Result<Vec<u8>> {
             name: plan.name,
             super_name: plan.super_name,
             flags: plan.flags,
-            protected_ns: None,
+            protected_ns: plan.protected_ns,
             interfaces: plan.interfaces.clone(),
             iinit: e.iinit,
             traits: e.instance_traits.clone(),
@@ -430,7 +463,7 @@ pub fn compile_units(units: &[CompilationUnit]) -> Result<Vec<u8>> {
     for e in &class_bodies {
         abc.classes.push(ClassInfo {
             cinit: e.cinit,
-            traits: Vec::new(),
+            traits: e.class_traits.clone(),
         });
     }
 
@@ -443,6 +476,7 @@ pub fn compile_units(units: &[CompilationUnit]) -> Result<Vec<u8>> {
             .iter()
             .enumerate()
             .map(|(index, plan)| Trait {
+                attributes: 0,
                 name: plan.name,
                 kind: TraitKind::Class {
                     slot_id: index as u32 + 1,
@@ -462,6 +496,7 @@ pub fn compile_units(units: &[CompilationUnit]) -> Result<Vec<u8>> {
         local_count: stats.local_count,
         init_scope_depth: SCRIPT_INIT_SCOPE_DEPTH,
         max_scope_depth: stats.max_scope_depth,
+        exceptions: script_code.exception_table(),
         code: script_code
             .assemble()
             .map_err(|e| Diagnostic::codegen(e, unit_span))?,
@@ -571,6 +606,33 @@ fn plan_class<'a>(
         };
     }
 
+    let mut member_names = HashMap::new();
+    let mut static_members = HashSet::new();
+    let mut lookup_namespaces = vec![member_ns];
+    let mut protected_ns = None;
+    for member in &decl.members {
+        let (name, modifiers) = match member {
+            Member::Function(f) => (&f.name, &f.modifiers),
+            Member::Var(v) => (&v.name, &v.modifiers),
+        };
+        let ns = match modifiers.visibility {
+            Some(Visibility::Private) => pool.namespace(NsKind::PrivateNs, &qualified),
+            Some(Visibility::Protected) => {
+                let ns = pool.namespace(NsKind::ProtectedNamespace, &qualified);
+                protected_ns = Some(ns);
+                ns
+            }
+            Some(Visibility::Internal) => pool.namespace(NsKind::PackageInternalNs, &package.name),
+            _ => member_ns,
+        };
+        if !lookup_namespaces.contains(&ns) {
+            lookup_namespaces.push(ns);
+        }
+        member_names.insert(name.clone(), pool.qname_in(ns, name));
+        if modifiers.is_static {
+            static_members.insert(name.clone());
+        }
+    }
     Ok(ClassPlan {
         decl,
         resolver,
@@ -580,8 +642,11 @@ fn plan_class<'a>(
         interfaces,
         flags,
         captured,
-        member_ns,
         members,
+        member_names,
+        static_members,
+        lookup_namespaces,
+        protected_ns,
     })
 }
 
@@ -589,179 +654,177 @@ struct ClassEmission {
     iinit: u32,
     cinit: u32,
     instance_traits: Vec<Trait>,
+    class_traits: Vec<Trait>,
 }
 
 fn emit_class(abc: &mut AbcFile, plan: &ClassPlan<'_>) -> Result<ClassEmission> {
-    let decl = plan.decl;
-    let mut constructor: Option<&FunctionDecl> = None;
-    let mut methods: Vec<&FunctionDecl> = Vec::new();
-
-    for member in &decl.members {
-        match member {
-            Member::Function(f) if !decl.is_interface && f.name == decl.name => {
-                if constructor.is_some() {
+    let mut instance_traits = Vec::new();
+    let mut class_traits = Vec::new();
+    let mut constructor = None;
+    for member in &plan.decl.members {
+        let (name, modifiers, kind) = match member {
+            Member::Var(v) => {
+                let type_name = type_multiname(&mut abc.pool, plan, &v.type_ref)?;
+                (
+                    &v.name,
+                    &v.modifiers,
+                    if v.is_const {
+                        TraitKind::Const {
+                            slot_id: 0,
+                            type_name,
+                        }
+                    } else {
+                        TraitKind::Slot {
+                            slot_id: 0,
+                            type_name,
+                            value_index: 0,
+                            value_kind: 0,
+                        }
+                    },
+                )
+            }
+            Member::Function(f) if !plan.decl.is_interface && f.name == plan.decl.name => {
+                if f.sig.return_type != TypeRef::Any {
                     return Err(Diagnostic::parse(
-                        format!("class `{}` declares more than one constructor", decl.name),
+                        "a constructor cannot declare a return type",
                         f.span,
                     ));
                 }
-                constructor = Some(f);
+                if constructor.replace(f).is_some() {
+                    return Err(Diagnostic::parse("duplicate constructor", f.span));
+                }
+                continue;
             }
             Member::Function(f) => {
-                if f.accessor != Accessor::None {
-                    return Err(Diagnostic::unsupported(
-                        format!(
-                            "accessor `{}` needs a getter/setter trait pair, which this \
-                             phase does not emit",
-                            f.name
-                        ),
-                        f.span,
-                    ));
-                }
-                if f.modifiers.is_static {
-                    return Err(Diagnostic::unsupported(
-                        format!("static member `{}` is not emitted in this phase", f.name),
-                        f.span,
-                    ));
-                }
-                if f.modifiers.is_override {
-                    return Err(Diagnostic::unsupported(
-                        format!(
-                            "`override {}` needs the trait OVERRIDE attribute and a check \
-                             against the base class, which this phase does not do",
-                            f.name
-                        ),
-                        f.span,
-                    ));
-                }
-                match f.modifiers.visibility {
-                    None | Some(Visibility::Public) => {}
-                    Some(_) => {
-                        return Err(Diagnostic::unsupported(
-                            format!(
-                                "only `public` members are emitted in this phase; `{}` is not",
-                                f.name
-                            ),
-                            f.span,
-                        ));
+                let method = declare_method(abc, plan, f)?;
+                if let Some(body) = &f.body {
+                    if plan.decl.is_interface {
+                        return Err(Diagnostic::parse("interface method has a body", f.span));
                     }
+                    let code = compile_method_body(abc, plan, f, body, false)?;
+                    push_body(abc, method, code, plan.captured + 1, f.span)?;
+                } else if !plan.decl.is_interface {
+                    return Err(Diagnostic::parse("method has no body", f.span));
                 }
-                methods.push(f);
+                let kind = match f.accessor {
+                    Accessor::None => TraitKind::Method { disp_id: 0, method },
+                    Accessor::Getter => TraitKind::Getter { disp_id: 0, method },
+                    Accessor::Setter => TraitKind::Setter { disp_id: 0, method },
+                };
+                (&f.name, &f.modifiers, kind)
             }
-            Member::Var(v) => {
-                return Err(Diagnostic::unsupported(
-                    format!(
-                        "field `{}` needs a slot trait, which this phase does not emit",
-                        v.name
-                    ),
-                    v.span,
-                ));
-            }
-        }
-    }
-
-    // An interface's methods are declarations only, and its instance
-    // initialiser has no body at all — both checked against `WeaponCND.swf`.
-    if decl.is_interface {
-        let mut traits = Vec::new();
-        for f in &methods {
-            if f.body.is_some() {
-                return Err(Diagnostic::parse(
-                    format!("interface method `{}` may not have a body", f.name),
-                    f.span,
-                ));
-            }
-            let method = declare_method(abc, plan, f)?;
-            traits.push(Trait {
-                name: abc.pool.qname_in(plan.member_ns, &f.name),
-                kind: TraitKind::Method { disp_id: 0, method },
-            });
-        }
-        let iinit = abc.methods.len() as u32;
-        abc.methods.push(MethodInfo::default());
-        let cinit = emit_empty_initializer(abc, plan.captured, decl.span)?;
-        return Ok(ClassEmission {
-            iinit,
-            cinit,
-            instance_traits: traits,
-        });
-    }
-
-    let mut traits = Vec::new();
-    for f in &methods {
-        let method = declare_method(abc, plan, f)?;
-        let Some(body) = &f.body else {
-            return Err(Diagnostic::parse(
-                format!("method `{}` has no body", f.name),
-                f.span,
-            ));
         };
-        let code = compile_method_body(abc, plan, f, body, false)?;
-        push_body(abc, method, code, plan.captured + 1, f.span)?;
-        traits.push(Trait {
-            name: abc.pool.qname_in(plan.member_ns, &f.name),
-            kind: TraitKind::Method { disp_id: 0, method },
-        });
+        let trait_ = Trait {
+            name: plan.member_names[name],
+            kind,
+            attributes: (if modifiers.is_override { 0x20 } else { 0 })
+                | (if modifiers.is_final { 0x10 } else { 0 }),
+        };
+        if modifiers.is_static {
+            class_traits.push(trait_);
+        } else {
+            instance_traits.push(trait_);
+        }
     }
-
-    let iinit = match constructor {
-        Some(ctor) => {
-            let method = declare_method(abc, plan, ctor)?;
-            if !matches!(ctor.sig.return_type, TypeRef::Any) {
-                return Err(Diagnostic::parse(
-                    "a constructor may not declare a return type",
-                    ctor.span,
-                ));
-            }
-            let Some(body) = &ctor.body else {
-                return Err(Diagnostic::parse(
-                    format!("constructor `{}` has no body", ctor.name),
-                    ctor.span,
-                ));
-            };
-            let code = compile_method_body(abc, plan, ctor, body, true)?;
-            push_body(abc, method, code, plan.captured + 1, ctor.span)?;
-            method
-        }
-        None => {
-            // A class with no declared constructor still needs one: it is what
-            // chains to the base class.
-            let method = abc.methods.len() as u32;
-            abc.methods.push(MethodInfo::default());
-            let mut code = CodeBuilder::new();
-            code.emit(Op::GetLocal0)
-                .emit(Op::PushScope)
-                .emit(Op::GetLocal0)
-                .emit(Op::ConstructSuper(0))
-                .emit(Op::ReturnVoid);
-            push_body(abc, method, code, plan.captured + 1, decl.span)?;
-            method
-        }
+    let empty = FunctionDecl {
+        modifiers: Modifiers::default(),
+        accessor: Accessor::None,
+        name: plan.decl.name.clone(),
+        sig: FunctionSig {
+            params: Vec::new(),
+            return_type: TypeRef::Any,
+        },
+        body: Some(Block {
+            statements: Vec::new(),
+            span: plan.decl.span,
+        }),
+        span: plan.decl.span,
     };
-
-    let cinit = emit_empty_initializer(abc, plan.captured, decl.span)?;
+    let ctor = constructor.unwrap_or(&empty);
+    let iinit = declare_method(abc, plan, ctor)?;
+    if !plan.decl.is_interface {
+        let body = ctor
+            .body
+            .as_ref()
+            .ok_or_else(|| Diagnostic::parse("constructor has no body", ctor.span))?;
+        let code = compile_method_body(abc, plan, ctor, body, true)?;
+        push_body(abc, iinit, code, plan.captured + 1, ctor.span)?;
+    }
+    let mut initializer = empty.clone();
+    initializer.modifiers.is_static = true;
+    initializer.sig.return_type = TypeRef::Void;
+    initializer.body.as_mut().unwrap().statements = field_initializers(plan, true);
+    let cinit = if initializer.body.as_ref().unwrap().statements.is_empty() {
+        emit_empty_initializer(abc, plan.captured, plan.decl.span)?
+    } else {
+        let index = declare_method(abc, plan, &initializer)?;
+        let code = compile_method_body(
+            abc,
+            plan,
+            &initializer,
+            initializer.body.as_ref().unwrap(),
+            false,
+        )?;
+        push_body(abc, index, code, plan.captured, plan.decl.span)?;
+        index
+    };
     Ok(ClassEmission {
         iinit,
         cinit,
-        instance_traits: traits,
+        instance_traits,
+        class_traits,
     })
+}
+
+fn field_initializers(plan: &ClassPlan<'_>, is_static: bool) -> Vec<Stmt> {
+    plan.decl
+        .members
+        .iter()
+        .filter_map(|m| {
+            let Member::Var(v) = m else {
+                return None;
+            };
+            if v.modifiers.is_static != is_static {
+                return None;
+            }
+            v.init.as_ref().map(|value| Stmt::InitializeField {
+                name: v.name.clone(),
+                value: value.clone(),
+            })
+        })
+        .collect()
 }
 
 /// Reserve a `method_info` for `f`, resolving its parameter and return types.
 fn declare_method(abc: &mut AbcFile, plan: &ClassPlan<'_>, f: &FunctionDecl) -> Result<u32> {
     let mut param_types = Vec::new();
+    let mut flags = 0;
+    let mut options = Vec::new();
     for p in &f.sig.params {
         if p.is_rest {
-            return Err(Diagnostic::unsupported(
-                "rest parameters need the NEED_REST flag and an argument array, which this \
-                 phase does not emit",
-                p.span,
-            ));
+            flags |= METHOD_NEED_REST;
+            continue;
         }
-        if p.default.is_some() {
-            return Err(Diagnostic::unsupported(
-                "default parameter values need the method_info optional-value table, which \
-                 this phase does not emit",
+        if let Some(value) = &p.default {
+            let constant = match value {
+                Expr::Null(_) => (0, 0x0C),
+                Expr::Bool(true, _) => (0, 0x0B),
+                Expr::Bool(false, _) => (0, 0x0A),
+                Expr::Int(v, _) => (abc.pool.int(*v as i32), 0x03),
+                Expr::Number(v, _) => (abc.pool.double(*v), 0x06),
+                Expr::Str(v, _) => (abc.pool.string(v), 0x01),
+                _ => {
+                    return Err(Diagnostic::unsupported(
+                        "nonliteral parameter default",
+                        p.span,
+                    ));
+                }
+            };
+            flags |= METHOD_HAS_OPTIONAL;
+            options.push(constant);
+        } else if !options.is_empty() {
+            return Err(Diagnostic::parse(
+                "required parameter follows optional parameter",
                 p.span,
             ));
         }
@@ -775,13 +838,19 @@ fn declare_method(abc: &mut AbcFile, plan: &ClassPlan<'_>, f: &FunctionDecl) -> 
         param_types,
         return_type,
         name: 0,
-        flags: 0,
+        flags,
+        options,
     });
     Ok(index)
 }
 
 fn type_multiname(pool: &mut ConstantPool, plan: &ClassPlan<'_>, ty: &TypeRef) -> Result<u32> {
     Ok(match ty {
+        TypeRef::Vector(item) => {
+            let vector = pool.qname(NsKind::PackageNamespace, "__AS3__.vec", "Vector");
+            let item = type_multiname(pool, plan, item)?;
+            pool.type_name(vector, item)
+        }
         TypeRef::Any => 0,
         TypeRef::Void => pool.qname(NsKind::PackageNamespace, "", "void"),
         TypeRef::Named(name) => {
@@ -815,7 +884,9 @@ fn push_body(
     init_scope_depth: u32,
     span: Span,
 ) -> Result<()> {
-    let min_locals = 1 + abc.methods[method as usize].param_types.len() as u32;
+    let signature = &abc.methods[method as usize];
+    let min_locals =
+        1 + signature.param_types.len() as u32 + u32::from(signature.flags & METHOD_NEED_REST != 0);
     let stats = code
         .analyze(init_scope_depth, min_locals)
         .map_err(|e| Diagnostic::codegen(e, span))?;
@@ -825,6 +896,7 @@ fn push_body(
         local_count: stats.local_count,
         init_scope_depth,
         max_scope_depth: stats.max_scope_depth,
+        exceptions: code.exception_table(),
         code: code.assemble().map_err(|e| Diagnostic::codegen(e, span))?,
         traits: Vec::new(),
     });
@@ -864,6 +936,11 @@ fn script_init_code(plans: &[ClassPlan<'_>]) -> CodeBuilder {
 struct BodyGen<'a> {
     pool: &'a mut ConstantPool,
     members: &'a HashSet<String>,
+    static_members: &'a HashSet<String>,
+    lookup_namespaces: &'a [u32],
+    resolver: &'a Resolver,
+    class_name: u32,
+    static_context: bool,
     /// Public namespace — where an unqualified property reference is looked up.
     public_ns: u32,
     code: CodeBuilder,
@@ -884,6 +961,11 @@ fn compile_method_body(
     let mut builder = BodyGen {
         pool: &mut abc.pool,
         members: &plan.members,
+        static_members: &plan.static_members,
+        lookup_namespaces: &plan.lookup_namespaces,
+        resolver: plan.resolver,
+        class_name: plan.name,
+        static_context: f.modifiers.is_static,
         public_ns,
         code: CodeBuilder::new(),
         locals: HashMap::new(),
@@ -925,6 +1007,11 @@ fn compile_method_body(
         }
     }
 
+    if is_constructor {
+        for init in field_initializers(plan, false) {
+            builder.statement(&init)?;
+        }
+    }
     for stmt in statements {
         builder.statement(stmt)?;
     }
@@ -939,18 +1026,15 @@ fn ends_in_return(statements: &[Stmt]) -> bool {
 }
 
 impl BodyGen<'_> {
-    /// A property named without a namespace qualifier is looked up in the
-    /// public namespace. swftools instead emits a namespace-set multiname and
-    /// falls back to late binding; a QName is the precise form and is all
-    /// `public`-only members need.
     fn prop(&mut self, name: &str) -> u32 {
-        self.pool.qname_in(self.public_ns, name)
+        if self.lookup_namespaces.len() == 1 {
+            self.pool.qname_in(self.public_ns, name)
+        } else {
+            let set = self.pool.ns_set(self.lookup_namespaces);
+            self.pool.multiname(name, set)
+        }
     }
 
-    /// The `MultinameL` an indexed access uses. The namespace set holds only the
-    /// public namespace, where array elements and dynamic properties live. ASC
-    /// emits every open namespace (13 in `WeaponCND.swf`), but this compiler emits
-    /// no private, protected or `AS3`-namespaced members, so those are unused.
     fn indexed(&mut self) -> u32 {
         let set = self.pool.ns_set(&[self.public_ns]);
         self.pool.multiname_l(set)
@@ -958,6 +1042,48 @@ impl BodyGen<'_> {
 
     fn statement(&mut self, stmt: &Stmt) -> Result<()> {
         match stmt {
+            Stmt::InitializeField { name, value } => {
+                self.code.emit(Op::GetLocal0);
+                self.expr_value(value)?;
+                let property = self.prop(name);
+                self.code.emit(Op::InitProperty(property));
+                Ok(())
+            }
+            Stmt::Throw(value) => {
+                self.expr_value(value)?;
+                self.code.emit(Op::Throw);
+                Ok(())
+            }
+            Stmt::Try { body, catches } => {
+                let from = self.code.new_label();
+                let to = self.code.new_label();
+                let end = self.code.new_label();
+                self.code.place(from).emit(Op::Nop);
+                self.statement(&Stmt::Block(body.clone()))?;
+                self.code.place(to).emit(Op::Jump(end));
+                for (name, ty, body) in catches {
+                    let handler = self.code.new_label();
+                    let ty = self.type_index(ty)?;
+                    self.code.catch(from, to, handler, ty);
+                    self.code
+                        .place(handler)
+                        .emit(Op::GetLocal0)
+                        .emit(Op::PushScope);
+                    let slot = self.next_local;
+                    self.next_local += 1;
+                    let previous = self.locals.insert(name.clone(), slot);
+                    self.code.emit(Op::SetLocal(slot));
+                    self.statement(&Stmt::Block(body.clone()))?;
+                    if let Some(old) = previous {
+                        self.locals.insert(name.clone(), old);
+                    } else {
+                        self.locals.remove(name);
+                    }
+                    self.code.emit(Op::Jump(end));
+                }
+                self.code.place(end);
+                Ok(())
+            }
             Stmt::Empty => Ok(()),
             Stmt::Block(b) => {
                 for s in &b.statements {
@@ -1026,9 +1152,68 @@ impl BodyGen<'_> {
             Stmt::While { cond, body } => {
                 let top = self.code.new_label();
                 let end = self.code.new_label();
-                self.code.place(top);
+                self.code.place(top).emit(Op::Label);
                 self.expr_value(cond)?;
                 self.code.emit(Op::IfFalse(end));
+                self.loops.push((end, top));
+                self.statement(body)?;
+                self.loops.pop();
+                self.code.emit(Op::Jump(top));
+                self.code.place(end);
+                Ok(())
+            }
+            Stmt::For {
+                init,
+                cond,
+                update,
+                body,
+            } => {
+                self.statement(init)?;
+                let top = self.code.new_label();
+                let next = self.code.new_label();
+                let end = self.code.new_label();
+                self.code.place(top).emit(Op::Label);
+                if let Some(cond) = cond {
+                    self.expr_value(cond)?;
+                    self.code.emit(Op::IfFalse(end));
+                }
+                self.loops.push((end, next));
+                self.statement(body)?;
+                self.loops.pop();
+                self.code.place(next);
+                if let Some(update) = update {
+                    self.expr_discard(update)?;
+                }
+                self.code.emit(Op::Jump(top));
+                self.code.place(end);
+                Ok(())
+            }
+            Stmt::ForIn {
+                variable,
+                iterable,
+                each,
+                body,
+            } => {
+                self.statement(&Stmt::Var(variable.clone()))?;
+                let object = self.next_local;
+                let index = object + 1;
+                self.next_local += 2;
+                self.expr_value(iterable)?;
+                self.code.emit(Op::SetLocal(object));
+                self.code.emit(Op::PushByte(0)).emit(Op::SetLocal(index));
+                let top = self.code.new_label();
+                let end = self.code.new_label();
+                self.code
+                    .place(top)
+                    .emit(Op::Label)
+                    .emit(Op::HasNext2(object, index))
+                    .emit(Op::IfFalse(end));
+                self.code
+                    .emit(Op::GetLocal(object))
+                    .emit(Op::GetLocal(index));
+                self.code
+                    .emit(if *each { Op::NextValue } else { Op::NextName });
+                self.code.emit(Op::SetLocal(self.locals[&variable.name]));
                 self.loops.push((end, top));
                 self.statement(body)?;
                 self.loops.pop();
@@ -1067,6 +1252,20 @@ impl BodyGen<'_> {
     /// Compile an expression used as a statement: nothing may be left behind.
     fn expr_discard(&mut self, e: &Expr) -> Result<()> {
         match e {
+            Expr::Postfix {
+                target,
+                increment,
+                span,
+            } => {
+                self.assign_value(
+                    target,
+                    Some(if *increment { BinOp::Add } else { BinOp::Sub }),
+                    &Expr::Int(1, *span),
+                    *span,
+                )?;
+                self.code.emit(Op::Pop);
+                Ok(())
+            }
             Expr::Call { callee, args, span } => {
                 let name = self.call_target(callee, *span)?;
                 for a in args {
@@ -1083,7 +1282,11 @@ impl BodyGen<'_> {
                 op,
                 value,
                 span,
-            } => self.assign(target, *op, value, *span),
+            } => {
+                self.assign_value(target, *op, value, *span)?;
+                self.code.emit(Op::Pop);
+                Ok(())
+            }
             other => {
                 self.expr_value(other)?;
                 self.code.emit(Op::Pop);
@@ -1094,13 +1297,23 @@ impl BodyGen<'_> {
 
     /// Push the receiver of a call and return the multiname to invoke on it.
     fn call_target(&mut self, callee: &Expr, span: Span) -> Result<u32> {
+        if let Some(name) = qualified_expr(callee) {
+            if name.contains('.')
+                && (self.resolver.ancestors.contains_key(&name) || builtin_super(&name).is_some())
+            {
+                let (pkg, simple) = split_qualified(&name);
+                let mn = self.pool.qname(NsKind::PackageNamespace, pkg, simple);
+                self.code.emit(Op::FindPropStrict(mn));
+                return Ok(mn);
+            }
+        }
         match callee {
             Expr::Member { object, name, .. } => {
                 self.expr_value(object)?;
                 Ok(self.prop(name))
             }
             Expr::Ident(name, _) => {
-                let mn = self.prop(name);
+                let mn = self.lexical(name);
                 if self.locals.contains_key(name) {
                     return Err(Diagnostic::unsupported(
                         format!("calling the local variable `{name}` as a function is not lowered"),
@@ -1108,7 +1321,7 @@ impl BodyGen<'_> {
                     ));
                 }
                 if self.members.contains(name) {
-                    self.code.emit(Op::GetLocal0);
+                    self.receiver(name);
                 } else {
                     // Not a member of this class: leave the lookup to the scope
                     // chain, which is what an unqualified call means.
@@ -1127,53 +1340,181 @@ impl BodyGen<'_> {
         }
     }
 
-    fn assign(&mut self, target: &Expr, op: Option<BinOp>, value: &Expr, span: Span) -> Result<()> {
-        if op.is_some() {
-            return Err(Diagnostic::unsupported(
-                "compound assignment (and `++`/`--`) is not lowered in this phase",
-                span,
-            ));
+    fn assign_value(
+        &mut self,
+        target: &Expr,
+        op: Option<BinOp>,
+        value: &Expr,
+        span: Span,
+    ) -> Result<()> {
+        let local = match target {
+            Expr::Ident(name, _) => self.locals.get(name).copied(),
+            _ => None,
+        };
+        let mut receiver = None;
+        let mut index = None;
+        let mut property = None;
+        if local.is_none() {
+            match target {
+                Expr::Ident(name, _) => {
+                    let mn = self.prop(name);
+                    property = Some(mn);
+                    if self.members.contains(name) {
+                        self.receiver(name);
+                    } else {
+                        self.code.emit(Op::FindPropStrict(mn));
+                    }
+                }
+                Expr::Member { object, name, .. } => {
+                    self.expr_value(object)?;
+                    property = Some(self.prop(name));
+                }
+                Expr::Index {
+                    object, index: key, ..
+                } => {
+                    self.expr_value(object)?;
+                    let obj = self.next_local;
+                    self.next_local += 1;
+                    self.code.emit(Op::SetLocal(obj));
+                    receiver = Some(obj);
+                    self.expr_value(key)?;
+                    let key_slot = self.next_local;
+                    self.next_local += 1;
+                    self.code.emit(Op::SetLocal(key_slot));
+                    index = Some(key_slot);
+                    property = Some(self.indexed());
+                }
+                _ => return Err(Diagnostic::parse("invalid assignment target", span)),
+            }
+            if receiver.is_none() {
+                let obj = self.next_local;
+                self.next_local += 1;
+                self.code.emit(Op::SetLocal(obj));
+                receiver = Some(obj);
+            }
         }
-        match target {
-            Expr::Ident(name, _) if self.locals.contains_key(name) => {
-                let slot = self.locals[name];
-                self.expr_value(value)?;
-                self.code.emit(Op::SetLocal(slot));
-                Ok(())
+        if let Some(operator) = op {
+            if let Some(slot) = local {
+                self.code.emit(Op::GetLocal(slot));
+            } else {
+                self.code.emit(Op::GetLocal(receiver.unwrap()));
+                if let Some(index) = index {
+                    self.code
+                        .emit(Op::GetLocal(index))
+                        .emit(Op::GetPropertyIndexed(property.unwrap()));
+                } else {
+                    self.code.emit(Op::GetProperty(property.unwrap()));
+                }
             }
-            Expr::Ident(name, _) if self.members.contains(name) => {
-                let mn = self.prop(name);
-                self.code.emit(Op::GetLocal0);
-                self.expr_value(value)?;
-                self.code.emit(Op::SetProperty(mn));
-                Ok(())
-            }
-            Expr::Member { object, name, .. } => {
-                let mn = self.prop(name);
-                self.expr_value(object)?;
-                self.expr_value(value)?;
-                self.code.emit(Op::SetProperty(mn));
-                Ok(())
-            }
-            Expr::Index { object, index, .. } => {
-                let mn = self.indexed();
-                self.expr_value(object)?;
-                self.expr_value(index)?;
-                self.expr_value(value)?;
-                self.code.emit(Op::SetPropertyIndexed(mn));
-                Ok(())
-            }
-            _ => Err(Diagnostic::unsupported(
-                "only assignment to a local, a field of `this`, `object.property` or \
-                 `object[index]` is lowered in this phase",
-                span,
-            )),
+            self.expr_value(value)?;
+            self.code.emit(match operator {
+                BinOp::Add => Op::Add,
+                BinOp::Sub => Op::Subtract,
+                BinOp::Mul => Op::Multiply,
+                BinOp::Div => Op::Divide,
+                BinOp::Mod => Op::Modulo,
+                BinOp::BitAnd => Op::BitAnd,
+                BinOp::BitOr => Op::BitOr,
+                BinOp::BitXor => Op::BitXor,
+                BinOp::Shl => Op::LShift,
+                BinOp::Shr => Op::RShift,
+                BinOp::UShr => Op::URShift,
+                _ => {
+                    return Err(Diagnostic::unsupported(
+                        "unsupported compound assignment",
+                        span,
+                    ));
+                }
+            });
+        } else {
+            self.expr_value(value)?;
         }
+        if let Some(slot) = local {
+            self.code.emit(Op::Dup).emit(Op::SetLocal(slot));
+        } else {
+            let result = self.next_local;
+            self.next_local += 1;
+            self.code
+                .emit(Op::SetLocal(result))
+                .emit(Op::GetLocal(receiver.unwrap()));
+            if let Some(index) = index {
+                self.code.emit(Op::GetLocal(index));
+            }
+            self.code.emit(Op::GetLocal(result));
+            self.code.emit(if index.is_some() {
+                Op::SetPropertyIndexed(property.unwrap())
+            } else {
+                Op::SetProperty(property.unwrap())
+            });
+            self.code.emit(Op::GetLocal(result));
+        }
+        Ok(())
     }
 
     /// Compile an expression that leaves exactly one value on the stack.
+    fn type_index(&mut self, ty: &TypeRef) -> Result<u32> {
+        match ty {
+            TypeRef::Any => Ok(0),
+            TypeRef::Void => Ok(self.pool.qname(NsKind::PackageNamespace, "", "void")),
+            TypeRef::Named(name) => {
+                let qualified = self.resolver.resolve(name)?;
+                let (pkg, name) = split_qualified(&qualified);
+                Ok(self.pool.qname(NsKind::PackageNamespace, pkg, name))
+            }
+            TypeRef::Vector(item) => {
+                let base = self
+                    .pool
+                    .qname(NsKind::PackageNamespace, "__AS3__.vec", "Vector");
+                let item = self.type_index(item)?;
+                Ok(self.pool.type_name(base, item))
+            }
+        }
+    }
+
+    fn receiver(&mut self, name: &str) {
+        self.code.emit(
+            if self.static_members.contains(name) && !self.static_context {
+                Op::GetLex(self.class_name)
+            } else {
+                Op::GetLocal0
+            },
+        );
+    }
+
+    fn lexical(&mut self, name: &str) -> u32 {
+        if name == "Vector" {
+            return self
+                .pool
+                .qname(NsKind::PackageNamespace, "__AS3__.vec", "Vector");
+        }
+        if let Some(pkg) = self.resolver.imports.get(name) {
+            return self.pool.qname(NsKind::PackageNamespace, pkg, name);
+        }
+        if let Some(qualified) = self.resolver.declared.get(name) {
+            let (pkg, name) = split_qualified(qualified);
+            return self.pool.qname(NsKind::PackageNamespace, pkg, name);
+        }
+        self.prop(name)
+    }
+
     fn expr_value(&mut self, e: &Expr) -> Result<()> {
+        if let Some(name) = qualified_expr(e) {
+            if name.contains('.')
+                && (self.resolver.ancestors.contains_key(&name) || builtin_super(&name).is_some())
+            {
+                let (pkg, simple) = split_qualified(&name);
+                let mn = self.pool.qname(NsKind::PackageNamespace, pkg, simple);
+                self.code.emit(Op::GetLex(mn));
+                return Ok(());
+            }
+        }
         match e {
+            Expr::Postfix { span, .. } => {
+                return Err(Diagnostic::unsupported(
+                    "postfix value expressions are not supported; separate the increment from its value",
+                    *span,
+                ));
+            }
             Expr::Null(_) => {
                 self.code.emit(Op::PushNull);
             }
@@ -1217,9 +1558,10 @@ impl BodyGen<'_> {
                     });
                 } else if self.members.contains(name) {
                     let mn = self.prop(name);
-                    self.code.emit(Op::GetLocal0).emit(Op::GetProperty(mn));
+                    self.receiver(name);
+                    self.code.emit(Op::GetProperty(mn));
                 } else {
-                    let mn = self.prop(name);
+                    let mn = self.lexical(name);
                     // Unqualified and not ours: `getlex` is exactly
                     // findpropstrict+getproperty, which is how a class or
                     // package-level name resolves.
@@ -1252,6 +1594,12 @@ impl BodyGen<'_> {
                         self.code.emit(Op::Negate);
                     }
                     UnOp::Plus => {}
+                    UnOp::BitNot => {
+                        self.code.emit(Op::BitNot);
+                    }
+                    UnOp::TypeOf => {
+                        self.code.emit(Op::TypeOf);
+                    }
                     other => {
                         return Err(Diagnostic::unsupported(
                             format!("unary `{other:?}` is not lowered in this phase"),
@@ -1261,24 +1609,24 @@ impl BodyGen<'_> {
                 }
             }
             Expr::Binary { op, lhs, rhs, span } => self.binary(*op, lhs, rhs, *span)?,
-            Expr::Assign { span, .. } => {
-                return Err(Diagnostic::unsupported(
-                    "an assignment used as a value is not lowered in this phase; \
-                     put it on its own line",
-                    *span,
-                ));
-            }
+            Expr::Assign {
+                target,
+                op,
+                value,
+                span,
+            } => self.assign_value(target, *op, value, *span)?,
             Expr::Super(span) => {
                 return Err(Diagnostic::unsupported(
                     "`super` is only lowered as a constructor's first statement in this phase",
                     *span,
                 ));
             }
-            Expr::New { span, .. } => {
-                return Err(Diagnostic::unsupported(
-                    "`new` needs constructprop, which this phase does not emit",
-                    *span,
-                ));
+            Expr::New { callee, args, .. } => {
+                self.expr_value(callee)?;
+                for arg in args {
+                    self.expr_value(arg)?;
+                }
+                self.code.emit(Op::Construct(args.len() as u32));
             }
             Expr::Index { object, index, .. } => {
                 let mn = self.indexed();
@@ -1286,17 +1634,66 @@ impl BodyGen<'_> {
                 self.expr_value(index)?;
                 self.code.emit(Op::GetPropertyIndexed(mn));
             }
-            Expr::ArrayLit { span, .. } => {
-                return Err(Diagnostic::unsupported(
-                    "array literals need newarray, which this phase does not emit",
-                    *span,
-                ));
+            Expr::ArrayLit { items, .. } => {
+                for item in items {
+                    self.expr_value(item)?;
+                }
+                self.code.emit(Op::NewArray(items.len() as u32));
             }
-            Expr::Conditional { span, .. } => {
-                return Err(Diagnostic::unsupported(
-                    "the conditional operator is not lowered in this phase; use `if`",
-                    *span,
-                ));
+            Expr::ObjectLit { entries, .. } => {
+                for (key, value) in entries {
+                    let key = self.pool.string(key);
+                    self.code.emit(Op::PushString(key));
+                    self.expr_value(value)?;
+                }
+                self.code.emit(Op::NewObject(entries.len() as u32));
+            }
+            Expr::TypeApply {
+                base, item_type, ..
+            } => {
+                self.expr_value(base)?;
+                let item = self.type_index(item_type)?;
+                self.code.emit(Op::GetLex(item)).emit(Op::ApplyType(1));
+            }
+            Expr::VectorLit {
+                item_type, items, ..
+            } => {
+                let vector = self
+                    .pool
+                    .qname(NsKind::PackageNamespace, "__AS3__.vec", "Vector");
+                let item = self.type_index(item_type)?;
+                self.code
+                    .emit(Op::GetLex(vector))
+                    .emit(Op::GetLex(item))
+                    .emit(Op::ApplyType(1));
+                let cast = self.next_local;
+                self.next_local += 1;
+                self.code
+                    .emit(Op::SetLocal(cast))
+                    .emit(Op::GetLocal(cast))
+                    .emit(Op::PushNull);
+                for item in items {
+                    self.expr_value(item)?;
+                }
+                self.code
+                    .emit(Op::NewArray(items.len() as u32))
+                    .emit(Op::Call(1));
+            }
+            Expr::Conditional {
+                cond,
+                then,
+                otherwise,
+                ..
+            } => {
+                let alternate = self.code.new_label();
+                let end = self.code.new_label();
+                self.expr_value(cond)?;
+                self.code.emit(Op::IfFalse(alternate));
+                self.expr_value(then)?;
+                self.code.emit(Op::Jump(end));
+                self.code.place(alternate);
+                self.expr_value(otherwise)?;
+                self.code.place(end);
             }
         }
         Ok(())
@@ -1328,6 +1725,16 @@ impl BodyGen<'_> {
             BinOp::Mul => Some(Op::Multiply),
             BinOp::Div => Some(Op::Divide),
             BinOp::Mod => Some(Op::Modulo),
+            BinOp::BitAnd => Some(Op::BitAnd),
+            BinOp::BitOr => Some(Op::BitOr),
+            BinOp::BitXor => Some(Op::BitXor),
+            BinOp::Shl => Some(Op::LShift),
+            BinOp::Shr => Some(Op::RShift),
+            BinOp::UShr => Some(Op::URShift),
+            BinOp::Is => Some(Op::IsTypeLate),
+            BinOp::As => Some(Op::AsTypeLate),
+            BinOp::InstanceOf => Some(Op::InstanceOf),
+            BinOp::In => Some(Op::In),
             BinOp::Eq => Some(Op::Equals),
             BinOp::StrictEq => Some(Op::StrictEquals),
             BinOp::Lt => Some(Op::LessThan),
@@ -1356,5 +1763,13 @@ impl BodyGen<'_> {
                 span,
             )),
         }
+    }
+}
+
+fn qualified_expr(expr: &Expr) -> Option<String> {
+    match expr {
+        Expr::Ident(name, _) => Some(name.clone()),
+        Expr::Member { object, name, .. } => Some(format!("{}.{name}", qualified_expr(object)?)),
+        _ => None,
     }
 }

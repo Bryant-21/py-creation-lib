@@ -6,8 +6,7 @@ order the function checks them so a regression in priority shows up clearly.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any
+from dataclasses import dataclass
 
 import pytest
 
@@ -28,198 +27,91 @@ class FakeMat:
     RootMaterialPath: str = ""
 
 
-# ---------------------------------------------------------------- exclusions
-class TestPathExclusions:
-    @pytest.mark.parametrize("path", [
-        "materials/effects/blood/blood01.bgsm",
-        "effects/blood01.bgem",
-        "materials/interface/lockpicking/lock.bgsm",
-        "materials/menu/main.bgsm",
-        "materials/sky/clouds01.bgsm",
-        "materials/decals/blood/decal01.bgsm",
-    ])
-    def test_excluded_paths_return_none(self, path: str) -> None:
-        cubemap, scale = select_cubemap(path, FakeMat())
-        assert cubemap is None
+@pytest.mark.parametrize("path", [
+    "materials/effects/blood/blood01.bgsm",
+    "effects/blood01.bgem",
+    "materials/interface/lockpicking/lock.bgsm",
+    "materials/menu/main.bgsm",
+    "materials/sky/clouds01.bgsm",
+    "materials/decals/blood/decal01.bgsm",
+])
+def test_excluded_paths_return_none(path: str) -> None:
+    cubemap, scale = select_cubemap(path, FakeMat())
+    assert cubemap is None
+    assert scale is None
+
+
+@pytest.mark.parametrize(("mat_kwargs", "src_path", "expected_cubemap", "expected_scale"), [
+    ({"DiffuseTexture": "textures/weapons/foo/Chrome_d.dds"}, "materials/weapons/foo/foo.bgsm",
+     "Shared/Cubemaps/MetalChrome01Cube_e.dds", 1.0),
+    ({"DiffuseTexture": "weapons/gauss/copperReceiver_d.dds"}, "materials/weapons/gauss/x.bgsm",
+     "Shared/Cubemaps/MetalCopperShine01Cube_e.dds", 1.0),
+    ({"NormalTexture": "actors/bug/bronzeArmor_n.dds"}, "materials/actors/bug/x.bgsm",
+     "Shared/Cubemaps/MetalBronzeCube_e.dds", None),
+    ({"DiffuseTexture": "props/Gold_d.dds"}, "materials/props/x.bgsm",
+     "Shared/Cubemaps/MetalBrushedGold_e.dds", None),
+    ({"DiffuseTexture": "props/brushedSteel_d.dds"}, "materials/props/x.bgsm",
+     "Shared/Cubemaps/MetalBrushed01Cube_e.dds", None),
+    ({"DiffuseTexture": "setdressing/glassBottle_d.dds"}, "materials/setdressing/x.bgsm",
+     "Shared/Cubemaps/mipblur_DefaultOutside1.dds", 0.5),
+    ({"DiffuseTexture": "actors/cat/eye_d.dds"}, "materials/actors/cat/eye.bgsm",
+     "Shared/Cubemaps/EyeCubeMap.dds", None),
+    ({"DiffuseTexture": "setdressing/oilSpill_d.dds"}, "materials/setdressing/x.bgsm",
+     "Shared/Cubemaps/Oil_e.dds", None),
+    ({"SpecularTexture": "weapons/gauss/copperish_s.dds"}, "materials/weapons/gauss/x.bgsm",
+     "Shared/Cubemaps/MetalCopperShine01Cube_e.dds", None),
+    # Priority: exclusion beats keyword — even with a chrome diffuse, an
+    # effects path returns None.
+    ({"DiffuseTexture": "effects/Chrome_d.dds"}, "materials/effects/x.bgsm", None, None),
+    # Priority: keyword beats path — a weapons path normally returns
+    # mipblur_DefaultOutside1, but a chrome diffuse overrides it.
+    ({"DiffuseTexture": "weapons/foo/Chrome_d.dds"}, "materials/weapons/foo/x.bgsm",
+     "Shared/Cubemaps/MetalChrome01Cube_e.dds", None),
+])
+def test_texture_keyword_branch(mat_kwargs, src_path, expected_cubemap, expected_scale) -> None:
+    mat = FakeMat(**mat_kwargs)
+    cubemap, scale = select_cubemap(src_path, mat)
+    assert cubemap == expected_cubemap
+    if expected_cubemap is None:
         assert scale is None
+    elif expected_scale is not None:
+        assert scale == expected_scale
 
 
-# ----------------------------------------------------- texture-keyword branch
-class TestTextureKeywords:
-    def test_chrome_keyword_overrides_path_default(self) -> None:
-        # Even on a weapon path (which would default to mipblur), the chrome
-        # keyword in the diffuse name picks the chrome cube.
-        mat = FakeMat(DiffuseTexture="textures/weapons/foo/Chrome_d.dds")
-        cubemap, scale = select_cubemap("materials/weapons/foo/foo.bgsm", mat)
-        assert cubemap == "Shared/Cubemaps/MetalChrome01Cube_e.dds"
-        assert scale == 1.0
-
-    def test_copper_keyword(self) -> None:
-        mat = FakeMat(DiffuseTexture="weapons/gauss/copperReceiver_d.dds")
-        cubemap, scale = select_cubemap("materials/weapons/gauss/x.bgsm", mat)
-        assert cubemap == "Shared/Cubemaps/MetalCopperShine01Cube_e.dds"
-        assert scale == 1.0
-
-    def test_bronze_keyword(self) -> None:
-        mat = FakeMat(NormalTexture="actors/bug/bronzeArmor_n.dds")
-        cubemap, scale = select_cubemap("materials/actors/bug/x.bgsm", mat)
-        assert cubemap == "Shared/Cubemaps/MetalBronzeCube_e.dds"
-
-    def test_gold_keyword(self) -> None:
-        mat = FakeMat(DiffuseTexture="props/Gold_d.dds")
-        cubemap, scale = select_cubemap("materials/props/x.bgsm", mat)
-        assert cubemap == "Shared/Cubemaps/MetalBrushedGold_e.dds"
-
-    def test_brushed_keyword(self) -> None:
-        mat = FakeMat(DiffuseTexture="props/brushedSteel_d.dds")
-        cubemap, scale = select_cubemap("materials/props/x.bgsm", mat)
-        assert cubemap == "Shared/Cubemaps/MetalBrushed01Cube_e.dds"
-
-    def test_glass_keyword_uses_lower_scale(self) -> None:
-        mat = FakeMat(DiffuseTexture="setdressing/glassBottle_d.dds")
-        cubemap, scale = select_cubemap("materials/setdressing/x.bgsm", mat)
-        assert cubemap == "Shared/Cubemaps/mipblur_DefaultOutside1.dds"
-        assert scale == 0.5
-
-    def test_eye_keyword(self) -> None:
-        mat = FakeMat(DiffuseTexture="actors/cat/eye_d.dds")
-        cubemap, scale = select_cubemap("materials/actors/cat/eye.bgsm", mat)
-        assert cubemap == "Shared/Cubemaps/EyeCubeMap.dds"
-
-    def test_oil_keyword(self) -> None:
-        mat = FakeMat(DiffuseTexture="setdressing/oilSpill_d.dds")
-        cubemap, scale = select_cubemap("materials/setdressing/x.bgsm", mat)
-        assert cubemap == "Shared/Cubemaps/Oil_e.dds"
-
-    def test_keyword_in_specular_slot_also_matches(self) -> None:
-        mat = FakeMat(SpecularTexture="weapons/gauss/copperish_s.dds")
-        cubemap, scale = select_cubemap("materials/weapons/gauss/x.bgsm", mat)
-        assert cubemap == "Shared/Cubemaps/MetalCopperShine01Cube_e.dds"
+@pytest.mark.parametrize(("src_path", "mat_kwargs", "expected_cubemap", "expected_scale"), [
+    ("materials/weapons/meltdown/MBody.bgsm", {"DiffuseTexture": "textures/weapons/meltdown/body_d.dds"},
+     "Shared/Cubemaps/mipblur_DefaultOutside1.dds", 1.0),
+    ("materials/weapons/10mmpistol/10mmRubberGrips.bgsm", {},
+     "Shared/Cubemaps/mipblur_DefaultOutside1_dielectric.dds", 0.3),
+    ("materials/atx/weapons/paint01/foo.bgsm", {},
+     "Shared/Cubemaps/mipblur_DefaultOutside1.dds", 1.0),
+    ("materials/actors/character/Body.bgsm", {"SkinTint": True},
+     "Shared/Cubemaps/mipblur_DefaultOutside1_dielectric.dds", 0.3),
+    ("materials/actors/dog/dog.bgsm", {"RootMaterialPath": "template/CreatureTemplate_Wet.bgsm"},
+     "Shared/Cubemaps/mipblur_DefaultOutside1_dielectric.dds", 0.3),
+    ("materials/architecture/MetalRoof01.bgsm", {},
+     "Shared/Cubemaps/mipblur_DefaultOutside1.dds", 1.0),
+    ("materials/architecture/Brickwall01.bgsm", {},
+     "Shared/Cubemaps/mipblur_DefaultOutside1_dielectric.dds", 0.3),
+    ("materials/clothes/Bathrobe/bathrobe.bgsm", {},
+     "Shared/Cubemaps/mipblur_DefaultOutside1_dielectric.dds", None),
+    ("materials/armor/Metal/MetalArmor.bgsm", {},
+     "Shared/Cubemaps/mipblur_DefaultOutside1.dds", None),
+    ("materials/armor/LeatherCoat/leather.bgsm", {},
+     "Shared/Cubemaps/mipblur_DefaultOutside1_dielectric.dds", None),
+    ("materials/vehicles/Car01.bgsm", {},
+     "Shared/Cubemaps/mipblur_DefaultOutside1.dds", None),
+    ("materials/ammo/10mm/cartridge.bgsm", {},
+     "Shared/Cubemaps/mipblur_DefaultOutside1.dds", None),
+    ("materials/unknownThing/foo.bgsm", {},
+     "Shared/Cubemaps/mipblur_DefaultOutside1.dds", 1.0),
+    ("", {},
+     "Shared/Cubemaps/mipblur_DefaultOutside1.dds", 1.0),
+])
+def test_path_driven_default(src_path, mat_kwargs, expected_cubemap, expected_scale) -> None:
+    cubemap, scale = select_cubemap(src_path, FakeMat(**mat_kwargs))
+    assert cubemap == expected_cubemap
+    if expected_scale is not None:
+        assert scale == expected_scale
 
 
-# ----------------------------------------------------- path-driven defaults
-class TestPathDefaults:
-    def test_weapons_path_uses_outside_cubemap(self) -> None:
-        cubemap, scale = select_cubemap(
-            "materials/weapons/meltdown/MBody.bgsm",
-            FakeMat(DiffuseTexture="textures/weapons/meltdown/body_d.dds"),
-        )
-        assert cubemap == "Shared/Cubemaps/mipblur_DefaultOutside1.dds"
-        assert scale == 1.0
-
-    def test_weapons_with_grip_hint_uses_dielectric(self) -> None:
-        # Rubber grips, wooden stocks, etc. should not look mirror-shiny.
-        cubemap, scale = select_cubemap(
-            "materials/weapons/10mmpistol/10mmRubberGrips.bgsm",
-            FakeMat(),
-        )
-        assert cubemap == "Shared/Cubemaps/mipblur_DefaultOutside1_dielectric.dds"
-        assert scale == 0.3
-
-    def test_atx_weapons_path_treated_as_weapon(self) -> None:
-        cubemap, scale = select_cubemap(
-            "materials/atx/weapons/paint01/foo.bgsm",
-            FakeMat(),
-        )
-        assert cubemap == "Shared/Cubemaps/mipblur_DefaultOutside1.dds"
-        assert scale == 1.0
-
-    def test_actors_skintint_uses_dielectric(self) -> None:
-        cubemap, scale = select_cubemap(
-            "materials/actors/character/Body.bgsm",
-            FakeMat(SkinTint=True),
-        )
-        assert cubemap == "Shared/Cubemaps/mipblur_DefaultOutside1_dielectric.dds"
-        assert scale == 0.3
-
-    def test_actors_creature_template_uses_dielectric(self) -> None:
-        cubemap, scale = select_cubemap(
-            "materials/actors/dog/dog.bgsm",
-            FakeMat(RootMaterialPath="template/CreatureTemplate_Wet.bgsm"),
-        )
-        assert cubemap == "Shared/Cubemaps/mipblur_DefaultOutside1_dielectric.dds"
-        assert scale == 0.3
-
-    def test_architecture_metal_hint_uses_outside(self) -> None:
-        cubemap, scale = select_cubemap(
-            "materials/architecture/MetalRoof01.bgsm",
-            FakeMat(),
-        )
-        assert cubemap == "Shared/Cubemaps/mipblur_DefaultOutside1.dds"
-        assert scale == 1.0
-
-    def test_architecture_no_metal_hint_uses_dielectric(self) -> None:
-        cubemap, scale = select_cubemap(
-            "materials/architecture/Brickwall01.bgsm",
-            FakeMat(),
-        )
-        assert cubemap == "Shared/Cubemaps/mipblur_DefaultOutside1_dielectric.dds"
-        assert scale == 0.3
-
-    def test_clothes_path_uses_dielectric(self) -> None:
-        cubemap, scale = select_cubemap(
-            "materials/clothes/Bathrobe/bathrobe.bgsm",
-            FakeMat(),
-        )
-        assert cubemap == "Shared/Cubemaps/mipblur_DefaultOutside1_dielectric.dds"
-
-    def test_armor_metal_hint_uses_outside(self) -> None:
-        cubemap, scale = select_cubemap(
-            "materials/armor/Metal/MetalArmor.bgsm",
-            FakeMat(),
-        )
-        assert cubemap == "Shared/Cubemaps/mipblur_DefaultOutside1.dds"
-
-    def test_armor_leather_hint_uses_dielectric(self) -> None:
-        cubemap, scale = select_cubemap(
-            "materials/armor/LeatherCoat/leather.bgsm",
-            FakeMat(),
-        )
-        assert cubemap == "Shared/Cubemaps/mipblur_DefaultOutside1_dielectric.dds"
-
-    def test_vehicles_uses_outside(self) -> None:
-        cubemap, scale = select_cubemap(
-            "materials/vehicles/Car01.bgsm",
-            FakeMat(),
-        )
-        assert cubemap == "Shared/Cubemaps/mipblur_DefaultOutside1.dds"
-
-    def test_ammo_uses_outside(self) -> None:
-        cubemap, scale = select_cubemap(
-            "materials/ammo/10mm/cartridge.bgsm",
-            FakeMat(),
-        )
-        assert cubemap == "Shared/Cubemaps/mipblur_DefaultOutside1.dds"
-
-
-# ---------------------------------------------------------------- fallback
-class TestFallback:
-    def test_unknown_category_falls_back_to_outside(self) -> None:
-        cubemap, scale = select_cubemap(
-            "materials/unknownThing/foo.bgsm",
-            FakeMat(),
-        )
-        assert cubemap == "Shared/Cubemaps/mipblur_DefaultOutside1.dds"
-        assert scale == 1.0
-
-    def test_empty_source_path_returns_default(self) -> None:
-        cubemap, scale = select_cubemap("", FakeMat())
-        assert cubemap == "Shared/Cubemaps/mipblur_DefaultOutside1.dds"
-        assert scale == 1.0
-
-
-# ----------------------------------------------- precedence: exclude > kw > path
-class TestPrecedence:
-    def test_exclusion_beats_keyword(self) -> None:
-        # Even with a chrome diffuse, an effects path returns None.
-        mat = FakeMat(DiffuseTexture="effects/Chrome_d.dds")
-        cubemap, scale = select_cubemap("materials/effects/x.bgsm", mat)
-        assert cubemap is None
-        assert scale is None
-
-    def test_keyword_beats_path(self) -> None:
-        # Weapons path normally returns mipblur_DefaultOutside1, but a chrome
-        # diffuse overrides it.
-        mat = FakeMat(DiffuseTexture="weapons/foo/Chrome_d.dds")
-        cubemap, scale = select_cubemap("materials/weapons/foo/x.bgsm", mat)
-        assert cubemap == "Shared/Cubemaps/MetalChrome01Cube_e.dds"

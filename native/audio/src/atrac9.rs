@@ -324,22 +324,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn frame_sizes_fit_config_field() {
-        assert_eq!(encoded_frame_bytes(1), 96);
-        assert_eq!(encoded_frame_bytes(2), 192);
-        assert!(encoded_frame_bytes(2) <= 2048);
+    fn frames_and_config_match_frame_size_and_channels() {
         let silent = [0.0; FRAME_SAMPLES];
         assert_eq!(encode_frame(&[silent], 1, 96, true).unwrap().len(), 96);
         assert_eq!(
             encode_frame(&[silent, silent], 2, 192, true).unwrap().len(),
             192
         );
-    }
-
-    #[test]
-    fn config_contains_frame_size_and_channel_mapping() {
         for channels in [1, 2] {
             let frame_bytes = encoded_frame_bytes(channels);
+            assert_eq!(frame_bytes, 96 * channels);
             let wave = make_at9_wave(&vec![0; frame_bytes], channels, 1, frame_bytes).unwrap();
             let config = u32::from_be_bytes(wave[64..68].try_into().unwrap());
             assert_eq!((config >> 24) & 0xff, 0xfe);

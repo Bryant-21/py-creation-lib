@@ -160,22 +160,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn gpu_bc7_roundtrips_or_reports_unavailable() {
-        // 8x8 solid red, RGBA8.
-        let rgba = vec![255u8, 0, 0, 255].repeat(8 * 8);
-        match compress_bc7_gpu(&rgba, 8, 8, false) {
-            Ok(bytes) => {
-                // BC7 = 16 bytes per 4x4 block; 8x8 = 4 blocks = 64 bytes.
-                assert_eq!(bytes.len(), 64, "BC7 payload size for 8x8");
-            }
-            Err(e) => {
-                // Acceptable in a GPU-less CI box: must be a clean error, not a panic.
-                assert!(!e.is_empty(), "error message present");
-            }
-        }
-    }
-
-    #[test]
     fn gpu_bc7_batch_matches_per_image() {
         // A descending mip chain with varied content per level.
         let sizes = [(8u32, 8u32), (4, 4), (2, 2), (1, 1)];

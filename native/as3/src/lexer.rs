@@ -195,6 +195,9 @@ pub enum Punct {
     StarAssign,
     SlashAssign,
     PercentAssign,
+    AmpAssign,
+    PipeAssign,
+    CaretAssign,
     AndAnd,
     OrOr,
     Not,
@@ -245,6 +248,9 @@ impl Punct {
             Punct::StarAssign => "*=",
             Punct::SlashAssign => "/=",
             Punct::PercentAssign => "%=",
+            Punct::AmpAssign => "&=",
+            Punct::PipeAssign => "|=",
+            Punct::CaretAssign => "^=",
             Punct::AndAnd => "&&",
             Punct::OrOr => "||",
             Punct::Not => "!",
@@ -726,6 +732,8 @@ fn lex_punct(cur: &mut Cursor<'_>, start: Pos) -> Result<TokenKind> {
         b'&' => {
             if cur.eat(b'&') {
                 Punct::AndAnd
+            } else if cur.eat(b'=') {
+                Punct::AmpAssign
             } else {
                 Punct::Amp
             }
@@ -733,11 +741,19 @@ fn lex_punct(cur: &mut Cursor<'_>, start: Pos) -> Result<TokenKind> {
         b'|' => {
             if cur.eat(b'|') {
                 Punct::OrOr
+            } else if cur.eat(b'=') {
+                Punct::PipeAssign
             } else {
                 Punct::Pipe
             }
         }
-        b'^' => Punct::Caret,
+        b'^' => {
+            if cur.eat(b'=') {
+                Punct::CaretAssign
+            } else {
+                Punct::Caret
+            }
+        }
         other => {
             return Err(Diagnostic::lex(
                 format!("unexpected character {:?}", other as char),

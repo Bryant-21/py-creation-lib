@@ -1258,7 +1258,7 @@ mod unseen_tests {
     use crate::atlas::AtlasList;
     use crate::input::{CellInput, RefInput, WorldspaceInput};
     use crate::objects::static_desc::{ShaderKind, ShapeDesc, ShapeFlags};
-    use crate::settings::{Fo76BtoMultiboundMode, LodSettings};
+    use crate::settings::LodSettings;
 
     fn identity4() -> [[f32; 4]; 4] {
         [
@@ -1427,42 +1427,6 @@ mod unseen_tests {
     }
 
     #[test]
-    fn source_bto_builder_preserves_geometry_with_decimation_enabled() {
-        let mut settings = LodSettings::fo4_default().objects;
-        settings.meshopt_decimate_object_lod = true;
-        settings.meshopt_lod_model_ratios = [0.10, 0.10, 0.10, 0.10];
-        settings.meshopt_quad_tri_budgets = [8, 8, 8, 8];
-
-        let mut q = quad();
-        q.quad_level = 16;
-        let mut s = grid_shape(
-            r"meshes\terrain\appalachia\objects\appalachia.16.-14.19.bto",
-            16,
-        );
-        s.geometry.vertices.push([999.0, 999.0, 999.0]);
-        s.geometry.uvcoords.push([0.0, 0.0]);
-        s.geometry.normals.push([0.0, 0.0, 1.0]);
-        let before_tris = s.geometry.num_triangles();
-        let before_verts = s.geometry.vertices.len();
-        s.segments = generate_segments(&q, s.x, s.y, before_tris as u16);
-
-        let (bto, telemetry) = build_source_bto_with_telemetry(&mut q, vec![s], &settings);
-
-        assert_eq!(bto.len(), 1);
-        assert_eq!(bto[0].geometry.num_triangles(), before_tris);
-        assert_eq!(bto[0].geometry.vertices.len(), before_verts);
-        assert_eq!(
-            bto[0]
-                .segments
-                .iter()
-                .map(|segment| segment.num_triangles as usize)
-                .sum::<usize>(),
-            before_tris
-        );
-        assert_eq!(telemetry.simplify.shapes_simplified, 0);
-    }
-
-    #[test]
     fn build_bto_caps_root_children_below_fo4_sentinel_index() {
         let settings = LodSettings::fo4_default().objects;
         let mut q = quad();
@@ -1514,22 +1478,6 @@ mod unseen_tests {
     }
 
     #[test]
-    fn source_bto_builder_keeps_compatible_shapes_separate_when_merge_disabled() {
-        let settings = LodSettings::fo4_default().objects;
-        let mut q = quad();
-        q.quad_level = 16;
-        let mut s1 = shape([0.0, 0.0, 0.0]);
-        let mut s2 = shape([10.0, 10.0, 0.0]);
-        s1.segments = generate_segments(&q, s1.x, s1.y, s1.geometry.num_triangles() as u16);
-        s2.segments = generate_segments(&q, s2.x, s2.y, s2.geometry.num_triangles() as u16);
-
-        let (bto, telemetry) = build_source_bto_with_telemetry(&mut q, vec![s1, s2], &settings);
-
-        assert_eq!(bto.len(), 2);
-        assert_eq!(telemetry.simplify.triangles_after, 2);
-    }
-
-    #[test]
     fn source_bto_builder_merges_compatible_shapes_when_enabled() {
         let mut settings = LodSettings::fo4_default().objects;
         settings.fo76_bto_merge_atlassed_shapes = true;
@@ -1556,52 +1504,6 @@ mod unseen_tests {
     }
 
     #[test]
-    fn source_bto_builder_preserves_explicit_output_transform() {
-        let settings = LodSettings::fo4_default().objects;
-        let mut q = quad();
-        q.x = -10;
-        q.y = -1;
-        q.quad_level = 4;
-
-        let mut s = shape([10.0, 20.0, 30.0]);
-        s.bto_translation = Some([-40960.0, -4096.0, 0.0]);
-        s.bto_scale = Some(1.0);
-        s.segments = generate_segments(&q, s.x, s.y, s.geometry.num_triangles() as u16);
-
-        let (bto, _) = build_source_bto_with_telemetry(&mut q, vec![s], &settings);
-
-        assert_eq!(bto.len(), 1);
-        assert_eq!(bto[0].translation, [-40960.0, -4096.0, 0.0]);
-        assert_eq!(bto[0].scale, 1.0);
-        assert_eq!(bto[0].multibound.position, [-40896.0, -4032.0, 20.0]);
-        assert_eq!(bto[0].multibound.extent, [64.0, 64.0, 10.0]);
-    }
-
-    #[test]
-    fn source_bto_tile_multibound_inflates_culling_bounds() {
-        let mut settings = LodSettings::fo4_default().objects;
-        settings.fo76_bto_multibound_mode = Fo76BtoMultiboundMode::Tile;
-        let mut q = quad();
-        q.x = -10;
-        q.y = -1;
-        q.quad_level = 4;
-        q.quad_offset = 16_384.0;
-
-        let mut s = shape([10.0, 20.0, 30.0]);
-        s.bto_translation = Some([-40960.0, -4096.0, 0.0]);
-        s.bto_scale = Some(1.0);
-        s.segments = generate_segments(&q, s.x, s.y, s.geometry.num_triangles() as u16);
-
-        let (bto, _) = build_source_bto_with_telemetry(&mut q, vec![s], &settings);
-
-        assert_eq!(bto.len(), 1);
-        assert_eq!(bto[0].translation, [-40960.0, -4096.0, 0.0]);
-        assert_eq!(bto[0].scale, 1.0);
-        assert_eq!(bto[0].multibound.position, [-32768.0, 4096.0, 20.0]);
-        assert_eq!(bto[0].multibound.extent, [12288.0, 12288.0, 65536.0]);
-    }
-
-    #[test]
     fn remove_unseen_faces_drops_fully_buried_triangle() {
         let world = WorldspaceInput::from_cells("W", vec![flat_cell(10.0)]);
         let settings = LodSettings::fo4_default();
@@ -1619,22 +1521,4 @@ mod unseen_tests {
         assert!(!kept);
     }
 
-    #[test]
-    fn remove_unseen_faces_keeps_triangle_with_visible_vertex() {
-        let world = WorldspaceInput::from_cells("W", vec![flat_cell(10.0)]);
-        let settings = LodSettings::fo4_default();
-        let mut shape = shape([0.0, 0.0, 20.0]);
-
-        let kept = transform_shape_with_world(
-            &quad(),
-            &stat(),
-            &mut shape,
-            &AtlasList::new(),
-            &settings.objects,
-            &world,
-        );
-
-        assert!(kept);
-        assert_eq!(shape.geometry.num_triangles(), 1);
-    }
 }

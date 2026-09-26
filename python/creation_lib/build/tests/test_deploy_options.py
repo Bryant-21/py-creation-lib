@@ -16,12 +16,12 @@ def test_preserve_xse_inis_copies_new_files_and_updates_dlls(tmp_path, game, ext
     staging = mod / extender / "Plugins"
     staging.mkdir(parents=True)
     (mod / "B21_Options.esp").write_bytes(b"plugin")
-    for name in ("B21_Test.INI", "B21_New.ini", "B21_Test.dll"):
+    for name in ("B21_Test.INI", "B21_New.ini", "B21_Test.dll", "B21_TalesFromAppalachia_en.txt"):
         (staging / name).write_text("new", encoding="utf-8")
     target = tmp_path / "MO2" / "B21_Options"
     installed = target / extender / "Plugins"
     installed.mkdir(parents=True)
-    for name in ("B21_Test.INI", "B21_Test.dll"):
+    for name in ("B21_Test.INI", "B21_Test.dll", "B21_TalesFromAppalachia_en.txt"):
         (installed / name).write_text("user setting", encoding="utf-8")
     kwargs = dict(game=game, game_data_dir=tmp_path / "Game" / "Data", deploy_data_dir=target,
                   project_root=tmp_path, skip_build=True, skip_papyrus_compile=True)
@@ -33,6 +33,7 @@ def test_preserve_xse_inis_copies_new_files_and_updates_dlls(tmp_path, game, ext
     assert (installed / "B21_Test.INI").read_text() == "user setting"
     assert (installed / "B21_New.ini").read_text() == "new"
     assert (installed / "B21_Test.dll").read_text() == "new"
+    assert (installed / "B21_TalesFromAppalachia_en.txt").read_text() == "new"
     assert not kwargs["game_data_dir"].exists()
     if mode == "loose":
         undeploy_loose_assets("B21_Options", game_data_dir=target, project_root=tmp_path)

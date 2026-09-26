@@ -1,7 +1,6 @@
 use crate::animation::clip::{AnimationClip, AnimationKeyframe, BoneChannel};
 use crate::animation::pose::{
-    Pose, PoseSkeleton, QsTransform, quat_mul, quat_normalize, quat_rotate, vec3_add, vec3_len,
-    vec3_sub,
+    Pose, PoseSkeleton, QsTransform, quat_mul, quat_normalize, quat_rotate, vec3_sub,
 };
 /// Skeleton retargeting between rigs that differ in bone count and naming
 /// (e.g. FO4 ↔ FO76 NPC rigs, Skyrim XPMSE → FO4).
@@ -61,7 +60,7 @@ impl SkeletonMapper {
 
         // Chain detection: find parent–child runs in source that have both
         // endpoints mapped, then build a target chain between those anchors.
-        let chains = detect_chains(&source, &target, &simple);
+        let chains = Vec::new();
 
         SkeletonMapper {
             source,
@@ -128,13 +127,6 @@ pub fn retarget_clip(clip: &AnimationClip, mapper: &SkeletonMapper) -> Animation
     // Per-target-bone per-frame translations and rotations.
     let mut tgt_trans: Vec<Vec<[f32; 3]>> = vec![Vec::new(); target_n];
     let mut tgt_rots: Vec<Vec<[f32; 4]>> = vec![Vec::new(); target_n];
-
-    // Build a set of source-bone indices that are simple-mapped to a target bone.
-    let src_to_tgt: HashMap<usize, usize> = mapper
-        .simple
-        .iter()
-        .map(|m| (m.source_idx, m.target_idx))
-        .collect();
 
     for &frame_time in &frame_times {
         // Sample source clip at this time by building a source pose.
@@ -439,18 +431,6 @@ fn model_to_local(parent: &QsTransform, model: &QsTransform) -> QsTransform {
     }
 }
 
-/// Detect chain mappings: multi-bone segments in source with both anchor bones
-/// mapped to target are grouped as chains. Returns chain mappings where source
-/// and target chains have different lengths.
-fn detect_chains(
-    source: &PoseSkeleton,
-    target: &PoseSkeleton,
-    simple: &[SimpleMapping],
-) -> Vec<ChainMapping> {
-    // Chain detection is not implemented; simple name-matching only.
-    Vec::new()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -467,94 +447,94 @@ mod tests {
     }
 
     #[test]
-    fn retarget_identity_clip_preserves_rotations() {
-        let src_skel = make_skeleton(&["Root", "Spine", "Head"], &[-1, 0, 1]);
-        let tgt_skel = make_skeleton(&["Root", "Spine", "Head"], &[-1, 0, 1]);
-        let mapper = SkeletonMapper::from_skeletons(src_skel, tgt_skel);
+    fn retarget_identity_and_name_mapping() {
+        {
+            let src_skel = make_skeleton(&["Root", "Spine", "Head"], &[-1, 0, 1]);
+            let tgt_skel = make_skeleton(&["Root", "Spine", "Head"], &[-1, 0, 1]);
+            let mapper = SkeletonMapper::from_skeletons(src_skel, tgt_skel);
 
-        let rot = [0.0f32, 0.0, 0.707, 0.707];
-        let clip = AnimationClip {
-            source_format: "hkx".into(),
-            duration: 1.0,
-            native_fps: 30.0,
-            channels: vec![
-                BoneChannel {
-                    bone_name: "Root".into(),
-                    translations: vec![AnimationKeyframe {
-                        time: 0.0,
-                        value: [0.0, 0.0, 0.0],
-                    }],
-                    rotations: vec![AnimationKeyframe {
-                        time: 0.0,
-                        value: rot,
-                    }],
-                    scales: Vec::new(),
-                },
-                BoneChannel {
-                    bone_name: "Spine".into(),
-                    translations: vec![AnimationKeyframe {
-                        time: 0.0,
-                        value: [0.0, 1.0, 0.0],
-                    }],
-                    rotations: vec![AnimationKeyframe {
-                        time: 0.0,
-                        value: [0.0, 0.0, 0.0, 1.0],
-                    }],
-                    scales: Vec::new(),
-                },
-                BoneChannel {
-                    bone_name: "Head".into(),
-                    translations: vec![AnimationKeyframe {
-                        time: 0.0,
-                        value: [0.0, 2.0, 0.0],
-                    }],
-                    rotations: vec![AnimationKeyframe {
-                        time: 0.0,
-                        value: [0.0, 0.0, 0.0, 1.0],
-                    }],
-                    scales: Vec::new(),
-                },
-            ],
-            events: Vec::new(),
-            original_skeleton_name: None,
-            warnings: Vec::new(),
-            is_additive: false,
-            track_to_bone_indices: Vec::new(),
-            extracted_motion_ref: String::new(),
-        };
+            let rot = [0.0f32, 0.0, 0.707, 0.707];
+            let clip = AnimationClip {
+                source_format: "hkx".into(),
+                duration: 1.0,
+                native_fps: 30.0,
+                channels: vec![
+                    BoneChannel {
+                        bone_name: "Root".into(),
+                        translations: vec![AnimationKeyframe {
+                            time: 0.0,
+                            value: [0.0, 0.0, 0.0],
+                        }],
+                        rotations: vec![AnimationKeyframe {
+                            time: 0.0,
+                            value: rot,
+                        }],
+                        scales: Vec::new(),
+                    },
+                    BoneChannel {
+                        bone_name: "Spine".into(),
+                        translations: vec![AnimationKeyframe {
+                            time: 0.0,
+                            value: [0.0, 1.0, 0.0],
+                        }],
+                        rotations: vec![AnimationKeyframe {
+                            time: 0.0,
+                            value: [0.0, 0.0, 0.0, 1.0],
+                        }],
+                        scales: Vec::new(),
+                    },
+                    BoneChannel {
+                        bone_name: "Head".into(),
+                        translations: vec![AnimationKeyframe {
+                            time: 0.0,
+                            value: [0.0, 2.0, 0.0],
+                        }],
+                        rotations: vec![AnimationKeyframe {
+                            time: 0.0,
+                            value: [0.0, 0.0, 0.0, 1.0],
+                        }],
+                        scales: Vec::new(),
+                    },
+                ],
+                events: Vec::new(),
+                original_skeleton_name: None,
+                warnings: Vec::new(),
+                is_additive: false,
+                track_to_bone_indices: Vec::new(),
+                extracted_motion_ref: String::new(),
+            };
 
-        let result = retarget_clip(&clip, &mapper);
-        assert_eq!(result.channels.len(), 3);
-        // Retargeted Root rotation should be close to input (same-skeleton retarget).
-        let root_ch = result
-            .channels
-            .iter()
-            .find(|c| c.bone_name == "Root")
-            .unwrap();
-        let r = root_ch.rotations[0].value;
-        let diff = (r[0] - rot[0]).abs()
-            + (r[1] - rot[1]).abs()
-            + (r[2] - rot[2]).abs()
-            + (r[3] - rot[3]).abs();
-        assert!(
-            diff < 0.1,
-            "root rotation mismatch after identity retarget: {r:?}"
-        );
-    }
-
-    #[test]
-    fn mapper_name_match_coverage() {
-        let src = make_skeleton(&["Pelvis", "Spine1", "Spine2", "Head"], &[-1, 0, 1, 2]);
-        let tgt = make_skeleton(&["Pelvis", "Spine1", "Head"], &[-1, 0, 1]);
-        let mapper = SkeletonMapper::from_skeletons(src, tgt);
-        // "Pelvis", "Spine1", "Head" should match (3 out of 4 source bones).
-        assert_eq!(mapper.simple.len(), 3);
-        // "Spine2" has no match in target — only 3 mappings.
-        assert!(
-            !mapper
-                .simple
+            let result = retarget_clip(&clip, &mapper);
+            assert_eq!(result.channels.len(), 3);
+            // Retargeted Root rotation should be close to input (same-skeleton retarget).
+            let root_ch = result
+                .channels
                 .iter()
-                .any(|m| m.source_idx == 2 && m.target_idx == 2)
-        );
+                .find(|c| c.bone_name == "Root")
+                .unwrap();
+            let r = root_ch.rotations[0].value;
+            let diff = (r[0] - rot[0]).abs()
+                + (r[1] - rot[1]).abs()
+                + (r[2] - rot[2]).abs()
+                + (r[3] - rot[3]).abs();
+            assert!(
+                diff < 0.1,
+                "root rotation mismatch after identity retarget: {r:?}"
+            );
+        }
+        {
+            let src = make_skeleton(&["Pelvis", "Spine1", "Spine2", "Head"], &[-1, 0, 1, 2]);
+            let tgt = make_skeleton(&["Pelvis", "Spine1", "Head"], &[-1, 0, 1]);
+            let mapper = SkeletonMapper::from_skeletons(src, tgt);
+            // "Pelvis", "Spine1", "Head" should match (3 out of 4 source bones).
+            assert_eq!(mapper.simple.len(), 3);
+            // "Spine2" has no match in target — only 3 mappings.
+            assert!(
+                !mapper
+                    .simple
+                    .iter()
+                    .any(|m| m.source_idx == 2 && m.target_idx == 2)
+            );
+        }
     }
 }

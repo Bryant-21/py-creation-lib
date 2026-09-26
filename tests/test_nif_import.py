@@ -32,8 +32,8 @@ def _make_nif_with_children(child_types: list[str]):
 
 
 class TestCategorizeChildren:
-    def test_empty_root(self):
-        """Root with no children returns empty categories."""
+    def test_empty_and_unknown_children(self):
+        """Root with no children returns empty categories; unknown types default to geometry."""
         from creation_lib.renderer.nif_importer import categorize_children
 
         nif = _make_nif_with_children([])
@@ -45,6 +45,13 @@ class TestCategorizeChildren:
             "connect_points": [],
             "root_extra_data": [],
         }
+
+        nif = _make_nif_with_children(["BSTriShape", "NiPointLight", "BSEffectShaderProperty"])
+        result = categorize_children(nif, 0)
+        assert result["geometry"] == [1, 2, 3]
+        assert result["animations"] == []
+        assert result["connect_points"] == []
+        assert result["root_extra_data"] == []
 
     def test_mixed_children(self):
         """Children are sorted into correct categories."""
@@ -67,18 +74,6 @@ class TestCategorizeChildren:
         assert result["animations"] == [2, 6, 9]
         assert result["connect_points"] == [3, 7]
         assert result["root_extra_data"] == [4, 8, 10]
-
-    def test_all_geometry(self):
-        """Unknown types default to geometry bucket."""
-        from creation_lib.renderer.nif_importer import categorize_children
-
-        nif = _make_nif_with_children(["BSTriShape", "NiPointLight", "BSEffectShaderProperty"])
-        result = categorize_children(nif, 0)
-        assert result["geometry"] == [1, 2, 3]
-        assert result["animations"] == []
-        assert result["connect_points"] == []
-        assert result["root_extra_data"] == []
-
 
 def _make_real_nif_pair():
     """Create two minimal real NifFile instances for import testing.
@@ -114,8 +109,8 @@ def _make_real_nif_pair():
 
 
 class TestImportNif:
-    def test_import_all(self):
-        """Import with all options enabled merges all blocks."""
+    def test_import_all_vs_nothing(self):
+        """All options enabled merges all blocks; all disabled imports zero."""
         from creation_lib.renderer.nif_importer import import_nif, ImportOptions
 
         source, target = _make_real_nif_pair()
@@ -125,12 +120,25 @@ class TestImportNif:
         app.nif = target
         app.nif_file = target
 
-        opts = ImportOptions()  # all True
-        result = import_nif(app, source, opts)
-
+        result = import_nif(app, source, ImportOptions())  # all True
         assert result.error == ""
         assert result.imported_count > 0
         assert len(target.blocks) > target_blocks_before
+
+        source2, target2 = _make_real_nif_pair()
+        target2_blocks_before = len(target2.blocks)
+        app2 = MagicMock()
+        app2.nif = target2
+        app2.nif_file = target2
+        opts_none = ImportOptions(
+            import_geometry=False,
+            import_animations=False,
+            import_connect_points=False,
+            import_root_extra_data=False,
+        )
+        result2 = import_nif(app2, source2, opts_none)
+        assert result2.imported_count == 0
+        assert len(target2.blocks) == target2_blocks_before
 
     def test_import_geometry_only(self):
         """With only geometry enabled, animations/connect_points/extra_data skipped."""
@@ -154,27 +162,6 @@ class TestImportNif:
         type_names = [b.type_name for b in target.blocks]
         assert "BSXFlags" not in type_names
 
-    def test_import_nothing(self):
-        """All options disabled imports zero blocks."""
-        from creation_lib.renderer.nif_importer import import_nif, ImportOptions
-
-        source, target = _make_real_nif_pair()
-        target_blocks_before = len(target.blocks)
-
-        app = MagicMock()
-        app.nif = target
-        app.nif_file = target
-
-        opts = ImportOptions(
-            import_geometry=False,
-            import_animations=False,
-            import_connect_points=False,
-            import_root_extra_data=False,
-        )
-        result = import_nif(app, source, opts)
-        assert result.imported_count == 0
-        assert len(target.blocks) == target_blocks_before
-
     def test_duplicate_extra_data_skipped(self):
         """If target root already has BSXFlags, importing BSXFlags is skipped."""
         from creation_lib.renderer.nif_importer import import_nif, ImportOptions
@@ -196,40 +183,29 @@ class TestImportNif:
         result = import_nif(app, source, opts)
         assert any("BSXFlags" in s for s in result.skipped)
 
-    def test_import_with_no_nif_returns_error(self):
-        """import_nif returns error when app has no NIF loaded."""
-        from creation_lib.renderer.nif_importer import import_nif, ImportOptions
-
-        source, _ = _make_real_nif_pair()
-        app = MagicMock()
-        app.nif = None
-        app.nif_file = None
-
-        result = import_nif(app, source, ImportOptions())
+        # import_nif returns an error when app has no NIF loaded.
+        app_no_nif = MagicMock()
+        app_no_nif.nif = None
+        app_no_nif.nif_file = None
+        result = import_nif(app_no_nif, source, ImportOptions())
         assert result.error != ""
 
 
 class TestImportOptions:
-    def test_to_dict_defaults(self):
+    def test_to_dict_and_from_dict_round_trip_and_defaults(self):
         from creation_lib.renderer.nif_importer import ImportOptions
+
         opts = ImportOptions()
-        d = opts.to_dict()
-        assert d == {
+        assert opts.to_dict() == {
             "import_geometry": True,
             "import_animations": True,
             "import_connect_points": True,
             "import_root_extra_data": True,
         }
 
-    def test_from_dict_round_trip(self):
-        from creation_lib.renderer.nif_importer import ImportOptions
         original = ImportOptions(import_geometry=False, import_animations=True,
                                   import_connect_points=False, import_root_extra_data=True)
-        d = original.to_dict()
-        restored = ImportOptions.from_dict(d)
+        restored = ImportOptions.from_dict(original.to_dict())
         assert restored == original
 
-    def test_from_dict_missing_keys(self):
-        from creation_lib.renderer.nif_importer import ImportOptions
-        opts = ImportOptions.from_dict({})
-        assert opts == ImportOptions()  # all defaults True
+        assert ImportOptions.from_dict({}) == ImportOptions()  # all defaults True

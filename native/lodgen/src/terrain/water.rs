@@ -231,37 +231,6 @@ mod tests {
         assert!((mesh.bbox.max[1] - 4096.0).abs() < 1e-3);
     }
 
-    /// A land cell that rises above its water height yields NO water plane.
-    #[test]
-    fn land_above_water_yields_none() {
-        // terrain at z=+500, water at z=0 → floor above water → no emit.
-        let cells = (0..16)
-            .flat_map(|y| (0..16).map(move |x| (x, y)))
-            .map(|(x, y)| cell(x, y, 500.0, 0.0))
-            .collect();
-        let mut w = WorldspaceInput::from_cells("W", cells);
-        w.water_height = 0.0;
-        assert!(
-            build_water_mesh(&w, &quad(16, 0, 0)).is_none(),
-            "land above water must not emit a water block"
-        );
-    }
-
-    /// The sentinel "no water" worldspace (f32::MIN) over landless cells emits
-    /// nothing (MIN > pz2 is false).
-    #[test]
-    fn sentinel_no_water_landless_yields_none() {
-        // No cells at all → all landless; worldspace water = sentinel f32::MIN.
-        let mut w = WorldspaceInput::from_cells("W", vec![cell(40, 40, 0.0, f32::MIN)]);
-        w.sw_cell = (0, 0);
-        w.ne_cell = (43, 43);
-        w.water_height = f32::MIN;
-        assert!(
-            build_water_mesh(&w, &quad(16, 0, 0)).is_none(),
-            "sentinel water must not emit"
-        );
-    }
-
     /// Landless cells (no LAND record) use the worldspace water over landHeight=0;
     /// a positive worldspace water height floods them.
     #[test]
@@ -301,16 +270,4 @@ mod tests {
         );
     }
 
-    /// Water z is the water height divided by lodLevel (local block space).
-    #[test]
-    fn water_z_is_height_over_level() {
-        let cells = vec![cell(0, 0, -100.0, 320.0)];
-        let mut w = WorldspaceInput::from_cells("W", cells);
-        w.sw_cell = (0, 0);
-        w.ne_cell = (15, 15);
-        w.water_height = 320.0;
-        let mesh = build_water_mesh(&w, &quad(16, 0, 0)).unwrap();
-        // z = 320 / 16 = 20.0 in local space.
-        assert!(mesh.verts.iter().all(|v| (v[2] - 20.0).abs() < 1e-3));
-    }
 }

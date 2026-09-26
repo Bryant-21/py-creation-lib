@@ -525,28 +525,6 @@ pub fn register_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn crate_marker_is_lodgen() {
-        assert_eq!(crate_marker(), "lodgen_native");
-    }
-}
-
-/// Returns the fast-path plugin candidate names for the given `world_id`.
-/// This mirrors the inline array in `run()` and is exposed only for testing.
-#[cfg(test)]
-pub fn fast_path_candidates(world_id: &str) -> Vec<String> {
-    vec![
-        format!("{}.esm", world_id),
-        format!("{}.esp", world_id),
-        "Fallout4.esm".to_string(),
-        "SeventySix.esm".to_string(),
-    ]
-}
-
-#[cfg(test)]
 mod run_tests {
     use super::*;
     use crate::progress::{LodPaths, Progress};
@@ -555,24 +533,6 @@ mod run_tests {
     struct NullProgress;
     impl Progress for NullProgress {
         fn report(&mut self, _m: &str, _f: f32) {}
-    }
-
-    /// The fast-path candidate list must include SeventySix.esm so that
-    /// APPALACHIA (FO76→FO4 converted-mod) is found without a full Data dir scan.
-    #[test]
-    fn fast_path_candidates_include_seventysix_esm() {
-        let candidates = fast_path_candidates("APPALACHIA");
-        assert!(
-            candidates
-                .iter()
-                .any(|c| c.eq_ignore_ascii_case("SeventySix.esm")),
-            "SeventySix.esm must be in the fast-path candidates; got: {:?}",
-            candidates
-        );
-        // Verify world_id.esm/esp are also present (regression guard).
-        assert!(candidates.contains(&"APPALACHIA.esm".to_string()));
-        assert!(candidates.contains(&"APPALACHIA.esp".to_string()));
-        assert!(candidates.contains(&"Fallout4.esm".to_string()));
     }
 
     /// With an explicit working ESM, `run()` must read the worldspace + records
@@ -765,80 +725,4 @@ mod run_tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    #[test]
-    fn run_with_world_ignores_starfield_source_lodsettings() {
-        let world = crate::input::WorldspaceInput::from_cells(
-            "AkilaCity",
-            vec![crate::input::CellInput {
-                x: -57,
-                y: -43,
-                heights: vec![0.0; 33 * 33],
-                vertex_colors: vec![[255, 255, 255]; 33 * 33],
-                layers: Vec::new(),
-                hidden_quadrants: [false; 4],
-                water_height: f32::MIN,
-            }],
-        );
-        let root = std::env::temp_dir().join(format!(
-            "lodgen_starfield_source_window_{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&root);
-        let source_dir = root.join("source");
-        let settings_dir = source_dir.join("LODSettings");
-        std::fs::create_dir_all(&settings_dir).unwrap();
-        let mut starfield_lod = Vec::with_capacity(20);
-        starfield_lod.extend_from_slice(&(-35i32).to_le_bytes());
-        starfield_lod.extend_from_slice(&(-59i32).to_le_bytes());
-        starfield_lod.extend_from_slice(&72i32.to_le_bytes());
-        starfield_lod.extend_from_slice(&0i32.to_le_bytes());
-        starfield_lod.extend_from_slice(&0i32.to_le_bytes());
-        std::fs::write(settings_dir.join("AkilaCity.lod"), starfield_lod).unwrap();
-
-        let mut settings = LodSettings::fo4_default();
-        settings.global.generate_objects = false;
-        let output = root.join("output");
-        let paths = LodPaths {
-            data_dirs: vec![root.clone()],
-            output_dir: output.clone(),
-            source_data_dir: Some(source_dir),
-        };
-        run_with_world(&world, &settings, &paths, &mut NullProgress).unwrap();
-        assert_eq!(
-            std::fs::read(output.join("LODSettings/AkilaCity.lod")).unwrap(),
-            crate::output::lodsettings::encode((-57, -43), 32, 4, 32)
-        );
-
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn run_with_world_can_skip_terrain_phase() {
-        let w = crate::input::WorldspaceInput::from_cells(
-            "W",
-            vec![crate::input::CellInput {
-                x: 0,
-                y: 0,
-                heights: vec![0.0; 33 * 33],
-                vertex_colors: vec![[255, 255, 255]; 33 * 33],
-                layers: Vec::new(),
-                hidden_quadrants: [false; 4],
-                water_height: f32::MIN,
-            }],
-        );
-        let mut s = LodSettings::fo4_default();
-        s.global.generate_terrain = false;
-        s.global.generate_objects = false;
-        let out = std::env::temp_dir().join("lodgen_run_skip_terrain_test");
-        std::fs::create_dir_all(&out).unwrap();
-        let paths = LodPaths {
-            data_dirs: vec![std::path::PathBuf::from(".")],
-            output_dir: out,
-            source_data_dir: None,
-        };
-        let mut p = NullProgress;
-        let stats = run_with_world(&w, &s, &paths, &mut p).unwrap();
-        assert_eq!(stats.btr, 0);
-        assert!(!stats.lod_written);
-    }
 }

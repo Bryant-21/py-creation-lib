@@ -24,7 +24,7 @@ def references(value, path=""):
 
 
 class PluginGraph:
-    def __init__(self, game, search_paths=()):
+    def __init__(self, game, search_paths=(), *, lazy_index=True):
         self.game = game
         self.search_paths = [Path(p).resolve() for p in search_paths]
         self.plugins = []
@@ -32,6 +32,7 @@ class PluginGraph:
         self._stack = ExitStack()
         self._indexes = {}
         self._records = {}
+        self.lazy_index = lazy_index
 
     def __enter__(self):
         return self
@@ -64,7 +65,7 @@ class PluginGraph:
             if Path(existing.file_path).resolve() != path:
                 raise ValueError(f"Two different paths supplied for {path.name}")
             return existing
-        plugin = self._stack.enter_context(Plugin.load(path, game=self.game, backend="native", lazy_index=True))
+        plugin = self._stack.enter_context(Plugin.load(path, game=self.game, backend="native", lazy_index=self.lazy_index))
         if path.parent not in self.search_paths:
             self.search_paths.append(path.parent)
         for name in plugin.header.masters:

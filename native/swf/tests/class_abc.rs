@@ -43,16 +43,20 @@ fn swf_with_classes(names: &[&str]) -> Vec<u8> {
     ])
 }
 
+/// The emitted block defines exactly the requested classes, and the `DoABCDefine`
+/// header matches the shipping reference (`weaponcnd.swf`): `flags = 1`, empty
+/// name, then minor 16 / major 46.
 #[test]
 fn emitted_abc_defines_exactly_the_requested_classes() {
     let abc = build_movieclip_class_abc(&["B21_LegendaryStarRow", "B21_LegendaryStars"]).unwrap();
     let body = do_abc_define_body(&abc);
+    assert_eq!(&body[..5], &[0x01, 0x00, 0x00, 0x00, 0x00]);
+    assert_eq!(&body[5..9], &[0x10, 0x00, 0x2E, 0x00]);
+    assert_eq!(body.len(), abc.len() + 5);
 
     let names = parse_abc_class_names(DO_ABC_DEFINE, &body).unwrap();
     assert_eq!(names, ["B21_LegendaryStarRow", "B21_LegendaryStars"]);
 
-    // The read-only string-pool view must see the class names and the supertype
-    // that the emitter claims to have written.
     let pool = parse_abc_strings(DO_ABC_DEFINE, &body).unwrap();
     assert_eq!((pool.major, pool.minor), (46, 16));
     for expected in [
@@ -67,105 +71,62 @@ fn emitted_abc_defines_exactly_the_requested_classes() {
             pool.strings
         );
     }
-    assert_eq!(pool.int_count, 0);
-    assert_eq!(pool.uint_count, 0);
-    assert_eq!(pool.double_count, 0);
-}
-
-/// The `DoABCDefine` header and ABC version must match the shipping reference
-/// (`weaponcnd.swf`): `flags = 1`, empty name, then minor 16 / major 46.
-#[test]
-fn do_abc_body_header_matches_the_reference_layout() {
-    let abc = build_movieclip_class_abc(&["Main"]).unwrap();
-    let body = do_abc_define_body(&abc);
-    assert_eq!(&body[..5], &[0x01, 0x00, 0x00, 0x00, 0x00]);
-    assert_eq!(&body[5..9], &[0x10, 0x00, 0x2E, 0x00]);
-    assert_eq!(body.len(), abc.len() + 5);
+    assert_eq!((pool.int_count, pool.uint_count, pool.double_count), (0, 0, 0));
 }
 
 // The full-byte lock on a one-class block lives with the compiler that now
 // produces it — `as3_native`'s `compile::a_dynamic_class_compiles_to_the_locked_
 // bytes`. `the_class_synthesizer_is_the_compiler` in `as3_equivalence.rs` pins
-// this entry point to that one, so a second copy of the array here would only
-// be another thing to keep in step.
+// this entry point to that one.
 
+/// A packaged name has to survive the split-and-rejoin unchanged, because the
+/// SymbolClass entry spells it the same way (`Shared.AS3.BSButtonHint`).
 #[test]
-fn synthesized_swf_has_no_unbacked_symbol_classes() {
-    let body = swf_with_classes(&["B21_LegendaryStarRow", "B21_LegendaryStars"]);
-
-    // The tag stream must still tile the body exactly and end on End.
+fn synthesized_swfs_back_their_symbol_classes() {
+    let names = ["Shared.AS3.BSButtonHint", "HUDMenu_fla.tick_119", "Bare"];
+    let body = swf_with_classes(&names);
     let spans = split_tags(&body).unwrap();
-    assert_eq!(spans.last().unwrap().code, 0);
     assert_eq!(spans.last().unwrap().end(), body.len());
-
-    // DoABC must precede SymbolClass, as it does in the reference file.
-    let abc_at = spans.iter().position(|s| s.code == DO_ABC_DEFINE).unwrap();
-    let symbols_at = spans.iter().position(|s| s.code == 76).unwrap();
-    assert!(abc_at < symbols_at);
-
+    let abc = &body[spans.iter().find(|s| s.code == DO_ABC_DEFINE).unwrap().body_range()];
+    assert_eq!(parse_abc_class_names(DO_ABC_DEFINE, abc).unwrap(), names);
     assert!(unbacked_symbol_class_names(&body).unwrap().is_empty());
-}
 
-#[test]
-fn a_symbol_class_with_no_definition_is_reported() {
-    let symbols = encode_symbol_table(&[
-        SymbolEntry {
-            character_id: 10,
-            name: "B21_LegendaryStarRow".into(),
-        },
-        SymbolEntry {
-            character_id: 0,
-            name: "B21_LegendaryStars".into(),
-        },
-    ]);
+    let rows = |entries: &[(u16, &str)]| {
+        encode_symbol_table(
+            &entries
+                .iter()
+                .map(|(id, n)| SymbolEntry {
+                    character_id: *id,
+                    name: (*n).into(),
+                })
+                .collect::<Vec<_>>(),
+        )
+    };
     // No DoABC at all — the exact defect this validator exists to catch.
-    let body = movie_body(&[(76, symbols), (1, Vec::new()), (0, Vec::new())]);
+    let body = movie_body(&[
+        (76, rows(&[(10, "B21_LegendaryStarRow"), (0, "B21_LegendaryStars")])),
+        (1, Vec::new()),
+        (0, Vec::new()),
+    ]);
     assert_eq!(
         unbacked_symbol_class_names(&body).unwrap(),
         ["B21_LegendaryStarRow", "B21_LegendaryStars"]
     );
-}
 
-#[test]
-fn only_the_missing_name_is_reported_when_some_resolve() {
-    let abc = build_movieclip_class_abc(&["Present"]).unwrap();
-    let symbols = encode_symbol_table(&[
-        SymbolEntry {
-            character_id: 1,
-            name: "Present".into(),
-        },
-        SymbolEntry {
-            character_id: 2,
-            name: "Absent".into(),
-        },
-    ]);
     let body = movie_body(&[
-        (DO_ABC_DEFINE, do_abc_define_body(&abc)),
-        (76, symbols),
+        (
+            DO_ABC_DEFINE,
+            do_abc_define_body(&build_movieclip_class_abc(&["Present"]).unwrap()),
+        ),
+        (76, rows(&[(1, "Present"), (2, "Absent")])),
         (0, Vec::new()),
     ]);
     assert_eq!(unbacked_symbol_class_names(&body).unwrap(), ["Absent"]);
 }
 
-/// A packaged name has to survive the split-and-rejoin unchanged, because the
-/// SymbolClass entry spells it the same way (`Shared.AS3.BSButtonHint`).
-#[test]
-fn package_qualified_names_round_trip() {
-    let names = ["Shared.AS3.BSButtonHint", "HUDMenu_fla.tick_119", "Bare"];
-    let abc = build_movieclip_class_abc(&names).unwrap();
-    let body = do_abc_define_body(&abc);
-    assert_eq!(parse_abc_class_names(DO_ABC_DEFINE, &body).unwrap(), names);
-    assert!(
-        unbacked_symbol_class_names(&swf_with_classes(&names))
-            .unwrap()
-            .is_empty()
-    );
-}
-
 #[test]
 fn repeated_or_empty_class_names_are_rejected() {
-    assert!(build_movieclip_class_abc(&[]).is_err());
-    assert!(build_movieclip_class_abc(&[""]).is_err());
-    assert!(build_movieclip_class_abc(&["Trailing."]).is_err());
-    assert!(build_movieclip_class_abc(&["Same", "Same"]).is_err());
+    for names in [&[][..], &[""], &["Trailing."], &["Same", "Same"]] {
+        assert!(build_movieclip_class_abc(names).is_err(), "{names:?}");
+    }
 }

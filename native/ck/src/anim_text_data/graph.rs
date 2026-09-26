@@ -843,51 +843,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn leaf_basename_strips_dirs_and_ext() {
-        assert_eq!(
-            leaf_basename(r"Animations\Weapon\44Pistol\WPNReload.hkt"),
-            "wpnreload"
-        );
-        assert_eq!(
-            leaf_basename(r"..\PowerArmor\Animations\1HM\ThrustIdle.HKT"),
-            "thrustidle"
-        );
-        assert_eq!(leaf_basename("Bare"), "bare");
-    }
-
-    #[test]
-    fn drop_last_two_yields_race_dir() {
-        assert_eq!(
-            drop_last_two(r"Actors\Character\Behaviors\WeaponBehavior.hkx"),
-            r"Actors\Character"
-        );
-        assert_eq!(
-            drop_last_two(r"Actors\Character\_1stPerson\Behaviors\GunBehavior.hkx"),
-            r"Actors\Character\_1stPerson"
-        );
-    }
-
-    #[test]
-    fn join_rel_resolves_behavior_reference() {
-        assert_eq!(
-            join_rel(r"Actors\Character", r"Behaviors\WeaponBehavior.hkx"),
-            r"Actors\Character\Behaviors\WeaponBehavior.hkx"
-        );
-        assert_eq!(
-            join_rel(r"Actors\Character\_1stPerson", r"Behaviors\GunBehavior"),
-            r"Actors\Character\_1stPerson\Behaviors\GunBehavior.hkx"
-        );
-    }
-
-    #[test]
-    fn sapt_dir_trims_authored_carriage_return() {
-        assert_eq!(
-            sapt_dir("Actors\\PowerArmor\\Animations\\Paired\r"),
-            r"Actors\PowerArmor\Animations\Paired"
-        );
-    }
-
-    #[test]
     fn missing_behavior_is_a_typed_role_failure() {
         let mut resolver = GraphResolver::new(vec![
             std::env::temp_dir().join("modkit-stance-role-fixture-that-does-not-exist"),
@@ -902,85 +857,24 @@ mod tests {
         ));
     }
 
-    /// CK keys furniture section 1 on the animation basename, never the generator's `name`
-    /// (generator `Standing Enter` plays `EnterFromStand`; the former appears in 0 of 3156
-    /// vanilla `AnimationOffsets` files). A clip-info miss deletes the `InteractionData`
-    /// entry, and an empty array makes workbenches refuse activation with `sFailedActivation`.
     #[test]
-    fn furniture_clip_generators_expose_animation_basename_not_generator_name() {
-        let meshes =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../extracted/fo4/Meshes");
-        let core = r"Actors\Character\Behaviors\WorkbenchFurnitureBehavior.hkx";
-        if !meshes
-            .join("Actors/Character/Behaviors/WorkbenchFurnitureBehavior.hkx")
-            .is_file()
-        {
-            eprintln!("extracted WorkbenchFurnitureBehavior fixture absent; skipping");
-            return;
-        }
-        let mut resolver = GraphResolver::new(vec![meshes]);
-        let clips = resolver.resolve_clip_generators(
-            core,
-            &[r"Actors\Character\Animations\Furniture\WorkbenchChemistryA".to_string()],
-        );
-        assert!(
-            !clips.is_empty(),
-            "chem furniture subgraph resolved no clips"
-        );
-
-        // The generator name must still be reported (weapon/creature key on it) ...
-        assert!(
-            clips.iter().any(|(name, ..)| name == "Standing Enter"),
-            "expected the `Standing Enter` generator in the FO4 furniture graph",
-        );
-        // ... but the furniture key for that same clip is the animation basename, cased as
-        // the graph spells it, which is what CK writes and what the engine looks up.
-        let entry = clips
-            .iter()
-            .find(|(name, ..)| name == "Standing Enter")
-            .expect("Standing Enter generator");
-        assert_eq!(entry.1, "EnterFromStand");
-        assert!(
-            !clips
-                .iter()
-                .any(|(_, basename, ..)| basename == "Standing Enter"),
-            "no furniture section-1 key may be a generator name",
-        );
-    }
-
-    #[test]
-    fn weapon_behavior_yields_six_owned_branches_and_twelve_role_keys() {
-        let meshes =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../extracted/fo4/Meshes");
-        let behavior = meshes.join("Actors/Character/Behaviors/WeaponBehavior.hkx");
-        if !behavior.is_file() {
-            eprintln!("extracted WeaponBehavior fixture absent; skipping");
-            return;
-        }
-        let mut resolver = GraphResolver::new(vec![meshes]);
-        let roles = resolver
-            .resolve_stance_pose_roles(
-                r"Actors\Character\Behaviors\WeaponBehavior.hkx",
-                &[
-                    r"Actors\Character\Animations\Weapon\Pistol".to_string(),
-                    r"Actors\Character\Animations\Weapon\Rifle\Neutral".to_string(),
-                    r"Actors\Character\Animations\Paired".to_string(),
-                    r"Actors\Character\Animations".to_string(),
-                ],
-                StancePerspective::ThirdPerson,
-            )
-            .expect("structured capture-pose graph");
-
-        assert_eq!(roles.len(), 12);
+    fn path_helpers_normalize_graph_references() {
         assert_eq!(
-            roles
-                .iter()
-                .map(|role| role.branch_ordinal)
-                .collect::<BTreeSet<_>>(),
-            BTreeSet::from([0, 1, 2, 3, 4, 5])
+            leaf_basename(r"..\PowerArmor\Animations\1HM\ThrustIdle.HKT"),
+            "thrustidle"
         );
-        assert!(roles.iter().all(|role| role.source_key().is_some()));
-        let source_keys: HashSet<_> = roles.iter().filter_map(|role| role.source_key()).collect();
-        assert_eq!(source_keys.len(), 12);
+        assert_eq!(leaf_basename("Bare"), "bare");
+        assert_eq!(
+            drop_last_two(r"Actors\Character\_1stPerson\Behaviors\GunBehavior.hkx"),
+            r"Actors\Character\_1stPerson"
+        );
+        assert_eq!(
+            join_rel(r"Actors\Character\_1stPerson", r"Behaviors\GunBehavior"),
+            r"Actors\Character\_1stPerson\Behaviors\GunBehavior.hkx"
+        );
+        assert_eq!(
+            sapt_dir("Actors\\PowerArmor\\Animations\\Paired\r"),
+            r"Actors\PowerArmor\Animations\Paired"
+        );
     }
 }

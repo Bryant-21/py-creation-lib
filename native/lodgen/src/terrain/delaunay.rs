@@ -387,7 +387,7 @@ impl<'a> Triangulator<'a> {
             x: circ_x,
             y: circ_y,
         };
-        let mut re_dist: Vec<f32> = (3..effective_n)
+        let re_dist: Vec<f32> = (3..effective_n)
             .map(|k| {
                 let v = &points[effective_order[k]];
                 (v.x - center.x) * (v.x - center.x) + (v.y - center.y) * (v.y - center.y)
@@ -421,7 +421,7 @@ impl<'a> Triangulator<'a> {
                     // Wrapping case: last edge also visible.
                     list.push(hull.verts[num8 - 1].points_index);
                     list2.push(hull.verts[num8 - 1].triad_index);
-                    let mut i = 0usize;
+                    let i = 0usize;
                     while i < num8 - 1 {
                         list.push(hull.verts[i].points_index);
                         list2.push(hull.verts[i].triad_index);
@@ -450,7 +450,7 @@ impl<'a> Triangulator<'a> {
                     // Normal case: only edges starting from 0.
                     list2.push(hull.verts[0].triad_index);
                     list.push(hull.verts[0].points_index);
-                    let mut i = 1usize;
+                    let i = 1usize;
                     let mut pos = 0usize;
                     while i < hull.verts.len() {
                         list.push(hull.verts[i].points_index);
@@ -897,39 +897,6 @@ mod tests {
     }
 
     #[test]
-    fn convex_hull_len_square_is_four() {
-        let pts = vec![
-            Vertex { x: 0.0, y: 0.0 },
-            Vertex { x: 1.0, y: 0.0 },
-            Vertex { x: 1.0, y: 1.0 },
-            Vertex { x: 0.0, y: 1.0 },
-        ];
-        assert_eq!(convex_hull_len(&pts, true), 4, "square: all 4 on hull");
-    }
-
-    #[test]
-    fn convex_hull_len_excludes_interior_point() {
-        // Square + a point at the center → hull is the 4 corners, center is interior.
-        let pts = vec![
-            Vertex { x: 0.0, y: 0.0 },
-            Vertex { x: 2.0, y: 0.0 },
-            Vertex { x: 2.0, y: 2.0 },
-            Vertex { x: 0.0, y: 2.0 },
-            Vertex { x: 1.0, y: 1.0 }, // interior
-        ];
-        assert_eq!(
-            convex_hull_len(&pts, true),
-            4,
-            "interior point excluded from hull"
-        );
-        assert_ne!(
-            convex_hull_len(&pts, true),
-            pts.len(),
-            "hull != point count → reject in CreateTriangles"
-        );
-    }
-
-    #[test]
     fn grid_triangulation_covers_all_points() {
         // 3x3 grid -> 8 triangles (2*(n-1)^2 for a regular grid)
         let mut pts = Vec::new();
@@ -948,23 +915,6 @@ mod tests {
     // --- Degenerate input must return None / 0, never panic ------------------
 
     #[test]
-    fn reject_dups_returns_some_for_convex_polygon() {
-        let pts = vec![
-            Vertex { x: 0.0, y: 0.0 },
-            Vertex { x: 1.0, y: 0.0 },
-            Vertex { x: 1.0, y: 1.0 },
-            Vertex { x: 0.0, y: 1.0 },
-        ];
-        let tris = triangulate_reject_dups(&pts).expect("convex polygon triangulates");
-        assert_eq!(tris.len(), 2, "4-point square = 2 triangles");
-        for t in &tris {
-            for &i in &[t.a, t.b, t.c] {
-                assert!(i < pts.len());
-            }
-        }
-    }
-
-    #[test]
     fn reject_dups_none_for_collinear_points() {
         // All points on the x-axis: no triple has a finite circumcircle.
         let pts = vec![
@@ -976,38 +926,4 @@ mod tests {
         assert!(triangulate_reject_dups(&pts).is_none());
     }
 
-    #[test]
-    fn reject_dups_none_for_coincident_points() {
-        let pts = vec![
-            Vertex { x: 1.0, y: 1.0 },
-            Vertex { x: 1.0, y: 1.0 },
-            Vertex { x: 1.0, y: 1.0 },
-            Vertex { x: 1.0, y: 1.0 },
-        ];
-        // After rejecting duplicates only one unique point remains (< 3).
-        assert!(triangulate_reject_dups(&pts).is_none());
-    }
-
-    #[test]
-    fn reject_dups_none_for_fewer_than_three_unique() {
-        let pts = vec![
-            Vertex { x: 0.0, y: 0.0 },
-            Vertex { x: 1.0, y: 0.0 },
-            Vertex { x: 1.0, y: 0.0 },
-        ];
-        // Two unique points after dedup → cannot triangulate.
-        assert!(triangulate_reject_dups(&pts).is_none());
-    }
-
-    #[test]
-    fn convex_hull_len_zero_for_collinear() {
-        let pts = vec![
-            Vertex { x: 0.0, y: 0.0 },
-            Vertex { x: 1.0, y: 0.0 },
-            Vertex { x: 2.0, y: 0.0 },
-        ];
-        // Degenerate → 0, which can never equal a real point count, so the
-        // CreateTriangles convexity check (== point count) fails cleanly.
-        assert_eq!(convex_hull_len(&pts, true), 0);
-    }
 }

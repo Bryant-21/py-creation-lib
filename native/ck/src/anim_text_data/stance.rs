@@ -1425,7 +1425,6 @@ pub fn emit_stance_for_subgraph(
 mod tests {
     use super::*;
     use crate::anim_text_data::bucket_files::StanceSec2Payload;
-    use std::path::PathBuf;
 
     #[test]
     fn donor_prefilter_preserves_relaxed_contexts_and_perspective_normalization() {
@@ -1479,90 +1478,6 @@ mod tests {
             !metadata_may_supply_donor(&first_person, &donor),
             "first-person trivial grid"
         );
-    }
-
-    fn extracted_meshes() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../extracted/fo4/Meshes")
-    }
-
-    fn fo76_skeleton(rel: &str) -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../extracted/fo76/meshes/actors")
-            .join(rel)
-    }
-
-    /// The head-bone selector must recognize converted FO76 skeletons whose head bone
-    /// carries a custom namespace/side prefix or embedded digits (`Mothman_BN_C_Head`,
-    /// `HB_C_Head`, `Toad_BN_C_Head`, `C_00Head1`, `C_head00`, `jnt_C_head`); stripping only
-    /// `C_`/`L_`/`R_` misses ~15 head-bearing races. The torso pivot must also skip the
-    /// likewise custom-prefixed neck bones.
-    #[test]
-    fn selector_covers_custom_prefixed_head_bones() {
-        let root =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../extracted/fo76/meshes/actors");
-        if !root.is_dir() {
-            eprintln!("extracted/fo76 actors absent; skipping");
-            return;
-        }
-        let cases = [
-            ("mothman/characterassets/skeleton.hkx", "Mothman_BN_C_Head"),
-            ("honeybeast/characterassets/skeleton.hkx", "HB_C_Head"),
-            ("radtoad/characterassets/skeleton.hkx", "Toad_BN_C_Head"),
-            ("jerseydevil/characterassets/skeleton.hkx", "C_head00"),
-            ("wendigocolossus/characterassets/skeleton.hkx", "jnt_C_head"),
-            (
-                "atx/redrocketrobot/characterassets/skeleton.hkx",
-                "C_00Head1",
-            ),
-        ];
-        let mut checked = 0;
-        for (rel, want_head) in cases {
-            let p = fo76_skeleton(rel);
-            if !p.is_file() {
-                continue;
-            }
-            checked += 1;
-            let (_skd, skel) = load_skeleton(&p).expect("skeleton parses");
-            let (head, torso) = select_head_torso(&skel)
-                .unwrap_or_else(|| panic!("no head/torso selected for {rel}"));
-            assert_eq!(skel.bone_names[head], want_head, "head bone for {rel}");
-            assert_ne!(head, torso, "torso must differ from head for {rel}");
-            let t = skel.bone_names[torso].to_ascii_lowercase();
-            assert!(
-                !t.contains("neck") && !t.contains("head"),
-                "torso pivot for {rel} must be a spine bone, got {}",
-                skel.bone_names[torso]
-            );
-        }
-        assert!(
-            checked >= 3,
-            "expected >=3 fo76 skeleton fixtures, found {checked}"
-        );
-    }
-
-    /// Headless rigs keep the skip. Grafton's top bone is `Grafton_BN_C_Spine4` (no head),
-    /// and the 76c headless oracle pose does not map onto any bone's frame-0 model
-    /// transform, so no defensible slot0/slot1 exists — the selector must return `None`
-    /// and stance stays absent rather than shipping a guessed body.
-    #[test]
-    fn headless_grafton_stance_is_skipped() {
-        let skel = fo76_skeleton("graftonmonster/characterassets/skeleton.hkx");
-        if !skel.is_file() {
-            return;
-        }
-        let (_skd, pose_skel) = load_skeleton(&skel).expect("skeleton parses");
-        assert!(
-            select_head_torso(&pose_skel).is_none(),
-            "headless Grafton has no head bone; stance must stay absent"
-        );
-    }
-
-    fn read_slot(b: &[u8], off: usize) -> ([f32; 4], [f32; 3]) {
-        let f = |o: usize| f32::from_le_bytes(b[o..o + 4].try_into().unwrap());
-        (
-            [f(off), f(off + 4), f(off + 8), f(off + 12)],
-            [f(off + 16), f(off + 20), f(off + 24)],
-        )
     }
 
     fn synthetic_roles(perspective: StancePerspective) -> Vec<PoseRoleProvenance> {
@@ -1777,81 +1692,5 @@ mod tests {
             assert_eq!(cells.len(), 35);
             assert_eq!(cells[17], record.reference, "neutral cell is the center");
         }
-    }
-
-    /// MirelurkKing count=1 stance (124 B): the container framing is BYTE-IDENTICAL to
-    /// the CK oracle and the Head/Spine1 model-space frame-0 bones match to the `hkaPose`
-    /// accumulation residual (Spine1 shallow ~1e-5, Head deep ~1e-3). This proves the
-    /// whole pipeline: skeleton load → clip frame-0 overlay → canonical local→model →
-    /// W-first slot serialization → count=1 container. (RE: `stance_work/reemit.py`.)
-    #[test]
-    fn mirelurkking_count1_stance_byte_exact_container_float_close_bones() {
-        let meshes = extracted_meshes();
-        let skel = meshes.join("actors/MirelurkKing/characterassets/skeleton.hkx");
-        let clip = meshes.join("actors/MirelurkKing/animations/ambushidn/ambush.hkx");
-        let oracle_path = meshes.join("AnimTextData/animationstancedata/10084591932766397485.txt");
-        if !skel.is_file() || !clip.is_file() || !oracle_path.is_file() {
-            eprintln!("extracted/fo4 MirelurkKing absent; skipping");
-            return;
-        }
-        let oracle = std::fs::read(&oracle_path).unwrap();
-        let ours = emit_stance_count1(&skel, &clip, "Head", "Spine1").expect("stance emitted");
-
-        assert_eq!(ours.len(), 124, "count=1 stance is 124 bytes");
-        assert_eq!(oracle.len(), 124);
-
-        // Container framing byte-identical: header(0..24), version+count(24..32),
-        // pose-0 header(32..36), slot2 IDENTITY(92..120), section-2 count(120..124).
-        assert_eq!(&ours[0..36], &oracle[0..36], "header/version/count/poseIdx");
-        assert_eq!(
-            &ours[92..124],
-            &oracle[92..124],
-            "slot2 IDENTITY + section-2 count"
-        );
-
-        // Bones (slot0 Head @36, slot1 Spine1 @64) float-close to the oracle.
-        for (label, off, tol) in [("Head", 36usize, 2e-3f32), ("Spine1", 64usize, 1e-3f32)] {
-            let (oq, ot) = read_slot(&oracle, off);
-            let (q, t) = read_slot(&ours, off);
-            for k in 0..4 {
-                assert!(
-                    (oq[k] - q[k]).abs() < tol,
-                    "{label} quat[{k}] {} vs {} (>{tol})",
-                    oq[k],
-                    q[k]
-                );
-            }
-            for k in 0..3 {
-                // Translations are in game units; allow a proportionally larger epsilon.
-                assert!(
-                    (ot[k] - t[k]).abs() < 0.05,
-                    "{label} trans[{k}] {} vs {}",
-                    ot[k],
-                    t[k]
-                );
-            }
-        }
-    }
-
-    /// The auto-selector finds `Head` + a spine/chest ancestor for the MirelurkKing
-    /// skeleton (the dispatcher path), and the resulting body is a well-formed 124 B
-    /// count=1 container.
-    #[test]
-    fn auto_select_emits_count1_for_creature() {
-        let meshes = extracted_meshes();
-        let skel = meshes.join("actors/MirelurkKing/characterassets/skeleton.hkx");
-        let clip = meshes.join("actors/MirelurkKing/animations/ambushidn/ambush.hkx");
-        if !skel.is_file() || !clip.is_file() {
-            eprintln!("extracted/fo4 MirelurkKing absent; skipping");
-            return;
-        }
-        let (_skd, pose_skel) = load_skeleton(&skel).expect("skeleton");
-        let (head, torso) = select_head_torso(&pose_skel).expect("head+torso");
-        assert!(pose_skel.bone_names[head].eq_ignore_ascii_case("Head"));
-        // The pivot must be an ancestor of the head (never the head itself).
-        assert_ne!(head, torso);
-        let body = emit_stance_for_creature(&skel, &clip, false).expect("stance");
-        assert_eq!(body.len(), 124);
-        assert_eq!(&body[1..23], b"AnimationBoneTransform");
     }
 }

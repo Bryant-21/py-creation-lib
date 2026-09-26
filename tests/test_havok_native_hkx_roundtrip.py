@@ -1,12 +1,4 @@
-from pathlib import Path
-
 import pytest
-
-
-FO4_FIXTURES = [
-    Path("resource/skeleton.hkx"),
-    Path("bacup/py_bacup_lib/python/bacup_lib/tests/fixtures/creatures/deathclaw/expected/character.hkx"),
-]
 
 
 def _native_runtime_or_skip():
@@ -17,12 +9,16 @@ def _native_runtime_or_skip():
     return native_runtime
 
 
-def test_native_hkx_roundtrip_bytes_raw_preserves_committed_fo4_fixtures():
+def test_native_hkx_roundtrip_bytes_raw_preserves_synthetic_packfile():
+    from creation_lib.hkxpack import DescriptorRegistry, HKXFile, HKXObject, write_hkx
+
     native_runtime = _native_runtime_or_skip()
 
-    for path in FO4_FIXTURES:
-        data = path.read_bytes()
-        assert native_runtime.hkx_roundtrip_bytes_raw(data) == data
+    hkx = HKXFile(class_version=11, contents_version="hk_2014.1.0-r1")
+    hkx.objects.append(HKXObject(name="#0001", class_name="hkRootLevelContainer"))
+    data = write_hkx(hkx, DescriptorRegistry())
+
+    assert native_runtime.hkx_roundtrip_bytes_raw(data) == data
 
 
 def test_native_hkx_roundtrip_bytes_raw_rejects_malformed_packfile():

@@ -2159,18 +2159,8 @@ impl<'a> Codegen<'a> {
             Expr::DotExpr { object, member, .. } => {
                 let obj_ty = self.type_of_expr(object);
                 type_name(&obj_ty)
-                    .and_then(|script| {
-                        self.resolver
-                            .get_hierarchy(&script)
-                            .into_iter()
-                            .find_map(|anc| {
-                                self.resolver
-                                    .get_properties(&anc)
-                                    .into_iter()
-                                    .find(|p| p.name.eq_ignore_ascii_case(member.as_str()))
-                                    .map(|p| parse_ty(&p.ty))
-                            })
-                    })
+                    .and_then(|script| self.resolver.get_hierarchy_property_type(&script, member))
+                    .map(|ty| parse_ty(&ty))
                     .unwrap_or(PapyrusType::None)
             }
             _ => PapyrusType::None,
@@ -2178,8 +2168,7 @@ impl<'a> Codegen<'a> {
     }
 
     /// Members of a same-script struct named by `type_name` (a bare `Struct`
-    /// name or the qualified `thisscript#struct` spelling). Cross-script structs
-    /// (`otherscript#struct`) are not yet resolved.
+    /// name or the qualified `thisscript#struct` spelling).
     fn struct_members(&self, type_name: &str) -> Option<&[StructMemberDef]> {
         let base = type_name.trim_end_matches("[]");
         let (script, sname) = match base.split_once('#') {
@@ -2199,10 +2188,16 @@ impl<'a> Codegen<'a> {
     }
 
     fn struct_member_ty(&self, type_name: &str, member: &str) -> Option<PapyrusType> {
-        self.struct_members(type_name)?
-            .iter()
-            .find(|m| m.name.eq_ignore_ascii_case(member))
-            .map(|m| parse_ty(&m.ty))
+        match self.struct_members(type_name) {
+            Some(members) => members
+                .iter()
+                .find(|m| m.name.eq_ignore_ascii_case(member))
+                .map(|m| parse_ty(&m.ty)),
+            None => self
+                .resolver
+                .get_struct_member_type(type_name.trim_end_matches("[]"), member)
+                .map(|t| parse_ty(&t)),
+        }
     }
 
     fn type_of_node(&self, node: &Expr) -> PapyrusType {
@@ -2851,319 +2846,351 @@ mod tests {
         p
     }
 
-    /// Compile `src` and assert semantic parity with the stock-exe golden.
-    fn check(src: &str, golden: &[u8]) {
-        let mine = compile_src(src);
-        let theirs = crate::pex::parse_pex_bytes(golden).expect("parse golden");
-        assert_eq!(
-            canon(&mine),
-            canon(&theirs),
-            "codegen diverges from the exe golden (semantic)"
-        );
+    /// Compile each source and assert semantic parity with its stock-exe golden.
+    #[test]
+    fn codegen_matches_exe_goldens() {
+        let goldens: &[(&str, &[u8])] = &[
+            (
+                "Scriptname GoldAdd\nInt Function F()\n  Return 1 + 2\nEndFunction\n",
+                include_bytes!("../tests/codegen_golden/GoldAdd.pex"),
+            ),
+            (
+                "Scriptname GRetLit\nInt Function F()\n  Return 5\nEndFunction\n",
+                include_bytes!("../tests/codegen_golden/GRetLit.pex"),
+            ),
+            (
+                "Scriptname GLocal\nInt Function F()\n  Int x = 5\n  Return x\nEndFunction\n",
+                include_bytes!("../tests/codegen_golden/GLocal.pex"),
+            ),
+            (
+                "Scriptname GLocalAdd\nInt Function F()\n  Int x = 1 + 2\n  Return x\nEndFunction\n",
+                include_bytes!("../tests/codegen_golden/GLocalAdd.pex"),
+            ),
+            (
+                "Scriptname GSub\nInt Function F()\n  Return 7 - 3\nEndFunction\n",
+                include_bytes!("../tests/codegen_golden/GSub.pex"),
+            ),
+            (
+                "Scriptname GMul\nInt Function F()\n  Return 2 * 3\nEndFunction\n",
+                include_bytes!("../tests/codegen_golden/GMul.pex"),
+            ),
+            (
+                "Scriptname GDiv\nInt Function F()\n  Return 8 / 2\nEndFunction\n",
+                include_bytes!("../tests/codegen_golden/GDiv.pex"),
+            ),
+            (
+                "Scriptname GMod\nInt Function F()\n  Return 9 % 4\nEndFunction\n",
+                include_bytes!("../tests/codegen_golden/GMod.pex"),
+            ),
+            (
+                "Scriptname GFloat\nFloat Function F()\n  Return 1.0 + 2.0\nEndFunction\n",
+                include_bytes!("../tests/codegen_golden/GFloat.pex"),
+            ),
+            (
+                "Scriptname GStr\nString Function F()\n  Return \"a\" + \"b\"\nEndFunction\n",
+                include_bytes!("../tests/codegen_golden/GStr.pex"),
+            ),
+            (
+                "Scriptname GVoid\nFunction F()\n  Return\nEndFunction\n",
+                include_bytes!("../tests/codegen_golden/GVoid.pex"),
+            ),
+            (
+                "Scriptname GEmpty\nFunction F()\nEndFunction\n",
+                include_bytes!("../tests/codegen_golden/GEmpty.pex"),
+            ),
+            (
+                "Scriptname GMix\nFloat Function F()\n  Return 1 + 2.0\nEndFunction\n",
+                include_bytes!("../tests/codegen_golden/GMix.pex"),
+            ),
+            (
+                "Scriptname GTwoLocal\nInt Function F()\n  Int x = 1 + 2\n  Int y = 3 + 4\n  Return x + y\nEndFunction\n",
+                include_bytes!("../tests/codegen_golden/GTwoLocal.pex"),
+            ),
+            (
+                "Scriptname GParam\nInt Function F(Int a, Int b)\n  Return a + b\nEndFunction\n",
+                include_bytes!("../tests/codegen_golden/GParam.pex"),
+            ),
+            (
+                "Scriptname GBool\nBool Function F()\n  Return True\nEndFunction\n",
+                include_bytes!("../tests/codegen_golden/GBool.pex"),
+            ),
+            (
+                "Scriptname GTwoFunc\nInt Function F()\n  Return 1 + 2\nEndFunction\nInt Function G()\n  Return 3 + 4\nEndFunction\n",
+                include_bytes!("../tests/codegen_golden/GTwoFunc.pex"),
+            ),
+            (
+                "Scriptname GLt\nBool Function F()\n  Return 2 < 3\nEndFunction\n",
+                include_bytes!("../tests/codegen_golden/GLt.pex"),
+            ),
+            (
+                "Scriptname GLe\nBool Function F()\n  Return 2 <= 3\nEndFunction\n",
+                include_bytes!("../tests/codegen_golden/GLe.pex"),
+            ),
+            (
+                "Scriptname GEq\nBool Function F()\n  Return 2 == 3\nEndFunction\n",
+                include_bytes!("../tests/codegen_golden/GEq.pex"),
+            ),
+            (
+                "Scriptname GNe\nBool Function F()\n  Return 2 != 3\nEndFunction\n",
+                include_bytes!("../tests/codegen_golden/GNe.pex"),
+            ),
+            (
+                "Scriptname GGt\nBool Function F()\n  Return 2 > 3\nEndFunction\n",
+                include_bytes!("../tests/codegen_golden/GGt.pex"),
+            ),
+            (
+                "Scriptname GGe\nBool Function F()\n  Return 2 >= 3\nEndFunction\n",
+                include_bytes!("../tests/codegen_golden/GGe.pex"),
+            ),
+            (
+                "Scriptname GNot\nBool Function F(Bool a)\n  Return !a\nEndFunction\n",
+                include_bytes!("../tests/codegen_golden/GNot.pex"),
+            ),
+            (
+                "Scriptname GNeg\nInt Function F(Int a)\n  Return -a\nEndFunction\n",
+                include_bytes!("../tests/codegen_golden/GNeg.pex"),
+            ),
+            (
+                "Scriptname GCast\nInt Function F(Float a)\n  Return a as Int\nEndFunction\n",
+                include_bytes!("../tests/codegen_golden/GCast.pex"),
+            ),
+            (
+                "Scriptname GIf\nInt Function F()\n  If 2 < 3\n    Return 1\n  EndIf\n  Return 0\nEndFunction\n",
+                include_bytes!("../tests/codegen_golden/GIf.pex"),
+            ),
+            (
+                "Scriptname GIfElse\nInt Function F()\n  If 2 < 3\n    Return 1\n  Else\n    Return 0\n  EndIf\nEndFunction\n",
+                include_bytes!("../tests/codegen_golden/GIfElse.pex"),
+            ),
+            (
+                "Scriptname GIfElseIf\nInt Function F(Int a)\n  If a == 1\n    Return 10\n  ElseIf a == 2\n    Return 20\n  Else\n    Return 0\n  EndIf\nEndFunction\n",
+                include_bytes!("../tests/codegen_golden/GIfElseIf.pex"),
+            ),
+            (
+                "Scriptname GWhile\nInt Function F()\n  Int x = 0\n  While x < 3\n    x = x + 1\n  EndWhile\n  Return x\nEndFunction\n",
+                include_bytes!("../tests/codegen_golden/GWhile.pex"),
+            ),
+            (
+                "Scriptname GAnd\nBool Function F(Bool a, Bool b)\n  Return a && b\nEndFunction\n",
+                include_bytes!("../tests/codegen_golden/GAnd.pex"),
+            ),
+            (
+                "Scriptname GOr\nBool Function F(Bool a, Bool b)\n  Return a || b\nEndFunction\n",
+                include_bytes!("../tests/codegen_golden/GOr.pex"),
+            ),
+            (
+                "Scriptname GArrLen\nInt Function F(Int[] a)\n  Return a.Length\nEndFunction\n",
+                include_bytes!("../tests/codegen_golden/GArrLen.pex"),
+            ),
+            (
+                "Scriptname GArrGet\nInt Function F(Int[] a)\n  Return a[0]\nEndFunction\n",
+                include_bytes!("../tests/codegen_golden/GArrGet.pex"),
+            ),
+            (
+                "Scriptname GArrSet\nFunction F(Int[] a)\n  a[0] = 5\nEndFunction\n",
+                include_bytes!("../tests/codegen_golden/GArrSet.pex"),
+            ),
+            (
+                "Scriptname GArrNew\nInt[] Function F()\n  Int[] a = new Int[4]\n  Return a\nEndFunction\n",
+                include_bytes!("../tests/codegen_golden/GArrNew.pex"),
+            ),
+            (
+                "Scriptname GArrFind\nInt Function F(Int[] a)\n  Return a.Find(7)\nEndFunction\n",
+                include_bytes!("../tests/codegen_golden/GArrFind.pex"),
+            ),
+            (
+                "Scriptname GArrMut\nFunction F(Int[] a)\n  a.Add(7)\n  a.Remove(0)\n  a.Clear()\nEndFunction\n",
+                include_bytes!("../tests/codegen_golden/GArrMut.pex"),
+            ),
+            (
+                "Scriptname GStruct\nStruct Point\n  Int X\n  Int Y\nEndStruct\nInt Function F()\n  Point p = new Point\n  p.X = 5\n  Return p.Y\nEndFunction\n",
+                include_bytes!("../tests/codegen_golden/GStruct.pex"),
+            ),
+            (
+                "Scriptname GPropHandler extends Quest\nInt _p\nInt Property P\n  Int Function Get()\n    Return _p\n  EndFunction\n  Function Set(Int v)\n    _p = v\n  EndFunction\nEndProperty\nInt Property RO = 3 AutoReadOnly\nFunction DoRead()\n  Int x = P\n  Int y = RO\nEndFunction\nFunction DoWrite()\n  P = 7\nEndFunction\nFunction DoCompound()\n  P += 1\nEndFunction\n",
+                include_bytes!("../tests/codegen_golden/GPropHandler.pex"),
+            ),
+            (
+                "Scriptname GSelfCall\nInt Function F()\n  Return G()\nEndFunction\nInt Function G()\n  Return 1\nEndFunction\n",
+                include_bytes!("../tests/codegen_golden/GSelfCall.pex"),
+            ),
+            (
+                "Scriptname GGlobalCall\nFunction F()\n  G()\nEndFunction\nFunction G() Global\nEndFunction\n",
+                include_bytes!("../tests/codegen_golden/GGlobalCall.pex"),
+            ),
+            (
+                "Scriptname GArgCall\nFunction F()\n  G(1, 2)\nEndFunction\nFunction G(Int a, Int b)\nEndFunction\n",
+                include_bytes!("../tests/codegen_golden/GArgCall.pex"),
+            ),
+            (
+                "Scriptname GDefArg\nFunction Caller()\n  Helper()\n  Helper(true)\n  Helper(abParam = true)\n  Multi(1, b = true)\nEndFunction\nFunction Helper(bool abParam = false)\nEndFunction\nFunction Multi(int a, bool b = false)\nEndFunction\n",
+                include_bytes!("../tests/codegen_golden/GDefArg.pex"),
+            ),
+            (
+                "Scriptname GPropGet\nInt Property P Auto\nInt Function F()\n  Return P\nEndFunction\n",
+                include_bytes!("../tests/codegen_golden/GPropGet.pex"),
+            ),
+            (
+                "Scriptname GPropSet\nInt Property P Auto\nFunction F()\n  P = 5\nEndFunction\n",
+                include_bytes!("../tests/codegen_golden/GPropSet.pex"),
+            ),
+            (
+                "Scriptname GEvent extends Quest\nEvent OnInit()\n  Int x = 1\nEndEvent\n",
+                include_bytes!("../tests/codegen_golden/GEvent.pex"),
+            ),
+            (
+                "Scriptname GEventArg extends ObjectReference\nEvent OnActivate(ObjectReference akActionRef)\nEndEvent\n",
+                include_bytes!("../tests/codegen_golden/GEventArg.pex"),
+            ),
+            (
+                "Scriptname GVarSet extends Quest\nInt _n\nFunction F()\n  _n = 5\nEndFunction\n",
+                include_bytes!("../tests/codegen_golden/GVarSet.pex"),
+            ),
+            (
+                "Scriptname GStates extends Quest\nInt Function F()\n  Return 1\nEndFunction\nState Running\n  Int Function F()\n    Return 2\n  EndFunction\nEndState\n",
+                include_bytes!("../tests/codegen_golden/GStates.pex"),
+            ),
+            (
+                "Scriptname GPropFull extends Quest\nInt _p\nInt Property P\n  Int Function Get()\n    Return _p\n  EndFunction\n  Function Set(Int v)\n    _p = v\n  EndFunction\nEndProperty\n",
+                include_bytes!("../tests/codegen_golden/GPropFull.pex"),
+            ),
+            (
+                "Scriptname GMulti extends Quest\nInt _alpha\nFloat _beta\nBool _gamma\nInt Property Pone Auto\nFloat Property Ptwo Auto\nBool Property Pthree Auto\nString Property Pfour Auto\n",
+                include_bytes!("../tests/codegen_golden/GMulti.pex"),
+            ),
+        ];
+        for (src, golden) in goldens {
+            let theirs = crate::pex::parse_pex_bytes(golden).expect("parse golden");
+            assert_eq!(
+                canon(&compile_src(src)),
+                canon(&theirs),
+                "codegen diverges from the exe golden for {src:?}"
+            );
+        }
     }
 
-    macro_rules! golden_test {
-        ($name:ident, $src:expr, $file:literal) => {
-            #[test]
-            fn $name() {
-                check(
-                    $src,
-                    include_bytes!(concat!("../tests/codegen_golden/", $file)),
-                );
-            }
-        };
+    fn fn_named<'a>(p: &'a PexFilePayload, name: &str) -> &'a crate::pex::PexFunctionPayload {
+        p.objects[0].states[0]
+            .functions
+            .iter()
+            .find(|f| f.name == name)
+            .unwrap()
     }
 
-    golden_test!(
-        golden_int_add,
-        "Scriptname GoldAdd\nInt Function F()\n  Return 1 + 2\nEndFunction\n",
-        "GoldAdd.pex"
-    );
-    golden_test!(
-        golden_return_literal,
-        "Scriptname GRetLit\nInt Function F()\n  Return 5\nEndFunction\n",
-        "GRetLit.pex"
-    );
-    golden_test!(
-        golden_local,
-        "Scriptname GLocal\nInt Function F()\n  Int x = 5\n  Return x\nEndFunction\n",
-        "GLocal.pex"
-    );
-    golden_test!(
-        golden_local_add,
-        "Scriptname GLocalAdd\nInt Function F()\n  Int x = 1 + 2\n  Return x\nEndFunction\n",
-        "GLocalAdd.pex"
-    );
-    golden_test!(
-        golden_isub,
-        "Scriptname GSub\nInt Function F()\n  Return 7 - 3\nEndFunction\n",
-        "GSub.pex"
-    );
-    golden_test!(
-        golden_imul,
-        "Scriptname GMul\nInt Function F()\n  Return 2 * 3\nEndFunction\n",
-        "GMul.pex"
-    );
-    golden_test!(
-        golden_idiv,
-        "Scriptname GDiv\nInt Function F()\n  Return 8 / 2\nEndFunction\n",
-        "GDiv.pex"
-    );
-    golden_test!(
-        golden_imod,
-        "Scriptname GMod\nInt Function F()\n  Return 9 % 4\nEndFunction\n",
-        "GMod.pex"
-    );
-    golden_test!(
-        golden_fadd,
-        "Scriptname GFloat\nFloat Function F()\n  Return 1.0 + 2.0\nEndFunction\n",
-        "GFloat.pex"
-    );
-    golden_test!(
-        golden_strcat,
-        "Scriptname GStr\nString Function F()\n  Return \"a\" + \"b\"\nEndFunction\n",
-        "GStr.pex"
-    );
-    golden_test!(
-        golden_void_return,
-        "Scriptname GVoid\nFunction F()\n  Return\nEndFunction\n",
-        "GVoid.pex"
-    );
-    golden_test!(
-        golden_empty_function,
-        "Scriptname GEmpty\nFunction F()\nEndFunction\n",
-        "GEmpty.pex"
-    );
-    golden_test!(
-        golden_int_to_float_cast,
-        "Scriptname GMix\nFloat Function F()\n  Return 1 + 2.0\nEndFunction\n",
-        "GMix.pex"
-    );
-    golden_test!(
-        golden_two_locals,
-        "Scriptname GTwoLocal\nInt Function F()\n  Int x = 1 + 2\n  Int y = 3 + 4\n  Return x + y\nEndFunction\n",
-        "GTwoLocal.pex"
-    );
-    golden_test!(
-        golden_params,
-        "Scriptname GParam\nInt Function F(Int a, Int b)\n  Return a + b\nEndFunction\n",
-        "GParam.pex"
-    );
-    golden_test!(
-        golden_bool_literal,
-        "Scriptname GBool\nBool Function F()\n  Return True\nEndFunction\n",
-        "GBool.pex"
-    );
-    golden_test!(
-        golden_two_functions,
-        "Scriptname GTwoFunc\nInt Function F()\n  Return 1 + 2\nEndFunction\nInt Function G()\n  Return 3 + 4\nEndFunction\n",
-        "GTwoFunc.pex"
-    );
+    fn opcodes(f: &crate::pex::PexFunctionPayload) -> Vec<u8> {
+        f.instructions.iter().map(|i| i.opcode).collect()
+    }
 
-    // --- comparisons, unary, cast, control flow, short-circuit ------
-    golden_test!(
-        golden_cmp_lt,
-        "Scriptname GLt\nBool Function F()\n  Return 2 < 3\nEndFunction\n",
-        "GLt.pex"
-    );
-    golden_test!(
-        golden_cmp_le,
-        "Scriptname GLe\nBool Function F()\n  Return 2 <= 3\nEndFunction\n",
-        "GLe.pex"
-    );
-    golden_test!(
-        golden_cmp_eq,
-        "Scriptname GEq\nBool Function F()\n  Return 2 == 3\nEndFunction\n",
-        "GEq.pex"
-    );
-    golden_test!(
-        golden_cmp_ne,
-        "Scriptname GNe\nBool Function F()\n  Return 2 != 3\nEndFunction\n",
-        "GNe.pex"
-    );
-    golden_test!(
-        golden_cmp_gt,
-        "Scriptname GGt\nBool Function F()\n  Return 2 > 3\nEndFunction\n",
-        "GGt.pex"
-    );
-    golden_test!(
-        golden_cmp_ge,
-        "Scriptname GGe\nBool Function F()\n  Return 2 >= 3\nEndFunction\n",
-        "GGe.pex"
-    );
-    golden_test!(
-        golden_not,
-        "Scriptname GNot\nBool Function F(Bool a)\n  Return !a\nEndFunction\n",
-        "GNot.pex"
-    );
-    golden_test!(
-        golden_neg,
-        "Scriptname GNeg\nInt Function F(Int a)\n  Return -a\nEndFunction\n",
-        "GNeg.pex"
-    );
-    golden_test!(
-        golden_as_cast,
-        "Scriptname GCast\nInt Function F(Float a)\n  Return a as Int\nEndFunction\n",
-        "GCast.pex"
-    );
-    golden_test!(
-        golden_if,
-        "Scriptname GIf\nInt Function F()\n  If 2 < 3\n    Return 1\n  EndIf\n  Return 0\nEndFunction\n",
-        "GIf.pex"
-    );
-    golden_test!(
-        golden_if_else,
-        "Scriptname GIfElse\nInt Function F()\n  If 2 < 3\n    Return 1\n  Else\n    Return 0\n  EndIf\nEndFunction\n",
-        "GIfElse.pex"
-    );
-    golden_test!(
-        golden_if_elseif,
-        "Scriptname GIfElseIf\nInt Function F(Int a)\n  If a == 1\n    Return 10\n  ElseIf a == 2\n    Return 20\n  Else\n    Return 0\n  EndIf\nEndFunction\n",
-        "GIfElseIf.pex"
-    );
-    golden_test!(
-        golden_while,
-        "Scriptname GWhile\nInt Function F()\n  Int x = 0\n  While x < 3\n    x = x + 1\n  EndWhile\n  Return x\nEndFunction\n",
-        "GWhile.pex"
-    );
-    golden_test!(
-        golden_and,
-        "Scriptname GAnd\nBool Function F(Bool a, Bool b)\n  Return a && b\nEndFunction\n",
-        "GAnd.pex"
-    );
-    golden_test!(
-        golden_or,
-        "Scriptname GOr\nBool Function F(Bool a, Bool b)\n  Return a || b\nEndFunction\n",
-        "GOr.pex"
-    );
-
-    // --- arrays, auto properties, same-script calls ----------------
-    golden_test!(
-        golden_arr_len,
-        "Scriptname GArrLen\nInt Function F(Int[] a)\n  Return a.Length\nEndFunction\n",
-        "GArrLen.pex"
-    );
-    golden_test!(
-        golden_arr_get,
-        "Scriptname GArrGet\nInt Function F(Int[] a)\n  Return a[0]\nEndFunction\n",
-        "GArrGet.pex"
-    );
-    golden_test!(
-        golden_arr_set,
-        "Scriptname GArrSet\nFunction F(Int[] a)\n  a[0] = 5\nEndFunction\n",
-        "GArrSet.pex"
-    );
+    /// Writes `files` (relative path, source) under a per-process temp import dir,
+    /// compiles `src` against it, then removes the dir.
+    fn compile_with_import_files(tag: &str, files: &[(&str, String)], src: &str) -> PexFilePayload {
+        let import_dir = std::env::temp_dir().join(format!("{tag}{}", std::process::id()));
+        for (rel, text) in files {
+            let path = import_dir.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).expect("create import dir");
+            std::fs::write(path, text).expect("write imported script");
+        }
+        let p = compile_src_with_imports(src, &[import_dir.to_string_lossy().into_owned()]);
+        std::fs::remove_dir_all(&import_dir).expect("remove import dir");
+        p
+    }
 
     #[test]
-    fn compound_local_assignments_emit_arithmetic_and_store_results() {
+    fn compound_assignments_read_and_write_the_same_target() {
         let p = compile_src(
             "Scriptname GCompoundLocal\nFunction F()\n  Int i = 1\n  Float f = 2.0\n  String s = \"x\"\n  i += 2\n  i -= 1\n  i *= 3\n  i /= 2\n  i %= 2\n  f += 1\n  s += 1\nEndFunction\n",
         );
-        let instructions = &p.objects[0].states[0].functions[0].instructions;
-        let arithmetic: Vec<u8> = instructions
-            .iter()
-            .map(|instruction| instruction.opcode)
-            .filter(|opcode| {
+        let f = fn_named(&p, "F");
+        let arithmetic: Vec<u8> = opcodes(f)
+            .into_iter()
+            .filter(|op| {
                 matches!(
-                    *opcode,
+                    *op,
                     OP_IADD | OP_ISUB | OP_IMUL | OP_IDIV | OP_IMOD | OP_FADD | OP_STRCAT
                 )
             })
             .collect();
-
         assert_eq!(
             arithmetic,
-            vec![
-                OP_IADD, OP_ISUB, OP_IMUL, OP_IDIV, OP_IMOD, OP_FADD, OP_STRCAT
-            ]
+            vec![OP_IADD, OP_ISUB, OP_IMUL, OP_IDIV, OP_IMOD, OP_FADD, OP_STRCAT]
         );
-        assert_eq!(
-            instructions
-                .iter()
-                .filter(|instruction| instruction.opcode == OP_ASSIGN)
-                .count(),
-            10
-        );
-    }
+        assert_eq!(opcodes(f).iter().filter(|&&op| op == OP_ASSIGN).count(), 10);
 
-    #[test]
-    fn compound_array_assignment_reads_and_writes_the_same_element() {
         let p = compile_src(
             "Scriptname GCompoundArray\nFunction F(Int[] values, Int index)\n  values[index] += 2\nEndFunction\n",
         );
-        let opcodes: Vec<u8> = p.objects[0].states[0].functions[0]
-            .instructions
-            .iter()
-            .map(|instruction| instruction.opcode)
-            .collect();
-
         assert_eq!(
-            opcodes,
+            opcodes(fn_named(&p, "F")),
             vec![OP_ARRAYGETELEMENT, OP_IADD, OP_ARRAYSETELEMENT]
         );
-    }
 
-    #[test]
-    fn compound_struct_assignment_reads_and_writes_the_same_member() {
         let p = compile_src(
             "Scriptname GCompoundStruct\nStruct Point\n  Int X\nEndStruct\nFunction F()\n  Point p = new Point\n  p.X += 2\nEndFunction\n",
         );
-        let opcodes: Vec<u8> = p.objects[0].states[0].functions[0]
-            .instructions
-            .iter()
-            .map(|instruction| instruction.opcode)
-            .collect();
+        assert_eq!(&opcodes(fn_named(&p, "F"))[2..], &[OP_STRUCTGET, OP_IADD, OP_STRUCTSET]);
 
-        assert_eq!(&opcodes[2..], &[OP_STRUCTGET, OP_IADD, OP_STRUCTSET]);
-    }
-
-    #[test]
-    fn compound_property_assignment_reads_and_writes_the_same_receiver() {
-        let type_name = format!("GCompoundBox{}", std::process::id());
-        let import_dir = std::env::temp_dir().join(&type_name);
-        std::fs::create_dir_all(&import_dir).expect("create import dir");
-        std::fs::write(
-            import_dir.join(format!("{type_name}.psc")),
-            format!("Scriptname {type_name}\nInt Property Count Auto\n"),
-        )
-        .expect("write imported script");
-        let p = compile_src_with_imports(
-            &format!(
-                "Scriptname GCompoundProperty\nFunction F({type_name} box)\n  box.Count += 2\nEndFunction\n"
-            ),
-            &[import_dir.to_string_lossy().into_owned()],
+        let p = compile_src(
+            "Scriptname GHandlerCompound\nInt Property P\n  Int Function Get()\n    Return 5\n  EndFunction\n  Function Set(Int v)\n  EndFunction\nEndProperty\nFunction F()\n  P += 1\nEndFunction\n",
         );
-        std::fs::remove_dir_all(&import_dir).expect("remove import dir");
-        let opcodes: Vec<u8> = p.objects[0].states[0].functions[0]
-            .instructions
-            .iter()
-            .map(|instruction| instruction.opcode)
-            .collect();
-
-        assert_eq!(opcodes, vec![OP_PROPGET, OP_IADD, OP_PROPSET]);
+        // Stock (PapyrusCompiler 2.8.0.4) allocates the PROPSET dest temp first but writes it last.
+        let f = fn_named(&p, "F");
+        assert_eq!(opcodes(f), vec![OP_PROPGET, OP_IADD, OP_ASSIGN, OP_PROPSET]);
+        assert_eq!(f.instructions[0].args, vec![ident("P"), ident("self"), ident("::temp1")]);
+        assert_eq!(
+            f.instructions[1].args,
+            vec![ident("::temp2"), ident("::temp1"), int_value(1)]
+        );
+        assert_eq!(f.instructions[2].args, vec![ident("::temp0"), ident("::temp2")]);
+        assert_eq!(f.instructions[3].args, vec![ident("P"), ident("self"), ident("::temp0")]);
     }
-    golden_test!(
-        golden_arr_new,
-        "Scriptname GArrNew\nInt[] Function F()\n  Int[] a = new Int[4]\n  Return a\nEndFunction\n",
-        "GArrNew.pex"
-    );
-    golden_test!(
-        golden_arr_find,
-        "Scriptname GArrFind\nInt Function F(Int[] a)\n  Return a.Find(7)\nEndFunction\n",
-        "GArrFind.pex"
-    );
-    golden_test!(
-        golden_arr_mut,
-        "Scriptname GArrMut\nFunction F(Int[] a)\n  a.Add(7)\n  a.Remove(0)\n  a.Clear()\nEndFunction\n",
-        "GArrMut.pex"
-    );
-    golden_test!(
-        golden_struct,
-        "Scriptname GStruct\nStruct Point\n  Int X\n  Int Y\nEndStruct\nInt Function F()\n  Point p = new Point\n  p.X = 5\n  Return p.Y\nEndFunction\n",
-        "GStruct.pex"
-    );
+
     #[test]
-    fn namespaced_object_type_keeps_colons() {
+    fn imported_script_members_dispatch_through_propget() {
+        let box_ty = format!("GCompoundBox{}", std::process::id());
+        let p = compile_with_import_files(
+            "GCompoundBox",
+            &[(
+                &format!("{box_ty}.psc"),
+                format!("Scriptname {box_ty}\nInt Property Count Auto\n"),
+            )],
+            &format!(
+                "Scriptname GCompoundProperty\nFunction F({box_ty} box)\n  box.Count += 2\nEndFunction\n"
+            ),
+        );
+        assert_eq!(opcodes(fn_named(&p, "F")), vec![OP_PROPGET, OP_IADD, OP_PROPSET]);
+
+        let parent = format!("GInheritedParent{}", std::process::id());
+        let p = compile_with_import_files(
+            "GInheritedParent",
+            &[(
+                &format!("{parent}.psc"),
+                format!("Scriptname {parent}\nInt Property StateIndex Auto\n"),
+            )],
+            &format!(
+                "Scriptname GInheritedChild extends {parent}\nFunction F()\n  Int x = StateIndex\n  StateIndex = x + 1\nEndFunction\n"
+            ),
+        );
+        let f = fn_named(&p, "F");
+        assert!(opcodes(f).contains(&OP_PROPGET) && opcodes(f).contains(&OP_PROPSET));
+        assert!(!f.instructions.iter().flat_map(|i| &i.args).any(|arg| {
+            arg.value_type == VT_IDENT && arg.data.as_str() == Some("::StateIndex_var")
+        }));
+
+        let p = compile_with_import_files(
+            "GForeignStruct",
+            &[(
+                "GForeignNs/Owner.psc",
+                "Scriptname GForeignNs:Owner extends Quest\nStruct Pair\n  Int Regular = -1\nEndStruct\nPair[] Property Pairs Auto\n".to_string(),
+            )],
+            "Scriptname GForeignStructReader\nInt Function F(GForeignNs:Owner akOwner)\n  Return akOwner.Pairs[0].Regular\nEndFunction\n",
+        );
+        let ops = opcodes(fn_named(&p, "F"));
+        assert!(ops.contains(&OP_STRUCTGET), "{ops:?}");
+        assert_eq!(ops.iter().filter(|&&op| op == OP_PROPGET).count(), 1, "{ops:?}");
+    }
+
+    #[test]
+    fn payload_names_keep_namespaces_and_source_hint() {
         let p = compile_src(
             "Scriptname GNamespacedType\nQuests:_Default:ProgressBar:MasterScript ProgressBar\n",
         );
@@ -3171,10 +3198,6 @@ mod tests {
             p.objects[0].variables[0].ty,
             "quests:_default:progressbar:masterscript"
         );
-    }
-
-    #[test]
-    fn source_script_name_hint_sets_payload_name() {
         let p = compile_src_with_source_name(
             "Scriptname Foo:Bar\nFunction F()\nEndFunction\n",
             Some("foo:bar"),
@@ -3191,42 +3214,18 @@ mod tests {
         let p = compile_src(
             "Scriptname GLocalDefaults\nFunction F()\n  Int i\n  Float f\n  Bool b\n  String s\nEndFunction\n",
         );
-        let f = &p.objects[0].states[0].functions[0];
-        assert_eq!(f.instructions[0].opcode, OP_ASSIGN);
-        assert_eq!(f.instructions[0].args, vec![ident("i"), int_value(0)]);
-        assert_eq!(f.instructions[1].opcode, OP_ASSIGN);
-        assert_eq!(
-            f.instructions[1].args,
-            vec![
-                ident("f"),
-                PexValuePayload {
-                    value_type: VT_FLOAT,
-                    data: serde_json::json!(0.0),
-                },
-            ]
-        );
-        assert_eq!(f.instructions[2].opcode, OP_ASSIGN);
-        assert_eq!(
-            f.instructions[2].args,
-            vec![
-                ident("b"),
-                PexValuePayload {
-                    value_type: VT_BOOL,
-                    data: serde_json::json!(false),
-                },
-            ]
-        );
-        assert_eq!(f.instructions[3].opcode, OP_ASSIGN);
-        assert_eq!(
-            f.instructions[3].args,
-            vec![
-                ident("s"),
-                PexValuePayload {
-                    value_type: VT_STRING,
-                    data: serde_json::json!(""),
-                },
-            ]
-        );
+        let f = fn_named(&p, "F");
+        let value = |value_type, data| PexValuePayload { value_type, data };
+        let expected = [
+            vec![ident("i"), int_value(0)],
+            vec![ident("f"), value(VT_FLOAT, serde_json::json!(0.0))],
+            vec![ident("b"), value(VT_BOOL, serde_json::json!(false))],
+            vec![ident("s"), value(VT_STRING, serde_json::json!(""))],
+        ];
+        for (instruction, args) in f.instructions.iter().zip(expected) {
+            assert_eq!(instruction.opcode, OP_ASSIGN);
+            assert_eq!(instruction.args, args);
+        }
     }
 
     #[test]
@@ -3234,7 +3233,7 @@ mod tests {
         let p = compile_src(
             "Scriptname GMissingStatic\nFunction F()\n  GlobalVariable g = Foo:Bar.GetGlobal()\nEndFunction\n",
         );
-        let f = &p.objects[0].states[0].functions[0];
+        let f = fn_named(&p, "F");
         assert_eq!(f.instructions.len(), 2);
         assert_eq!(f.instructions[0].opcode, OP_CALLSTATIC);
         assert_eq!(f.instructions[0].args[0], ident("foo:bar"));
@@ -3245,7 +3244,7 @@ mod tests {
     }
 
     #[test]
-    fn full_property_literal_getter_returns_literal_without_cast() {
+    fn property_getters_and_local_shadowing() {
         let p = compile_src(
             "Scriptname GPropLit\nInt Property P\n  Int Function Get()\n    Return 5\n  EndFunction\nEndProperty\n",
         );
@@ -3254,10 +3253,7 @@ mod tests {
         assert_eq!(getter.instructions.len(), 1);
         assert_eq!(getter.instructions[0].opcode, OP_RETURN);
         assert_eq!(getter.instructions[0].args, vec![int_value(5)]);
-    }
 
-    #[test]
-    fn auto_read_only_property_emits_read_flag_and_constant_getter() {
         let p = compile_src("Scriptname GARO\nInt Property T = 3 AutoReadOnly\n");
         let prop = &p.objects[0].properties[0];
         assert_eq!(prop.flags, 1);
@@ -3267,245 +3263,34 @@ mod tests {
         let getter = prop.getter.as_ref().unwrap();
         assert_eq!(getter.name, "get_T");
         assert_eq!(getter.instructions.len(), 1);
-        assert_eq!(getter.instructions[0].opcode, OP_RETURN);
         assert_eq!(getter.instructions[0].args, vec![int_value(3)]);
-    }
 
-    #[test]
-    fn bare_read_of_handler_property_emits_propget_on_self() {
-        let p = compile_src(
-            "Scriptname GHandlerRead\nInt Property P\n  Int Function Get()\n    Return 5\n  EndFunction\nEndProperty\nFunction F()\n  Int x = P\nEndFunction\n",
-        );
-        let f = p.objects[0].states[0]
-            .functions
-            .iter()
-            .find(|f| f.name == "F")
-            .unwrap();
-        assert_eq!(f.instructions[0].opcode, OP_PROPGET);
-        assert_eq!(
-            f.instructions[0].args,
-            vec![ident("P"), ident("self"), ident("::temp0")]
-        );
-        assert_eq!(f.instructions[1].opcode, OP_ASSIGN);
-        assert_eq!(f.instructions[1].args, vec![ident("x"), ident("::temp0")]);
-    }
-
-    #[test]
-    fn bare_read_of_auto_read_only_property_emits_propget_on_self() {
-        let p = compile_src(
-            "Scriptname GARORead\nInt Property T = 3 AutoReadOnly\nFunction F()\n  Int x = T\nEndFunction\n",
-        );
-        let f = &p.objects[0].states[0].functions[0];
-        assert_eq!(f.instructions[0].opcode, OP_PROPGET);
-        assert_eq!(
-            f.instructions[0].args,
-            vec![ident("T"), ident("self"), ident("::temp0")]
-        );
-    }
-
-    #[test]
-    fn inherited_auto_property_dispatches_through_self() {
-        let type_name = format!("GInheritedParent{}", std::process::id());
-        let import_dir = std::env::temp_dir().join(&type_name);
-        std::fs::create_dir_all(&import_dir).expect("create import dir");
-        std::fs::write(
-            import_dir.join(format!("{type_name}.psc")),
-            format!("Scriptname {type_name}\nInt Property StateIndex Auto\n"),
-        )
-        .expect("write parent script");
-        let p = compile_src_with_imports(
-            &format!(
-                "Scriptname GInheritedChild extends {type_name}\nFunction F()\n  Int x = StateIndex\n  StateIndex = x + 1\nEndFunction\n"
-            ),
-            &[import_dir.to_string_lossy().into_owned()],
-        );
-        std::fs::remove_dir_all(&import_dir).expect("remove import dir");
-        let f = &p.objects[0].states[0].functions[0];
-        let opcodes: Vec<u8> = f.instructions.iter().map(|i| i.opcode).collect();
-        assert!(opcodes.contains(&OP_PROPGET));
-        assert!(opcodes.contains(&OP_PROPSET));
-        assert!(!f.instructions.iter().flat_map(|i| &i.args).any(|arg| {
-            arg.value_type == VT_IDENT && arg.data.as_str() == Some("::StateIndex_var")
-        }));
-    }
-
-    #[test]
-    fn local_shadows_handler_property_and_reads_the_local() {
         let p = compile_src(
             "Scriptname GShadow\nInt Property P\n  Int Function Get()\n    Return 5\n  EndFunction\nEndProperty\nFunction F()\n  Int P = 1\n  Int x = P\nEndFunction\n",
         );
-        let f = p.objects[0].states[0]
-            .functions
-            .iter()
-            .find(|f| f.name == "F")
-            .unwrap();
-        assert!(!f.instructions.iter().any(|i| i.opcode == OP_PROPGET));
+        assert!(!opcodes(fn_named(&p, "F")).contains(&OP_PROPGET));
     }
 
+    /// Stock's `DefaultDisableSelfTrigger.pex` passes an `objectReference` parameter into an
+    /// `ObjectReference` slot with no CAST; member and local arguments behave the same.
     #[test]
-    fn bare_write_of_handler_property_emits_propset_on_self() {
-        let p = compile_src(
-            "Scriptname GHandlerWrite\nInt Property P\n  Int Function Get()\n    Return 5\n  EndFunction\n  Function Set(Int v)\n  EndFunction\nEndProperty\nFunction F()\n  P = 7\nEndFunction\n",
-        );
-        let f = p.objects[0].states[0]
-            .functions
-            .iter()
-            .find(|f| f.name == "F")
-            .unwrap();
-        assert_eq!(f.instructions[0].opcode, OP_ASSIGN);
-        assert_eq!(f.instructions[0].args, vec![ident("::temp0"), int_value(7)]);
-        assert_eq!(f.instructions[1].opcode, OP_PROPSET);
-        assert_eq!(
-            f.instructions[1].args,
-            vec![ident("P"), ident("self"), ident("::temp0")]
-        );
-    }
-
-    #[test]
-    fn compound_assign_to_handler_property_round_trips_through_self() {
-        let p = compile_src(
-            "Scriptname GHandlerCompound\nInt Property P\n  Int Function Get()\n    Return 5\n  EndFunction\n  Function Set(Int v)\n  EndFunction\nEndProperty\nFunction F()\n  P += 1\nEndFunction\n",
-        );
-        let f = p.objects[0].states[0]
-            .functions
-            .iter()
-            .find(|f| f.name == "F")
-            .unwrap();
-        // Stock (PapyrusCompiler 2.8.0.4) for `P += 1` on a full property:
-        //   PROPGET P, self, ::temp1 / IADD ::temp2, ::temp1, 1
-        //   ASSIGN ::temp0, ::temp2  / PROPSET P, self, ::temp0
-        // The PROPSET dest temp is allocated first but written last.
-        let opcodes: Vec<u8> = f.instructions.iter().map(|i| i.opcode).collect();
-        assert_eq!(opcodes, vec![OP_PROPGET, OP_IADD, OP_ASSIGN, OP_PROPSET]);
-        assert_eq!(
-            f.instructions[0].args,
-            vec![ident("P"), ident("self"), ident("::temp1")]
-        );
-        assert_eq!(
-            f.instructions[1].args,
-            vec![ident("::temp2"), ident("::temp1"), int_value(1)]
-        );
-        assert_eq!(
-            f.instructions[2].args,
-            vec![ident("::temp0"), ident("::temp2")]
-        );
-        assert_eq!(
-            f.instructions[3].args,
-            vec![ident("P"), ident("self"), ident("::temp0")]
-        );
-    }
-
-    #[test]
-    fn call_argument_type_casing_does_not_cast() {
+    fn argument_type_casing_does_not_cast() {
         let p = compile_src(
             "Scriptname GCallTypeCase\nform Property F Auto\nFunction Caller()\n  Callee(F)\nEndFunction\nFunction Callee(Form akForm)\nEndFunction\n",
         );
-        let f = p.objects[0].states[0]
-            .functions
-            .iter()
-            .find(|f| f.name == "Caller")
-            .unwrap();
-        assert!(!f.instructions.iter().any(|i| i.opcode == OP_CAST));
+        let f = fn_named(&p, "Caller");
+        assert!(!opcodes(f).contains(&OP_CAST));
         assert_eq!(f.locals.len(), 1);
         assert_eq!(f.locals[0].name, "::nonevar");
-    }
 
-    /// A local/parameter argument casts no differently from a script member.
-    /// Stock's `DefaultDisableSelfTrigger.pex` passes an `objectReference`
-    /// parameter into an `ObjectReference` slot with no CAST, and the vanilla
-    /// corpus agrees on every script where the two spellings meet.
-    #[test]
-    fn local_argument_type_casing_does_not_cast() {
         let p = compile_src(
             "Scriptname GCallLocalTypeCase\nFunction Caller(Actor akActor)\n  Callee(akActor)\nEndFunction\nFunction Callee(actor akActor)\nEndFunction\n",
         );
-        let f = p.objects[0].states[0]
-            .functions
-            .iter()
-            .find(|f| f.name == "Caller")
-            .unwrap();
-        assert!(!f.instructions.iter().any(|i| i.opcode == OP_CAST));
+        assert!(!opcodes(fn_named(&p, "Caller")).contains(&OP_CAST));
     }
-    // Properties with NO backing variable: full Get/Set and AutoReadOnly. Bare
-    // self-reads/writes go through PROPGET/PROPSET on `self` — the pre-existing
-    // GPropGet/GPropSet goldens only cover `Auto` (backing-var) properties, and
-    // GPropFull never touches the property outside its own accessors.
-    golden_test!(
-        golden_handler_property_self_access,
-        "Scriptname GPropHandler extends Quest\nInt _p\nInt Property P\n  Int Function Get()\n    Return _p\n  EndFunction\n  Function Set(Int v)\n    _p = v\n  EndFunction\nEndProperty\nInt Property RO = 3 AutoReadOnly\nFunction DoRead()\n  Int x = P\n  Int y = RO\nEndFunction\nFunction DoWrite()\n  P = 7\nEndFunction\nFunction DoCompound()\n  P += 1\nEndFunction\n",
-        "GPropHandler.pex"
-    );
-    golden_test!(
-        golden_self_call,
-        "Scriptname GSelfCall\nInt Function F()\n  Return G()\nEndFunction\nInt Function G()\n  Return 1\nEndFunction\n",
-        "GSelfCall.pex"
-    );
-    golden_test!(
-        golden_global_call,
-        "Scriptname GGlobalCall\nFunction F()\n  G()\nEndFunction\nFunction G() Global\nEndFunction\n",
-        "GGlobalCall.pex"
-    );
-    golden_test!(
-        golden_arg_call,
-        "Scriptname GArgCall\nFunction F()\n  G(1, 2)\nEndFunction\nFunction G(Int a, Int b)\nEndFunction\n",
-        "GArgCall.pex"
-    );
-    // Default-argument fill + arg binding: omitted (default materialized),
-    // positional, and named-in-order (`abParam = true` / `b = true`).
-    golden_test!(
-        golden_default_args,
-        "Scriptname GDefArg\nFunction Caller()\n  Helper()\n  Helper(true)\n  Helper(abParam = true)\n  Multi(1, b = true)\nEndFunction\nFunction Helper(bool abParam = false)\nEndFunction\nFunction Multi(int a, bool b = false)\nEndFunction\n",
-        "GDefArg.pex"
-    );
-    golden_test!(
-        golden_prop_get,
-        "Scriptname GPropGet\nInt Property P Auto\nInt Function F()\n  Return P\nEndFunction\n",
-        "GPropGet.pex"
-    );
-    golden_test!(
-        golden_prop_set,
-        "Scriptname GPropSet\nInt Property P Auto\nFunction F()\n  P = 5\nEndFunction\n",
-        "GPropSet.pex"
-    );
-
-    // --- events, member variables, named states ----------------
-    golden_test!(
-        golden_event,
-        "Scriptname GEvent extends Quest\nEvent OnInit()\n  Int x = 1\nEndEvent\n",
-        "GEvent.pex"
-    );
-    golden_test!(
-        golden_event_arg,
-        "Scriptname GEventArg extends ObjectReference\nEvent OnActivate(ObjectReference akActionRef)\nEndEvent\n",
-        "GEventArg.pex"
-    );
-    golden_test!(
-        golden_var_set,
-        "Scriptname GVarSet extends Quest\nInt _n\nFunction F()\n  _n = 5\nEndFunction\n",
-        "GVarSet.pex"
-    );
-    golden_test!(
-        golden_states,
-        "Scriptname GStates extends Quest\nInt Function F()\n  Return 1\nEndFunction\nState Running\n  Int Function F()\n    Return 2\n  EndFunction\nEndState\n",
-        "GStates.pex"
-    );
-    golden_test!(
-        golden_prop_full,
-        "Scriptname GPropFull extends Quest\nInt _p\nInt Property P\n  Int Function Get()\n    Return _p\n  EndFunction\n  Function Set(Int v)\n    _p = v\n  EndFunction\nEndProperty\n",
-        "GPropFull.pex"
-    );
-    // Multi-property / multi-variable: the property and variable LISTS are
-    // Hashtable-randomized, so this only passes because canon() sorts them.
-    golden_test!(
-        golden_multi,
-        "Scriptname GMulti extends Quest\nInt _alpha\nFloat _beta\nBool _gamma\nInt Property Pone Auto\nFloat Property Ptwo Auto\nBool Property Pthree Auto\nString Property Pfour Auto\n",
-        "GMulti.pex"
-    );
-
-    // --- slice regression (empty object stays byte-identical) ----------------
 
     #[test]
-    fn slice_payload_matches_reference_structure() {
+    fn slice_payload_matches_reference_and_round_trips() {
         let p = compile_src("ScriptName B21Slice extends Quest\n");
         assert_eq!((p.major_version, p.minor_version, p.game_id), (3, 9, 2));
         assert!(p.debug_info.is_none());
@@ -3527,13 +3312,7 @@ mod tests {
         assert_eq!((o.name.as_str(), o.parent.as_str()), ("B21Slice", "Quest"));
         assert_eq!(o.states.len(), 1);
         assert!(o.states[0].functions.is_empty());
-    }
-
-    #[test]
-    fn slice_payload_round_trips_through_writer() {
-        let p = compile_src("ScriptName B21Slice extends Quest\n");
         let bytes = crate::pex_writer::write_pex_bytes(&p).expect("write");
-        let reparsed = crate::pex::parse_pex_bytes(&bytes).expect("reparse");
-        assert_eq!(reparsed, p);
+        assert_eq!(crate::pex::parse_pex_bytes(&bytes).expect("reparse"), p);
     }
 }

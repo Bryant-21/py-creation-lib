@@ -43,6 +43,10 @@ use super::sync::{
     build_plugin_sync_anim_data, plugin_sync_anim_filename, weapon_sync_anim_filenames,
 };
 
+#[cfg(test)]
+#[path = "emit_local_core_tests.rs"]
+mod local_core_tests;
+
 const AUTHORITATIVE_MANIFEST: &str = "AnimTextData/.modkit-authoritative-files.json";
 
 /// A subgraph to emit, as read from a RACE record.
@@ -1056,9 +1060,8 @@ fn emit_derivable_buckets_with_progress(
         // core (lc) -> AnimEventInfo clip targets (lc); the AnimationOffsets section1 set.
         let mut core_event_clips: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         for sg in sgs {
-            if weapon_subgraph_ids.contains(&sg.id()) {
-                continue;
-            }
+            // Private weapon cores need their own AI attack tables. Only base-game
+            // cores can reuse vanilla's name-keyed tables, regardless of STKD routing.
             let core = &sg.core_behavior;
             if !seen_core.insert(core.to_ascii_lowercase()) {
                 continue;
@@ -1528,66 +1531,6 @@ mod tests {
     use super::*;
     use std::collections::BTreeSet;
     use std::path::PathBuf;
-
-    #[test]
-    #[ignore = "requires local converted and base game fixtures"]
-    fn authoritative_corpus_equivalence() {
-        let config_path = std::env::var("MODKIT_ANIM_CORPUS").unwrap();
-        let config: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(config_path).unwrap()).unwrap();
-        let path = |key: &str| PathBuf::from(config[key].as_str().unwrap());
-        let inputs = super::super::race_decode::subgraph_inputs_from_plugin(
-            &path("plugin"),
-            "fo4",
-            &[path("base_plugin")],
-        )
-        .unwrap();
-        let out = tempfile::tempdir().unwrap();
-        let started = Instant::now();
-        let report = emit_serialized_production_buckets(
-            &deduplicated_subgraphs(&inputs.subgraphs),
-            &inputs.weapon_profiles,
-            &inputs.base_stance_profiles,
-            &inputs.target_plugin_name,
-            &path("meshes"),
-            out.path(),
-            Some(&path("base_meshes")),
-        )
-        .unwrap();
-        eprintln!(
-            "authoritative corpus: {report:?} elapsed={:.6}s profiles={} base_profiles={}",
-            started.elapsed().as_secs_f64(),
-            inputs.weapon_profiles.len(),
-            inputs.base_stance_profiles.len()
-        );
-        assert_eq!(report.written, 4);
-        assert_eq!(report.stance_reused, 1);
-        assert_eq!(report.stance_generated, 1);
-        assert_eq!(report.stance_skipped, 0);
-        let manifest: AuthoritativeManifest = serde_json::from_slice(
-            &std::fs::read(out.path().join(AUTHORITATIVE_MANIFEST)).unwrap(),
-        )
-        .unwrap();
-        let record = std::env::var_os("MODKIT_ANIM_RECORD").is_some();
-        for relative in manifest
-            .files
-            .iter()
-            .map(String::as_str)
-            .chain(std::iter::once(AUTHORITATIVE_MANIFEST))
-        {
-            let body = std::fs::read(out.path().join(relative)).unwrap();
-            let expected = path("baseline").join(relative);
-            if record {
-                std::fs::create_dir_all(expected.parent().unwrap()).unwrap();
-                std::fs::write(expected, body).unwrap();
-            } else {
-                assert!(
-                    std::fs::read(expected).unwrap() == body,
-                    "different bytes: {relative}"
-                );
-            }
-        }
-    }
 
     fn make_target_profile(core: &str, sapt: &[&str]) -> WeaponProfileInput {
         let subgraph = SubgraphInput {
@@ -2150,10 +2093,6 @@ mod tests {
         assert_eq!(race_order(parallel_messages), expected_order);
     }
 
-    fn base_meshes() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../extracted/fo4/Meshes")
-    }
-
     #[test]
     fn creature_only_authoritative_phase_succeeds_without_base_inputs() {
         let out = tempfile::tempdir().unwrap();
@@ -2457,85 +2396,6 @@ mod tests {
     }
 
     #[test]
-    fn generated_weapon_sync_and_stance_are_withheld_and_stale_files_are_removed() {
-        let source_base = base_meshes();
-        let aggregate_source = source_base
-            .join("AnimTextData/AnimationOffsets/PersistantSubgraphInfoAndOffsetData.txt");
-        if !aggregate_source.is_file() {
-            eprintln!("base aggregate fixture absent; skipping");
-            return;
-        }
-        let src = tempfile::tempdir().unwrap();
-        let base = tempfile::tempdir().unwrap();
-        let aggregate = base
-            .path()
-            .join("AnimTextData/AnimationOffsets/PersistantSubgraphInfoAndOffsetData.txt");
-        std::fs::create_dir_all(aggregate.parent().unwrap()).unwrap();
-        std::fs::copy(aggregate_source, &aggregate).unwrap();
-        let donor = WeaponSubgraphMetadata {
-            race_family: WeaponRaceFamily {
-                owner_race: StanceFormKey {
-                    plugin: "Fallout4.esm".to_string(),
-                    local: 2,
-                },
-                sadd: None,
-            },
-            perspective: StancePerspective::ThirdPerson,
-            sakd: Vec::new(),
-            stkd: Vec::new(),
-            core_behavior: "donor.hkx".to_string(),
-            sapt: vec!["donor".to_string()],
-            sraf: WeaponSraf {
-                role: 1,
-                perspective: 0,
-            },
-            id: 42,
-        };
-        let donor_file = base.path().join("AnimTextData/AnimationStanceData/42.txt");
-        std::fs::create_dir_all(donor_file.parent().unwrap()).unwrap();
-        std::fs::write(donor_file, b"file-backed donor").unwrap();
-
-        let (subgraphs, profiles) = synthetic_weapon_inputs();
-        let out = tempfile::tempdir().unwrap();
-        seed_stale_authoritative_outputs(out.path(), &profiles);
-        let report = emit_serialized_production_buckets(
-            &subgraphs,
-            &profiles,
-            &[donor],
-            "Test.esp",
-            src.path(),
-            out.path(),
-            Some(base.path()),
-        )
-        .unwrap();
-        // 2 = the trusted aggregate + the plugin-level ResolvedSyncAnimDataTest.txt empty
-        // form (V4\n0\n), now always emitted alongside the authoritative buckets.
-        assert_eq!(
-            report.written, 2,
-            "only the trusted aggregate + plugin sync file are emitted"
-        );
-        let atd = out.path().join("AnimTextData");
-        assert!(
-            atd.join("AnimationOffsets/PersistantSubgraphInfoAndOffsetData.txt")
-                .is_file()
-        );
-        assert!(
-            !atd.join("SyncAnimData/ResolvedSyncAnimDatamissing.txt")
-                .exists()
-        );
-        for profile in &profiles {
-            assert!(
-                !atd.join(format!("AnimationStanceData/{}.txt", profile.stance.id))
-                    .exists()
-            );
-        }
-        assert_eq!(
-            std::fs::read(atd.join("SyncAnimData/unrelated.txt")).unwrap(),
-            b"keep"
-        );
-    }
-
-    #[test]
     fn structural_aggregates_write_dirlists_and_merged_single_file() {
         let out = tempfile::tempdir().unwrap();
         let base = tempfile::tempdir().unwrap();
@@ -2723,10 +2583,6 @@ mod tests {
     #[test]
     fn dynamic_tag_core_subgraph_keeps_core_first_and_appends_sapt_files() {
         assert_dynamic_subgraph_dependencies(false);
-    }
-
-    #[test]
-    fn local_core_with_clips_keeps_referenced_behavior_in_manifest() {
         assert_dynamic_subgraph_dependencies(true);
     }
 

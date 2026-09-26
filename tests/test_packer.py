@@ -94,42 +94,6 @@ def test_pack_mod_uses_separate_effects_resizes_for_pc_and_xbox(tmp_path):
     assert archive2_calls == []
 
 
-def test_pack_mod_defaults_effects_max_to_main_size(tmp_path):
-    mod_name = "B21_TestPack"
-    _build_mod_tree(tmp_path, mod_name)
-
-    batch_resize_calls: list[dict] = []
-
-    def _fake_batch_resize(*, input_dir, output_dir, sizes, **kwargs):
-        batch_resize_calls.append(
-            {
-                "input_dir": Path(input_dir).as_posix(),
-                "output_dir": Path(output_dir).as_posix(),
-                "sizes": list(sizes),
-            }
-        )
-        return {"processed": 0, "failed": 0, "errors": []}
-
-    with patch("creation_lib.build.packer.native_runtime.native_function_available", side_effect=lambda name: name == "pack_archive"), \
-            patch("creation_lib.build.packer.native_runtime.pack_archive", side_effect=lambda src, out, *args, **kwargs: Path(out).write_bytes(b"native")), \
-            patch("creation_lib.build.packer._tile_textures_for_xbox"), \
-            patch("creation_lib.dds.batch_resize", side_effect=_fake_batch_resize):
-        pack_mod(
-            mod_name,
-            pc=True,
-            xbox=False,
-            pc_max_res=2048,
-            pc_effects_max_res=None,
-            game="fo4",
-            use_archive2=False,
-            project_root=tmp_path,
-        )
-
-    assert len(batch_resize_calls) == 2
-    assert batch_resize_calls[0]["sizes"] == [2048]
-    assert batch_resize_calls[1]["sizes"] == [2048]
-
-
 def test_tile_textures_for_xbox_uses_xbox_cli_flags_without_overwrite(tmp_path):
     src_root = tmp_path / "src"
     dest_root = tmp_path / "dest"
@@ -152,70 +116,25 @@ def test_tile_textures_for_xbox_uses_xbox_cli_flags_without_overwrite(tmp_path):
     assert calls[0][2] == "-o"
 
 
-def test_pack_mod_prefers_native_pack_when_available(tmp_path):
+def test_pack_mod_fo4_og_routes_through_native_mod_pack_with_og_flag(tmp_path):
+    """A PC-only pack (the native mod-archive planner's fast path) must pass
+    fo4_og=True through to pack_mod_archives when the OG BA2 target is
+    requested, so the native side emits v1-capable archives."""
     mod_name = "B21_TestPack"
     _build_mod_tree(tmp_path, mod_name)
 
-    native_calls: list[tuple[str, str, str, bool, int]] = []
+    mod_archive_calls: list[dict] = []
 
-    def _fake_batch_resize(*, input_dir, output_dir, sizes, **kwargs):
-        return {"processed": 0, "failed": 0, "errors": []}
-
-    def _fake_native_pack(src, out, archive_type, compress=True, compression_level=6, share_data=False, manifest_path=None, **kwargs):
-        native_calls.append((Path(src).as_posix(), Path(out).name, archive_type, compress, compression_level))
-        Path(out).write_bytes(b"native")
-
-    with patch("creation_lib.build.packer.native_runtime.native_function_available", side_effect=lambda name: name == "pack_archive"), \
-            patch("creation_lib.build.packer.native_runtime.pack_archive", side_effect=_fake_native_pack), \
-            patch("creation_lib.build.packer._tile_textures_for_xbox"), \
-            patch("creation_lib.dds.batch_resize", side_effect=_fake_batch_resize):
-        pack_mod(
-            mod_name,
-            pc=True,
-            xbox=False,
-            pc_max_res=0,
-            game="fo4",
-            use_archive2=False,
-            project_root=tmp_path,
-        )
-
-    assert native_calls == [
-        (
-            Path(tmp_path / "mods" / mod_name / "data").as_posix(),
-            "B21_TestPack - Main.ba2",
-            "fo4",
-            True,
-            9,
-        ),
-        (
-            Path(tmp_path / "mods" / mod_name / "data").as_posix(),
-            "B21_TestPack - Textures.ba2",
-            "fo4dds",
-            True,
-            9,
-        ),
-    ]
-
-
-def test_pack_mod_fo4_og_uses_v1_archive_tokens(tmp_path):
-    mod_name = "B21_TestPack"
-    _build_mod_tree(tmp_path, mod_name)
-
-    archive_types: list[str] = []
-
-    def _fake_native_pack(src, out, archive_type, **kwargs):
-        archive_types.append(archive_type)
-        Path(out).write_bytes(b"native")
+    def _fake_pack_mod_archives(options, progress=None):
+        mod_archive_calls.append(options)
+        return {"archives": []}
 
     with patch(
         "creation_lib.build.packer.native_runtime.native_function_available",
         return_value=True,
     ), patch(
         "creation_lib.build.packer.native_runtime.pack_mod_archives",
-        side_effect=AssertionError("OG packing must use the v1-capable path"),
-    ), patch(
-        "creation_lib.build.packer.native_runtime.pack_archive",
-        side_effect=_fake_native_pack,
+        side_effect=_fake_pack_mod_archives,
     ):
         pack_mod(
             mod_name,
@@ -226,7 +145,8 @@ def test_pack_mod_fo4_og_uses_v1_archive_tokens(tmp_path):
             fo4_ba2_target="og",
         )
 
-    assert archive_types == ["fo4og", "fo4ogdds"]
+    assert len(mod_archive_calls) == 1
+    assert mod_archive_calls[0]["fo4_og"] is True
 
 
 def test_pack_mod_fo4_og_writes_v1_header(tmp_path):
@@ -284,20 +204,21 @@ def test_pack_mod_prefers_native_pack_for_xbox_fo4(tmp_path):
             resource_dir=tmp_path / "resource",
         )
 
+    # compression_level=None lets the native side pick its own default.
     assert native_calls == [
         (
             Path(tmp_path / "mods" / mod_name / "_deploy_tmp" / "planned_main").as_posix(),
             "B21_TestPack - Main_xbox.ba2",
             "fo4xbox",
             False,
-            9,
+            None,
         ),
         (
             Path(tmp_path / "mods" / mod_name / "_deploy_tmp" / "planned_textures").as_posix(),
             "B21_TestPack - Textures_xbox.ba2",
             "fo4xboxdds",
             True,
-            9,
+            None,
         ),
     ]
     find_archive2.assert_not_called()

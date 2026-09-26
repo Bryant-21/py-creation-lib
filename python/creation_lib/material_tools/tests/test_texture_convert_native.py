@@ -21,8 +21,8 @@ def test_materials_native_exposes_texture_conversion_functions():
     assert callable(getattr(module, "passthrough_rgba_f32", None))
 
 
-def test_native_runtime_bundle_wrapper_returns_source_formula_values():
-    result = native_runtime.fo76_bundle_to_fo4_f32(
+def test_native_runtime_byte_wrappers_transform_source_values():
+    bundle_result = native_runtime.fo76_bundle_to_fo4_f32(
         _rgba_bytes((1.0, 0.0, 0.0, 1.0)),
         _rgba_bytes((0.0, 0.0, 0.0, 1.0)),
         _rgba_bytes((0.5, 1.0, 0.0, 1.0)),
@@ -39,21 +39,19 @@ def test_native_runtime_bundle_wrapper_returns_source_formula_values():
         emit_lighting_alpha_glow=False,
     )
 
-    np.testing.assert_allclose(_rgba_from_bytes(result["diffuse"])[0, 0], [1.0, 0.0, 0.0, 1.0])
+    np.testing.assert_allclose(_rgba_from_bytes(bundle_result["diffuse"])[0, 0], [1.0, 0.0, 0.0, 1.0])
     np.testing.assert_allclose(
-        _rgba_from_bytes(result["specgloss"])[0, 0], [0.22, 0.5, 0.0, 1.0]
+        _rgba_from_bytes(bundle_result["specgloss"])[0, 0], [0.22, 0.5, 0.0, 1.0]
     )
-    assert "glow" not in result
+    assert "glow" not in bundle_result
 
-
-def test_native_runtime_normal_wrapper_transforms_signed_values():
-    result = native_runtime.fo76_normal_to_fo4_f32(
+    normal_result = native_runtime.fo76_normal_to_fo4_f32(
         np.array([[[-1.0, 0.0, 1.0, 0.5]]], dtype=np.float32).tobytes(),
         1,
         1,
     )
 
-    np.testing.assert_allclose(_rgba_from_bytes(result)[0, 0], [0.0, 0.5, 1.0, 0.75])
+    np.testing.assert_allclose(_rgba_from_bytes(normal_result)[0, 0], [0.0, 0.5, 1.0, 0.75])
 
 
 def test_numpy_wrapper_returns_shaped_arrays():
@@ -79,7 +77,9 @@ def test_numpy_wrapper_returns_shaped_arrays():
     assert result.glow is not None
     np.testing.assert_allclose(result.diffuse[0, 0], [1.0, 0.0, 0.0, 1.0])
     np.testing.assert_allclose(result.specgloss[0, 0], [0.22, 0.5, 0.0, 1.0])
-    np.testing.assert_allclose(result.glow[0, 0], [0.375, 0.75, 0.0, 1.0])
+    # Default params broadcast the `_l` alpha emissive mask across RGB
+    # (preserve_lighting_rgb_for_glow is off unless explicitly requested).
+    np.testing.assert_allclose(result.glow[0, 0], [0.75, 0.75, 0.75, 1.0])
 
 
 def test_native_runtime_converts_texture_set_paths(tmp_path):
@@ -120,12 +120,9 @@ def test_native_runtime_converts_texture_set_paths(tmp_path):
     assert (out_dir / "armor_s.dds").exists()
     assert (out_dir / "armor_g.dds").exists()
 
-
-def test_native_runtime_fo76_normal_path_preserves_normalized_rgba_except_blue(tmp_path):
-    from creation_lib.dds import native_runtime as dds_native
-
+    # The normal-map path (fo76_normal_to_fo4) preserves the normalized RGBA
+    # except it zeroes the blue channel.
     normal = tmp_path / "armor_n.dds"
-    out_dir = tmp_path / "out"
     dds_native.write_dds_rgba(
         str(normal),
         1,
@@ -134,7 +131,7 @@ def test_native_runtime_fo76_normal_path_preserves_normalized_rgba_except_blue(t
         format="R8G8B8A8_UNORM",
     )
 
-    result = native_runtime.convert_texture_set_paths({
+    normal_result = native_runtime.convert_texture_set_paths({
         "source_game": "fo76",
         "target_game": "fo4",
         "inputs": [
@@ -145,7 +142,7 @@ def test_native_runtime_fo76_normal_path_preserves_normalized_rgba_except_blue(t
         ],
     })
 
-    assert {item["role"] for item in result["converted"]} == {"normal"}
+    assert {item["role"] for item in normal_result["converted"]} == {"normal"}
     assert dds_native.read_dds_rgba(str(out_dir / "armor_n.dds"))["rgba"] == bytes(
         [64, 128, 0, 191]
     )

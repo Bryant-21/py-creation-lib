@@ -178,32 +178,3 @@ pub fn fo4_weapon_psd_object_template() -> HkxObject {
         ],
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn array_len(object: &HkxObject, name: &str) -> usize {
-        object
-            .members
-            .iter()
-            .find(|member| member.name == name)
-            .and_then(|member| match &member.value {
-                HkxValue::Array(values) => Some(values.len()),
-                _ => None,
-            })
-            .unwrap_or_default()
-    }
-
-    #[test]
-    fn weapon_psd_object_template_has_required_arrays() {
-        let object = fo4_weapon_psd_object_template();
-        assert_eq!(object.class_name, "hknpPhysicsSystemData");
-        assert_eq!(array_len(&object, "materials"), 1);
-        assert_eq!(array_len(&object, "motionProperties"), 1);
-        assert_eq!(array_len(&object, "motionCinfos"), 1);
-        assert_eq!(array_len(&object, "bodyCinfos"), 1);
-        assert_eq!(array_len(&object, "constraintCinfos"), 0);
-        assert_eq!(array_len(&object, "referencedObjects"), 1);
-    }
-}

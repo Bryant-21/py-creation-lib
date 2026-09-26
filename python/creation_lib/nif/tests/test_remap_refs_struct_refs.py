@@ -81,8 +81,16 @@ def _build_nif_with_palette():
     return nif
 
 
-def test_remap_refs_recurses_into_palette_objs():
-    """After removing a middle block, palette AV Object Ptrs must shift."""
+def test_remap_refs_recurses_into_struct_nested_refs():
+    """After removing a block, struct-nested Ref/Ptr fields must shift.
+
+    Phase 1 covers palette Objs[].AV Object plus top-level Ref/Ptr (Children
+    array, Scene Ptr) off one remove_blocks([2]) call. Phase 2 covers
+    NiControllerSequence Controlled Blocks[].Interpolator/Controller off a
+    separate remove_blocks([6]) call, using its own nif build to avoid
+    collisions with phase 1's removal.
+    """
+    # Phase 1: palette Objs[].AV Object + top-level Children/Scene.
     nif = _build_nif_with_palette()
 
     # Remove Mesh_B (block 2). Remaining: 0,1,3,4,5,6,7,8,9 → renumbered 0..8
@@ -108,19 +116,22 @@ def test_remap_refs_recurses_into_palette_objs():
         assert 0 <= av < len(nif.blocks), f"AV Object {av} out of range after remove"
         assert nif.blocks[av].get_field("Name") == entry["Name"]
 
+    root = nif.blocks[0]
+    # Children was [1,2,3] → after dropping 2: [1,-1,2]
+    children = root.get_field("Children")
+    assert children == [1, -1, 2], f"Children remap wrong: {children}"
+    assert palette.get_field("Scene") == 0
 
-def test_remap_refs_recurses_into_controlled_blocks():
-    """Controlled Blocks struct array fields (Interpolator, Controller) must remap."""
-    nif = _build_nif_with_palette()
+    # Phase 2: NiControllerSequence Controlled Blocks[].Interpolator/Controller.
+    nif2 = _build_nif_with_palette()
 
-    # Sanity: initial refs
-    seq = next(b for b in nif.blocks if b.type_name == "NiControllerSequence")
+    seq = next(b for b in nif2.blocks if b.type_name == "NiControllerSequence")
     before = seq.get_field("Controlled Blocks")
     assert before[0]["Interpolator"] == 5
     assert before[1]["Controller"] == 8
 
     # Remove block 6 (ctrl_a). New indices: 0,1,2,3,4,5(=interp_a),6(=interp_b),7(=ctrl_b),8(=seq)
-    nif.remove_blocks([6])
+    nif2.remove_blocks([6])
 
     after = seq.get_field("Controlled Blocks")
     # First controlled block: Interpolator was 5 → still 5; Controller was 6 → -1
@@ -131,16 +142,3 @@ def test_remap_refs_recurses_into_controlled_blocks():
     assert after[1]["Controller"] == 7
 
 
-def test_remap_refs_top_level_still_works():
-    """Top-level Ref/Ptr (Children array, Scene Ptr) still remap correctly."""
-    nif = _build_nif_with_palette()
-
-    nif.remove_blocks([2])  # drop Mesh_B
-
-    root = nif.blocks[0]
-    # Children was [1,2,3] → after dropping 2: [1,-1,2]
-    children = root.get_field("Children")
-    assert children == [1, -1, 2], f"Children remap wrong: {children}"
-
-    palette = next(b for b in nif.blocks if b.type_name == "NiDefaultAVObjectPalette")
-    assert palette.get_field("Scene") == 0

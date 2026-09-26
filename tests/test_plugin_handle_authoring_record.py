@@ -44,17 +44,16 @@ def _handle() -> int:
     )
 
 
-def test_record_summary_returns_scalar_record_metadata() -> None:
-    summary = native_runtime.plugin_handle_record_summary(_handle(), 0x000800)
+def test_record_summary_and_export_record_text_return_metadata() -> None:
+    handle = _handle()
+    summary = native_runtime.plugin_handle_record_summary(handle, 0x000800)
 
     assert summary is not None
     assert summary.form_id == 0x000800
     assert summary.signature == "MISC"
     assert summary.editor_id == "NativeAuthoringRecord"
 
-
-def test_export_record_text_returns_authoring_text_payload() -> None:
-    exported = native_runtime.plugin_handle_call(_handle(), "export_record_text", 0x000800, "json")
+    exported = native_runtime.plugin_handle_call(handle, "export_record_text", 0x000800, "json")
     payload = json.loads(exported)
 
     assert payload["type"] == "record"
@@ -63,12 +62,11 @@ def test_export_record_text_returns_authoring_text_payload() -> None:
     assert payload["eid"] == "NativeAuthoringRecord"
 
 
-def test_export_record_text_rejects_unknown_form_id() -> None:
+def test_export_record_text_rejects_unknown_form_id_and_no_authoring_dict_apis() -> None:
+    handle = _handle()
     with pytest.raises(KeyError, match="unknown record form_id"):
-        native_runtime.plugin_handle_call(_handle(), "export_record_text", 0x00FFFF, "json")
+        native_runtime.plugin_handle_call(handle, "export_record_text", 0x00FFFF, "json")
 
-
-def test_authoring_dict_handle_apis_are_not_exported() -> None:
     module = native_runtime.load_native_module()
     assert not hasattr(module, "plugin_handle_record_as_authoring_dict")
     assert not hasattr(module, "plugin_handle_records_as_authoring_dicts_batch")

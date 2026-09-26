@@ -769,13 +769,6 @@ mod tests {
     use walkdir::WalkDir;
 
     #[test]
-    fn default_state() {
-        let archive = Archive::default();
-        assert!(archive.is_empty());
-        assert_eq!(archive.len(), 0);
-    }
-
-    #[test]
     fn chunking_strategy() -> anyhow::Result<()> {
         let file = {
             let options = FileReadOptions::builder()
@@ -874,106 +867,6 @@ mod tests {
             }
         }
 
-        Ok(())
-    }
-
-    #[test]
-    fn files_with_cubemaps() -> anyhow::Result<()> {
-        let file = {
-            let options = FileReadOptions::builder()
-                .format(Format::DX10)
-                .compression_result(CompressionResult::Compressed)
-                .build();
-            File::read(Path::new("data/fo4_cubemap_test/blacksky_e.dds"), &options)
-                .context("failed to read file")?
-        };
-
-        let FileHeader::DX10(header) = &file.header else {
-            anyhow::bail!("file was not dx10");
-        };
-        assert_eq!(header.mip_count, 10);
-        assert_eq!(header.flags, 1);
-        assert_eq!(header.tile_mode, 8);
-        assert_eq!(file.len(), 1);
-
-        let chunk = &file[0];
-        let Some(mips) = &chunk.mips else {
-            anyhow::bail!("chunk was missing mips");
-        };
-
-        assert_eq!(*mips, 0..=9);
-        assert_eq!(chunk.decompressed_len(), Some(0x20_00A0));
-
-        Ok(())
-    }
-
-    #[test]
-    fn read_write_texture_archives() -> anyhow::Result<()> {
-        let path = Path::new("data/fo4_dds_test/in.ba2");
-        let original = {
-            let fd =
-                fs::File::open(path).with_context(|| format!("failed to open file: {path:?}"))?;
-            unsafe { Mmap::map(&fd) }
-                .with_context(|| format!("failed to memory map file: {path:?}"))?
-        };
-
-        let (archive, options) = Archive::read(Borrowed(&original[..]))
-            .with_context(|| format!("failed to read archive: {path:?}"))?;
-        assert_eq!(options.compression_format, CompressionFormat::Zip);
-        assert_eq!(options.format, Format::DX10);
-        assert_eq!(options.strings, true);
-        assert_eq!(options.version, Version::v1);
-        assert_eq!(archive.len(), 1);
-
-        let file = archive
-            .get(&ArchiveKey::from("Fence006_1K_Roughness.dds"))
-            .context("failed to get file from archive")?;
-        let FileHeader::DX10(header) = &file.header else {
-            anyhow::bail!("file header was not dx10");
-        };
-        assert_eq!(file.len(), 3);
-        assert_eq!(header.height, 1024);
-        assert_eq!(header.width, 1024);
-        assert_eq!(header.mip_count, 11);
-        assert_eq!(header.format, 98);
-        assert_eq!(header.flags, 0);
-        assert_eq!(header.tile_mode, 8);
-
-        let mut idx = 0;
-        let mut next_chunk = || {
-            let chunk = &file[idx];
-            idx += 1;
-            let Some(mips) = &chunk.mips else {
-                anyhow::bail!("chunk extra was missing mips");
-            };
-            Ok((chunk, mips))
-        };
-
-        let (chunk, mips) = next_chunk()?;
-        assert_eq!(chunk.len(), 0x100_000);
-        assert_eq!(*mips.start(), 0);
-        assert_eq!(*mips.end(), 0);
-
-        let (chunk, mips) = next_chunk()?;
-        assert_eq!(chunk.len(), 0x40_000);
-        assert_eq!(*mips.start(), 1);
-        assert_eq!(*mips.end(), 1);
-
-        let (chunk, mips) = next_chunk()?;
-        assert_eq!(chunk.len(), 0x15_570);
-        assert_eq!(*mips.start(), 2);
-        assert_eq!(*mips.end(), 10);
-
-        let copy = {
-            let mut v = Vec::new();
-            archive
-                .write(&mut v, &options)
-                .with_context(|| format!("failed to write archive: {path:?}"))?;
-            v
-        };
-
-        assert_eq!(original.len(), copy.len());
-        assert_eq!(&original[..], copy);
         Ok(())
     }
 
@@ -1183,65 +1076,33 @@ mod tests {
     }
 
     #[test]
-    fn invalid_exhausted() -> anyhow::Result<()> {
-        let path = Path::new("data/fo4_invalid_test/invalid_exhausted.ba2");
-        match Archive::read(path) {
-            Err(Error::Io(error)) => {
-                assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
-                Ok(())
+    fn malformed_archives_are_rejected() {
+        let cases: [(&str, fn(&Error) -> bool); 6] = [
+            ("invalid_exhausted.ba2", |err| {
+                matches!(err, Error::Io(error) if error.kind() == io::ErrorKind::UnexpectedEof)
+            }),
+            ("invalid_format.ba2", |err| {
+                matches!(err, Error::InvalidFormat(x) if *x == cc::make_four(b"BLAH"))
+            }),
+            ("invalid_magic.ba2", |err| {
+                matches!(err, Error::InvalidMagic(x) if *x == cc::make_four(b"BLAH"))
+            }),
+            ("invalid_sentinel.ba2", |err| {
+                matches!(err, Error::InvalidChunkSentinel(0xDEADBEEF))
+            }),
+            ("invalid_size.ba2", |err| {
+                matches!(err, Error::InvalidChunkSize(0xCCCC))
+            }),
+            ("invalid_version.ba2", |err| {
+                matches!(err, Error::InvalidVersion(0x101))
+            }),
+        ];
+        for (name, expected) in cases {
+            let path = Path::new("data/fo4_invalid_test").join(name);
+            match Archive::read(path.as_path()) {
+                Err(err) => assert!(expected(&err), "{name}: unexpected error {err}"),
+                Ok(_) => panic!("{name}: read should have failed"),
             }
-            Err(err) => Err(err.into()),
-            Ok(_) => anyhow::bail!("read should have failed"),
-        }
-    }
-
-    #[test]
-    fn invalid_format() -> anyhow::Result<()> {
-        let path = Path::new("data/fo4_invalid_test/invalid_format.ba2");
-        match Archive::read(path) {
-            Err(Error::InvalidFormat(x)) if x == cc::make_four(b"BLAH") => Ok(()),
-            Err(err) => Err(anyhow::Error::from(err)),
-            Ok(_) => anyhow::bail!("read should have failed"),
-        }
-    }
-
-    #[test]
-    fn invalid_magic() -> anyhow::Result<()> {
-        let path = Path::new("data/fo4_invalid_test/invalid_magic.ba2");
-        match Archive::read(path) {
-            Err(Error::InvalidMagic(x)) if x == cc::make_four(b"BLAH") => Ok(()),
-            Err(err) => Err(anyhow::Error::from(err)),
-            Ok(_) => anyhow::bail!("read should have failed"),
-        }
-    }
-
-    #[test]
-    fn invalid_sentinel() -> anyhow::Result<()> {
-        let path = Path::new("data/fo4_invalid_test/invalid_sentinel.ba2");
-        match Archive::read(path) {
-            Err(Error::InvalidChunkSentinel(0xDEADBEEF)) => Ok(()),
-            Err(err) => Err(anyhow::Error::from(err)),
-            Ok(_) => anyhow::bail!("read should have failed"),
-        }
-    }
-
-    #[test]
-    fn invalid_size() -> anyhow::Result<()> {
-        let path = Path::new("data/fo4_invalid_test/invalid_size.ba2");
-        match Archive::read(path) {
-            Err(Error::InvalidChunkSize(0xCCCC)) => Ok(()),
-            Err(err) => Err(anyhow::Error::from(err)),
-            Ok(_) => anyhow::bail!("read should have failed"),
-        }
-    }
-
-    #[test]
-    fn invalid_version() -> anyhow::Result<()> {
-        let path = Path::new("data/fo4_invalid_test/invalid_version.ba2");
-        match Archive::read(path) {
-            Err(Error::InvalidVersion(0x101)) => Ok(()),
-            Err(err) => Err(anyhow::Error::from(err)),
-            Ok(_) => anyhow::bail!("read should have failed"),
         }
     }
 

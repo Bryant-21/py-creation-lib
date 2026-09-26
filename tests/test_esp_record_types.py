@@ -1,30 +1,26 @@
 from __future__ import annotations
 
+import pytest
+
 from creation_lib.esp.record_types import (
     record_type_display_label,
     record_type_signature,
 )
 
 
-def test_record_type_signature_accepts_legacy_aliases() -> None:
-    assert record_type_signature("Weapons") == "WEAP"
-    assert record_type_signature("Ammo") == "AMMO"
-    assert record_type_signature("LeveledNpcs") == "LVLN"
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [("Weapons", "WEAP"), ("WEAP", "WEAP"), ("npc_", "npc_"), ("Race", "Race")],
+    ids=["legacy-alias", "signature-passthrough", "already-four-chars", "unknown-falls-back-to-name"],
+)
+def test_record_type_signature(name: str, expected: str) -> None:
+    assert record_type_signature(name) == expected
 
 
-def test_record_type_signature_preserves_signature_codes() -> None:
-    assert record_type_signature("WEAP") == "WEAP"
-    assert record_type_signature("npc_") == "npc_"
-
-
-def test_record_type_signature_falls_back_to_raw_name_for_unknown_four_char_name() -> None:
-    assert record_type_signature("Race") == "Race"
-
-
-def test_record_type_display_label_uses_schema_label_for_alias() -> None:
-    assert record_type_display_label("Weapons", "fo4") == "Weapon"
-    assert record_type_display_label("Ammo", "fo4") == "Ammunition"
-
-
-def test_record_type_display_label_falls_back_to_raw_name() -> None:
-    assert record_type_display_label("MadeUpRecords", "fo4") == "MadeUpRecords"
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [("Weapons", "Weapon"), ("MadeUpRecords", "MadeUpRecords")],
+    ids=["alias-uses-schema-label", "unknown-falls-back-to-name"],
+)
+def test_record_type_display_label(name: str, expected: str) -> None:
+    assert record_type_display_label(name, "fo4") == expected

@@ -39,6 +39,24 @@ _GENERATED_LABEL_BASES = frozenset(
 )
 
 
+def precombine_sidecar_names(plugin_name: str | Path) -> tuple[str, str, str]:
+    """Return the ``<stem> - Geometry.csg``, ``<stem>.cdx`` and
+    ``<stem> - Exterior.cdx`` precombine sidecar names for a plugin. The engine
+    only reads the first two loose beside the deployed plugin, never from an
+    archive; Tales reads the exterior index from the same place — deploy code
+    must copy them loose and pack code must exclude them.
+    """
+    stem = Path(plugin_name).stem
+    return f"{stem} - Geometry.csg", f"{stem}.cdx", f"{stem} - Exterior.cdx"
+
+
+_PRECOMBINE_SIDECAR_EXTENSIONS = frozenset({".csg", ".cdx"})
+
+
+def is_precombine_sidecar(path: Path) -> bool:
+    return path.suffix.lower() in _PRECOMBINE_SIDECAR_EXTENSIONS
+
+
 @dataclass(frozen=True)
 class ArchiveEntry:
     relative_path: str

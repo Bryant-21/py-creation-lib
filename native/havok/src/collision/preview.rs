@@ -155,6 +155,10 @@ pub fn decode_source_mass_distributions(blob: &[u8]) -> Vec<Option<SourceMassDis
     let Ok(hkx) = tagfile.materialize_hkx() else {
         return Vec::new();
     };
+    source_mass_distributions_from_hkx(&hkx)
+}
+
+fn source_mass_distributions_from_hkx(hkx: &HkxFile) -> Vec<Option<SourceMassDistribution>> {
     let objects = hkx.objects();
     let Some(psd) = objects
         .iter()
@@ -192,6 +196,10 @@ pub fn decode_source_body_transforms(blob: &[u8]) -> Vec<Option<SourceBodyTransf
     let Ok(hkx) = HkxFile::read(blob) else {
         return Vec::new();
     };
+    source_body_transforms_from_hkx(&hkx)
+}
+
+fn source_body_transforms_from_hkx(hkx: &HkxFile) -> Vec<Option<SourceBodyTransform>> {
     let Some(psd) = hkx
         .objects()
         .iter()
@@ -258,19 +266,29 @@ impl<'a> SourcePhysicsSystemContext<'a> {
     }
 
     pub fn body_transforms(&self) -> &[Option<SourceBodyTransform>] {
-        self.body_transforms
-            .get_or_init(|| decode_source_body_transforms(self.blob))
+        self.body_transforms.get_or_init(|| match &self.hkx {
+            Some(hkx) => source_body_transforms_from_hkx(hkx),
+            None => decode_source_body_transforms(self.blob),
+        })
     }
 
     pub fn mass_distributions(&self) -> &[Option<SourceMassDistribution>] {
-        self.mass_distributions
-            .get_or_init(|| decode_source_mass_distributions(self.blob))
+        self.mass_distributions.get_or_init(|| match &self.hkx {
+            Some(hkx) if self.blob.get(4..8) == Some(b"TAG0") => {
+                source_mass_distributions_from_hkx(hkx)
+            }
+            _ => decode_source_mass_distributions(self.blob),
+        })
     }
 
     pub fn collision_summary(&self) -> Result<&str, String> {
         self.collision_summary
             .get_or_init(|| {
-                crate::api::havok_collision_summary(self.blob).map_err(|e| e.to_string())
+                match &self.hkx {
+                    Some(hkx) => crate::api::havok_collision_summary_from_hkx(hkx, self.blob),
+                    None => crate::api::havok_collision_summary(self.blob),
+                }
+                .map_err(|e| e.to_string())
             })
             .as_deref()
             .map_err(Clone::clone)
@@ -304,9 +322,21 @@ impl<'a> SourcePhysicsSystemContext<'a> {
         &self,
         body_id: usize,
     ) -> HavokResult<Option<RawCompressedMeshData>> {
-        // This wrapper applies primitive_stores_is_flat_convex markers from the
-        // original packfile bytes; the materialized model does not carry them.
-        extract_direct_raw_compressed_mesh_from_blob(self.blob, body_id)
+        match &self.hkx {
+            Some(hkx) => {
+                if body_shape_class_for_body(hkx, Some(body_id)).as_deref()
+                    != Some("hknpCompressedMeshShape")
+                {
+                    return Ok(None);
+                }
+                Ok(
+                    raw_compressed_meshes_with_markers(hkx, self.blob, Some(body_id))
+                        .into_iter()
+                        .next(),
+                )
+            }
+            None => extract_direct_raw_compressed_mesh_from_blob(self.blob, body_id),
+        }
     }
 
     pub fn preview_meshes(
@@ -314,9 +344,10 @@ impl<'a> SourcePhysicsSystemContext<'a> {
         havok_scale: f32,
         body_id: usize,
     ) -> HavokResult<Vec<PreviewMesh>> {
-        // This wrapper has raw compressed-mesh marker handling that depends on
-        // the original bytes, so keep its exact behavior.
-        extract_preview_meshes_from_blob(self.blob, havok_scale, Some(body_id))
+        match &self.hkx {
+            Some(hkx) => preview_meshes_with_source(hkx, self.blob, havok_scale, Some(body_id)),
+            None => extract_preview_meshes_from_blob(self.blob, havok_scale, Some(body_id)),
+        }
     }
 }
 
@@ -412,24 +443,7 @@ pub fn extract_raw_compressed_meshes_from_blob(
     body_id: Option<usize>,
 ) -> HavokResult<Vec<RawCompressedMeshData>> {
     if let Ok(hkx) = HkxFile::read(blob) {
-        let mut meshes = extract_raw_compressed_meshes_from_hkx(&hkx, body_id);
-        if let Ok(markers) = super::compressed_mesh::fo4_compressed_mesh_flat_convex_markers(blob) {
-            if body_id.is_none() {
-                for (mesh, marker) in meshes.iter_mut().zip(markers) {
-                    mesh.primitive_stores_is_flat_convex = marker;
-                }
-            } else {
-                let all_meshes = extract_raw_compressed_meshes_from_hkx(&hkx, None);
-                for mesh in &mut meshes {
-                    if let Some(index) = all_meshes.iter().position(|candidate| candidate == mesh) {
-                        if let Some(marker) = markers.get(index) {
-                            mesh.primitive_stores_is_flat_convex = *marker;
-                        }
-                    }
-                }
-            }
-        }
-        return Ok(meshes);
+        return Ok(raw_compressed_meshes_with_markers(&hkx, blob, body_id));
     }
     if let Ok(tagfile) = crate::hkx::parse_tagfile(blob) {
         if let Ok(hkx) = tagfile.materialize_hkx() {
@@ -437,6 +451,31 @@ pub fn extract_raw_compressed_meshes_from_blob(
         }
     }
     Ok(Vec::new())
+}
+
+fn raw_compressed_meshes_with_markers(
+    hkx: &HkxFile,
+    blob: &[u8],
+    body_id: Option<usize>,
+) -> Vec<RawCompressedMeshData> {
+    let mut meshes = extract_raw_compressed_meshes_from_hkx(hkx, body_id);
+    if let Ok(markers) = super::compressed_mesh::fo4_compressed_mesh_flat_convex_markers(blob) {
+        if body_id.is_none() {
+            for (mesh, marker) in meshes.iter_mut().zip(markers) {
+                mesh.primitive_stores_is_flat_convex = marker;
+            }
+        } else {
+            let all_meshes = extract_raw_compressed_meshes_from_hkx(hkx, None);
+            for mesh in &mut meshes {
+                if let Some(index) = all_meshes.iter().position(|candidate| candidate == mesh) {
+                    if let Some(marker) = markers.get(index) {
+                        mesh.primitive_stores_is_flat_convex = *marker;
+                    }
+                }
+            }
+        }
+    }
+    meshes
 }
 
 pub fn extract_direct_raw_compressed_mesh_from_blob(
@@ -500,6 +539,21 @@ pub fn extract_raw_compressed_meshes_from_hkx(
     meshes
 }
 
+/// Object indices in the same order `extract_raw_compressed_meshes_from_hkx`
+/// emits its meshes for these targets.
+fn raw_compressed_mesh_target_indices(hkx: &HkxFile, targets: &[ShapeTarget]) -> Vec<usize> {
+    hkx.objects()
+        .iter()
+        .enumerate()
+        .filter(|(idx, obj)| {
+            obj.class_name == "hknpCompressedMeshShape"
+                && targets.iter().any(|target| target.index == *idx)
+                && raw_compressed_mesh_from_hkx(hkx, *idx).is_some()
+        })
+        .map(|(idx, _)| idx)
+        .collect()
+}
+
 pub fn extract_preview_meshes_from_blob(
     blob: &[u8],
     havok_scale: f32,
@@ -512,23 +566,7 @@ pub fn extract_preview_meshes_from_blob(
     // bhkPhysicsSystem blobs are TAG0, but materialize into the same HkxFile
     // object model as packfiles once parsed.
     if let Ok(hkx) = HkxFile::read(blob) {
-        let (mut hkx_meshes, shape_class) =
-            extract_preview_meshes_from_hkx_with_body_class(&hkx, havok_scale, body_id);
-        if let Ok(raw_meshes) = extract_raw_compressed_meshes_from_blob(blob, body_id) {
-            if raw_meshes
-                .iter()
-                .any(|mesh| mesh.primitive_stores_is_flat_convex == FLAT_CONVEX_ENABLED)
-            {
-                let corrected_compressed_meshes = raw_meshes
-                    .iter()
-                    .filter_map(|mesh| preview_compressed_mesh_from_raw(mesh, havok_scale))
-                    .collect::<Vec<_>>();
-                hkx_meshes.retain(|mesh| mesh.shape_type != "compressed_mesh");
-                hkx_meshes.extend(corrected_compressed_meshes);
-            }
-        }
-        body_shape_class = shape_class;
-        meshes.extend(hkx_meshes);
+        return preview_meshes_with_source(&hkx, blob, havok_scale, body_id);
     } else if let Ok(tagfile) = crate::hkx::parse_tagfile(blob) {
         if let Ok(hkx) = tagfile.materialize_hkx() {
             let (hkx_meshes, shape_class) =
@@ -538,6 +576,60 @@ pub fn extract_preview_meshes_from_blob(
         }
     }
 
+    preview_meshes_with_fallbacks(blob, havok_scale, body_id, meshes, body_shape_class)
+}
+
+fn preview_meshes_with_source(
+    hkx: &HkxFile,
+    blob: &[u8],
+    havok_scale: f32,
+    body_id: Option<usize>,
+) -> HavokResult<Vec<PreviewMesh>> {
+    let (mut hkx_meshes, shape_class) =
+        extract_preview_meshes_from_hkx_with_body_class(hkx, havok_scale, body_id);
+    let raw_meshes = raw_compressed_meshes_with_markers(hkx, blob, body_id);
+    if raw_meshes
+        .iter()
+        .any(|mesh| mesh.primitive_stores_is_flat_convex == FLAT_CONVEX_ENABLED)
+    {
+        // The raw decode is shape-local; a compound child must still get its
+        // instance transform, exactly like the hkx preview it replaces.
+        let corrected_compressed_meshes = match shape_targets_for_body(hkx, body_id) {
+            Some(targets) => {
+                let raw_indices = raw_compressed_mesh_target_indices(hkx, &targets);
+                targets
+                    .iter()
+                    .filter_map(|target| {
+                        let raw_index = raw_indices.iter().position(|&i| i == target.index)?;
+                        let mut mesh =
+                            preview_compressed_mesh_from_raw(raw_meshes.get(raw_index)?, havok_scale)?;
+                        apply_shape_transform_to_meshes(
+                            std::slice::from_mut(&mut mesh),
+                            target.transform,
+                            havok_scale,
+                        );
+                        Some(mesh)
+                    })
+                    .collect::<Vec<_>>()
+            }
+            None => raw_meshes
+                .iter()
+                .filter_map(|mesh| preview_compressed_mesh_from_raw(mesh, havok_scale))
+                .collect::<Vec<_>>(),
+        };
+        hkx_meshes.retain(|mesh| mesh.shape_type != "compressed_mesh");
+        hkx_meshes.extend(corrected_compressed_meshes);
+    }
+    preview_meshes_with_fallbacks(blob, havok_scale, body_id, hkx_meshes, shape_class)
+}
+
+fn preview_meshes_with_fallbacks(
+    blob: &[u8],
+    havok_scale: f32,
+    body_id: Option<usize>,
+    mut meshes: Vec<PreviewMesh>,
+    body_shape_class: Option<String>,
+) -> HavokResult<Vec<PreviewMesh>> {
     // FO4 compressed mesh path. Run when:
     //   - body_id is None and we still have nothing (full-blob unfiltered preview), OR
     //   - body_id resolved to an `hknpCompressedMeshShape` (per-object handler can't decode it,
@@ -686,8 +778,17 @@ fn extract_source_compound_children_from_hkx(hkx: &HkxFile, body_id: usize) -> V
         .filter_map(|target| {
             let mut visiting = HashSet::new();
             let shape = source_polytope_for_shape_index(hkx, target.index, &mut visiting)?;
+            // An FO4 instance transform must stay rigid; bake any scale into the hull.
+            let (shape, transform) = if transform_is_rigid(target.transform) {
+                (shape, target.transform)
+            } else {
+                (
+                    transform_source_polytope(shape, target.transform)?,
+                    ShapeTransform::identity(),
+                )
+            };
             Some(CompoundChild {
-                transform: target.transform.to_row_major_matrix(),
+                transform: transform.to_row_major_matrix(),
                 kind: CompoundChildKind::SourcePolytope { shape },
             })
         })
@@ -2334,28 +2435,32 @@ mod tests {
     use crate::hkx::model::{HkxFile, HkxMember, HkxObject};
     use crate::hkx::types::HkxValue;
 
+    fn mem(name: &str, value: HkxValue) -> HkxMember {
+        HkxMember {
+            name: name.to_string(),
+            value,
+        }
+    }
+
     fn direct_body_file(shape: HkxObject) -> HkxFile {
         let physics_system = HkxObject {
             name: Some("#0001".to_string()),
             offset: 0,
             signature: 0,
             class_name: "hknpPhysicsSystemData".to_string(),
-            members: vec![HkxMember {
-                name: "bodyCinfos".to_string(),
-                value: HkxValue::Array(vec![HkxValue::Object(vec![HkxMember {
-                    name: "shape".to_string(),
-                    value: HkxValue::Pointer(Some(1)),
-                }])]),
-            }],
+            members: vec![mem(
+                "bodyCinfos",
+                HkxValue::Array(vec![HkxValue::Object(vec![mem(
+                    "shape",
+                    HkxValue::Pointer(Some(1)),
+                )])]),
+            )],
         };
         HkxFile::from_tagxml(11, "hk_2018.1.0-r1", vec![physics_system, shape])
     }
 
     fn primitive_shape(class_name: &str, mut members: Vec<HkxMember>) -> HkxObject {
-        members.push(HkxMember {
-            name: "properties".to_string(),
-            value: HkxValue::Pointer(None),
-        });
+        members.push(mem("properties", HkxValue::Pointer(None)));
         HkxObject {
             name: Some("#0002".to_string()),
             offset: 0,
@@ -2365,19 +2470,36 @@ mod tests {
         }
     }
 
+    fn faces(count: u16, stride: u16) -> HkxValue {
+        HkxValue::Array(
+            (0..count)
+                .map(|index| {
+                    HkxValue::Object(vec![
+                        mem("firstIndex", HkxValue::U16(index * stride)),
+                        mem("numIndices", HkxValue::U8(stride as u8)),
+                        mem("minHalfAngle", HkxValue::U8(4)),
+                    ])
+                })
+                .collect(),
+        )
+    }
+
+    fn vec4s(values: &[[f32; 4]]) -> HkxValue {
+        HkxValue::Array(
+            values
+                .iter()
+                .map(|v| HkxValue::F32List(v.to_vec()))
+                .collect(),
+        )
+    }
+
     #[test]
-    fn direct_primitive_extraction_reads_semantic_sphere_capsule_and_convex_fields() {
+    fn source_shape_extraction_reads_semantic_fields() {
         let sphere = direct_body_file(primitive_shape(
             "hknpSphereShape",
             vec![
-                HkxMember {
-                    name: "convexRadius".to_string(),
-                    value: HkxValue::F32(0.25),
-                },
-                HkxMember {
-                    name: "vertices".to_string(),
-                    value: HkxValue::Array(vec![HkxValue::F32List(vec![1.0, 2.0, 3.0, 0.5])]),
-                },
+                mem("convexRadius", HkxValue::F32(0.25)),
+                mem("vertices", vec4s(&[[1.0, 2.0, 3.0, 0.5]])),
             ],
         ));
         assert_eq!(
@@ -2398,78 +2520,34 @@ mod tests {
             [0.001, 1.0, 0.001],
             [-0.001, 1.0, 0.001],
         ];
-        let vertex_values = vertices
+        let vertex_values: Vec<[f32; 4]> = vertices
             .iter()
             .enumerate()
-            .map(|(index, vertex)| {
-                HkxValue::F32List(vec![
-                    vertex[0],
-                    vertex[1],
-                    vertex[2],
-                    f32::from_bits(0x3F00_0000 + index as u32),
-                ])
-            })
-            .collect();
-        let planes = vec![
-            [-1.0, 0.0, 0.0, -0.001],
-            [1.0, 0.0, 0.0, -0.001],
-            [0.0, -1.0, 0.0, -1.0],
-            [0.0, 1.0, 0.0, -1.0],
-            [0.0, 0.0, -1.0, -0.001],
-            [0.0, 0.0, 1.0, -0.001],
-        ]
-        .into_iter()
-        .map(|plane| HkxValue::F32List(plane.to_vec()))
-        .collect();
-        let faces = (0..6)
-            .map(|index| {
-                HkxValue::Object(vec![
-                    HkxMember {
-                        name: "firstIndex".to_string(),
-                        value: HkxValue::U16(index * 4),
-                    },
-                    HkxMember {
-                        name: "numIndices".to_string(),
-                        value: HkxValue::U8(4),
-                    },
-                    HkxMember {
-                        name: "minHalfAngle".to_string(),
-                        value: HkxValue::U8(4),
-                    },
-                ])
-            })
+            .map(|(index, v)| [v[0], v[1], v[2], f32::from_bits(0x3F00_0000 + index as u32)])
             .collect();
         let capsule = direct_body_file(primitive_shape(
             "hknpCapsuleShape",
             vec![
-                HkxMember {
-                    name: "convexRadius".to_string(),
-                    value: HkxValue::F32(0.099),
-                },
-                HkxMember {
-                    name: "vertices".to_string(),
-                    value: HkxValue::Array(vertex_values),
-                },
-                HkxMember {
-                    name: "planes".to_string(),
-                    value: HkxValue::Array(planes),
-                },
-                HkxMember {
-                    name: "faces".to_string(),
-                    value: HkxValue::Array(faces),
-                },
-                HkxMember {
-                    name: "indices".to_string(),
-                    value: HkxValue::Array((0..24).map(|index| HkxValue::U8(index % 8)).collect()),
-                },
-                HkxMember {
-                    name: "a".to_string(),
-                    value: HkxValue::F32List(vec![0.0, 1.0, 0.0, 0.1]),
-                },
-                HkxMember {
-                    name: "b".to_string(),
-                    value: HkxValue::F32List(vec![0.0, -1.0, 0.0, 1.0]),
-                },
+                mem("convexRadius", HkxValue::F32(0.099)),
+                mem("vertices", vec4s(&vertex_values)),
+                mem(
+                    "planes",
+                    vec4s(&[
+                        [-1.0, 0.0, 0.0, -0.001],
+                        [1.0, 0.0, 0.0, -0.001],
+                        [0.0, -1.0, 0.0, -1.0],
+                        [0.0, 1.0, 0.0, -1.0],
+                        [0.0, 0.0, -1.0, -0.001],
+                        [0.0, 0.0, 1.0, -0.001],
+                    ]),
+                ),
+                mem("faces", faces(6, 4)),
+                mem(
+                    "indices",
+                    HkxValue::Array((0..24).map(|index| HkxValue::U8(index % 8)).collect()),
+                ),
+                mem("a", HkxValue::F32List(vec![0.0, 1.0, 0.0, 0.1])),
+                mem("b", HkxValue::F32List(vec![0.0, -1.0, 0.0, 1.0])),
             ],
         ));
         let Some(SourcePrimitiveShape::Capsule(capsule)) =
@@ -2484,17 +2562,11 @@ mod tests {
         let convex = direct_body_file(primitive_shape(
             "hknpConvexShape",
             vec![
-                HkxMember {
-                    name: "convexRadius".to_string(),
-                    value: HkxValue::F32(0.0),
-                },
-                HkxMember {
-                    name: "vertices".to_string(),
-                    value: HkxValue::Array(vec![
-                        HkxValue::F32List(vec![-1.0, 0.0, 0.0, 0.5]),
-                        HkxValue::F32List(vec![1.0, 0.0, 0.0, 0.5]),
-                    ]),
-                },
+                mem("convexRadius", HkxValue::F32(0.0)),
+                mem(
+                    "vertices",
+                    vec4s(&[[-1.0, 0.0, 0.0, 0.5], [1.0, 0.0, 0.0, 0.5]]),
+                ),
             ],
         ));
         let Some(SourcePrimitiveShape::Convex(convex)) =
@@ -2503,71 +2575,43 @@ mod tests {
             panic!("convex semantic extraction failed");
         };
         assert_eq!(convex.vertices.len(), 2);
-    }
 
-    #[test]
-    fn source_box_extraction_uses_inherited_polytope_topology() {
-        let box_shape = primitive_shape(
+        // hknpBoxShape inherits its topology from hknpConvexPolytopeShape.
+        let box_file = direct_body_file(primitive_shape(
             "hknpBoxShape",
             vec![
-                HkxMember {
-                    name: "convexRadius".to_string(),
-                    value: HkxValue::F32(0.05),
-                },
-                HkxMember {
-                    name: "vertices".to_string(),
-                    value: HkxValue::Array(vec![
-                        HkxValue::F32List(vec![0.0, 0.0, 0.0, 0.5]),
-                        HkxValue::F32List(vec![1.0, 0.0, 0.0, 0.5]),
-                        HkxValue::F32List(vec![0.0, 1.0, 0.0, 0.5]),
-                        HkxValue::F32List(vec![0.0, 0.0, 1.0, 0.5]),
+                mem("convexRadius", HkxValue::F32(0.05)),
+                mem(
+                    "vertices",
+                    vec4s(&[
+                        [0.0, 0.0, 0.0, 0.5],
+                        [1.0, 0.0, 0.0, 0.5],
+                        [0.0, 1.0, 0.0, 0.5],
+                        [0.0, 0.0, 1.0, 0.5],
                     ]),
-                },
-                HkxMember {
-                    name: "planes".to_string(),
-                    value: HkxValue::Array(vec![
-                        HkxValue::F32List(vec![-1.0, 0.0, 0.0, 0.0]),
-                        HkxValue::F32List(vec![0.0, -1.0, 0.0, 0.0]),
-                        HkxValue::F32List(vec![0.0, 0.0, -1.0, 0.0]),
-                        HkxValue::F32List(vec![0.577, 0.577, 0.577, -0.577]),
+                ),
+                mem(
+                    "planes",
+                    vec4s(&[
+                        [-1.0, 0.0, 0.0, 0.0],
+                        [0.0, -1.0, 0.0, 0.0],
+                        [0.0, 0.0, -1.0, 0.0],
+                        [0.577, 0.577, 0.577, -0.577],
                     ]),
-                },
-                HkxMember {
-                    name: "faces".to_string(),
-                    value: HkxValue::Array(
-                        (0..4)
-                            .map(|index| {
-                                HkxValue::Object(vec![
-                                    HkxMember {
-                                        name: "firstIndex".to_string(),
-                                        value: HkxValue::U16(index * 3),
-                                    },
-                                    HkxMember {
-                                        name: "numIndices".to_string(),
-                                        value: HkxValue::U8(3),
-                                    },
-                                    HkxMember {
-                                        name: "minHalfAngle".to_string(),
-                                        value: HkxValue::U8(4),
-                                    },
-                                ])
-                            })
-                            .collect(),
-                    ),
-                },
-                HkxMember {
-                    name: "indices".to_string(),
-                    value: HkxValue::Array(
+                ),
+                mem("faces", faces(4, 3)),
+                mem(
+                    "indices",
+                    HkxValue::Array(
                         [0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3]
                             .into_iter()
                             .map(HkxValue::U8)
                             .collect(),
                     ),
-                },
+                ),
             ],
-        );
-        let file = direct_body_file(box_shape);
-        let shapes = extract_source_polytopes_from_hkx(&file, 0);
+        ));
+        let shapes = extract_source_polytopes_from_hkx(&box_file, 0);
         assert_eq!(shapes.len(), 1);
         assert_eq!(shapes[0].vertices.len(), 4);
         assert_eq!(shapes[0].faces.len(), 4);
@@ -2576,7 +2620,7 @@ mod tests {
     }
 
     #[test]
-    fn source_polytope_transform_scales_vertices_planes_and_radius() {
+    fn transform_and_index_helpers() {
         let shape = SourcePolytopeShape {
             vertices: vec![
                 [-0.5, -0.5, -0.5],
@@ -2596,63 +2640,67 @@ mod tests {
                 [0.0, 0.0, -1.0, -0.5],
                 [0.0, 0.0, 1.0, -0.5],
             ],
-            faces: vec![
-                (0, 4, 128),
-                (4, 4, 128),
-                (8, 4, 128),
-                (12, 4, 128),
-                (16, 4, 128),
-                (20, 4, 128),
-            ],
+            faces: (0..6).map(|i| (i * 4, 4, 128)).collect(),
             indices: vec![
                 0, 4, 7, 3, 1, 2, 6, 5, 0, 1, 5, 4, 3, 7, 6, 2, 0, 3, 2, 1, 4, 5, 6, 7,
             ],
             convex_radius: 0.02,
             mass_properties: None,
         };
-        let transform = ShapeTransform {
-            basis: [[2.0, 0.0, 0.0], [0.0, 3.0, 0.0], [0.0, 0.0, 4.0]],
-            translation: [1.0, -2.0, 0.5],
-        };
-
-        let transformed = transform_source_polytope(shape, transform).expect("transformed shape");
-
+        let transformed = transform_source_polytope(
+            shape,
+            ShapeTransform {
+                basis: [[2.0, 0.0, 0.0], [0.0, 3.0, 0.0], [0.0, 0.0, 4.0]],
+                translation: [1.0, -2.0, 0.5],
+            },
+        )
+        .expect("transformed shape");
         assert_eq!(transformed.vertices[0], [0.0, -3.5, -1.5]);
         assert!(
-            transformed
-                .planes
+            transformed.planes.iter().any(|plane| plane
                 .iter()
-                .any(|plane| approx_plane(*plane, [1.0, 0.0, 0.0, -2.0])),
+                .zip([1.0, 0.0, 0.0, -2.0])
+                .all(|(a, e)| (a - e).abs() < 1e-6)),
             "positive x plane should move to x=2.0: {:?}",
             transformed.planes
         );
         assert!(
             (transformed.convex_radius - 0.08).abs() < 1e-6,
-            "convex radius should scale by max axis"
+            "radius scales by max axis"
         );
-    }
 
-    fn approx_plane(actual: [f32; 4], expected: [f32; 4]) -> bool {
-        actual
-            .iter()
-            .zip(expected.iter())
-            .all(|(a, e)| (a - e).abs() < 1e-6)
-    }
-
-    #[test]
-    fn triangles_from_faces_skips_spans_beyond_indices() {
-        let faces = [(25, 3, 0), (0, 3, 0)];
-        let indices = [0, 1, 2];
+        // Column-major hkTransform: 90 degrees about Z, translation (5,6,7).
+        let members = vec![mem(
+            "transform",
+            HkxValue::F32List(vec![
+                0.0, 1.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 5.0, 6.0, 7.0, 1.0,
+            ]),
+        )];
+        let t = super::shape_instance_transform(&members);
+        assert_eq!(t.translation, [5.0, 6.0, 7.0]);
+        assert_eq!(
+            t.basis,
+            [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]
+        );
 
         assert_eq!(
-            triangles_from_faces_usize(&faces, &indices),
-            vec![[0, 1, 2]]
+            triangles_from_faces_usize(&[(25, 3, 0), (0, 3, 0)], &[0, 1, 2]),
+            vec![[0, 1, 2]],
+            "face spans beyond indices are skipped"
         );
+        assert_eq!(shared_pool_index(0, 5), 5);
+        assert_eq!(shared_pool_index(1, 0), 65536);
+        assert_eq!(shared_pool_index(2, 7), 131079);
     }
 
-    #[test]
-    fn compressed_mesh_preview_ignores_unused_shared_index_metadata() {
-        let raw = RawCompressedMeshData {
+    fn raw_mesh(
+        packed_vertices: Vec<u32>,
+        shared_vertices_index: Vec<u16>,
+        primitive_bytes: Vec<u8>,
+        section_tree_nodes: Vec<u8>,
+        shared_vertices: Vec<u64>,
+    ) -> RawCompressedMeshData {
+        RawCompressedMeshData {
             user_data: 0,
             edge_welding_map: RawCompressedMeshSparseMap::default(),
             quad_is_flat: RawCompressedMeshBitField::default(),
@@ -2670,10 +2718,10 @@ mod tests {
                 aabb_max: [1.0, 1.0, 1.0],
                 base: [0.0, 0.0, 0.0],
                 scale: [1.0, 1.0, 1.0],
-                packed_vertices: vec![pack_vertex_11_11_10(0, 0, 0), pack_vertex_11_11_10(1, 0, 0)],
-                shared_vertices_index: vec![9999, 0],
-                primitive_bytes: vec![2, 2, 2, 2, 0, 1, 3, 3],
-                section_tree_nodes: Vec::new(),
+                packed_vertices,
+                shared_vertices_index,
+                primitive_bytes,
+                section_tree_nodes,
                 primitive_data_runs: Vec::new(),
                 leaf_index: 0,
                 page: 0,
@@ -2681,74 +2729,50 @@ mod tests {
                 layer_data: 0,
                 unused_data: 0,
             }],
-            shared_vertices: vec![pack_vertex_21_21_22(0, 1, 0)],
+            shared_vertices,
+        }
+    }
+
+    /// FO76 CUSTOM primitives (the SCOL CM*.NIF shared-vertex case): m_indices =
+    /// [svi_record, aabb_node, ...] with the record header in
+    /// sharedVerticesIndex and LOCAL_4-compressed vertices in the u64 shared pool,
+    /// read as u32 with fetchIndex pair-swapping. A single root tree node makes
+    /// the primitive AABB the section domain.
+    #[test]
+    fn compressed_mesh_preview_decodes_raw_primitive_layouts() {
+        let bounds = |mesh: &super::PreviewMesh, axis: usize| {
+            mesh.vertices
+                .iter()
+                .map(|v| v[axis])
+                .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), x| {
+                    (lo.min(x), hi.max(x))
+                })
         };
 
-        let mesh = preview_compressed_mesh_from_raw(&raw, 1.0).expect("preview mesh");
-
-        assert_eq!(mesh.vertices.len(), 3);
+        let unused_shared = raw_mesh(
+            vec![pack_vertex_11_11_10(0, 0, 0), pack_vertex_11_11_10(1, 0, 0)],
+            vec![9999, 0],
+            vec![2, 2, 2, 2, 0, 1, 3, 3],
+            Vec::new(),
+            vec![pack_vertex_21_21_22(0, 1, 0)],
+        );
+        let mesh = preview_compressed_mesh_from_raw(&unused_shared, 1.0).expect("preview");
+        assert_eq!(
+            mesh.vertices.len(),
+            3,
+            "unused shared index metadata ignored"
+        );
         assert_eq!(mesh.triangles, vec![[0, 1, 2]]);
-    }
 
-    #[test]
-    fn compressed_mesh_preview_decodes_custom_flat_convex_local4() {
-        // CUSTOM flat-convex primitive (the SCOL CM*.NIF shared-vertex case):
-        // m_indices = [svi_record, aabb_node, CUSTOM(3), aabb_node] with the
-        // record header / firstShared packed in sharedVerticesIndex and the
-        // vertices LOCAL_4-compressed in the u64 shared pool (read as u32 with
-        // fetchIndex pair-swapping). Decoded corners form a unit tetrahedron:
-        //   V0=(0,0,0) V1=(1,0,0) V2=(0,1,0) V3=(0,0,1)
-        // The fetchIndex pair-swap means pool u32 order is [V1,V0,V3,V2].
-        let w0 = 0x7FFu32; // x = 2047  -> (1,0,0)  (read for j=1)
-        let w1 = 0u32; // (0,0,0)         (read for j=0)
-        let w2 = 0xFFC00000u32; // z = 1023 -> (0,0,1) (read for j=3)
-        let w3 = 0x003FF800u32; // y = 2047 -> (0,1,0) (read for j=2)
-        let pool = vec![
-            (w0 as u64) | ((w1 as u64) << 32),
-            (w2 as u64) | ((w3 as u64) << 32),
-        ];
-        // header: numVertices=4 (<<8), compression=LOCAL_4(1) (<<4), type=CUSTOM(3)
+        // CUSTOM(3) tetrahedron; the pair-swap stores pool u32s as [V1,V0,V3,V2].
         let header = (4u16 << 8) | (1u16 << 4) | 3u16;
-
-        let raw = RawCompressedMeshData {
-            user_data: 0,
-            edge_welding_map: RawCompressedMeshSparseMap::default(),
-            quad_is_flat: RawCompressedMeshBitField::default(),
-            triangle_is_interior: RawCompressedMeshBitField::default(),
-            materials: Vec::new(),
-            object_aabb_min: [0.0, 0.0, 0.0],
-            object_aabb_max: [1.0, 1.0, 1.0],
-            num_primitive_keys: 1,
-            bits_per_key: 8,
-            max_key_value: 1,
-            primitive_stores_is_flat_convex: 0xff,
-            master_tree_nodes: Vec::new(),
-            sections: vec![RawCompressedMeshSection {
-                aabb_min: [0.0, 0.0, 0.0],
-                aabb_max: [1.0, 1.0, 1.0],
-                base: [0.0, 0.0, 0.0],
-                scale: [1.0, 1.0, 1.0],
-                packed_vertices: Vec::new(),
-                shared_vertices_index: vec![header, 0],
-                // FO76 custom layout: m_indices = [sviRecord=0, aabbNode, aabbNode,
-                // aabbNode]; node 0 == root => AABB is the section domain.
-                primitive_bytes: vec![0, 0, 0, 0],
-                // single root node so getNodeAabb(0) returns the section domain
-                section_tree_nodes: vec![0, 0, 0, 0],
-                primitive_data_runs: Vec::new(),
-                leaf_index: 0,
-                page: 0,
-                flags: 1,
-                layer_data: 0,
-                unused_data: 0,
-            }],
-            shared_vertices: pool,
-        };
-
-        let mesh = preview_compressed_mesh_from_raw(&raw, 1.0).expect("preview mesh");
-
-        assert_eq!(mesh.vertices.len(), 4, "tetra hull keeps all 4 corners");
-        assert_eq!(mesh.triangles.len(), 4, "tetra hull has 4 triangular faces");
+        let pool = vec![0x7FFu64, 0xFFC0_0000u64 | (0x003F_F800u64 << 32)];
+        let mesh = preview_compressed_mesh_from_raw(
+            &raw_mesh(Vec::new(), vec![header, 0], vec![0; 4], vec![0; 4], pool),
+            1.0,
+        )
+        .expect("preview");
+        assert_eq!((mesh.vertices.len(), mesh.triangles.len()), (4, 4));
         for expected in [
             [0.0, 0.0, 0.0],
             [1.0, 0.0, 0.0],
@@ -2756,231 +2780,88 @@ mod tests {
             [0.0, 0.0, 1.0],
         ] {
             assert!(
-                mesh.vertices.iter().any(|v| {
-                    (v[0] - expected[0]).abs() < 1e-4
-                        && (v[1] - expected[1]).abs() < 1e-4
-                        && (v[2] - expected[2]).abs() < 1e-4
-                }),
-                "decoded hull missing corner {expected:?}; got {:?}",
+                mesh.vertices
+                    .iter()
+                    .any(|v| (0..3).all(|a| (v[a] - expected[a]).abs() < 1e-4)),
+                "missing corner {expected:?}; got {:?}",
                 mesh.vertices
             );
         }
-    }
 
-    #[test]
-    fn compressed_mesh_preview_decodes_custom_capsule_local4() {
-        let endpoint_b = 0x7FFu32;
-        let endpoint_a = 0u32;
-        let pool = vec![(endpoint_b as u64) | ((endpoint_a as u64) << 32)];
-        // header: numVertices=2, numTags=1, compression=LOCAL_4(1), type=CAPSULE(1)
+        // CAPSULE(1) with one radius tag: the segment is expanded by the radius.
         let header = (2u16 << 8) | (1u16 << 6) | (1u16 << 4) | 1u16;
-
-        let raw = RawCompressedMeshData {
-            user_data: 0,
-            edge_welding_map: RawCompressedMeshSparseMap::default(),
-            quad_is_flat: RawCompressedMeshBitField::default(),
-            triangle_is_interior: RawCompressedMeshBitField::default(),
-            materials: Vec::new(),
-            object_aabb_min: [0.0, 0.0, 0.0],
-            object_aabb_max: [1.0, 1.0, 1.0],
-            num_primitive_keys: 1,
-            bits_per_key: 8,
-            max_key_value: 1,
-            primitive_stores_is_flat_convex: 0xff,
-            master_tree_nodes: Vec::new(),
-            sections: vec![RawCompressedMeshSection {
-                aabb_min: [0.0, 0.0, 0.0],
-                aabb_max: [1.0, 1.0, 1.0],
-                base: [0.0, 0.0, 0.0],
-                scale: [1.0, 1.0, 1.0],
-                packed_vertices: Vec::new(),
-                shared_vertices_index: vec![header, 0, 0x3E80],
-                primitive_bytes: vec![0, 0, 0, 0],
-                section_tree_nodes: vec![0, 0, 0, 0],
-                primitive_data_runs: Vec::new(),
-                leaf_index: 0,
-                page: 0,
-                flags: 1,
-                layer_data: 0,
-                unused_data: 0,
-            }],
-            shared_vertices: pool,
-        };
-
-        let mesh = preview_compressed_mesh_from_raw(&raw, 1.0).expect("preview mesh");
-
-        assert!(!mesh.vertices.is_empty());
+        let mesh = preview_compressed_mesh_from_raw(
+            &raw_mesh(
+                Vec::new(),
+                vec![header, 0, 0x3E80],
+                vec![0; 4],
+                vec![0; 4],
+                vec![0x7FF],
+            ),
+            1.0,
+        )
+        .expect("preview");
         assert!(!mesh.triangles.is_empty());
-        let min_x = mesh
-            .vertices
-            .iter()
-            .map(|v| v[0])
-            .fold(f32::INFINITY, f32::min);
-        let max_x = mesh
-            .vertices
-            .iter()
-            .map(|v| v[0])
-            .fold(f32::NEG_INFINITY, f32::max);
-        assert!(
-            min_x < -0.2 && max_x > 1.2,
-            "capsule radius tag should expand the segment, got min_x={min_x} max_x={max_x}"
-        );
-    }
+        let (min_x, max_x) = bounds(&mesh, 0);
+        assert!(min_x < -0.2 && max_x > 1.2, "min_x={min_x} max_x={max_x}");
 
-    #[test]
-    fn compressed_mesh_preview_triangulates_custom_flat_convex_local4() {
-        let v0 = 0u32;
-        let v1 = 0x7FFu32;
-        let v2 = 0x003F_FFFFu32;
-        let v3 = 0x003F_F800u32;
-        let pool = vec![
-            (v1 as u64) | ((v0 as u64) << 32),
-            (v3 as u64) | ((v2 as u64) << 32),
-        ];
-        // header: numVertices=4, numTags=0, compression=LOCAL_4(1), type=CONVEX(2)
+        // CONVEX(2) flat quad triangulates on its source plane.
         let header = (4u16 << 8) | (1u16 << 4) | 2u16;
-
-        let raw = RawCompressedMeshData {
-            user_data: 0,
-            edge_welding_map: RawCompressedMeshSparseMap::default(),
-            quad_is_flat: RawCompressedMeshBitField::default(),
-            triangle_is_interior: RawCompressedMeshBitField::default(),
-            materials: Vec::new(),
-            object_aabb_min: [0.0, 0.0, 0.0],
-            object_aabb_max: [1.0, 1.0, 1.0],
-            num_primitive_keys: 1,
-            bits_per_key: 8,
-            max_key_value: 1,
-            primitive_stores_is_flat_convex: 0xff,
-            master_tree_nodes: Vec::new(),
-            sections: vec![RawCompressedMeshSection {
-                aabb_min: [0.0, 0.0, 0.0],
-                aabb_max: [1.0, 1.0, 1.0],
-                base: [0.0, 0.0, 0.0],
-                scale: [1.0, 1.0, 1.0],
-                packed_vertices: Vec::new(),
-                shared_vertices_index: vec![header, 0],
-                primitive_bytes: vec![0, 0, 0, 0],
-                section_tree_nodes: vec![0, 0, 0, 0],
-                primitive_data_runs: Vec::new(),
-                leaf_index: 0,
-                page: 0,
-                flags: 1,
-                layer_data: 0,
-                unused_data: 0,
-            }],
-            shared_vertices: pool,
-        };
-
-        let mesh = preview_compressed_mesh_from_raw(&raw, 1.0).expect("preview mesh");
-
-        assert_eq!(mesh.vertices.len(), 4);
-        assert_eq!(mesh.triangles.len(), 2);
+        let pool = vec![0x7FFu64, 0x003F_F800u64 | (0x003F_FFFFu64 << 32)];
+        let mesh = preview_compressed_mesh_from_raw(
+            &raw_mesh(Vec::new(), vec![header, 0], vec![0; 4], vec![0; 4], pool),
+            1.0,
+        )
+        .expect("preview");
+        assert_eq!((mesh.vertices.len(), mesh.triangles.len()), (4, 2));
+        let (min_z, max_z) = bounds(&mesh, 2);
         assert!(
-            mesh.vertices.iter().all(|vertex| vertex[2].abs() < 1.0e-5),
-            "flat convex preview should stay on the source plane: {:?}",
+            min_z.abs() < 1e-5 && max_z.abs() < 1e-5,
+            "{:?}",
             mesh.vertices
         );
     }
 
     #[test]
-    fn aabb_alignment_basis_preserves_up_for_xy_swaps() {
-        let local = super::ShapeAabb {
-            min: [-10.0, -2.0, -1.0],
-            max: [10.0, 2.0, 1.0],
-        };
-        let target = super::ShapeAabb {
-            min: [-2.0, -10.0, -1.0],
-            max: [2.0, 10.0, 1.0],
-        };
-
-        let basis = super::aabb_alignment_basis(local, target);
-
-        assert!(
-            basis[2][2] > 0.9,
-            "AABB alignment must preserve local +Z; got {basis:?}"
+    fn compound_leaf_aabb_alignment_and_ordering() {
+        let aabb = |min: [f32; 3], max: [f32; 3]| super::ShapeAabb { min, max };
+        let basis = super::aabb_alignment_basis(
+            aabb([-10.0, -2.0, -1.0], [10.0, 2.0, 1.0]),
+            aabb([-2.0, -10.0, -1.0], [2.0, 10.0, 1.0]),
         );
+        assert!(basis[2][2] > 0.9, "must preserve local +Z; got {basis:?}");
         assert!(
             basis[0][1].abs() > 0.9 && basis[1][0].abs() > 0.9,
-            "AABB alignment should still rotate the horizontal axes; got {basis:?}"
+            "{basis:?}"
         );
         assert!(
             super::determinant3(basis) > 0.0,
-            "AABB alignment must remain a proper basis; got {basis:?}"
+            "proper basis; got {basis:?}"
         );
-    }
 
-    #[test]
-    fn ordered_leaf_aabbs_from_pairs_uses_encoded_leaf_order() {
-        let first = super::ShapeAabb {
-            min: [0.0, 0.0, 0.0],
-            max: [1.0, 1.0, 1.0],
-        };
-        let second = super::ShapeAabb {
-            min: [10.0, 0.0, 0.0],
-            max: [11.0, 1.0, 1.0],
-        };
-        let third = super::ShapeAabb {
-            min: [20.0, 0.0, 0.0],
-            max: [21.0, 1.0, 1.0],
-        };
-
+        let first = aabb([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]);
+        let second = aabb([10.0, 0.0, 0.0], [11.0, 1.0, 1.0]);
+        let third = aabb([20.0, 0.0, 0.0], [21.0, 1.0, 1.0]);
         let ordered =
             super::ordered_leaf_aabbs_from_pairs(&[(2, third), (0, first), (1, second)], 3)
                 .expect("ordered leaf aabbs");
-
-        assert_eq!(super::aabb_center(ordered[0]), [0.5, 0.5, 0.5]);
-        assert_eq!(super::aabb_center(ordered[1]), [10.5, 0.5, 0.5]);
-        assert_eq!(super::aabb_center(ordered[2]), [20.5, 0.5, 0.5]);
+        let centers: Vec<[f32; 3]> = ordered.into_iter().map(super::aabb_center).collect();
+        assert_eq!(
+            centers,
+            vec![[0.5, 0.5, 0.5], [10.5, 0.5, 0.5], [20.5, 0.5, 0.5]]
+        );
         assert!(
             super::ordered_leaf_aabbs_from_pairs(&[(0, first), (0, second)], 2).is_none(),
-            "duplicate or incomplete leaf maps must fall back to unordered matching"
+            "duplicate or incomplete leaf maps fall back to unordered matching"
         );
     }
 
-    #[test]
-    fn shared_pool_index_applies_page_offset() {
-        assert_eq!(shared_pool_index(0, 5), 5);
-        assert_eq!(shared_pool_index(1, 0), 65536);
-        assert_eq!(shared_pool_index(2, 7), 131079);
-    }
-
-    #[test]
-    fn shape_instance_transform_reads_column_major() {
-        // Column-major hkTransform: col0=[0..3], col1=[4..7], col2=[8..11], translation=[12..15].
-        // 90-deg rotation about Z, translation (5,6,7):
-        //   col0=(0,1,0,*), col1=(-1,0,0,*), col2=(0,0,1,*), trans=(5,6,7,*)
-        use super::shape_instance_transform;
-        use crate::hkx::model::HkxMember;
-        use crate::hkx::types::HkxValue;
-        let values = vec![
-            0.0f32, 1.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 5.0, 6.0, 7.0, 1.0,
-        ];
-        let members = vec![HkxMember {
-            name: "transform".to_string(),
-            value: HkxValue::F32List(values),
-        }];
-        let t = shape_instance_transform(&members);
-        assert_eq!(t.translation, [5.0, 6.0, 7.0]);
-        assert_eq!(t.basis[0], [0.0, -1.0, 0.0]);
-        assert_eq!(t.basis[1], [1.0, 0.0, 0.0]);
-        assert_eq!(t.basis[2], [0.0, 0.0, 1.0]);
-    }
-
+    /// A compound whose instances do not decode and whose backing data is not
+    /// reachable must infer no leaves; the SDK enumerates membership only through
+    /// the compound's own backing data, so a leaf owned by another body must never
+    /// be claimed.
     #[test]
     fn compound_leaf_inference_excludes_cross_body_shapes() {
-        // FO76 norm: a body's compound shape whose `instances` array does not
-        // decode (empty) and whose backing `hknpDynamicCompoundShapeData` is
-        // present in the blob but NOT reachable from this compound (no resolved
-        // `boundingVolumeData` pointer). A SECOND, unrelated leaf shape belongs
-        // to a different body. Compound-leaf inference must never claim that
-        // cross-body leaf as one of this compound's children — the SDK only
-        // enumerates membership through the compound's own backing data, never
-        // "every previewable leaf in the file".
-        use super::inferred_compound_leaf_targets;
-        use crate::hkx::model::{HkxFile, HkxMember, HkxObject};
-        use crate::hkx::types::HkxValue;
-
         fn object(name: &str, class: &str, members: Vec<HkxMember>) -> HkxObject {
             HkxObject {
                 name: Some(name.to_string()),
@@ -2990,68 +2871,38 @@ mod tests {
                 members,
             }
         }
-        fn ptr(name: &str, target: usize) -> HkxMember {
-            HkxMember {
-                name: name.to_string(),
-                value: HkxValue::Pointer(Some(target)),
-            }
-        }
-
-        let aabb_tree = HkxValue::Object(vec![HkxMember {
-            name: "numLeaves".to_string(),
-            value: HkxValue::U32(1),
-        }]);
-        let body1_instances = HkxValue::Array(vec![HkxValue::Object(vec![ptr("shape", 4)])]);
         let objects = vec![
             object(
                 "#0000",
                 "hknpStaticCompoundShape",
-                vec![HkxMember {
-                    name: "instances".to_string(),
-                    value: HkxValue::Array(Vec::new()),
-                }],
+                vec![mem("instances", HkxValue::Array(Vec::new()))],
             ),
             object(
                 "#0001",
                 "hknpDynamicCompoundShapeData",
-                vec![HkxMember {
-                    name: "aabbTree".to_string(),
-                    value: aabb_tree,
-                }],
+                vec![mem(
+                    "aabbTree",
+                    HkxValue::Object(vec![mem("numLeaves", HkxValue::U32(1))]),
+                )],
             ),
             object("#0002", "hknpConvexPolytopeShape", Vec::new()),
             object(
                 "#0003",
                 "hknpStaticCompoundShape",
-                vec![HkxMember {
-                    name: "instances".to_string(),
-                    value: body1_instances,
-                }],
+                vec![mem(
+                    "instances",
+                    HkxValue::Array(vec![HkxValue::Object(vec![mem(
+                        "shape",
+                        HkxValue::Pointer(Some(4)),
+                    )])]),
+                )],
             ),
             object("#0004", "hknpConvexPolytopeShape", Vec::new()),
         ];
         let hkx = HkxFile::from_tagxml(0, "test", objects);
-
-        let compound_index = 0usize;
-        // Body 0's shape is compound 0; body 1's shape is compound 3. Only the
-        // compounds are body shapes — their nested leaves (#0002, #0004) are not.
-        let body_shape_indices = [compound_index, 3usize];
-        let compound = &hkx.objects()[compound_index];
-
         let targets =
-            inferred_compound_leaf_targets(&hkx, compound_index, compound, &body_shape_indices);
-
-        assert!(
-            !targets.iter().any(|target| target.index == 4),
-            "cross-body leaf #0004 (body 1's) must never be claimed as a child of compound #0000; got {targets:?}"
-        );
-        // The compound's own backing data is unreachable here, so there is no
-        // authoritative leaf set — inference must yield nothing rather than
-        // sweeping the whole blob.
-        assert!(
-            targets.is_empty(),
-            "with no reachable backing data, inference must return no leaves; got {targets:?}"
-        );
+            super::inferred_compound_leaf_targets(&hkx, 0, &hkx.objects()[0], &[0usize, 3]);
+        assert!(targets.is_empty(), "got {targets:?}");
     }
 }
 
@@ -3475,10 +3326,11 @@ fn compound_child_shape_targets(
     let mut targets = Vec::new();
 
     if let Some(elements) = compound_instance_elements(obj) {
-        for element in elements {
-            let Some(members) = element.as_object_members() else {
-                continue;
-            };
+        let instances: Vec<&[HkxMember]> = elements
+            .iter()
+            .filter_map(|element| element.as_object_members())
+            .collect();
+        for members in &instances {
             if let Some(index) = member_target_index(hkx, members, "shape") {
                 let transform = parent_transform.compose(shape_instance_transform(members));
                 targets.extend(shape_targets_for_shape_index(
@@ -3491,6 +3343,11 @@ fn compound_child_shape_targets(
         }
         if !targets.is_empty() {
             return targets;
+        }
+        if let Some(paired) =
+            pointerless_instance_targets(hkx, obj, &instances, parent_transform, body_shape_indices)
+        {
+            return paired;
         }
     }
 
@@ -3532,12 +3389,62 @@ fn inferred_compound_leaf_targets(
         .unwrap_or_default()
 }
 
-fn compound_backing_data_leaf_targets(
+/// FO76 TAG0 `hknpShapeInstance` carries no `shape` pointer, but its
+/// transform and scale survive and the instances follow the backing data's
+/// leaf order. Pairing them keeps the authored placement exactly; the AABB
+/// inference that runs otherwise can neither scale nor reliably place a
+/// symmetric child. Every paired child must land inside the compound's
+/// authored AABB, else the pairing is rejected.
+fn pointerless_instance_targets(
     hkx: &HkxFile,
+    compound: &HkxObject,
+    instances: &[&[HkxMember]],
+    parent_transform: ShapeTransform,
+    body_shape_indices: &[usize],
+) -> Option<Vec<ShapeTarget>> {
+    let wrapped_shapes = wrapped_shape_indices(hkx);
+    let (_, leaves) =
+        compound_backing_data_leaf_indices(hkx, compound, body_shape_indices, &wrapped_shapes)?;
+    if leaves.len() != instances.len() {
+        return None;
+    }
+    let bounds = member_object(compound, "aabb").and_then(|aabb| {
+        let min = member_vec4_from_members(aabb, "min")?;
+        let max = member_vec4_from_members(aabb, "max")?;
+        Some(ShapeAabb {
+            min: [min[0], min[1], min[2]],
+            max: [max[0], max[1], max[2]],
+        })
+    })?;
+    let tolerance = aabb_extent(bounds).iter().fold(0.0_f32, |a, b| a.max(*b)) * 0.01 + 1e-3;
+
+    let mut targets = Vec::with_capacity(leaves.len());
+    for (index, members) in leaves.into_iter().zip(instances) {
+        let local = shape_instance_transform(members);
+        let mut meshes = preview_for_shape_index(hkx, index, 1.0);
+        apply_shape_transform_to_meshes(&mut meshes, local, 1.0);
+        let placed = preview_meshes_aabb(&meshes)?;
+        let inside = (0..3).all(|axis| {
+            placed.min[axis] >= bounds.min[axis] - tolerance
+                && placed.max[axis] <= bounds.max[axis] + tolerance
+        });
+        if !inside {
+            return None;
+        }
+        targets.push(ShapeTarget {
+            index,
+            transform: parent_transform.compose(local),
+        });
+    }
+    Some(targets)
+}
+
+fn compound_backing_data_leaf_indices<'a>(
+    hkx: &'a HkxFile,
     compound: &HkxObject,
     body_shape_indices: &[usize],
     wrapped_shapes: &[usize],
-) -> Option<Vec<ShapeTarget>> {
+) -> Option<(&'a HkxObject, Vec<usize>)> {
     let data_index = member_target_index(hkx, &compound.members, "boundingVolumeData")?;
     let data = hkx.objects().get(data_index)?;
     if data.class_name != "hknpDynamicCompoundShapeData" {
@@ -3548,7 +3455,7 @@ fn compound_backing_data_leaf_targets(
         return None;
     }
 
-    let mut targets = Vec::with_capacity(leaf_count);
+    let mut leaves = Vec::with_capacity(leaf_count);
     for (index, object) in hkx.objects().iter().enumerate().skip(data_index + 1) {
         if object.class_name == "hknpDynamicCompoundShapeData" {
             break;
@@ -3557,15 +3464,26 @@ fn compound_backing_data_leaf_targets(
             continue;
         }
         if previewable_leaf_shape_class(&object.class_name) {
-            targets.push(index);
-            if targets.len() == leaf_count {
-                let aabbs = dynamic_compound_aabb_candidates(data);
-                return Some(shape_targets_from_leaf_aabbs(hkx, &targets, &aabbs));
+            leaves.push(index);
+            if leaves.len() == leaf_count {
+                return Some((data, leaves));
             }
         }
     }
 
     None
+}
+
+fn compound_backing_data_leaf_targets(
+    hkx: &HkxFile,
+    compound: &HkxObject,
+    body_shape_indices: &[usize],
+    wrapped_shapes: &[usize],
+) -> Option<Vec<ShapeTarget>> {
+    let (data, leaves) =
+        compound_backing_data_leaf_indices(hkx, compound, body_shape_indices, wrapped_shapes)?;
+    let aabbs = dynamic_compound_aabb_candidates(data);
+    Some(shape_targets_from_leaf_aabbs(hkx, &leaves, &aabbs))
 }
 
 fn shape_targets_from_leaf_aabbs(
@@ -3939,8 +3857,31 @@ fn shape_instance_transform(members: &[HkxMember]) -> ShapeTransform {
         [values[2], values[6], values[10]],
     ];
     let translation = [values[12], values[13], values[14]];
+    let mut transform = ShapeTransform { basis, translation };
 
-    ShapeTransform { basis, translation }
+    // hknpShapeInstance scales the child before rotating it; FO76 SCOLs bake
+    // their placement scale here rather than into the NIF node.
+    if let Some(scale) = member_vec3_from_members(members, "scale")
+        .filter(|scale| scale.iter().all(|value| value.is_finite() && *value != 0.0))
+    {
+        for row in &mut transform.basis {
+            for (value, axis_scale) in row.iter_mut().zip(scale) {
+                *value *= axis_scale;
+            }
+        }
+    }
+    transform
+}
+
+fn transform_is_rigid(transform: ShapeTransform) -> bool {
+    let b = transform.basis;
+    (0..3).all(|i| {
+        (0..3).all(|j| {
+            let dot = b[0][i] * b[0][j] + b[1][i] * b[1][j] + b[2][i] * b[2][j];
+            let expected = if i == j { 1.0 } else { 0.0 };
+            (dot - expected).abs() <= 1e-4
+        })
+    }) && determinant3(b) > 0.0
 }
 
 fn is_hknp_compound_shape(class_name: &str) -> bool {

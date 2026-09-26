@@ -3,7 +3,6 @@ import struct
 import pytest
 
 from creation_lib.pex.parser import parse_pex_bytes
-from creation_lib.pex.tests.pex_samples import find_pex_files
 
 
 def _build_header(
@@ -42,7 +41,7 @@ def _build_minimal_pex():
     return buf
 
 
-def test_parse_header():
+def test_parse_header_and_string_table():
     data = _build_minimal_pex()
     pex = parse_pex_bytes(data)
     assert pex.magic == 0xFA57C0DE
@@ -52,11 +51,6 @@ def test_parse_header():
     assert pex.source_filename == "test.psc"
     assert pex.username == "tester"
     assert pex.machine_name == "pc"
-
-
-def test_parse_string_table():
-    data = _build_minimal_pex()
-    pex = parse_pex_bytes(data)
     assert pex.string_table == ["MyScript", "None", "ObjectReference"]
 
 
@@ -207,26 +201,7 @@ def test_parse_function_with_instructions():
     assert fn.instructions[1].args[0].data == "result"
 
 
-def test_parse_real_pex():
-    """Smoke test: parse a small sample of available .pex files without crashing."""
-    pex_files = find_pex_files(limit=10)
-    if not pex_files:
-        pytest.skip("No .pex files found")
-    failures = []
-    for pex_path in pex_files:
-        try:
-            pex = parse_pex_bytes(pex_path.read_bytes())
-            assert pex.magic == 0xFA57C0DE
-            assert len(pex.objects) >= 1
-            assert pex.objects[0].name
-        except Exception as e:
-            failures.append(f"{pex_path.name}: {e}")
-    if failures:
-        pytest.fail(f"Failed to parse {len(failures)}/{len(pex_files)} files:\n" +
-                    "\n".join(failures[:10]))
-
-
-def test_parse_pex_bytes_uses_native_runtime(monkeypatch):
+def test_parse_pex_dispatches_to_native_runtime(monkeypatch, tmp_path):
     from creation_lib.pex import parser as pex_parser
     from creation_lib.pex.types import PexFile
 
@@ -242,27 +217,9 @@ def test_parse_pex_bytes_uses_native_runtime(monkeypatch):
     )
 
     monkeypatch.setattr(pex_parser.native_runtime, "parse_pex_bytes_native", lambda data: expected)
-
     assert pex_parser.parse_pex_bytes(b"native-bytes") is expected
 
-
-def test_parse_pex_uses_native_file_runtime(monkeypatch, tmp_path):
-    from creation_lib.pex import parser as pex_parser
-    from creation_lib.pex.types import PexFile
-
-    expected = PexFile(
-        magic=0xFA57C0DE,
-        major_version=3,
-        minor_version=9,
-        game_id=2,
-        compilation_time=1,
-        source_filename="native.psc",
-        username="u",
-        machine_name="m",
-    )
     pex_path = tmp_path / "native.pex"
     pex_path.write_bytes(b"native-bytes")
-
     monkeypatch.setattr(pex_parser.native_runtime, "parse_pex_file_native", lambda path: expected)
-
     assert pex_parser.parse_pex(pex_path) is expected

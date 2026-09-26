@@ -66,8 +66,12 @@ def _packed_strips_nif(body_type="bhkRigidBody", translation=None):
     )
 
 
-def test_packed_tri_strips_shape_produces_preview_geometry():
-    """Regression: FNV/FO3 mesh collision rendered nothing in the NIF editor."""
+def test_packed_tri_strips_shape_produces_preview_geometry_at_legacy_havok_scale():
+    """Regression: FNV/FO3 mesh collision rendered nothing in the NIF editor.
+
+    Also verifies the legacy Havok scale is honored: 10 legacy Havok units is
+    ~70 game units, not ~700.
+    """
     from creation_lib.renderer.nif_loader import _extract_legacy_collision_shapes
 
     nif = _packed_strips_nif()
@@ -80,17 +84,6 @@ def test_packed_tri_strips_shape_produces_preview_geometry():
     assert len(shapes[0].vertices) == 4
     assert len(shapes[0].triangles) == 4
     assert len(shapes[0].positions) > 0
-
-
-def test_packed_tri_strips_shape_uses_legacy_havok_scale():
-    """10 legacy Havok units is ~70 game units, not ~700."""
-    from creation_lib.renderer.nif_loader import _extract_legacy_collision_shapes
-
-    nif = _packed_strips_nif()
-    shapes = _extract_legacy_collision_shapes(
-        nif, nif.get_block(1), havok_scale=6.999125
-    )
-
     assert shapes[0].vertices.max() == pytest.approx(69.99125, rel=1e-4)
 
 

@@ -55,18 +55,15 @@ def test_native_parser_shape(src, exp_name, exp_parent, exp_props, exp_funcs):
     assert len(nat.ast.functions) == exp_funcs
 
 
-def test_native_filename_validation():
+def test_native_filename_validation_and_emit_round_trip():
     from creation_lib.papyrus_lsp import validate_filename as facade_validate
 
     nat = facade_validate("/path/WrongName.psc", "MyScript")
     assert nat is not None
     assert "WrongName" in nat.message
-
     assert facade_validate("/path/B21/TestScript.psc", "B21:TestScript") is None
 
-
-def test_native_emit_round_trip():
-    """Parse, emit via native, ensure the result re-parses."""
+    # Parse, emit via native, ensure the result re-parses.
     src = (
         "ScriptName Foo extends Bar\n"
         "Int Property X Auto\n"
@@ -74,10 +71,10 @@ def test_native_emit_round_trip():
         "  Int y = X + 1\n"
         "EndFunction\n"
     )
-    nat = parse_via_facade(src)
-    assert nat.ast is not None
+    parsed = parse_via_facade(src)
+    assert parsed.ast is not None
 
-    rendered = nr.emit_script_native(nat.ast)
+    rendered = nr.emit_script_native(parsed.ast)
     assert "Scriptname Foo Extends Bar" in rendered
     assert "Int Property X" in rendered
     assert "Function DoIt" in rendered

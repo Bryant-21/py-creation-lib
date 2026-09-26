@@ -861,53 +861,43 @@ mod tests {
     }
 
     #[test]
-    fn rejects_invalid_magic() {
-        let mut data = minimal_pex();
-        data[0] = 0;
-        let err = parse_pex_bytes(&data).unwrap_err();
-        assert!(err.contains("Invalid PEX magic"));
+    fn rejects_malformed_input() {
+        let mut bad_magic = minimal_pex();
+        bad_magic[0] = 0;
+
+        let mut bad_structural_index = Vec::new();
+        push_header(&mut bad_structural_index, 1);
+        push_string_table(&mut bad_structural_index, &["MyScript"]);
+        bad_structural_index.push(0);
+        bad_structural_index.extend_from_slice(&1u16.to_le_bytes());
+        bad_structural_index.extend_from_slice(&99u16.to_le_bytes());
+        bad_structural_index.push(0);
+
+        let mut bad_debug_index = Vec::new();
+        push_header(&mut bad_debug_index, GAME_FO4);
+        push_string_table(&mut bad_debug_index, &["MyScript"]);
+        bad_debug_index.push(1);
+        bad_debug_index.extend_from_slice(&1700000001u64.to_le_bytes());
+        for v in [0u16, 1, 0, 99, 0] {
+            bad_debug_index.extend_from_slice(&v.to_le_bytes());
+        }
+        bad_debug_index.extend_from_slice(&0u32.to_le_bytes());
+        for _ in 0..4 {
+            bad_debug_index.extend_from_slice(&0u16.to_le_bytes());
+        }
+
+        for (data, want) in [
+            (bad_magic, "Invalid PEX magic"),
+            (bad_structural_index, "Invalid string table index 99"),
+            (bad_debug_index, "Invalid string table index 99"),
+        ] {
+            let err = parse_pex_bytes(&data).unwrap_err();
+            assert!(err.contains(want), "{err}");
+        }
     }
 
     #[test]
-    fn rejects_invalid_structural_string_index() {
-        let mut data = Vec::new();
-        push_header(&mut data, 1);
-        push_string_table(&mut data, &["MyScript"]);
-        data.push(0);
-        data.extend_from_slice(&1u16.to_le_bytes());
-        data.extend_from_slice(&99u16.to_le_bytes());
-        data.push(0);
-
-        let err = parse_pex_bytes(&data).unwrap_err();
-
-        assert!(err.contains("Invalid string table index 99"));
-    }
-
-    #[test]
-    fn rejects_invalid_fo4_debug_extension_string_index() {
-        let mut data = Vec::new();
-        push_header(&mut data, GAME_FO4);
-        push_string_table(&mut data, &["MyScript"]);
-        data.push(1);
-        data.extend_from_slice(&1700000001u64.to_le_bytes());
-        data.extend_from_slice(&0u16.to_le_bytes());
-        data.extend_from_slice(&1u16.to_le_bytes());
-        data.extend_from_slice(&0u16.to_le_bytes());
-        data.extend_from_slice(&99u16.to_le_bytes());
-        data.extend_from_slice(&0u16.to_le_bytes());
-        data.extend_from_slice(&0u32.to_le_bytes());
-        data.extend_from_slice(&0u16.to_le_bytes());
-        data.extend_from_slice(&0u16.to_le_bytes());
-        data.extend_from_slice(&0u16.to_le_bytes());
-        data.extend_from_slice(&0u16.to_le_bytes());
-
-        let err = parse_pex_bytes(&data).unwrap_err();
-
-        assert!(err.contains("Invalid string table index 99"));
-    }
-
-    #[test]
-    fn parses_object_variable_and_function() {
+    fn parses_object_variable_and_function_and_serde_round_trips() {
         let buf = super::tests_fixture_object_variable_and_function();
         let parsed = parse_pex_bytes(&buf).unwrap();
         let object = &parsed.objects[0];
@@ -917,6 +907,9 @@ mod tests {
         assert_eq!(function.name, "Add");
         assert_eq!(function.instructions[0].opcode, 0x01);
         assert_eq!(function.instructions[1].opcode, 0x1A);
+        let json = serde_json::to_string(&parsed).unwrap();
+        let restored: PexFilePayload = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored, parsed);
     }
 
     #[test]
@@ -1061,15 +1054,6 @@ mod tests {
         assert_eq!(st[0].members[0].name, "First");
         assert_eq!(st[0].members[0].ty, "Int");
         assert_eq!(st[0].members[0].data.data, serde_json::json!(7));
-    }
-
-    #[test]
-    fn serde_json_roundtrip_preserves_object_fixture() {
-        let buf = super::tests_fixture_object_variable_and_function();
-        let payload = parse_pex_bytes(&buf).unwrap();
-        let json = serde_json::to_string(&payload).unwrap();
-        let restored: PexFilePayload = serde_json::from_str(&json).unwrap();
-        assert_eq!(restored, payload);
     }
 
     #[test]

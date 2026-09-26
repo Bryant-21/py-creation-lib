@@ -56,11 +56,15 @@ def _make_behavior_project(base: Path, name: str):
 
 class TestPreprocessHavok:
     def test_creates_all_tables(self, tmp_path):
-        from creation_lib.preprocessor.havok import create_db
+        from creation_lib.preprocessor.havok import build_db
 
+        meshes_dir = tmp_path / "Meshes"
+        meshes_dir.mkdir()
         db_path = tmp_path / "test_havok.db"
-        conn = create_db(db_path)
-        cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        build_db(meshes_dir=meshes_dir, db_path=db_path, game="fo4", source="fo4")
+
+        conn = sqlite3.connect(str(db_path))
+        cursor = conn.execute("SELECT name FROM sqlite_master WHERE type IN ('table', 'view')")
         tables = {row[0] for row in cursor.fetchall()}
         assert "havok_projects" in tables
         assert "havok_characters" in tables

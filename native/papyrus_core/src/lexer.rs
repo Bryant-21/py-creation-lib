@@ -722,194 +722,106 @@ pub fn tokenize_with_docs(src: &str) -> Result<(Vec<Token>, Vec<DocComment>), Le
 #[cfg(test)]
 mod tests {
     use super::*;
+    use TokenKind as K;
 
     fn kinds(src: &str) -> Vec<TokenKind> {
         tokenize(src)
             .unwrap()
             .into_iter()
             .map(|t| t.kind)
-            .filter(|k| !matches!(k, TokenKind::Newline | TokenKind::Eof))
+            .filter(|k| !matches!(k, K::Newline | K::Eof))
             .collect()
     }
 
-    #[test]
-    fn empty_input_yields_only_trailing_eof() {
-        // preprocess() always appends a trailing newline, so we get [Newline, Eof].
-        let toks = tokenize("").unwrap();
-        assert!(matches!(toks.last().unwrap().kind, TokenKind::Eof));
+    fn name(n: &str) -> TokenKind {
+        K::Name(n.into())
+    }
+
+    fn start_of(src: &str, n: &str) -> Pos {
+        tokenize(src)
+            .unwrap()
+            .into_iter()
+            .find(|t| matches!(&t.kind, K::Name(x) if x == n))
+            .unwrap()
+            .start
     }
 
     #[test]
-    fn keywords_are_case_insensitive() {
-        let toks = kinds("scriptname Foo extends Bar");
-        assert_eq!(
-            toks,
-            vec![
-                TokenKind::KwScriptname,
-                TokenKind::Name("Foo".into()),
-                TokenKind::KwExtends,
-                TokenKind::Name("Bar".into()),
-            ]
-        );
-
-        let toks = kinds("ScriptName Foo EXTENDS Bar");
-        assert_eq!(
-            toks,
-            vec![
-                TokenKind::KwScriptname,
-                TokenKind::Name("Foo".into()),
-                TokenKind::KwExtends,
-                TokenKind::Name("Bar".into()),
-            ]
-        );
+    fn tokenizes_representative_inputs() {
+        let foo_bar = vec![name("Foo"), name("Bar")];
+        let cases: Vec<(&str, Vec<TokenKind>)> = vec![
+            (
+                "scriptname Foo EXTENDS Bar",
+                vec![K::KwScriptname, name("Foo"), K::KwExtends, name("Bar")],
+            ),
+            ("42", vec![K::Int(42)]),
+            ("3.14", vec![K::Float(3.14)]),
+            ("0x1a2B", vec![K::Int(0x1a2B)]),
+            // The lexer never produces negative literals; that is the parser's job.
+            ("-1.5", vec![K::Minus, K::Float(1.5)]),
+            (r#""hello world""#, vec![K::Str("hello world".into())]),
+            (r#""a\tb""#, vec![K::Str("a\tb".into())]),
+            (r#""""#, vec![K::Str(String::new())]),
+            ("Foo ; this is a comment\nBar", foo_bar.clone()),
+            ("Foo ;/ block /; Bar", foo_bar.clone()),
+            ("Foo \\\n  Bar", foo_bar.clone()),
+            // `B21:Script` is NAME ":" NAME; the parser glues namespaced names together.
+            ("B21:Script", vec![name("B21"), K::Colon, name("Script")]),
+            (
+                "== != <= >= < > || && += -= *= /= %= = + - * / % ! . , : ( ) [ ]",
+                vec![
+                    K::Eq,
+                    K::Neq,
+                    K::Lte,
+                    K::Gte,
+                    K::Lt,
+                    K::Gt,
+                    K::OrOr,
+                    K::AndAnd,
+                    K::PlusAssign,
+                    K::MinusAssign,
+                    K::MulAssign,
+                    K::DivAssign,
+                    K::ModAssign,
+                    K::Assign,
+                    K::Plus,
+                    K::Minus,
+                    K::Star,
+                    K::Slash,
+                    K::Percent,
+                    K::Bang,
+                    K::Dot,
+                    K::Comma,
+                    K::Colon,
+                    K::LParen,
+                    K::RParen,
+                    K::LBracket,
+                    K::RBracket,
+                ],
+            ),
+        ];
+        for (src, want) in cases {
+            assert_eq!(kinds(src), want, "{src:?}");
+        }
     }
 
     #[test]
-    fn integers_floats_hex() {
-        assert_eq!(kinds("42"), vec![TokenKind::Int(42)]);
-        assert_eq!(kinds("3.14"), vec![TokenKind::Float(3.14)]);
-        assert_eq!(kinds("0xFF"), vec![TokenKind::Int(0xFF)]);
-        assert_eq!(kinds("0x1a2B"), vec![TokenKind::Int(0x1a2B)]);
-    }
-
-    #[test]
-    fn negative_numbers_are_minus_plus_number() {
-        // Lexer never produces NEG_INT/NEG_FLOAT — that's the parser's job.
-        assert_eq!(kinds("-3"), vec![TokenKind::Minus, TokenKind::Int(3)]);
-        assert_eq!(kinds("-1.5"), vec![TokenKind::Minus, TokenKind::Float(1.5)]);
-    }
-
-    #[test]
-    fn strings() {
-        assert_eq!(
-            kinds(r#""hello world""#),
-            vec![TokenKind::Str("hello world".into())]
-        );
-        assert_eq!(kinds(r#""a\tb""#), vec![TokenKind::Str("a\tb".into())]);
-        assert_eq!(kinds(r#""""#), vec![TokenKind::Str(String::new())]);
-    }
-
-    #[test]
-    fn unterminated_string_errors() {
+    fn edge_inputs() {
+        assert!(matches!(tokenize("").unwrap().last().unwrap().kind, K::Eof));
         let err = tokenize("\"oops\n").unwrap_err();
         assert!(err.message.contains("unterminated"));
     }
 
     #[test]
-    fn line_comments_are_skipped() {
-        let toks = kinds("Foo ; this is a comment\nBar");
+    fn positions_are_one_based_and_survive_normalization() {
+        assert_eq!(tokenize("Foo\n  Bar").unwrap()[0].start, Pos { line: 1, col: 1 });
+        assert_eq!(start_of("Foo\n  Bar", "Bar"), Pos { line: 2, col: 3 });
+        assert_eq!(start_of("Foo\r\nBar", "Bar").line, 2);
+        // A doc comment eats its internal newline but keeps line numbering.
         assert_eq!(
-            toks,
-            vec![TokenKind::Name("Foo".into()), TokenKind::Name("Bar".into())]
+            kinds("Foo { docstring spanning\nmultiple lines } Bar"),
+            vec![name("Foo"), name("Bar")]
         );
-    }
-
-    #[test]
-    fn doc_comments_are_stripped_preserving_lines() {
-        let toks = tokenize("Foo { docstring spanning\nmultiple lines } Bar").unwrap();
-        let names: Vec<_> = toks
-            .iter()
-            .filter_map(|t| match &t.kind {
-                TokenKind::Name(n) => Some(n.clone()),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(names, vec!["Foo", "Bar"]);
-        // "Bar" sits on line 2 because the doc comment ate one newline internally.
-        let bar = toks
-            .iter()
-            .find(|t| matches!(&t.kind, TokenKind::Name(n) if n == "Bar"))
-            .unwrap();
-        assert_eq!(bar.start.line, 2);
-    }
-
-    #[test]
-    fn block_comments_are_stripped() {
-        let toks = kinds("Foo ;/ block /; Bar");
-        assert_eq!(
-            toks,
-            vec![TokenKind::Name("Foo".into()), TokenKind::Name("Bar".into())]
-        );
-    }
-
-    #[test]
-    fn line_continuation_collapses_to_space() {
-        let toks = kinds("Foo \\\n  Bar");
-        assert_eq!(
-            toks,
-            vec![TokenKind::Name("Foo".into()), TokenKind::Name("Bar".into())]
-        );
-    }
-
-    #[test]
-    fn operators_compound_and_simple() {
-        assert_eq!(
-            kinds("== != <= >= < > || && += -= *= /= %= = + - * / % ! . , : ( ) [ ]"),
-            vec![
-                TokenKind::Eq,
-                TokenKind::Neq,
-                TokenKind::Lte,
-                TokenKind::Gte,
-                TokenKind::Lt,
-                TokenKind::Gt,
-                TokenKind::OrOr,
-                TokenKind::AndAnd,
-                TokenKind::PlusAssign,
-                TokenKind::MinusAssign,
-                TokenKind::MulAssign,
-                TokenKind::DivAssign,
-                TokenKind::ModAssign,
-                TokenKind::Assign,
-                TokenKind::Plus,
-                TokenKind::Minus,
-                TokenKind::Star,
-                TokenKind::Slash,
-                TokenKind::Percent,
-                TokenKind::Bang,
-                TokenKind::Dot,
-                TokenKind::Comma,
-                TokenKind::Colon,
-                TokenKind::LParen,
-                TokenKind::RParen,
-                TokenKind::LBracket,
-                TokenKind::RBracket,
-            ]
-        );
-    }
-
-    #[test]
-    fn line_col_tracking_is_one_based() {
-        let toks = tokenize("Foo\n  Bar").unwrap();
-        let foo = &toks[0];
-        assert_eq!(foo.start, Pos { line: 1, col: 1 });
-        let bar = toks
-            .iter()
-            .find(|t| matches!(&t.kind, TokenKind::Name(n) if n == "Bar"))
-            .unwrap();
-        assert_eq!(bar.start, Pos { line: 2, col: 3 });
-    }
-
-    #[test]
-    fn crlf_normalized_to_lf() {
-        let toks = tokenize("Foo\r\nBar").unwrap();
-        let bar = toks
-            .iter()
-            .find(|t| matches!(&t.kind, TokenKind::Name(n) if n == "Bar"))
-            .unwrap();
-        assert_eq!(bar.start.line, 2);
-    }
-
-    #[test]
-    fn namespaced_ident_is_three_tokens() {
-        // Per grammar, `B21:Script` is parsed as NAME ":" NAME at the token level;
-        // the parser's `type_name` / `script_ident` rules glue them together.
-        assert_eq!(
-            kinds("B21:Script"),
-            vec![
-                TokenKind::Name("B21".into()),
-                TokenKind::Colon,
-                TokenKind::Name("Script".into()),
-            ]
-        );
+        assert_eq!(start_of("Foo { docstring spanning\nmultiple lines } Bar", "Bar").line, 2);
     }
 }

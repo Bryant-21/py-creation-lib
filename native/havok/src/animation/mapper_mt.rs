@@ -53,47 +53,45 @@ mod tests {
     }
 
     #[test]
-    fn retarget_batch_preserves_order() {
-        let clips: Vec<AnimationClip> = (0..100)
-            .map(|i| make_identity_clip(&format!("bone_{i}")))
-            .collect();
-        // Identity mapper.
-        let mapper: RetargetFn = Box::new(|c: &AnimationClip| c.clone());
-        let results = retarget_batch(&clips, &mapper);
-        assert_eq!(results.len(), clips.len());
-        for (i, (orig, result)) in clips.iter().zip(results.iter()).enumerate() {
-            assert_eq!(
-                result.channels[0].bone_name, orig.channels[0].bone_name,
-                "order mismatch at {i}"
-            );
+    fn retarget_batch_order_and_parallel_equivalence() {
+        {
+            let clips: Vec<AnimationClip> = (0..100)
+                .map(|i| make_identity_clip(&format!("bone_{i}")))
+                .collect();
+            // Identity mapper.
+            let mapper: RetargetFn = Box::new(|c: &AnimationClip| c.clone());
+            let results = retarget_batch(&clips, &mapper);
+            assert_eq!(results.len(), clips.len());
+            for (i, (orig, result)) in clips.iter().zip(results.iter()).enumerate() {
+                assert_eq!(
+                    result.channels[0].bone_name, orig.channels[0].bone_name,
+                    "order mismatch at {i}"
+                );
+            }
         }
-    }
-
-    #[test]
-    fn retarget_batch_indexed_sorted() {
-        let indexed: Vec<(usize, AnimationClip)> = (0..50)
-            .map(|i| (i, make_identity_clip(&format!("b{i}"))))
-            .collect();
-        let mapper: RetargetFn = Box::new(|c: &AnimationClip| c.clone());
-        let results = retarget_batch_indexed(&indexed, &mapper);
-        assert_eq!(results.len(), 50);
-        // Assert sorted by index.
-        for (i, (idx, _)) in results.iter().enumerate() {
-            assert_eq!(*idx, i);
+        {
+            let indexed: Vec<(usize, AnimationClip)> = (0..50)
+                .map(|i| (i, make_identity_clip(&format!("b{i}"))))
+                .collect();
+            let mapper: RetargetFn = Box::new(|c: &AnimationClip| c.clone());
+            let results = retarget_batch_indexed(&indexed, &mapper);
+            assert_eq!(results.len(), 50);
+            // Assert sorted by index.
+            for (i, (idx, _)) in results.iter().enumerate() {
+                assert_eq!(*idx, i);
+            }
         }
-    }
-
-    #[test]
-    fn parallel_vs_serial_same_result() {
-        let clips: Vec<AnimationClip> = (0..20)
-            .map(|i| make_identity_clip(&format!("c{i}")))
-            .collect();
-        let mapper: RetargetFn = Box::new(|c: &AnimationClip| {
-            let mut r = c.clone();
-            r.duration = 2.0;
-            r
-        });
-        let results = retarget_batch(&clips, &mapper);
-        assert!(results.iter().all(|c| (c.duration - 2.0).abs() < 1e-6));
+        {
+            let clips: Vec<AnimationClip> = (0..20)
+                .map(|i| make_identity_clip(&format!("c{i}")))
+                .collect();
+            let mapper: RetargetFn = Box::new(|c: &AnimationClip| {
+                let mut r = c.clone();
+                r.duration = 2.0;
+                r
+            });
+            let results = retarget_batch(&clips, &mapper);
+            assert!(results.iter().all(|c| (c.duration - 2.0).abs() < 1e-6));
+        }
     }
 }

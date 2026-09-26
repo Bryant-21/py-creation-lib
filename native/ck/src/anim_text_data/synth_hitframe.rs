@@ -31,8 +31,8 @@
 //! (6), none of which carry `HitFrame` on the animation side. In-game, all six ScorchBeast
 //! attack clips pass every gate and still report `time=0.000 dist=0`.
 //!
-//! This pass adds `HitFrame` where the FO76 damage window opens, copying the donor trigger's
-//! flags so the timing basis (`relativeToEndOfClip`) cannot drift. It repairs the behavior
+//! This pass adds `HitFrame` where the FO76 damage window opens, copying a graph donor's
+//! flags or using the absolute time of an animation annotation. It repairs the behavior
 //! graph rather than the emitted bucket because the graph feeds both: `ClipGeneratorData`
 //! gives combat its `attackTime`, and the graph must fire `HitFrame` during playback for the
 //! hit to land.
@@ -46,8 +46,9 @@
 //! # FixupReport mapping
 //! `records_changed` = number of clip generators given a `HitFrame` trigger.
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use havok_native::hkx::read_packfile;
 use havok_native::hkx::types::HkxValue;
@@ -65,13 +66,65 @@ const HIT_FRAME: &str = "HitFrame";
 const DONOR_EVENTS: [&str; 2] = ["WeaponSweepAttackStart", "AreaAttackStart"];
 
 /// A clip generator that needs a `HitFrame`, and the trigger to model it on.
+#[derive(Debug, PartialEq)]
 struct Missing {
+    clip: usize,
     /// Index of the clip's `hkbClipTriggerArray` in the file's object table.
     trigger_array: usize,
     local_time: f32,
     relative_to_end_of_clip: HkxValue,
     acyclic: HkxValue,
     is_annotation: HkxValue,
+}
+
+#[derive(Clone, Copy, Default)]
+struct AnnotationFacts {
+    fires_hit_frame: bool,
+    sweep: Option<Option<f32>>,
+}
+
+#[derive(Default)]
+struct AnnotationCache {
+    facts: HashMap<PathBuf, AnnotationFacts>,
+    reads: usize,
+    parses: usize,
+    hits: usize,
+    elapsed: Duration,
+}
+
+impl AnnotationCache {
+    fn get(&mut self, path: &Path, need_sweep: bool) -> AnnotationFacts {
+        if let Some(facts) = self.facts.get(path) {
+            if !need_sweep || facts.sweep.is_some() || facts.fires_hit_frame {
+                self.hits += 1;
+                return *facts;
+            }
+        }
+        let started = Instant::now();
+        self.reads += 1;
+        let facts = match std::fs::read(path) {
+            Ok(bytes) => {
+                let fires_hit_frame = bytes_fire_hit_frame(&bytes);
+                let sweep = if need_sweep && !fires_hit_frame {
+                    self.parses += 1;
+                    Some(annotation_sweep_time(&bytes))
+                } else {
+                    None
+                };
+                AnnotationFacts {
+                    fires_hit_frame,
+                    sweep,
+                }
+            }
+            Err(_) => AnnotationFacts {
+                fires_hit_frame: false,
+                sweep: Some(None),
+            },
+        };
+        self.elapsed += started.elapsed();
+        self.facts.insert(path.to_owned(), facts);
+        facts
+    }
 }
 
 pub fn synthesize_missing_hit_frames(
@@ -83,6 +136,8 @@ pub fn synthesize_missing_hit_frames(
     }
 
     let mut added = 0u32;
+    let started = Instant::now();
+    let mut annotations = AnnotationCache::default();
     let mut seen_core: BTreeSet<String> = BTreeSet::new();
     for subgraph in &inputs.subgraphs {
         if !seen_core.insert(subgraph.core_behavior.to_ascii_lowercase()) {
@@ -97,6 +152,7 @@ pub fn synthesize_missing_hit_frames(
             subgraph,
             src_meshes_root,
             &inputs.event_candidates,
+            &mut annotations,
         )?;
     }
     if added > 0 {
@@ -106,6 +162,15 @@ pub fn synthesize_missing_hit_frames(
         // trigger lists while the graph on disk is correct.
         super::hkx_cache::clear_all();
     }
+    eprintln!(
+        "[animtext_hitframe_timing] total={:.3}s annotations={:.3}s reads={} parses={} cache_hits={} paths={} triggers={added}",
+        started.elapsed().as_secs_f64(),
+        annotations.elapsed.as_secs_f64(),
+        annotations.reads,
+        annotations.parses,
+        annotations.hits,
+        annotations.facts.len()
+    );
     Ok(added)
 }
 
@@ -114,6 +179,7 @@ fn repair_one_core(
     subgraph: &SubgraphInput,
     src_meshes_root: &Path,
     event_candidates: &[String],
+    annotations: &mut AnnotationCache,
 ) -> Result<u32, String> {
     let events = resolve_anim_events(core_file, event_candidates);
     if events.is_empty() {
@@ -147,6 +213,7 @@ fn repair_one_core(
         src_meshes_root,
         subgraph,
         core_project.as_deref(),
+        annotations,
     );
     if missing.is_empty() {
         return Ok(0);
@@ -159,7 +226,9 @@ fn repair_one_core(
 
     let mut added = 0u32;
     for entry in &missing {
-        let object = &mut hkx.objects_mut()[entry.trigger_array];
+        // Clips can share an end-trigger array but have different impact times.
+        let mut object = hkx.objects()[entry.trigger_array].clone();
+        object.name = None;
         let Some(member) = object.members.iter_mut().find(|m| m.name == "triggers") else {
             continue;
         };
@@ -167,6 +236,13 @@ fn repair_one_core(
             continue;
         };
         list.push(new_trigger(entry, hit_id));
+        let index = hkx.push_object(object);
+        hkx.objects_mut()[entry.clip]
+            .members
+            .iter_mut()
+            .find(|m| m.name == "triggers")
+            .unwrap()
+            .value = HkxValue::Pointer(Some(index));
         added += 1;
     }
 
@@ -241,9 +317,10 @@ fn collect_missing(
     src_meshes_root: &Path,
     subgraph: &SubgraphInput,
     core_project: Option<&str>,
+    annotations: &mut AnnotationCache,
 ) -> Vec<Missing> {
     let mut out = Vec::new();
-    for obj in objects {
+    for (clip, obj) in objects.iter().enumerate() {
         if obj.class_name != "hkbClipGenerator" {
             continue;
         }
@@ -252,9 +329,6 @@ fn collect_missing(
         };
         if !combat_clips.contains(&name.to_ascii_lowercase()) {
             continue;
-        }
-        if animation_fires_hit_frame(&obj.members, src_meshes_root, subgraph, core_project) {
-            continue; // convention 2 — the animation already lands the hit
         }
         let Some(array_index) = pointer_member(&obj.members, "triggers") else {
             continue; // no trigger array at all — nothing to model a hit on
@@ -295,47 +369,82 @@ fn collect_missing(
         if already_has_hit {
             continue;
         }
-        let Some((_, members)) = donor else {
-            continue; // no damage window to derive a hit from; do not invent one
-        };
-        let Some(local_time) = f32_member(members, "localTime") else {
+        let facts = animation_path(&obj.members, src_meshes_root, subgraph, core_project)
+            .map(|path| annotations.get(&path, donor.is_none()))
+            .unwrap_or_default();
+        if facts.fires_hit_frame {
             continue;
+        }
+        let entry = if let Some((_, members)) = donor {
+            let Some(local_time) = f32_member(members, "localTime") else {
+                continue;
+            };
+            Missing {
+                clip,
+                trigger_array: array_index,
+                local_time,
+                relative_to_end_of_clip: flag_of(members, "relativeToEndOfClip"),
+                acyclic: flag_of(members, "acyclic"),
+                is_annotation: flag_of(members, "isAnnotation"),
+            }
+        } else {
+            let Some(local_time) = facts.sweep.flatten() else {
+                continue;
+            };
+            Missing {
+                clip,
+                trigger_array: array_index,
+                local_time,
+                relative_to_end_of_clip: HkxValue::Bool(false),
+                acyclic: HkxValue::Bool(false),
+                is_annotation: HkxValue::Bool(false),
+            }
         };
-        out.push(Missing {
-            trigger_array: array_index,
-            local_time,
-            relative_to_end_of_clip: flag_of(members, "relativeToEndOfClip"),
-            acyclic: flag_of(members, "acyclic"),
-            is_annotation: flag_of(members, "isAnnotation"),
-        });
+        out.push(entry);
     }
     out
 }
 
-/// Does this clip's animation already carry a `HitFrame` annotation?
-///
-/// Byte scan rather than a full parse: the annotation name lives NUL-delimited in the
-/// animation's string table, and `\0HitFrame\0` distinguishes it from `preHitFrame`, which
-/// these clips also carry. An animation not found on disk counts as not firing, leaving the
-/// trigger side as the only source.
-fn animation_fires_hit_frame(
+fn animation_path(
     members: &[HkxMember],
     src_meshes_root: &Path,
     subgraph: &SubgraphInput,
     core_project: Option<&str>,
-) -> bool {
-    let Some(animation) = string_member(members, "animationName") else {
-        return false;
-    };
+) -> Option<PathBuf> {
+    let animation = string_member(members, "animationName")?;
     if animation.is_empty() {
-        return false;
+        return None;
     }
     let leaf = clip_leaf(&animation);
     let rel = resolve_leaf(src_meshes_root, &subgraph.sapt_chain, &leaf, core_project);
-    let Ok(data) = std::fs::read(src_meshes_root.join(rel.replace('\\', "/"))) else {
-        return false;
-    };
-    bytes_fire_hit_frame(&data)
+    Some(src_meshes_root.join(rel.replace('\\', "/")))
+}
+
+fn annotation_sweep_time(data: &[u8]) -> Option<f32> {
+    let animation = read_packfile(data).ok()?;
+    for donor in DONOR_EVENTS {
+        for object in animation.objects() {
+            for track in array_member(&object.members, "annotationTracks")
+                .into_iter()
+                .flatten()
+            {
+                let Some(members) = track.as_object_members() else {
+                    continue;
+                };
+                for annotation in array_member(members, "annotations").into_iter().flatten() {
+                    let Some(members) = annotation.as_object_members() else {
+                        continue;
+                    };
+                    if string_member(members, "text")
+                        .is_some_and(|text| text.eq_ignore_ascii_case(donor))
+                    {
+                        return f32_member(members, "time");
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 fn bytes_fire_hit_frame(data: &[u8]) -> bool {
@@ -528,6 +637,99 @@ fn int_member(members: &[HkxMember], name: &str) -> Option<usize> {
 mod tests {
     use super::*;
 
+    fn member(name: &str, value: HkxValue) -> HkxMember {
+        HkxMember {
+            name: name.into(),
+            value,
+        }
+    }
+
+    fn annotation_fixture(area: f32, sweep: f32) -> Vec<u8> {
+        let annotation = |name: &str, time| {
+            HkxValue::Object(vec![
+                member("time", HkxValue::F32(time)),
+                member(
+                    "text",
+                    HkxValue::String {
+                        value: name.into(),
+                        is_null: false,
+                    },
+                ),
+            ])
+        };
+        havok_native::hkx::HkxFile::from_tagxml(
+            11,
+            "hk_2014.1.0-r1",
+            vec![HkxObject {
+                name: None,
+                offset: 0,
+                signature: 0,
+                class_name: "hkaInterleavedUncompressedAnimation".into(),
+                members: vec![member(
+                    "annotationTracks",
+                    HkxValue::Array(vec![
+                        HkxValue::Object(vec![member(
+                            "annotations",
+                            HkxValue::Array(vec![annotation("AreaAttackStart", area)]),
+                        )]),
+                        HkxValue::Object(vec![member(
+                            "annotations",
+                            HkxValue::Array(vec![annotation("WeaponSweepAttackStart", sweep)]),
+                        )]),
+                    ]),
+                )],
+            }],
+        )
+        .save()
+    }
+
+    #[test]
+    fn annotation_cache_retains_facts_and_distinguishes_resolved_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("A.hkx");
+        let b = dir.path().join("B.hkx");
+        std::fs::write(&a, annotation_fixture(0.1, 0.4)).unwrap();
+        std::fs::write(&b, annotation_fixture(0.2, 0.7)).unwrap();
+        let mut cache = AnnotationCache::default();
+        for _ in 0..100 {
+            assert_eq!(cache.get(&a, true).sweep, Some(Some(0.4)));
+        }
+        assert_eq!((cache.reads, cache.parses, cache.hits), (1, 1, 99));
+        assert!(!cache.get(&b, false).fires_hit_frame);
+        assert_eq!(cache.parses, 1);
+        assert_eq!(cache.get(&b, true).sweep, Some(Some(0.7)));
+        assert_eq!((cache.reads, cache.parses), (3, 2));
+        let absent = dir.path().join("absent.hkx");
+        assert_eq!(cache.get(&absent, true).sweep, Some(None));
+        assert_eq!(cache.get(&absent, true).sweep, Some(None));
+        assert_eq!(cache.reads, 4);
+    }
+
+    #[test]
+    fn graph_hit_frame_skips_animation_reads() {
+        let names = names_map(&["HitFrame"]);
+        let objects = vec![clip("Attack", 1), trigger_array(vec![trigger(0, 0.4)])];
+        let subgraph = SubgraphInput {
+            core_behavior: "Core.hkx".into(),
+            sapt_chain: vec![],
+            race_dir: None,
+        };
+        let mut cache = AnnotationCache::default();
+        assert!(
+            collect_missing(
+                &objects,
+                &BTreeSet::from(["attack".into()]),
+                &names,
+                Path::new("."),
+                &subgraph,
+                None,
+                &mut cache
+            )
+            .is_empty()
+        );
+        assert_eq!(cache.reads, 0);
+    }
+
     fn trigger(event_id: i32, time: f32) -> HkxValue {
         HkxValue::Object(vec![
             HkxMember {
@@ -613,89 +815,15 @@ mod tests {
             sapt_chain: vec![r"Actors\X\Animations".into()],
             race_dir: None,
         };
-        collect_missing(objects, combat, names, Path::new("."), &subgraph, None)
-    }
-
-    #[test]
-    fn a_sweep_window_supplies_the_hit_time() {
-        let names = names_map(&["WeaponSweepAttackStart", "WeaponSweepAttackStop"]);
-        let objects = vec![
-            clip("WingSwipeLeft", 1),
-            trigger_array(vec![trigger(0, 1.2), trigger(1, 1.4)]),
-        ];
-        let combat = BTreeSet::from(["wingswipeleft".to_string()]);
-
-        let missing = survey(&objects, &combat, &names);
-
-        assert_eq!(missing.len(), 1);
-        assert_eq!(missing[0].local_time, 1.2);
-        assert_eq!(missing[0].trigger_array, 1);
-    }
-
-    #[test]
-    fn a_clip_that_already_hits_is_left_alone() {
-        let names = names_map(&["WeaponSweepAttackStart", "HitFrame"]);
-        let objects = vec![
-            clip("WingSwipeLeft", 1),
-            trigger_array(vec![trigger(0, 1.2), trigger(1, 1.3)]),
-        ];
-        let combat = BTreeSet::from(["wingswipeleft".to_string()]);
-
-        assert!(survey(&objects, &combat, &names).is_empty());
-    }
-
-    #[test]
-    fn area_attacks_are_covered_when_there_is_no_sweep() {
-        let names = names_map(&["AreaAttackStart", "CameraShake"]);
-        let objects = vec![
-            clip("GroundAreaAttackClip", 1),
-            trigger_array(vec![trigger(1, 0.3), trigger(0, 2.133)]),
-        ];
-        let combat = BTreeSet::from(["groundareaattackclip".to_string()]);
-
-        let missing = survey(&objects, &combat, &names);
-
-        assert_eq!(missing.len(), 1);
-        assert_eq!(missing[0].local_time, 2.133);
-    }
-
-    #[test]
-    fn the_sweep_wins_when_a_clip_carries_both_markers() {
-        let names = names_map(&["AreaAttackStart", "WeaponSweepAttackStart"]);
-        let objects = vec![
-            clip("Both", 1),
-            trigger_array(vec![trigger(0, 2.0), trigger(1, 1.0)]),
-        ];
-        let combat = BTreeSet::from(["both".to_string()]);
-
-        let missing = survey(&objects, &combat, &names);
-
-        assert_eq!(missing.len(), 1);
-        assert_eq!(
-            missing[0].local_time, 1.0,
-            "WeaponSweepAttackStart outranks AreaAttackStart"
-        );
-    }
-
-    #[test]
-    fn non_combat_clips_are_out_of_scope() {
-        let names = names_map(&["WeaponSweepAttackStart"]);
-        let objects = vec![clip("SomeIdle", 1), trigger_array(vec![trigger(0, 1.2)])];
-        let combat = BTreeSet::from(["wingswipeleft".to_string()]);
-
-        assert!(survey(&objects, &combat, &names).is_empty());
-    }
-
-    #[test]
-    fn a_clip_with_no_damage_window_is_not_given_an_invented_hit() {
-        let names = names_map(&["CameraShake", "soundPlayAt"]);
-        let objects = vec![
-            clip("Roar", 1),
-            trigger_array(vec![trigger(0, 0.3), trigger(1, 0.0)]),
-        ];
-        let combat = BTreeSet::from(["roar".to_string()]);
-
-        assert!(survey(&objects, &combat, &names).is_empty());
+        collect_missing(
+            objects,
+            combat,
+            names,
+            Path::new("."),
+            &subgraph,
+            None,
+            &mut AnnotationCache::default(),
+        )
     }
 
     #[test]
@@ -707,6 +835,84 @@ mod tests {
             b"\0preHitFrame\0WeaponSweepAttackStart\0"
         ));
         assert!(!bytes_fire_hit_frame(b"\0FootLeft\0SoundPlay.AttackA\0"));
+    }
+
+    #[test]
+    fn scorched_annotation_sweep_supplies_hit_time_without_duplicating_hits() {
+        use havok_native::hkx::HkxFile;
+        let temp = tempfile::tempdir().unwrap();
+        let member = |name: &str, value| HkxMember {
+            name: name.into(),
+            value,
+        };
+        let string = |value: &str| HkxValue::String {
+            value: value.into(),
+            is_null: false,
+        };
+        let annotation = |name: &str, time| {
+            HkxValue::Object(vec![
+                member("time", HkxValue::F32(time)),
+                member("text", string(name)),
+            ])
+        };
+        for already_hits in [false, true] {
+            let mut annotations = vec![
+                annotation("preHitFrame", 0.233343),
+                annotation("WeaponSweepAttackStart", 0.400010),
+            ];
+            if already_hits {
+                annotations.push(annotation("HitFrame", 0.400010));
+            }
+            let animation = HkxFile::from_tagxml(
+                11,
+                "hk_2014.1.0-r1",
+                vec![HkxObject {
+                    name: None,
+                    offset: 0,
+                    signature: 0,
+                    class_name: "hkaInterleavedUncompressedAnimation".into(),
+                    members: vec![member(
+                        "annotationTracks",
+                        HkxValue::Array(vec![HkxValue::Object(vec![member(
+                            "annotations",
+                            HkxValue::Array(annotations),
+                        )])]),
+                    )],
+                }],
+            );
+            std::fs::write(temp.path().join("Attack.hkx"), animation.save()).unwrap();
+            let mut attack = clip("H2HAttackStandingA", 1);
+            attack
+                .members
+                .push(member("animationName", string("Animations\\Attack.hkx")));
+            let objects = vec![attack, trigger_array(vec![trigger(0, -0.167)])];
+            let names = names_map(&["attackEnd"]);
+            let subgraph = SubgraphInput {
+                core_behavior: "Melee.hkx".into(),
+                sapt_chain: vec![".".into()],
+                race_dir: None,
+            };
+            let missing = collect_missing(
+                &objects,
+                &BTreeSet::from(["h2hattackstandinga".into()]),
+                &names,
+                temp.path(),
+                &subgraph,
+                None,
+                &mut AnnotationCache::default(),
+            );
+            if already_hits {
+                assert!(missing.is_empty());
+            } else {
+                assert_eq!(
+                    missing.len(),
+                    1,
+                    "annotation-only sweep must supply a HitFrame"
+                );
+                assert!((missing[0].local_time - 0.400010).abs() < 0.000001);
+                assert_eq!(missing[0].relative_to_end_of_clip, HkxValue::Bool(false));
+            }
+        }
     }
 
     #[test]
@@ -736,5 +942,72 @@ mod tests {
             .find(|m| m.name == "relativeToEndOfClip")
             .unwrap();
         assert_eq!(rel.value, HkxValue::Bool(true));
+    }
+
+    #[test]
+    fn survey_picks_the_damage_window_hit_time() {
+        // (event names, clip, triggers (name index, time), combat clip, expected hit time)
+        let cases: [(&[&'static str], &str, Vec<(i32, f32)>, &str, Option<f32>); 6] = [
+            (
+                &["WeaponSweepAttackStart", "WeaponSweepAttackStop"],
+                "WingSwipeLeft",
+                vec![(0, 1.2), (1, 1.4)],
+                "wingswipeleft",
+                Some(1.2),
+            ),
+            (
+                &["WeaponSweepAttackStart", "HitFrame"],
+                "WingSwipeLeft",
+                vec![(0, 1.2), (1, 1.3)],
+                "wingswipeleft",
+                None,
+            ),
+            (
+                &["AreaAttackStart", "CameraShake"],
+                "GroundAreaAttackClip",
+                vec![(1, 0.3), (0, 2.133)],
+                "groundareaattackclip",
+                Some(2.133),
+            ),
+            // WeaponSweepAttackStart outranks AreaAttackStart.
+            (
+                &["AreaAttackStart", "WeaponSweepAttackStart"],
+                "Both",
+                vec![(0, 2.0), (1, 1.0)],
+                "both",
+                Some(1.0),
+            ),
+            (
+                &["WeaponSweepAttackStart"],
+                "SomeIdle",
+                vec![(0, 1.2)],
+                "wingswipeleft",
+                None,
+            ),
+            (
+                &["CameraShake", "soundPlayAt"],
+                "Roar",
+                vec![(0, 0.3), (1, 0.0)],
+                "roar",
+                None,
+            ),
+        ];
+        for (event_names, clip_name, triggers, combat_clip, expected) in cases {
+            let names = names_map(event_names);
+            let objects = vec![
+                clip(clip_name, 1),
+                trigger_array(triggers.into_iter().map(|(n, t)| trigger(n, t)).collect()),
+            ];
+            let combat = BTreeSet::from([combat_clip.to_string()]);
+            let missing = survey(&objects, &combat, &names);
+            match expected {
+                Some(time) => {
+                    assert_eq!(missing.len(), 1, "{clip_name}");
+                    assert_eq!(missing[0].local_time, time, "{clip_name}");
+                    assert_eq!(missing[0].trigger_array, 1);
+                }
+                None => assert!(missing.is_empty(), "{clip_name}"),
+            }
+        }
     }
 }

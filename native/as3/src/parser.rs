@@ -184,6 +184,19 @@ impl Parser {
                 imports.push(self.import()?);
                 continue;
             }
+            if self.eat_punct(Punct::LBracket) {
+                if !self.check_ident("SWF") {
+                    return Err(Diagnostic::unsupported(
+                        "unsupported class metadata",
+                        self.span(),
+                    ));
+                }
+                while !self.check_punct(Punct::RBracket) && !self.at_eof() {
+                    self.bump();
+                }
+                self.expect_punct(Punct::RBracket)?;
+                continue;
+            }
             if self.check_kw(Keyword::Use) {
                 // `use namespace X;` — recognised so it does not derail the
                 // parse, but it has no effect on resolution in this phase.
@@ -476,7 +489,30 @@ impl Parser {
         })
     }
 
+    fn type_close(&mut self) -> Result<()> {
+        let remainder = match self.peek() {
+            TokenKind::Punct(Punct::Ge) => Some(Punct::Assign),
+            TokenKind::Punct(Punct::Shr) => Some(Punct::Gt),
+            TokenKind::Punct(Punct::UShr) => Some(Punct::Shr),
+            _ => None,
+        };
+        if let Some(remainder) = remainder {
+            self.tokens[self.at].kind = TokenKind::Punct(remainder);
+        } else {
+            self.expect_punct(Punct::Gt)?;
+        }
+        Ok(())
+    }
+
     fn type_ref(&mut self) -> Result<TypeRef> {
+        if self.check_ident("Vector") && matches!(self.peek_at(1), TokenKind::Punct(Punct::Dot)) {
+            self.bump();
+            self.bump();
+            self.expect_punct(Punct::Lt)?;
+            let item = self.type_ref()?;
+            self.type_close()?;
+            return Ok(TypeRef::Vector(Box::new(item)));
+        }
         if self.eat_punct(Punct::Star) {
             return Ok(TypeRef::Any);
         }
@@ -535,6 +571,33 @@ impl Parser {
     }
 
     fn statement(&mut self) -> Result<Stmt> {
+        if self.eat_kw(Keyword::Throw) {
+            let value = self.expression()?;
+            self.eat_punct(Punct::Semi);
+            return Ok(Stmt::Throw(value));
+        }
+        if self.eat_kw(Keyword::Try) {
+            let body = self.block()?;
+            let mut catches = Vec::new();
+            while self.eat_kw(Keyword::Catch) {
+                self.expect_punct(Punct::LParen)?;
+                let name = self.expect_ident()?;
+                self.expect_punct(Punct::Colon)?;
+                let ty = self.type_ref()?;
+                self.expect_punct(Punct::RParen)?;
+                catches.push((name, ty, self.block()?));
+            }
+            if self.check_kw(Keyword::Finally) {
+                return Err(Diagnostic::unsupported(
+                    "finally is not supported",
+                    self.span(),
+                ));
+            }
+            if catches.is_empty() {
+                return Err(Diagnostic::parse("try requires a catch", self.span()));
+            }
+            return Ok(Stmt::Try { body, catches });
+        }
         if self.eat_punct(Punct::Semi) {
             return Ok(Stmt::Empty);
         }
@@ -543,6 +606,34 @@ impl Parser {
         }
         if self.check_kw(Keyword::Var) || self.check_kw(Keyword::Const) {
             let decl = self.var_decl(Modifiers::default())?;
+            if self.check_punct(Punct::Comma) {
+                let span = decl.span;
+                let is_const = decl.is_const;
+                let mut statements = vec![Stmt::Var(decl)];
+                while self.eat_punct(Punct::Comma) {
+                    let name = self.expect_ident()?;
+                    let type_ref = if self.eat_punct(Punct::Colon) {
+                        self.type_ref()?
+                    } else {
+                        TypeRef::Any
+                    };
+                    let init = if self.eat_punct(Punct::Assign) {
+                        Some(self.expression()?)
+                    } else {
+                        None
+                    };
+                    statements.push(Stmt::Var(Box::new(VarDecl {
+                        modifiers: Modifiers::default(),
+                        is_const,
+                        name,
+                        type_ref,
+                        init,
+                        span,
+                    })));
+                }
+                self.eat_punct(Punct::Semi);
+                return Ok(Stmt::Block(Block { statements, span }));
+            }
             self.eat_punct(Punct::Semi);
             return Ok(Stmt::Var(decl));
         }
@@ -577,6 +668,58 @@ impl Parser {
             self.expect_punct(Punct::RParen)?;
             let body = Box::new(self.statement()?);
             return Ok(Stmt::While { cond, body });
+        }
+        if self.eat_kw(Keyword::For) {
+            let each = self.check_ident("each");
+            if each {
+                self.bump();
+            }
+            self.expect_punct(Punct::LParen)?;
+            let init = if self.check_kw(Keyword::Var) || self.check_kw(Keyword::Const) {
+                Stmt::Var(self.var_decl(Modifiers::default())?)
+            } else if self.check_punct(Punct::Semi) {
+                Stmt::Empty
+            } else {
+                Stmt::Expr(self.expression()?)
+            };
+            if self.eat_kw(Keyword::In) {
+                let Stmt::Var(variable) = init else {
+                    return Err(Diagnostic::parse(
+                        "for-in requires a variable declaration",
+                        self.span(),
+                    ));
+                };
+                let iterable = self.expression()?;
+                self.expect_punct(Punct::RParen)?;
+                return Ok(Stmt::ForIn {
+                    variable,
+                    iterable,
+                    each,
+                    body: Box::new(self.statement()?),
+                });
+            }
+            if each {
+                return Err(Diagnostic::parse("for each requires in", self.span()));
+            }
+            self.expect_punct(Punct::Semi)?;
+            let cond = if self.check_punct(Punct::Semi) {
+                None
+            } else {
+                Some(self.expression()?)
+            };
+            self.expect_punct(Punct::Semi)?;
+            let update = if self.check_punct(Punct::RParen) {
+                None
+            } else {
+                Some(self.expression()?)
+            };
+            self.expect_punct(Punct::RParen)?;
+            return Ok(Stmt::For {
+                init: Box::new(init),
+                cond,
+                update,
+                body: Box::new(self.statement()?),
+            });
         }
         if self.check_kw(Keyword::Break) || self.check_kw(Keyword::Continue) {
             let is_break = self.check_kw(Keyword::Break);
@@ -692,6 +835,9 @@ impl Parser {
             TokenKind::Punct(Punct::StarAssign) => Some(Some(BinOp::Mul)),
             TokenKind::Punct(Punct::SlashAssign) => Some(Some(BinOp::Div)),
             TokenKind::Punct(Punct::PercentAssign) => Some(Some(BinOp::Mod)),
+            TokenKind::Punct(Punct::AmpAssign) => Some(Some(BinOp::BitAnd)),
+            TokenKind::Punct(Punct::PipeAssign) => Some(Some(BinOp::BitOr)),
+            TokenKind::Punct(Punct::CaretAssign) => Some(Some(BinOp::BitXor)),
             _ => None,
         };
         let Some(op) = op else { return Ok(lhs) };
@@ -830,6 +976,17 @@ impl Parser {
         loop {
             if self.check_punct(Punct::Dot) {
                 self.bump();
+                if self.eat_punct(Punct::Lt) {
+                    let item_type = self.type_ref()?;
+                    self.type_close()?;
+                    let span = Span::new(expr.span().start, self.prev_span().end);
+                    expr = Expr::TypeApply {
+                        base: Box::new(expr),
+                        item_type,
+                        span,
+                    };
+                    continue;
+                }
                 let name = self.expect_ident()?;
                 let span = Span::new(expr.span().start, self.prev_span().end);
                 expr = Expr::Member {
@@ -868,10 +1025,9 @@ impl Parser {
                 let is_inc = self.check_punct(Punct::PlusPlus);
                 self.bump();
                 let span = Span::new(expr.span().start, self.prev_span().end);
-                expr = Expr::Assign {
+                expr = Expr::Postfix {
                     target: Box::new(expr),
-                    op: Some(if is_inc { BinOp::Add } else { BinOp::Sub }),
-                    value: Box::new(Expr::Int(1, span)),
+                    increment: is_inc,
                     span,
                 };
                 continue;
@@ -934,12 +1090,35 @@ impl Parser {
             }
             TokenKind::Keyword(Keyword::New) => {
                 self.bump();
+                if self.eat_punct(Punct::Lt) {
+                    let item_type = self.type_ref()?;
+                    self.type_close()?;
+                    let Expr::ArrayLit { items, .. } = self.primary()? else {
+                        return Err(Diagnostic::parse("expected vector literal", self.span()));
+                    };
+                    return Ok(Expr::VectorLit {
+                        item_type,
+                        items,
+                        span: Span::new(span.start, self.prev_span().end),
+                    });
+                }
                 // The callee of `new` is a member expression without its own
                 // call: `new a.b.C(x)` constructs `a.b.C`, it does not call it.
                 let mut callee = self.primary()?;
                 loop {
                     if self.check_punct(Punct::Dot) {
                         self.bump();
+                        if self.eat_punct(Punct::Lt) {
+                            let item_type = self.type_ref()?;
+                            self.type_close()?;
+                            let span = Span::new(callee.span().start, self.prev_span().end);
+                            callee = Expr::TypeApply {
+                                base: Box::new(callee),
+                                item_type,
+                                span,
+                            };
+                            continue;
+                        }
                         let name = self.expect_ident()?;
                         let s = Span::new(callee.span().start, self.prev_span().end);
                         callee = Expr::Member {
@@ -980,6 +1159,38 @@ impl Parser {
                 self.expect_punct(Punct::RBracket)?;
                 Ok(Expr::ArrayLit {
                     items,
+                    span: Span::new(span.start, self.prev_span().end),
+                })
+            }
+            TokenKind::Punct(Punct::LBrace) => {
+                self.bump();
+                let mut entries = Vec::new();
+                while !self.check_punct(Punct::RBrace) {
+                    let name = match self.peek().clone() {
+                        TokenKind::Ident(name) | TokenKind::Str(name) => {
+                            self.bump();
+                            name
+                        }
+                        TokenKind::Int(value) => {
+                            self.bump();
+                            value.to_string()
+                        }
+                        _ => {
+                            return Err(Diagnostic::parse(
+                                "expected object property name",
+                                self.span(),
+                            ));
+                        }
+                    };
+                    self.expect_punct(Punct::Colon)?;
+                    entries.push((name, self.expression()?));
+                    if !self.eat_punct(Punct::Comma) {
+                        break;
+                    }
+                }
+                self.expect_punct(Punct::RBrace)?;
+                Ok(Expr::ObjectLit {
+                    entries,
                     span: Span::new(span.start, self.prev_span().end),
                 })
             }

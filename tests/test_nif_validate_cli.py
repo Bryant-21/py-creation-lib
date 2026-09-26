@@ -2,7 +2,7 @@ from creation_lib.nif.validation import validate_nif
 from creation_lib.nif.nif_file import NifBlock, NifFile
 
 
-def test_validate_nif_accepts_non_shape_root():
+def test_validate_nif_accepts_non_shape_root_and_reports_out_of_range_refs():
     nif = NifFile()
     nif.blocks.append(NifBlock(0, "NiNode", fields=[("Name", "FXRoot")]))
 
@@ -12,8 +12,6 @@ def test_validate_nif_accepts_non_shape_root():
     assert report["error_count"] == 0
     assert "expected BSTriShape" not in str(report)
 
-
-def test_validate_nif_reports_out_of_range_refs():
     nif = NifFile()
     nif.blocks.append(NifBlock(0, "NiNode", fields=[
         ("Name", "Root"),

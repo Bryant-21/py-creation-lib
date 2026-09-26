@@ -24,9 +24,8 @@ def test_world_batch_manifest_parses_native_report() -> None:
     assert manifest.batches[0].instance_count == 3
     assert manifest.batches[0].debug_buffers == {}
 
-
-def test_world_batch_manifest_parses_optional_pick_and_debug_buffers() -> None:
-    manifest = WorldBatchManifest.from_report_data(
+    # Optional pick_buffer / debug_buffers fields parse too, when present.
+    manifest2 = WorldBatchManifest.from_report_data(
         {
             "batches": [
                 {
@@ -42,8 +41,7 @@ def test_world_batch_manifest_parses_optional_pick_and_debug_buffers() -> None:
             ]
         }
     )
-
-    batch = manifest.batches[0]
+    batch = manifest2.batches[0]
     assert batch.pick_buffer == "pick:static:0"
     assert batch.debug_buffers == {"normal": "debug:normal:0", "depth": "debug:depth:0"}
 

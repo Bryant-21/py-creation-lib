@@ -574,151 +574,90 @@ mod tests {
     }
 
     #[test]
-    fn polytope_mass_properties_static_body_is_zero() {
-        let mp = polytope_mass_properties(&cube_verts(1.0), 0.0);
-        assert_eq!(mp.inverse_mass, 0.0);
-        assert_eq!(mp.inverse_inertia_diag, [0.0; 3]);
-    }
+    fn polytope_mass_properties_and_serialized_block() {
+        let static_mp = polytope_mass_properties(&cube_verts(1.0), 0.0);
+        assert_eq!(static_mp.inverse_mass, 0.0);
+        assert_eq!(static_mp.inverse_inertia_diag, [0.0; 3]);
+        let zero_block = serialize_mass_properties_block(&MassProperties::zero());
+        assert_eq!(zero_block.len(), 0x30);
+        assert!(zero_block[0x00..0x10].iter().all(|b| *b == 0));
+        assert_eq!(&zero_block[0x28..0x30], &[0u8; 8], "mass and volume zero");
 
-    #[test]
-    fn polytope_mass_properties_dynamic_body_inverse_mass_correct() {
+        // 10 kg unit cube: I = (1/12)·10·(1+1) ≈ 1.667, inverse ≈ 0.6.
         let mp = polytope_mass_properties(&cube_verts(0.5), 10.0);
-        // 10 kg → inv_mass = 0.1.
         assert!((mp.inverse_mass - 0.1).abs() < 1e-5);
-        // Inertia about each principal axis of a 1x1x1 cube (m=10):
-        // I = (1/12) m (1+1) = 10/6 ≈ 1.667 → inv ≈ 0.6.
         for c in mp.inverse_inertia_diag {
-            assert!(c.is_finite());
-            assert!((c - 0.6).abs() < 1e-3, "inv inertia component = {}", c);
+            assert!((c - 0.6).abs() < 1e-3, "inv inertia component = {c}");
+        }
+        let block = serialize_mass_properties_block(&mp);
+        assert!((f32::from_le_bytes(block[0x28..0x2C].try_into().unwrap()) - 10.0).abs() < 1e-5);
+        // The block stores the forward inertia, not the inverse held internally.
+        for c in unpack_vector3(block[0x18..0x20].try_into().unwrap()) {
+            assert!((c - 1.6667).abs() < 0.05, "forward inertia ~1.667, got {c}");
         }
     }
 
     #[test]
-    fn pack_vector3_roundtrips_within_tolerance() {
-        let cases: &[[f32; 3]] = &[
+    fn packed_vector_and_quat_round_trip() {
+        for v in [
             [0.0, 0.0, 0.0],
             [1.0, 2.0, 3.0],
             [-1.5, 0.5, -0.25],
             [100.0, -200.0, 300.0],
             [1e-3, 1e-4, 1e-5],
-        ];
-        for &v in cases {
-            let packed = pack_vector3(v);
-            let unpacked = unpack_vector3(&packed);
+        ] {
+            let unpacked = unpack_vector3(&pack_vector3(v));
             for i in 0..3 {
-                let abs = v[i].abs().max(1e-6);
-                let rel_err = (v[i] - unpacked[i]).abs() / abs;
-                // 15-bit mantissa per-component with shared exponent: when one
-                // component is much smaller than the dominant component, its
-                // relative error is dominated by the shared scale.  Allow ≤2%.
-                assert!(
-                    rel_err < 2e-2,
-                    "pack/unpack v={v:?} got {unpacked:?} rel_err[{i}]={rel_err}"
-                );
+                // Shared exponent: small components relative to the dominant one
+                // lose precision, so allow 2%.
+                let rel_err = (v[i] - unpacked[i]).abs() / v[i].abs().max(1e-6);
+                assert!(rel_err < 2e-2, "v={v:?} got {unpacked:?}");
             }
         }
-    }
 
-    #[test]
-    fn pack_vector3_matches_vanilla_packed_scale_not_raw_exponent() {
-        // Real vanilla FO4 hknpShapeMassProperties inertia (AlienToy): mantissas
-        // [13200, 21797, 14798] with scale word m3 = 10752 (0x2A00). The engine
-        // decodes these to a physically-sane forward inertia (~1e-4, i.e. I≈m·r²
-        // for a small clutter item). Guards against the old raw power-of-2
-        // exponent scheme that decoded them to ~1e-37 → +Inf inverse inertia.
+        // Vanilla FO4 AlienToy inertia: mantissas [13200, 21797, 14798], scale word
+        // 10752 decode to ~1e-4. The old raw power-of-2 exponent scheme decoded
+        // them to ~1e-37 -> +Inf inverse inertia.
         let mut vanilla = [0u8; 8];
         vanilla[0..2].copy_from_slice(&13200i16.to_le_bytes());
         vanilla[2..4].copy_from_slice(&21797i16.to_le_bytes());
         vanilla[4..6].copy_from_slice(&14798i16.to_le_bytes());
         vanilla[6..8].copy_from_slice(&10752u16.to_le_bytes());
         for c in unpack_vector3(&vanilla) {
-            assert!(
-                c > 1e-6 && c < 1e-2,
-                "vanilla inertia must decode to a physical scale, got {c}"
-            );
+            assert!(c > 1e-6 && c < 1e-2, "vanilla inertia decoded to {c}");
         }
-
-        // Our encoder must emit a vanilla-magnitude scale word for a physical
-        // inertia, NOT a tiny raw exponent (~30) like the old bug.
-        let packed = pack_vector3([9.8e-5, 1.6e-4, 1.1e-4]);
-        let m3 = u16::from_le_bytes([packed[6], packed[7]]);
+        let want = [9.8e-5_f32, 1.6e-4, 1.1e-4];
+        let packed = pack_vector3(want);
+        let scale_word = u16::from_le_bytes([packed[6], packed[7]]);
         assert!(
-            m3 > 4096,
-            "scale word must be a real float scale (vanilla ~10752), got {m3}"
+            scale_word > 4096,
+            "scale word must be a float scale, got {scale_word}"
         );
         let back = unpack_vector3(&packed);
-        let want = [9.8e-5_f32, 1.6e-4, 1.1e-4];
         for i in 0..3 {
-            assert!(
-                (back[i] - want[i]).abs() / want[i] < 0.02,
-                "got {} want {}",
-                back[i],
-                want[i]
-            );
+            assert!((back[i] - want[i]).abs() / want[i] < 0.02);
+        }
+
+        let identity = pack_unit_quat([0.0, 0.0, 0.0, 1.0]);
+        let words: Vec<i16> = identity
+            .chunks_exact(2)
+            .map(|c| i16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        assert_eq!(
+            words,
+            vec![-32768, -32768, -32768, -2768],
+            "vanilla majorAxisSpace"
+        );
+        for q in [[0.0_f32, 0.0, 0.0, 1.0], [0.5, -0.5, 0.5, 0.5]] {
+            let unpacked = unpack_unit_quat(&pack_unit_quat(q));
+            for i in 0..4 {
+                assert!((q[i] - unpacked[i]).abs() < 1e-3);
+            }
         }
     }
 
     #[test]
-    fn serialize_mass_properties_stores_forward_not_inverse_inertia() {
-        // 10 kg unit cube: forward principal inertia I = (1/12)·10·(1+1) ≈ 1.667.
-        // The serialized inertia slot must decode to ~1.667 (forward), not ~0.6
-        // (the inverse we hold internally).
-        let mp = polytope_mass_properties(&cube_verts(0.5), 10.0);
-        let block = serialize_mass_properties_block(&mp);
-        let inertia = unpack_vector3(block[0x18..0x20].try_into().unwrap());
-        for c in inertia {
-            assert!(
-                (c - 1.6667).abs() < 0.05,
-                "forward inertia must decode to ~1.667, got {c}"
-            );
-        }
-    }
-
-    #[test]
-    fn pack_unit_quat_roundtrips_within_tolerance() {
-        let q_identity = [0.0_f32, 0.0, 0.0, 1.0];
-        let packed = pack_unit_quat(q_identity);
-        // Identity must byte-match vanilla clutter majorAxisSpace.
-        assert_eq!(i16::from_le_bytes([packed[0], packed[1]]), -32768);
-        assert_eq!(i16::from_le_bytes([packed[2], packed[3]]), -32768);
-        assert_eq!(i16::from_le_bytes([packed[4], packed[5]]), -32768);
-        assert_eq!(i16::from_le_bytes([packed[6], packed[7]]), -2768);
-        let unpacked = unpack_unit_quat(&packed);
-        for i in 0..4 {
-            assert!((q_identity[i] - unpacked[i]).abs() < 1e-3);
-        }
-        let q = [0.5_f32, -0.5, 0.5, 0.5];
-        let packed = pack_unit_quat(q);
-        let unpacked = unpack_unit_quat(&packed);
-        for i in 0..4 {
-            assert!((q[i] - unpacked[i]).abs() < 1e-3);
-        }
-    }
-
-    #[test]
-    fn serialize_mass_properties_static_emits_zeros_for_packed_fields() {
-        let mp = MassProperties::zero();
-        let block = serialize_mass_properties_block(&mp);
-        assert_eq!(block.len(), 0x30);
-        // hkReferencedObject parent zeroed.
-        for b in &block[0x00..0x10] {
-            assert_eq!(*b, 0);
-        }
-        // mass = 0.0, volume = 0.0.
-        assert_eq!(&block[0x28..0x2C], &0.0_f32.to_le_bytes());
-        assert_eq!(&block[0x2C..0x30], &0.0_f32.to_le_bytes());
-    }
-
-    #[test]
-    fn serialize_mass_properties_dynamic_writes_real_mass() {
-        let mp = polytope_mass_properties(&cube_verts(0.5), 10.0);
-        let block = serialize_mass_properties_block(&mp);
-        let stored_mass = f32::from_le_bytes(block[0x28..0x2C].try_into().unwrap());
-        assert!((stored_mass - 10.0).abs() < 1e-5);
-    }
-
-    #[test]
-    fn mass_properties_from_source_carries_real_distribution() {
+    fn mass_properties_from_source_distribution() {
         let dist = SourceMassDistribution {
             center_of_mass: [0.1, 0.2, -0.3],
             volume: 0.5,
@@ -726,59 +665,34 @@ mod tests {
             major_axis_space: [0.0, 0.0, 0.0, 1.0],
         };
         let mp = mass_properties_from_source(&dist);
-        // Density-1.0: mass == volume == 0.5; COM carried verbatim.
+        // Density 1.0: mass == volume; forward inertia = unit_inertia * mass.
         assert!((mp.mass - 0.5).abs() < 1e-6);
         assert!((mp.volume - 0.5).abs() < 1e-6);
         assert!((mp.inverse_mass - 2.0).abs() < 1e-6);
         assert_eq!(mp.center_of_mass, [0.1, 0.2, -0.3]);
-        // forward inertia = unit_inertia * mass = [1.0, 2.0, 4.0] → inv [1.0, 0.5, 0.25].
-        let want = [1.0, 0.5, 0.25];
-        for i in 0..3 {
-            assert!(
-                (mp.inverse_inertia_diag[i] - want[i]).abs() < 1e-5,
-                "inv_inertia[{i}] = {}",
-                mp.inverse_inertia_diag[i]
-            );
+        for (i, want) in [1.0, 0.5, 0.25].into_iter().enumerate() {
+            assert!((mp.inverse_inertia_diag[i] - want).abs() < 1e-5);
         }
-        // Serialized block round-trips the carried COM + forward inertia.
         let block = serialize_mass_properties_block(&mp);
         let com = unpack_vector3(block[0x10..0x18].try_into().unwrap());
-        for i in 0..3 {
-            assert!(
-                (com[i] - dist.center_of_mass[i]).abs() < 1e-3,
-                "com[{i}] = {}",
-                com[i]
-            );
-        }
         let inertia = unpack_vector3(block[0x18..0x20].try_into().unwrap());
-        let fwd = [1.0, 2.0, 4.0];
-        for i in 0..3 {
-            assert!(
-                (inertia[i] - fwd[i]).abs() / fwd[i] < 0.02,
-                "inertia[{i}] = {}",
-                inertia[i]
-            );
+        for (i, fwd) in [1.0, 2.0, 4.0].into_iter().enumerate() {
+            assert!((com[i] - dist.center_of_mass[i]).abs() < 1e-3);
+            assert!((inertia[i] - fwd).abs() / fwd < 0.02);
         }
-    }
 
-    #[test]
-    fn mass_properties_from_source_zero_volume_is_static() {
-        let dist = SourceMassDistribution {
-            center_of_mass: [0.0; 3],
+        let zero_volume = mass_properties_from_source(&SourceMassDistribution {
             volume: 0.0,
-            unit_inertia: [1.0; 3],
-            major_axis_space: [0.0, 0.0, 0.0, 1.0],
-        };
-        let mp = mass_properties_from_source(&dist);
-        assert_eq!(mp.inverse_mass, 0.0);
-        assert_eq!(mp.inverse_inertia_diag, [0.0; 3]);
+            ..dist
+        });
+        assert_eq!(zero_volume.inverse_mass, 0.0);
+        assert_eq!(zero_volume.inverse_inertia_diag, [0.0; 3]);
     }
 
     fn quat_norm(q: [f32; 4]) -> f32 {
         (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt()
     }
 
-    /// Convert quaternion (x,y,z,w) → 3×3 rotation matrix in row-major order.
     fn quat_to_rot(q: [f32; 4]) -> [[f32; 3]; 3] {
         let (x, y, z, w) = (q[0], q[1], q[2], q[3]);
         [
@@ -801,101 +715,42 @@ mod tests {
     }
 
     fn matmul3(a: [[f32; 3]; 3], b: [[f32; 3]; 3]) -> [[f32; 3]; 3] {
-        let mut o = [[0.0; 3]; 3];
-        for i in 0..3 {
-            for j in 0..3 {
-                o[i][j] = a[i][0] * b[0][j] + a[i][1] * b[1][j] + a[i][2] * b[2][j];
-            }
-        }
-        o
+        std::array::from_fn(|i| std::array::from_fn(|j| (0..3).map(|k| a[i][k] * b[k][j]).sum()))
     }
 
     fn transpose3(a: [[f32; 3]; 3]) -> [[f32; 3]; 3] {
-        let mut o = [[0.0; 3]; 3];
-        for i in 0..3 {
-            for j in 0..3 {
-                o[j][i] = a[i][j];
-            }
-        }
-        o
+        std::array::from_fn(|i| std::array::from_fn(|j| a[j][i]))
     }
 
     #[test]
-    fn diagonalize_inertia_already_diagonal_returns_identity_quat() {
-        let i = [
-            5.0, 0.0, 0.0, //
-            0.0, 7.0, 0.0, //
-            0.0, 0.0, 9.0,
-        ];
-        let (eigs, q) = diagonalize_inertia(i);
-        // Eigenvalues match diagonal (in some order).
-        let mut sorted_eigs = eigs;
-        sorted_eigs.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        assert!((sorted_eigs[0] - 5.0).abs() < 1e-4);
-        assert!((sorted_eigs[1] - 7.0).abs() < 1e-4);
-        assert!((sorted_eigs[2] - 9.0).abs() < 1e-4);
-        // Quaternion is a unit vector (it may be a permutation, not strictly identity).
+    fn diagonalize_inertia_recovers_principal_axes() {
+        let sorted = |mut eigs: [f32; 3]| {
+            eigs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            eigs
+        };
+        let (eigs, q) = diagonalize_inertia([0.0; 9]);
+        assert_eq!(eigs, [0.0; 3]);
         assert!((quat_norm(q) - 1.0).abs() < 1e-5);
-    }
 
-    #[test]
-    fn diagonalize_inertia_off_diagonal_produces_valid_quat_and_diagonalizes() {
-        // Build a known rotated diagonal inertia.
-        // Start with diag(2, 5, 8), rotate by R(axis=z, angle=30°).
-        let theta: f32 = 0.5235988; // 30°
-        let c = theta.cos();
-        let s = theta.sin();
+        let (eigs, q) = diagonalize_inertia([5.0, 0.0, 0.0, 0.0, 7.0, 0.0, 0.0, 0.0, 9.0]);
+        for (got, want) in sorted(eigs).into_iter().zip([5.0, 7.0, 9.0]) {
+            assert!((got - want).abs() < 1e-4);
+        }
+        assert!((quat_norm(q) - 1.0).abs() < 1e-5);
+
+        // diag(2, 5, 8) rotated 30 degrees about Z.
+        let (s, c) = 0.5235988_f32.sin_cos();
         let rot = [[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]];
         let diag = [[2.0_f32, 0.0, 0.0], [0.0, 5.0, 0.0], [0.0, 0.0, 8.0]];
-        // I = R * diag * R^T
-        let rd = matmul3(rot, diag);
-        let i_full = matmul3(rd, transpose3(rot));
-        let i_input = [
-            i_full[0][0],
-            i_full[0][1],
-            i_full[0][2], //
-            i_full[1][0],
-            i_full[1][1],
-            i_full[1][2], //
-            i_full[2][0],
-            i_full[2][1],
-            i_full[2][2],
-        ];
-
-        let (eigs, q) = diagonalize_inertia(i_input);
-
-        // (1) Quaternion is a valid unit quaternion.
-        assert!(
-            (quat_norm(q) - 1.0).abs() < 1e-4,
-            "quat must be unit, got norm={}",
-            quat_norm(q)
-        );
-
-        // (2) Eigenvalues match the original diagonal up to permutation.
-        let mut sorted = eigs;
-        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        assert!((sorted[0] - 2.0).abs() < 1e-3, "eig0 = {}", sorted[0]);
-        assert!((sorted[1] - 5.0).abs() < 1e-3, "eig1 = {}", sorted[1]);
-        assert!((sorted[2] - 8.0).abs() < 1e-3, "eig2 = {}", sorted[2]);
-
-        // (3) Rotating the original inertia by the inverse of the major-axis
-        // quaternion diagonalizes it: D = R^T * I * R, off-diagonals ~0.
+        let i_full = matmul3(matmul3(rot, diag), transpose3(rot));
+        let (eigs, q) = diagonalize_inertia(std::array::from_fn(|k| i_full[k / 3][k % 3]));
+        assert!((quat_norm(q) - 1.0).abs() < 1e-4);
+        for (got, want) in sorted(eigs).into_iter().zip([2.0, 5.0, 8.0]) {
+            assert!((got - want).abs() < 1e-3, "eig {got} vs {want}");
+        }
         let r = quat_to_rot(q);
         let i_rot = matmul3(matmul3(transpose3(r), i_full), r);
         let off = i_rot[0][1].abs() + i_rot[0][2].abs() + i_rot[1][2].abs();
-        assert!(
-            off < 1e-3,
-            "off-diagonals must vanish after diagonalization, got {} (matrix={:?})",
-            off,
-            i_rot
-        );
-    }
-
-    #[test]
-    fn diagonalize_inertia_zero_tensor_returns_identity() {
-        let (eigs, q) = diagonalize_inertia([0.0; 9]);
-        assert_eq!(eigs, [0.0, 0.0, 0.0]);
-        // Identity quaternion (or any unit quaternion is acceptable for null inertia).
-        assert!((quat_norm(q) - 1.0).abs() < 1e-5);
+        assert!(off < 1e-3, "off-diagonals {off} in {i_rot:?}");
     }
 }

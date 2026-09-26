@@ -108,33 +108,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn camel_case() {
-        assert_eq!(
-            tokenize_str("WorkbenchChemistry"),
-            "workbench chemistry workbenchchemistry"
-        );
-    }
-
-    #[test]
-    fn underscored_with_digits() {
-        assert_eq!(
-            tokenize_str("DLC01_Weapon_Radium"),
-            "dlc 01 weapon radium dlc01weaponradium"
-        );
-    }
-
-    #[test]
-    fn all_caps_then_camel() {
-        assert_eq!(tokenize_str("HTTPSProxy"), "https proxy httpsproxy");
-    }
-
-    #[test]
-    fn digits_between() {
-        assert_eq!(tokenize_str("abc123DEF"), "abc 123 def abc123def");
-    }
-
-    #[test]
-    fn empty() {
-        assert_eq!(tokenize_str(""), "");
+    fn tokenize_splits_case_digits_and_underscores() {
+        for (input, want) in [
+            ("WorkbenchChemistry", "workbench chemistry workbenchchemistry"),
+            ("DLC01_Weapon_Radium", "dlc 01 weapon radium dlc01weaponradium"),
+            ("HTTPSProxy", "https proxy httpsproxy"),
+            ("abc123DEF", "abc 123 def abc123def"),
+            ("", ""),
+        ] {
+            assert_eq!(tokenize_str(input), want, "{input}");
+        }
     }
 }

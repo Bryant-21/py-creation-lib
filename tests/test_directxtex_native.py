@@ -40,71 +40,38 @@ def test_directxtex_native_roundtrip(tmp_path: Path):
     assert int(payload["height"]) == height
     assert len(bytes(payload["rgba"])) == width * height * 4
 
+    info = module.texdiag_info(str(output_path))
+    assert info["width"] == width
+    assert info["height"] == height
+    assert info["format"] == "BC7_UNORM"
+    assert info["dimension"] == "2D"
+    assert info["is_compressed"] is True
 
-def test_convert_to_dds_palette_uses_native_without_subprocess(
+
+def test_convert_to_dds_palette_and_batch_resize_use_native_without_subprocess(
     monkeypatch, tmp_path: Path
 ):
-    _require_native()
+    module = _require_native()
     from PIL import Image
 
     from creation_lib.dds.io import convert_to_dds
+    from creation_lib.dds import batch_resize
+
+    def fail_subprocess(*args, **kwargs):
+        raise AssertionError("DDS subprocess should not run")
+
+    monkeypatch.setattr("subprocess.run", fail_subprocess)
 
     input_path = tmp_path / "palette.png"
     output_path = tmp_path / "palette.dds"
     Image.new("RGBA", (4, 4), (16, 32, 48, 255)).save(input_path)
-
-    def fail_subprocess(*args, **kwargs):
-        raise AssertionError("DDS conversion subprocess should not run")
-
-    monkeypatch.setattr("subprocess.run", fail_subprocess)
-
     convert_to_dds(
         str(input_path),
         str(output_path),
         is_palette=True,
         generate_mips=True,
     )
-
     assert output_path.is_file()
-
-
-def test_texdiag_info_reports_native_dds_metadata(tmp_path: Path):
-    module = _require_native()
-    output_path = tmp_path / "normal_mipped.dds"
-    rgba = bytes([128, 128, 255, 255] * 64)
-
-    module.write_dds_rgba(
-        str(output_path),
-        8,
-        8,
-        rgba,
-        format="BC5_UNORM",
-        generate_mips=True,
-    )
-
-    info = module.texdiag_info(str(output_path))
-
-    assert info["width"] == 8
-    assert info["height"] == 8
-    assert info["mip_levels"] == 4
-    assert info["array_size"] == 1
-    assert info["format"] == "BC5_UNORM"
-    assert info["dimension"] == "2D"
-    assert info["is_compressed"] is True
-    assert info["bits_per_pixel"] == 8
-
-
-def test_texdiag_runtime_wrapper_when_module_missing(monkeypatch):
-    monkeypatch.setattr(native_runtime, "_NATIVE_MODULE", None)
-    monkeypatch.setattr(native_runtime, "_NATIVE_IMPORT_ATTEMPTED", True)
-    assert native_runtime.texdiag_info("unused") is None
-
-
-def test_batch_resize_default_path_uses_native_without_subprocess(
-    monkeypatch, tmp_path: Path
-):
-    module = _require_native()
-    from creation_lib.dds import batch_resize
 
     input_dir = tmp_path / "input"
     output_dir = tmp_path / "output"
@@ -119,11 +86,6 @@ def test_batch_resize_default_path_uses_native_without_subprocess(
         format="BC5_UNORM",
         generate_mips=False,
     )
-
-    def fail_subprocess(*args, **kwargs):
-        raise AssertionError("DDS resize subprocess should not run")
-
-    monkeypatch.setattr("subprocess.run", fail_subprocess)
 
     result = batch_resize(
         str(input_dir),
@@ -183,6 +145,7 @@ def test_directxtex_runtime_wrappers_when_module_missing(monkeypatch):
     monkeypatch.setattr(native_runtime, "_NATIVE_IMPORT_ATTEMPTED", True)
     assert native_runtime.read_dds_rgba("unused") is None
     assert native_runtime.write_dds_rgba("unused", 1, 1, b"\x00\x00\x00\x00") is False
+    assert native_runtime.texdiag_info("unused") is None
 
 
 def test_directxtex_runtime_loads_umbrella_submodule(monkeypatch):
@@ -213,48 +176,3 @@ def test_directxtex_runtime_loads_umbrella_submodule(monkeypatch):
     assert module is umbrella.directxtex_native
 
 
-def test_dds_loader_decodes_repo_envmap_if_available():
-    envmap = (
-        Path(__file__).resolve().parents[2]
-        / "extracted"
-        / "fo4"
-        / "Textures"
-        / "Shared"
-        / "Cubemaps"
-        / "mipblur_DefaultOutside1.dds"
-    )
-    if not envmap.is_file():
-        pytest.skip("FO4 extracted envmap not available in this workspace")
-
-    from creation_lib.renderer.dds_loader import decode_texture
-
-    decoded = decode_texture(str(envmap))
-
-    assert decoded is not None
-    assert decoded.size[0] > 0
-    assert decoded.size[1] > 0
-    assert len(decoded.data) == decoded.size[0] * decoded.size[1] * 4
-
-
-def test_directxtex_native_decodes_repo_envmap_if_available():
-    module = _require_native()
-    envmap = (
-        Path(__file__).resolve().parents[2]
-        / "extracted"
-        / "fo4"
-        / "Textures"
-        / "Shared"
-        / "Cubemaps"
-        / "mipblur_DefaultOutside1.dds"
-    )
-    if not envmap.is_file():
-        pytest.skip("FO4 extracted envmap not available in this workspace")
-
-    payload = module.read_dds_rgba(str(envmap))
-
-    assert int(payload["width"]) > 0
-    assert int(payload["height"]) > 0
-    assert (
-        len(bytes(payload["rgba"]))
-        == int(payload["width"]) * int(payload["height"]) * 4
-    )

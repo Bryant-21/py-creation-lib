@@ -19,7 +19,7 @@ _FO4_3P_BONES = [
 ]
 
 
-def test_classifier_assigns_ik_tip_to_hands_and_feet():
+def test_classifier_assigns_ik_tip_to_hands_and_feet_and_ik_pole_to_forearm1_and_calf():
     from creation_lib.bone_edit.bone_classifier import BoneClassifier, BoneCategory
     c = BoneClassifier()
     cats = c.classify_all(_FO4_3P_BONES)
@@ -27,19 +27,13 @@ def test_classifier_assigns_ik_tip_to_hands_and_feet():
     assert cats["LArm_Hand"] == BoneCategory.IK_TIP
     assert cats["LLeg_Foot"] == BoneCategory.IK_TIP
     assert cats["RLeg_Foot"] == BoneCategory.IK_TIP
-
-
-def test_classifier_assigns_ik_pole_to_forearm1_and_calf():
-    from creation_lib.bone_edit.bone_classifier import BoneClassifier, BoneCategory
-    c = BoneClassifier()
-    cats = c.classify_all(_FO4_3P_BONES)
     assert cats["RArm_ForeArm1"] == BoneCategory.IK_POLE
     assert cats["LArm_ForeArm1"] == BoneCategory.IK_POLE
     assert cats["RLeg_Calf"] == BoneCategory.IK_POLE
     assert cats["LLeg_Calf"] == BoneCategory.IK_POLE
 
 
-def test_classifier_assigns_limb_segment_to_upper_arms_thighs_twists_spine():
+def test_classifier_assigns_limb_segment_and_mount_categories():
     from creation_lib.bone_edit.bone_classifier import BoneClassifier, BoneCategory
     c = BoneClassifier()
     cats = c.classify_all(_FO4_3P_BONES)
@@ -49,12 +43,6 @@ def test_classifier_assigns_limb_segment_to_upper_arms_thighs_twists_spine():
         assert cats[n] == BoneCategory.LIMB_SEGMENT, n
     for n in ["SPINE1", "SPINE2", "Chest", "Neck", "RArm_Collarbone", "LArm_Collarbone"]:
         assert cats[n] == BoneCategory.LIMB_SEGMENT, n
-
-
-def test_classifier_assigns_mount_to_root_fingers_toe():
-    from creation_lib.bone_edit.bone_classifier import BoneClassifier, BoneCategory
-    c = BoneClassifier()
-    cats = c.classify_all(_FO4_3P_BONES)
     # Head rotates about the neck joint — rotation-only (LIMB_SEGMENT).
     assert cats["HEAD"] == BoneCategory.LIMB_SEGMENT
     assert cats["COM_Twin"] == BoneCategory.MOUNT
@@ -74,43 +62,34 @@ def test_classifier_hides_skin_and_animobject_bones():
     assert "AnimObjectA" in hidden
 
 
-def test_classifier_unknown_bone_falls_back_to_limb_segment():
+def test_classifier_unknown_bone_falls_back_to_limb_segment_and_override_wins():
     from creation_lib.bone_edit.bone_classifier import BoneClassifier, BoneCategory
     c = BoneClassifier()
     cats = c.classify_all(["MysteryBone"])
     assert cats["MysteryBone"] == BoneCategory.LIMB_SEGMENT
 
-
-def test_classifier_override_changes_category():
-    from creation_lib.bone_edit.bone_classifier import BoneClassifier, BoneCategory
-    c = BoneClassifier()
     c.set_override("RArm_Hand", BoneCategory.MOUNT)
     cats = c.classify_all(["RArm_Hand"])
     assert cats["RArm_Hand"] == BoneCategory.MOUNT
 
 
-def test_classifier_detects_arm_chain():
+def test_classifier_detects_arm_and_leg_chains():
     from creation_lib.bone_edit.bone_classifier import BoneClassifier
     c = BoneClassifier()
     parent_indices = _build_synthetic_arm_parents()
     chains = c.detect_chains(_FO4_3P_BONES, parent_indices)
+
     assert "RArm_Hand" in chains
-    chain = chains["RArm_Hand"]
-    assert chain.tip == "RArm_Hand"
-    assert chain.mid == "RArm_ForeArm1"
-    assert chain.root == "RArm_UpperArm"
+    arm_chain = chains["RArm_Hand"]
+    assert arm_chain.tip == "RArm_Hand"
+    assert arm_chain.mid == "RArm_ForeArm1"
+    assert arm_chain.root == "RArm_UpperArm"
 
-
-def test_classifier_detects_leg_chain():
-    from creation_lib.bone_edit.bone_classifier import BoneClassifier
-    c = BoneClassifier()
-    parent_indices = _build_synthetic_arm_parents()
-    chains = c.detect_chains(_FO4_3P_BONES, parent_indices)
     assert "RLeg_Foot" in chains
-    chain = chains["RLeg_Foot"]
-    assert chain.tip == "RLeg_Foot"
-    assert chain.mid == "RLeg_Calf"
-    assert chain.root == "RLeg_Thigh"
+    leg_chain = chains["RLeg_Foot"]
+    assert leg_chain.tip == "RLeg_Foot"
+    assert leg_chain.mid == "RLeg_Calf"
+    assert leg_chain.root == "RLeg_Thigh"
 
 
 def test_classifier_falls_back_to_mount_when_no_chain():

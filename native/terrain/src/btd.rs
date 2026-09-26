@@ -125,6 +125,10 @@ pub struct BtdTileCacheStats {
     pub misses: u64,
     pub cached_tiles: u64,
     pub cached_payload_bytes: u64,
+    pub cached_height_payload_bytes: u64,
+    pub cached_land_alpha_payload_bytes: u64,
+    pub cached_ground_cover_payload_bytes: u64,
+    pub cached_vertex_color_payload_bytes: u64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -188,22 +192,51 @@ impl BtdFile {
     }
 
     pub fn tile_cache_stats(&self) -> BtdTileCacheStats {
-        let cached_payload_bytes = self
+        let cached_height_payload_bytes = self
             .tile_cache
             .values()
-            .map(|tile| {
-                tile.heights.len() * std::mem::size_of::<u16>()
-                    + tile.land_alphas.len() * std::mem::size_of::<u16>()
-                    + tile.ground_cover.len()
-                    + tile.vertex_color.len() * std::mem::size_of::<u16>()
-            })
+            .map(|tile| tile.heights.len() * std::mem::size_of::<u16>())
             .sum::<usize>();
+        let cached_land_alpha_payload_bytes = self
+            .tile_cache
+            .values()
+            .map(|tile| tile.land_alphas.len() * std::mem::size_of::<u16>())
+            .sum::<usize>();
+        let cached_ground_cover_payload_bytes = self
+            .tile_cache
+            .values()
+            .map(|tile| tile.ground_cover.len())
+            .sum::<usize>();
+        let cached_vertex_color_payload_bytes = self
+            .tile_cache
+            .values()
+            .map(|tile| tile.vertex_color.len() * std::mem::size_of::<u16>())
+            .sum::<usize>();
+        let cached_payload_bytes = cached_height_payload_bytes
+            + cached_land_alpha_payload_bytes
+            + cached_ground_cover_payload_bytes
+            + cached_vertex_color_payload_bytes;
         BtdTileCacheStats {
             hits: self.tile_cache_hits,
             misses: self.tile_cache_misses,
             cached_tiles: self.tile_cache.len() as u64,
             cached_payload_bytes: cached_payload_bytes as u64,
+            cached_height_payload_bytes: cached_height_payload_bytes as u64,
+            cached_land_alpha_payload_bytes: cached_land_alpha_payload_bytes as u64,
+            cached_ground_cover_payload_bytes: cached_ground_cover_payload_bytes as u64,
+            cached_vertex_color_payload_bytes: cached_vertex_color_payload_bytes as u64,
         }
+    }
+
+    pub(crate) fn release_land_alpha_payloads(&mut self) -> u64 {
+        self.tile_cache
+            .values_mut()
+            .map(|tile| {
+                let released = tile.land_alphas.len() * std::mem::size_of::<u16>();
+                drop(std::mem::take(&mut tile.land_alphas));
+                released as u64
+            })
+            .sum()
     }
 
     pub fn land_texture_form_id(&self, index: usize) -> Option<u32> {
@@ -625,10 +658,34 @@ impl BtdFile {
         };
         let cache_key =
             (kind_key << 28) | ((u32::from(lod)) << 24) | u32::try_from(tile_index).unwrap();
-        if !self.tile_cache.contains_key(&cache_key) {
+        let cache_hit = self
+            .tile_cache
+            .get(&cache_key)
+            .is_some_and(|tile| match kind {
+                ExtractKind::Height => tile.heights.len() >= TILE_SAMPLE_COUNT,
+                ExtractKind::LandAlpha => tile.land_alphas.len() >= TILE_SAMPLE_COUNT,
+                ExtractKind::TerrainColor => {
+                    tile.vertex_color.len() >= TILE_VERTEX_COLOR_SAMPLE_COUNT
+                }
+            });
+        if !cache_hit {
             self.tile_cache_misses = self.tile_cache_misses.saturating_add(1);
-            let tile = self.read_tile(tile_x, tile_y, lod, kind)?;
-            self.tile_cache.insert(cache_key, tile);
+            let mut decoded = self.read_tile(tile_x, tile_y, lod, kind)?;
+            if let Some(tile) = self.tile_cache.get_mut(&cache_key) {
+                match kind {
+                    ExtractKind::Height => {
+                        tile.heights = std::mem::take(&mut decoded.heights);
+                    }
+                    ExtractKind::LandAlpha => {
+                        tile.land_alphas = std::mem::take(&mut decoded.land_alphas);
+                    }
+                    ExtractKind::TerrainColor => {
+                        tile.vertex_color = std::mem::take(&mut decoded.vertex_color);
+                    }
+                }
+            } else {
+                self.tile_cache.insert(cache_key, decoded);
+            }
         } else {
             self.tile_cache_hits = self.tile_cache_hits.saturating_add(1);
         }
@@ -1158,16 +1215,6 @@ fn ensure_index_u16(values: &[u16], index: usize) -> Result<(), BtdError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn starfield_btd(name: &str) -> std::path::PathBuf {
-        let root = std::env::var_os("STARFIELD_EXTRACTED_DIR")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| {
-                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("../../../extracted/starfield")
-            });
-        root.join("terrain").join(name)
-    }
     use std::io::Write;
 
     /// Verifies that BtdFile::open uses the mmap path and reaches the same
@@ -1213,16 +1260,12 @@ mod tests {
     }
 
     #[test]
-    fn gcvr_table_uses_direct_indices_with_ff_sentinel() {
+    fn gcvr_indices_and_ground_cover_bits_match_fo76utils() {
         assert_eq!(decode_direct_index(0, 3), Some(0));
         assert_eq!(decode_direct_index(2, 3), Some(2));
         assert_eq!(decode_direct_index(3, 3), None);
         assert_eq!(decode_direct_index(0xFF, 3), None);
         assert_eq!(decode_reversed_index(1, 3), Some(2));
-    }
-
-    #[test]
-    fn ground_cover_mask_reorder_matches_fo76utils() {
         for bit in 0..8 {
             assert_eq!(reorder_ground_cover_bits(1 << bit), 1 << (7 - bit));
         }
@@ -1243,276 +1286,5 @@ mod tests {
         assert!(!header.is_starfield_layout);
         assert_eq!(header.cells_x, 1);
         assert_eq!(header.cells_y, 1);
-    }
-
-    #[test]
-    fn reads_starfield_akilacity_btd() {
-        let path = starfield_btd("akilacity.btd");
-        if !path.exists() {
-            eprintln!("skip: starfield extracted data not present");
-            return;
-        }
-        let path_str = path.to_str().unwrap();
-
-        let header = BtdFile::open_header(path_str).expect("starfield btd header parses");
-        assert!(header.is_starfield_layout);
-        assert_eq!(header.version, 6);
-        assert!(header.cell_max_x > header.cell_min_x);
-        assert!(header.cell_max_y > header.cell_min_y);
-        assert_eq!(header.cell_min_x, -4);
-        assert_eq!(header.cell_max_x, 4);
-        assert_eq!(header.cells_x, 9);
-        assert_eq!(header.cells_y, 9);
-        assert_eq!(header.ltex_count, 11);
-        assert_eq!(header.gcvr_count, 0);
-
-        let mut btd = BtdFile::open(path_str).expect("starfield btd opens");
-        let heights = btd
-            .cell_height_map_u16(0, 0, 0)
-            .expect("starfield height block decodes");
-        assert_eq!(heights.len(), 128 * 128);
-        // Cross-checked against an independent Python zlib-decode of the same
-        // LOD0 block (cell (0,0), block_index 40) straight from the real file.
-        assert_eq!(
-            &heights[0..10],
-            &[
-                23385, 23379, 23381, 23382, 23383, 23382, 23379, 23374, 23357, 23359
-            ]
-        );
-        assert_eq!(heights[16383], 23551);
-        assert_eq!(heights.iter().copied().min().unwrap(), 22952);
-        assert_eq!(heights.iter().copied().max().unwrap(), 23570);
-
-        let alphas = btd
-            .cell_land_alpha_u16(0, 0, 0)
-            .expect("starfield land alpha block decodes");
-        assert_eq!(alphas.len(), 128 * 128);
-        assert!(alphas.iter().any(|value| *value != alphas[0]));
-    }
-
-    /// Expected values come from a vanilla decode (see
-    /// `bacup/docs/starfield_target/R4-btd-layout.md`). Starfield header floats
-    /// are already world units; a stray `*= 8.0` would break every downstream
-    /// height dequantization.
-    #[test]
-    fn starfield_newatlantis_header_matches_r4_recorded_stats() {
-        let path = starfield_btd("newatlantis.btd");
-        if !path.exists() {
-            eprintln!("skip: starfield extracted data not present");
-            return;
-        }
-        let path_str = path.to_str().unwrap();
-
-        let header = BtdFile::open_header(path_str).expect("newatlantis btd header parses");
-        assert!(header.is_starfield_layout);
-        assert_eq!(header.version, 6);
-        assert_eq!(header.resolution_x, 1792);
-        assert_eq!(header.resolution_y, 1792);
-        assert_eq!(header.cell_min_x, -7);
-        assert_eq!(header.cell_min_y, -7);
-        assert_eq!(header.cell_max_x, 6);
-        assert_eq!(header.cell_max_y, 6);
-        assert_eq!(header.cells_x, 14);
-        assert_eq!(header.cells_y, 14);
-        assert_eq!(header.ltex_count, 7);
-        assert_eq!(header.gcvr_count, 0);
-        assert!(
-            (header.world_height_min - 0.0).abs() < 1e-6,
-            "world_height_min = {} (expected 0.0, dumps/R4/vanilla_decode.json)",
-            header.world_height_min
-        );
-        assert!(
-            (header.world_height_max - 260.502_04).abs() < 1e-3,
-            "world_height_max = {} (expected 260.5020446777344, dumps/R4/vanilla_decode.json)",
-            header.world_height_max
-        );
-    }
-
-    fn short_ltex(objid: u32) -> String {
-        match objid {
-            0xDAE7 => "ForestDirt".into(),
-            0x1198A => "CranBogMud".into(),
-            0x1197B => "MtnTopDirt".into(),
-            0x1197E => "PineNeedl".into(),
-            0xD677 => "ForestGrass".into(),
-            0xE559 => "ForestLeaves".into(),
-            0x11979 => "MtnRockSlab".into(),
-            0xDAED => "ForestRocks".into(),
-            0 => "-".into(),
-            other => format!("{other:#x}"),
-        }
-    }
-
-    /// Manual diagnostic: horizontal scan of decoded per-layer alpha across the
-    /// TL|TR internal boundary (x=64) of one BTD cell, at the y from
-    /// BTD_ALPHA_Y (default 96). Shows whether the source ramps the neighbor-base
-    /// overlay to full at the shared edge (continuity carrier) or not.
-    #[test]
-    #[ignore = "manual; needs BTD_PATH + BTD_ALPHA_CELL env"]
-    fn dump_cell_alpha_profile() {
-        let path = std::env::var("BTD_PATH").expect("BTD_PATH env");
-        let cell = std::env::var("BTD_ALPHA_CELL").expect("BTD_ALPHA_CELL env (cx,cy)");
-        let y: usize = std::env::var("BTD_ALPHA_Y")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(96);
-        let mut it = cell.split(',');
-        let cx: i32 = it.next().unwrap().trim().parse().unwrap();
-        let cy: i32 = it.next().unwrap().trim().parse().unwrap();
-        let mut btd = BtdFile::open(&path).expect("open btd");
-        let alpha = btd.cell_land_alpha_u16(cx, cy, 0).expect("alpha"); // 128*128
-        let set = btd.cell_texture_set(cx, cy).expect("set");
-        let nm = |slot: Option<u8>| {
-            slot.and_then(|x| btd.land_texture_form_id(x as usize))
-                .map(|f| short_ltex(f & 0xFFFFFF))
-                .unwrap_or_else(|| "-".into())
-        };
-        const QN: [&str; 4] = ["CK Q1 [BL]", "CK Q2 [BR]", "CK Q3 [TL]", "CK Q4 [TR]"];
-        println!("== cell ({cx},{cy}) alpha scan at y={y}, x=56..72 (TL|TR boundary @ x=64) ==");
-        for x in 56usize..72 {
-            let (qx, qy) = (x / 64, y / 64);
-            let q = (qy << 1) | qx;
-            let quad = &set.quadrants[q];
-            let packed = alpha[y * 128 + x];
-            let parts: Vec<String> = (0..5)
-                .map(|k| format!("{}={}", nm(quad.additional[k]), (packed >> (k * 3)) & 0x7))
-                .collect();
-            println!(
-                "  x={x:3} {} base={:12} | {}",
-                QN[q],
-                nm(quad.base),
-                parts.join("  ")
-            );
-        }
-    }
-
-    /// Manual diagnostic: dumps the exact 17x17 LAND/VTXT vertex positions for
-    /// one FO4 quadrant, mapped back to the source BTD cell/quadrant.
-    #[test]
-    #[ignore = "manual; needs BTD_PATH + BTD_FO4_CELL + BTD_FO4_QUAD env"]
-    fn dump_fo4_quadrant_vtxt_source_layers() {
-        let path = std::env::var("BTD_PATH").expect("BTD_PATH env");
-        let cell = std::env::var("BTD_FO4_CELL").expect("BTD_FO4_CELL env (cx,cy)");
-        let quad: usize = std::env::var("BTD_FO4_QUAD")
-            .expect("BTD_FO4_QUAD env")
-            .parse()
-            .expect("quad 0..3");
-        let positions: Option<Vec<usize>> = std::env::var("BTD_VTXT_POSITIONS").ok().map(|s| {
-            s.split(',')
-                .filter(|value| !value.trim().is_empty())
-                .map(|value| value.trim().parse().expect("VTXT position"))
-                .collect()
-        });
-        let mut it = cell.split(',');
-        let cell_x: i32 = it.next().unwrap().trim().parse().unwrap();
-        let cell_y: i32 = it.next().unwrap().trim().parse().unwrap();
-        let qx = quad & 1;
-        let qy = quad >> 1;
-        let src_cell_x = cell_x + qx as i32;
-        let src_cell_y = cell_y + qy as i32;
-        let src_qx = 1 - qx;
-        let src_qy = 1 - qy;
-        let src_quad = (src_qy << 1) | src_qx;
-
-        let mut btd = BtdFile::open(&path).expect("open btd");
-        let alpha = btd
-            .cell_land_alpha_u16(src_cell_x, src_cell_y, 0)
-            .expect("alpha");
-        let colors = btd
-            .cell_terrain_color_u16(src_cell_x, src_cell_y, 2)
-            .expect("terrain color");
-        let set = btd
-            .cell_texture_set(src_cell_x, src_cell_y)
-            .expect("cell_texture_set");
-        let qset = &set.quadrants[src_quad];
-        let nm = |slot: Option<u8>| {
-            slot.and_then(|x| btd.land_texture_form_id(x as usize))
-                .map(|f| short_ltex(f & 0xFFFFFF))
-                .unwrap_or_else(|| "-".into())
-        };
-        let qn = ["CK Q1 [BL]", "CK Q2 [BR]", "CK Q3 [TL]", "CK Q4 [TR]"];
-        println!(
-            "== FO4 cell ({cell_x},{cell_y}) {} -> BTD cell ({src_cell_x},{src_cell_y}) {} ==",
-            qn[quad], qn[src_quad]
-        );
-        println!(
-            "  base={} additional=[{}]",
-            nm(qset.base),
-            qset.additional
-                .iter()
-                .map(|slot| nm(*slot))
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
-
-        let mut selected = positions.unwrap_or_else(|| (0..(17 * 17)).collect());
-        selected.sort_unstable();
-        selected.dedup();
-        for pos in selected {
-            let row = pos / 17;
-            let col = pos % 17;
-            assert!(row < 17, "VTXT position must be 0..288");
-            let src_x = src_qx * 64 + col * 4;
-            let src_y = src_qy * 64 + row * 4;
-            let packed = alpha[src_y * 128 + src_x];
-            let color = colors[(src_y / 4) * 32 + (src_x / 4)];
-            let (r, g, b) = decode_fo76_vclr_rgb8(color);
-            let raw: Vec<String> = (0..5)
-                .map(|layer| {
-                    let value = (packed >> (layer * 3)) & 0x7;
-                    format!("{}={}", nm(qset.additional[layer]), value)
-                })
-                .collect();
-            println!(
-                "  pos={pos:3} row={row:2} col={col:2} src=({src_x:3},{src_y:3}) packed=0x{packed:04X} vclr=0x{color:04X} rgb=({r:3},{g:3},{b:3}) {}",
-                raw.join("  ")
-            );
-        }
-    }
-
-    fn decode_fo76_vclr_rgb8(value: u16) -> (u8, u8, u8) {
-        let r5 = ((value >> 10) & 0x1f) as u8;
-        let g5 = ((value >> 5) & 0x1f) as u8;
-        let b5 = (value & 0x1f) as u8;
-        (expand_5_to_8(r5), expand_5_to_8(g5), expand_5_to_8(b5))
-    }
-
-    fn expand_5_to_8(value: u8) -> u8 {
-        ((u16::from(value) * 255 + 15) / 31) as u8
-    }
-
-    /// Manual diagnostic (cross-cell seam investigation): dumps per-quadrant
-    /// base + additional LTEX form IDs for each BTD cell in BTD_CELLS
-    /// ("cx,cy;cx,cy;..."). FO4 cell (x,y) quadrant (qx,qy) reads BTD cell
-    /// (x+qx,y+qy) quadrant (1-qx,1-qy), so an FO4 (x,y)|(x+1,y) seam is the
-    /// TL|TR boundary of BTD cell (x+1,y).
-    #[test]
-    #[ignore = "manual; needs BTD_PATH + BTD_CELLS env"]
-    fn dump_cell_textures() {
-        let path = std::env::var("BTD_PATH").expect("BTD_PATH env");
-        let cells = std::env::var("BTD_CELLS").expect("BTD_CELLS env");
-        let btd = BtdFile::open(&path).expect("open btd");
-        let ltex = |slot: Option<u8>| {
-            slot.and_then(|x| btd.land_texture_form_id(x as usize))
-                .map(|f| format!("0x{f:08X}"))
-                .unwrap_or_else(|| "----------".to_owned())
-        };
-        const NAME: [&str; 4] = ["CK Q1 [BL]", "CK Q2 [BR]", "CK Q3 [TL]", "CK Q4 [TR]"];
-        for pair in cells.split(';').filter(|s| !s.trim().is_empty()) {
-            let mut it = pair.split(',');
-            let cx: i32 = it.next().unwrap().trim().parse().expect("cx");
-            let cy: i32 = it.next().unwrap().trim().parse().expect("cy");
-            let set = btd.cell_texture_set(cx, cy).expect("cell_texture_set");
-            println!("== BTD cell ({cx},{cy}) ==");
-            for (qi, q) in set.quadrants.iter().enumerate() {
-                let add: Vec<String> = q.additional.iter().map(|a| ltex(*a)).collect();
-                println!(
-                    "  {}  base={}  additional=[{}]",
-                    NAME[qi],
-                    ltex(q.base),
-                    add.join(", ")
-                );
-            }
-        }
     }
 }

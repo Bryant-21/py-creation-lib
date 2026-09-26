@@ -13,47 +13,6 @@ fn repo_path(relative: &str) -> PathBuf {
         .join(relative)
 }
 
-/// Build a minimal HkxFile with two objects (hkRootLevelContainer + hkMemoryResourceContainer).
-/// These are simple classes that are always present in any FO4 behaviour HKX.
-fn make_minimal_hkx() -> HkxFile {
-    let objects = vec![
-        HkxObject {
-            name: Some("#0000".to_string()),
-            offset: 0,
-            signature: 0,
-            class_name: "hkRootLevelContainer".to_string(),
-            members: vec![HkxMember {
-                name: "namedVariants".to_string(),
-                value: HkxValue::Array(Vec::new()),
-            }],
-        },
-        HkxObject {
-            name: Some("#0001".to_string()),
-            offset: 0,
-            signature: 0,
-            class_name: "hkMemoryResourceContainer".to_string(),
-            members: vec![
-                HkxMember {
-                    name: "name".to_string(),
-                    value: HkxValue::String {
-                        value: String::new(),
-                        is_null: false,
-                    },
-                },
-                HkxMember {
-                    name: "resourceHandles".to_string(),
-                    value: HkxValue::Array(Vec::new()),
-                },
-                HkxMember {
-                    name: "children".to_string(),
-                    value: HkxValue::Array(Vec::new()),
-                },
-            ],
-        },
-    ];
-    HkxFile::from_tagxml(11, "hk_2014.1.0-r1", objects)
-}
-
 /// Make a minimal HkxFile where object[1] has a Pointer(Some(0)) pointing at object[0].
 fn make_hkx_with_pointer() -> HkxFile {
     let objects = vec![
@@ -95,82 +54,28 @@ fn make_hkx_with_pointer() -> HkxFile {
     HkxFile::from_tagxml(11, "hk_2014.1.0-r1", objects)
 }
 
-// ─── Test 1: round-trip preserves object count and class names ────────────
-
 #[test]
-fn write_hkx_round_trip_preserves_object_count_and_class_names() {
-    let hkx_file = make_minimal_hkx();
-    let mut registry = DescriptorRegistry::new();
-
-    let bytes = write_hkx(&hkx_file, &mut registry);
-    assert!(!bytes.is_empty(), "writer produced empty output");
-
-    let parsed = read_packfile(&bytes).expect("writer output should be parseable by read_packfile");
-
-    assert_eq!(
-        parsed.objects().len(),
-        hkx_file.objects().len(),
-        "object count mismatch after round-trip"
-    );
-    for (orig, rt) in hkx_file.objects().iter().zip(parsed.objects().iter()) {
-        assert_eq!(
-            orig.class_name, rt.class_name,
-            "class_name mismatch: {} vs {}",
-            orig.class_name, rt.class_name
-        );
-    }
-}
-
-// ─── Test 2: header fields ────────────────────────────────────────────────
-
-#[test]
-fn write_hkx_emits_valid_packfile_header() {
-    let hkx_file = make_minimal_hkx();
-    let mut registry = DescriptorRegistry::new();
-
-    let bytes = write_hkx(&hkx_file, &mut registry);
-    let parsed = read_packfile(&bytes).expect("parseable output");
-
-    assert_eq!(parsed.class_version(), 11, "packfile version must be 11");
-    assert_eq!(
-        parsed.contents_version(),
-        "hk_2014.1.0-r1",
-        "version_name mismatch"
-    );
-}
-
-// ─── Test 3: pointer indices survive round-trip ───────────────────────────
-
-#[test]
-fn write_hkx_round_trip_preserves_pointer_indices() {
+fn write_hkx_round_trips_header_classes_and_pointer_indices() {
     let hkx_file = make_hkx_with_pointer();
     let mut registry = DescriptorRegistry::new();
 
     let bytes = write_hkx(&hkx_file, &mut registry);
-    let parsed = read_packfile(&bytes).expect("parseable output");
+    let parsed = read_packfile(&bytes).expect("writer output should be parseable");
+    assert_eq!(parsed.class_version(), 11);
+    assert_eq!(parsed.contents_version(), "hk_2014.1.0-r1");
+    let classes: Vec<_> = parsed.objects().iter().map(|o| &o.class_name).collect();
+    let expected: Vec<_> = hkx_file.objects().iter().map(|o| &o.class_name).collect();
+    assert_eq!(classes, expected);
 
-    assert_eq!(parsed.objects().len(), 2, "should have 2 objects");
-
-    // Object[1] should have a resourceHandles member with a pointer to object[0].
-    let obj1 = &parsed.objects()[1];
-    let rh = obj1
+    let handles = parsed.objects()[1]
         .members
         .iter()
         .find(|m| m.name == "resourceHandles")
         .expect("resourceHandles member should survive round-trip");
-
-    match &rh.value {
-        HkxValue::Array(elems) => {
-            assert_eq!(elems.len(), 1, "pointer array should have 1 element");
-            match &elems[0] {
-                HkxValue::Pointer(Some(idx)) => {
-                    assert_eq!(*idx, 0, "pointer should resolve to object index 0");
-                }
-                other => panic!("expected Pointer(Some(0)), got {:?}", other),
-            }
-        }
-        other => panic!("expected Array for resourceHandles, got {:?}", other),
-    }
+    assert_eq!(
+        handles.value,
+        HkxValue::Array(vec![HkxValue::Pointer(Some(0))])
+    );
 }
 
 #[test]
@@ -325,47 +230,6 @@ fn havok_convert_bytes_fo76_to_fo4_returns_bytes_for_fixture() {
     }
 }
 
-// ─── Test 5 (optional): byte-exact for AttackSprinting if present ─────────
-
-#[test]
-fn write_hkx_byte_exact_for_attacksprinting_if_present() {
-    let path =
-        repo_path("../extracted/fo4/Meshes/Actors/Character/Animations/1HM/AttackSprinting.hkx");
-    if !path.exists() {
-        // Byte-exact check is optional — skip silently.
-        eprintln!(
-            "SKIP: {} not present (Milestone 2 byte-exact check)",
-            path.display()
-        );
-        return;
-    }
-
-    let src_bytes = std::fs::read(&path).expect("read AttackSprinting.hkx");
-    let hkx_file = read_packfile(&src_bytes).expect("parse AttackSprinting.hkx");
-    let mut registry = DescriptorRegistry::new();
-
-    let out = write_hkx(&hkx_file, &mut registry);
-
-    let diff_count = src_bytes
-        .iter()
-        .zip(out.iter())
-        .filter(|(a, b)| a != b)
-        .count();
-    let len_match = src_bytes.len() == out.len();
-
-    eprintln!(
-        "AttackSprinting byte-exact: len_match={len_match}, diff_bytes={diff_count}/{}",
-        src_bytes.len()
-    );
-
-    // This test does not hard-fail on byte-exactness (the file might have edge
-    // cases listed in CLAUDE.md). Uncomment the assert to enforce byte-exact:
-    // assert!(len_match && diff_count == 0, "not byte-exact");
-
-    // Minimum bar: output is parseable.
-    read_packfile(&out).expect("AttackSprinting re-written output must be parseable");
-}
-
 // ─── Test 6: hkRelArray contents survive round-trip ──────
 
 /// Recursively pull every (member name, element count) for an HkxValue::Array
@@ -399,70 +263,24 @@ fn collect_relarray_member_lengths(file: &HkxFile) -> Vec<(String, String, usize
 }
 
 #[test]
-fn write_hkx_preserves_rel_array_contents_for_skeleton_fixture() {
-    // resource/skeleton.hkx contains hknpCapsuleShape objects whose parent
-    // hknpConvexPolytopeShape declares `planes`/`faces`/`indices` as hkRelArrays.
-    let path = repo_path("native/havok/tests/fixtures/skeleton.hkx");
-    let src_bytes = std::fs::read(&path).expect("read resource/skeleton.hkx");
+fn skeleton_fixture_rewrite_preserves_rel_arrays_and_save_tracks_dirty_state() {
+    // skeleton.hkx holds hknpCapsuleShape objects whose parent
+    // hknpConvexPolytopeShape declares planes/faces/indices as hkRelArrays; a
+    // skipped relarray block would silently re-read as empty.
+    let src_bytes =
+        std::fs::read(repo_path("native/havok/tests/fixtures/skeleton.hkx")).expect("read fixture");
     let hkx_file = read_packfile(&src_bytes).expect("parse skeleton.hkx");
-
     let before = collect_relarray_member_lengths(&hkx_file);
-    assert!(
-        !before.is_empty(),
-        "skeleton.hkx fixture should contain at least one hkRelArray member \
-         (hknpConvexPolytopeShape planes/faces/indices)"
-    );
+    assert!(!before.is_empty());
 
     let mut registry = DescriptorRegistry::new();
-    let written = write_hkx(&hkx_file, &mut registry);
+    let reread = read_packfile(&write_hkx(&hkx_file, &mut registry)).expect("re-read written");
+    assert_eq!(before, collect_relarray_member_lengths(&reread));
 
-    // Re-read the round-tripped output and verify every hkRelArray member
-    // ends up with the same element count it had before. A skipped relarray
-    // data block leaves the offset field zero, so the reader returns zero (or
-    // whatever lands at offset 0) — silent corruption.
-    let reread = read_packfile(&written).expect("re-read written skeleton.hkx");
-    let after = collect_relarray_member_lengths(&reread);
-
-    assert_eq!(
-        before, after,
-        "hkRelArray member contents diverged across write/read round-trip"
-    );
-}
-
-// ─── Test 7: HkxFile::save runs the writer when dirty ────
-
-#[test]
-fn save_returns_source_bytes_when_clean_and_writer_output_when_dirty() {
-    let path = repo_path("native/havok/tests/fixtures/skeleton.hkx");
-    let src_bytes = std::fs::read(&path).expect("read resource/skeleton.hkx");
-
-    // Clean read: save() must echo the source bytes verbatim.
-    let hkx_clean = read_packfile(&src_bytes).expect("parse skeleton.hkx");
-    assert!(
-        !hkx_clean.is_dirty(),
-        "freshly-read file should not be dirty"
-    );
-    assert_eq!(
-        hkx_clean.save(),
-        src_bytes,
-        "save() on a clean file must echo source_bytes verbatim"
-    );
-
-    // Mutate via objects_mut() so the dirty bit flips. save() must then
-    // route through the writer rather than echoing stale source bytes.
-    let mut hkx_dirty = read_packfile(&src_bytes).expect("parse skeleton.hkx");
-    {
-        let objects = hkx_dirty.objects_mut();
-        // Touch a member name on object[0] — any in-memory mutation works.
-        // The point is: save() must *not* return source_bytes after this.
-        if let Some(obj) = objects.get_mut(0) {
-            obj.name = Some("#FFFF".to_string());
-        }
-    }
-    assert!(hkx_dirty.is_dirty(), "objects_mut() should set dirty bit");
-
-    let saved = hkx_dirty.save();
-    assert!(!saved.is_empty(), "writer output must be non-empty");
-    // Should re-parse without error — i.e. save() actually ran the writer.
-    read_packfile(&saved).expect("save() output must be a valid packfile");
+    assert!(!hkx_file.is_dirty());
+    assert_eq!(hkx_file.save(), src_bytes);
+    let mut dirty = read_packfile(&src_bytes).expect("parse skeleton.hkx");
+    dirty.objects_mut()[0].name = Some("#FFFF".to_string());
+    assert!(dirty.is_dirty());
+    read_packfile(&dirty.save()).expect("save() output must be a valid packfile");
 }

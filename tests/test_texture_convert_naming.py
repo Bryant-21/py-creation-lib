@@ -1,52 +1,30 @@
 import pytest
 
 
-def test_rename_fo76_to_fo4():
-    """FO76 _r (reflectivity) -> FO4 _s (specular) via fallback.
-    FO76 _l (lighting/emissive rolloff) -> FO4 _g (glow) via fallback, since
-    the BGSM downgrade promotes LightingTexture into GlowTexture.
-    """
+@pytest.mark.parametrize("filename,src_profile,dst_profile,expected", [
+    # FO76 _r (reflectivity) -> FO4 _s (specular) via fallback.
+    ("armor_r.dds", "FO76_PROFILE", "FO4_PROFILE", "armor_s.dds"),
+    # FO76 _l (lighting/emissive rolloff) -> FO4 _g (glow) via fallback, since
+    # the BGSM downgrade promotes LightingTexture into GlowTexture.
+    ("armor_l.dds", "FO76_PROFILE", "FO4_PROFILE", "armor_g.dds"),
+    # FO4 _s maps to FO76 _r (the primary metallic map).
+    ("armor_s.dds", "FO4_PROFILE", "FO76_PROFILE", "armor_r.dds"),
+    # Suffixes shared between games (_d diffuse, _n normal) pass through.
+    ("armor_d.dds", "FO4_PROFILE", "FO76_PROFILE", "armor_d.dds"),
+    ("armor_n.dds", "FO4_PROFILE", "FO76_PROFILE", "armor_n.dds"),
+    # Starfield _color/_normal -> FO4 _d/_n.
+    ("gun_color.dds", "STARFIELD_PROFILE", "FO4_PROFILE", "gun_d.dds"),
+    ("gun_normal.dds", "STARFIELD_PROFILE", "FO4_PROFILE", "gun_n.dds"),
+    # Unrecognized suffixes pass through unchanged.
+    ("custom_texture.dds", "FO4_PROFILE", "FO76_PROFILE", "custom_texture.dds"),
+])
+def test_convert_texture_name_cases(filename, src_profile, dst_profile, expected):
     from creation_lib.textures.naming import convert_texture_name
-    from creation_lib.core.game_profiles import FO76_PROFILE, FO4_PROFILE
+    from creation_lib.core import game_profiles
 
-    assert convert_texture_name("armor_l.dds", FO76_PROFILE, FO4_PROFILE) == "armor_g.dds"
-    assert convert_texture_name("armor_r.dds", FO76_PROFILE, FO4_PROFILE) == "armor_s.dds"
-
-
-def test_rename_fo4_to_fo76():
-    """FO4 _s suffix should map to FO76 _r (metallic)."""
-    from creation_lib.textures.naming import convert_texture_name
-    from creation_lib.core.game_profiles import FO76_PROFILE, FO4_PROFILE
-
-    # _s maps to _r (the primary metallic map)
-    assert convert_texture_name("armor_s.dds", FO4_PROFILE, FO76_PROFILE) == "armor_r.dds"
-
-
-def test_rename_shared_suffixes_unchanged():
-    """Suffixes shared between games should pass through."""
-    from creation_lib.textures.naming import convert_texture_name
-    from creation_lib.core.game_profiles import FO76_PROFILE, FO4_PROFILE
-
-    # _d (diffuse) and _n (normal) are shared
-    assert convert_texture_name("armor_d.dds", FO4_PROFILE, FO76_PROFILE) == "armor_d.dds"
-    assert convert_texture_name("armor_n.dds", FO4_PROFILE, FO76_PROFILE) == "armor_n.dds"
-
-
-def test_rename_starfield_to_fo4():
-    """Starfield _color/_rough/_normal suffixes -> FO4 _d/_s/_n."""
-    from creation_lib.textures.naming import convert_texture_name
-    from creation_lib.core.game_profiles import STARFIELD_PROFILE, FO4_PROFILE
-
-    assert convert_texture_name("gun_color.dds", STARFIELD_PROFILE, FO4_PROFILE) == "gun_d.dds"
-    assert convert_texture_name("gun_normal.dds", STARFIELD_PROFILE, FO4_PROFILE) == "gun_n.dds"
-
-
-def test_rename_no_recognized_suffix():
-    """Filenames without recognized suffixes pass through unchanged."""
-    from creation_lib.textures.naming import convert_texture_name
-    from creation_lib.core.game_profiles import FO4_PROFILE, FO76_PROFILE
-
-    assert convert_texture_name("custom_texture.dds", FO4_PROFILE, FO76_PROFILE) == "custom_texture.dds"
+    src = getattr(game_profiles, src_profile)
+    dst = getattr(game_profiles, dst_profile)
+    assert convert_texture_name(filename, src, dst) == expected
 
 
 def test_detect_texture_role():

@@ -87,46 +87,45 @@ pub fn solve_ccd(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::animation::pose::vec3_len;
 
     #[test]
-    fn ccd_5_bone_reaches_target() {
-        // 5-bone chain along X: joints at 0,1,2,3,4.
-        let positions = [
-            [0.0f32, 0.0, 0.0],
-            [1.0, 0.0, 0.0],
-            [2.0, 0.0, 0.0],
-            [3.0, 0.0, 0.0],
-            [4.0, 0.0, 0.0],
-        ];
-        let rotations = [[0.0f32, 0.0, 0.0, 1.0]; 5];
-        let target = [2.0f32, 2.0, 0.0];
-        let result = solve_ccd(&positions, &rotations, &target, &CcdParams::default());
-        assert_eq!(result.len(), 5);
-        // All rotations should be unit quaternions.
-        for q in &result {
-            let len = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt();
-            assert!((len - 1.0).abs() < 1e-4, "quat not normalized: {q:?}");
+    fn ccd_reaches_target_and_noop_at_target() {
+        {
+            // 5-bone chain along X: joints at 0,1,2,3,4.
+            let positions = [
+                [0.0f32, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [2.0, 0.0, 0.0],
+                [3.0, 0.0, 0.0],
+                [4.0, 0.0, 0.0],
+            ];
+            let rotations = [[0.0f32, 0.0, 0.0, 1.0]; 5];
+            let target = [2.0f32, 2.0, 0.0];
+            let result = solve_ccd(&positions, &rotations, &target, &CcdParams::default());
+            assert_eq!(result.len(), 5);
+            // All rotations should be unit quaternions.
+            for q in &result {
+                let len = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt();
+                assert!((len - 1.0).abs() < 1e-4, "quat not normalized: {q:?}");
+            }
         }
-    }
-
-    #[test]
-    fn ccd_already_at_target_no_change() {
-        // Target is exactly at end position; should converge immediately.
-        let positions = [[0.0f32, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]];
-        let rotations = [[0.0f32, 0.0, 0.0, 1.0]; 3];
-        let target = [2.0f32, 0.0, 0.0];
-        let result = solve_ccd(
-            &positions,
-            &rotations,
-            &target,
-            &CcdParams {
-                tolerance: 1e-3,
-                ..Default::default()
-            },
-        );
-        // End effector already at target — root joint should be near identity.
-        let root = result[0];
-        assert!((root[3] - 1.0).abs() < 1e-4);
+        {
+            // Target is exactly at end position; should converge immediately.
+            let positions = [[0.0f32, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]];
+            let rotations = [[0.0f32, 0.0, 0.0, 1.0]; 3];
+            let target = [2.0f32, 0.0, 0.0];
+            let result = solve_ccd(
+                &positions,
+                &rotations,
+                &target,
+                &CcdParams {
+                    tolerance: 1e-3,
+                    ..Default::default()
+                },
+            );
+            // End effector already at target — root joint should be near identity.
+            let root = result[0];
+            assert!((root[3] - 1.0).abs() < 1e-4);
+        }
     }
 }

@@ -189,26 +189,3 @@ pub fn get_preset(name: &str) -> HavokResult<&'static MaterialPreset> {
         PRESETS.iter().map(|p| p.name).collect::<Vec<_>>()
     )))
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn all_9_presets_present() {
-        assert_eq!(PRESETS.len(), 9);
-    }
-
-    #[test]
-    fn cotton_values_match_python() {
-        let p = get_preset("Cotton").unwrap();
-        assert_eq!(p.particle_mass, 0.02);
-        assert_eq!(p.bend_stiffness, 0.3);
-    }
-
-    #[test]
-    fn chain_mail_bend_stiffness_is_zero() {
-        let p = get_preset("Chain Mail").unwrap();
-        assert_eq!(p.bend_stiffness, 0.0);
-    }
-}

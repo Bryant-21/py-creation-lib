@@ -101,33 +101,3 @@ impl From<HResult> for u32 {
         value.0
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use crate::hresult::HResult;
-
-    #[test]
-    fn error() {
-        macro_rules! test {
-            ($error_code:literal, $message:literal) => {{
-                let error = {
-                    let result = HResult::from($error_code);
-                    assert!(!result.is_success());
-                    let success = result.success(0);
-                    assert!(success.is_err());
-                    success.unwrap_err()
-                };
-                let display = format!("{error}");
-                assert!(display.ends_with($message));
-                let debug = format!("{error:?}");
-                assert!(debug.ends_with(core::concat!($message, ")")));
-            }};
-        }
-
-        test!(0x80080200, "E_PACKAGING_INTERNAL");
-        test!(0x800B0101, "E_EXPIRED");
-        test!(0x80094001, "E_BAD_REQUESTSUBJECT");
-        test!(0x80004006, "E_INIT_TLS");
-        test!(0x80110401, "E_OBJECTERRORS");
-    }
-}

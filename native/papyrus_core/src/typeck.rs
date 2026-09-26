@@ -126,13 +126,19 @@ fn type_eq_ci(a: &PapyrusType, b: &PapyrusType) -> bool {
     }
 }
 
-/// A bare struct name `Name` and its qualified spelling `Owner:Name` denote the
-/// same struct type (e.g. accessing `REScript`'s `DeadCount[]` member from
-/// another script yields a value typed `DeadCount` that is assignable to a
-/// `REScript:DeadCount` slot). Two differently-qualified names stay distinct.
+/// A bare struct name `Name` and its qualified spellings `Owner:Name` and
+/// `Owner#Name` denote the same struct type (e.g. accessing `REScript`'s
+/// `DeadCount[]` member from another script yields a value typed
+/// `REScript#DeadCount` that is assignable to a `REScript:DeadCount` slot). Two
+/// differently-qualified names stay distinct.
 fn struct_qual_eq(a: &str, b: &str) -> bool {
-    let (aq, an) = a.rsplit_once(':').map_or((None, a), |(q, n)| (Some(q), n));
-    let (bq, bn) = b.rsplit_once(':').map_or((None, b), |(q, n)| (Some(q), n));
+    fn split(name: &str) -> (Option<&str>, &str) {
+        name.rsplit_once('#')
+            .or_else(|| name.rsplit_once(':'))
+            .map_or((None, name), |(q, n)| (Some(q), n))
+    }
+    let (aq, an) = split(a);
+    let (bq, bn) = split(b);
     an.eq_ignore_ascii_case(bn)
         && match (aq, bq) {
             (Some(x), Some(y)) => x.eq_ignore_ascii_case(y),
@@ -159,9 +165,12 @@ pub fn is_implicitly_assignable(
         // Int widens to Float.
         (Int, Float) => true,
         // None assigns to any reference type.
-        (None, Object(_)) | (None, Array(_)) | (None, Struct(_)) | (None, String) => true,
+        (None, Object(_)) | (None, Array(_)) | (None, Struct(_)) => true,
         // Up-cast via extends chain, or a bare/qualified spelling of one struct.
         (Object(c), Object(p)) => struct_qual_eq(c, p) || is_subtype(c, p),
+        (Array(c), Array(p)) => {
+            matches!((&**c, &**p), (Object(a), Object(b)) if struct_qual_eq(a, b))
+        }
         // Bool context: any type is truthy/falsy.
         (Int, Bool) | (Float, Bool) | (String, Bool) | (Object(_), Bool) => true,
         // Var accepts / produces anything (FO4 / Starfield).
@@ -280,24 +289,39 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    /// Type of a same-script struct member, if `type_name` (bare `Struct` or
-    /// `thisscript#struct`) names a struct declared in this script.
+    /// Type of a struct member. A bare `Struct` or `thisscript#struct` names a
+    /// struct declared in this script; `owner#struct` or `Owner:Struct` names
+    /// another script's.
     fn struct_member_ty(&self, type_name: &str, member: &str) -> Option<PapyrusType> {
         let base = type_name.trim_end_matches("[]");
-        let sname = match base.split_once('#') {
-            Some((sc, sn)) if sc.eq_ignore_ascii_case(&self.ast.name) => sn,
-            Some(_) => return None,
-            None => base,
+        let local_name = match base.split_once('#') {
+            Some((sc, sn)) if sc.eq_ignore_ascii_case(&self.ast.name) => Some(sn),
+            Some(_) => None,
+            None => Some(base),
         };
-        let st = self
-            .ast
-            .structs
-            .iter()
-            .find(|s| s.name.eq_ignore_ascii_case(sname))?;
-        st.members
-            .iter()
-            .find(|m| m.name.eq_ignore_ascii_case(member))
-            .map(|m| self.parse_type(&m.ty))
+        let local = local_name.and_then(|sname| {
+            self.ast
+                .structs
+                .iter()
+                .find(|s| s.name.eq_ignore_ascii_case(sname))
+        });
+        match local {
+            Some(st) => st
+                .members
+                .iter()
+                .find(|m| m.name.eq_ignore_ascii_case(member))
+                .map(|m| self.parse_type(&m.ty)),
+            None => self
+                .resolver
+                .get_struct_member_type(base, member)
+                .map(|t| self.parse_type(&t)),
+        }
+    }
+
+    fn hierarchy_property_ty(&self, script: &str, member: &str) -> Option<PapyrusType> {
+        self.resolver
+            .get_hierarchy_property_type(script, member)
+            .map(|t| self.parse_type(&t))
     }
 
     fn check_function(
@@ -505,7 +529,16 @@ impl<'a> TypeChecker<'a> {
                         .map(|p| PapyrusType::Object(p.to_owned()))
                         .unwrap_or(PapyrusType::None);
                 }
-                scope.get(&lower).cloned().unwrap_or(PapyrusType::None)
+                scope
+                    .get(&lower)
+                    .cloned()
+                    .or_else(|| {
+                        self.ast
+                            .parent
+                            .as_deref()
+                            .and_then(|parent| self.hierarchy_property_ty(parent, name))
+                    })
+                    .unwrap_or(PapyrusType::None)
             }
 
             Expr::ParentExpr { .. } => self
@@ -617,11 +650,7 @@ impl<'a> TypeChecker<'a> {
                     PapyrusType::Object(n) => n.clone(),
                     _ => std::string::String::new(),
                 };
-                self.resolver
-                    .get_properties(&script_name)
-                    .into_iter()
-                    .find(|p| p.name.eq_ignore_ascii_case(member))
-                    .map(|p| self.parse_type(&p.ty))
+                self.hierarchy_property_ty(&script_name, member)
                     .unwrap_or(PapyrusType::None)
             }
 
@@ -797,6 +826,13 @@ mod tests {
             (None, Object("ObjectReference".into()), true),
             (Object("Actor".into()), String, true),
             (String, Int, false),
+            (Object("Ns:Owner#Pair".into()), Object("ns:owner:pair".into()), true),
+            (
+                Array(Box::new(Object("Owner#Pair".into()))),
+                Array(Box::new(Object("Pair".into()))),
+                true,
+            ),
+            (Object("Owner#Pair".into()), Object("Other:Pair".into()), false),
         ];
         for (from, to, expected) in cases {
             assert_eq!(

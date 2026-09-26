@@ -124,29 +124,27 @@ mod tests {
     }
 
     #[test]
-    fn merge_two_sections_offsets_indices() {
-        let sections = vec![simple_section(0.0), simple_section(10.0)];
-        let merged = merge_sections(&sections);
-        assert_eq!(merged.vertices.len(), 6);
-        assert_eq!(merged.triangles.len(), 2);
-        assert_eq!(merged.triangles[0], [0, 1, 2]);
-        assert_eq!(merged.triangles[1], [3, 4, 5]);
-    }
-
-    #[test]
-    fn merge_empty_input_is_empty() {
-        let merged = merge_sections(&[]);
-        assert!(merged.vertices.is_empty());
-        assert!(merged.triangles.is_empty());
-    }
-
-    #[test]
-    fn split_restores_sections() {
-        let sections = vec![simple_section(0.0), simple_section(10.0)];
-        let merged = merge_sections(&sections);
-        let split = split_sections(&merged, 3);
-        assert_eq!(split.len(), 2);
-        assert_eq!(split[0].vertices.len(), 3);
-        assert_eq!(split[1].vertices.len(), 3);
+    fn merge_and_split_sections() {
+        {
+            let sections = vec![simple_section(0.0), simple_section(10.0)];
+            let merged = merge_sections(&sections);
+            assert_eq!(merged.vertices.len(), 6);
+            assert_eq!(merged.triangles.len(), 2);
+            assert_eq!(merged.triangles[0], [0, 1, 2]);
+            assert_eq!(merged.triangles[1], [3, 4, 5]);
+        }
+        {
+            let merged = merge_sections(&[]);
+            assert!(merged.vertices.is_empty());
+            assert!(merged.triangles.is_empty());
+        }
+        {
+            let sections = vec![simple_section(0.0), simple_section(10.0)];
+            let merged = merge_sections(&sections);
+            let split = split_sections(&merged, 3);
+            assert_eq!(split.len(), 2);
+            assert_eq!(split[0].vertices.len(), 3);
+            assert_eq!(split[1].vertices.len(), 3);
+        }
     }
 }

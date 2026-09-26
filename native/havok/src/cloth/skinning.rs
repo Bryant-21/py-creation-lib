@@ -73,30 +73,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn exact_match_returns_full_weight() {
-        let v = vec![[0.0f32, 0.0, 0.0, 0.0]];
-        let b = vec![[0.0f32, 0.0, 0.0, 0.0], [10.0, 0.0, 0.0, 0.0]];
-        let w = auto_skin_to_cloth_bones(&v, &b, 4, 2.0);
-        assert_eq!(w[0], vec![(0, 1.0)]);
-    }
+    fn auto_skin_weights_favor_nearest_bone_and_sum_to_one() {
+        let bones = vec![[0.0f32, 0.0, 0.0, 0.0], [10.0, 0.0, 0.0, 0.0]];
 
-    #[test]
-    fn nearest_bone_gets_highest_weight() {
-        let v = vec![[1.0f32, 0.0, 0.0, 0.0]];
-        let b = vec![[0.0f32, 0.0, 0.0, 0.0], [10.0, 0.0, 0.0, 0.0]];
-        let w = auto_skin_to_cloth_bones(&v, &b, 2, 2.0);
-        assert_eq!(w[0].len(), 2);
-        // Bone 0 (distance 1) should have higher weight than bone 1 (distance 9)
-        let w0 = w[0]
-            .iter()
-            .find(|(bi, _)| *bi == 0)
-            .map(|(_, w)| *w)
-            .unwrap();
-        let w1 = w[0]
-            .iter()
-            .find(|(bi, _)| *bi == 1)
-            .map(|(_, w)| *w)
-            .unwrap();
-        assert!(w0 > w1, "Nearest bone should have higher weight");
+        let exact = auto_skin_to_cloth_bones(&[[0.0, 0.0, 0.0, 0.0]], &bones, 4, 2.0);
+        assert_eq!(exact[0], vec![(0, 1.0)]);
+
+        let vertices: Vec<[f32; 4]> = (1..4).map(|i| [i as f32, 0.0, 0.0, 0.0]).collect();
+        let weights = auto_skin_to_cloth_bones(&vertices, &bones, 2, 2.0);
+        assert_eq!(weights.len(), 3);
+        for (vi, vw) in weights.iter().enumerate() {
+            assert_eq!(vw.len(), 2);
+            let sum: f32 = vw.iter().map(|(_, w)| w).sum();
+            assert!((sum - 1.0).abs() < 1e-5, "vertex {vi} weights sum to {sum}");
+            let w = |bone| vw.iter().find(|(bi, _)| *bi == bone).unwrap().1;
+            assert!(w(0) > w(1), "vertex {vi}: nearest bone must weigh more");
+        }
     }
 }

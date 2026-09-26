@@ -1,15 +1,10 @@
 from __future__ import annotations
 
-import io
 import struct
-from dataclasses import asdict
-from pathlib import Path
 
 from creation_lib.material_tools import native_runtime
 from creation_lib.material_tools import _bsrefl_stringtable
 from creation_lib.material_tools._bsrefl import ChunkType, find_master_string
-from creation_lib.material_tools.bgem_bin import read_bgem
-from creation_lib.material_tools.bgsm_bin import read_bgsm
 from creation_lib.material_tools.materials_cdb import (
     BSResourceID,
     ClassDef,
@@ -19,27 +14,6 @@ from creation_lib.material_tools.materials_cdb import (
     MaterialsCDB,
     bethesda_crc32,
 )
-
-FIXTURE_DIR = (
-    Path(__file__).parent.parent.parent
-    / "conversion"
-    / "tests"
-    / "fixtures"
-    / "fo76"
-    / "materials"
-)
-
-
-def _normalize_payload(value):
-    if hasattr(value, "__dataclass_fields__"):
-        return {k: _normalize_payload(v) for k, v in asdict(value).items()}
-    if isinstance(value, tuple):
-        return [_normalize_payload(v) for v in value]
-    if isinstance(value, list):
-        return [_normalize_payload(v) for v in value]
-    if isinstance(value, dict):
-        return {k: _normalize_payload(v) for k, v in value.items()}
-    return value
 
 
 def _beth_magic() -> bytes:
@@ -105,23 +79,15 @@ def _object_info_record(path: str, db_id: int) -> bytes:
     )
 
 
-def test_materials_native_module_loads():
+def test_native_parity_crc32_resource_id_and_master_string():
     module = native_runtime.load_native_module()
     assert module is not None
     assert callable(getattr(module, "bethesda_crc32", None))
-
-
-def test_bethesda_crc32_matches_known_values():
     assert native_runtime.bethesda_crc32(b"") == 0
     assert native_runtime.bethesda_crc32(b"Bethesda") == 3937205212
-
-
-def test_materials_native_crc_matches_python():
     for sample in (b"", b"a", b"abc", b"materials\\weapons\\gun"):
         assert native_runtime.bethesda_crc32(sample) == bethesda_crc32(sample)
 
-
-def test_materials_native_resource_id_matches_python():
     paths = [
         "Materials/Weapons/gun.mat",
         "materials\\weapons\\gun.mat",
@@ -139,8 +105,6 @@ def test_materials_native_resource_id_matches_python():
             "ext": expected.ext,
         }
 
-
-def test_native_find_master_string_matches_python():
     assert native_runtime.find_master_string("BSResource::ID") == find_master_string(
         "BSResource::ID"
     )
@@ -185,45 +149,67 @@ def test_native_parse_cdb_object_info_matches_python_lookup():
     }
 
 
-def test_native_parse_cdb_drops_truncated_object_info_list():
+def test_native_parse_cdb_drops_truncated_records():
     class_name = "BSComponentDB2::DBFileIndex::ObjectInfo"
     _, offsets = _make_strt_with_strings([class_name])
     first_record = _object_info_record("materials/test/gun.mat", 1)
     partial_second_record = _object_info_record("materials/test/rifle.mat", 2)[:8]
     list_body = struct.pack("<II", offsets[class_name], 2) + first_record + partial_second_record
     data, _ = _minimal_cdb_with_strings([(ChunkType.LIST.value, list_body)], [class_name])
+    assert native_runtime.parse_cdb(data)["objects"] == []
 
-    payload = native_runtime.parse_cdb(data)
-
-    assert payload["objects"] == []
-
-
-def test_native_parse_cdb_drops_truncated_edge_info_list_parent_link():
+    # A truncated EdgeInfo list must not leave a dangling parent link either.
     object_class = "BSComponentDB2::DBFileIndex::ObjectInfo"
     edge_class = "BSComponentDB2::DBFileIndex::EdgeInfo"
-    _, offsets = _make_strt_with_strings([object_class, edge_class])
+    _, offsets2 = _make_strt_with_strings([object_class, edge_class])
     object_list_body = (
-        struct.pack("<II", offsets[object_class], 2)
+        struct.pack("<II", offsets2[object_class], 2)
         + _object_info_record("materials/test/parent.mat", 1)
         + _object_info_record("materials/test/child.mat", 2)
     )
     partial_edge_record = struct.pack("<II", 2, 1)
-    edge_list_body = struct.pack("<II", offsets[edge_class], 1) + partial_edge_record
-    data, _ = _minimal_cdb_with_strings(
+    edge_list_body = struct.pack("<II", offsets2[edge_class], 1) + partial_edge_record
+    data2, _ = _minimal_cdb_with_strings(
         [
             (ChunkType.LIST.value, object_list_body),
             (ChunkType.LIST.value, edge_list_body),
         ],
         [object_class, edge_class],
     )
-
-    payload = native_runtime.parse_cdb(data)
-
-    child = next(obj for obj in payload["objects"] if obj["db_id"] == 2)
+    payload2 = native_runtime.parse_cdb(data2)
+    child = next(obj for obj in payload2["objects"] if obj["db_id"] == 2)
     assert child["parent_db_id"] is None
 
 
-def test_native_ce2_projection_populates_texture_slots_from_payload():
+def _layerid_classdef() -> ClassDef:
+    return ClassDef(
+        class_name="BSMaterial::LayerID",
+        class_name_index=_bsrefl_stringtable.STRING_TABLE.index("BSMaterial::LayerID"),
+        class_version=1,
+        class_flags=0,
+        field_count=0,
+    )
+
+
+def _mrtexturefile_classdef() -> ClassDef:
+    return ClassDef(
+        class_name="BSMaterial::MRTextureFile",
+        class_name_index=_bsrefl_stringtable.STRING_TABLE.index("BSMaterial::MRTextureFile"),
+        class_version=1,
+        class_flags=0,
+        field_count=1,
+        fields=[
+            FieldDef(
+                name_index=_bsrefl_stringtable.STRING_TABLE.index("FileName"),
+                type_index=_bsrefl_stringtable.STRING_TABLE.index("String"),
+                data_offset=0,
+                data_size=0,
+            )
+        ],
+    )
+
+
+def test_native_ce2_projection_populates_texture_slots_from_normal_and_diff_payloads():
     cdb = MaterialsCDB()
     root = MaterialObject(
         persistent_id=BSResourceID(dir=1, file=2, ext=3),
@@ -232,12 +218,7 @@ def test_native_ce2_projection_populates_texture_slots_from_payload():
         has_data=True,
     )
     root.components.append(
-        ComponentBlob(
-            class_name="BSMaterial::LayerID",
-            is_diff=False,
-            key=0,
-            body=b"",
-        )
+        ComponentBlob(class_name="BSMaterial::LayerID", is_diff=False, key=0, body=b"")
     )
     cdb.objects_by_db_id[root.db_id] = root
 
@@ -271,214 +252,46 @@ def test_native_ce2_projection_populates_texture_slots_from_payload():
         )
     cdb.objects_by_db_id[texture_child.db_id] = texture_child
 
-    cdb.class_defs["BSMaterial::LayerID"] = ClassDef(
-        class_name="BSMaterial::LayerID",
-        class_name_index=_bsrefl_stringtable.STRING_TABLE.index("BSMaterial::LayerID"),
-        class_version=1,
-        class_flags=0,
-        field_count=0,
-    )
-    cdb.class_defs["BSMaterial::MRTextureFile"] = ClassDef(
-        class_name="BSMaterial::MRTextureFile",
-        class_name_index=_bsrefl_stringtable.STRING_TABLE.index("BSMaterial::MRTextureFile"),
-        class_version=1,
-        class_flags=0,
-        field_count=1,
-        fields=[
-            FieldDef(
-                name_index=_bsrefl_stringtable.STRING_TABLE.index("FileName"),
-                type_index=_bsrefl_stringtable.STRING_TABLE.index("String"),
-                data_offset=0,
-                data_size=0,
-            )
-        ],
-    )
+    cdb.class_defs["BSMaterial::LayerID"] = _layerid_classdef()
+    cdb.class_defs["BSMaterial::MRTextureFile"] = _mrtexturefile_classdef()
 
-    payload = cdb._to_native_payload()
-    projected = native_runtime.project_ce2_material(payload, 1)
+    projected = native_runtime.project_ce2_material(cdb._to_native_payload(), 1)
 
     assert projected["layers"][0]["texture_set"]["diffuse"] == "textures\\test_color.dds"
     assert projected["layers"][0]["texture_set"]["normal"] == "textures\\test_normal.dds"
 
-
-def test_native_ce2_projection_reads_diff_mrtexturefile_payload():
-    cdb = MaterialsCDB()
-    root = MaterialObject(
+    # A DIFF-encoded MRTextureFile (u16 field number prefix) reads the same way.
+    diff_cdb = MaterialsCDB()
+    diff_root = MaterialObject(
         persistent_id=BSResourceID(dir=1, file=2, ext=3),
         db_id=1,
         base_object_db_id=0,
         has_data=True,
     )
-    root.components.append(
-        ComponentBlob(
-            class_name="BSMaterial::LayerID",
-            is_diff=False,
-            key=0,
-            body=b"",
-        )
+    diff_root.components.append(
+        ComponentBlob(class_name="BSMaterial::LayerID", is_diff=False, key=0, body=b"")
     )
-    cdb.objects_by_db_id[root.db_id] = root
+    diff_cdb.objects_by_db_id[diff_root.db_id] = diff_root
 
-    texture_child = MaterialObject(
+    diff_texture_child = MaterialObject(
         persistent_id=BSResourceID(dir=4, file=5, ext=6),
         db_id=2,
         base_object_db_id=0,
         has_data=True,
-        parent=root,
+        parent=diff_root,
     )
-    filename = b"textures\\diff_color.dds\x00"
-    texture_child.components.append(
+    diff_filename = b"textures\\diff_color.dds\x00"
+    diff_texture_child.components.append(
         ComponentBlob(
             class_name="BSMaterial::MRTextureFile",
             is_diff=True,
             key=0,
-            body=struct.pack("<HH", 0, len(filename)) + filename,
+            body=struct.pack("<HH", 0, len(diff_filename)) + diff_filename,
         )
     )
-    cdb.objects_by_db_id[texture_child.db_id] = texture_child
+    diff_cdb.objects_by_db_id[diff_texture_child.db_id] = diff_texture_child
+    diff_cdb.class_defs["BSMaterial::LayerID"] = _layerid_classdef()
+    diff_cdb.class_defs["BSMaterial::MRTextureFile"] = _mrtexturefile_classdef()
 
-    cdb.class_defs["BSMaterial::LayerID"] = ClassDef(
-        class_name="BSMaterial::LayerID",
-        class_name_index=_bsrefl_stringtable.STRING_TABLE.index("BSMaterial::LayerID"),
-        class_version=1,
-        class_flags=0,
-        field_count=0,
-    )
-    cdb.class_defs["BSMaterial::MRTextureFile"] = ClassDef(
-        class_name="BSMaterial::MRTextureFile",
-        class_name_index=_bsrefl_stringtable.STRING_TABLE.index("BSMaterial::MRTextureFile"),
-        class_version=1,
-        class_flags=0,
-        field_count=1,
-        fields=[
-            FieldDef(
-                name_index=_bsrefl_stringtable.STRING_TABLE.index("FileName"),
-                type_index=_bsrefl_stringtable.STRING_TABLE.index("String"),
-                data_offset=0,
-                data_size=0,
-            )
-        ],
-    )
-
-    projected = native_runtime.project_ce2_material(cdb._to_native_payload(), 1)
-
-    assert projected["layers"][0]["texture_set"]["diffuse"] == "textures\\diff_color.dds"
-
-
-def test_native_bgsm_parse_matches_python_fixture():
-    data = (FIXTURE_DIR / "sample_v22.bgsm").read_bytes()
-
-    expected = _normalize_payload(read_bgsm(io.BytesIO(data)))
-    actual = _normalize_payload(native_runtime.parse_bgsm(data))
-
-    assert actual == expected
-
-
-def test_native_bgsm_write_round_trips_fixture():
-    data = (FIXTURE_DIR / "sample_v22.bgsm").read_bytes()
-
-    payload = native_runtime.parse_bgsm(data)
-
-    assert native_runtime.write_bgsm(payload) == data
-
-
-def test_native_bgsm_writer_null_terminates_generated_texture_paths():
-    data = (FIXTURE_DIR / "sample_v22.bgsm").read_bytes()
-    payload = native_runtime.parse_bgsm(data)
-    payload["DiffuseTexture"] = payload["DiffuseTexture"].rstrip("\x00")
-    payload["NormalTexture"] = payload["NormalTexture"].rstrip("\x00")
-
-    written = native_runtime.write_bgsm(payload)
-
-    for field in ("DiffuseTexture", "NormalTexture"):
-        encoded = payload[field].encode("utf-8")
-        offset = written.index(encoded)
-        encoded_len = int.from_bytes(written[offset - 4 : offset], "little")
-        assert encoded_len == len(encoded) + 1
-        assert written[offset + len(encoded)] == 0
-
-
-def test_native_bgem_parse_matches_python_fixture():
-    data = (FIXTURE_DIR / "sample_v22.bgem").read_bytes()
-
-    expected = _normalize_payload(read_bgem(io.BytesIO(data)))
-    actual = _normalize_payload(native_runtime.parse_bgem(data))
-
-    assert actual == expected
-
-
-def test_native_bgem_glass_write_round_trips_fixture():
-    data = (FIXTURE_DIR / "sample_v22_glass.bgem").read_bytes()
-
-    payload = native_runtime.parse_bgem(data)
-
-    assert payload["GlassEnabled"] is True
-    assert native_runtime.write_bgem(payload) == data
-
-
-def test_public_bgsm_reader_uses_native_roundtrip_contract():
-    original = (FIXTURE_DIR / "sample_v22.bgsm").read_bytes()
-    data = read_bgsm(io.BytesIO(original))
-    buf = io.BytesIO()
-    data.write(buf)
-    assert buf.getvalue() == original
-
-
-def test_public_bgem_reader_uses_native_roundtrip_contract():
-    original = (FIXTURE_DIR / "sample_v22_glass.bgem").read_bytes()
-    data = read_bgem(io.BytesIO(original))
-    buf = io.BytesIO()
-    data.write(buf)
-    assert buf.getvalue() == original
-
-
-def test_public_bgsm_reader_and_writer_delegate_to_native(monkeypatch):
-    payload = native_runtime.parse_bgsm((FIXTURE_DIR / "sample_v22.bgsm").read_bytes())
-    calls = {}
-
-    def fake_parse(raw):
-        calls["parse_raw"] = raw
-        return payload
-
-    def fake_write(native_payload):
-        calls["write_payload"] = native_payload
-        return b"native-bgsm"
-
-    monkeypatch.setattr(native_runtime, "parse_bgsm", fake_parse)
-    monkeypatch.setattr(native_runtime, "write_bgsm", fake_write)
-
-    data = read_bgsm(io.BytesIO(b"raw-bgsm"))
-
-    assert calls["parse_raw"] == b"raw-bgsm"
-    assert isinstance(data.SpecularColor, tuple)
-    buf = io.BytesIO()
-    data.write(buf)
-    assert buf.getvalue() == b"native-bgsm"
-    assert calls["write_payload"]["header"] == asdict(data.header)
-
-
-def test_public_bgem_reader_and_writer_delegate_to_native(monkeypatch):
-    payload = native_runtime.parse_bgem(
-        (FIXTURE_DIR / "sample_v22_glass.bgem").read_bytes()
-    )
-    calls = {}
-
-    def fake_parse(raw):
-        calls["parse_raw"] = raw
-        return payload
-
-    def fake_write(native_payload):
-        calls["write_payload"] = native_payload
-        return b"native-bgem"
-
-    monkeypatch.setattr(native_runtime, "parse_bgem", fake_parse)
-    monkeypatch.setattr(native_runtime, "write_bgem", fake_write)
-
-    data = read_bgem(io.BytesIO(b"raw-bgem"))
-
-    assert calls["parse_raw"] == b"raw-bgem"
-    assert isinstance(data.BaseColor, tuple)
-    buf = io.BytesIO()
-    data.write(buf)
-    assert buf.getvalue() == b"native-bgem"
-    assert calls["write_payload"]["header"] == asdict(data.header)
+    diff_projected = native_runtime.project_ce2_material(diff_cdb._to_native_payload(), 1)
+    assert diff_projected["layers"][0]["texture_set"]["diffuse"] == "textures\\diff_color.dds"

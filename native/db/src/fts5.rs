@@ -60,25 +60,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn empty_query() {
-        assert_eq!(fts5_escape_str(""), "\"\"");
-    }
-
-    #[test]
-    fn multiword() {
-        assert_eq!(fts5_escape_str("combat shotgun"), "\"combat\" \"shotgun\"");
-    }
-
-    #[test]
-    fn strips_special() {
-        assert_eq!(
-            fts5_escape_str(r#"laser*(gun):"rifle""#),
-            "\"laser\" \"gun\" \"rifle\""
-        );
-    }
-
-    #[test]
-    fn column_scope() {
+    fn escape_and_column_scope() {
+        for (input, want) in [
+            ("", "\"\""),
+            ("combat shotgun", "\"combat\" \"shotgun\""),
+            (r#"laser*(gun):"rifle""#, "\"laser\" \"gun\" \"rifle\""),
+        ] {
+            assert_eq!(fts5_escape_str(input), want, "{input}");
+        }
         let p = column_scope_prefix(&["name".into(), "category".into()]);
         assert_eq!(p, "{name category} : ");
     }

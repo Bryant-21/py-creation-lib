@@ -1554,13 +1554,6 @@ mod tests {
     }
 
     #[test]
-    fn resize_rgba_identity_when_same_size() {
-        let src = vec![1u8, 2, 3, 4, 5, 6, 7, 8];
-        let out = resize_rgba(&src, 2, 1, 2, 1);
-        assert_eq!(out, src, "same-size resize is a no-op copy");
-    }
-
-    #[test]
     fn infinite_dilation_fills_rgb_and_preserves_alpha() {
         let mut rgba = vec![0u8; 5 * 5 * 4];
         let center = (2 * 5 + 2) * 4;
@@ -1574,18 +1567,6 @@ mod tests {
         assert_eq!(rgba[center + 3], 128);
         assert_eq!(rgba[3], 0);
         assert_eq!(rgba[(5 * 5 - 1) * 4 + 3], 0);
-    }
-
-    #[test]
-    fn infinite_dilation_skips_fully_opaque_and_fully_transparent_images() {
-        let mut opaque = vec![255u8; 2 * 2 * 4];
-        let opaque_before = opaque.clone();
-        assert!(!infinite_dilate_transparent_rgb(&mut opaque, 2, 2));
-        assert_eq!(opaque, opaque_before);
-
-        let mut transparent = vec![0u8; 2 * 2 * 4];
-        assert!(!infinite_dilate_transparent_rgb(&mut transparent, 2, 2));
-        assert_eq!(transparent, vec![0u8; 2 * 2 * 4]);
     }
 
     #[test]

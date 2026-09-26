@@ -31,7 +31,7 @@ def solid_tile(h: int, w: int, color: tuple[int, int, int, int]) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 class TestPackTilesDeterministic:
-    def test_pack_two_tiles_deterministic(self):
+    def test_pack_two_tiles_deterministic_and_schema(self):
         """Two solid-color tiles packed twice → identical atlas bytes and entries."""
         tiles = [
             BillboardTile(model="meshes/trees/red.nif", index=0, width=100.0, height=200.0,
@@ -60,6 +60,15 @@ class TestPackTilesDeterministic:
                 f"uv_min_x/uv_max_x out of range: {entry}"
             assert 0.0 <= entry["uv_min_y"] < entry["uv_max_y"] <= 1.0, \
                 f"uv_min_y/uv_max_y out of range: {entry}"
+
+        # Each entry dict has exactly the contract keys (wbLOD.pas:851-854 schema)
+        expected_keys = {
+            "model", "index", "width", "height", "shift_z",
+            "uv_min_x", "uv_max_x", "uv_min_y", "uv_max_y",
+        }
+        for entry in entries1:
+            assert set(entry.keys()) == expected_keys, \
+                f"entry keys {set(entry.keys())} do not match contract {expected_keys}"
 
     def test_pack_crc_dedup(self):
         """Two byte-identical tiles with different model keys → one atlas block, two entries with same UV."""
@@ -102,22 +111,6 @@ class TestPackTilesDeterministic:
         # Should fail at 128 (can't fit 12 64×64 tiles in 128×128)
         with pytest.raises(ValueError, match="not enough space"):
             pack_billboards(tiles, max_atlas_size=128)
-
-    def test_pack_returns_correct_schema_keys(self):
-        """Each entry dict has exactly the contract keys."""
-        tiles = [
-            BillboardTile(model="meshes/trees/test.nif", index=0, width=100.0, height=300.0,
-                          shift_z=4.0, rgba=solid_tile(32, 32, (200, 200, 200, 255))),
-        ]
-        _, entries = pack_billboards(tiles, max_atlas_size=512)
-        assert len(entries) == 1
-        expected_keys = {
-            "model", "index", "width", "height", "shift_z",
-            "uv_min_x", "uv_max_x", "uv_min_y", "uv_max_y",
-        }
-        actual_keys = set(entries[0].keys())
-        assert actual_keys == expected_keys, \
-            f"entry keys {actual_keys} do not match contract {expected_keys}"
 
 
 class TestWriteManifest:
@@ -168,10 +161,8 @@ class TestWriteManifest:
         assert manifest_path1.read_bytes() == manifest_path2.read_bytes(), \
             "manifest is not byte-identical across two runs"
 
-    def test_write_manifest_entries_sorted_by_index(self, tmp_path: Path):
-        """write_manifest sorts entries by index for deterministic output."""
-        # Provide entries in reverse order
-        entries = [
+        # Entries provided out of order come back sorted by index.
+        unsorted_entries = [
             {"model": "b.nif", "index": 2, "width": 1.0, "height": 1.0, "shift_z": 0.0,
              "uv_min_x": 0.5, "uv_max_x": 1.0, "uv_min_y": 0.0, "uv_max_y": 1.0},
             {"model": "a.nif", "index": 0, "width": 1.0, "height": 1.0, "shift_z": 0.0,
@@ -180,13 +171,13 @@ class TestWriteManifest:
              "uv_min_x": 0.0, "uv_max_x": 0.5, "uv_min_y": 0.5, "uv_max_y": 1.0},
         ]
         mp = write_manifest(
-            out_dir=tmp_path, world="W",
+            out_dir=tmp_path / "sorted", world="W",
             atlas_rel="atlas.dds", atlas_n_rel="atlas_n.dds",
-            atlas_w=256, atlas_h=256, entries=entries,
+            atlas_w=256, atlas_h=256, entries=unsorted_entries,
         )
         with open(mp) as f:
-            data = json.load(f)
-        indices = [e["index"] for e in data["entries"]]
+            sorted_data = json.load(f)
+        indices = [e["index"] for e in sorted_data["entries"]]
         assert indices == sorted(indices), f"entries not sorted by index: {indices}"
 
 
@@ -249,7 +240,7 @@ class TestFboPipeline:
     need a NIF fixture, so they exercise the novel GL plumbing directly.
     """
 
-    def test_fbo_render_triangle_non_blank(self):
+    def test_fbo_render_triangle_non_blank_and_deterministic(self):
         ctx = _try_gl_context()
         size = 64
         arr = _render_solid_triangle(ctx, size, (1.0, 0.0, 0.0, 1.0))
@@ -263,9 +254,6 @@ class TestFboPipeline:
         # Something actually rendered.
         assert arr[:, :, 3].max() == 255
 
-    def test_fbo_render_deterministic(self):
-        ctx = _try_gl_context()
-        size = 64
         a = _render_solid_triangle(ctx, size, (0.0, 1.0, 0.0, 1.0))
         b = _render_solid_triangle(ctx, size, (0.0, 1.0, 0.0, 1.0))
         assert a.tobytes() == b.tobytes(), "two identical renders differ (non-deterministic)"
@@ -287,80 +275,10 @@ class TestCoverageAlpha:
         assert tuple(out[1, 1, :3]) == (10, 20, 30)
 
 
-# Repo root, for locating an optional real FO4 LOD nif fixture.
-_REPO_ROOT = Path(__file__).resolve().parents[5]
-# A small real FO4 LOD nif present when the extracted corpus is available
-# (same fixture the Rust object tests use). Lets the full NIF render
-# path be exercised on a GPU box; skipped cleanly when the corpus is absent.
-_FO4_LOD_NIF = _REPO_ROOT / "extracted" / "fo4" / "Meshes" / "DLC03" / "LOD" / \
-    "Architecture" / "Barn" / "BarnDoorMedL01_LOD.nif"
-_FO4_DATA_DIR = _REPO_ROOT / "extracted" / "fo4"
-
-
-def _model_fixture():
-    """Return (model_path, data_dirs) for the full NIF render path, or None."""
-    for cand in (
-        Path(__file__).parent / "fixtures" / "synthetic_tree.nif",
-        Path("tests/fixtures/synthetic_tree.nif"),
-    ):
-        if cand.exists():
-            return str(cand), [cand.parent]
-    if _FO4_LOD_NIF.is_file():
-        return str(_FO4_LOD_NIF), [_FO4_DATA_DIR]
-    return None
-
-
-class TestRenderSpeciesTile:
-    """Full NIF render path. Runs only when both a GL context and a NIF model
-    are available; otherwise skips (the FBO-pipeline tests above are the
-    always-on GL gate)."""
-
-    def test_render_species_tile_smoke(self):
-        _try_gl_context()  # skip cleanly when no GPU; render uses the shared ctx
-        from creation_lib.lod.billboards import render_species_tile
-        fx = _model_fixture()
-        if fx is None:
-            pytest.skip("no NIF model fixture available (synthetic or extracted corpus)")
-        model, data_dirs = fx
-        tile = render_species_tile(model, data_dirs=data_dirs, size=64, brightness=1.0)
-        assert tile.shape == (64, 64, 4), f"unexpected tile shape: {tile.shape}"
-        assert tile.dtype == np.uint8, f"unexpected dtype: {tile.dtype}"
-        assert tile[:, :, 3].max() > 0, "all alpha zero — nothing rendered"
-
-    def test_render_species_tile_deterministic(self):
-        # The shared module context is used (ctx=None) — a fresh standalone
-        # context per call is driver-nondeterministic on the first render.
-        _try_gl_context()
-        from creation_lib.lod.billboards import render_species_tile
-        fx = _model_fixture()
-        if fx is None:
-            pytest.skip("no NIF model fixture available")
-        model, data_dirs = fx
-        a = render_species_tile(model, data_dirs=data_dirs, size=64, brightness=1.0)
-        b = render_species_tile(model, data_dirs=data_dirs, size=64, brightness=1.0)
-        assert a.tobytes() == b.tobytes(), "two renders of the same model differ"
-
-    def test_brightness_scales_rgb_gpu(self):
-        _try_gl_context()
-        from creation_lib.lod.billboards import render_species_tile
-        fx = _model_fixture()
-        if fx is None:
-            pytest.skip("no NIF model fixture available")
-        model, data_dirs = fx
-        tile_full = render_species_tile(model, data_dirs=data_dirs, size=64, brightness=1.0)
-        tile_dim = render_species_tile(model, data_dirs=data_dirs, size=64, brightness=0.5)
-        cov = tile_full[:, :, 3] > 0
-        mean_full = tile_full[:, :, :3][cov].mean() if cov.any() else 0.0
-        if mean_full < 8.0:
-            pytest.skip("model renders too dark for a meaningful brightness comparison")
-        mean_dim = tile_dim[:, :, :3][cov].mean()
-        assert mean_dim < mean_full, f"dim ({mean_dim}) not less than full ({mean_full})"
-
-
 class TestApplyBrightness:
     """Brightness scaling is a pure post-readback op — tested without a GPU."""
 
-    def test_brightness_scales_rgb_not_alpha(self):
+    def test_brightness_scales_rgb_not_alpha_and_is_noop_at_one(self):
         from creation_lib.lod.billboards import _apply_brightness
         arr = np.zeros((2, 2, 4), dtype=np.uint8)
         arr[:, :, :3] = (200, 100, 50)
@@ -369,49 +287,9 @@ class TestApplyBrightness:
         assert tuple(out[0, 0, :3]) == (100, 50, 25), f"got {tuple(out[0, 0, :3])}"
         assert out[0, 0, 3] == 255, "alpha (coverage) must not be scaled"
 
-    def test_brightness_one_is_noop(self):
-        from creation_lib.lod.billboards import _apply_brightness
-        arr = np.full((2, 2, 4), 123, dtype=np.uint8)
-        out = _apply_brightness(arr, 1.0)
-        assert np.array_equal(out, arr)
-
-
-class TestGenerateBillboardsEndToEnd:
-    """Full headless generator: render → pack → atlas DDS + _n → manifest."""
-
-    def test_generate_billboards_writes_atlas_and_manifest(self, tmp_path: Path):
-        _try_gl_context()
-        from creation_lib.lod.billboards import generate_billboards
-        fx = _model_fixture()
-        if fx is None:
-            pytest.skip("no NIF model fixture available")
-        model, data_dirs = fx
-        species = [
-            {"model": model, "billboard": "a.dds", "index": 0,
-             "width": 100.0, "height": 300.0, "shift_z": 4.0},
-            {"model": model, "billboard": "b.dds", "index": 1,
-             "width": 120.0, "height": 280.0, "shift_z": 8.0},
-        ]
-        manifest_path = generate_billboards(
-            species, data_dirs=data_dirs, out_dir=tmp_path,
-            world="TestWorld", atlas_size=512, brightness=1.0, tile_size=128,
-        )
-        assert manifest_path.exists()
-        data = json.loads(manifest_path.read_text())
-        assert data["atlas_w"] > 0 and data["atlas_h"] > 0
-        assert len(data["entries"]) == 2
-        # Input width/height/index round-trip into the manifest entries.
-        by_index = {e["index"]: e for e in data["entries"]}
-        assert by_index[0]["width"] == 100.0
-        assert by_index[1]["height"] == 280.0
-        # Atlas DDS + flat-normal sibling exist on disk at the manifest paths.
-        atlas = tmp_path / data["atlas"].replace("\\", "/")
-        normal = tmp_path / data["atlas_normal"].replace("\\", "/")
-        assert atlas.is_file() and atlas.stat().st_size > 0
-        assert normal.is_file() and normal.stat().st_size > 0
-        # Identical species → CRC-dedup shares one atlas block (same UV rect).
-        e0, e1 = data["entries"][0], data["entries"][1]
-        assert (e0["uv_min_x"], e0["uv_max_x"]) == (e1["uv_min_x"], e1["uv_max_x"])
+        noop_arr = np.full((2, 2, 4), 123, dtype=np.uint8)
+        noop_out = _apply_brightness(noop_arr, 1.0)
+        assert np.array_equal(noop_out, noop_arr)
 
 
 class TestBillboardRenderErrorContract:

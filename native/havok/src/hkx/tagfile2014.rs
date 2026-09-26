@@ -1671,27 +1671,16 @@ mod tests {
     }
 
     #[test]
-    fn vle_round_trip_small_positive_and_negative_values() {
-        for v in [0i64, 1, -1, 7, -7, 0x3F, -0x3F] {
+    fn vle_round_trips_all_widths_and_rejects_truncation() {
+        let values = [
+            0i64, 1, -1, 7, -7, 0x3F, -0x3F, 0x40, -0x40, 0x1FFF, -0x1FFF,
+        ];
+        for v in values.into_iter().chain([0x10_0000, 0x7FFF_FFFF]) {
             let encoded = vle_signed(v);
             let (decoded, consumed) = read_vle_signed(&encoded, 0).unwrap();
             assert_eq!(decoded, v, "round trip {v}");
             assert_eq!(consumed, encoded.len());
         }
-    }
-
-    #[test]
-    fn vle_round_trip_continuation_widths() {
-        for v in [0x40i64, -0x40, 0x1FFF, -0x1FFF, 0x10_0000, 0x7FFF_FFFF] {
-            let encoded = vle_signed(v);
-            let (decoded, consumed) = read_vle_signed(&encoded, 0).unwrap();
-            assert_eq!(decoded, v, "round trip {v}");
-            assert_eq!(consumed, encoded.len());
-        }
-    }
-
-    #[test]
-    fn vle_truncated_input_errors() {
         let err = read_vle_signed(&[0x80], 0).unwrap_err();
         assert!(err.to_string().contains("truncated"));
     }

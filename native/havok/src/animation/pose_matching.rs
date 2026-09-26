@@ -3,7 +3,7 @@
 /// Indexes a set of named poses (each a quantized rotation fingerprint) and
 /// supports nearest-neighbor lookup. Used for "find the get-up animation that
 /// ends in T-pose" and similar semantic animation queries.
-use crate::animation::pose::{Pose, QsTransform, vec3_dot};
+use crate::animation::pose::Pose;
 
 // ---------------------------------------------------------------------------
 // Fingerprint
@@ -138,41 +138,41 @@ mod tests {
     }
 
     #[test]
-    fn query_returns_nearest_pose() {
-        let mut db = PoseDatabase::new();
+    fn pose_matching_query_and_fingerprint() {
+        {
+            let mut db = PoseDatabase::new();
 
-        // 10 distinct poses.
-        let mut poses: Vec<Pose> = (0..10)
-            .map(|i| {
-                let angle = (i as f32) * std::f32::consts::TAU / 10.0;
-                make_pose(
-                    [0.0, 0.0, 0.0],
-                    [0.0, 0.0, (angle * 0.5).sin(), (angle * 0.5).cos()],
-                )
-            })
-            .collect();
+            // 10 distinct poses.
+            let mut poses: Vec<Pose> = (0..10)
+                .map(|i| {
+                    let angle = (i as f32) * std::f32::consts::TAU / 10.0;
+                    make_pose(
+                        [0.0, 0.0, 0.0],
+                        [0.0, 0.0, (angle * 0.5).sin(), (angle * 0.5).cos()],
+                    )
+                })
+                .collect();
 
-        for (i, pose) in poses.iter_mut().enumerate() {
-            let fp = PoseFingerprint::from_pose(pose);
-            db.insert(format!("pose_{i}"), fp);
+            for (i, pose) in poses.iter_mut().enumerate() {
+                let fp = PoseFingerprint::from_pose(pose);
+                db.insert(format!("pose_{i}"), fp);
+            }
+
+            // Query with pose_0 perturbed slightly.
+            let mut query_pose = make_pose([0.0, 0.0, 0.0], [0.0, 0.0, 0.001, 0.9999995]);
+            let query_fp = PoseFingerprint::from_pose(&mut query_pose);
+            let results = db.query(&query_fp, 1);
+            assert_eq!(results.len(), 1);
+            assert_eq!(
+                results[0].0, "pose_0",
+                "nearest should be pose_0, got {}",
+                results[0].0
+            );
         }
-
-        // Query with pose_0 perturbed slightly.
-        let mut query_pose = make_pose([0.0, 0.0, 0.0], [0.0, 0.0, 0.001, 0.9999995]);
-        let query_fp = PoseFingerprint::from_pose(&mut query_pose);
-        let results = db.query(&query_fp, 1);
-        assert_eq!(results.len(), 1);
-        assert_eq!(
-            results[0].0, "pose_0",
-            "nearest should be pose_0, got {}",
-            results[0].0
-        );
-    }
-
-    #[test]
-    fn fingerprint_self_distance_is_zero() {
-        let mut pose = make_pose([1.0, 2.0, 3.0], [0.0, 0.0, 0.0, 1.0]);
-        let fp = PoseFingerprint::from_pose(&mut pose);
-        assert_eq!(fp.distance_sq(&fp), 0.0);
+        {
+            let mut pose = make_pose([1.0, 2.0, 3.0], [0.0, 0.0, 0.0, 1.0]);
+            let fp = PoseFingerprint::from_pose(&mut pose);
+            assert_eq!(fp.distance_sq(&fp), 0.0);
+        }
     }
 }

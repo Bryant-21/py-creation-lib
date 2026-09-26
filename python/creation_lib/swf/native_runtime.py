@@ -9,6 +9,8 @@ disturbing them. Use it for marker-symbol injection (FO76 → FO4).
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 from importlib import import_module
 from typing import Any
 
@@ -76,6 +78,10 @@ def list_symbols(data: bytes) -> list[tuple[int, str]]:
     return load_native_module().list_symbols(bytes(data))
 
 
+def render_symbol_png(data: bytes, name: str, frame: int = 1, scale: float = 1.0) -> bytes:
+    return bytes(load_native_module().render_symbol_png(bytes(data), name, frame, scale))
+
+
 def tag_histogram(data: bytes) -> list[tuple[int, int]]:
     """``(tag_code, count)`` sorted by code — a structural fingerprint."""
     return load_native_module().tag_histogram(bytes(data))
@@ -127,12 +133,54 @@ def compile_as3_do_abc(sources: list[str]) -> bytes:
     return bytes(load_native_module().compile_as3_do_abc([str(s) for s in sources]))
 
 
+def replace_as3_classes(data: bytes, sources: dict[str, str], dependencies: Iterable[bytes] = ()) -> bytes:
+    return bytes(load_native_module().replace_as3_classes(bytes(data), sources, list(dependencies)))
+
+
+def augment_as3_classes(data: bytes, sources: dict[str, str], dependencies: Iterable[bytes] = ()) -> bytes:
+    return bytes(load_native_module().augment_as3_classes(bytes(data), sources, list(dependencies)))
+
+
+def rename_as3_classes(data: bytes, prefix: str, keep: Iterable[str] = ()) -> bytes:
+    """Move every class the movie defines under ``prefix`` so a host menu's classes
+    of the same name cannot take their place; ``keep`` lists packages to leave
+    alone, such as the player's own ``scaleform.gfx`` stubs."""
+    return bytes(load_native_module().rename_as3_classes(bytes(data), str(prefix), [str(k) for k in keep]))
+
+
+def patch_as3_method(data: bytes, class_name: str, method_name: str, pattern: list, replacement: list,
+                     *, expected_matches: int = 1) -> bytes:
+    import json
+    return bytes(load_native_module().patch_as3_method(
+        bytes(data), class_name, method_name, json.dumps(pattern), json.dumps(replacement), expected_matches))
+
+
 def compile_as3_class_names(sources: list[str]) -> list[str]:
     """Fully-qualified names of every class the given ActionScript defines.
 
     Use this to check that each SymbolClass export a packer is about to write is
     actually backed by a compiled class, before the SWF ships."""
     return list(load_native_module().compile_as3_class_names([str(s) for s in sources]))
+
+
+def abc_class_outline(data: bytes, class_name: str) -> dict[str, Any]:
+    """Superclass, interfaces, traits and method signatures of one AS3 class."""
+    import json
+    return json.loads(load_native_module().abc_class_outline(bytes(data), str(class_name)))
+
+
+def abc_disassemble(data: bytes, class_name: str, method: str | None = None) -> list[dict[str, Any]]:
+    """Instruction listings for a class's methods; ``method`` matches a label such
+    as ``populate``, ``get total`` or just ``total`` (both accessors)."""
+    import json
+    return json.loads(load_native_module().abc_disassemble(bytes(data), str(class_name), method))
+
+
+def abc_class_references(data: bytes, class_name: str, transitive: bool = False) -> dict[str, Any]:
+    """Names a class depends on, split into movie-defined, built-in and external
+    classes plus accessed members; ``transitive`` follows movie-defined classes."""
+    import json
+    return json.loads(load_native_module().abc_class_references(bytes(data), str(class_name), bool(transitive)))
 
 
 def inject_symbols(src: bytes, dst: bytes, names: list[str]) -> bytes:

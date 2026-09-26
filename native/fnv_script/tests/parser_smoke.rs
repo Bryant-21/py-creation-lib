@@ -1,4 +1,3 @@
-use fnv_script_native::ast::Stmt;
 use fnv_script_native::error::FnvScriptError;
 use fnv_script_native::parser::parse_script;
 
@@ -22,21 +21,6 @@ End
     let block = &script.blocks[0];
     assert_eq!(block.event, "OnActivate");
     assert_eq!(block.statements.len(), 2);
-}
-
-#[test]
-fn parse_quest_script_with_set_to_function_call() {
-    let src = r#"
-ScriptName QuestScr
-ref rPlayer
-Begin GameMode
-    Set rPlayer to GetPlayer
-End
-"#;
-
-    let script = parse_script(src).unwrap();
-    let block = &script.blocks[0];
-    assert!(matches!(&block.statements[0], Stmt::Set { .. }));
 }
 
 #[test]

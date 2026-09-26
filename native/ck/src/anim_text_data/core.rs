@@ -111,20 +111,13 @@ mod tests {
     const BASE: &str = r"Actors\Snallygaster\Animations";
 
     #[test]
-    fn name_only_ids_match_ck() {
-        // AnimEventInfo/<id>.txt
+    fn ids_and_filenames_match_ck() {
         assert_eq!(name_id(ROOT), 133025100);
         assert_eq!(name_id(CORE), 4152054059);
-    }
-
-    #[test]
-    fn base_subgraph_id_matches_ck() {
-        // AnimationFileData/16837539554263781675.txt — lone SAPT, verbatim.
+        assert_eq!(name_id(CORE), name_id(&CORE.to_uppercase()));
+        assert_eq!(name_filename(ROOT), "133025100.txt");
         assert_eq!(subgraph_id(CORE, &[BASE]), 16837539554263781675);
-    }
-
-    #[test]
-    fn inherited_subgraph_ids_match_ck() {
+        assert_eq!(subgraph_filename(CORE, &[BASE]), "16837539554263781675.txt");
         // Injured variants: chain = [self, base], lowercased.
         assert_eq!(
             subgraph_id(CORE, &[&format!(r"{BASE}\Injured\RightLeg"), BASE]),
@@ -139,16 +132,5 @@ mod tests {
             subgraph_id(CORE, &[&format!(r"{BASE}\injured\boothlegs"), BASE]),
             3632382008203366699
         );
-    }
-
-    #[test]
-    fn name_id_is_case_insensitive() {
-        assert_eq!(name_id(CORE), name_id(&CORE.to_uppercase()));
-    }
-
-    #[test]
-    fn filename_formatting() {
-        assert_eq!(name_filename(ROOT), "133025100.txt");
-        assert_eq!(subgraph_filename(CORE, &[BASE]), "16837539554263781675.txt");
     }
 }

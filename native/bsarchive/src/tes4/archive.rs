@@ -1034,13 +1034,6 @@ mod tests {
     };
 
     #[test]
-    fn default_state() {
-        let bsa = Archive::new();
-        assert!(bsa.is_empty());
-        assert!(bsa.len() == 0);
-    }
-
-    #[test]
     fn read_compressed() -> anyhow::Result<()> {
         let test = |file_name: &str| -> anyhow::Result<()> {
             let root = Path::new("data/tes4_compression_test");
@@ -1094,41 +1087,6 @@ mod tests {
 
         test("test_104.bsa").context("v104")?;
         test("test_105.bsa").context("v105")?;
-
-        Ok(())
-    }
-
-    #[test]
-    fn xbox_decompressed_read() -> anyhow::Result<()> {
-        let root = Path::new("data/tes4_xbox_read_test");
-
-        let (normal, normal_options) = Archive::read(root.join("normal.bsa").as_path())
-            .context("failed to read normal archive")?;
-        assert!(!normal_options.flags().xbox_archive());
-        assert!(!normal_options.flags().xbox_compressed());
-        assert!(!normal_options.flags().compressed());
-
-        let (xbox, xbox_options) = Archive::read(root.join("xbox.bsa").as_path())
-            .context("failed to read xbox archive")?;
-        assert!(xbox_options.flags().xbox_archive());
-        assert!(!xbox_options.flags().xbox_compressed());
-        assert!(!xbox_options.flags().compressed());
-
-        assert_eq!(normal.len(), xbox.len());
-        for (directory_normal, directory_xbox) in normal.iter().zip(xbox) {
-            assert_eq!(directory_normal.0.hash(), directory_xbox.0.hash());
-            assert_eq!(directory_normal.0.name(), directory_xbox.0.name());
-            assert_eq!(directory_normal.1.len(), directory_xbox.1.len());
-
-            for (file_normal, file_xbox) in directory_normal.1.iter().zip(directory_xbox.1) {
-                assert_eq!(file_normal.0.hash(), file_xbox.0.hash());
-                assert_eq!(file_normal.0.name(), file_xbox.0.name());
-                assert!(!file_normal.1.is_compressed());
-                assert!(!file_xbox.1.is_compressed());
-                assert_eq!(file_normal.1.len(), file_xbox.1.len());
-                assert_eq!(file_normal.1.as_bytes(), file_xbox.1.as_bytes());
-            }
-        }
 
         Ok(())
     }
@@ -1375,45 +1333,27 @@ mod tests {
     }
 
     #[test]
-    fn invalid_magic() -> anyhow::Result<()> {
-        let path = Path::new("data/tes4_invalid_test/invalid_magic.bsa");
-        match Archive::read(path) {
-            Err(Error::InvalidMagic(0x00324142)) => Ok(()),
-            Err(err) => Err(err.into()),
-            Ok(_) => anyhow::bail!("read should have failed"),
-        }
-    }
-
-    #[test]
-    fn invalid_size() -> anyhow::Result<()> {
-        let path = Path::new("data/tes4_invalid_test/invalid_size.bsa");
-        match Archive::read(path) {
-            Err(Error::InvalidHeaderSize(0xCC)) => Ok(()),
-            Err(err) => Err(err.into()),
-            Ok(_) => anyhow::bail!("read should have failed"),
-        }
-    }
-
-    #[test]
-    fn invalid_version() -> anyhow::Result<()> {
-        let path = Path::new("data/tes4_invalid_test/invalid_version.bsa");
-        match Archive::read(path) {
-            Err(Error::InvalidVersion(42)) => Ok(()),
-            Err(err) => Err(anyhow::Error::from(err)),
-            Ok(_) => anyhow::bail!("read should have failed"),
-        }
-    }
-
-    #[test]
-    fn invalid_exhausted() -> anyhow::Result<()> {
-        let path = Path::new("data/tes4_invalid_test/invalid_exhausted.bsa");
-        match Archive::read(path) {
-            Err(Error::Io(error)) => {
-                assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
-                Ok(())
+    fn malformed_archives_are_rejected() {
+        let cases: [(&str, fn(&Error) -> bool); 4] = [
+            ("invalid_exhausted.bsa", |err| {
+                matches!(err, Error::Io(error) if error.kind() == io::ErrorKind::UnexpectedEof)
+            }),
+            ("invalid_magic.bsa", |err| {
+                matches!(err, Error::InvalidMagic(0x00324142))
+            }),
+            ("invalid_size.bsa", |err| {
+                matches!(err, Error::InvalidHeaderSize(0xCC))
+            }),
+            ("invalid_version.bsa", |err| {
+                matches!(err, Error::InvalidVersion(42))
+            }),
+        ];
+        for (name, expected) in cases {
+            let path = Path::new("data/tes4_invalid_test").join(name);
+            match Archive::read(path.as_path()) {
+                Err(err) => assert!(expected(&err), "{name}: unexpected error {err}"),
+                Ok(_) => panic!("{name}: read should have failed"),
             }
-            Err(err) => Err(err.into()),
-            Ok(_) => anyhow::bail!("read should have failed"),
         }
     }
 

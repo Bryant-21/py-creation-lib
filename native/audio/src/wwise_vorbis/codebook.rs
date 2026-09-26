@@ -182,74 +182,80 @@ mod tests {
     }
 
     #[test]
-    fn sparse_lengths_widen_to_five_bits() {
-        let packed = bits(&[
-            (1, 4),
-            (3, 14),
-            (0, 1),
-            (3, 3),
-            (1, 1),
-            (1, 1),
-            (4, 3),
-            (0, 1),
-            (1, 1),
-            (2, 3),
-            (0, 1),
-        ]);
-        let full = bits(&[
-            (SYNC, 24),
-            (1, 16),
-            (3, 24),
-            (0, 1),
-            (1, 1),
-            (1, 1),
-            (4, 5),
-            (0, 1),
-            (1, 1),
-            (2, 5),
-            (0, 4),
-        ]);
-        assert_eq!(expand(&packed), full);
-    }
-
-    #[test]
-    fn ordered_runs_copy_through() {
-        let packed = bits(&[(2, 4), (5, 14), (1, 1), (3, 5), (2, 3), (3, 2), (0, 1)]);
-        let full = bits(&[
-            (SYNC, 24),
-            (2, 16),
-            (5, 24),
-            (1, 1),
-            (3, 5),
-            (2, 3),
-            (3, 2),
-            (0, 4),
-        ]);
-        assert_eq!(expand(&packed), full);
-    }
-
-    #[test]
-    fn lookup_table_values_copy_through() {
-        let mut packed = vec![(2, 4), (9, 14), (0, 1), (2, 3), (0, 1)];
-        let mut full = vec![(SYNC, 24), (2, 16), (9, 24), (0, 1), (0, 1)];
-        for length in 0..9 {
-            packed.push((length % 4, 2));
-            full.push((length % 4, 5));
+    fn expand_codebook_cases() {
+        let sparse_widen_to_five_bits = (
+            bits(&[
+                (1, 4),
+                (3, 14),
+                (0, 1),
+                (3, 3),
+                (1, 1),
+                (1, 1),
+                (4, 3),
+                (0, 1),
+                (1, 1),
+                (2, 3),
+                (0, 1),
+            ]),
+            bits(&[
+                (SYNC, 24),
+                (1, 16),
+                (3, 24),
+                (0, 1),
+                (1, 1),
+                (1, 1),
+                (4, 5),
+                (0, 1),
+                (1, 1),
+                (2, 5),
+                (0, 4),
+            ]),
+        );
+        let ordered_runs_copy_through = (
+            bits(&[(2, 4), (5, 14), (1, 1), (3, 5), (2, 3), (3, 2), (0, 1)]),
+            bits(&[
+                (SYNC, 24),
+                (2, 16),
+                (5, 24),
+                (1, 1),
+                (3, 5),
+                (2, 3),
+                (3, 2),
+                (0, 4),
+            ]),
+        );
+        let lookup_values_copy_through = {
+            let mut packed = vec![(2, 4), (9, 14), (0, 1), (2, 3), (0, 1)];
+            let mut full = vec![(SYNC, 24), (2, 16), (9, 24), (0, 1), (0, 1)];
+            for length in 0..9 {
+                packed.push((length % 4, 2));
+                full.push((length % 4, 5));
+            }
+            let lookup = [
+                (1, 1),
+                (0x1122_3344, 32),
+                (0x5566_7788, 32),
+                (2, 4),
+                (1, 1),
+                (5, 3),
+                (6, 3),
+                (7, 3),
+            ];
+            packed.extend_from_slice(&lookup);
+            full.push((1, 4));
+            full.extend_from_slice(&lookup[1..]);
+            (bits(&packed), bits(&full))
+        };
+        for (packed, full) in [
+            sparse_widen_to_five_bits,
+            ordered_runs_copy_through,
+            lookup_values_copy_through,
+        ] {
+            assert_eq!(expand(&packed), full);
         }
-        let lookup = [
-            (1, 1),
-            (0x1122_3344, 32),
-            (0x5566_7788, 32),
-            (2, 4),
-            (1, 1),
-            (5, 3),
-            (6, 3),
-            (7, 3),
-        ];
-        packed.extend_from_slice(&lookup);
-        full.push((1, 4));
-        full.extend_from_slice(&lookup[1..]);
-        assert_eq!(expand(&bits(&packed)), bits(&full));
+
+        let zero_width = bits(&[(1, 4), (3, 14), (0, 1), (0, 3), (0, 1), (0, 8)]);
+        assert!(expand_codebook(&zero_width, &mut BitWriter::new()).is_err());
     }
 
     #[test]
@@ -276,12 +282,6 @@ mod tests {
             (0, 1),
         ]);
         assert_eq!(packed_codebook_len(&thirty_three_bits).unwrap(), 5);
-    }
-
-    #[test]
-    fn zero_width_codeword_lengths_are_rejected() {
-        let packed = bits(&[(1, 4), (3, 14), (0, 1), (0, 3), (0, 1), (0, 8)]);
-        assert!(expand_codebook(&packed, &mut BitWriter::new()).is_err());
     }
 
     fn sample_books(count: u32) -> Vec<Vec<u8>> {
@@ -319,10 +319,7 @@ mod tests {
             assert_eq!(table.book(id as u32).unwrap(), book.as_slice(), "book {id}");
         }
         assert!(table.book(300).is_err());
-    }
 
-    #[test]
-    fn executable_without_a_table_is_reported() {
         let image = synthetic_image(
             &[vec![0x55; 4096]],
             &[(0..400).map(|index| index * 8).collect()],

@@ -447,6 +447,55 @@ mod tests {
         assert!(matching.ok, "{:?}", matching.diagnostics);
     }
 
+    #[test]
+    fn compile_source_types_inherited_properties_structs_and_namespaced_custom_events() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let import_dir = std::env::temp_dir().join(format!(
+            "papyrus_inherited_property_{}_{}",
+            std::process::id(),
+            unique,
+        ));
+        std::fs::create_dir_all(import_dir.join("InheritNs")).expect("create import dir");
+        std::fs::write(
+            import_dir.join("InheritNs").join("Timer.psc"),
+            "ScriptName InheritNs:Timer Extends Quest\n\
+             CustomEvent Ended\n\
+             Struct Pair\n\
+               Int Regular = -1\n\
+             EndStruct\n\
+             Int Property StateIndex Auto\n\
+             Pair[] Property Pairs Auto\n",
+        )
+        .expect("write parent source");
+        let imports = vec![import_dir.to_string_lossy().into_owned()];
+
+        let result = compile_source(
+            "ScriptName InheritNs:TimerUser Extends InheritNs:Timer\n\
+             Int Function CurrentState()\n\
+               Int fromName = StateIndex\n\
+               Return Self.StateIndex + fromName\n\
+             EndFunction\n\
+             Int Function FirstRegular(InheritNs:Timer akTimer)\n\
+               Int regular = akTimer.Pairs[0].Regular\n\
+               Return regular\n\
+             EndFunction\n\
+             Function Listen(InheritNs:Timer akTimer)\n\
+               RegisterForCustomEvent(akTimer, \"Ended\")\n\
+             EndFunction\n\
+             Event InheritNs:Timer.Ended(InheritNs:Timer akSender, Var[] akArgs)\n\
+             EndEvent\n",
+            &imports,
+            Game::Fo4,
+            None,
+        );
+        std::fs::remove_dir_all(&import_dir).expect("remove import dir");
+
+        assert!(result.ok, "{:?}", result.diagnostics);
+    }
+
     /// The script under compilation is in memory, not on the import path; its
     /// own hierarchy must still resolve so same-script calls get their declared
     /// return type instead of `None`.

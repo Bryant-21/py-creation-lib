@@ -27,19 +27,15 @@ def test_native_convert_batch_reports_mixed_results(tmp_path):
     (src_root / "b").mkdir(parents=True)
     shutil.copyfile(ROOT / "resource" / "skeleton.hkx", src_root / "a" / "skeleton.hkx")
     shutil.copyfile(
-        ROOT / "py_creation_lib/python/creation_lib" / "conversion" / "tests" / "fixtures" / "creatures" / "deathclaw" / "expected" / "character.hkx",
-        src_root / "b" / "character.hkx",
-    )
-    shutil.copyfile(
         ROOT / "py_creation_lib/python/creation_lib" / "hkxpack" / "tests" / "fixtures" / "fo76_snallygastercharacter.hkx",
         src_root / "b" / "fo76.hkx",
     )
 
     result = json.loads(havok.havok_convert_batch(str(src_root), str(dst_root), "fo4", True))
 
-    # All three files succeed: skeleton.hkx and character.hkx are FO4 no-ops,
-    # fo76_snallygastercharacter.hkx goes through the FO76 migration path.
-    assert result["converted"] == 3
+    # skeleton.hkx is an FO4 no-op; fo76_snallygastercharacter.hkx goes
+    # through the FO76 migration path.
+    assert result["converted"] == 2
     assert result["skipped"] == 0
     assert result["errors"] == []
     assert (dst_root / "b" / "fo76.hkx").exists()

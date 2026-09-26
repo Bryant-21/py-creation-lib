@@ -458,143 +458,80 @@ mod tests {
     }
 
     #[test]
-    fn build_vcp_on_quad_centered_particle_produces_one_fan() {
+    fn centered_particle_builds_one_fan_with_centroid_points() {
         let mesh = quad_mesh();
-        let cfg = VcpBuilderConfig::default();
-        let vcp = build_vcp(&mesh, &[4], cfg);
+        let vcp = build_vcp(&mesh, &[4], VcpBuilderConfig::default());
 
         assert_eq!(vcp.triangle_fans.len(), 1);
         let fan = &vcp.triangle_fans[0];
         assert_eq!(fan.real_particle_index, 4);
         assert_eq!(fan.num_triangles, 4);
-
-        // Four triangle sections — one per fan triangle.
         assert_eq!(vcp.triangles.len(), 4);
         for sec in &vcp.triangles {
-            // The two opposite verts must each be one of {0,1,2,3}.
             for &op in &sec.opposite_real_particle_indices {
                 assert!(op < 4, "opposite vert {op} not in outer ring");
             }
         }
-
-        // Edge fan: vertex 4 is connected to all four corners — 4 edges.
         assert_eq!(vcp.edge_fans.len(), 1);
         assert_eq!(vcp.edge_fans[0].num_edges, 4);
         assert_eq!(vcp.edges.len(), 4);
-
-        // Total VCP count = 4 triangle points + 4 edge points = 8.
         assert_eq!(vcp.num_vc_points, 8);
-
-        // Block accounting matches.
         assert_eq!(vcp.blocks.len(), 1);
         assert_eq!(vcp.blocks[0].starting_vcp_index, 0);
         assert_eq!(vcp.blocks[0].num_vcps, 8);
-    }
 
-    #[test]
-    fn triangle_dictionary_is_deduped() {
-        // Multiple selected particles — every fan uses the same canonical
-        // (1/3, 1/3) centroid run, so the dict should have exactly one entry.
-        let mesh = quad_mesh();
-        let cfg = VcpBuilderConfig::default();
-        let vcp = build_vcp(&mesh, &[0, 1, 2, 3, 4], cfg);
-
-        assert_eq!(vcp.triangle_dictionary_entries.len(), 1);
-        assert_eq!(vcp.triangle_barycentrics_dictionary.len(), 1);
-        let bp = vcp.triangle_barycentrics_dictionary[0];
-        assert!((bp.u - 1.0 / 3.0).abs() < 1e-6);
-        assert!((bp.v - 1.0 / 3.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn barycentric_weights_in_unit_simplex() {
-        let mesh = quad_mesh();
-        let cfg = VcpBuilderConfig {
-            density: 3,
-            ..Default::default()
-        };
-        let vcp = build_vcp(&mesh, &[4], cfg);
-
-        for bp in &vcp.triangle_barycentrics_dictionary {
-            assert!(
-                bp.u >= 0.0 && bp.v >= 0.0 && bp.u + bp.v <= 1.0 + 1e-6,
-                "barycentric ({}, {}) outside unit simplex",
-                bp.u,
-                bp.v,
-            );
-        }
-        for &t in &vcp.edge_barycentrics_dictionary {
-            assert!(
-                (0.0..=1.0).contains(&t),
-                "edge barycentric {t} outside [0,1]"
-            );
-        }
-    }
-
-    #[test]
-    fn centroid_reconstruction_lies_on_triangle_for_density_1() {
-        // For density=1 (centroid only) the reconstructed point must equal
-        // the triangle centroid in world space.
-        let mesh = quad_mesh();
-        let vcp = build_vcp(&mesh, &[4], VcpBuilderConfig::default());
-        // Pick the first triangle section (which corresponds to one of the
-        // four fan triangles around vertex 4).
-        let sec = &vcp.triangles[0];
-        let entry = &vcp.triangle_dictionary_entries[sec.barycentric_dictionary_index as usize];
-        let bp = vcp.triangle_barycentrics_dictionary[entry.starting_barycentric_index as usize];
-
-        // Reconstruct a triangle from (vertex 4, two opposites). Since we
-        // don't know which fan triangle this is exactly without a back-map,
-        // verify the property holds: centroid of any (4, oa, ob) where oa,
-        // ob are the section's two opposite real-particle indices.
-        let p_owner = mesh.positions[4];
-        let p_a = mesh.positions[sec.opposite_real_particle_indices[0] as usize];
-        let p_b = mesh.positions[sec.opposite_real_particle_indices[1] as usize];
-
-        // Reconstruct point at barycentric (bp.u, bp.v, 1-bp.u-bp.v) on
-        // (owner, oa, ob).
-        let w0 = 1.0 - bp.u - bp.v;
-        let recon = [
-            w0 * p_owner[0] + bp.u * p_a[0] + bp.v * p_b[0],
-            w0 * p_owner[1] + bp.u * p_a[1] + bp.v * p_b[1],
-            w0 * p_owner[2] + bp.u * p_a[2] + bp.v * p_b[2],
-        ];
-        let centroid = [
-            (p_owner[0] + p_a[0] + p_b[0]) / 3.0,
-            (p_owner[1] + p_a[1] + p_b[1]) / 3.0,
-            (p_owner[2] + p_a[2] + p_b[2]) / 3.0,
-        ];
-        for k in 0..3 {
-            assert!(
-                (recon[k] - centroid[k]).abs() < 1e-5,
-                "centroid mismatch axis {k}: {} vs {}",
-                recon[k],
-                centroid[k]
-            );
-        }
-    }
-
-    #[test]
-    fn unselected_particles_get_sentinel_fan_index() {
-        let mesh = quad_mesh();
-        let vcp = build_vcp(&mesh, &[4], VcpBuilderConfig::default());
-
-        // Only vertex 4 has a fan; vertices 0..3 should map to the
-        // out-of-range sentinel value (== num_fans).
+        // Unselected particles map to the out-of-range sentinel (== num_fans).
         let n_fans = vcp.triangle_fans.len() as u16;
         assert_eq!(vcp.triangle_fan_indices[4], 0);
         for i in 0..4 {
             assert_eq!(vcp.triangle_fan_indices[i], n_fans);
         }
+
+        // density=1 reconstructs exactly the triangle centroid.
+        let sec = &vcp.triangles[0];
+        let entry = &vcp.triangle_dictionary_entries[sec.barycentric_dictionary_index as usize];
+        let bp = vcp.triangle_barycentrics_dictionary[entry.starting_barycentric_index as usize];
+        let p_owner = mesh.positions[4];
+        let p_a = mesh.positions[sec.opposite_real_particle_indices[0] as usize];
+        let p_b = mesh.positions[sec.opposite_real_particle_indices[1] as usize];
+        let w0 = 1.0 - bp.u - bp.v;
+        for k in 0..3 {
+            let recon = w0 * p_owner[k] + bp.u * p_a[k] + bp.v * p_b[k];
+            let centroid = (p_owner[k] + p_a[k] + p_b[k]) / 3.0;
+            assert!((recon - centroid).abs() < 1e-5, "axis {k}: {recon} vs {centroid}");
+        }
     }
 
     #[test]
-    fn empty_mesh_produces_empty_data() {
-        let mut mesh = SetupMesh::default();
-        mesh.positions = vec![[0.0, 0.0, 0.0, 1.0]];
-        let vcp = build_vcp(&mesh, &[0], VcpBuilderConfig::default());
-        assert_eq!(vcp.num_vc_points, 0);
-        assert!(vcp.blocks.is_empty());
-        assert!(vcp.triangle_fans.is_empty());
+    fn barycentric_dictionaries_dedupe_and_stay_in_simplex() {
+        let mesh = quad_mesh();
+        let vcp = build_vcp(&mesh, &[0, 1, 2, 3, 4], VcpBuilderConfig::default());
+        assert_eq!(vcp.triangle_dictionary_entries.len(), 1);
+        assert_eq!(vcp.triangle_barycentrics_dictionary.len(), 1);
+        let bp = vcp.triangle_barycentrics_dictionary[0];
+        assert!((bp.u - 1.0 / 3.0).abs() < 1e-6);
+        assert!((bp.v - 1.0 / 3.0).abs() < 1e-6);
+
+        let dense = build_vcp(
+            &mesh,
+            &[4],
+            VcpBuilderConfig {
+                density: 3,
+                ..Default::default()
+            },
+        );
+        for bp in &dense.triangle_barycentrics_dictionary {
+            assert!(bp.u >= 0.0 && bp.v >= 0.0 && bp.u + bp.v <= 1.0 + 1e-6);
+        }
+        for &t in &dense.edge_barycentrics_dictionary {
+            assert!((0.0..=1.0).contains(&t), "edge barycentric {t} outside [0,1]");
+        }
+
+        let mut lone = SetupMesh::default();
+        lone.positions = vec![[0.0, 0.0, 0.0, 1.0]];
+        let empty = build_vcp(&lone, &[0], VcpBuilderConfig::default());
+        assert_eq!(empty.num_vc_points, 0);
+        assert!(empty.blocks.is_empty());
+        assert!(empty.triangle_fans.is_empty());
     }
 }

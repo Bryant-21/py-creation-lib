@@ -132,7 +132,8 @@ def test_bbox_collision_mesh_winds_outward():
         )
 
 
-def test_auto_compressed_mesh_simplifies_to_compressed_mesh_limits():
+def test_auto_compressed_mesh_simplifies_falls_back_and_feeds_blob(monkeypatch):
+    # Phase 1: real decimator simplifies an open panel mesh in place.
     verts_arr, tris_arr = _large_panel_with_small_detail_mesh()
     out_verts, out_tris, simplified = collision._simplify_mesh_for_compressed_collision(
         verts_arr,
@@ -145,30 +146,28 @@ def test_auto_compressed_mesh_simplifies_to_compressed_mesh_limits():
     np.testing.assert_allclose(out_verts.min(axis=0), verts_arr.min(axis=0), atol=1e-5)
     np.testing.assert_allclose(out_verts.max(axis=0), verts_arr.max(axis=0), atol=1e-5)
 
-
-def test_auto_compressed_mesh_falls_back_when_decimator_opens_closed_mesh(monkeypatch):
-    verts_arr, tris_arr = _many_closed_cubes()
-    assert collision._triangle_mesh_has_closed_edges(tris_arr, len(verts_arr))
+    # Phase 2: when the decimator opens a closed mesh, fall back to convex hull.
+    closed_verts, closed_tris = _many_closed_cubes()
+    assert collision._triangle_mesh_has_closed_edges(closed_tris, len(closed_verts))
 
     def fake_qem(vertices, triangles, target_triangles):
         return vertices[:3], np.asarray([[0, 1, 2]], dtype=np.int32)
 
     monkeypatch.setattr(collision, "_qem_decimate_mesh", fake_qem)
 
-    out_verts, out_tris, simplified = collision._simplify_mesh_for_compressed_collision(
-        verts_arr,
-        tris_arr,
+    fb_verts, fb_tris, fb_simplified = collision._simplify_mesh_for_compressed_collision(
+        closed_verts,
+        closed_tris,
     )
 
-    assert simplified is True
-    assert len(out_verts) == 8
-    assert len(out_tris) == 12
-    assert collision._triangle_mesh_has_closed_edges(out_tris, len(out_verts))
-    np.testing.assert_allclose(out_verts.min(axis=0), verts_arr.min(axis=0), atol=1e-5)
-    np.testing.assert_allclose(out_verts.max(axis=0), verts_arr.max(axis=0), atol=1e-5)
+    assert fb_simplified is True
+    assert len(fb_verts) == 8
+    assert len(fb_tris) == 12
+    assert collision._triangle_mesh_has_closed_edges(fb_tris, len(fb_verts))
+    np.testing.assert_allclose(fb_verts.min(axis=0), closed_verts.min(axis=0), atol=1e-5)
+    np.testing.assert_allclose(fb_verts.max(axis=0), closed_verts.max(axis=0), atol=1e-5)
 
-
-def test_fo4_auto_compressed_mesh_simplifies_before_building_blob(monkeypatch):
+    # Phase 3: through generate_collision, the simplified mesh feeds the compressed blob.
     vertices, triangles = _large_independent_triangle_mesh()
     nif = NifFile()
     node = nif.add_block(
@@ -220,6 +219,11 @@ def test_fo4_auto_compressed_mesh_simplifies_before_building_blob(monkeypatch):
     assert "simplified compressed mesh" in result.warnings[0]
 
 
+# Edge length in NIF units. At FO4's 1/70 Havok scale a 1-unit triangle falls
+# under the native compressed-mesh near-zero-area guard, so use 10-unit cubes.
+_CUBE = 10.0
+
+
 def test_fo4_auto_compressed_mesh_preview_is_parseable():
     nif = NifFile()
     node = nif.add_block(
@@ -232,13 +236,13 @@ def test_fo4_auto_compressed_mesh_preview_is_parseable():
             "Name": "CollisionTarget:0",
             "Vertex Data": [
                 {"Vertex": {"x": 0.0, "y": 0.0, "z": 0.0}},
-                {"Vertex": {"x": 1.0, "y": 0.0, "z": 0.0}},
-                {"Vertex": {"x": 1.0, "y": 1.0, "z": 0.0}},
-                {"Vertex": {"x": 0.0, "y": 1.0, "z": 0.0}},
-                {"Vertex": {"x": 0.0, "y": 0.0, "z": 1.0}},
-                {"Vertex": {"x": 1.0, "y": 0.0, "z": 1.0}},
-                {"Vertex": {"x": 1.0, "y": 1.0, "z": 1.0}},
-                {"Vertex": {"x": 0.0, "y": 1.0, "z": 1.0}},
+                {"Vertex": {"x": _CUBE, "y": 0.0, "z": 0.0}},
+                {"Vertex": {"x": _CUBE, "y": _CUBE, "z": 0.0}},
+                {"Vertex": {"x": 0.0, "y": _CUBE, "z": 0.0}},
+                {"Vertex": {"x": 0.0, "y": 0.0, "z": _CUBE}},
+                {"Vertex": {"x": _CUBE, "y": 0.0, "z": _CUBE}},
+                {"Vertex": {"x": _CUBE, "y": _CUBE, "z": _CUBE}},
+                {"Vertex": {"x": 0.0, "y": _CUBE, "z": _CUBE}},
             ],
             "Triangles": [
                 {"v1": 0, "v2": 1, "v3": 2},
@@ -285,13 +289,13 @@ def _add_compressed_source(nif: NifFile, name: str, x: float):
             "Name": f"{name}:0",
             "Vertex Data": [
                 {"Vertex": {"x": x, "y": 0.0, "z": 0.0}},
-                {"Vertex": {"x": x + 1.0, "y": 0.0, "z": 0.0}},
-                {"Vertex": {"x": x + 1.0, "y": 1.0, "z": 0.0}},
-                {"Vertex": {"x": x, "y": 1.0, "z": 0.0}},
-                {"Vertex": {"x": x, "y": 0.0, "z": 1.0}},
-                {"Vertex": {"x": x + 1.0, "y": 0.0, "z": 1.0}},
-                {"Vertex": {"x": x + 1.0, "y": 1.0, "z": 1.0}},
-                {"Vertex": {"x": x, "y": 1.0, "z": 1.0}},
+                {"Vertex": {"x": x + _CUBE, "y": 0.0, "z": 0.0}},
+                {"Vertex": {"x": x + _CUBE, "y": _CUBE, "z": 0.0}},
+                {"Vertex": {"x": x, "y": _CUBE, "z": 0.0}},
+                {"Vertex": {"x": x, "y": 0.0, "z": _CUBE}},
+                {"Vertex": {"x": x + _CUBE, "y": 0.0, "z": _CUBE}},
+                {"Vertex": {"x": x + _CUBE, "y": _CUBE, "z": _CUBE}},
+                {"Vertex": {"x": x, "y": _CUBE, "z": _CUBE}},
             ],
             "Triangles": [
                 {"v1": 0, "v2": 1, "v3": 2},

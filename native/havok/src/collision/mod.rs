@@ -96,6 +96,7 @@ where
     f()
 }
 
+#[cfg(test)]
 pub(crate) fn collision_diagnostic_context() -> Option<String> {
     COLLISION_DIAGNOSTIC_CONTEXT.with(|stack| stack.borrow().last().cloned())
 }

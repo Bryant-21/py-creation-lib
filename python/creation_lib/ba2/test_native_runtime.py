@@ -18,7 +18,51 @@ def test_archive_entry_count_uses_native_header_reader(monkeypatch):
     assert calls == ["Main.ba2"]
 
 
-def test_pack_archive_entries_forwards_options(monkeypatch):
+@pytest.mark.parametrize(
+    ("entries", "output_path", "archive_type", "kwargs", "expected_kwargs", "expected_error"),
+    [
+        (
+            [("X:/src/a.nif", "Meshes/a.nif")],
+            "X:/out/archive.ba2",
+            "fo4",
+            dict(
+                texture_archive=False,
+                compress=True,
+                compression_level=9,
+                share_data=False,
+                manifest_path="X:/manifest.json",
+                jobs=3,
+            ),
+            {
+                "compress": True,
+                "compression_level": 9,
+                "share_data": False,
+                "manifest_path": "X:/manifest.json",
+                "jobs": 3,
+            },
+            None,
+        ),
+        (
+            [("source.dds", "Textures/source.dds")],
+            "Textures_ps.ba2",
+            "fo4psdds",
+            dict(texture_archive=True),
+            None,
+            None,
+        ),
+        (
+            [("X:/src/a.nif", "Meshes/a.nif")],
+            "X:/out/archive.ba2",
+            "fo4",
+            dict(texture_archive=True),
+            None,
+            "texture_archive=True requires a texture archive type",
+        ),
+    ],
+)
+def test_pack_archive_entries_forwards_options(
+    monkeypatch, entries, output_path, archive_type, kwargs, expected_kwargs, expected_error
+):
     import creation_lib.ba2.native_runtime as runtime
 
     calls = []
@@ -31,73 +75,19 @@ def test_pack_archive_entries_forwards_options(monkeypatch):
     monkeypatch.setattr(runtime, "_NATIVE_MODULE", fake_native)
     monkeypatch.setattr(runtime, "_NATIVE_IMPORT_ATTEMPTED", True)
 
-    result = runtime.pack_archive_entries(
-        [("X:/src/a.nif", "Meshes/a.nif")],
-        "X:/out/archive.ba2",
-        "fo4",
-        texture_archive=False,
-        compress=True,
-        compression_level=9,
-        share_data=False,
-        manifest_path="X:/manifest.json",
-        jobs=3,
-    )
+    if expected_error is not None:
+        with pytest.raises(ValueError, match=expected_error):
+            runtime.pack_archive_entries(entries, output_path, archive_type, **kwargs)
+        assert calls == []
+        return
 
-    assert result == 1
-    assert calls == [
-        (
-            [("X:/src/a.nif", "Meshes/a.nif")],
-            "X:/out/archive.ba2",
-            "fo4",
-            {
-                "compress": True,
-                "compression_level": 9,
-                "share_data": False,
-                "manifest_path": "X:/manifest.json",
-                "jobs": 3,
-            },
-        )
-    ]
+    result = runtime.pack_archive_entries(entries, output_path, archive_type, **kwargs)
 
-
-def test_pack_archive_entries_rejects_texture_flag_for_general_archive(monkeypatch):
-    import creation_lib.ba2.native_runtime as runtime
-
-    calls = []
-    fake_native = SimpleNamespace(pack_archive_entries=lambda *args, **kwargs: calls.append(args))
-    monkeypatch.setattr(runtime, "_NATIVE_MODULE", fake_native)
-    monkeypatch.setattr(runtime, "_NATIVE_IMPORT_ATTEMPTED", True)
-
-    with pytest.raises(ValueError, match="texture_archive=True requires a texture archive type"):
-        runtime.pack_archive_entries(
-            [("X:/src/a.nif", "Meshes/a.nif")],
-            "X:/out/archive.ba2",
-            "fo4",
-            texture_archive=True,
-        )
-
-    assert calls == []
-
-
-def test_pack_archive_entries_accepts_playstation_texture_type(monkeypatch):
-    import creation_lib.ba2.native_runtime as runtime
-
-    calls = []
-    fake_native = SimpleNamespace(
-        pack_archive_entries=lambda *args, **kwargs: calls.append((args, kwargs)) or 1
-    )
-    monkeypatch.setattr(runtime, "_NATIVE_MODULE", fake_native)
-    monkeypatch.setattr(runtime, "_NATIVE_IMPORT_ATTEMPTED", True)
-
-    result = runtime.pack_archive_entries(
-        [("source.dds", "Textures/source.dds")],
-        "Textures_ps.ba2",
-        "fo4psdds",
-        texture_archive=True,
-    )
-
-    assert result == 1
-    assert calls[0][0][2] == "fo4psdds"
+    assert result == len(entries)
+    if expected_kwargs is not None:
+        assert calls == [(entries, output_path, archive_type, expected_kwargs)]
+    else:
+        assert calls[0][:3] == (entries, output_path, archive_type)
 
 
 def test_pack_archive_entries_refreshes_stale_native_module(monkeypatch):

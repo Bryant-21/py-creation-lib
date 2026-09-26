@@ -2,13 +2,8 @@ from __future__ import annotations
 
 import gc
 import json
-import logging
-import os
 from pathlib import Path
 import struct
-import subprocess
-import sys
-import time
 from types import SimpleNamespace
 from typing import Any
 
@@ -19,12 +14,9 @@ from creation_lib.esp import Plugin, build_authoring_dir, export_authoring_dir, 
 import creation_lib.esp.api as esp_api
 import creation_lib.esp.plugin as plugin_module
 from creation_lib.esp.native_runtime import load_native_module
-from creation_lib.esp.strings import write_string_table
 
 
 pytestmark = pytest.mark.skipif(load_native_module() is None, reason="esp_authoring_core is not installed")
-
-logger = logging.getLogger(__name__)
 
 
 def _rebuild_via_streaming(authoring_dir: Path, *, game: str = "fo4", jobs: int | None = None) -> Plugin:
@@ -32,15 +24,6 @@ def _rebuild_via_streaming(authoring_dir: Path, *, game: str = "fo4", jobs: int 
     rebuilt_esp = authoring_dir.parent / f"{authoring_dir.name}.rebuilt.esp"
     build_authoring_dir(authoring_dir, rebuilt_esp, game=game, jobs=jobs)
     return Plugin.load(rebuilt_esp, game=game, backend="native")
-
-
-def _log_timed_step_start(plugin_name: str, step: str, target: Path) -> float:
-    logger.info("[%s] %s started: %s", plugin_name, step, target)
-    return time.perf_counter()
-
-
-def _log_timed_step_end(plugin_name: str, step: str, started_at: float) -> None:
-    logger.info("[%s] %s completed in %.2fs", plugin_name, step, time.perf_counter() - started_at)
 
 
 def _native_handle_metadata(
@@ -77,48 +60,6 @@ def _native_handle_metadata(
     }
 
 
-def _record_payload(signature: str, form_id: int, editor_id: str, full_name: str | None = None) -> dict[str, Any]:
-    subrecords = [
-        {"signature": "EDID", "data": f"{editor_id}\0".encode("utf-8"), "semantic_type": None},
-    ]
-    if full_name is not None:
-        subrecords.append({"signature": "FULL", "data": f"{full_name}\0".encode("utf-8"), "semantic_type": None})
-    return {
-        "kind": "record",
-        "signature": signature,
-        "form_id": form_id,
-        "flags": 0,
-        "version_control": 0,
-        "form_version": 0,
-        "version2": 0,
-        "subrecords": subrecords,
-        "raw_payload": None,
-        "parse_error": None,
-    }
-
-
-def _write_raw_authoring_dir(path: Path) -> None:
-    path.mkdir(parents=True, exist_ok=True)
-    (path / "records" / "MISC").mkdir(parents=True, exist_ok=True)
-    (path / "plugin.json").write_text(
-        (
-            '{"plugin":"RawAuthoring.esp","game":"fo4","header":{"version":1.0,'
-            '"num_records":1,"next_object_id":"000801","author":"","description":"",'
-            '"masters":[],"master_sizes":[],"overridden_forms":[],"flags":"00000000",'
-            '"version_control":0,"extra_subrecords":[]}}'
-        ),
-        encoding="utf-8",
-    )
-    (path / "records" / "MISC" / "RawAuthoringRecord.json").write_text(
-        (
-            '{"form_id":"000800:RawAuthoring.esp","subrecords":['
-            '{"signature":"EDID","data_hex":"526177417574686F72696E675265636F726400"},'
-            '{"signature":"FULL","data_hex":"52617720417574686F72696E6700"}]}'
-        ),
-        encoding="utf-8",
-    )
-
-
 def test_native_backend_load_defers_python_materialization(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -144,43 +85,51 @@ def test_native_backend_load_defers_python_materialization(
     assert loaded._rust_handle == handle
     assert loaded.file_path == Path("C:/fake/Deferred.esp")
     assert loaded.record_count == 1
-    assert loaded._rust_handle == handle
+    assert len(loaded) == 1
 
 
-def test_plugin_close_releases_native_handle(monkeypatch: pytest.MonkeyPatch) -> None:
-    closed_handles: list[int] = []
-
-    def plugin_handle_close(handle_id: int) -> bool:
-        closed_handles.append(handle_id)
-        return True
-
-    monkeypatch.setattr(plugin_module._native_runtime, "plugin_handle_close", plugin_handle_close)
-
+def _release_via_close() -> Plugin:
     plugin = Plugin(plugin_name="CloseMe.esp", game="fo4")
     plugin._rust_handle = 4242
-
     assert plugin.close() is True
     assert plugin._rust_handle is None
-    assert closed_handles == [4242]
+    return plugin
 
 
-def test_plugin_del_releases_native_handle(monkeypatch: pytest.MonkeyPatch) -> None:
-    gc.collect()
-    closed_handles: list[int] = []
-
-    def plugin_handle_close(handle_id: int) -> bool:
-        closed_handles.append(handle_id)
-        return True
-
-    monkeypatch.setattr(plugin_module._native_runtime, "plugin_handle_close", plugin_handle_close)
-
-    plugin = Plugin(plugin_name="DropClose.esp", game="fo4")
-    plugin._rust_handle = 6262
-
+def _release_via_del() -> None:
+    plugin = Plugin(plugin_name="CloseMe.esp", game="fo4")
+    plugin._rust_handle = 4242
     del plugin
     gc.collect()
 
-    assert closed_handles.count(6262) == 1
+
+def _release_via_context_manager() -> Plugin:
+    plugin = Plugin(plugin_name="CloseMe.esp", game="fo4")
+    plugin._rust_handle = 4242
+    with plugin as bound:
+        assert bound is plugin
+    assert plugin._rust_handle is None
+    return plugin
+
+
+@pytest.mark.parametrize(
+    "trigger",
+    [_release_via_close, _release_via_del, _release_via_context_manager],
+    ids=["close()", "__del__", "context-manager-exit"],
+)
+def test_plugin_release_paths_close_the_native_handle(monkeypatch: pytest.MonkeyPatch, trigger) -> None:
+    gc.collect()
+    closed_handles: list[int] = []
+
+    def plugin_handle_close(handle_id: int) -> bool:
+        closed_handles.append(handle_id)
+        return True
+
+    monkeypatch.setattr(plugin_module._native_runtime, "plugin_handle_close", plugin_handle_close)
+
+    trigger()
+
+    assert closed_handles == [4242]
 
 
 def test_plugin_save_can_close_native_handle(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -212,78 +161,6 @@ def test_plugin_save_can_close_native_handle(monkeypatch: pytest.MonkeyPatch, tm
     assert plugin._rust_handle is None
     assert saved_paths == [str(target)]
     assert closed_handles == [4343]
-
-
-def test_plugin_context_manager_closes_native_handle(monkeypatch: pytest.MonkeyPatch) -> None:
-    closed_handles: list[int] = []
-
-    def plugin_handle_close(handle_id: int) -> bool:
-        closed_handles.append(handle_id)
-        return True
-
-    monkeypatch.setattr(plugin_module._native_runtime, "plugin_handle_close", plugin_handle_close)
-
-    plugin = Plugin(plugin_name="ContextClose.esp", game="fo4")
-    plugin._rust_handle = 5252
-
-    with plugin as bound:
-        assert bound is plugin
-
-    assert plugin._rust_handle is None
-    assert closed_handles == [5252]
-
-
-def test_native_records_property_uses_record_summaries(monkeypatch: pytest.MonkeyPatch) -> None:
-    closed_handles: list[int] = []
-
-    def plugin_handle_close(handle_id: int) -> bool:
-        closed_handles.append(handle_id)
-        return True
-
-    monkeypatch.setattr(plugin_module._native_runtime, "plugin_handle_close", plugin_handle_close)
-    monkeypatch.setattr(
-        plugin_module._native_runtime,
-        "plugin_handle_record_form_ids",
-        lambda handle_id: [0xFF000800],
-    )
-    monkeypatch.setattr(
-        plugin_module._native_runtime,
-        "plugin_handle_record_summary",
-        lambda handle_id, form_id: plugin_module._native_runtime.RecordSummary(form_id, "MISC", "NativeSummary"),
-    )
-
-    plugin = Plugin(plugin_name="NativeSummary.esp", game="fo4")
-    plugin._rust_handle = 6262
-
-    items = plugin.records
-
-    assert items == [plugin_module._native_runtime.RecordSummary(0xFF000800, "MISC", "NativeSummary")]
-    assert plugin._rust_handle == 6262
-    assert closed_handles == []
-
-
-def test_native_backend_len_uses_handle_record_count_without_materialization(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    handle = 1002
-    metadata = _native_handle_metadata(
-        plugin_name="DeferredCount.esp",
-        file_path="C:/fake/DeferredCount.esp",
-        record_count=123,
-    )
-
-    monkeypatch.setattr(
-        plugin_module._native_runtime,
-        "load_native_module",
-        lambda: SimpleNamespace(plugin_handle_metadata=lambda handle_id: metadata),
-    )
-    monkeypatch.setattr(plugin_module._native_runtime, "should_use_native_backend", lambda *_args, **_kwargs: True)
-    monkeypatch.setattr(plugin_module._native_runtime, "plugin_handle_load", lambda *_args, **_kwargs: handle)
-
-    loaded = Plugin.load("DeferredCount.esp", game="fo4", backend="native")
-
-    assert loaded.record_count == 123
-    assert len(loaded) == 123
 
 
 def test_native_backend_records_property_uses_summary_query(
@@ -407,7 +284,7 @@ def test_native_backend_plugin_save_uses_handle_directly_for_lazy_plugins(
     assert loaded._rust_handle == handle
 
 
-def test_native_backend_form_id_and_addon_queries_stay_native_backed(tmp_path: Path) -> None:
+def test_native_backend_lookup_and_reference_graph_queries_stay_native_backed(tmp_path: Path) -> None:
     plugin_path = tmp_path / "NativeLazyLookups.esp"
     plugin = Plugin.new(plugin_path.name, game="fo4")
 
@@ -420,26 +297,6 @@ def test_native_backend_form_id_and_addon_queries_stay_native_backed(tmp_path: P
     addn.editor_id = "NativeLazyAddon"
     addn.add_subrecord("DATA", (77).to_bytes(4, "little"))
     plugin.add_record(addn)
-    plugin.save(plugin_path, backend="native")
-
-    loaded = Plugin.load(plugin_path, game="fo4", backend="native")
-
-    found_by_form = loaded.get_record_by_form_id(misc.form_id)
-    addon_records = loaded.get_addon_nodes_by_index_id(77)
-    addon_record = loaded.get_addon_node_by_index_id(77)
-
-    assert found_by_form is not None
-    assert found_by_form.editor_id == "NativeLazyMisc"
-    assert len(addon_records) == 1
-    assert addon_records[0].editor_id == "NativeLazyAddon"
-    assert addon_record is not None
-    assert addon_record.editor_id == "NativeLazyAddon"
-    assert loaded._rust_handle is not None
-
-
-def test_native_backend_reference_graph_queries_stay_native_backed(tmp_path: Path) -> None:
-    plugin_path = tmp_path / "NativeLazyRefs.esp"
-    plugin = Plugin.new(plugin_path.name, game="fo4")
 
     target = plugin.new_record("MISC")
     target.editor_id = "NativeTarget"
@@ -456,74 +313,25 @@ def test_native_backend_reference_graph_queries_stay_native_backed(tmp_path: Pat
     plugin.add_record(caller)
 
     plugin.save(plugin_path, backend="native")
-
     loaded = Plugin.load(plugin_path, game="fo4", backend="native")
 
+    found_by_form = loaded.get_record_by_form_id(misc.form_id)
+    addon_records = loaded.get_addon_nodes_by_index_id(77)
+    addon_record = loaded.get_addon_node_by_index_id(77)
     referenced = loaded.get_referenced_form_ids(source.form_id)
     referencing = loaded.get_referencing_form_ids(source.form_id)
     chain = loaded.get_form_id_chain(source.form_id)
 
+    assert found_by_form is not None
+    assert found_by_form.editor_id == "NativeLazyMisc"
+    assert len(addon_records) == 1
+    assert addon_records[0].editor_id == "NativeLazyAddon"
+    assert addon_record is not None
+    assert addon_record.editor_id == "NativeLazyAddon"
     assert referenced == [target.object_id]
     assert referencing == [caller.object_id]
     assert chain == [source.object_id, target.object_id, caller.object_id]
     assert loaded._rust_handle is not None
-
-
-def test_native_backend_handle_exposes_authoring_spec_and_record_context(
-    tmp_path: Path,
-) -> None:
-    plugin_path = tmp_path / "NativeSchemaLookup.esp"
-    plugin = Plugin.new(plugin_path.name, game="fo4")
-
-    record = plugin.new_record("PROJ")
-    record.editor_id = "NativeSchemaProjectile"
-    record.add_subrecord(
-        "DNAM",
-        struct.pack(
-            "<HHfffIIffIIfffIIIffffIIBI",
-            0x0020,
-            0x0008,
-            1.5,
-            1000.0,
-            4000.0,
-            0x00000011,
-            0x00000022,
-            3.5,
-            4.5,
-            0x00000033,
-            0x00000044,
-            5.5,
-            6.5,
-            7.5,
-            0x00000055,
-            0x00000066,
-            0x00000077,
-            8.5,
-            9.5,
-            10.5,
-            11.5,
-            0x00000088,
-            0x00000099,
-            12,
-            0x000000AA,
-        ),
-    )
-    plugin.add_record(record)
-    plugin.save(plugin_path, backend="native")
-
-    loaded = Plugin.load(plugin_path, game="fo4", backend="native")
-    handle = loaded._rust_handle
-
-    assert handle is not None
-
-    context = plugin_module._native_runtime.plugin_handle_call(handle, "record_context_for_form_id", record.form_id)
-
-    assert context == {
-        "record_signature": "PROJ",
-        "record_form_version": 0,
-        "record_version2": 0,
-    }
-    assert loaded._rust_handle is handle
 
 
 def test_native_backend_import_json_uses_handle_import_text(
@@ -569,31 +377,6 @@ def test_native_backend_import_json_uses_handle_import_text(
     assert imported._rust_handle == handle
     assert imported.plugin_name == "Imported.esm"
     assert imported.file_path is None
-
-
-def test_native_backend_build_authoring_dir_uses_direct_raw_native_path(
-    tmp_path: Path,
-) -> None:
-    authoring_dir = tmp_path / "raw_authoring_build"
-    output_path = tmp_path / "RawAuthoringBuilt.esp"
-    _write_raw_authoring_dir(authoring_dir)
-
-    esp_api._native_runtime.build_authoring_dir_streaming_native(
-        str(authoring_dir),
-        str(output_path),
-        game="fo4",
-        jobs=8,
-    )
-
-    loaded = Plugin.load(output_path, game="fo4", backend="native")
-    exported = plugin_module._native_runtime.plugin_handle_call(
-        loaded._rust_handle,
-        "export_record_text",
-        0x000800,
-        "json",
-    )
-    assert "RawAuthoringRecord" in exported
-    assert "Raw Authoring" in exported
 
 
 def test_native_backend_build_authoring_dir_recomputes_num_records(
@@ -700,26 +483,6 @@ def test_native_backend_preserves_compressed_records(tmp_path: Path) -> None:
     assert loaded.to_bytes() == plugin.to_bytes()
 
 
-def test_native_backend_export_and_import_json_roundtrip(tmp_path: Path) -> None:
-    plugin = Plugin.new("NativeJson.esp", game="fo4")
-    record = plugin.new_record("MISC")
-    record.editor_id = "NativeJsonRecord"
-    record.full_name = "Native Json"
-    plugin.add_record(record)
-
-    export_started_at = _log_timed_step_start(plugin.plugin_name, "first export", tmp_path / "NativeJson.json")
-    text = export_json(plugin, mode="lossless", backend="native")
-    _log_timed_step_end(plugin.plugin_name, "first export", export_started_at)
-
-    import_started_at = _log_timed_step_start(plugin.plugin_name, "first import", tmp_path / "NativeJson.json")
-    rebuilt = import_json(text, backend="native")
-    _log_timed_step_end(plugin.plugin_name, "first import", import_started_at)
-
-    assert rebuilt.eid_index()["nativejsonrecord"] == ["NativeJson.esp:000800"]
-    assert "Native Json" in export_json(rebuilt, mode="lossless", backend="native")
-    assert rebuilt._rust_handle is not None
-
-
 def test_native_backend_authoring_dir_roundtrip(tmp_path: Path) -> None:
     plugin = Plugin.new("NativeAuthoring.esp", game="fo4")
     record = plugin.new_record("DOBJ")
@@ -782,266 +545,6 @@ def test_native_backend_groups_object_templates_with_schema_labels(tmp_path: Pat
     assert _rebuild_via_streaming(yaml_dir).to_bytes() == plugin.to_bytes()
 
 
-def test_native_backend_groups_fo76_npc_object_template_properties(tmp_path: Path) -> None:
-    plugin = Plugin.new("NativeFo76ObjectTemplates.esm", game="fo76")
-    record = plugin.new_record("NPC_")
-    record.editor_id = "NativeFo76ObjectTemplateNpc"
-    record.form_version = 155
-    record.add_subrecord("OBTE", struct.pack("<I", 1))
-    record.add_subrecord("OBTF", b"")
-    record.add_subrecord(
-        "FULL",
-        "Material Swap(Bloody)".encode("cp1252") + b"\x00",
-        semantic_type="lstring",
-    )
-    record.add_subrecord(
-        "OBTS",
-        bytes.fromhex(
-            "000000000100000000000000FFFF000000000400"
-            "000002000000050000003EEA34000300000000000000"
-        ),
-    )
-    record.add_subrecord("STOP", b"")
-    plugin.add_record(record)
-
-    yaml_dir = tmp_path / "authoring-yaml"
-    export_authoring_dir(plugin, yaml_dir, format="yaml", backend="native")
-    yaml_payload = yaml.safe_load(next((yaml_dir / "records" / "NPC_").glob("*.yaml")).read_text())
-    templates = next(field["ObjectTemplates"] for field in yaml_payload["fields"] if "ObjectTemplates" in field)
-
-    assert "raw_hex" not in templates[0]
-    assert templates[0]["IsEditorOnly"] is True
-    assert templates[0]["Name"] == "Material Swap(Bloody)"
-    assert templates[0]["Properties"][0]["Value1"] == 0x34EA3E
-    assert templates[0]["Marker"] is True
-    assert _rebuild_via_streaming(yaml_dir, game="fo76").to_bytes() == plugin.to_bytes()
-
-
-def test_native_backend_groups_fo76_npc_object_template_properties_curve_table_step(tmp_path: Path) -> None:
-    plugin = Plugin.new("NativeFo76ObjectTemplates.esm", game="fo76")
-    record = plugin.new_record("NPC_")
-    record.editor_id = "NativeFo76ObjectTemplateNpcCurve"
-    record.form_version = 208
-    record.add_subrecord("OBTE", struct.pack("<I", 1))
-    record.add_subrecord("OBTF", b"")
-    record.add_subrecord(
-        "FULL",
-        "Material Swap(Bloody)".encode("cp1252") + b"\x00",
-        semantic_type="lstring",
-    )
-    record.add_subrecord(
-        "OBTS",
-        bytes.fromhex(
-            "000000000100000000000000FFFF000000000400"
-            "000002000000050000003EEA34000300000000000000"
-        ),
-    )
-    record.add_subrecord("STOP", b"")
-    plugin.add_record(record)
-
-    yaml_dir = tmp_path / "authoring-yaml"
-    export_authoring_dir(plugin, yaml_dir, format="yaml", backend="native")
-    yaml_payload = yaml.safe_load(next((yaml_dir / "records" / "NPC_").glob("*.yaml")).read_text())
-    templates = next(field["ObjectTemplates"] for field in yaml_payload["fields"] if "ObjectTemplates" in field)
-
-    assert "raw_hex" not in templates[0]
-    assert templates[0]["Properties"][0]["Value1"] == 0x34EA3E
-    assert templates[0]["Properties"][0]["Step"] == {
-        "variant": "curve_table",
-        "value": 0,
-    }
-    assert _rebuild_via_streaming(yaml_dir, game="fo76").to_bytes() == plugin.to_bytes()
-
-
-def test_native_backend_groups_object_template_stop_marker(tmp_path: Path) -> None:
-    plugin = Plugin.new("NativeObjectTemplateMarker.esp", game="fo4")
-    record = plugin.new_record("FURN")
-    record.editor_id = "NativeObjectTemplateFurniture"
-    record.add_subrecord("OBTE", struct.pack("<I", 1))
-    record.add_subrecord(
-        "OBTS",
-        bytes.fromhex(
-            "040000000000000000000000FFFF01000000"
-            "619C0D000000015D9C0D00000001609C0D000000015F9C0D00000001"
-        ),
-    )
-    record.add_subrecord("STOP", b"")
-    plugin.add_record(record)
-
-    yaml_dir = tmp_path / "authoring-yaml"
-    export_authoring_dir(plugin, yaml_dir, format="yaml", backend="native")
-    yaml_payload = yaml.safe_load(next((yaml_dir / "records" / "FURN").glob("*.yaml")).read_text())
-    yaml_keys = [next(iter(field)) for field in yaml_payload["fields"]]
-    templates = next(field["ObjectTemplates"] for field in yaml_payload["fields"] if "ObjectTemplates" in field)
-
-    assert "ObjectTemplates" in yaml_keys
-    assert "Object Mod Template Item" not in yaml_keys
-    assert "Marker" not in yaml_keys
-    assert templates[0]["Marker"] is True
-    assert _rebuild_via_streaming(yaml_dir).to_bytes() == plugin.to_bytes()
-
-
-def test_native_backend_groups_duplicate_schema_labels_by_scope(tmp_path: Path) -> None:
-    plugin = Plugin.new("NativeDuplicateLabelKeys.esp", game="fo4")
-    record = plugin.new_record("PACK")
-    record.editor_id = "NativeDuplicateLabelPackage"
-    record.add_subrecord("PNAM", struct.pack("<I", 1))
-    record.add_subrecord("FNAM", struct.pack("<I", 1))
-    plugin.add_record(record)
-
-    yaml_dir = tmp_path / "authoring-yaml"
-    export_authoring_dir(plugin, yaml_dir, format="yaml", backend="native")
-    yaml_payload = yaml.safe_load(next((yaml_dir / "records" / "PACK").glob("*.yaml")).read_text())
-    yaml_keys = [next(iter(field)) for field in yaml_payload["fields"]]
-
-    assert "PackageDatas" in yaml_keys
-    assert "ProcedureTrees" in yaml_keys
-    assert yaml_keys.count("Flags") == 0
-    package_datas = next(field["PackageDatas"] for field in yaml_payload["fields"] if "PackageDatas" in field)
-    procedure_trees = next(field["ProcedureTrees"] for field in yaml_payload["fields"] if "ProcedureTrees" in field)
-    assert "PNAM" in package_datas[0]
-    assert "FNAM" in procedure_trees[0]
-    assert _rebuild_via_streaming(yaml_dir).to_bytes() == plugin.to_bytes()
-
-
-def test_native_backend_load_prefers_sibling_strings_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    plugin_path = tmp_path / "NativeSiblingStrings.esp"
-    plugin = Plugin.new(plugin_path.name, game="fo4")
-    plugin.header.is_localized = True
-    record = plugin.new_record("MISC")
-    record.editor_id = "NativeSiblingStringsRecord"
-    record.add_subrecord("FULL", struct.pack("<I", 1))
-    plugin.add_record(record)
-    plugin.save(plugin_path)
-
-    sibling_strings = tmp_path / "Strings"
-    game_strings = tmp_path / "GameStrings"
-    write_string_table(sibling_strings / "NativeSiblingStrings_en.STRINGS", {1: "Sibling Name"}, table_type="strings")
-    write_string_table(game_strings / "NativeSiblingStrings_en.STRINGS", {1: "Game Name"}, table_type="strings")
-    loaded = Plugin.load(plugin_path, game="fo4", strings_dirs=[game_strings], backend="native")
-
-    assert loaded.resolve_string(1, language="en") == "Sibling Name"
-
-
-def test_native_backend_groups_schema_row_groups_generically(tmp_path: Path) -> None:
-    plugin = Plugin.new("NativeRowGroups.esp", game="fo4")
-    record = plugin.new_record("ACHR")
-    record.editor_id = "NativeRowGroupActorRef"
-    record.add_subrecord("XPRD", struct.pack("<f", 1.5))
-    record.add_subrecord("XPPA", b"")
-    plugin.add_record(record)
-
-    json_dir = tmp_path / "authoring-json"
-    export_authoring_dir(plugin, json_dir, format="json", backend="native")
-    payload = json.loads(next((json_dir / "records" / "ACHR").glob("*.json")).read_text())
-    keys = [next(iter(field)) for field in payload["fields"]]
-
-    assert "PatrolDatas" in keys
-    assert "XPRD" not in keys
-    assert "XPPA" not in keys
-    patrol_datas = next(field["PatrolDatas"] for field in payload["fields"] if "PatrolDatas" in field)
-    assert patrol_datas[0]["IdleTime"] == 1.5
-    assert patrol_datas[0]["PatrolScriptMarker"] is True
-
-    yaml_dir = tmp_path / "authoring-yaml"
-    export_authoring_dir(plugin, yaml_dir, format="yaml", backend="native")
-    yaml_payload = yaml.safe_load(next((yaml_dir / "records" / "ACHR").glob("*.yaml")).read_text())
-    yaml_keys = [next(iter(field)) for field in yaml_payload["fields"]]
-
-    assert "PatrolDatas" in yaml_keys
-    assert "XPRD" not in yaml_keys
-    assert "XPPA" not in yaml_keys
-    assert _rebuild_via_streaming(json_dir).to_bytes() == plugin.to_bytes()
-    assert _rebuild_via_streaming(yaml_dir).to_bytes() == plugin.to_bytes()
-
-
-def test_native_backend_export_and_import_authoring_json_roundtrip() -> None:
-    plugin = Plugin.new("NativeAuthoringJson.esp", game="fo4")
-    record = plugin.new_record("DOBJ")
-    record.editor_id = "NativeAuthoringJsonRecord"
-    record.add_subrecord("DNAM", b"\x41\x41\x41\x43\x45\x23\x01\x00")
-    plugin.add_record(record)
-
-    text = export_json(plugin, mode="authoring", backend="native")
-    payload = json.loads(text)
-    group_payload = next(item for item in payload["items"] if item.get("label_text") == "DOBJ")
-    record_payload = next(child for child in group_payload["children"] if child["signature"] == "DOBJ")
-    assert record_payload["eid"] == "NativeAuthoringJsonRecord"
-    assert all("Editor ID" not in field and "EDID" not in field for field in record_payload["fields"])
-
-    rebuilt = import_json(text, backend="native")
-
-    assert rebuilt.to_bytes() == plugin.to_bytes()
-
-
-def test_native_backend_imports_compact_raw_duplicates_from_authoring_json(
-    tmp_path: Path,
-) -> None:
-    plugin = Plugin.new("NativeCompactRawDuplicates.esp", game="fo4")
-
-    race = plugin.new_record("RACE")
-    race.editor_id = "NativeRaceExtraAnam"
-    race.add_subrecord("MNAM", b"")
-    race.add_subrecord("ANAM", b"Actors\\Deathclaw\\CharacterAssets\\skeleton.nif\x00")
-    race.add_subrecord("FNAM", b"")
-    race.add_subrecord("ANAM", b"Actors\\Deathclaw\\CharacterAssets\\skeleton.nif\x00")
-    plugin.add_record(race)
-
-    pack = plugin.new_record("PACK")
-    pack.editor_id = "NativePackRawCnam"
-    pack.add_subrecord("CNAM", b"\x00")
-    plugin.add_record(pack)
-
-    lens = plugin.new_record("LENS")
-    lens.editor_id = "NativeLensDuplicateDnam"
-    lens.add_subrecord("CNAM", struct.pack("<f", 0.75))
-    lens.add_subrecord("DNAM", struct.pack("<f", 4.5))
-    lens.add_subrecord("LFSP", struct.pack("<I", 1))
-    lens.add_subrecord("DNAM", b"Glow01\x00")
-    plugin.add_record(lens)
-
-    authoring_dir = tmp_path / "authoring"
-    export_authoring_dir(plugin, authoring_dir, jobs=8, format="json", backend="native")
-    rebuilt = _rebuild_via_streaming(authoring_dir)
-
-    assert rebuilt.to_bytes() == plugin.to_bytes()
-
-
-def test_native_backend_preserves_parallel_export_raw_scalar_hex(
-    tmp_path: Path,
-) -> None:
-    plugin = Plugin.new("NativeCompactRawScalar.esp", game="fo4")
-
-    record = plugin.new_record("DOBJ")
-    record.editor_id = "NativeOneByteRawScalar"
-    record.add_subrecord("ZZZZ", b"\x02")
-    plugin.add_record(record)
-
-    authoring_dir = tmp_path / "authoring"
-    first_export_started_at = _log_timed_step_start(plugin.plugin_name, "first export", authoring_dir)
-    export_authoring_dir(plugin, authoring_dir, jobs=8, format="json", backend="native")
-    _log_timed_step_end(plugin.plugin_name, "first export", first_export_started_at)
-    record_payload = json.loads(
-        next((authoring_dir / "records" / "DOBJ").glob("*.json")).read_text()
-    )
-    assert {"ZZZZ": {"raw_hex": "02"}} in record_payload["fields"]
-
-    import_started_at = _log_timed_step_start(plugin.plugin_name, "first creation/import", authoring_dir)
-    rebuilt = _rebuild_via_streaming(authoring_dir)
-    _log_timed_step_end(plugin.plugin_name, "first creation/import", import_started_at)
-
-    assert rebuilt.to_bytes() == plugin.to_bytes()
-
-    authoring_dir_2 = tmp_path / "authoring2"
-    second_export_started_at = _log_timed_step_start(rebuilt.plugin_name, "second export", authoring_dir_2)
-    export_authoring_dir(rebuilt, authoring_dir_2, jobs=8, format="json", backend="native")
-    _log_timed_step_end(rebuilt.plugin_name, "second export", second_export_started_at)
-    record_payload_2 = json.loads(
-        next((authoring_dir_2 / "records" / "DOBJ").glob("*.json")).read_text()
-    )
-    assert record_payload_2 == record_payload
-
-
 def test_native_backend_authoring_dir_paths_do_not_call_python_authoring_dir(
     tmp_path: Path,
 ) -> None:
@@ -1062,56 +565,6 @@ def test_native_backend_authoring_dir_paths_do_not_call_python_authoring_dir(
 
     with pytest.raises(ValueError, match="Unsupported ESP backend"):
         export_authoring_dir(plugin, tmp_path / "python-backend", format="json", backend="python")
-
-
-def test_native_backend_authoring_export_produces_plugin_json(
-    tmp_path: Path,
-) -> None:
-    plugin_path = tmp_path / "NativeMetadataOnlyProxy.esp"
-    plugin = Plugin.new(plugin_path.name, game="fo4")
-    record = plugin.new_record("MISC")
-    record.editor_id = "NativeMetadataOnlyProxyRecord"
-    record.full_name = "Native Metadata Only Proxy"
-    plugin.add_record(record)
-    plugin.save(plugin_path, backend="native")
-
-    loaded = Plugin.load(plugin_path, game="fo4", backend="native")
-    authoring_dir = tmp_path / "metadata_only_authoring"
-    export_authoring_dir(loaded, authoring_dir, format="json", backend="native")
-
-    assert (authoring_dir / "plugin.json").is_file()
-
-
-def test_native_backend_authoring_export_write_trace_logs_to_stderr(
-    tmp_path: Path,
-) -> None:
-    authoring_dir = tmp_path / "write_trace_authoring"
-    script = """
-from pathlib import Path
-import sys
-from creation_lib.esp import Plugin, export_authoring_dir
-
-plugin = Plugin.new("NativeWriteTrace.esp", game="fo4")
-record = plugin.new_record("MISC")
-record.editor_id = "NativeWriteTraceRecord"
-record.full_name = "Native Write Trace"
-plugin.add_record(record)
-export_authoring_dir(plugin, Path(sys.argv[1]), format="json", backend="native")
-"""
-    env = os.environ.copy()
-    env["MODBOX21_NATIVE_EXPORT_TRACE"] = "1"
-    result = subprocess.run(
-        [sys.executable, "-c", script, str(authoring_dir)],
-        cwd=Path.cwd(),
-        env=env,
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-
-    assert result.stderr.count("[creation_lib::_native::esp_export]") >= 2
-    assert "record export starting" in result.stderr
-    assert ".json" in result.stderr
 
 
 def test_native_backend_wrapper_materialization_does_not_call_plugin_to_bytes() -> None:

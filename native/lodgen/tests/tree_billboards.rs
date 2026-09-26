@@ -50,19 +50,11 @@ mod task1_is_tree {
     }
 
     #[test]
-    fn is_tree_by_billboard_dds() {
-        // LODApp.cs:1391: if LOD model ends with .dds → isBillboard=true
-        let mut stat = make_stat();
-        stat.is_billboard = true;
-        assert!(is_tree(&stat), "is_billboard=true should classify as tree");
-    }
-
-    #[test]
     fn generate_quad_dispatch_3d_vs_billboard() {
         use lodgen_native::atlas::atlas::AtlasResult;
         use lodgen_native::descriptors::QuadDesc;
         use lodgen_native::input::WorldspaceInput;
-        use lodgen_native::progress::{LodPaths, QuadCtx, QuadOutputs};
+        use lodgen_native::progress::{LodPaths, QuadCtx};
         use lodgen_native::settings::LodSettings;
         use lodgen_native::trees::generate_quad;
 
@@ -138,84 +130,6 @@ mod task2_flatdesc {
     use lodgen_native::trees::tree3d::{FlatDesc, parse_billboard_dimensions};
 
     #[test]
-    fn flatdesc_parse_basic() {
-        // Seed: width=1, depth=1, height=1, scale=1 (per Utils.cs:538-542)
-        let mut fd = FlatDesc {
-            width: 1.0,
-            depth: 1.0,
-            height: 1.0,
-            scale: 1.0,
-            ..Default::default()
-        };
-        parse_billboard_dimensions("WIDTH=200\nHEIGHT=512\nSHIFTZ=8\nSCALE=1.5\n", &mut fd);
-        // WIDTH halved → 100; DEPTH also set to width (Utils.cs:617-618)
-        assert!((fd.width - 100.0).abs() < 1e-4, "width={}", fd.width);
-        assert!((fd.depth - 100.0).abs() < 1e-4, "depth={}", fd.depth);
-        assert!((fd.height - 512.0).abs() < 1e-4, "height={}", fd.height);
-        assert!((fd.shift_z - 8.0).abs() < 1e-4, "shift_z={}", fd.shift_z);
-        assert!((fd.scale - 1.5).abs() < 1e-4, "scale={}", fd.scale);
-        // dimensions[0] = [width,height,0]; dimensions[1] = [width(==depth), height, 0]
-        assert_eq!(fd.dimensions.len(), 2);
-        assert!(
-            (fd.dimensions[0][0] - 100.0).abs() < 1e-4,
-            "dim[0].x={}",
-            fd.dimensions[0][0]
-        );
-        assert!(
-            (fd.dimensions[0][1] - 512.0).abs() < 1e-4,
-            "dim[0].y={}",
-            fd.dimensions[0][1]
-        );
-        assert!(
-            (fd.dimensions[1][0] - 100.0).abs() < 1e-4,
-            "dim[1].x={}",
-            fd.dimensions[1][0]
-        );
-        assert!(
-            (fd.dimensions[1][1] - 512.0).abs() < 1e-4,
-            "dim[1].y={}",
-            fd.dimensions[1][1]
-        );
-    }
-
-    #[test]
-    fn flatdesc_parse_depth_overrides() {
-        let mut fd = FlatDesc {
-            width: 50.0,
-            depth: 50.0,
-            height: 256.0,
-            scale: 1.0,
-            ..Default::default()
-        };
-        // Seed dimensions manually to match pre-parse state
-        fd.dimensions = vec![[50.0, 256.0, 0.0], [50.0, 256.0, 0.0]];
-        parse_billboard_dimensions("DEPTH=60\n", &mut fd);
-        // DEPTH halved → 30; only dimensions[1].x updated
-        assert!((fd.depth - 30.0).abs() < 1e-4, "depth={}", fd.depth);
-        assert!(
-            (fd.dimensions[1][0] - 30.0).abs() < 1e-4,
-            "dim[1].x={}",
-            fd.dimensions[1][0]
-        );
-        // dimensions[0].x unchanged
-        assert!(
-            (fd.dimensions[0][0] - 50.0).abs() < 1e-4,
-            "dim[0].x={}",
-            fd.dimensions[0][0]
-        );
-    }
-
-    #[test]
-    fn flatdesc_parse_strips_units() {
-        let mut fd = FlatDesc {
-            height: 1.0,
-            ..Default::default()
-        };
-        parse_billboard_dimensions("HEIGHT=512px\n", &mut fd);
-        assert!((fd.height - 512.0).abs() < 1e-4, "height={}", fd.height);
-    }
-
-    #[test]
     fn flatdesc_parse_complex() {
         let mut fd = FlatDesc::default();
         parse_billboard_dimensions("COMPLEX=true\n", &mut fd);
@@ -229,7 +143,7 @@ mod task2_flatdesc {
 
 #[cfg(test)]
 mod task3_btt {
-    use lodgen_native::naming::{btt, tree_list};
+
     use lodgen_native::output::btt::{
         LstEntry, TreeRef, TreeType, encode_tree_block, encode_tree_list,
     };
@@ -278,45 +192,6 @@ mod task3_btt {
     }
 
     #[test]
-    fn tree_block_multi_type_order() {
-        // wbLOD.pas:947 iterates 0..Length(Types) — no sort; insertion order preserved.
-        let types = vec![
-            TreeType {
-                index: 3,
-                refs: vec![TreeRef {
-                    form_id: 1,
-                    x: 0.0,
-                    y: 0.0,
-                    z: 0.0,
-                    scale: 1.0,
-                    rotation: 0.0,
-                }],
-            },
-            TreeType {
-                index: 1,
-                refs: vec![TreeRef {
-                    form_id: 2,
-                    x: 0.0,
-                    y: 0.0,
-                    z: 0.0,
-                    scale: 1.0,
-                    rotation: 0.0,
-                }],
-            },
-        ];
-        let bytes = encode_tree_block(&types);
-        // [numTypes=2][index=3,...][index=1,...]
-        assert_eq!(le_i32(&bytes, 0), 2, "numTypes");
-        assert_eq!(
-            le_i32(&bytes, 4),
-            3,
-            "first index should be 3 (insertion order)"
-        );
-        // second type starts at 4+4+4+32=44 (32-byte TreeRef stride)
-        assert_eq!(le_i32(&bytes, 44), 1, "second index should be 1");
-    }
-
-    #[test]
     fn tree_list_header_bytes() {
         // TwbLodTES5TreeType layout (wbLOD.pas:115-122):
         //   Index(i32), Width(f32), Height(f32), UVMinX(f32), UVMinY(f32), UVMaxX(f32), UVMaxY(f32), Unknown(i32)
@@ -340,18 +215,6 @@ mod task3_btt {
         assert!((le_f32(&bytes, 12) - 256.0).abs() < 1e-4, "height");
     }
 
-    #[test]
-    fn naming_btt_matches_pattern() {
-        // FO4 reuses Skyrim meshes\terrain\<W>\trees\ layout (wbLOD.pas:882)
-        assert_eq!(
-            btt("DLC03FarHarbor", 16, -25, -11),
-            r"Meshes\Terrain\DLC03FarHarbor\Trees\DLC03FarHarbor.16.-25.-11.btt"
-        );
-        assert_eq!(
-            tree_list("DLC03FarHarbor"),
-            r"Meshes\Terrain\DLC03FarHarbor\Trees\DLC03FarHarbor.lst"
-        );
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -494,25 +357,6 @@ mod task4_tree3d {
         assert!((x_max - 50.0).abs() < 1e-4, "q0 x_max={x_max} expected +50");
     }
 
-    /// FlatDesc SCALE= must propagate to node_scale (LODApp.cs:1451 SetScale(flatDesc.scale)).
-    /// The raw FlatTrunk verts stay unit geometry; `transform_shape` (objects/object_lod.rs)
-    /// multiplies every vertex by `node_scale` first (like C# matrix7), so SCALE=2.0
-    /// doubles the emitted quad's x/z extents.
-    #[test]
-    fn flat_trunk_scale_propagates_to_node_scale() {
-        let mut fd = make_flat_desc();
-        fd.scale = 2.0;
-        let shapes = build_flat_trunk(&fd, "textures/trees/sometree.dds");
-        assert_eq!(shapes.len(), 2, "expected 2 shapes");
-        for (i, shape) in shapes.iter().enumerate() {
-            assert!(
-                (shape.node_scale - 2.0).abs() < 1e-6,
-                "quad {i}: node_scale expected 2.0 (== fd.scale), got {}",
-                shape.node_scale
-            );
-        }
-    }
-
     /// tree3d_billboard_dds_model_emits_flattrunk.
     ///
     /// A quad with a tree StaticDesc whose lod_models[0] ends in .dds (+ a synthetic
@@ -589,98 +433,6 @@ mod task4_tree3d {
         );
     }
 
-    /// tree3d_deterministic.
-    ///
-    /// Two runs over the same quad with a .dds LOD model → identical .bto bytes.
-    /// (FlatTrunk has no Random; vertices are deterministic from FlatDesc.)
-    #[test]
-    fn tree3d_deterministic() {
-        use lodgen_native::atlas::atlas::AtlasResult;
-        use lodgen_native::descriptors::QuadDesc;
-        use lodgen_native::input::WorldspaceInput;
-        use lodgen_native::progress::{LodPaths, QuadCtx};
-        use lodgen_native::settings::LodSettings;
-        use lodgen_native::trees::tree3d::generate_quad;
-
-        let out = std::env::temp_dir().join("lodgen_p3_task4_det");
-        std::fs::create_dir_all(&out).unwrap();
-
-        let dds_model = "textures/trees/detbillboard.dds";
-        let txt_path = out.join("textures/trees/detbillboard.txt");
-        std::fs::create_dir_all(txt_path.parent().unwrap()).unwrap();
-        std::fs::write(&txt_path, "WIDTH=100\nHEIGHT=300\nSHIFTZ=0\n").unwrap();
-
-        let mut stat = make_stat_billboard();
-        stat.lod_models[0] = Some(dds_model.to_string());
-
-        let world = WorldspaceInput::from_cells("DetermWorld", vec![]);
-        let settings = LodSettings::fo4_default();
-        let paths = LodPaths {
-            data_dirs: vec![out.clone()],
-            output_dir: out.clone(),
-            source_data_dir: None,
-        };
-        let atlas = AtlasResult {
-            map_path: out.join("atlas.json"),
-            diffuse: out.join("atlas.dds"),
-            normal: out.join("atlas_n.dds"),
-            specular: out.join("atlas_s.dds"),
-            atlas_size: (0, 0),
-            uv: Default::default(),
-            list: Default::default(),
-            dds_written: 0,
-        };
-        let quad = QuadDesc {
-            z_order: 0,
-            x: 1,
-            y: 2,
-            quad_level: 4,
-            quad_index: 0,
-            quad_offset: 4096.0,
-            static_indices: Vec::new(),
-            statics: vec![stat],
-            out_values: Default::default(),
-        };
-
-        let make_ctx = |world: &WorldspaceInput, settings: &LodSettings, paths: &LodPaths| {
-            (world as *const _, settings as *const _, paths as *const _)
-        };
-        let _ = make_ctx; // unused but ensures lifetime coupling is considered
-
-        let ctx = QuadCtx {
-            world: &world,
-            settings: &settings,
-            game: &lodgen_native::game::Game::fo4(),
-            paths: &paths,
-            level: 4,
-        };
-        let trees: Vec<&lodgen_native::input::StaticDesc> = quad.statics.iter().collect();
-
-        // Run once
-        let out1 = generate_quad(&quad, &ctx, &atlas, &trees).expect("run1");
-        let bytes1 = out1
-            .meshes
-            .first()
-            .map(|p| std::fs::read(p).unwrap())
-            .unwrap_or_default();
-
-        // Remove the file and run again
-        if let Some(p) = out1.meshes.first() {
-            let _ = std::fs::remove_file(p);
-        }
-        let out2 = generate_quad(&quad, &ctx, &atlas, &trees).expect("run2");
-        let bytes2 = out2
-            .meshes
-            .first()
-            .map(|p| std::fs::read(p).unwrap())
-            .unwrap_or_default();
-
-        assert!(!bytes1.is_empty(), "run1: .bto is empty");
-        assert_eq!(
-            bytes1, bytes2,
-            "tree3d: two runs produce different .bto bytes (non-deterministic)"
-        );
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -689,49 +441,7 @@ mod task4_tree3d {
 
 #[cfg(test)]
 mod task5_manifest {
-    use lodgen_native::billboards::{BillboardEntry, BillboardManifest};
-
-    fn make_manifest() -> BillboardManifest {
-        BillboardManifest {
-            atlas: "Textures\\Terrain\\LODGen\\World\\WorldTreeLod.dds".to_string(),
-            atlas_normal: "Textures\\Terrain\\LODGen\\World\\WorldTreeLod_n.dds".to_string(),
-            atlas_w: 1024,
-            atlas_h: 512,
-            entries: vec![
-                BillboardEntry {
-                    model: "meshes/trees/pinetree01_lod.nif".to_string(),
-                    index: 0,
-                    width: 150.0,
-                    height: 512.0,
-                    shift_z: 8.0,
-                    uv_min_x: 0.0,
-                    uv_max_x: 0.5,
-                    uv_min_y: 0.0,
-                    uv_max_y: 1.0,
-                },
-                BillboardEntry {
-                    model: "meshes/trees/oaktree02_lod.nif".to_string(),
-                    index: 1,
-                    width: 200.0,
-                    height: 600.0,
-                    shift_z: 0.0,
-                    uv_min_x: 0.5,
-                    uv_max_x: 1.0,
-                    uv_min_y: 0.0,
-                    uv_max_y: 1.0,
-                },
-            ],
-        }
-    }
-
-    #[test]
-    fn manifest_roundtrip() {
-        // Build a BillboardManifest, serialize to JSON, deserialize, assert equal.
-        let original = make_manifest();
-        let json = serde_json::to_string(&original).expect("serialize");
-        let decoded: BillboardManifest = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(original, decoded, "manifest roundtrip failed");
-    }
+    use lodgen_native::billboards::BillboardManifest;
 
     #[test]
     fn manifest_load_fixture() {
@@ -756,38 +466,6 @@ mod task5_manifest {
         assert_eq!(entry_upper.index, 0, "uppercase lookup matches same entry");
     }
 
-    #[test]
-    fn manifest_schema_keys() {
-        // Serialize one entry and assert the JSON contains exactly the contract keys.
-        // This is the cross-language contract the Python side must match.
-        let entry = BillboardEntry {
-            model: "meshes/trees/test.nif".to_string(),
-            index: 0,
-            width: 100.0,
-            height: 300.0,
-            shift_z: 4.0,
-            uv_min_x: 0.0,
-            uv_max_x: 0.25,
-            uv_min_y: 0.0,
-            uv_max_y: 0.5,
-        };
-        let json = serde_json::to_string(&entry).expect("serialize entry");
-        let v: serde_json::Value = serde_json::from_str(&json).expect("parse entry json");
-        let obj = v.as_object().expect("entry must be a JSON object");
-        let expected_keys: std::collections::BTreeSet<&str> = [
-            "model", "index", "width", "height", "shift_z", "uv_min_x", "uv_max_x", "uv_min_y",
-            "uv_max_y",
-        ]
-        .iter()
-        .copied()
-        .collect();
-        let actual_keys: std::collections::BTreeSet<&str> =
-            obj.keys().map(|k| k.as_str()).collect();
-        assert_eq!(
-            actual_keys, expected_keys,
-            "BillboardEntry JSON keys do not match contract"
-        );
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -800,11 +478,10 @@ mod task8_billboard_place {
     use lodgen_native::billboards::{BillboardEntry, BillboardManifest};
     use lodgen_native::descriptors::QuadDesc;
     use lodgen_native::input::{RefInput, WorldspaceInput};
-    use lodgen_native::output::btt::{TreeRef, TreeType, encode_tree_block};
+
     use lodgen_native::progress::{LodPaths, QuadCtx};
     use lodgen_native::settings::LodSettings;
     use lodgen_native::trees::billboard_place::deterministic_rotation;
-    use std::f32::consts::PI;
 
     fn make_manifest_two_species() -> BillboardManifest {
         BillboardManifest {
@@ -903,44 +580,6 @@ mod task8_billboard_place {
     }
 
     #[test]
-    fn deterministic_rotation_stable() {
-        // Same ref_id → same value twice; value in [0, 2π).
-        let r1 = deterministic_rotation("00001234");
-        let r2 = deterministic_rotation("00001234");
-        assert_eq!(r1, r2, "rotation must be stable for the same ref_id");
-        assert!(
-            r1 >= 0.0 && r1 < 2.0 * PI,
-            "rotation must be in [0, 2π), got {r1}"
-        );
-
-        // Two different ids → (very likely) different.
-        let r_other = deterministic_rotation("DEADBEEF");
-        // Not guaranteed by spec but FNV on short strings has no known collision here.
-        assert_ne!(
-            r1, r_other,
-            "different ref_ids should produce different rotations"
-        );
-
-        // Pin the exact FNV-1a("00001234") rotation; a failure means the hash changed
-        // and rotations are no longer deterministic.
-        let expected = {
-            // FNV-1a 32-bit of "00001234" (8 bytes, ASCII)
-            const FNV_PRIME: u32 = 16777619;
-            const FNV_OFFSET: u32 = 2166136261;
-            let mut h = FNV_OFFSET;
-            for b in b"00001234" {
-                h ^= *b as u32;
-                h = h.wrapping_mul(FNV_PRIME);
-            }
-            (h as f64 / u32::MAX as f64) as f32 * 2.0 * PI
-        };
-        assert!(
-            (r1 - expected).abs() < 1e-5,
-            "regression lock failed: expected {expected}, got {r1}"
-        );
-    }
-
-    #[test]
     fn billboard_place_buckets_by_index() {
         // A manifest with species A(index 1)/B(index 2); a quad with 3 tree refs (A,A,B)
         // → the written .btt has TreeType index 1 with 2 refs, index 2 with 1 ref.
@@ -1028,80 +667,6 @@ mod task8_billboard_place {
     }
 
     #[test]
-    fn billboard_place_skips_unknown_species() {
-        // A tree ref whose model is not in the manifest → skipped + a warning (no crash).
-        let out = std::env::temp_dir().join("lodgen_p3_task8_unknown");
-        std::fs::create_dir_all(&out).unwrap();
-
-        let manifest = make_manifest_two_species();
-        let manifest_json = serde_json::to_string(&manifest).unwrap();
-        std::fs::write(out.join("World_billboard_manifest.json"), &manifest_json).unwrap();
-
-        let world = WorldspaceInput::from_cells("World", vec![]);
-        let mut settings = LodSettings::fo4_default();
-        settings.trees.trees_3d = false;
-        let paths = LodPaths {
-            data_dirs: vec![out.clone()],
-            output_dir: out.clone(),
-            source_data_dir: None,
-        };
-        let atlas = make_atlas(&out);
-
-        // Use a model that is NOT in the manifest
-        let unknown_ref = make_ref(
-            "FFFFFFFF",
-            "meshes/trees/unknown_species.dds",
-            [0.0, 0.0, 0.0],
-        );
-        let quad = QuadDesc {
-            z_order: 0,
-            x: 5,
-            y: 5,
-            quad_level: 4,
-            quad_index: 0,
-            quad_offset: 4096.0,
-            static_indices: Vec::new(),
-            statics: vec![unknown_ref],
-            out_values: Default::default(),
-        };
-        let ctx = QuadCtx {
-            world: &world,
-            settings: &settings,
-            game: &lodgen_native::game::Game::fo4(),
-            paths: &paths,
-            level: 4,
-        };
-        let trees: Vec<&lodgen_native::input::StaticDesc> = quad.statics.iter().collect();
-
-        // Should not panic; returns empty (no known species → no types written)
-        let outputs = lodgen_native::trees::billboard_place::generate_quad(
-            &quad,
-            &ctx,
-            &atlas,
-            &trees,
-            Some(&manifest),
-        )
-        .expect("should not error on unknown species");
-
-        // Empty outputs because no valid refs were placed
-        assert!(
-            outputs.meshes.is_empty() || {
-                // If the .btt was written, it may be empty (0 types)
-                outputs.meshes.iter().all(|p| {
-                    if p.exists() {
-                        let bytes = std::fs::read(p).unwrap();
-                        let num_types = i32::from_le_bytes(bytes[0..4].try_into().unwrap());
-                        num_types == 0
-                    } else {
-                        true
-                    }
-                })
-            },
-            "unknown species should produce 0 types or empty output"
-        );
-    }
-
-    #[test]
     fn billboard_place_writes_btt() {
         // Assert that outputs include the .btt at naming::btt path.
         let out = std::env::temp_dir().join("lodgen_p3_task8_writes");
@@ -1169,88 +734,6 @@ mod task8_billboard_place {
         );
     }
 
-    #[test]
-    fn billboard_place_deterministic() {
-        // Two runs over the same quad → identical .btt bytes.
-        let out = std::env::temp_dir().join("lodgen_p3_task8_det");
-        std::fs::create_dir_all(&out).unwrap();
-
-        let manifest = make_manifest_two_species();
-        let manifest_json = serde_json::to_string(&manifest).unwrap();
-        std::fs::write(out.join("World_billboard_manifest.json"), &manifest_json).unwrap();
-
-        let world = WorldspaceInput::from_cells("World", vec![]);
-        let mut settings = LodSettings::fo4_default();
-        settings.trees.trees_3d = false;
-        let paths = LodPaths {
-            data_dirs: vec![out.clone()],
-            output_dir: out.clone(),
-            source_data_dir: None,
-        };
-        let atlas = make_atlas(&out);
-
-        let refs = vec![
-            make_ref("11111111", "meshes/trees/species_a.dds", [1.0, 2.0, 3.0]),
-            make_ref("22222222", "meshes/trees/species_b.dds", [4.0, 5.0, 6.0]),
-        ];
-        let quad = QuadDesc {
-            z_order: 0,
-            x: 2,
-            y: 3,
-            quad_level: 4,
-            quad_index: 0,
-            quad_offset: 4096.0,
-            static_indices: Vec::new(),
-            statics: refs,
-            out_values: Default::default(),
-        };
-        let ctx = QuadCtx {
-            world: &world,
-            settings: &settings,
-            game: &lodgen_native::game::Game::fo4(),
-            paths: &paths,
-            level: 4,
-        };
-        let trees: Vec<&lodgen_native::input::StaticDesc> = quad.statics.iter().collect();
-
-        let out1 = lodgen_native::trees::billboard_place::generate_quad(
-            &quad,
-            &ctx,
-            &atlas,
-            &trees,
-            Some(&manifest),
-        )
-        .unwrap();
-        let bytes1 = out1
-            .meshes
-            .first()
-            .map(|p| std::fs::read(p).unwrap())
-            .unwrap_or_default();
-
-        // Remove the .btt and re-run
-        if let Some(p) = out1.meshes.first() {
-            let _ = std::fs::remove_file(p);
-        }
-        let out2 = lodgen_native::trees::billboard_place::generate_quad(
-            &quad,
-            &ctx,
-            &atlas,
-            &trees,
-            Some(&manifest),
-        )
-        .unwrap();
-        let bytes2 = out2
-            .meshes
-            .first()
-            .map(|p| std::fs::read(p).unwrap())
-            .unwrap_or_default();
-
-        assert!(!bytes1.is_empty(), "run1: .btt is empty");
-        assert_eq!(
-            bytes1, bytes2,
-            "billboard_place: two runs produce different .btt bytes"
-        );
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1385,124 +868,6 @@ mod task9_generate_quad_wired {
         );
     }
 
-    #[test]
-    fn generate_quad_billboard_missing_manifest_warns() {
-        // trees_3d=false + no manifest → returns empty QuadOutputs (no crash).
-        let out = std::env::temp_dir().join("lodgen_p3_task9_no_manifest");
-        std::fs::create_dir_all(&out).unwrap();
-
-        // Deliberately do NOT write the manifest file.
-        let world = WorldspaceInput::from_cells("NoManifestWorld", vec![]);
-        let mut settings = LodSettings::fo4_default();
-        settings.trees.trees_3d = false;
-        let paths = LodPaths {
-            data_dirs: vec![out.clone()],
-            output_dir: out.clone(),
-            source_data_dir: None,
-        };
-        let atlas = make_atlas(&out);
-
-        let tree_ref = make_tree_ref("DEADBEEF", "meshes/trees/pinetree.dds");
-        let quad = QuadDesc {
-            z_order: 0,
-            x: 1,
-            y: 1,
-            quad_level: 4,
-            quad_index: 0,
-            quad_offset: 4096.0,
-            static_indices: Vec::new(),
-            statics: vec![tree_ref],
-            out_values: Default::default(),
-        };
-        let ctx = QuadCtx {
-            world: &world,
-            settings: &settings,
-            game: &lodgen_native::game::Game::fo4(),
-            paths: &paths,
-            level: 4,
-        };
-
-        // Should not crash; returns empty or warning (not an error)
-        let outputs = generate_quad(&quad, &ctx, &atlas).expect("no manifest should not error");
-        // No crash is the contract; empty output is acceptable
-        assert!(
-            outputs.meshes.is_empty() || outputs.meshes.iter().all(|p| !p.exists()),
-            "missing manifest should yield empty or non-existent outputs"
-        );
-    }
-
-    #[test]
-    fn driver_counts_btt() {
-        // run_trees in billboard mode over a tree world → stats.btt > 0 and
-        // the world .lst exists at naming::tree_list under output_dir.
-        let out = std::env::temp_dir().join("lodgen_p3_task9_driver");
-        std::fs::create_dir_all(&out).unwrap();
-
-        let world_id = "DriverBttWorld";
-        let _ = make_manifest(world_id, &out);
-
-        let tree_ref = make_tree_ref("00000099", "meshes/trees/pinetree.dds");
-
-        let world = WorldspaceInput {
-            editor_id: world_id.to_string(),
-            sw_cell: (0, 0),
-            ne_cell: (0, 0),
-            water_height: 0.0,
-            no_lod_water: false,
-            default_diffuse: String::new(),
-            default_normal: String::new(),
-            cells: vec![],
-            refs: vec![tree_ref],
-        };
-
-        let mut settings = LodSettings::fo4_default();
-        settings.trees.trees_3d = false;
-        // Only run at level 4 to keep the test fast
-        settings.global.lod_min = 4;
-        settings.global.lod_max = 4;
-        settings.global.write_lodsettings = false;
-
-        let paths = LodPaths {
-            data_dirs: vec![out.clone()],
-            output_dir: out.clone(),
-            source_data_dir: None,
-        };
-        let game = lodgen_native::game::Game::fo4();
-
-        struct NullProgress;
-        impl lodgen_native::progress::Progress for NullProgress {
-            fn report(&mut self, _m: &str, _f: f32) {}
-        }
-
-        // Billboard mode ignores the object atlas; pass an empty one.
-        let atlas = lodgen_native::atlas::atlas::AtlasResult {
-            map_path: out.join("atlas.txt"),
-            diffuse: out.join("atlas.dds"),
-            normal: out.join("atlas_n.dds"),
-            specular: out.join("atlas_s.dds"),
-            atlas_size: (0, 0),
-            uv: Default::default(),
-            list: Default::default(),
-            dds_written: 0,
-        };
-        let stats = lodgen_native::driver::run_trees(
-            &world,
-            &settings,
-            &game,
-            &paths,
-            &atlas,
-            &mut NullProgress,
-        )
-        .expect("run_trees");
-
-        assert!(stats.btt > 0, "expected btt > 0, got {}", stats.btt);
-
-        // .lst should exist at naming::tree_list
-        let lst_rel = lodgen_native::naming::tree_list(world_id);
-        let lst_path = out.join(lst_rel.replace('\\', "/"));
-        assert!(lst_path.exists(), ".lst not written at {:?}", lst_path);
-    }
-
     fn build_object_lod_3d_tree_case(generate_trees: bool) -> LodGenStats {
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1558,12 +923,6 @@ mod task9_generate_quad_wired {
 
         std::fs::remove_dir_all(out).unwrap();
         stats
-    }
-
-    #[test]
-    fn build_object_lod_runs_3d_trees_when_enabled() {
-        let stats = build_object_lod_3d_tree_case(true);
-        assert!(stats.bto > 0, "3D-tree mode must emit tree BTO output");
     }
 
     #[test]

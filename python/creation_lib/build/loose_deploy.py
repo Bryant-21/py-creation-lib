@@ -19,7 +19,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from creation_lib.build.deployer import compile_papyrus, XSE_PLUGIN_DIR
+from creation_lib.build.archive_plan import is_precombine_sidecar, precombine_sidecar_names
+from creation_lib.build.deployer import always_loose_files, compile_papyrus, XSE_PLUGIN_DIR
 from creation_lib.esp.validate import validate_authoring
 from creation_lib.build.packer import _prepare_texture_root
 from creation_lib.esp.authoring import deserialize
@@ -36,6 +37,7 @@ _SOURCE_ROOTS: list[tuple[str, str]] = [
     ("Meshes", "Meshes"),
     ("MCM", "MCM"),
     ("Terrain", "Terrain"),
+    ("PrismaUI_F4", "PrismaUI_F4"),
     *((name, name) for name in XSE_PLUGIN_DIR.values()),
 ]
 
@@ -161,6 +163,11 @@ def _iter_source_files(mod_dir: Path):
                 continue
             # Behavior XML sources are packed into .hkx in place; don't deploy the .xml.
             if src_root_name == "Meshes" and abs_path.suffix.lower() == ".xml":
+                continue
+            # Precombine sidecars are deployed explicitly (see deploy_loose_assets)
+            # by plugin stem, from mod_dir or mod_dir/data — never as a generic
+            # loose asset, or a mismatched stale copy could double up here.
+            if src_root_name == "data" and is_precombine_sidecar(abs_path):
                 continue
             rel = abs_path.relative_to(src_root)
             # Texture files are handled separately so PC resize limits can be applied.
@@ -384,6 +391,18 @@ def deploy_loose_assets(
                 src_rel=src_rel.as_posix(),
             )
         )
+    queued = {job.rel.casefold() for job in copy_jobs}
+    for relative, source in always_loose_files(mod_dir).items():
+        if relative.as_posix().casefold() not in queued and source.is_file():
+            copy_jobs.append(
+                _LooseCopyJob(
+                    source=source,
+                    dest=target_data_dir / relative,
+                    rel=relative.as_posix(),
+                    src_root="",
+                    src_rel=source.relative_to(mod_dir.resolve()).as_posix(),
+                )
+            )
     _validate_unique_copy_destinations(copy_jobs)
     if preserve_xse_inis:
         retained = []
@@ -408,6 +427,26 @@ def deploy_loose_assets(
     })
     result.plugin = dest_esp.name
     _emit(f"  Copied plugin: {dest_esp.name}")
+
+    # Precombine sidecars (- Geometry.csg / .cdx) — like the plugin, the engine
+    # only reads them loose beside it and never from an archive.
+    for sidecar_name in precombine_sidecar_names(esp.name):
+        sidecar_source = next(
+            (root / sidecar_name for root in (mod_dir, mod_dir / "data")
+             if (root / sidecar_name).is_file()),
+            None,
+        )
+        if sidecar_source is None:
+            continue
+        sidecar_dest = target_data_dir / sidecar_name
+        shutil.copy2(sidecar_source, sidecar_dest)
+        deployed.append({
+            "rel": sidecar_name,
+            "src_root": "",
+            "src_rel": sidecar_source.relative_to(mod_dir).as_posix(),
+            **_file_stat(sidecar_dest),
+        })
+        _emit(f"  Copied: {sidecar_name}")
 
     if copy_jobs:
         worker_count = _resolve_copy_workers(workers, len(copy_jobs))
@@ -643,6 +682,115 @@ def undeploy_loose_assets(
             pass
 
     _manifest_path(mod_dir).unlink(missing_ok=True)
+    _emit(f"=== Loose undeploy complete === ({len(removed)} file(s) removed)")
+    return removed
+
+
+def _loose_destination_rel(mod_dir: Path, asset_path: Path | str) -> Path:
+    """Map a mod-relative (or absolute) asset path to its game-Data relative path.
+
+    Mirrors the source-root mapping ``deploy_loose_file`` applies, but resolves
+    from the path alone so an asset already rebuilt or deleted in the mod can
+    still be undeployed.
+    """
+    requested = Path(asset_path)
+    if requested.is_absolute():
+        requested = requested.resolve().relative_to(mod_dir.resolve())
+    parts = requested.parts
+    for root_name, destination_prefix in _SOURCE_ROOTS:
+        if parts and parts[0].casefold() == root_name.casefold():
+            rest = Path(*parts[1:])
+            return Path(destination_prefix) / rest if destination_prefix else rest
+    roots = ", ".join(name for name, _ in _SOURCE_ROOTS)
+    raise ValueError(f"Loose asset must be under one of the mod roots: {roots}")
+
+
+def undeploy_loose_file(
+    mod_name: str,
+    asset_path: Path | str,
+    *,
+    game_data_dir: Path | None = None,
+    project_root: Path | str | None = None,
+    dry_run: bool = False,
+    on_progress: Callable[[str], None] | None = None,
+) -> list[str]:
+    """Remove one tracked loose asset (file or directory), leaving the rest deployed.
+
+    The inverse of ``deploy_loose_file``: it takes the same mod-relative asset
+    path, deletes only the manifest entries under it, and rewrites the manifest
+    so a later undeploy/import still knows about everything else.
+    """
+    if project_root is None:
+        raise ValueError("project_root is required")
+    project_root = Path(project_root)
+    mod_dir = project_root / "mods" / mod_name
+
+    def _emit(msg: str) -> None:
+        _log.info(msg)
+        if on_progress:
+            on_progress(msg)
+
+    manifest = _read_manifest(mod_dir)
+    if not manifest:
+        _emit(f"No loose manifest for {mod_name} — nothing to undeploy")
+        return []
+
+    target = game_data_dir or Path(manifest.get("game_data_dir", ""))
+    if not target.is_dir():
+        raise FileNotFoundError(f"game_data_dir not found: {target}")
+
+    destination_rel = _loose_destination_rel(mod_dir, asset_path).as_posix().casefold()
+    entries = manifest.get("files", [])
+    selected = [
+        entry for entry in entries
+        if (rel := str(entry.get("rel", "")).casefold()) == destination_rel
+        or rel.startswith(f"{destination_rel}/")
+    ]
+    if not selected:
+        _emit(f"Not tracked in {mod_name}'s loose manifest: {asset_path}")
+        return []
+
+    removed: list[str] = []
+    dirs_touched: set[Path] = set()
+    for entry in selected:
+        rel = entry["rel"]
+        f = target / rel
+        if not f.is_file():
+            continue
+        try:
+            if not dry_run:
+                f.unlink()
+            removed.append(rel)
+            dirs_touched.add(f.parent)
+            _emit(f"  Removed: {rel}")
+        except OSError as e:
+            _emit(f"  FAILED: {rel}: {e}")
+
+    if dry_run:
+        return removed
+
+    for d in sorted(dirs_touched, key=lambda p: len(p.parts), reverse=True):
+        cur = d
+        try:
+            while cur != target and cur.is_dir() and not any(cur.iterdir()):
+                cur.rmdir()
+                cur = cur.parent
+        except OSError:
+            pass
+
+    dropped = {str(entry.get("rel", "")).casefold() for entry in selected}
+    files = [
+        entry for entry in entries
+        if str(entry.get("rel", "")).casefold() not in dropped
+    ]
+    if files:
+        manifest.update({
+            "files": files,
+            "claimed_dirs": _collect_claimed_dirs([item["rel"] for item in files], mod_name),
+        })
+        _write_manifest(mod_dir, manifest)
+    else:
+        _manifest_path(mod_dir).unlink(missing_ok=True)
     _emit(f"=== Loose undeploy complete === ({len(removed)} file(s) removed)")
     return removed
 

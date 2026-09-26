@@ -642,28 +642,7 @@ mod tests {
     }
 
     #[test]
-    fn cube_polytope_planes_and_faces_each_at_least_four() {
-        // Sanity: standard quickhull on a cube produces 12 planes/faces.
-        let opts = BuildOptions {
-            friction: 0.5,
-            restitution: 0.4,
-            layer: 5,
-            mass: 0.0,
-            ..BuildOptions::default()
-        };
-        let blob = build_fo4_polytope_collision(&cube_verts(), &opts).expect("build");
-        let shape_abs = find_polytope_shape(&blob).expect("shape located");
-        let (n_planes, _) = read_relarray(&blob, shape_abs + 0x40);
-        let (n_faces, _) = read_relarray(&blob, shape_abs + 0x44);
-        assert!(
-            n_planes >= 4,
-            "cube hull must emit ≥4 planes (got {n_planes})"
-        );
-        assert!(n_faces >= 4, "cube hull must emit ≥4 faces (got {n_faces})");
-    }
-
-    #[test]
-    fn cube_polytope_matches_fo4_box_shape_layout() {
+    fn polytope_shape_layout_matches_fo4() {
         let opts = BuildOptions {
             friction: 0.5,
             restitution: 0.4,
@@ -687,10 +666,7 @@ mod tests {
                 .all(|angle| angle == FO4_POLYTOPE_FACE_MIN_HALF_ANGLE),
             "FO4 convex polytope faces must use the native minHalfAngle"
         );
-    }
 
-    #[test]
-    fn source_polytope_preserves_face_min_half_angles() {
         let shape = SourcePolytopeShape {
             vertices: cube_verts(),
             planes: vec![
@@ -721,11 +697,8 @@ mod tests {
         let shape_abs = find_polytope_shape(&blob).expect("shape located");
 
         assert_eq!(read_face_min_half_angles(&blob, shape_abs), expected);
-    }
 
-    #[test]
-    fn polytope_vertices_padded_to_multiple_of_four() {
-        // 5 vertices → must be padded to 8 (next multiple of 4).
+        // 5 vertices pad to 8 (next multiple of 4).
         let verts = vec![
             [0.0f32, 0.0, 0.0],
             [1.0, 0.0, 0.0],

@@ -28,7 +28,7 @@ BGEM_TEXTURE_SLOTS = [
 
 def _normalize_path(p: str) -> str:
     """Normalize a texture path to lowercase forward-slash relative."""
-    return p.replace("\\", "/").strip().lower()
+    return p.replace("\\", "/").strip("\x00").strip().lower()
 
 
 def parse_material_textures(filepath: str) -> dict | None:
@@ -64,7 +64,7 @@ def _parse_bgsm(filepath: str) -> dict | None:
     textures = {}
     for slot in BGSM_TEXTURE_SLOTS:
         val = getattr(mat, slot, None)
-        if val and isinstance(val, str) and val.strip():
+        if val and isinstance(val, str) and val.strip("\x00").strip():
             textures[slot] = _normalize_path(val)
 
     return {"type": "bgsm", "textures": textures}
@@ -82,7 +82,7 @@ def _parse_bgem(filepath: str) -> dict | None:
     textures = {}
     for slot in BGEM_TEXTURE_SLOTS:
         val = getattr(mat, slot, None)
-        if val and isinstance(val, str) and val.strip():
+        if val and isinstance(val, str) and val.strip("\x00").strip():
             textures[slot] = _normalize_path(val)
 
     return {"type": "bgem", "textures": textures}

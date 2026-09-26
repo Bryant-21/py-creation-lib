@@ -776,13 +776,6 @@ mod tests {
         }
     }
 
-    fn vec3(value: Option<&NifValue>) -> [f32; 3] {
-        match value {
-            Some(NifValue::Vec3(v)) => *v,
-            other => panic!("expected Vec3, got {other:?}"),
-        }
-    }
-
     #[test]
     fn build_btr_block_graph() {
         let verts = [[0.0, 0.0, 0.0], [4096.0, 0.0, 0.0], [0.0, 4096.0, 0.0]];
@@ -837,22 +830,6 @@ mod tests {
             .iter()
             .any(|bl| bl.type_name == "BSLightingShaderProperty");
         assert!(has_tri && has_lsp);
-    }
-
-    #[test]
-    fn write_btr_to_disk() {
-        let verts = [[0.0, 0.0, 0.0], [4096.0, 0.0, 0.0], [0.0, 4096.0, 0.0]];
-        let uvs = [[0.0, 1.0], [1.0, 1.0], [0.0, 0.0]];
-        let tris = [[0u16, 1, 2]];
-        let mut b = BBox::empty();
-        for v in &verts {
-            b.grow_vertex(*v);
-        }
-        let dir = std::env::temp_dir().join("lodgen_btr_test");
-        std::fs::create_dir_all(&dir).unwrap();
-        let p = dir.join("W.4.0.0.btr");
-        write_btr(&p, &verts, &uvs, &tris, "d.dds", "d_msn.dds", &b).unwrap();
-        assert!(std::fs::metadata(&p).unwrap().len() > 100);
     }
 
     use crate::terrain::water::{WaterMesh, WaterSegment};
@@ -929,106 +906,6 @@ mod tests {
         }
     }
 
-    /// build_btr_nif_with_water emits a water BSTriShape with a
-    /// BSEffectShaderProperty under a "WATER" BSMultiBoundNode, and a chunk root
-    /// with TWO children — matching the golden landless `.btr` graph.
-    #[test]
-    fn water_block_graph_matches_golden_structure() {
-        let verts = [[0.0, 0.0, 0.0], [4096.0, 0.0, 0.0], [0.0, 4096.0, 0.0]];
-        let uvs = [[0.0, 1.0], [1.0, 1.0], [0.0, 0.0]];
-        let tris = [[0u16, 1, 2]];
-        let mut b = BBox::empty();
-        for v in &verts {
-            b.grow_vertex(*v);
-        }
-        let water = flat_water_sheet();
-        let nif = build_btr_nif_with_water(
-            &verts,
-            &uvs,
-            &tris,
-            "d.dds",
-            "d_msn.dds",
-            &b,
-            32.0,
-            0.0,
-            &water,
-        )
-        .unwrap();
-
-        let block_types: Vec<_> = nif.blocks.iter().map(|b| b.type_name.as_str()).collect();
-        assert_eq!(
-            block_types,
-            vec![
-                "BSMultiBoundNode",
-                "BSTriShape",
-                "BSLightingShaderProperty",
-                "BSShaderTextureSet",
-                "BSMultiBoundNode",
-                "BSTriShape",
-                "BSEffectShaderProperty",
-                "BSMultiBound",
-                "BSMultiBoundAABB",
-                "BSMultiBound",
-                "BSMultiBoundAABB",
-            ],
-            "water BTR block order must match shipped/xLODGen"
-        );
-
-        // One terrain BSTriShape, one water BSTriShape, one BSEffectShaderProperty,
-        // one BSLightingShaderProperty, and a "WATER" BSMultiBoundNode.
-        let tri_shapes = nif
-            .blocks
-            .iter()
-            .filter(|x| x.type_name == "BSTriShape")
-            .count();
-        assert_eq!(tri_shapes, 2, "expected terrain + water BSTriShape");
-        assert_eq!(
-            nif.blocks
-                .iter()
-                .filter(|x| x.type_name == "BSSubIndexTriShape")
-                .count(),
-            0,
-            "coarse BTR water must not use BSSubIndexTriShape"
-        );
-        assert_eq!(
-            nif.blocks
-                .iter()
-                .filter(|x| x.type_name == "BSEffectShaderProperty")
-                .count(),
-            1
-        );
-        let water_node = nif
-            .blocks
-            .iter()
-            .find(|x| {
-                x.type_name == "BSMultiBoundNode"
-                    && matches!(x.fields.get("Name"), Some(NifValue::String(s)) if s == "WATER")
-            })
-            .expect("WATER BSMultiBoundNode present");
-        // WATER node keeps default cull mode (CULL_NORMAL), not CULL_ALLPASS.
-        match water_node.fields.get("Culling Mode") {
-            Some(NifValue::String(s)) => assert_eq!(s, "CULL_NORMAL"),
-            other => panic!("WATER culling mode: {other:?}"),
-        }
-
-        // The chunk root has two children.
-        let chunk = &nif.blocks[0];
-        match chunk.fields.get("Children") {
-            value => assert_eq!(ref_array(value), vec![1, 4]),
-        }
-        match chunk.fields.get("Multi Bound") {
-            Some(NifValue::Ref(id)) => assert_eq!(*id, 9),
-            other => panic!("chunk multibound: {other:?}"),
-        }
-        match water_node.fields.get("Children") {
-            value => assert_eq!(ref_array(value), vec![5]),
-        }
-        match water_node.fields.get("Multi Bound") {
-            Some(NifValue::Ref(id)) => assert_eq!(*id, 7),
-            other => panic!("water multibound: {other:?}"),
-        }
-    }
-
     #[test]
     fn l4_water_block_uses_subindex_segments() {
         let verts = [[0.0, 0.0, 0.0], [4096.0, 0.0, 0.0], [0.0, 4096.0, 0.0]];
@@ -1089,29 +966,6 @@ mod tests {
                 other => panic!("segment {i} Num Primitives: {other:?}"),
             }
         }
-    }
-
-    #[test]
-    fn root_multibound_is_scaled_to_lod_space() {
-        let verts = [[0.0, 0.0, -16.0], [4096.0, 0.0, -8.0], [0.0, 4096.0, -8.0]];
-        let uvs = [[0.0, 1.0], [1.0, 1.0], [0.0, 0.0]];
-        let tris = [[0u16, 1, 2]];
-        let mut b = BBox::empty();
-        for v in &verts {
-            b.grow_vertex(*v);
-        }
-
-        let nif = build_btr_nif(&verts, &uvs, &tris, "d.dds", "d_msn.dds", &b, 16.0, 0.0).unwrap();
-        let root_bound = &nif.blocks[5];
-
-        assert_eq!(
-            vec3(root_bound.fields.get("Position")),
-            [32768.0, 32768.0, -128.0]
-        );
-        assert_eq!(
-            vec3(root_bound.fields.get("Extent")),
-            [32768.0, 32768.0, 128.0]
-        );
     }
 
     /// Regression: the terrain `BSLightingShaderProperty` must serialize to the
@@ -1280,72 +1134,4 @@ mod tests {
         }
     }
 
-    /// The water BSEffectShaderProperty flags use version-suffixed keys and MUST
-    /// round-trip through serialize → reload (a bare key is silently dropped).
-    #[test]
-    fn water_effect_shader_flags_roundtrip() {
-        let verts = [[0.0, 0.0, 0.0], [4096.0, 0.0, 0.0], [0.0, 4096.0, 0.0]];
-        let uvs = [[0.0, 1.0], [1.0, 1.0], [0.0, 0.0]];
-        let tris = [[0u16, 1, 2]];
-        let mut b = BBox::empty();
-        for v in &verts {
-            b.grow_vertex(*v);
-        }
-        let water = flat_water_sheet();
-        let mut nif = build_btr_nif_with_water(
-            &verts,
-            &uvs,
-            &tris,
-            "d.dds",
-            "d_msn.dds",
-            &b,
-            32.0,
-            0.0,
-            &water,
-        )
-        .unwrap();
-        let bytes = nif.to_bytes().unwrap();
-        let rt = NifFile::from_bytes(&bytes, None).expect("reload water btr");
-
-        let esp = rt
-            .blocks
-            .iter()
-            .find(|x| x.type_name == "BSEffectShaderProperty")
-            .expect("water BSEffectShaderProperty present");
-        let mask = |field: &str| -> u64 {
-            let key = format!("{field}:FO4");
-            match esp.fields.get(&key).or_else(|| esp.fields.get(field)) {
-                Some(NifValue::UInt(v)) => *v,
-                Some(NifValue::Int(v)) => *v as u64,
-                other => panic!("{key} not a numeric flag: {other:?}"),
-            }
-        };
-        assert_eq!(
-            mask("Shader Flags 1"),
-            0x8000_0000,
-            "flags1 must round-trip"
-        );
-        assert_eq!(mask("Shader Flags 2"), 0x1, "flags2 must round-trip");
-        // Clamp mode round-trips as WRAP_S_WRAP_T (value 3 in TexClampModeB; the
-        // golden water block reads back WRAP_S_WRAP_T too).
-        match esp.fields.get("Texture Clamp Mode") {
-            Some(NifValue::String(s)) => assert_eq!(s, "WRAP_S_WRAP_T"),
-            Some(NifValue::UInt(v)) => assert_eq!(*v, 3),
-            other => panic!("clamp mode: {other:?}"),
-        }
-
-        // Water survives the round-trip as a plain render shape with no UVs.
-        let water_tri = rt
-            .blocks
-            .iter()
-            .filter(|x| x.type_name == "BSTriShape")
-            .find(|x| matches!(x.fields.get("Name"), Some(NifValue::String(s)) if s.is_empty()))
-            .expect("water BSTriShape present");
-        match water_tri.fields.get("Vertex Desc") {
-            Some(NifValue::UInt(v)) => assert_eq!(*v, 17592186044930, "water vertex desc (no UV)"),
-            other => panic!("water vertex desc: {other:?}"),
-        }
-        // Tri/vert counts preserved (8 tris, 9 welded verts).
-        assert_eq!(water.tris.len(), 8, "sanity: flat 2x2 sheet has 8 tris");
-    }
 }

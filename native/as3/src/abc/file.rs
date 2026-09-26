@@ -30,10 +30,15 @@ pub struct MethodInfo {
     pub return_type: u32,
     pub name: u32,
     pub flags: u8,
+    pub options: Vec<(u32, u8)>,
 }
 
 #[derive(Debug, Clone)]
 pub enum TraitKind {
+    Const {
+        slot_id: u32,
+        type_name: u32,
+    },
     Slot {
         slot_id: u32,
         type_name: u32,
@@ -62,6 +67,7 @@ pub enum TraitKind {
 impl TraitKind {
     fn tag(&self) -> u8 {
         match self {
+            TraitKind::Const { .. } => 6,
             TraitKind::Slot { .. } => 0,
             TraitKind::Method { .. } => 1,
             TraitKind::Getter { .. } => 2,
@@ -75,15 +81,19 @@ impl TraitKind {
 pub struct Trait {
     pub name: u32,
     pub kind: TraitKind,
+    pub attributes: u8,
 }
 
 impl Trait {
     fn write(&self, out: &mut Vec<u8>) {
         write_u30(out, self.name);
-        // The high nibble carries attributes (final/override/metadata); none of
-        // them are emitted yet, so the tag is the kind alone.
-        out.push(self.kind.tag());
+        out.push(self.kind.tag() | self.attributes);
         match self.kind {
+            TraitKind::Const { slot_id, type_name } => {
+                write_u30(out, slot_id);
+                write_u30(out, type_name);
+                write_u30(out, 0);
+            }
             TraitKind::Slot {
                 slot_id,
                 type_name,
@@ -145,6 +155,7 @@ pub struct MethodBody {
     pub init_scope_depth: u32,
     pub max_scope_depth: u32,
     pub code: Vec<u8>,
+    pub exceptions: Vec<[u32; 5]>,
     pub traits: Vec<Trait>,
 }
 
@@ -200,11 +211,15 @@ impl AbcFile {
             }
             write_u30(&mut out, m.name);
             out.push(m.flags);
-            if m.flags & (METHOD_HAS_OPTIONAL | METHOD_HAS_PARAM_NAMES) != 0 {
-                return Err(
-                    "method_info optional-value and parameter-name tables are not emitted yet"
-                        .into(),
-                );
+            if m.flags & METHOD_HAS_OPTIONAL != 0 {
+                write_u30(&mut out, m.options.len() as u32);
+                for &(index, kind) in &m.options {
+                    write_u30(&mut out, index);
+                    out.push(kind);
+                }
+            }
+            if m.flags & METHOD_HAS_PARAM_NAMES != 0 {
+                return Err("method_info parameter-name tables are not emitted".into());
             }
         }
 
@@ -259,7 +274,12 @@ impl AbcFile {
             write_u30(&mut out, body.max_scope_depth);
             write_u30(&mut out, body.code.len() as u32);
             out.extend_from_slice(&body.code);
-            write_u30(&mut out, 0); // exception_count
+            write_u30(&mut out, body.exceptions.len() as u32);
+            for exception in &body.exceptions {
+                for value in exception {
+                    write_u30(&mut out, *value);
+                }
+            }
             write_u30(&mut out, body.traits.len() as u32);
             for t in &body.traits {
                 t.write(&mut out);

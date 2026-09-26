@@ -132,116 +132,50 @@ fn synthetic_v8_packfile() -> Vec<u8> {
 }
 
 #[test]
-fn parses_fo4_packfile_fixtures() {
+fn fo4_fixtures_parse_and_round_trip_byte_exact() {
     for relative in fo4_fixture_paths() {
-        let path = repo_path(relative);
-        if !path.exists() {
-            eprintln!("SKIP missing fixture: {relative}");
-            continue;
-        }
         let data = fixture_bytes(relative);
         let parsed = parse_packfile(&data).unwrap_or_else(|error| {
             panic!("failed to parse {relative}: {error}");
         });
-
         assert_eq!(parsed.header.version, 11, "{relative}");
         assert_eq!(parsed.header.pointer_size, 8, "{relative}");
         assert!(parsed.header.version_name.contains("2014"), "{relative}");
-        assert!(parsed.section("__classnames__").is_some(), "{relative}");
-        assert!(parsed.section("__types__").is_some(), "{relative}");
-        assert!(parsed.section("__data__").is_some(), "{relative}");
+        for section in ["__classnames__", "__types__", "__data__"] {
+            assert!(parsed.section(section).is_some(), "{relative} {section}");
+        }
         assert_monotonic_section_ranges(relative, &parsed);
         assert!(
             parsed
                 .classnames
                 .iter()
                 .any(|entry| entry.name == "hkRootLevelContainer"),
-            "{relative} should declare hkRootLevelContainer"
+            "{relative}"
         );
-        assert!(
-            !parsed.virtual_fixups.is_empty(),
-            "{relative} should contain root virtual fixups"
-        );
-    }
-}
+        assert!(!parsed.virtual_fixups.is_empty(), "{relative}");
 
-#[test]
-fn parses_synthetic_v8_packfile_sections() {
-    let data = synthetic_v8_packfile();
-    let parsed = parse_packfile(&data).unwrap();
-
-    assert_eq!(parsed.header.version, 8);
-    assert_eq!(parsed.header.section_header_size, 0x30);
-    assert!(parsed.section("__classnames__").is_some());
-    assert!(parsed.section("__types__").is_some());
-    assert!(parsed.section("__data__").is_some());
-    assert_monotonic_section_ranges("synthetic v8", &parsed);
-    assert_eq!(parsed.section("__classnames__").unwrap().offset, 0xD0);
-    assert_eq!(parsed.section("__data__").unwrap().imports, 0x14C);
-}
-
-#[test]
-fn rejects_packfile_without_types_section() {
-    let mut data = synthetic_v8_packfile();
-    data[0x70..0x70 + 11].copy_from_slice(b"__objects__");
-
-    let error = parse_packfile(&data).unwrap_err();
-
-    assert!(
-        error.to_string().contains("missing __types__ section"),
-        "unexpected error: {error}"
-    );
-}
-
-#[test]
-fn rejects_truncated_packfile_header() {
-    let error = parse_packfile(b"\x57\xE0\xE0\x57").unwrap_err();
-    assert!(
-        error.to_string().contains("packfile header"),
-        "unexpected error: {error}"
-    );
-}
-
-#[test]
-fn source_preserving_model_saves_unchanged_bytes() {
-    for relative in fo4_fixture_paths() {
-        let path = repo_path(relative);
-        if !path.exists() {
-            eprintln!("SKIP missing fixture: {relative}");
-            continue;
-        }
-        let data = fixture_bytes(relative);
         let hkx = read_packfile(&data).unwrap_or_else(|error| {
             panic!("failed to read {relative}: {error}");
         });
-
-        assert!(hkx.packfile().section("__data__").is_some(), "{relative}");
         assert!(!hkx.is_dirty(), "{relative}");
         assert_eq!(hkx.save_unchanged(), data, "{relative}");
+        assert_eq!(api::hkx_roundtrip_bytes(&data).unwrap(), data, "{relative}");
     }
 }
 
 #[test]
-fn api_roundtrip_preserves_unchanged_fo4_fixture_bytes() {
-    for relative in fo4_fixture_paths() {
-        let path = repo_path(relative);
-        if !path.exists() {
-            eprintln!("SKIP missing fixture: {relative}");
-            continue;
-        }
-        let data = fixture_bytes(relative);
-        let roundtripped = api::hkx_roundtrip_bytes(&data).unwrap_or_else(|error| {
-            panic!("failed to roundtrip {relative}: {error}");
-        });
-
-        assert_eq!(roundtripped, data, "{relative}");
+fn v8_layout_is_parsed_and_emitted_with_48_byte_section_headers() {
+    let data = synthetic_v8_packfile();
+    let parsed = parse_packfile(&data).unwrap();
+    assert_eq!(parsed.header.version, 8);
+    assert_eq!(parsed.header.section_header_size, 0x30);
+    for section in ["__classnames__", "__types__", "__data__"] {
+        assert!(parsed.section(section).is_some(), "{section}");
     }
-}
+    assert_monotonic_section_ranges("synthetic v8", &parsed);
+    assert_eq!(parsed.section("__classnames__").unwrap().offset, 0xD0);
+    assert_eq!(parsed.section("__data__").unwrap().imports, 0x14C);
 
-#[test]
-fn writer_emits_v8_header_layout_for_v8_class_version() {
-    // when class_version=8 the writer must emit 48-byte section headers
-    // and no v11 padding byte, so the resulting bytes parse back as version 8.
     let hkx = HkxFile::from_tagxml(
         8,
         "Havok-5.5.0-r1",
@@ -256,33 +190,25 @@ fn writer_emits_v8_header_layout_for_v8_class_version() {
             }],
         }],
     );
-
-    let bytes = hkx.save();
-    let parsed = parse_packfile(&bytes).expect("v8 output must be parseable");
-
-    assert_eq!(parsed.header.version, 8, "output must be flagged as v8");
-    assert_eq!(
-        parsed.header.section_header_size, 0x30,
-        "v8 section headers must be 48 bytes"
-    );
-    // __classnames__ starts at header(64) + 3*section_header_size(48) = 208 = 0xD0, snapped to 16 = 0xD0.
-    let cn = parsed
-        .section("__classnames__")
-        .expect("__classnames__ section");
-    assert_eq!(
-        cn.offset & 0xF,
-        0,
-        "classnames section must be 16-byte aligned"
-    );
+    let parsed = parse_packfile(&hkx.save()).expect("v8 output must be parseable");
+    assert_eq!(parsed.header.version, 8);
+    assert_eq!(parsed.header.section_header_size, 0x30);
+    assert_eq!(parsed.section("__classnames__").unwrap().offset & 0xF, 0);
 }
 
 #[test]
-fn api_roundtrip_rejects_malformed_packfile_instead_of_echoing_bytes() {
-    let malformed = b"\x57\xE0\xE0\x57\x10\xC0\xC0\x10";
-    let error = api::hkx_roundtrip_bytes(malformed).unwrap_err();
-
+fn malformed_packfiles_are_rejected_instead_of_echoed() {
+    let mut missing_types = synthetic_v8_packfile();
+    missing_types[0x70..0x70 + 11].copy_from_slice(b"__objects__");
+    let error = parse_packfile(&missing_types).unwrap_err();
     assert!(
-        error.to_string().contains("packfile header"),
-        "unexpected error: {error}"
+        error.to_string().contains("missing __types__ section"),
+        "{error}"
     );
+
+    let error = parse_packfile(b"\x57\xE0\xE0\x57").unwrap_err();
+    assert!(error.to_string().contains("packfile header"), "{error}");
+
+    let error = api::hkx_roundtrip_bytes(HKX_MAGIC).unwrap_err();
+    assert!(error.to_string().contains("packfile header"), "{error}");
 }

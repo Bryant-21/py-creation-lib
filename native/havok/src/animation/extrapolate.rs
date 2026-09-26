@@ -341,84 +341,80 @@ mod tests {
     }
 
     #[test]
-    fn extrapolate_noop_when_duration_unchanged() {
-        let clip = make_clip(1.0);
-        let result = extrapolate(&clip, 1.0, ExtrapolationPolicy::Cyclic);
-        assert_eq!(result.duration, clip.duration);
-        assert_eq!(
-            result.channels[0].translations.len(),
-            clip.channels[0].translations.len()
-        );
-    }
-
-    #[test]
-    fn cyclic_second_half_mirrors_first() {
-        // 1s clip extrapolated to 2s cyclically: second half should repeat.
-        let clip = make_clip(1.0);
-        let result = extrapolate(&clip, 2.0, ExtrapolationPolicy::Cyclic);
-        assert_eq!(result.duration, 2.0);
-        let trans = &result.channels[0].translations;
-        // At t=0.5s original = 0.5 in X; at t=1.5s cyclic should also be ~0.5.
-        let val_at = |t: f32| -> f32 {
-            let idx = trans.partition_point(|kf| kf.time <= t);
-            if idx == 0 {
-                return trans[0].value[0];
-            }
-            if idx >= trans.len() {
-                return trans.last().unwrap().value[0];
-            }
-            let lo = &trans[idx - 1];
-            let hi = &trans[idx];
-            let alpha = (t - lo.time) / (hi.time - lo.time);
-            lo.value[0] + (hi.value[0] - lo.value[0]) * alpha
-        };
-        let at_half = val_at(0.5);
-        let at_one_half = val_at(1.5);
-        assert!(
-            (at_half - at_one_half).abs() < 0.05,
-            "cyclic: {at_half} vs {at_one_half}"
-        );
-    }
-
-    #[test]
-    fn mirror_policy_reverses_second_half() {
-        let clip = make_clip(1.0);
-        let result = extrapolate(&clip, 2.0, ExtrapolationPolicy::Mirror);
-        assert_eq!(result.duration, 2.0);
-        // Mirror: value at t=1.5 should mirror value at t=0.5.
-        let trans = &result.channels[0].translations;
-        let val_at = |t: f32| -> f32 {
-            let idx = trans.partition_point(|kf| kf.time <= t);
-            if idx == 0 {
-                return trans[0].value[0];
-            }
-            if idx >= trans.len() {
-                return trans.last().unwrap().value[0];
-            }
-            let lo = &trans[idx - 1];
-            let hi = &trans[idx];
-            let alpha = (t - lo.time) / (hi.time - lo.time);
-            lo.value[0] + (hi.value[0] - lo.value[0]) * alpha
-        };
-        let a = val_at(0.5);
-        let b = val_at(1.5);
-        assert!((a - b).abs() < 0.1, "mirror: {a} vs {b}");
-    }
-
-    #[test]
-    fn hold_policy_holds_last_value() {
-        let clip = make_clip(1.0);
-        let result = extrapolate(&clip, 2.0, ExtrapolationPolicy::LinearHold);
-        assert_eq!(result.duration, 2.0);
-        let trans = &result.channels[0].translations;
-        // Every frame after t=1.0 should have value[0] == 1.0.
-        for kf in trans.iter().filter(|kf| kf.time > 1.0) {
-            assert!(
-                (kf.value[0] - 1.0).abs() < 1e-4,
-                "hold: t={} v={}",
-                kf.time,
-                kf.value[0]
+    fn extrapolate_policies() {
+        {
+            let clip = make_clip(1.0);
+            let result = extrapolate(&clip, 1.0, ExtrapolationPolicy::Cyclic);
+            assert_eq!(result.duration, clip.duration);
+            assert_eq!(
+                result.channels[0].translations.len(),
+                clip.channels[0].translations.len()
             );
+        }
+        {
+            // 1s clip extrapolated to 2s cyclically: second half should repeat.
+            let clip = make_clip(1.0);
+            let result = extrapolate(&clip, 2.0, ExtrapolationPolicy::Cyclic);
+            assert_eq!(result.duration, 2.0);
+            let trans = &result.channels[0].translations;
+            // At t=0.5s original = 0.5 in X; at t=1.5s cyclic should also be ~0.5.
+            let val_at = |t: f32| -> f32 {
+                let idx = trans.partition_point(|kf| kf.time <= t);
+                if idx == 0 {
+                    return trans[0].value[0];
+                }
+                if idx >= trans.len() {
+                    return trans.last().unwrap().value[0];
+                }
+                let lo = &trans[idx - 1];
+                let hi = &trans[idx];
+                let alpha = (t - lo.time) / (hi.time - lo.time);
+                lo.value[0] + (hi.value[0] - lo.value[0]) * alpha
+            };
+            let at_half = val_at(0.5);
+            let at_one_half = val_at(1.5);
+            assert!(
+                (at_half - at_one_half).abs() < 0.05,
+                "cyclic: {at_half} vs {at_one_half}"
+            );
+        }
+        {
+            let clip = make_clip(1.0);
+            let result = extrapolate(&clip, 2.0, ExtrapolationPolicy::Mirror);
+            assert_eq!(result.duration, 2.0);
+            // Mirror: value at t=1.5 should mirror value at t=0.5.
+            let trans = &result.channels[0].translations;
+            let val_at = |t: f32| -> f32 {
+                let idx = trans.partition_point(|kf| kf.time <= t);
+                if idx == 0 {
+                    return trans[0].value[0];
+                }
+                if idx >= trans.len() {
+                    return trans.last().unwrap().value[0];
+                }
+                let lo = &trans[idx - 1];
+                let hi = &trans[idx];
+                let alpha = (t - lo.time) / (hi.time - lo.time);
+                lo.value[0] + (hi.value[0] - lo.value[0]) * alpha
+            };
+            let a = val_at(0.5);
+            let b = val_at(1.5);
+            assert!((a - b).abs() < 0.1, "mirror: {a} vs {b}");
+        }
+        {
+            let clip = make_clip(1.0);
+            let result = extrapolate(&clip, 2.0, ExtrapolationPolicy::LinearHold);
+            assert_eq!(result.duration, 2.0);
+            let trans = &result.channels[0].translations;
+            // Every frame after t=1.0 should have value[0] == 1.0.
+            for kf in trans.iter().filter(|kf| kf.time > 1.0) {
+                assert!(
+                    (kf.value[0] - 1.0).abs() < 1e-4,
+                    "hold: t={} v={}",
+                    kf.time,
+                    kf.value[0]
+                );
+            }
         }
     }
 }

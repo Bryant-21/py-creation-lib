@@ -3,8 +3,7 @@
 /// Wraps existing spline/interleaved decoders with a uniform `expand` API
 /// that samples a compressed clip to a dense per-frame sequence at a given
 /// rate. CLI: `modkit anim sample --rate 60 <clip.hkx>`.
-use crate::animation::clip::{AnimationClip, AnimationKeyframe, BoneChannel};
-use crate::error::HavokResult;
+use crate::animation::clip::{AnimationClip, AnimationKeyframe};
 
 /// A dense (per-frame) animation clip, sampled at a uniform rate.
 #[derive(Debug, Clone)]
@@ -169,7 +168,7 @@ fn quat_slerp(a: &[f32; 4], b: &[f32; 4], t: f32) -> [f32; 4] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::animation::clip::{AnimationClip, AnimationEvent, AnimationKeyframe, BoneChannel};
+    use crate::animation::clip::{AnimationClip, AnimationKeyframe, BoneChannel};
 
     fn make_clip(duration: f32) -> AnimationClip {
         AnimationClip {
@@ -219,32 +218,30 @@ mod tests {
     }
 
     #[test]
-    fn expand_frame_count_matches_duration_times_rate() {
-        let clip = make_clip(1.0);
-        let dense = expand(&clip, 60.0);
-        // For a 1-second clip at 60 Hz: 61 frames.
-        assert_eq!(dense.frame_count, 61);
-        assert_eq!(dense.channels[0].times.len(), 61);
-    }
-
-    #[test]
-    fn expand_interpolates_midpoint() {
-        let clip = make_clip(1.0);
-        let dense = expand(&clip, 2.0);
-        // 3 frames: t=0, t=0.5, t=1.
-        assert_eq!(dense.frame_count, 3);
-        let mid_trans = dense.channels[0].translations[1];
-        // At t=0.5, translation should be [0.5, 0, 0].
-        assert!((mid_trans[0] - 0.5).abs() < 1e-5, "mid_trans={mid_trans:?}");
-    }
-
-    #[test]
-    fn expand_first_and_last_frames() {
-        let clip = make_clip(2.0);
-        let dense = expand(&clip, 30.0);
-        let first = dense.channels[0].translations[0];
-        let last = *dense.channels[0].translations.last().unwrap();
-        assert!((first[0] - 0.0).abs() < 1e-5);
-        assert!((last[0] - 1.0).abs() < 1e-5);
+    fn expand_frame_count_and_interpolation() {
+        {
+            let clip = make_clip(1.0);
+            let dense = expand(&clip, 60.0);
+            // For a 1-second clip at 60 Hz: 61 frames.
+            assert_eq!(dense.frame_count, 61);
+            assert_eq!(dense.channels[0].times.len(), 61);
+        }
+        {
+            let clip = make_clip(1.0);
+            let dense = expand(&clip, 2.0);
+            // 3 frames: t=0, t=0.5, t=1.
+            assert_eq!(dense.frame_count, 3);
+            let mid_trans = dense.channels[0].translations[1];
+            // At t=0.5, translation should be [0.5, 0, 0].
+            assert!((mid_trans[0] - 0.5).abs() < 1e-5, "mid_trans={mid_trans:?}");
+        }
+        {
+            let clip = make_clip(2.0);
+            let dense = expand(&clip, 30.0);
+            let first = dense.channels[0].translations[0];
+            let last = *dense.channels[0].translations.last().unwrap();
+            assert!((first[0] - 0.0).abs() < 1e-5);
+            assert!((last[0] - 1.0).abs() < 1e-5);
+        }
     }
 }

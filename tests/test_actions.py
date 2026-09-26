@@ -60,7 +60,7 @@ def test_set_field_action_updates_list_item_paths_without_appending_fields():
     assert "Colors[0]" not in dict(block.fields)
 
 
-def test_snapshot_action_execute_and_undo():
+def test_snapshot_and_composite_action_execute_and_undo():
     nif = _make_test_nif()
     action = SnapshotAction(_description="test snapshot")
     action.capture_before(nif)
@@ -73,8 +73,6 @@ def test_snapshot_action_execute_and_undo():
     action.execute(nif)
     assert nif.blocks[0].get_field("Name") == "Modified"
 
-
-def test_composite_action():
     nif = _make_test_nif()
     children = [
         SetFieldAction(block_id=0, field_name="Name", old_value="TestNode", new_value="A"),

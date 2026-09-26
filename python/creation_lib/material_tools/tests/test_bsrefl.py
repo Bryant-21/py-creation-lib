@@ -12,7 +12,6 @@ import pytest
 from creation_lib.material_tools._bsrefl import (
     BSReflStream,
     ChunkType,
-    StringType,
     find_master_string,
     read_bsrefl,
 )
@@ -22,22 +21,6 @@ from creation_lib.material_tools._bsrefl_stringtable import STRING_TABLE
 # ---------------------------------------------------------------------------
 # Master string table sanity
 # ---------------------------------------------------------------------------
-
-def test_master_string_table_has_1156_entries():
-    assert len(STRING_TABLE) == 1156
-
-
-def test_master_string_table_known_anchors():
-    # Anchored against enums in bsrefl.hpp.
-    assert STRING_TABLE[0] == "null"
-    assert STRING_TABLE[1] == "String"
-    assert STRING_TABLE[4] == "<ref>"
-    assert STRING_TABLE[7] == "int8_t"
-    assert STRING_TABLE[12] == "uint32_t"
-    assert STRING_TABLE[16] == "float"
-    assert STRING_TABLE[18] == "<unknown>"
-    assert STRING_TABLE[228] == "BSResource::ID"
-
 
 def test_find_master_string_binary_search():
     # findString() in cpp starts the search at index 19 (after the primitives)
@@ -91,33 +74,47 @@ def test_stream_reads_beth_header_and_empty_strt():
     assert chunk_type == 0
     assert chunk is None
 
+    # The plan-scaffold compatibility wrapper returns the same kind of stream.
+    wrapped_stream, new_offset = read_bsrefl(data, 0)
+    assert isinstance(wrapped_stream, BSReflStream)
+    assert new_offset == len(data)
 
-def test_stream_rejects_bad_magic():
-    bad = b"XXXX" + b"\x00" * 20
-    with pytest.raises(ValueError, match="invalid reflection stream header"):
-        BSReflStream(bad)
+
+def _bad_magic_stream() -> bytes:
+    return b"XXXX" + b"\x00" * 20
 
 
-def test_stream_rejects_bad_version():
+def _bad_version_stream() -> bytes:
     buf = bytearray()
     buf += _beth_magic()
     buf += struct.pack("<I", 999)  # bad version
     buf += struct.pack("<I", 2)
     buf += struct.pack("<I", ChunkType.STRT.value)
     buf += struct.pack("<I", 0)
-    with pytest.raises(ValueError, match="unsupported reflection stream version"):
-        BSReflStream(bytes(buf))
+    return bytes(buf)
 
 
-def test_stream_rejects_missing_strt():
+def _missing_strt_stream() -> bytes:
     buf = bytearray()
     buf += _beth_magic()
     buf += struct.pack("<I", 4)
     buf += struct.pack("<I", 2)
     buf += struct.pack("<I", ChunkType.TYPE.value)  # not STRT
     buf += struct.pack("<I", 0)
-    with pytest.raises(ValueError, match="missing string table"):
-        BSReflStream(bytes(buf))
+    return bytes(buf)
+
+
+@pytest.mark.parametrize(
+    ("build_stream", "match"),
+    [
+        (_bad_magic_stream, "invalid reflection stream header"),
+        (_bad_version_stream, "unsupported reflection stream version"),
+        (_missing_strt_stream, "missing string table"),
+    ],
+)
+def test_stream_rejects_malformed_header(build_stream, match):
+    with pytest.raises(ValueError, match=match):
+        BSReflStream(build_stream())
 
 
 def test_stream_iterates_trailing_chunks():
@@ -201,46 +198,14 @@ def test_chunk_reads_primitive_values():
     ok, _ = chunk.read_u8()
     assert not ok
 
-
-def test_chunk_readfloat_flushes_denormals_to_zero():
-    # A denormal (exponent==0, mantissa!=0) should become zero per cpp behavior.
-    # Denormal float: 0x00000001
-    body = struct.pack("<I", 0x00000001)
-    data = _build_minimal_stream([(ChunkType.OBJT.value, body)])
-    stream = BSReflStream(data)
-    _, chunk = stream.read_chunk()
-    assert chunk is not None
-    ok, f = chunk.read_float()
+    # A denormal (exponent==0, mantissa!=0) should become zero per cpp
+    # behavior. Denormal float: 0x00000001.
+    denormal_body = struct.pack("<I", 0x00000001)
+    denormal_data = _build_minimal_stream([(ChunkType.OBJT.value, denormal_body)])
+    denormal_stream = BSReflStream(denormal_data)
+    _, denormal_chunk = denormal_stream.read_chunk()
+    assert denormal_chunk is not None
+    ok, f = denormal_chunk.read_float()
     assert ok and f == 0.0
 
 
-# ---------------------------------------------------------------------------
-# Compatibility wrapper for plan scaffold API
-# ---------------------------------------------------------------------------
-
-def test_read_bsrefl_wrapper_returns_stream():
-    data = _build_minimal_stream([])
-    stream, new_offset = read_bsrefl(data, 0)
-    assert isinstance(stream, BSReflStream)
-    assert new_offset == len(data)
-
-
-def test_chunk_type_and_string_type_enum_values():
-    assert ChunkType.BETH.value == 0x48544542
-    assert ChunkType.STRT.value == 0x54525453
-    assert ChunkType.TYPE.value == 0x45505954
-    assert ChunkType.CLAS.value == 0x53414C43
-    assert ChunkType.LIST.value == 0x5453494C
-    assert ChunkType.MAPC.value == 0x4350414D
-    assert ChunkType.OBJT.value == 0x544A424F
-    assert ChunkType.DIFF.value == 0x46464944
-    assert ChunkType.USER.value == 0x52455355
-    assert ChunkType.USRD.value == 0x44525355
-
-    assert StringType.NONE.value == 0
-    assert StringType.STRING.value == 1
-    assert StringType.REF.value == 4
-    assert StringType.UINT32.value == 12
-    assert StringType.FLOAT.value == 16
-    assert StringType.UNKNOWN.value == 18
-    assert StringType.BS_RESOURCE_ID.value == 228

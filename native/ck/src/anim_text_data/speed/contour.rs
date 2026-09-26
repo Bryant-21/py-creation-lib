@@ -636,64 +636,6 @@ mod tests {
     }
 
     #[test]
-    fn mode_one_collection_metadata_is_not_an_entry_link() {
-        let file = SpeedInfoFile {
-            roots: vec![SpeedInfoRoot {
-                state_machine_path: "WeaponBehavior.hkb/direct".to_string(),
-                contour: Contour::Collection(CollectionContour {
-                    children: vec![Contour::Individual(individual(producer(0.0)))],
-                }),
-                metadata: RootMetadata::Collection(CollectionRootMetadata {
-                    center_mode: CenterMode::ZeroCentered,
-                    producer: producer(0.108),
-                }),
-            }],
-        };
-        let encoded = encode_speed_info(&file).unwrap();
-        let decoded = decode_speed_info(&encoded).unwrap();
-        assert_eq!(decoded, file);
-    }
-
-    #[test]
-    fn direct_individual_owns_its_producer_metadata_entry() {
-        let file = SpeedInfoFile {
-            roots: vec![SpeedInfoRoot {
-                state_machine_path: "WeaponBehavior.hkb/WPNLanding_SM".to_string(),
-                contour: Contour::Individual(individual(producer(1.0 / 30.0))),
-                metadata: RootMetadata::DirectIndividual,
-            }],
-        };
-        let encoded = encode_speed_info(&file).unwrap();
-        let decoded = decode_speed_info(&encoded).unwrap();
-        assert_eq!(decoded, file);
-        assert_eq!(
-            decoded.roots[0].producer_metadata(),
-            Some(&producer(1.0 / 30.0))
-        );
-    }
-
-    #[test]
-    fn root_metadata_entries_are_terminal_at_file_boundaries() {
-        let file = SpeedInfoFile {
-            roots: vec![SpeedInfoRoot {
-                state_machine_path: "root".to_string(),
-                contour: Contour::Individual(individual(producer(f32::from_bits(1)))),
-                metadata: RootMetadata::DirectIndividual,
-            }],
-        };
-        let mut encoded = encode_speed_info(&file).unwrap();
-        let boundary = encoded.len();
-        encoded.push(1);
-        assert_eq!(
-            decode_speed_info(&encoded),
-            Err(ContourCodecError::TrailingBytes {
-                offset: boundary,
-                count: 1,
-            })
-        );
-    }
-
-    #[test]
     fn root_metadata_value_bits_round_trip_without_link_lookahead() {
         let boundary_values = [
             0,
@@ -729,5 +671,52 @@ mod tests {
                 bits
             );
         }
+    }
+
+    #[test]
+    fn root_metadata_round_trips_and_rejects_trailing_bytes() {
+        let collection = SpeedInfoRoot {
+            state_machine_path: "WeaponBehavior.hkb/direct".to_string(),
+            contour: Contour::Collection(CollectionContour {
+                children: vec![Contour::Individual(individual(producer(0.0)))],
+            }),
+            // Mode-one collection metadata is not an entry link.
+            metadata: RootMetadata::Collection(CollectionRootMetadata {
+                center_mode: CenterMode::ZeroCentered,
+                producer: producer(0.108),
+            }),
+        };
+        let direct = SpeedInfoRoot {
+            state_machine_path: "WeaponBehavior.hkb/WPNLanding_SM".to_string(),
+            contour: Contour::Individual(individual(producer(1.0 / 30.0))),
+            metadata: RootMetadata::DirectIndividual,
+        };
+        for root in [collection, direct] {
+            let file = SpeedInfoFile { roots: vec![root] };
+            let mut encoded = encode_speed_info(&file).unwrap();
+            let decoded = decode_speed_info(&encoded).unwrap();
+            assert_eq!(decoded, file);
+
+            let boundary = encoded.len();
+            encoded.push(1);
+            assert_eq!(
+                decode_speed_info(&encoded),
+                Err(ContourCodecError::TrailingBytes {
+                    offset: boundary,
+                    count: 1,
+                })
+            );
+        }
+        let direct = SpeedInfoFile {
+            roots: vec![SpeedInfoRoot {
+                state_machine_path: "root".to_string(),
+                contour: Contour::Individual(individual(producer(1.0 / 30.0))),
+                metadata: RootMetadata::DirectIndividual,
+            }],
+        };
+        assert_eq!(
+            direct.roots[0].producer_metadata(),
+            Some(&producer(1.0 / 30.0))
+        );
     }
 }

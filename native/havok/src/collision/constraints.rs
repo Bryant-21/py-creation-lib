@@ -326,7 +326,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_motors_pad_to_three_nulls_like_vanilla() {
+    fn ragdoll_motor_slots_pad_empty_and_keep_populated() {
         // FO76 trap chimes ship a zero-length motors array; vanilla FO4 ships three
         // null pointers. We must pad, not inject a real motor (that would drive the
         // joints instead of letting them free-swing).
@@ -341,10 +341,6 @@ mod tests {
                 HkxValue::Pointer(None)
             ]
         );
-    }
-
-    #[test]
-    fn populated_motors_are_left_untouched() {
         let motors = HkxValue::Array(vec![
             HkxValue::Pointer(Some(7)),
             HkxValue::Pointer(Some(7)),

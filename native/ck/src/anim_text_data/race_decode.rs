@@ -237,9 +237,30 @@ fn decode_target_plugin(plugin: &ParsedPlugin) -> Result<DecodedAnimInputs, Stri
                 .to_ascii_lowercase()
         })
         .collect::<std::collections::BTreeSet<_>>();
-    for source_record in records_with_signature(&plugin.root_items, "IDLE") {
-        let record = decoded_record(source_record);
+    let idles = records_with_signature(&plugin.root_items, "IDLE")
+        .into_iter()
+        .map(decoded_record)
+        .collect::<Vec<_>>();
+    let idle_parents = idles
+        .iter()
+        .filter_map(|record| {
+            let anam = record
+                .subrecords
+                .iter()
+                .find(|subrecord| subrecord.signature.as_str() == "ANAM")?;
+            let parent = u32::from_le_bytes(anam.data.get(..4)?.try_into().ok()?);
+            Some((record.form_id, parent))
+        })
+        .collect::<std::collections::HashMap<_, _>>();
+    let own_plugin = Arc::<str>::from(plugin.plugin_name.as_str());
+    for record in &idles {
         let record = record.as_ref();
+        let combat_action_idle = idle_tree_root(record.form_id, &idle_parents)
+            .map(|root| resolve_form_id_to_form_key(root, &own_plugin, &plugin.header.masters))
+            .is_some_and(|root| {
+                root.plugin.eq_ignore_ascii_case("Fallout4.esm")
+                    && AI_COMBAT_ACTIONS.contains(&root.object_id)
+            });
         let furniture_idle = record.subrecords.iter().any(|subrecord| {
             subrecord.signature.as_str() == "DNAM"
                 && furniture_cores.contains(
@@ -258,7 +279,9 @@ fn decode_target_plugin(plugin: &ParsedPlugin) -> Result<DecodedAnimInputs, Stri
                 }
                 "ENAM" => {
                     let value = decode_zstring(&subrecord.data);
-                    if is_ai_combat_idle_event(&value) || (furniture_idle && !value.is_empty()) {
+                    if is_ai_combat_idle_event(&value)
+                        || ((furniture_idle || combat_action_idle) && !value.is_empty())
+                    {
                         decoded.event_candidates.push(value);
                     }
                 }
@@ -514,6 +537,38 @@ fn decode_zstring(data: &[u8]) -> String {
     }
 }
 
+/// Fallout4.esm actions whose idle trees feed CK's AnimEventInfo. Vanilla weapon tables
+/// carry these idles' events but not sighted, release, stagger or equip ones.
+const AI_COMBAT_ACTIONS: [u32; 16] = [
+    0x004A5A, // ActionFireSingle
+    0x004A5C, // ActionFireAuto
+    0x004A5B, // ActionFireCharge
+    0x20A702, // ActionFireEmpty
+    0x004A56, // ActionReload
+    0x004A59, // ActionMelee
+    0x013005, // ActionRightAttack
+    0x013383, // ActionRightPowerAttack
+    0x050C96, // ActionDualAttack
+    0x004E32, // ActionThrow
+    0x0B259D, // ActionBoltCharge
+    0x019A61, // ActionEnterCover
+    0x0299B0, // ActionMantle
+    0x042651, // ActionDodge
+    0x042650, // ActionEvade
+    0x02E444, // ActionLargeMovementDelta
+];
+
+const MAX_IDLE_TREE_DEPTH: usize = 64;
+
+/// The action (or foreign idle) at the top of `idle`'s parent chain.
+fn idle_tree_root(idle: u32, parents: &std::collections::HashMap<u32, u32>) -> Option<u32> {
+    std::iter::successors(parents.get(&idle).copied(), |node| {
+        parents.get(node).copied()
+    })
+    .take(MAX_IDLE_TREE_DEPTH)
+    .last()
+}
+
 fn is_ai_combat_idle_event(name: &str) -> bool {
     let lowercase = name.to_ascii_lowercase();
     // The IDLE records for a creature's ranged attacks are named `<Creature>Fire*`,
@@ -693,24 +748,6 @@ mod tests {
     }
 
     #[test]
-    fn relocated_project_takes_priority_over_render_skeleton() {
-        let race = record("RACE", 0x0100_0900, vec![
-            zstring("ANAM", r"Actors\MoleMiner\CharacterAssets\skeleton.nif"),
-            zstring("MODL", r"Actors\Fixture\MoleMiner\MoleMinerProject.hkx"),
-            zstring("SGNM", r"Actors\Character\Behaviors\GunBehavior.hkx"),
-        ]);
-        assert_eq!(race_animation_dir(&race).as_deref(), Some(r"Actors\Fixture\MoleMiner"));
-    }
-
-    #[test]
-    fn nested_skeleton_directory_is_not_truncated_to_two_components() {
-        let race = record("RACE", 0x0100_0900, vec![
-            zstring("ANAM", r"Actors\Fixture\MoleMiner\CharacterAssets\skeleton.nif"),
-        ]);
-        assert_eq!(race_animation_dir(&race).as_deref(), Some(r"Actors\Fixture\MoleMiner"));
-    }
-
-    #[test]
     fn canonical_parser_keeps_leading_and_post_flags_keywords_with_the_next_block() {
         use CanonicalSubgraphField::*;
 
@@ -768,80 +805,6 @@ mod tests {
             vec![r"Actors\Fixture\Animations\*.hkx".to_string()]
         );
         assert_eq!(decoded.event_candidates, vec!["AttackPrimary", "evadeLeft"]);
-    }
-
-    #[test]
-    fn decoded_parsed_inputs_match_path_inputs() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = write_race_idle_fixture(temp.path());
-        let from_paths =
-            subgraph_inputs_from_plugin(&path, "fo4", std::slice::from_ref(&path)).unwrap();
-        let target = parse_plugin(&path, "fo4").unwrap();
-        let base = parse_plugin(&path, "fo4").unwrap();
-        let from_parsed = subgraph_inputs_from_parsed_plugins(&target, &[&base]).unwrap();
-
-        assert_eq!(from_parsed, from_paths);
-    }
-
-    #[test]
-    fn lazy_compressed_race_and_idle_inputs_match_eager_path_inputs() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = write_race_idle_fixture_with_flags(temp.path(), COMPRESSED_RECORD_FLAG);
-        let from_paths =
-            subgraph_inputs_from_plugin(&path, "fo4", std::slice::from_ref(&path)).unwrap();
-        let path_string = path.to_string_lossy().into_owned();
-        let target = parse_plugin_file(&path_string, Some("fo4".to_string()), false).unwrap();
-        let base = parse_plugin_file(&path_string, Some("fo4".to_string()), false).unwrap();
-        for signature in ["RACE", "IDLE"] {
-            let record = records_with_signature(&target.root_items, signature)[0];
-            assert!(record.subrecords.is_empty());
-            assert!(record.raw_payload.is_some());
-        }
-        let from_parsed = subgraph_inputs_from_parsed_plugins(&target, &[&base]).unwrap();
-
-        assert_eq!(from_parsed, from_paths);
-    }
-
-    #[test]
-    fn malformed_compressed_race_and_idle_match_eager_empty_record_behavior() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = write_race_idle_fixture_with_flags(temp.path(), COMPRESSED_RECORD_FLAG);
-        mutate_compressed_race_idle_payloads(&path, |payload| {
-            payload[4] = 0;
-            payload[5] = 0;
-        });
-        let from_paths =
-            subgraph_inputs_from_plugin(&path, "fo4", std::slice::from_ref(&path)).unwrap();
-        let path_string = path.to_string_lossy().into_owned();
-        let target = parse_plugin_file(&path_string, Some("fo4".to_string()), false).unwrap();
-        let base = parse_plugin_file(&path_string, Some("fo4".to_string()), false).unwrap();
-        let from_parsed = subgraph_inputs_from_parsed_plugins(&target, &[&base]).unwrap();
-
-        assert_eq!(from_parsed, from_paths);
-        assert_eq!(from_parsed.race_record_count, 1);
-        assert!(from_parsed.subgraphs.is_empty());
-        assert!(from_parsed.idle_globs.is_empty());
-        assert!(from_parsed.event_candidates.is_empty());
-    }
-
-    #[test]
-    fn bad_checksum_compressed_race_and_idle_salvage_matches_eager_path() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = write_race_idle_fixture_with_flags(temp.path(), COMPRESSED_RECORD_FLAG);
-        mutate_compressed_race_idle_payloads(&path, |payload| {
-            *payload.last_mut().unwrap() ^= 0xFF;
-        });
-        let from_paths =
-            subgraph_inputs_from_plugin(&path, "fo4", std::slice::from_ref(&path)).unwrap();
-        let path_string = path.to_string_lossy().into_owned();
-        let target = parse_plugin_file(&path_string, Some("fo4".to_string()), false).unwrap();
-        let base = parse_plugin_file(&path_string, Some("fo4".to_string()), false).unwrap();
-        let from_parsed = subgraph_inputs_from_parsed_plugins(&target, &[&base]).unwrap();
-
-        assert_eq!(from_parsed, from_paths);
-        assert_eq!(from_parsed.subgraphs.len(), 1);
-        assert_eq!(from_parsed.idle_globs.len(), 1);
-        assert_eq!(from_parsed.event_candidates, ["AttackPrimary", "evadeLeft"]);
     }
 
     #[test]
@@ -911,6 +874,117 @@ mod tests {
                 !is_ai_combat_idle_event(event),
                 "{event} is not an AI combat idle event"
             );
+        }
+    }
+
+    #[test]
+    fn idles_under_fallout4_combat_actions_supply_gun_event_candidates() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = write_race_idle_fixture(temp.path());
+        let mut plugin = parse_plugin(&path, "fo4").unwrap();
+        let idle = |form_id: u32, parent: u32, event: &str| {
+            let anam = [parent.to_le_bytes(), 0u32.to_le_bytes()].concat();
+            ParsedItem::Record(record(
+                "IDLE",
+                form_id,
+                vec![zstring("ENAM", event), bytes("ANAM", &anam)],
+            ))
+        };
+        // The converted FO76 gun-graph idles hang straight off these actions; a prefix
+        // match alone left attackStart and reloadStart out of every gun table.
+        plugin.root_items = vec![
+            idle(0x0100_0801, 0x0000_4A5A, "attackStart"),
+            idle(0x0100_0802, 0x0000_4A56, "reloadStart"),
+            idle(0x0100_0803, 0x0100_0802, "reloadSequentialStart"),
+            idle(0x0100_0804, 0x0000_4A57, "rifleSightedStart"),
+            idle(0x0100_0805, 0x0001_3454, "attackReleaseCharge"),
+        ];
+
+        let decoded = decode_target_plugin(&plugin).unwrap();
+
+        assert_eq!(
+            decoded.event_candidates,
+            ["attackStart", "reloadStart", "reloadSequentialStart"]
+        );
+    }
+
+    #[test]
+    fn race_animation_dir_prefers_relocated_project_and_keeps_nested_dirs() {
+        let relocated = record("RACE", 0x0100_0900, vec![
+            zstring("ANAM", r"Actors\MoleMiner\CharacterAssets\skeleton.nif"),
+            zstring("MODL", r"Actors\Fixture\MoleMiner\MoleMinerProject.hkx"),
+            zstring("SGNM", r"Actors\Character\Behaviors\GunBehavior.hkx"),
+        ]);
+        assert_eq!(race_animation_dir(&relocated).as_deref(), Some(r"Actors\Fixture\MoleMiner"));
+        let nested = record("RACE", 0x0100_0900, vec![
+            zstring("ANAM", r"Actors\Fixture\MoleMiner\CharacterAssets\skeleton.nif"),
+        ]);
+        assert_eq!(race_animation_dir(&nested).as_deref(), Some(r"Actors\Fixture\MoleMiner"));
+    }
+
+    #[test]
+    fn parsed_and_lazy_compressed_inputs_match_eager_path_inputs() {
+        let temp = tempfile::tempdir().unwrap();
+        let plain = write_race_idle_fixture(temp.path());
+        let from_paths =
+            subgraph_inputs_from_plugin(&plain, "fo4", std::slice::from_ref(&plain)).unwrap();
+        let target = parse_plugin(&plain, "fo4").unwrap();
+        let base = parse_plugin(&plain, "fo4").unwrap();
+        assert_eq!(
+            subgraph_inputs_from_parsed_plugins(&target, &[&base]).unwrap(),
+            from_paths
+        );
+
+        let temp = tempfile::tempdir().unwrap();
+        let path = write_race_idle_fixture_with_flags(temp.path(), COMPRESSED_RECORD_FLAG);
+        let from_paths =
+            subgraph_inputs_from_plugin(&path, "fo4", std::slice::from_ref(&path)).unwrap();
+        let path_string = path.to_string_lossy().into_owned();
+        let target = parse_plugin_file(&path_string, Some("fo4".to_string()), false).unwrap();
+        let base = parse_plugin_file(&path_string, Some("fo4".to_string()), false).unwrap();
+        for signature in ["RACE", "IDLE"] {
+            let record = records_with_signature(&target.root_items, signature)[0];
+            assert!(record.subrecords.is_empty());
+            assert!(record.raw_payload.is_some());
+        }
+        assert_eq!(
+            subgraph_inputs_from_parsed_plugins(&target, &[&base]).unwrap(),
+            from_paths
+        );
+    }
+
+    #[test]
+    fn corrupt_compressed_race_and_idle_match_eager_path_behavior() {
+        let truncate_size: fn(&mut [u8]) = |payload| {
+            payload[4] = 0;
+            payload[5] = 0;
+        };
+        let flip_checksum: fn(&mut [u8]) = |payload| {
+            *payload.last_mut().unwrap() ^= 0xFF;
+        };
+        for (mutation, salvaged) in [(truncate_size, false), (flip_checksum, true)] {
+            let temp = tempfile::tempdir().unwrap();
+            let path = write_race_idle_fixture_with_flags(temp.path(), COMPRESSED_RECORD_FLAG);
+            mutate_compressed_race_idle_payloads(&path, mutation);
+            let from_paths =
+                subgraph_inputs_from_plugin(&path, "fo4", std::slice::from_ref(&path)).unwrap();
+            let path_string = path.to_string_lossy().into_owned();
+            let target =
+                parse_plugin_file(&path_string, Some("fo4".to_string()), false).unwrap();
+            let base = parse_plugin_file(&path_string, Some("fo4".to_string()), false).unwrap();
+            let from_parsed = subgraph_inputs_from_parsed_plugins(&target, &[&base]).unwrap();
+
+            assert_eq!(from_parsed, from_paths);
+            assert_eq!(from_parsed.race_record_count, 1);
+            if salvaged {
+                assert_eq!(from_parsed.subgraphs.len(), 1);
+                assert_eq!(from_parsed.idle_globs.len(), 1);
+                assert_eq!(from_parsed.event_candidates, ["AttackPrimary", "evadeLeft"]);
+            } else {
+                assert!(from_parsed.subgraphs.is_empty());
+                assert!(from_parsed.idle_globs.is_empty());
+                assert!(from_parsed.event_candidates.is_empty());
+            }
         }
     }
 }

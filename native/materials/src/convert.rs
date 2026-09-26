@@ -2502,31 +2502,19 @@ mod tests {
     // ---- asset_output_subpath ----
 
     #[test]
-    fn subpath_bare_path_injects_root_without_prefix() {
+    fn asset_output_subpath_cases() {
         let result = asset_output_subpath("Weapons/Foo.bgsm", "fo76", None);
         assert_eq!(result, "Materials/Weapons/Foo.bgsm");
-    }
 
-    #[test]
-    fn subpath_already_has_materials_root_without_prefix() {
         let result = asset_output_subpath("Materials/Weapons/Bar.bgsm", "fo76", None);
         assert_eq!(result, "Materials/Weapons/Bar.bgsm");
-    }
 
-    #[test]
-    fn subpath_no_prefix_is_identity() {
         let result = asset_output_subpath("Materials/Weapons/Bar.bgsm", "", None);
         assert_eq!(result, "Materials/Weapons/Bar.bgsm");
-    }
 
-    #[test]
-    fn subpath_strips_known_prefix() {
         let result = asset_output_subpath("Materials/fo76/Weapons/Bar.bgsm", "fo76", None);
         assert_eq!(result, "Materials/Weapons/Bar.bgsm");
-    }
 
-    #[test]
-    fn subpath_uses_explicit_output_subpath() {
         let result = asset_output_subpath(
             "Materials/fo76/Weapons/Bar.bgsm",
             "fo76",
@@ -2536,58 +2524,53 @@ mod tests {
     }
 
     #[test]
-    fn namespace_texture_slot_preserves_requested_namespace() {
+    fn texture_slot_namespace_and_prefix_cases() {
         assert_eq!(
             namespace_texture_slot_path("Textures/Landscape/Rocks/Foo_d.dds", "FO76"),
             "FO76/Landscape/Rocks/Foo_d.dds"
         );
-    }
 
-    #[test]
-    fn namespace_texture_slot_preserves_empty_slots() {
         assert_eq!(namespace_texture_slot_path("", "FO76"), "");
         assert_eq!(namespace_texture_slot_path("   \0\0", "FO76"), "");
-    }
 
-    #[test]
-    fn namespace_texture_slot_leaves_shared_cubemap_unprefixed() {
         assert_eq!(
             namespace_texture_slot_path("Shared/Cubemaps/mipblur_DefaultOutside1.dds", "FO76"),
             "Shared/Cubemaps/mipblur_DefaultOutside1.dds"
+        );
+
+        assert_eq!(
+            material_texture_slot_path("Textures/fo76/Landscape/Rocks/Foo_d.dds"),
+            "Landscape/Rocks/Foo_d.dds"
+        );
+        assert_eq!(
+            material_texture_slot_path("Data/Textures/fo76/Landscape/Rocks/Foo_d.dds"),
+            "Landscape/Rocks/Foo_d.dds"
+        );
+        assert_eq!(
+            material_texture_slot_path("Landscape/Rocks/Foo_d.dds"),
+            "Landscape/Rocks/Foo_d.dds"
         );
     }
 
     // ---- texture suffix renaming ----
 
     #[test]
-    fn rename_reflectivity_suffix() {
+    fn fo76_texture_path_rewrites() {
         assert_eq!(
             rename_texture_basename_fo76_to_fo4("Foo_r.dds"),
             Some("Foo_s.dds".to_owned())
         );
-    }
 
-    #[test]
-    fn rename_lighting_suffix() {
         assert_eq!(
             rename_texture_basename_fo76_to_fo4("Bar_l.dds"),
             Some("Bar_g.dds".to_owned())
         );
-    }
 
-    #[test]
-    fn no_rename_for_diffuse_suffix() {
         assert_eq!(rename_texture_basename_fo76_to_fo4("Baz_d.dds"), None);
-    }
 
-    #[test]
-    fn rewrite_preserves_path_prefix() {
         let result = rewrite_texture_path_fo76_to_fo4("Textures/Weapons/Gun_r.dds");
         assert_eq!(result, "Textures/Weapons/Gun_s.dds");
-    }
 
-    #[test]
-    fn rewrite_repairs_dangling_corpse_customization_dir() {
         // FO76's corpse head BGSMs point diffuse/normal at a
         // `Actors/Customization/Character/Corpse/` directory that ships no
         // texture; the real corpse heads live under `Actors/Corpse/`. Left
@@ -2605,10 +2588,7 @@ mod tests {
             ),
             "Actors/Corpse/Female/Head_n.dds"
         );
-    }
 
-    #[test]
-    fn rewrite_repairs_dangling_actor_customization_dir() {
         assert_eq!(
             rewrite_texture_path_fo76_to_fo4(
                 "Actors/Customization/Character/GhoulFemale/PlayerGhoul/PlayerGhoulHeadSmoothFemale_d.dds"
@@ -2627,10 +2607,7 @@ mod tests {
             ),
             "Actors/Character/Piper/PiperHead_g.dds"
         );
-    }
 
-    #[test]
-    fn rewrite_repairs_dangling_stock_head_dirs() {
         assert_eq!(
             rewrite_texture_path_fo76_to_fo4(
                 "Actors/Customization/Character/BaseHumanFemale/MidAgeFemaleHead_d.dds"
@@ -2655,36 +2632,17 @@ mod tests {
             ),
             "Actors/Character/Mayor/Mayor_g.dds"
         );
-    }
 
-    #[test]
-    fn rewrite_leaves_real_actors_corpse_dir_untouched() {
         assert_eq!(
             rewrite_texture_path_fo76_to_fo4("Actors/Corpse/Male/Head_r.dds"),
             "Actors/Corpse/Male/Head_s.dds"
         );
     }
 
-    #[test]
-    fn material_texture_slot_path_strips_root_and_known_game_prefix() {
-        assert_eq!(
-            material_texture_slot_path("Textures/fo76/Landscape/Rocks/Foo_d.dds"),
-            "Landscape/Rocks/Foo_d.dds"
-        );
-        assert_eq!(
-            material_texture_slot_path("Data/Textures/fo76/Landscape/Rocks/Foo_d.dds"),
-            "Landscape/Rocks/Foo_d.dds"
-        );
-        assert_eq!(
-            material_texture_slot_path("Landscape/Rocks/Foo_d.dds"),
-            "Landscape/Rocks/Foo_d.dds"
-        );
-    }
-
     // ---- BGSM downgrade ----
 
     #[test]
-    fn bgsm_roundtrip_downgrade_v20_to_v2() {
+    fn bgsm_downgrade_v20_to_v2_only_for_fo4_target() {
         let bgsm = make_test_bgsm_v20();
         assert_eq!(bgsm.header.version, 20);
 
@@ -2723,17 +2681,11 @@ mod tests {
             downgraded.WetnessControlEnvMapScale.is_some(),
             "WetnessControlEnvMapScale missing"
         );
-    }
 
-    #[test]
-    fn bgsm_no_downgrade_when_already_v2() {
         let bgsm = make_test_bgsm_v2();
         let result = downgrade_bgsm(bgsm, "Materials/Test.bgsm", Game::Fo76, Game::Fo4);
         assert_eq!(result.header.version, 2);
-    }
 
-    #[test]
-    fn bgsm_no_downgrade_for_fo76_target() {
         let bgsm = make_test_bgsm_v20();
         let result = downgrade_bgsm(bgsm, "Materials/Test.bgsm", Game::Fo76, Game::Fo76);
         assert_eq!(
@@ -2743,7 +2695,7 @@ mod tests {
     }
 
     #[test]
-    fn bgsm_lighting_emittance_is_disabled_for_static_fo4_bgsm() {
+    fn bgsm_lighting_emittance_policy_by_path() {
         let mut bgsm = make_test_bgsm_v20();
         bgsm.LightingTexture = Some("Interiors/Industrial/Foo_l.dds".to_owned());
         bgsm.GlowTexture = None;
@@ -2763,10 +2715,7 @@ mod tests {
         assert!(!result.EmitEnabled);
         assert!(result.EmittanceColor.is_none());
         assert_eq!(result.EmittanceMult, 1.0);
-    }
 
-    #[test]
-    fn bgsm_ultracite_crystal_lighting_emittance_is_preserved() {
         let mut bgsm = make_test_bgsm_v20();
         bgsm.LightingTexture = Some("Landscape/Plants/Mineral_Ultracite01_l.dds".to_owned());
         bgsm.GlowTexture = None;
@@ -2792,10 +2741,42 @@ mod tests {
             Some([0.8196079, 0.854902, 0.17254902])
         );
         assert_eq!(result.EmittanceMult, 1.0);
+
+        let mut bgsm = make_test_bgsm_v20();
+        bgsm.LightingTexture = Some("Landscape/Plants/MineralWall_Ultracite01_l.dds".to_owned());
+        bgsm.EmitEnabled = true;
+        bgsm.EmittanceColor = Some([0.8196079, 0.854902, 0.17254902]);
+        bgsm.EmittanceMult = 3.0;
+
+        let result = downgrade_bgsm(
+            bgsm,
+            "Materials/Landscape/Plants/MineralWall_Ultracite01.bgsm",
+            Game::Fo76,
+            Game::Fo4,
+        );
+
+        assert!(result.GlowTexture.is_none());
+        assert!(!result.Glowmap);
+        assert!(!result.EmitEnabled);
+        assert!(result.EmittanceColor.is_none());
+        assert_eq!(result.EmittanceMult, 1.0);
+
+        let mut bgsm = make_test_bgsm_v20();
+        bgsm.LightingTexture = Some("Effects/Foo_l.dds".to_owned());
+        bgsm.GlowTexture = None;
+        bgsm.EmitEnabled = true;
+        bgsm.EmittanceMult = 10.0;
+
+        let result = downgrade_bgsm(bgsm, "Materials/Effects/Foo.bgsm", Game::Fo76, Game::Fo4);
+
+        assert_eq!(result.GlowTexture.as_deref(), Some("Effects/Foo_g.dds"));
+        assert!(result.Glowmap);
+        assert!(result.EmitEnabled);
+        assert_eq!(result.EmittanceMult, 1.0);
     }
 
     #[test]
-    fn mothman_eye_materials_keep_variant_emittance_and_glow_binding() {
+    fn mothman_materials_keep_their_emittance_policy() {
         let output_path = std::env::temp_dir().join(format!(
             "mothman_eye_material_{}.bgsm",
             std::process::id()
@@ -2846,10 +2827,7 @@ mod tests {
             ));
         }
         fs::remove_file(output_path).unwrap();
-    }
 
-    #[test]
-    fn mothman_glowing_variant_keeps_existing_conversion() {
         for name in ["MothmanGlow", "MothmanWingGlow"] {
             let source_path = format!("Materials/Actors/Mothman/{name}.bgsm");
             let mut bgsm = make_test_bgsm_v20();
@@ -2868,10 +2846,7 @@ mod tests {
                 format!("Actors/Mothman/{name}_g.dds")
             );
         }
-    }
 
-    #[test]
-    fn mothman_non_emitting_materials_stay_non_emitting() {
         for name in ["MothmanNoEmit", "MothmanWing", "MothmanWingWise"] {
             let source_path = format!("Materials/Actors/Mothman/{name}.bgsm");
             let mut bgsm = make_test_bgsm_v20();
@@ -2885,29 +2860,7 @@ mod tests {
     }
 
     #[test]
-    fn bgsm_ultracite_wall_lighting_emittance_is_suppressed() {
-        let mut bgsm = make_test_bgsm_v20();
-        bgsm.LightingTexture = Some("Landscape/Plants/MineralWall_Ultracite01_l.dds".to_owned());
-        bgsm.EmitEnabled = true;
-        bgsm.EmittanceColor = Some([0.8196079, 0.854902, 0.17254902]);
-        bgsm.EmittanceMult = 3.0;
-
-        let result = downgrade_bgsm(
-            bgsm,
-            "Materials/Landscape/Plants/MineralWall_Ultracite01.bgsm",
-            Game::Fo76,
-            Game::Fo4,
-        );
-
-        assert!(result.GlowTexture.is_none());
-        assert!(!result.Glowmap);
-        assert!(!result.EmitEnabled);
-        assert!(result.EmittanceColor.is_none());
-        assert_eq!(result.EmittanceMult, 1.0);
-    }
-
-    #[test]
-    fn bgsm_named_glow_texture_uses_fo4_glow_map_with_masked_emittance() {
+    fn bgsm_named_glow_material_uses_fo4_glow_map_with_masked_emittance() {
         let mut bgsm = make_test_bgsm_v20();
         bgsm.LightingTexture = Some("Actors/Wendigo/wendigo_glow_l.dds".to_owned());
         bgsm.GlowTexture = None;
@@ -2930,10 +2883,7 @@ mod tests {
         assert!(result.EmitEnabled);
         assert_eq!(result.EmittanceColor, Some([1.0, 1.0, 1.0]));
         assert_eq!(result.EmittanceMult, FO4_GLOW_MAP_EMITTANCE_MULT);
-    }
 
-    #[test]
-    fn bgsm_named_glow_material_uses_lighting_mask_with_masked_emittance() {
         let mut bgsm = make_test_bgsm_v20();
         bgsm.LightingTexture = Some("SetDressing/AutoDispenser/AutoDispenserAmmo_l.dds".to_owned());
         bgsm.GlowTexture = None;
@@ -2957,10 +2907,7 @@ mod tests {
         assert!(result.EmitEnabled);
         assert_eq!(result.EmittanceColor, Some([1.0, 1.0, 1.0]));
         assert_eq!(result.EmittanceMult, FO4_GLOW_MAP_EMITTANCE_MULT);
-    }
 
-    #[test]
-    fn bgsm_named_glow_material_keeps_existing_glow_texture_with_masked_emittance() {
         let mut bgsm = make_test_bgsm_v20();
         bgsm.GlowTexture = Some("SetDressing/AutoDispenser/AutoDispenserAmmo_g.dds".to_owned());
         bgsm.Glowmap = false;
@@ -2983,23 +2930,7 @@ mod tests {
     }
 
     #[test]
-    fn bgsm_effect_lighting_emittance_is_preserved() {
-        let mut bgsm = make_test_bgsm_v20();
-        bgsm.LightingTexture = Some("Effects/Foo_l.dds".to_owned());
-        bgsm.GlowTexture = None;
-        bgsm.EmitEnabled = true;
-        bgsm.EmittanceMult = 10.0;
-
-        let result = downgrade_bgsm(bgsm, "Materials/Effects/Foo.bgsm", Game::Fo76, Game::Fo4);
-
-        assert_eq!(result.GlowTexture.as_deref(), Some("Effects/Foo_g.dds"));
-        assert!(result.Glowmap);
-        assert!(result.EmitEnabled);
-        assert_eq!(result.EmittanceMult, 1.0);
-    }
-
-    #[test]
-    fn bgsm_tree_vegetation_uses_leaf_template_defaults() {
+    fn bgsm_root_template_selection_by_path() {
         let mut bgsm = make_test_bgsm_v20();
         bgsm.Tree = true;
         bgsm.Translucency = Some(true);
@@ -3023,10 +2954,7 @@ mod tests {
         assert_eq!(result.header.env_mapping, Some(false));
         assert!(result.GlowTexture.is_none());
         assert_eq!(result.SmoothSpecTexture, "Landscape/Plants/Bramble01_s.dds");
-    }
 
-    #[test]
-    fn bgsm_grass_path_uses_grass_template_before_tree_flag() {
         let mut bgsm = make_test_bgsm_v20();
         bgsm.Tree = true;
         bgsm.Translucency = Some(true);
@@ -3042,10 +2970,7 @@ mod tests {
         assert_eq!(result.SubsurfaceLighting, Some(true));
         assert_eq!(result.EnvmapTexture.as_deref(), Some(""));
         assert_eq!(result.header.env_mapping, Some(false));
-    }
 
-    #[test]
-    fn bgsm_landscape_rock_path_uses_rock_template() {
         let mut bgsm = make_test_bgsm_v20();
         bgsm.RootMaterialPath = String::new();
         bgsm.Tree = false;
@@ -3061,10 +2986,57 @@ mod tests {
         // Rock is dielectric/matte — no cubemap, env mapping off (was chrome).
         assert_eq!(result.EnvmapTexture.as_deref(), Some(""));
         assert_eq!(result.header.env_mapping, Some(false));
+
+        let mut bgsm = make_test_bgsm_v20();
+        bgsm.RootMaterialPath = String::new();
+        bgsm.Tree = false;
+
+        let result = downgrade_bgsm(
+            bgsm,
+            "Materials/Landscape/Plants/Mineral_Gold01.bgsm",
+            Game::Fo76,
+            Game::Fo4,
+        );
+
+        assert_eq!(result.RootMaterialPath, "template/defaultTemplate_wet.bgsm");
+        assert_eq!(result.EnvmapTexture.as_deref(), Some(ORE_GOLD));
+        assert_eq!(result.header.env_mapping, Some(true));
+        assert_eq!(result.header.env_mapping_mask_scale, Some(1.0));
+
+        let mut bgsm = make_test_bgsm_v20();
+        bgsm.RootMaterialPath = "template/defaultTemplate_wet.bgsm".to_owned();
+
+        let result = downgrade_bgsm(
+            bgsm,
+            "Materials/SetDressing/Carpet/CarpetRunner01.bgsm",
+            Game::Fo76,
+            Game::Fo4,
+        );
+
+        assert_eq!(result.RootMaterialPath, "");
+        assert_eq!(result.EnvmapTexture.as_deref(), Some(DEFAULT_DIELECTRIC));
+        assert_eq!(result.header.env_mapping, Some(true));
+        assert_eq!(result.header.env_mapping_mask_scale, Some(0.3));
+
+        let mut bgsm = make_test_bgsm_v20();
+        bgsm.header.decal = true;
+        bgsm.header.decal_nofade = true;
+        bgsm.RootMaterialPath = String::new();
+
+        let result = downgrade_bgsm(
+            bgsm,
+            "Materials/SetDressing/NukaWorldProps/SignDecals01.bgsm",
+            Game::Fo76,
+            Game::Fo4,
+        );
+
+        assert_eq!(result.RootMaterialPath, "");
+        assert!(result.header.decal);
+        assert!(result.header.decal_nofade);
     }
 
     #[test]
-    fn select_cubemap_uses_ore_specific_cubemaps() {
+    fn select_cubemap_by_material_path() {
         let cases = [
             ("Materials/Props/Ore/ore_gold.bgsm", ORE_GOLD),
             ("Materials/Props/Ore/ore_silver.bgsm", ORE_SILVER),
@@ -3093,10 +3065,7 @@ mod tests {
                 "unexpected cubemap for {path}"
             );
         }
-    }
 
-    #[test]
-    fn select_cubemap_does_not_match_non_ore_words_containing_ore() {
         // "score"/"forest" contain the substring "ore" but are not ore, and are
         // dielectric — they must get no cubemap, not an ore/chrome one.
         assert_eq!(
@@ -3107,10 +3076,7 @@ mod tests {
             select_cubemap("Materials/Landscape/Ground/forestfloor01.bgsm"),
             None
         );
-    }
 
-    #[test]
-    fn select_cubemap_is_opt_in_for_metal() {
         // Dielectric / matte surfaces → no cubemap.
         for path in [
             "Materials/Landscape/Rocks/RockCliff76.bgsm",
@@ -3173,7 +3139,7 @@ mod tests {
     }
 
     #[test]
-    fn distillery_material_overrides_use_bronze_cubemap() {
+    fn named_material_overrides_use_tinted_cubemaps() {
         for source_path in [
             "Materials/Furniture/WorkstationDistillery/WorkstationDistillery01_Pipes.bgsm",
             "Materials/SetDressing/ModifiedDistiller/ModifiedDistiller01.bgsm",
@@ -3184,10 +3150,7 @@ mod tests {
             assert_eq!(result.header.env_mapping, Some(true));
             assert_eq!(result.header.env_mapping_mask_scale, Some(1.0));
         }
-    }
 
-    #[test]
-    fn chargen_trophy_material_overrides_use_gold_cubemap() {
         for source_path in [
             "Materials/SetDressing/CharGen/CharGenTrophy01.bgsm",
             "Materials/SetDressing/CharGen/CharGenTrophy03.bgsm",
@@ -3204,92 +3167,16 @@ mod tests {
         }
     }
 
-    #[test]
-    fn bgsm_landscape_mineral_path_keeps_ore_cubemap() {
-        let mut bgsm = make_test_bgsm_v20();
-        bgsm.RootMaterialPath = String::new();
-        bgsm.Tree = false;
-
-        let result = downgrade_bgsm(
-            bgsm,
-            "Materials/Landscape/Plants/Mineral_Gold01.bgsm",
-            Game::Fo76,
-            Game::Fo4,
-        );
-
-        assert_eq!(result.RootMaterialPath, "template/defaultTemplate_wet.bgsm");
-        assert_eq!(result.EnvmapTexture.as_deref(), Some(ORE_GOLD));
-        assert_eq!(result.header.env_mapping, Some(true));
-        assert_eq!(result.header.env_mapping_mask_scale, Some(1.0));
-    }
-
-    #[test]
-    fn bgsm_carpet_path_keeps_empty_root_material() {
-        let mut bgsm = make_test_bgsm_v20();
-        bgsm.RootMaterialPath = "template/defaultTemplate_wet.bgsm".to_owned();
-
-        let result = downgrade_bgsm(
-            bgsm,
-            "Materials/SetDressing/Carpet/CarpetRunner01.bgsm",
-            Game::Fo76,
-            Game::Fo4,
-        );
-
-        assert_eq!(result.RootMaterialPath, "");
-        assert_eq!(result.EnvmapTexture.as_deref(), Some(DEFAULT_DIELECTRIC));
-        assert_eq!(result.header.env_mapping, Some(true));
-        assert_eq!(result.header.env_mapping_mask_scale, Some(0.3));
-    }
-
-    #[test]
-    fn bgsm_decal_keeps_empty_root_material() {
-        let mut bgsm = make_test_bgsm_v20();
-        bgsm.header.decal = true;
-        bgsm.header.decal_nofade = true;
-        bgsm.RootMaterialPath = String::new();
-
-        let result = downgrade_bgsm(
-            bgsm,
-            "Materials/SetDressing/NukaWorldProps/SignDecals01.bgsm",
-            Game::Fo76,
-            Game::Fo4,
-        );
-
-        assert_eq!(result.RootMaterialPath, "");
-        assert!(result.header.decal);
-        assert!(result.header.decal_nofade);
-    }
-
-    #[test]
-    fn bgsm_corpse_head_repairs_dangling_diffuse_and_normal() {
-        let mut bgsm = make_test_bgsm_v20();
-        bgsm.DiffuseTexture = "Actors/Customization/Character/Corpse/Male/Head_d.dds".to_owned();
-        bgsm.NormalTexture = "Actors/Customization/Character/Corpse/Male/Head_n.dds".to_owned();
-
-        let result = downgrade_bgsm(
-            bgsm,
-            "Materials/Actors/Corpse/MaleHead.bgsm",
-            Game::Fo76,
-            Game::Fo4,
-        );
-
-        assert_eq!(result.DiffuseTexture, "Actors/Corpse/Male/Head_d.dds");
-        assert_eq!(result.NormalTexture, "Actors/Corpse/Male/Head_n.dds");
-    }
-
     // ---- BGSM default overrides ----
 
     #[test]
-    fn bgsm_override_cast_shadows() {
+    fn bgsm_default_overrides_apply_shadow_flags() {
         let mut bgsm = make_test_bgsm_v2();
         bgsm.CastShadows = false;
         let overrides = vec![("bCastShadows".to_owned(), serde_json::json!(true))];
         apply_bgsm_overrides(&mut bgsm, &overrides);
         assert!(bgsm.CastShadows);
-    }
 
-    #[test]
-    fn bgsm_override_receive_shadows() {
         let mut bgsm = make_test_bgsm_v2();
         bgsm.ReceiveShadows = true;
         let overrides = vec![("bReceiveShadows".to_owned(), serde_json::json!(false))];
@@ -3313,7 +3200,7 @@ mod tests {
     }
 
     #[test]
-    fn json_bgsm_material_converts_to_binary_v2() {
+    fn json_materials_convert_to_binary_v2() {
         let data = br##"{
             "bCastShadows": true,
             "bPBR": true,
@@ -3341,10 +3228,7 @@ mod tests {
             downgraded.SmoothSpecTexture,
             "ATX/SetDressing/Foo/Foo_s.dds"
         );
-    }
 
-    #[test]
-    fn json_bgem_material_converts_to_binary_v2() {
         let data = br##"{
             "bZBufferWrite": false,
             "cBaseColor": "#ffffff",
@@ -3375,7 +3259,7 @@ mod tests {
     // ---- request parsing ----
 
     #[test]
-    fn enumerate_source_materials_walks_bgsm_and_bgem() {
+    fn source_material_enumeration_walks_tree_or_uses_inventory() {
         let tmp = std::env::temp_dir().join("enumerate_source_materials_walks");
         let _ = fs::remove_dir_all(&tmp);
         fs::create_dir_all(tmp.join("Materials").join("Sub")).unwrap();
@@ -3393,10 +3277,7 @@ mod tests {
                 .any(|e| e.source_path == "Materials/Sub/b.bgem")
         );
         let _ = fs::remove_dir_all(&tmp);
-    }
 
-    #[test]
-    fn pre_enumerated_source_materials_avoid_a_second_tree_scan() {
         let temp = std::env::temp_dir().join("pre_enumerated_source_materials");
         let _ = fs::remove_dir_all(&temp);
         let source = temp.join("source");
@@ -3431,16 +3312,13 @@ mod tests {
     }
 
     #[test]
-    fn from_json_parses_convert_all_flag() {
+    fn request_from_json_parses_flags_and_entries() {
         let v = serde_json::json!({ "materials": [], "convert_all": true });
         let req = ConvertMaterialsRequest::from_json(&v).unwrap();
         assert!(req.convert_all);
         let v2 = serde_json::json!({ "materials": [] });
         assert!(!ConvertMaterialsRequest::from_json(&v2).unwrap().convert_all);
-    }
 
-    #[test]
-    fn from_json_parses_pbr_carry_flag() {
         let enabled = serde_json::json!({ "pbr_carry": true });
         let defaulted = serde_json::json!({});
 
@@ -3454,19 +3332,13 @@ mod tests {
                 .unwrap()
                 .pbr_carry
         );
-    }
 
-    #[test]
-    fn params_parse_empty_materials() {
         let v = serde_json::json!({});
         let p = ConvertMaterialsRequest::from_json(&v).expect("parse failed");
         assert!(p.materials.is_empty());
         assert!(p.bgsm_default_overrides.is_empty());
         assert!(!p.overwrite_existing);
-    }
 
-    #[test]
-    fn params_parse_material_entry() {
         let v = serde_json::json!({
             "materials": [{
                 "source_path": "Materials/Weapons/Gun.bgsm",
@@ -3555,7 +3427,7 @@ mod tests {
     }
 
     #[test]
-    fn existing_static_fo76_bgsm_with_emit_enabled_is_stale() {
+    fn stale_existing_fo76_bgsm_outputs_are_regenerated() {
         let tmp = std::env::temp_dir().join(format!(
             "existing_static_fo76_bgsm_with_emit_enabled_is_stale_{}",
             std::process::id()
@@ -3632,10 +3504,7 @@ mod tests {
             "ultracite output without its glow binding must be regenerated"
         );
         let _ = std::fs::remove_dir_all(&tmp);
-    }
 
-    #[test]
-    fn existing_named_glow_fo76_bgsm_without_emittance_is_stale() {
         let tmp = std::env::temp_dir().join(format!(
             "existing_named_glow_fo76_bgsm_without_emittance_is_stale_{}",
             std::process::id()

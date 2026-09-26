@@ -675,15 +675,11 @@ mod tests {
     }
 
     #[test]
-    fn identity_quaternion_yields_identity_basis() {
+    fn instance_transforms_from_quaternion_translation_scale() {
         assert_eq!(
             quaternion_basis([0.0, 0.0, 0.0, 1.0]),
             [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
         );
-    }
-
-    #[test]
-    fn instance_transform_places_translation_in_last_column() {
         let members = vec![
             HkxMember {
                 name: "rotation".to_string(),

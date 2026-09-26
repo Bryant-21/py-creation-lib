@@ -1,10 +1,5 @@
 """Tests for creation_lib.havok.parsers — Havok XML file parsers."""
-import tempfile
-from pathlib import Path
-
-import pytest
-
-from creation_lib.havok.parsers.behavior import BehaviorData, parse_behavior
+from creation_lib.havok.parsers.behavior import parse_behavior
 
 
 # Minimal valid behavior XML with events, variables, sequences, transitions.
@@ -42,55 +37,30 @@ SAMPLE_BEHAVIOR_XML = """\
 """
 
 
-class TestParseBehavior:
-    def test_extracts_events(self, tmp_path):
-        xml_path = tmp_path / "Behavior.xml"
-        xml_path.write_text(SAMPLE_BEHAVIOR_XML)
-        result = parse_behavior(xml_path)
-        assert result.events == ["EquipWeapon", "UnequipWeapon"]
+def test_parse_behavior_extracts_events_variables_sequences_transitions_and_nodes(tmp_path):
+    xml_path = tmp_path / "Behavior.xml"
+    xml_path.write_text(SAMPLE_BEHAVIOR_XML)
+    result = parse_behavior(xml_path)
 
-    def test_extracts_variables(self, tmp_path):
-        xml_path = tmp_path / "Behavior.xml"
-        xml_path.write_text(SAMPLE_BEHAVIOR_XML)
-        result = parse_behavior(xml_path)
-        assert result.variables == [("Speed", "VARIABLE_TYPE_REAL")]
+    assert result.events == ["EquipWeapon", "UnequipWeapon"]
+    assert result.variables == [("Speed", "VARIABLE_TYPE_REAL")]
+    assert result.sequences == ["IdleLoop"]
+    assert result.transitions == [("FadeIn", "0.300000")]
+    assert result.node_count == 5
+    assert "hkbBehaviorGraphStringData" in result.node_classes
+    assert "BGSGamebryoSequenceGenerator" in result.node_classes
 
-    def test_extracts_sequences(self, tmp_path):
-        xml_path = tmp_path / "Behavior.xml"
-        xml_path.write_text(SAMPLE_BEHAVIOR_XML)
-        result = parse_behavior(xml_path)
-        assert result.sequences == ["IdleLoop"]
 
-    def test_extracts_transitions(self, tmp_path):
-        xml_path = tmp_path / "Behavior.xml"
-        xml_path.write_text(SAMPLE_BEHAVIOR_XML)
-        result = parse_behavior(xml_path)
-        assert result.transitions == [("FadeIn", "0.300000")]
+def test_parse_behavior_handles_empty_and_malformed_xml(tmp_path):
+    empty_path = tmp_path / "Empty.xml"
+    empty_path.write_text('<?xml version="1.0"?><hkpackfile><hksection name="__data__"></hksection></hkpackfile>')
+    result = parse_behavior(empty_path)
+    assert result.events == []
+    assert result.variables == []
+    assert result.node_count == 0
 
-    def test_counts_nodes(self, tmp_path):
-        xml_path = tmp_path / "Behavior.xml"
-        xml_path.write_text(SAMPLE_BEHAVIOR_XML)
-        result = parse_behavior(xml_path)
-        assert result.node_count == 5
-
-    def test_collects_node_classes(self, tmp_path):
-        xml_path = tmp_path / "Behavior.xml"
-        xml_path.write_text(SAMPLE_BEHAVIOR_XML)
-        result = parse_behavior(xml_path)
-        assert "hkbBehaviorGraphStringData" in result.node_classes
-        assert "BGSGamebryoSequenceGenerator" in result.node_classes
-
-    def test_handles_empty_xml(self, tmp_path):
-        xml_path = tmp_path / "Empty.xml"
-        xml_path.write_text('<?xml version="1.0"?><hkpackfile><hksection name="__data__"></hksection></hkpackfile>')
-        result = parse_behavior(xml_path)
-        assert result.events == []
-        assert result.variables == []
-        assert result.node_count == 0
-
-    def test_handles_malformed_xml(self, tmp_path):
-        xml_path = tmp_path / "Bad.xml"
-        xml_path.write_text("not xml at all")
-        result = parse_behavior(xml_path)
-        assert result.events == []
-        assert result.node_count == 0
+    bad_path = tmp_path / "Bad.xml"
+    bad_path.write_text("not xml at all")
+    result = parse_behavior(bad_path)
+    assert result.events == []
+    assert result.node_count == 0

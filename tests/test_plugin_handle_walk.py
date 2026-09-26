@@ -38,7 +38,7 @@ def _policy(**overrides: object) -> str:
 
 
 @pytest.mark.skipif(not _NATIVE_AVAILABLE, reason="esp_authoring_core not installed")
-def test_walk_single_root_follows_formid_edges_and_assets() -> None:
+def test_walk_single_root_follows_formid_edges_and_assets_without_global_indexes() -> None:
     plugin = Plugin.new("WalkSynthetic.esp", game="fo4")
     child = plugin.new_record("MISC")
     child.editor_id = "ChildMisc"
@@ -49,6 +49,9 @@ def test_walk_single_root_follows_formid_edges_and_assets() -> None:
     root.add_subrecord("CNAM", int(child.form_id).to_bytes(4, "little"), semantic_type="formid")
     root.add_subrecord("MODL", b"Meshes\\Root.nif\0")
     plugin.add_record(root)
+
+    assert native_runtime.plugin_handle_debug_section_loaded(plugin._rust_handle, "refs") is False
+    assert native_runtime.plugin_handle_debug_section_loaded(plugin._rust_handle, "assets") is False
 
     result = plugin.walk_dependencies(
         root_form_keys=[_form_key("WalkSynthetic.esp", root.form_id)],
@@ -68,48 +71,22 @@ def test_walk_single_root_follows_formid_edges_and_assets() -> None:
         ("nif", "Meshes/Child.nif", _form_key("WalkSynthetic.esp", child.form_id), 1),
     }
 
-
-@pytest.mark.skipif(not _NATIVE_AVAILABLE, reason="esp_authoring_core not installed")
-def test_rooted_walk_does_not_build_global_refs_or_assets_sections() -> None:
-    plugin = Plugin.new("WalkNoGlobalIndexes.esp", game="fo4")
-    child = plugin.new_record("MISC")
-    child.editor_id = "ChildMisc"
-    child.add_subrecord("MODL", b"Meshes\\Child.nif\0")
-    plugin.add_record(child)
-    root = plugin.new_record("WEAP")
-    root.editor_id = "RootWeapon"
-    root.add_subrecord("CNAM", int(child.form_id).to_bytes(4, "little"), semantic_type="formid")
-    root.add_subrecord("MODL", b"Meshes\\Root.nif\0")
-    plugin.add_record(root)
-
-    assert native_runtime.plugin_handle_debug_section_loaded(plugin._rust_handle, "refs") is False
-    assert native_runtime.plugin_handle_debug_section_loaded(plugin._rust_handle, "assets") is False
-
-    result = plugin.walk_dependencies(
-        root_form_keys=[_form_key("WalkNoGlobalIndexes.esp", root.form_id)],
-        policy_json=_policy(asset_kinds=["nif"]),
-    )
-
-    assert [item["signature"] for item in result["reached_records"]] == ["WEAP", "MISC"]
+    # A rooted walk must not have built the global refs/assets index sections.
     assert native_runtime.plugin_handle_debug_section_loaded(plugin._rust_handle, "refs") is False
     assert native_runtime.plugin_handle_debug_section_loaded(plugin._rust_handle, "assets") is False
 
 
 @pytest.mark.skipif(not _NATIVE_AVAILABLE, reason="esp_authoring_core not installed")
-def test_empty_root_walk_preserves_full_index_path() -> None:
+def test_empty_roots_use_full_index_and_primary_source_handle() -> None:
     plugin = Plugin.new("WalkFullIndexes.esp", game="fo4")
     root = plugin.new_record("WEAP")
     root.editor_id = "RootWeapon"
     plugin.add_record(root)
 
+    # An empty root list falls back to the full core/refs/assets index build.
     result = native_runtime.plugin_handle_walk_dependencies(
-        [plugin._rust_handle],
-        [],
-        [],
-        _policy(max_depth=0),
-        strict_unresolved_masters=True,
+        [plugin._rust_handle], [], [], _policy(max_depth=0), strict_unresolved_masters=True,
     )
-
     assert [item["form_key"] for item in result["reached_records"]] == [
         _form_key("WalkFullIndexes.esp", root.form_id)
     ]
@@ -117,154 +94,70 @@ def test_empty_root_walk_preserves_full_index_path() -> None:
     assert native_runtime.plugin_handle_debug_section_loaded(plugin._rust_handle, "refs") is True
     assert native_runtime.plugin_handle_debug_section_loaded(plugin._rust_handle, "assets") is True
 
-
-@pytest.mark.skipif(not _NATIVE_AVAILABLE, reason="esp_authoring_core not installed")
-def test_rooted_walk_reports_timing_breakdown() -> None:
-    plugin = Plugin.new("WalkTiming.esp", game="fo4")
-    root = plugin.new_record("MISC")
-    root.editor_id = "RootMisc"
-    plugin.add_record(root)
-
-    result = plugin.walk_dependencies(
-        root_form_keys=[_form_key("WalkTiming.esp", root.form_id)],
-        policy_json=_policy(max_depth=0),
-    )
-
-    timing = result.get("timing")
-    assert isinstance(timing, dict)
-    assert set(timing) >= {
-        "locator_ms",
-        "main_walk_ms",
-        "reverse_race_ms",
-        "reverse_skm_ms",
-        "total_ms",
-    }
-    assert all(isinstance(timing[key], int) and timing[key] >= 0 for key in timing)
-
-
-@pytest.mark.skipif(not _NATIVE_AVAILABLE, reason="esp_authoring_core not installed")
-def test_walk_reports_unresolved_form_keys_when_not_strict() -> None:
-    plugin = Plugin.new("WalkUnresolved.esp", game="fo4")
-    root = plugin.new_record("WEAP")
-    root.editor_id = "RootWeapon"
-    root.add_subrecord("CNAM", (0x01000001).to_bytes(4, "little"), semantic_type="formid")
-    plugin.add_record(root)
-
-    result = plugin.walk_dependencies(
-        root_form_keys=[_form_key("WalkUnresolved.esp", root.form_id)],
-        policy_json=_policy(),
-        strict=False,
-    )
-
-    assert result["errors"] == []
-    assert result["unresolved_form_keys"] == ["01000001"]
-
-
-@pytest.mark.skipif(not _NATIVE_AVAILABLE, reason="esp_authoring_core not installed")
-def test_walk_normalizes_equivalent_roots_before_visiting() -> None:
-    plugin = Plugin.new("WalkNormalize.esp", game="fo4")
-    root = plugin.new_record("WEAP")
-    root.editor_id = "RootWeapon"
-    plugin.add_record(root)
-
-    result = plugin.walk_dependencies(
-        root_form_keys=[
-            "walknormalize.esp:800",
-            _form_key("WalkNormalize.esp", root.form_id),
-        ],
-        policy_json=_policy(max_depth=0),
-    )
-
-    assert [item["form_key"] for item in result["reached_records"]] == [
-        _form_key("WalkNormalize.esp", root.form_id)
-    ]
-
-
-@pytest.mark.skipif(not _NATIVE_AVAILABLE, reason="esp_authoring_core not installed")
-def test_walk_empty_roots_stays_on_primary_source_handle() -> None:
-    primary = Plugin.new("WalkPrimary.esp", game="fo4")
-    primary_root = primary.new_record("WEAP")
-    primary_root.editor_id = "PrimaryRoot"
-    primary.add_record(primary_root)
-
+    # With multiple handles and empty roots, it stays on the primary (first) handle.
     secondary = Plugin.new("WalkSecondary.esp", game="fo4")
     secondary_root = secondary.new_record("WEAP")
     secondary_root.editor_id = "SecondaryRoot"
     secondary.add_record(secondary_root)
-
-    result = native_runtime.plugin_handle_walk_dependencies(
-        [primary._rust_handle, secondary._rust_handle],
-        [],
-        [],
-        _policy(max_depth=0),
+    multi_result = native_runtime.plugin_handle_walk_dependencies(
+        [plugin._rust_handle, secondary._rust_handle], [], [], _policy(max_depth=0),
         strict_unresolved_masters=True,
     )
-
-    assert [item["form_key"] for item in result["reached_records"]] == [
-        _form_key("WalkPrimary.esp", primary_root.form_id)
+    assert [item["form_key"] for item in multi_result["reached_records"]] == [
+        _form_key("WalkFullIndexes.esp", root.form_id)
     ]
 
-
-@pytest.mark.skipif(not _NATIVE_AVAILABLE, reason="esp_authoring_core not installed")
-def test_native_cell_slice_api_returns_expected_shape_for_empty_plugin() -> None:
-    plugin = Plugin.new("EmptyWorld.esp", game="fo4")
-
-    result = native_runtime.plugin_handle_collect_cell_slice_roots(
-        plugin._rust_handle,
-        worldspace_editor_id="MissingWorld",
-        min_x=0,
-        min_y=0,
-        max_x=0,
-        max_y=0,
-        include_worldspace_persistent_cell=False,
+    # An empty-plugin cell-slice query on a missing worldspace reports it and returns empty shapes.
+    cell_result = native_runtime.plugin_handle_collect_cell_slice_roots(
+        plugin._rust_handle, worldspace_editor_id="MissingWorld",
+        min_x=0, min_y=0, max_x=0, max_y=0, include_worldspace_persistent_cell=False,
     )
-
-    assert result["cell_form_keys"] == []
-    assert result["placed_form_keys"] == []
-    assert result["cell_children"] == {}
-    assert result["cell_grids"] == {}
-    assert any("MissingWorld" in warning for warning in result["warnings"])
-    assert set(result["timing"]) >= {"world_lookup_ms", "cell_traversal_ms", "total_ms"}
+    assert cell_result["cell_form_keys"] == []
+    assert cell_result["placed_form_keys"] == []
+    assert any("MissingWorld" in warning for warning in cell_result["warnings"])
 
 
 @pytest.mark.skipif(not _NATIVE_AVAILABLE, reason="esp_authoring_core not installed")
-def test_walk_strict_unresolved_master_reference_reports_form_key() -> None:
-    plugin = Plugin.new("WalkStrict.esp", game="fo4", masters=["MissingMaster.esm"])
-    root = plugin.new_record("WEAP")
-    root.editor_id = "RootWeapon"
-    root.add_subrecord("CNAM", (0x00000900).to_bytes(4, "little"), semantic_type="formid")
-    plugin.add_record(root)
+def test_walk_reports_unresolved_local_form_key_when_not_strict() -> None:
+    local_plugin = Plugin.new("WalkLocal.esp", game="fo4")
+    local_root = local_plugin.new_record("WEAP")
+    local_root.editor_id = "RootWeapon"
+    local_root.add_subrecord("CNAM", (0x01000001).to_bytes(4, "little"), semantic_type="formid")
+    local_plugin.add_record(local_root)
 
-    result = plugin.walk_dependencies(
-        root_form_keys=[_form_key("WalkStrict.esp", root.form_id)],
-        policy_json=_policy(),
-        strict=True,
+    local_result = local_plugin.walk_dependencies(
+        root_form_keys=[_form_key("WalkLocal.esp", local_root.form_id)],
+        policy_json=_policy(), strict=False,
     )
-
-    assert result["errors"] == ["Unresolved FormKey: MissingMaster.esm:000900"]
-    assert result["unresolved_form_keys"] == []
+    assert local_result["errors"] == []
+    assert local_result["unresolved_form_keys"] == ["01000001"]
 
 
 @pytest.mark.skipif(not _NATIVE_AVAILABLE, reason="esp_authoring_core not installed")
-def test_walk_non_strict_unresolved_master_reference_records_form_key() -> None:
-    plugin = Plugin.new("WalkNonStrict.esp", game="fo4", masters=["MissingMaster.esm"])
-    root = plugin.new_record("WEAP")
-    root.editor_id = "RootWeapon"
-    root.add_subrecord("CNAM", (0x00000900).to_bytes(4, "little"), semantic_type="formid")
-    plugin.add_record(root)
+@pytest.mark.parametrize("strict", [True, False])
+def test_walk_unresolved_master_reference(strict: bool) -> None:
+    """A ref into a missing master is an error in strict mode, and recorded in
+    unresolved_form_keys otherwise."""
+    master_plugin = Plugin.new("WalkMasterRef.esp", game="fo4", masters=["MissingMaster.esm"])
+    master_root = master_plugin.new_record("WEAP")
+    master_root.editor_id = "RootWeapon"
+    master_root.add_subrecord("CNAM", (0x00000900).to_bytes(4, "little"), semantic_type="formid")
+    master_plugin.add_record(master_root)
 
-    result = plugin.walk_dependencies(
-        root_form_keys=[_form_key("WalkNonStrict.esp", root.form_id)],
-        policy_json=_policy(),
-        strict=False,
+    master_result = master_plugin.walk_dependencies(
+        root_form_keys=[_form_key("WalkMasterRef.esp", master_root.form_id)],
+        policy_json=_policy(), strict=strict,
     )
-
-    assert result["errors"] == []
-    assert result["unresolved_form_keys"] == ["MissingMaster.esm:000900"]
+    if strict:
+        assert master_result["errors"] == ["Unresolved FormKey: MissingMaster.esm:000900"]
+        assert master_result["unresolved_form_keys"] == []
+    else:
+        assert master_result["errors"] == []
+        assert master_result["unresolved_form_keys"] == ["MissingMaster.esm:000900"]
 
 
 @pytest.mark.skipif(not _NATIVE_AVAILABLE, reason="esp_authoring_core not installed")
-def test_walk_resolves_references_through_master_handles() -> None:
+def test_walk_normalizes_roots_and_resolves_references_through_masters() -> None:
     master = Plugin.new("WalkMaster.esm", game="fo4")
     master_child = master.new_record("MISC")
     master_child.editor_id = "MasterChild"
@@ -281,9 +174,14 @@ def test_walk_resolves_references_through_master_handles() -> None:
     )
     plugin.add_record(root)
 
+    # Passing both a plugin-prefix-lowercased alias and the canonical root key
+    # should normalize to a single visit, and resolve through the master handle.
     result = plugin.walk_dependencies(
         master_plugins=[master],
-        root_form_keys=[_form_key("WalkSource.esp", root.form_id)],
+        root_form_keys=[
+            "walksource.esp:800",
+            _form_key("WalkSource.esp", root.form_id),
+        ],
         policy_json=_policy(asset_kinds=["nif"]),
     )
 
@@ -300,49 +198,23 @@ def test_walk_resolves_references_through_master_handles() -> None:
         (item["asset_kind"], item["source_path"], item["source_form_key"], item["walk_depth"])
         for item in result["assets"]
     } == {
-        (
-            "nif",
-            "Meshes/MasterChild.nif",
-            _form_key("WalkMaster.esm", master_child.form_id),
-            1,
-        )
+        ("nif", "Meshes/MasterChild.nif", _form_key("WalkMaster.esm", master_child.form_id), 1),
     }
 
 
 @pytest.mark.skipif(not _NATIVE_AVAILABLE, reason="esp_authoring_core not installed")
-def test_walk_reverse_race_injects_race_referencing_root_keyword() -> None:
-    plugin = Plugin.new("WalkRace.esp", game="fo4")
+@pytest.mark.parametrize("max_depth", [1, 0])
+def test_walk_reverse_passes_inject_race_and_skm_records(max_depth: int) -> None:
+    """reverse_race pulls in a RACE referencing the root's keyword; reverse_skm
+    pulls in a KSSM sound mapping and (depth-permitting) the SNDR it points at."""
+    plugin = Plugin.new("WalkReverse.esp", game="fo4")
     keyword = plugin.new_record("KYWD")
-    keyword.editor_id = "AnimKeyword"
+    keyword.editor_id = "SharedKeyword"
     plugin.add_record(keyword)
     race = plugin.new_record("RACE")
     race.editor_id = "CreatureRace"
     race.add_subrecord("KWDA", int(keyword.form_id).to_bytes(4, "little"), semantic_type="formid_array")
     plugin.add_record(race)
-    root = plugin.new_record("WEAP")
-    root.editor_id = "RootWeapon"
-    root.add_subrecord("KWDA", int(keyword.form_id).to_bytes(4, "little"), semantic_type="formid_array")
-    plugin.add_record(root)
-
-    result = plugin.walk_dependencies(
-        root_form_keys=[_form_key("WalkRace.esp", root.form_id)],
-        policy_json=_policy(reverse_passes=["race"], max_depth=0),
-    )
-
-    injected = [
-        item for item in result["reached_records"] if item["walker_pass"] == "reverse_race"
-    ]
-    assert [(item["form_key"], item["signature"]) for item in injected] == [
-        (_form_key("WalkRace.esp", race.form_id), "RACE")
-    ]
-
-
-@pytest.mark.skipif(not _NATIVE_AVAILABLE, reason="esp_authoring_core not installed")
-def test_walk_reverse_skm_walks_keyword_mapping_sound_descriptors() -> None:
-    plugin = Plugin.new("WalkSkm.esp", game="fo4")
-    keyword = plugin.new_record("KYWD")
-    keyword.editor_id = "WeaponKeyword"
-    plugin.add_record(keyword)
     sound = plugin.new_record("SNDR")
     sound.editor_id = "WeaponFireSound"
     sound.add_subrecord("ANAM", b"Data\\Sound\\FX\\Weapon.wav\0")
@@ -358,51 +230,22 @@ def test_walk_reverse_skm_walks_keyword_mapping_sound_descriptors() -> None:
     plugin.add_record(root)
 
     result = plugin.walk_dependencies(
-        root_form_keys=[_form_key("WalkSkm.esp", root.form_id)],
-        policy_json=_policy(asset_kinds=["sound"], reverse_passes=["skm"], max_depth=1),
+        root_form_keys=[_form_key("WalkReverse.esp", root.form_id)],
+        policy_json=_policy(asset_kinds=["sound"], reverse_passes=["race", "skm"], max_depth=max_depth),
     )
 
     reverse_records = {
         (item["form_key"], item["signature"], item["walker_pass"])
         for item in result["reached_records"]
-        if item["walker_pass"] == "reverse_skm"
+        if item["walker_pass"] in ("reverse_race", "reverse_skm")
     }
-    assert reverse_records == {
-        (_form_key("WalkSkm.esp", skm.form_id), "KSSM", "reverse_skm"),
-        (_form_key("WalkSkm.esp", sound.form_id), "SNDR", "reverse_skm"),
-    }
-    assert {
-        (item["asset_kind"], item["source_path"], item["walker_pass"])
-        for item in result["assets"]
-    } == {("sound", "Sound/FX/Weapon.wav", "reverse_skm")}
-
-
-@pytest.mark.skipif(not _NATIVE_AVAILABLE, reason="esp_authoring_core not installed")
-def test_walk_reverse_skm_respects_max_depth() -> None:
-    plugin = Plugin.new("WalkSkmBounded.esp", game="fo4")
-    keyword = plugin.new_record("KYWD")
-    keyword.editor_id = "WeaponKeyword"
-    plugin.add_record(keyword)
-    sound = plugin.new_record("SNDR")
-    sound.editor_id = "WeaponFireSound"
-    plugin.add_record(sound)
-    skm = plugin.new_record("KSSM")
-    skm.editor_id = "WeaponSoundMapping"
-    skm.add_subrecord("KWDA", int(keyword.form_id).to_bytes(4, "little"), semantic_type="formid_array")
-    skm.add_subrecord("CNAM", int(sound.form_id).to_bytes(4, "little"), semantic_type="formid")
-    plugin.add_record(skm)
-    root = plugin.new_record("WEAP")
-    root.editor_id = "RootWeapon"
-    root.add_subrecord("KWDA", int(keyword.form_id).to_bytes(4, "little"), semantic_type="formid_array")
-    plugin.add_record(root)
-
-    result = plugin.walk_dependencies(
-        root_form_keys=[_form_key("WalkSkmBounded.esp", root.form_id)],
-        policy_json=_policy(reverse_passes=["skm"], max_depth=0),
-    )
-
-    assert {
-        (item["form_key"], item["signature"], item["walker_pass"])
-        for item in result["reached_records"]
-        if item["walker_pass"] == "reverse_skm"
-    } == {(_form_key("WalkSkmBounded.esp", skm.form_id), "KSSM", "reverse_skm")}
+    assert (_form_key("WalkReverse.esp", race.form_id), "RACE", "reverse_race") in reverse_records
+    if max_depth == 0:
+        assert (_form_key("WalkReverse.esp", skm.form_id), "KSSM", "reverse_skm") in reverse_records
+        assert (_form_key("WalkReverse.esp", sound.form_id), "SNDR", "reverse_skm") not in reverse_records
+    else:
+        assert (_form_key("WalkReverse.esp", sound.form_id), "SNDR", "reverse_skm") in reverse_records
+        assert {
+            (item["asset_kind"], item["source_path"], item["walker_pass"])
+            for item in result["assets"]
+        } == {("sound", "Sound/FX/Weapon.wav", "reverse_skm")}

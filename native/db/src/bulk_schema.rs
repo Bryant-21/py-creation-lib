@@ -98,10 +98,6 @@ mod tests {
             t.insert_sql(),
             "INSERT OR REPLACE INTO nifs (id,name) VALUES (?,?)"
         );
-    }
-
-    #[test]
-    fn rejects_bad_ident() {
         let err = SchemaDoc::parse(r#"{"tables":[{"name":"bad;drop","columns":["id"]}]}"#);
         assert!(err.is_err());
     }

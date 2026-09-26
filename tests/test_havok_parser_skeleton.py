@@ -1,5 +1,5 @@
 import json
-from creation_lib.havok.parsers.skeleton import SkeletonData, parse_skeleton
+from creation_lib.havok.parsers.skeleton import parse_skeleton
 
 
 SAMPLE_SKELETON_XML = """\
@@ -39,51 +39,22 @@ SAMPLE_SKELETON_XML = """\
 """
 
 
-class TestParseSkeleton:
-    def test_extracts_bone_names(self, tmp_path):
-        xml_path = tmp_path / "skeleton.xml"
-        xml_path.write_text(SAMPLE_SKELETON_XML)
-        result = parse_skeleton(xml_path)
-        assert result.bone_names == ["Root", "Bone01", "Bone02"]
+def test_parse_skeleton_extracts_all_fields_and_is_json_serializable(tmp_path):
+    xml_path = tmp_path / "skeleton.xml"
+    xml_path.write_text(SAMPLE_SKELETON_XML)
+    result = parse_skeleton(xml_path)
 
-    def test_extracts_parent_indices(self, tmp_path):
-        xml_path = tmp_path / "skeleton.xml"
-        xml_path.write_text(SAMPLE_SKELETON_XML)
-        result = parse_skeleton(xml_path)
-        assert result.parent_indices == [-1, 0, 1]
+    assert result.bone_names == ["Root", "Bone01", "Bone02"]
+    assert result.parent_indices == [-1, 0, 1]
+    assert result.bone_count == 3
+    assert result.float_slots == ["MorphWeight"]
+    assert result.partition_names == ["Body"]
 
-    def test_bone_count(self, tmp_path):
-        xml_path = tmp_path / "skeleton.xml"
-        xml_path.write_text(SAMPLE_SKELETON_XML)
-        result = parse_skeleton(xml_path)
-        assert result.bone_count == 3
+    # {"t": [x,y,z], "q": [x,y,z,w], "s": [x,y,z]} per bone
+    assert len(result.reference_pose) == 3
+    assert result.reference_pose[0]["t"] == [0.0, 0.0, 0.0]
+    assert result.reference_pose[1]["t"] == [1.0, 0.0, 0.0]
 
-    def test_extracts_reference_pose(self, tmp_path):
-        xml_path = tmp_path / "skeleton.xml"
-        xml_path.write_text(SAMPLE_SKELETON_XML)
-        result = parse_skeleton(xml_path)
-        assert len(result.reference_pose) == 3
-        # Each pose entry: {"t": [x,y,z], "q": [x,y,z,w], "s": [x,y,z]}
-        assert result.reference_pose[0]["t"] == [0.0, 0.0, 0.0]
-        assert result.reference_pose[1]["t"] == [1.0, 0.0, 0.0]
-
-    def test_extracts_float_slots(self, tmp_path):
-        xml_path = tmp_path / "skeleton.xml"
-        xml_path.write_text(SAMPLE_SKELETON_XML)
-        result = parse_skeleton(xml_path)
-        assert result.float_slots == ["MorphWeight"]
-
-    def test_extracts_partition_names(self, tmp_path):
-        xml_path = tmp_path / "skeleton.xml"
-        xml_path.write_text(SAMPLE_SKELETON_XML)
-        result = parse_skeleton(xml_path)
-        assert result.partition_names == ["Body"]
-
-    def test_serializes_to_json(self, tmp_path):
-        xml_path = tmp_path / "skeleton.xml"
-        xml_path.write_text(SAMPLE_SKELETON_XML)
-        result = parse_skeleton(xml_path)
-        # Verify JSON-serializable fields
-        json.dumps(result.bone_names)
-        json.dumps(result.parent_indices)
-        json.dumps(result.reference_pose)
+    json.dumps(result.bone_names)
+    json.dumps(result.parent_indices)
+    json.dumps(result.reference_pose)

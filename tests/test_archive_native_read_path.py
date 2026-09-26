@@ -52,7 +52,7 @@ def test_extract_one_prefers_native_archive_backend(tmp_path, monkeypatch: pytes
 
     native_calls: list[tuple[str, str, str | None, int]] = []
 
-    def _fake_native_extract(archive_path: str, out_dir: str, *, format: str | None = None, workers: int = 0) -> int:
+    def _fake_native_extract(archive_path: str, out_dir: str, *, format: str | None = None, workers: int = 0, progress=None) -> int:
         native_calls.append((archive_path, out_dir, format, workers))
         target = Path(out_dir) / "meshes" / "test.nif"
         target.parent.mkdir(parents=True, exist_ok=True)

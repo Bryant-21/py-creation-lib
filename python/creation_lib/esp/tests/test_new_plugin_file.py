@@ -44,31 +44,23 @@ def test_creates_empty_esp_with_base_master(tmp_path: Path) -> None:
     assert summary["masters"] == ["Fallout4.esm"]
 
 
-def test_esm_extension_auto_sets_master_bit(tmp_path: Path) -> None:
+def test_extension_and_override_flag_combinations(tmp_path: Path) -> None:
     out = tmp_path / "B21_New.esm"
     new_plugin_file(out, game="fo4", extension="esm")
     assert _flags(out) & header_flags.FLAG_MASTER
 
-
-def test_esl_extension_auto_sets_light_bit(tmp_path: Path) -> None:
     out = tmp_path / "B21_New.esl"
     new_plugin_file(out, game="fo4", extension="esl")
     assert _flags(out) & header_flags.FLAG_LIGHT
 
-
-def test_light_override_flags_esp_as_light(tmp_path: Path) -> None:
     out = tmp_path / "B21_Light.esp"
     new_plugin_file(out, game="fo4", extension="esp", set_light=True)
     assert _flags(out) & header_flags.FLAG_LIGHT
 
-
-def test_master_override_clears_auto_bit_on_esm(tmp_path: Path) -> None:
     out = tmp_path / "B21_NoMaster.esm"
     new_plugin_file(out, game="fo4", extension="esm", set_master=False)
     assert not _flags(out) & header_flags.FLAG_MASTER
 
-
-def test_localized_and_medium_flags(tmp_path: Path) -> None:
     out = tmp_path / "B21_Flags.esp"
     new_plugin_file(out, game="fo4", extension="esp", set_localized=True, set_medium=True)
     flags = _flags(out)

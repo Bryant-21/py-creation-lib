@@ -4654,7 +4654,7 @@ def build_schema() -> GameSchema:
                                 name='unnamed',
                                 codec='uint32',
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(5, 12, 18, 24, 25, 26, 35, 39, 40, 41, 46, 48, 49, 50, 61, 62, 63, 64, 65, 75, 77, 80, 81, 91, 101, 102, 103, 106, 107, 108, 110, 111, 112, 116, 117, 118, 123, 125, 127, 128, 133, 134, 135, 141, 142, 143, 144, 145, 146, 147, 148, 150, 153, 154, 157, 159, 160, 170, 175, 176, 185, 190, 192, 203, 215, 219, 224, 225, 226, 227, 229, 235, 237, 242, 244, 254, 255, 258, 259, 264, 265, 266, 267, 274, 282, 285, 286, 287, 288, 289, 300, 304, 306, 309, 310, 313, 314, 315, 318, 320, 323, 327, 332, 338, 339, 353, 354, 358, 361, 362, 365, 367, 391, 392, 397, 403, 416, 417, 428, 430, 431, 435, 436, 454, 455, 459, 460, 471, 489, 492, 496, 500, 503, 510, 522, 523, 524, 533, 550, 557, 558, 1024, 1025, 1213, 4644, 4645, 4653, 4665, 4696, 4768, 8471, 8473, 8474, 8486, 8548, 8549, 8550, 8551, 8552, 8553, 8597)),
+                                    ConditionSpec(field='function', operator='in', values=(310,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -4683,22 +4683,21 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(98, 1082, 1166, 8547, 8610, 8613, 8616, 8619)),
+                                    ConditionSpec(field='function', operator='in', values=(5, 12, 18, 24, 25, 26, 35, 39, 40, 41, 46, 48, 49, 50, 61, 62, 63, 64, 65, 75, 77, 80, 81, 91, 101, 102, 103, 106, 107, 108, 110, 111, 112, 116, 117, 118, 123, 125, 127, 128, 133, 134, 135, 141, 142, 143, 144, 145, 146, 147, 148, 150, 153, 154, 157, 159, 160, 170, 175, 176, 185, 190, 192, 203, 215, 219, 224, 225, 226, 227, 229, 235, 237, 242, 244, 254, 255, 258, 259, 264, 265, 266, 267, 274, 282, 285, 286, 287, 288, 289, 300, 304, 306, 309, 313, 314, 315, 318, 320, 323, 327, 332, 338, 339, 353, 354, 358, 361, 362, 365, 367, 391, 392, 397, 403, 416, 417, 428, 430, 431, 435, 436, 454, 455, 459, 460, 471, 489, 492, 496, 500, 503, 510, 522, 523, 524, 533, 550, 557, 558, 1024, 1025, 1213, 4644, 4645, 4653, 4665, 4696, 4768, 8471, 8473, 8474, 8486, 8548, 8549, 8550, 8551, 8552, 8553, 8597)),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='vats_value_param',
-                                codec='struct:I',
+                                name='integer',
+                                codec='int32',
                                 fields=(
                                     FieldSpec(
-                                        name='vats_value_param_vats_value_param',
-                                        kind='uint32',
-                                        authoring_label='VATS Value Param VATS Value Param',
-                                        notes='width-preserving union fallback for wbConditionVATSValueParam',
+                                        name='integer_integer',
+                                        kind='int32',
+                                        authoring_label='Integer Integer',
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(14, 109, 277, 495)),
+                                    ConditionSpec(field='function', operator='in', values=(98, 1082, 1166, 8547, 8610, 8613, 8616, 8619)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -4713,7 +4712,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(474,)),
+                                    ConditionSpec(field='function', operator='in', values=(14, 109, 277, 495)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -4728,7 +4727,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(6, 8, 10, 11)),
+                                    ConditionSpec(field='function', operator='in', values=(474,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -4743,7 +4742,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(398,)),
+                                    ConditionSpec(field='function', operator='in', values=(6, 8, 10, 11)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -4758,22 +4757,22 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(438,)),
+                                    ConditionSpec(field='function', operator='in', values=(398,)),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='crime_type',
+                                name='creature_type',
                                 codec='uint32',
                                 fields=(
                                     FieldSpec(
-                                        name='crime_type_crime_type',
+                                        name='creature_type_creature_type',
                                         kind='uint32',
-                                        enum_ref='crime_type_enum',
-                                        authoring_label='Crime Type Crime Type',
+                                        enum_ref='creature_type_enum',
+                                        authoring_label='Creature Type Creature Type',
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(531,)),
+                                    ConditionSpec(field='function', operator='in', values=(438,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -4788,7 +4787,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(480,)),
+                                    ConditionSpec(field='function', operator='in', values=(531,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -4803,7 +4802,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(247, 433)),
+                                    ConditionSpec(field='function', operator='in', values=(480,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -4818,7 +4817,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(36,)),
+                                    ConditionSpec(field='function', operator='in', values=(247, 433)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -4832,7 +4831,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(312,)),
+                                    ConditionSpec(field='function', operator='in', values=(36,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -4847,7 +4846,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(368,)),
+                                    ConditionSpec(field='function', operator='in', values=(312,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -4862,7 +4861,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(70, 131)),
+                                    ConditionSpec(field='function', operator='in', values=(368,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -4877,7 +4876,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(408,)),
+                                    ConditionSpec(field='function', operator='in', values=(70, 131)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -4892,7 +4891,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(42, 43, 44, 45, 66, 76, 122, 172, 180, 370, 409, 450, 478, 515, 4640)),
+                                    ConditionSpec(field='function', operator='in', values=(408,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -4907,7 +4906,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(84,)),
+                                    ConditionSpec(field='function', operator='in', values=(42, 43, 44, 45, 66, 76, 122, 172, 180, 370, 409, 450, 478, 515, 4640)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -4922,7 +4921,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(214,)),
+                                    ConditionSpec(field='function', operator='in', values=(84,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -4938,7 +4937,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(72, 246)),
+                                    ConditionSpec(field='function', operator='in', values=(214,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -4952,7 +4951,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(67, 230, 280)),
+                                    ConditionSpec(field='function', operator='in', values=(72, 246)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -4968,7 +4967,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(68, 129, 228)),
+                                    ConditionSpec(field='function', operator='in', values=(67, 230, 280)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -4984,7 +4983,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(223, 555, 4715)),
+                                    ConditionSpec(field='function', operator='in', values=(68, 129, 228)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -4999,7 +4998,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(446,)),
+                                    ConditionSpec(field='function', operator='in', values=(223, 555, 4715)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -5015,7 +5014,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(60, 71, 73, 132, 193, 195, 197, 199, 411)),
+                                    ConditionSpec(field='function', operator='in', values=(446,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -5031,7 +5030,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(372, 399, 410, 8571)),
+                                    ConditionSpec(field='function', operator='in', values=(60, 71, 73, 132, 193, 195, 197, 199, 411)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -5047,7 +5046,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(163,)),
+                                    ConditionSpec(field='function', operator='in', values=(372, 399, 410, 8571)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -5062,7 +5061,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(74,)),
+                                    ConditionSpec(field='function', operator='in', values=(163,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -5078,7 +5077,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(451, 4700)),
+                                    ConditionSpec(field='function', operator='in', values=(74,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -5094,7 +5093,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(47, 182, 1028, 1165)),
+                                    ConditionSpec(field='function', operator='in', values=(451, 4700)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -5109,7 +5108,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(382, 8575)),
+                                    ConditionSpec(field='function', operator='in', values=(47, 182, 1028, 1165)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -5125,7 +5124,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(278,)),
+                                    ConditionSpec(field='function', operator='in', values=(382, 8575)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -5141,7 +5140,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(161,)),
+                                    ConditionSpec(field='function', operator='in', values=(278,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -5157,7 +5156,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(449,)),
+                                    ConditionSpec(field='function', operator='in', values=(161,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -5173,7 +5172,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(56, 58, 59, 79, 546, 4776)),
+                                    ConditionSpec(field='function', operator='in', values=(449,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -5189,7 +5188,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(69, 130)),
+                                    ConditionSpec(field='function', operator='in', values=(56, 58, 59, 79, 546, 4776)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -5205,7 +5204,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(1, 27, 32, 53, 99, 136, 162, 415, 464, 518, 519, 520, 521, 525, 526, 527, 528)),
+                                    ConditionSpec(field='function', operator='in', values=(69, 130)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -5220,19 +5219,35 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
+                                    ConditionSpec(field='function', operator='in', values=(1, 27, 32, 53, 99, 136, 162, 415, 464, 518, 519, 520, 521, 525, 526, 527, 528)),
+                                ),
+                            ),
+                            UnionVariantSpec(
+                                name='voice_type',
+                                codec='formid',
+                                fields=(
+                                    FieldSpec(
+                                        name='voice_type_voice_type',
+                                        kind='formid',
+                                        formlink_target='VTYP',
+                                        formlink_targets=('VTYP',),
+                                        authoring_label='Voice Type Voice Type',
+                                    ),
+                                ),
+                                conditions=(
                                     ConditionSpec(field='function', operator='in', values=(427,)),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='weapon',
+                                name='weather',
                                 codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='weapon_weapon',
+                                        name='weather_weather',
                                         kind='formid',
-                                        formlink_target='WEAP',
-                                        formlink_targets=('WEAP',),
-                                        authoring_label='Weapon Weapon',
+                                        formlink_target='WTHR',
+                                        formlink_targets=('WTHR',),
+                                        authoring_label='Weather Weather',
                                     ),
                                 ),
                                 conditions=(
@@ -5255,13 +5270,6 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='unnamed',
-                                codec='uint32',
-                                conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(1, 5, 6, 8, 10, 11, 12, 14, 18, 24, 25, 26, 27, 32, 35, 36, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 56, 58, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 80, 81, 84, 91, 99, 101, 102, 103, 106, 107, 108, 109, 110, 111, 112, 116, 117, 118, 123, 125, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 153, 154, 157, 159, 160, 161, 162, 163, 170, 172, 175, 176, 180, 182, 185, 190, 192, 193, 195, 197, 199, 203, 214, 215, 219, 223, 224, 225, 226, 227, 228, 229, 235, 237, 242, 244, 246, 247, 254, 255, 258, 259, 264, 265, 266, 267, 274, 277, 278, 282, 285, 286, 287, 288, 289, 300, 304, 306, 309, 310, 312, 313, 314, 315, 318, 320, 323, 327, 332, 338, 339, 353, 354, 358, 361, 362, 365, 367, 368, 370, 372, 382, 391, 392, 397, 398, 399, 403, 409, 410, 415, 416, 417, 427, 428, 430, 431, 433, 435, 436, 438, 446, 449, 450, 451, 454, 455, 459, 460, 464, 471, 474, 478, 480, 489, 492, 495, 496, 500, 503, 510, 515, 518, 519, 520, 521, 522, 523, 524, 525, 526, 527, 528, 531, 533, 546, 550, 555, 557, 558, 1024, 1025, 1028, 1082, 1165, 1166, 1213, 4640, 4644, 4645, 4653, 4665, 4696, 4700, 4715, 4768, 4776, 8471, 8473, 8474, 8486, 8547, 8548, 8549, 8550, 8551, 8552, 8553, 8575, 8597, 8610, 8613, 8616, 8619)),
-                                ),
-                            ),
-                            UnionVariantSpec(
                                 name='none',
                                 codec='struct:B,B,B,B',
                                 fields=(
@@ -5287,7 +5295,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(98,)),
+                                    ConditionSpec(field='function', operator='in', values=(1, 5, 6, 8, 10, 11, 12, 14, 18, 24, 25, 26, 27, 32, 35, 36, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 56, 58, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 80, 81, 84, 91, 99, 101, 102, 103, 106, 107, 108, 109, 110, 111, 112, 116, 117, 118, 123, 125, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 153, 154, 157, 159, 160, 161, 162, 163, 170, 172, 175, 176, 180, 182, 185, 190, 192, 193, 195, 197, 199, 203, 214, 215, 219, 223, 224, 225, 226, 227, 228, 229, 235, 237, 242, 244, 246, 247, 254, 255, 258, 259, 264, 265, 266, 267, 274, 277, 278, 282, 285, 286, 287, 288, 289, 300, 304, 306, 309, 310, 312, 313, 314, 315, 318, 320, 323, 327, 332, 338, 339, 353, 354, 358, 361, 362, 365, 367, 368, 370, 372, 382, 391, 392, 397, 398, 399, 403, 409, 410, 415, 416, 417, 427, 428, 430, 431, 433, 435, 436, 438, 446, 449, 450, 451, 454, 455, 459, 460, 464, 471, 474, 478, 480, 489, 492, 495, 496, 500, 503, 510, 515, 518, 519, 520, 521, 522, 523, 524, 525, 526, 527, 528, 531, 533, 546, 550, 555, 557, 558, 1024, 1025, 1028, 1082, 1165, 1166, 1213, 4640, 4644, 4645, 4653, 4665, 4696, 4700, 4715, 4768, 4776, 8471, 8473, 8474, 8486, 8547, 8548, 8549, 8550, 8551, 8552, 8553, 8575, 8597, 8610, 8613, 8616, 8619)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -5301,7 +5309,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(59,)),
+                                    ConditionSpec(field='function', operator='in', values=(98,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -5315,7 +5323,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(53, 79)),
+                                    ConditionSpec(field='function', operator='in', values=(59,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -5329,18 +5337,33 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
+                                    ConditionSpec(field='function', operator='in', values=(53, 79)),
+                                ),
+                            ),
+                            UnionVariantSpec(
+                                name='vats_value_param',
+                                codec='struct:I',
+                                fields=(
+                                    FieldSpec(
+                                        name='vats_value_param_vats_value_param',
+                                        kind='uint32',
+                                        authoring_label='VATS Value Param VATS Value Param',
+                                        notes='width-preserving union fallback for wbConditionVATSValueParam',
+                                    ),
+                                ),
+                                conditions=(
                                     ConditionSpec(field='function', operator='in', values=(408,)),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='creature_type',
+                                name='crime_type',
                                 codec='uint32',
                                 fields=(
                                     FieldSpec(
-                                        name='creature_type_creature_type',
+                                        name='crime_type_crime_type',
                                         kind='uint32',
-                                        enum_ref='creature_type_enum',
-                                        authoring_label='Creature Type Creature Type',
+                                        enum_ref='crime_type_enum',
+                                        authoring_label='Crime Type Crime Type',
                                     ),
                                 ),
                                 conditions=(
@@ -5348,14 +5371,14 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='equip_type',
+                                name='form_type',
                                 codec='uint32',
                                 fields=(
                                     FieldSpec(
-                                        name='equip_type_equip_type',
+                                        name='form_type_form_type',
                                         kind='uint32',
-                                        enum_ref='equip_type_enum',
-                                        authoring_label='Equip Type Equip Type',
+                                        enum_ref='form_type_enum',
+                                        authoring_label='Form Type Form Type',
                                     ),
                                 ),
                                 conditions=(
@@ -5363,32 +5386,30 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='vats_value_function',
-                                codec='uint32',
+                                name='actor',
+                                codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='vats_value_function_vats_value_function',
-                                        kind='uint32',
-                                        enum_ref='vats_value_function_enum',
-                                        authoring_label='VATS Value Function VATS Value Function',
+                                        name='actor_actor',
+                                        kind='formid',
+                                        formlink_targets=('ACHR', 'ACRE', 'PLYR', 'TRGT'),
+                                        authoring_label='Actor Actor',
                                     ),
                                 ),
                                 conditions=(
                                     ConditionSpec(field='function', operator='in', values=(60,)),
-                                    ConditionSpec(field='type', operator='bit_unset', value=2),
-                                    ConditionSpec(field='type', operator='bit_unset', value=8),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='encounter_zone',
+                                name='faction',
                                 codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='encounter_zone_encounter_zone',
+                                        name='faction_faction',
                                         kind='formid',
-                                        formlink_target='ECZN',
-                                        formlink_targets=('ECZN',),
-                                        authoring_label='Encounter Zone Encounter Zone',
+                                        formlink_target='FACT',
+                                        formlink_targets=('FACT',),
+                                        authoring_label='Faction Faction',
                                     ),
                                 ),
                                 conditions=(
@@ -5396,15 +5417,15 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='note',
+                                name='owner',
                                 codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='note_note',
+                                        name='owner_owner',
                                         kind='formid',
-                                        formlink_target='NOTE',
-                                        formlink_targets=('NOTE',),
-                                        authoring_label='Note Note',
+                                        formlink_targets=('FACT', 'NPC_'),
+                                        null_allowed=True,
+                                        authoring_label='Owner Owner',
                                     ),
                                 ),
                                 conditions=(
@@ -5412,21 +5433,18 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='race',
+                                name='reference',
                                 codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='race_race',
+                                        name='reference_reference',
                                         kind='formid',
-                                        formlink_target='RACE',
-                                        formlink_targets=('RACE',),
-                                        authoring_label='Race Race',
+                                        formlink_targets=('ACHR', 'ACRE', 'PBEA', 'PGRE', 'PLYR', 'PMIS', 'REFR', 'TRGT'),
+                                        authoring_label='Reference Reference',
                                     ),
                                 ),
                                 conditions=(
                                     ConditionSpec(field='function', operator='in', values=(230,)),
-                                    ConditionSpec(field='type', operator='bit_unset', value=2),
-                                    ConditionSpec(field='type', operator='bit_unset', value=8),
                                 ),
                             ),
                         ),
@@ -10288,7 +10306,7 @@ def build_schema() -> GameSchema:
                                 name='unnamed',
                                 codec='uint32',
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(5, 12, 18, 24, 25, 26, 35, 39, 40, 41, 46, 48, 49, 50, 61, 62, 63, 64, 65, 75, 77, 80, 81, 91, 101, 102, 103, 106, 107, 108, 110, 111, 112, 116, 117, 118, 123, 125, 127, 128, 133, 134, 135, 141, 142, 143, 144, 145, 146, 147, 148, 150, 153, 154, 157, 159, 160, 170, 175, 176, 185, 190, 192, 203, 215, 219, 224, 225, 226, 227, 229, 235, 237, 242, 244, 254, 255, 258, 259, 264, 265, 266, 267, 274, 282, 285, 286, 287, 288, 289, 300, 304, 306, 309, 310, 313, 314, 315, 318, 320, 323, 327, 332, 338, 339, 353, 354, 358, 361, 362, 365, 367, 391, 392, 397, 403, 416, 417, 428, 430, 431, 435, 436, 454, 455, 459, 460, 471, 489, 492, 496, 500, 503, 510, 522, 523, 524, 533, 550, 557, 558, 1024, 1025, 1213, 4644, 4645, 4653, 4665, 4696, 4768, 8471, 8473, 8474, 8486, 8548, 8549, 8550, 8551, 8552, 8553, 8597)),
+                                    ConditionSpec(field='function', operator='in', values=(310,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -10317,22 +10335,21 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(98, 1082, 1166, 8547, 8610, 8613, 8616, 8619)),
+                                    ConditionSpec(field='function', operator='in', values=(5, 12, 18, 24, 25, 26, 35, 39, 40, 41, 46, 48, 49, 50, 61, 62, 63, 64, 65, 75, 77, 80, 81, 91, 101, 102, 103, 106, 107, 108, 110, 111, 112, 116, 117, 118, 123, 125, 127, 128, 133, 134, 135, 141, 142, 143, 144, 145, 146, 147, 148, 150, 153, 154, 157, 159, 160, 170, 175, 176, 185, 190, 192, 203, 215, 219, 224, 225, 226, 227, 229, 235, 237, 242, 244, 254, 255, 258, 259, 264, 265, 266, 267, 274, 282, 285, 286, 287, 288, 289, 300, 304, 306, 309, 313, 314, 315, 318, 320, 323, 327, 332, 338, 339, 353, 354, 358, 361, 362, 365, 367, 391, 392, 397, 403, 416, 417, 428, 430, 431, 435, 436, 454, 455, 459, 460, 471, 489, 492, 496, 500, 503, 510, 522, 523, 524, 533, 550, 557, 558, 1024, 1025, 1213, 4644, 4645, 4653, 4665, 4696, 4768, 8471, 8473, 8474, 8486, 8548, 8549, 8550, 8551, 8552, 8553, 8597)),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='vats_value_param',
-                                codec='struct:I',
+                                name='integer',
+                                codec='int32',
                                 fields=(
                                     FieldSpec(
-                                        name='vats_value_param_vats_value_param',
-                                        kind='uint32',
-                                        authoring_label='VATS Value Param VATS Value Param',
-                                        notes='width-preserving union fallback for wbConditionVATSValueParam',
+                                        name='integer_integer',
+                                        kind='int32',
+                                        authoring_label='Integer Integer',
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(14, 109, 277, 495)),
+                                    ConditionSpec(field='function', operator='in', values=(98, 1082, 1166, 8547, 8610, 8613, 8616, 8619)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -10347,7 +10364,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(474,)),
+                                    ConditionSpec(field='function', operator='in', values=(14, 109, 277, 495)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -10362,7 +10379,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(6, 8, 10, 11)),
+                                    ConditionSpec(field='function', operator='in', values=(474,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -10377,7 +10394,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(398,)),
+                                    ConditionSpec(field='function', operator='in', values=(6, 8, 10, 11)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -10392,22 +10409,22 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(438,)),
+                                    ConditionSpec(field='function', operator='in', values=(398,)),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='crime_type',
+                                name='creature_type',
                                 codec='uint32',
                                 fields=(
                                     FieldSpec(
-                                        name='crime_type_crime_type',
+                                        name='creature_type_creature_type',
                                         kind='uint32',
-                                        enum_ref='crime_type_enum',
-                                        authoring_label='Crime Type Crime Type',
+                                        enum_ref='creature_type_enum',
+                                        authoring_label='Creature Type Creature Type',
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(531,)),
+                                    ConditionSpec(field='function', operator='in', values=(438,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -10422,7 +10439,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(480,)),
+                                    ConditionSpec(field='function', operator='in', values=(531,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -10437,7 +10454,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(247, 433)),
+                                    ConditionSpec(field='function', operator='in', values=(480,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -10452,7 +10469,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(36,)),
+                                    ConditionSpec(field='function', operator='in', values=(247, 433)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -10466,7 +10483,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(312,)),
+                                    ConditionSpec(field='function', operator='in', values=(36,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -10481,7 +10498,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(368,)),
+                                    ConditionSpec(field='function', operator='in', values=(312,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -10496,7 +10513,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(70, 131)),
+                                    ConditionSpec(field='function', operator='in', values=(368,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -10511,7 +10528,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(408,)),
+                                    ConditionSpec(field='function', operator='in', values=(70, 131)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -10526,7 +10543,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(42, 43, 44, 45, 66, 76, 122, 172, 180, 370, 409, 450, 478, 515, 4640)),
+                                    ConditionSpec(field='function', operator='in', values=(408,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -10541,7 +10558,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(84,)),
+                                    ConditionSpec(field='function', operator='in', values=(42, 43, 44, 45, 66, 76, 122, 172, 180, 370, 409, 450, 478, 515, 4640)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -10556,7 +10573,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(214,)),
+                                    ConditionSpec(field='function', operator='in', values=(84,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -10572,7 +10589,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(72, 246)),
+                                    ConditionSpec(field='function', operator='in', values=(214,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -10586,7 +10603,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(67, 230, 280)),
+                                    ConditionSpec(field='function', operator='in', values=(72, 246)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -10602,7 +10619,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(68, 129, 228)),
+                                    ConditionSpec(field='function', operator='in', values=(67, 230, 280)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -10618,7 +10635,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(223, 555, 4715)),
+                                    ConditionSpec(field='function', operator='in', values=(68, 129, 228)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -10633,7 +10650,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(446,)),
+                                    ConditionSpec(field='function', operator='in', values=(223, 555, 4715)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -10649,7 +10666,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(60, 71, 73, 132, 193, 195, 197, 199, 411)),
+                                    ConditionSpec(field='function', operator='in', values=(446,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -10665,7 +10682,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(372, 399, 410, 8571)),
+                                    ConditionSpec(field='function', operator='in', values=(60, 71, 73, 132, 193, 195, 197, 199, 411)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -10681,7 +10698,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(163,)),
+                                    ConditionSpec(field='function', operator='in', values=(372, 399, 410, 8571)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -10696,7 +10713,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(74,)),
+                                    ConditionSpec(field='function', operator='in', values=(163,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -10712,7 +10729,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(451, 4700)),
+                                    ConditionSpec(field='function', operator='in', values=(74,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -10728,7 +10745,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(47, 182, 1028, 1165)),
+                                    ConditionSpec(field='function', operator='in', values=(451, 4700)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -10743,7 +10760,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(382, 8575)),
+                                    ConditionSpec(field='function', operator='in', values=(47, 182, 1028, 1165)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -10759,7 +10776,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(278,)),
+                                    ConditionSpec(field='function', operator='in', values=(382, 8575)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -10775,7 +10792,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(161,)),
+                                    ConditionSpec(field='function', operator='in', values=(278,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -10791,7 +10808,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(449,)),
+                                    ConditionSpec(field='function', operator='in', values=(161,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -10807,7 +10824,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(56, 58, 59, 79, 546, 4776)),
+                                    ConditionSpec(field='function', operator='in', values=(449,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -10823,7 +10840,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(69, 130)),
+                                    ConditionSpec(field='function', operator='in', values=(56, 58, 59, 79, 546, 4776)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -10839,7 +10856,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(1, 27, 32, 53, 99, 136, 162, 415, 464, 518, 519, 520, 521, 525, 526, 527, 528)),
+                                    ConditionSpec(field='function', operator='in', values=(69, 130)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -10854,19 +10871,35 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
+                                    ConditionSpec(field='function', operator='in', values=(1, 27, 32, 53, 99, 136, 162, 415, 464, 518, 519, 520, 521, 525, 526, 527, 528)),
+                                ),
+                            ),
+                            UnionVariantSpec(
+                                name='voice_type',
+                                codec='formid',
+                                fields=(
+                                    FieldSpec(
+                                        name='voice_type_voice_type',
+                                        kind='formid',
+                                        formlink_target='VTYP',
+                                        formlink_targets=('VTYP',),
+                                        authoring_label='Voice Type Voice Type',
+                                    ),
+                                ),
+                                conditions=(
                                     ConditionSpec(field='function', operator='in', values=(427,)),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='weapon',
+                                name='weather',
                                 codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='weapon_weapon',
+                                        name='weather_weather',
                                         kind='formid',
-                                        formlink_target='WEAP',
-                                        formlink_targets=('WEAP',),
-                                        authoring_label='Weapon Weapon',
+                                        formlink_target='WTHR',
+                                        formlink_targets=('WTHR',),
+                                        authoring_label='Weather Weather',
                                     ),
                                 ),
                                 conditions=(
@@ -10889,13 +10922,6 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='unnamed',
-                                codec='uint32',
-                                conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(1, 5, 6, 8, 10, 11, 12, 14, 18, 24, 25, 26, 27, 32, 35, 36, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 56, 58, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 80, 81, 84, 91, 99, 101, 102, 103, 106, 107, 108, 109, 110, 111, 112, 116, 117, 118, 123, 125, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 153, 154, 157, 159, 160, 161, 162, 163, 170, 172, 175, 176, 180, 182, 185, 190, 192, 193, 195, 197, 199, 203, 214, 215, 219, 223, 224, 225, 226, 227, 228, 229, 235, 237, 242, 244, 246, 247, 254, 255, 258, 259, 264, 265, 266, 267, 274, 277, 278, 282, 285, 286, 287, 288, 289, 300, 304, 306, 309, 310, 312, 313, 314, 315, 318, 320, 323, 327, 332, 338, 339, 353, 354, 358, 361, 362, 365, 367, 368, 370, 372, 382, 391, 392, 397, 398, 399, 403, 409, 410, 415, 416, 417, 427, 428, 430, 431, 433, 435, 436, 438, 446, 449, 450, 451, 454, 455, 459, 460, 464, 471, 474, 478, 480, 489, 492, 495, 496, 500, 503, 510, 515, 518, 519, 520, 521, 522, 523, 524, 525, 526, 527, 528, 531, 533, 546, 550, 555, 557, 558, 1024, 1025, 1028, 1082, 1165, 1166, 1213, 4640, 4644, 4645, 4653, 4665, 4696, 4700, 4715, 4768, 4776, 8471, 8473, 8474, 8486, 8547, 8548, 8549, 8550, 8551, 8552, 8553, 8575, 8597, 8610, 8613, 8616, 8619)),
-                                ),
-                            ),
-                            UnionVariantSpec(
                                 name='none',
                                 codec='struct:B,B,B,B',
                                 fields=(
@@ -10921,7 +10947,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(98,)),
+                                    ConditionSpec(field='function', operator='in', values=(1, 5, 6, 8, 10, 11, 12, 14, 18, 24, 25, 26, 27, 32, 35, 36, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 56, 58, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 80, 81, 84, 91, 99, 101, 102, 103, 106, 107, 108, 109, 110, 111, 112, 116, 117, 118, 123, 125, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 153, 154, 157, 159, 160, 161, 162, 163, 170, 172, 175, 176, 180, 182, 185, 190, 192, 193, 195, 197, 199, 203, 214, 215, 219, 223, 224, 225, 226, 227, 228, 229, 235, 237, 242, 244, 246, 247, 254, 255, 258, 259, 264, 265, 266, 267, 274, 277, 278, 282, 285, 286, 287, 288, 289, 300, 304, 306, 309, 310, 312, 313, 314, 315, 318, 320, 323, 327, 332, 338, 339, 353, 354, 358, 361, 362, 365, 367, 368, 370, 372, 382, 391, 392, 397, 398, 399, 403, 409, 410, 415, 416, 417, 427, 428, 430, 431, 433, 435, 436, 438, 446, 449, 450, 451, 454, 455, 459, 460, 464, 471, 474, 478, 480, 489, 492, 495, 496, 500, 503, 510, 515, 518, 519, 520, 521, 522, 523, 524, 525, 526, 527, 528, 531, 533, 546, 550, 555, 557, 558, 1024, 1025, 1028, 1082, 1165, 1166, 1213, 4640, 4644, 4645, 4653, 4665, 4696, 4700, 4715, 4768, 4776, 8471, 8473, 8474, 8486, 8547, 8548, 8549, 8550, 8551, 8552, 8553, 8575, 8597, 8610, 8613, 8616, 8619)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -10935,7 +10961,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(59,)),
+                                    ConditionSpec(field='function', operator='in', values=(98,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -10949,7 +10975,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(53, 79)),
+                                    ConditionSpec(field='function', operator='in', values=(59,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -10963,18 +10989,33 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
+                                    ConditionSpec(field='function', operator='in', values=(53, 79)),
+                                ),
+                            ),
+                            UnionVariantSpec(
+                                name='vats_value_param',
+                                codec='struct:I',
+                                fields=(
+                                    FieldSpec(
+                                        name='vats_value_param_vats_value_param',
+                                        kind='uint32',
+                                        authoring_label='VATS Value Param VATS Value Param',
+                                        notes='width-preserving union fallback for wbConditionVATSValueParam',
+                                    ),
+                                ),
+                                conditions=(
                                     ConditionSpec(field='function', operator='in', values=(408,)),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='creature_type',
+                                name='crime_type',
                                 codec='uint32',
                                 fields=(
                                     FieldSpec(
-                                        name='creature_type_creature_type',
+                                        name='crime_type_crime_type',
                                         kind='uint32',
-                                        enum_ref='creature_type_enum',
-                                        authoring_label='Creature Type Creature Type',
+                                        enum_ref='crime_type_enum',
+                                        authoring_label='Crime Type Crime Type',
                                     ),
                                 ),
                                 conditions=(
@@ -10982,14 +11023,14 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='equip_type',
+                                name='form_type',
                                 codec='uint32',
                                 fields=(
                                     FieldSpec(
-                                        name='equip_type_equip_type',
+                                        name='form_type_form_type',
                                         kind='uint32',
-                                        enum_ref='equip_type_enum',
-                                        authoring_label='Equip Type Equip Type',
+                                        enum_ref='form_type_enum',
+                                        authoring_label='Form Type Form Type',
                                     ),
                                 ),
                                 conditions=(
@@ -10997,32 +11038,30 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='vats_value_function',
-                                codec='uint32',
+                                name='actor',
+                                codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='vats_value_function_vats_value_function',
-                                        kind='uint32',
-                                        enum_ref='vats_value_function_enum',
-                                        authoring_label='VATS Value Function VATS Value Function',
+                                        name='actor_actor',
+                                        kind='formid',
+                                        formlink_targets=('ACHR', 'ACRE', 'PLYR', 'TRGT'),
+                                        authoring_label='Actor Actor',
                                     ),
                                 ),
                                 conditions=(
                                     ConditionSpec(field='function', operator='in', values=(60,)),
-                                    ConditionSpec(field='type', operator='bit_unset', value=2),
-                                    ConditionSpec(field='type', operator='bit_unset', value=8),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='encounter_zone',
+                                name='faction',
                                 codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='encounter_zone_encounter_zone',
+                                        name='faction_faction',
                                         kind='formid',
-                                        formlink_target='ECZN',
-                                        formlink_targets=('ECZN',),
-                                        authoring_label='Encounter Zone Encounter Zone',
+                                        formlink_target='FACT',
+                                        formlink_targets=('FACT',),
+                                        authoring_label='Faction Faction',
                                     ),
                                 ),
                                 conditions=(
@@ -11030,15 +11069,15 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='note',
+                                name='owner',
                                 codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='note_note',
+                                        name='owner_owner',
                                         kind='formid',
-                                        formlink_target='NOTE',
-                                        formlink_targets=('NOTE',),
-                                        authoring_label='Note Note',
+                                        formlink_targets=('FACT', 'NPC_'),
+                                        null_allowed=True,
+                                        authoring_label='Owner Owner',
                                     ),
                                 ),
                                 conditions=(
@@ -11046,21 +11085,18 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='race',
+                                name='reference',
                                 codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='race_race',
+                                        name='reference_reference',
                                         kind='formid',
-                                        formlink_target='RACE',
-                                        formlink_targets=('RACE',),
-                                        authoring_label='Race Race',
+                                        formlink_targets=('ACHR', 'ACRE', 'PBEA', 'PGRE', 'PLYR', 'PMIS', 'REFR', 'TRGT'),
+                                        authoring_label='Reference Reference',
                                     ),
                                 ),
                                 conditions=(
                                     ConditionSpec(field='function', operator='in', values=(230,)),
-                                    ConditionSpec(field='type', operator='bit_unset', value=2),
-                                    ConditionSpec(field='type', operator='bit_unset', value=8),
                                 ),
                             ),
                         ),
@@ -14361,7 +14397,7 @@ def build_schema() -> GameSchema:
                                 name='unnamed',
                                 codec='uint32',
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(5, 12, 18, 24, 25, 26, 35, 39, 40, 41, 46, 48, 49, 50, 61, 62, 63, 64, 65, 75, 77, 80, 81, 91, 101, 102, 103, 106, 107, 108, 110, 111, 112, 116, 117, 118, 123, 125, 127, 128, 133, 134, 135, 141, 142, 143, 144, 145, 146, 147, 148, 150, 153, 154, 157, 159, 160, 170, 175, 176, 185, 190, 192, 203, 215, 219, 224, 225, 226, 227, 229, 235, 237, 242, 244, 254, 255, 258, 259, 264, 265, 266, 267, 274, 282, 285, 286, 287, 288, 289, 300, 304, 306, 309, 310, 313, 314, 315, 318, 320, 323, 327, 332, 338, 339, 353, 354, 358, 361, 362, 365, 367, 391, 392, 397, 403, 416, 417, 428, 430, 431, 435, 436, 454, 455, 459, 460, 471, 489, 492, 496, 500, 503, 510, 522, 523, 524, 533, 550, 557, 558, 1024, 1025, 1213, 4644, 4645, 4653, 4665, 4696, 4768, 8471, 8473, 8474, 8486, 8548, 8549, 8550, 8551, 8552, 8553, 8597)),
+                                    ConditionSpec(field='function', operator='in', values=(310,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -14390,22 +14426,21 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(98, 1082, 1166, 8547, 8610, 8613, 8616, 8619)),
+                                    ConditionSpec(field='function', operator='in', values=(5, 12, 18, 24, 25, 26, 35, 39, 40, 41, 46, 48, 49, 50, 61, 62, 63, 64, 65, 75, 77, 80, 81, 91, 101, 102, 103, 106, 107, 108, 110, 111, 112, 116, 117, 118, 123, 125, 127, 128, 133, 134, 135, 141, 142, 143, 144, 145, 146, 147, 148, 150, 153, 154, 157, 159, 160, 170, 175, 176, 185, 190, 192, 203, 215, 219, 224, 225, 226, 227, 229, 235, 237, 242, 244, 254, 255, 258, 259, 264, 265, 266, 267, 274, 282, 285, 286, 287, 288, 289, 300, 304, 306, 309, 313, 314, 315, 318, 320, 323, 327, 332, 338, 339, 353, 354, 358, 361, 362, 365, 367, 391, 392, 397, 403, 416, 417, 428, 430, 431, 435, 436, 454, 455, 459, 460, 471, 489, 492, 496, 500, 503, 510, 522, 523, 524, 533, 550, 557, 558, 1024, 1025, 1213, 4644, 4645, 4653, 4665, 4696, 4768, 8471, 8473, 8474, 8486, 8548, 8549, 8550, 8551, 8552, 8553, 8597)),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='vats_value_param',
-                                codec='struct:I',
+                                name='integer',
+                                codec='int32',
                                 fields=(
                                     FieldSpec(
-                                        name='vats_value_param_vats_value_param',
-                                        kind='uint32',
-                                        authoring_label='VATS Value Param VATS Value Param',
-                                        notes='width-preserving union fallback for wbConditionVATSValueParam',
+                                        name='integer_integer',
+                                        kind='int32',
+                                        authoring_label='Integer Integer',
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(14, 109, 277, 495)),
+                                    ConditionSpec(field='function', operator='in', values=(98, 1082, 1166, 8547, 8610, 8613, 8616, 8619)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -14420,7 +14455,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(474,)),
+                                    ConditionSpec(field='function', operator='in', values=(14, 109, 277, 495)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -14435,7 +14470,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(6, 8, 10, 11)),
+                                    ConditionSpec(field='function', operator='in', values=(474,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -14450,7 +14485,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(398,)),
+                                    ConditionSpec(field='function', operator='in', values=(6, 8, 10, 11)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -14465,22 +14500,22 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(438,)),
+                                    ConditionSpec(field='function', operator='in', values=(398,)),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='crime_type',
+                                name='creature_type',
                                 codec='uint32',
                                 fields=(
                                     FieldSpec(
-                                        name='crime_type_crime_type',
+                                        name='creature_type_creature_type',
                                         kind='uint32',
-                                        enum_ref='crime_type_enum',
-                                        authoring_label='Crime Type Crime Type',
+                                        enum_ref='creature_type_enum',
+                                        authoring_label='Creature Type Creature Type',
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(531,)),
+                                    ConditionSpec(field='function', operator='in', values=(438,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -14495,7 +14530,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(480,)),
+                                    ConditionSpec(field='function', operator='in', values=(531,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -14510,7 +14545,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(247, 433)),
+                                    ConditionSpec(field='function', operator='in', values=(480,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -14525,7 +14560,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(36,)),
+                                    ConditionSpec(field='function', operator='in', values=(247, 433)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -14539,7 +14574,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(312,)),
+                                    ConditionSpec(field='function', operator='in', values=(36,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -14554,7 +14589,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(368,)),
+                                    ConditionSpec(field='function', operator='in', values=(312,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -14569,7 +14604,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(70, 131)),
+                                    ConditionSpec(field='function', operator='in', values=(368,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -14584,7 +14619,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(408,)),
+                                    ConditionSpec(field='function', operator='in', values=(70, 131)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -14599,7 +14634,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(42, 43, 44, 45, 66, 76, 122, 172, 180, 370, 409, 450, 478, 515, 4640)),
+                                    ConditionSpec(field='function', operator='in', values=(408,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -14614,7 +14649,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(84,)),
+                                    ConditionSpec(field='function', operator='in', values=(42, 43, 44, 45, 66, 76, 122, 172, 180, 370, 409, 450, 478, 515, 4640)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -14629,7 +14664,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(214,)),
+                                    ConditionSpec(field='function', operator='in', values=(84,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -14645,7 +14680,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(72, 246)),
+                                    ConditionSpec(field='function', operator='in', values=(214,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -14659,7 +14694,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(67, 230, 280)),
+                                    ConditionSpec(field='function', operator='in', values=(72, 246)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -14675,7 +14710,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(68, 129, 228)),
+                                    ConditionSpec(field='function', operator='in', values=(67, 230, 280)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -14691,7 +14726,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(223, 555, 4715)),
+                                    ConditionSpec(field='function', operator='in', values=(68, 129, 228)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -14706,7 +14741,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(446,)),
+                                    ConditionSpec(field='function', operator='in', values=(223, 555, 4715)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -14722,7 +14757,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(60, 71, 73, 132, 193, 195, 197, 199, 411)),
+                                    ConditionSpec(field='function', operator='in', values=(446,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -14738,7 +14773,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(372, 399, 410, 8571)),
+                                    ConditionSpec(field='function', operator='in', values=(60, 71, 73, 132, 193, 195, 197, 199, 411)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -14754,7 +14789,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(163,)),
+                                    ConditionSpec(field='function', operator='in', values=(372, 399, 410, 8571)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -14769,7 +14804,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(74,)),
+                                    ConditionSpec(field='function', operator='in', values=(163,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -14785,7 +14820,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(451, 4700)),
+                                    ConditionSpec(field='function', operator='in', values=(74,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -14801,7 +14836,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(47, 182, 1028, 1165)),
+                                    ConditionSpec(field='function', operator='in', values=(451, 4700)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -14816,7 +14851,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(382, 8575)),
+                                    ConditionSpec(field='function', operator='in', values=(47, 182, 1028, 1165)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -14832,7 +14867,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(278,)),
+                                    ConditionSpec(field='function', operator='in', values=(382, 8575)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -14848,7 +14883,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(161,)),
+                                    ConditionSpec(field='function', operator='in', values=(278,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -14864,7 +14899,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(449,)),
+                                    ConditionSpec(field='function', operator='in', values=(161,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -14880,7 +14915,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(56, 58, 59, 79, 546, 4776)),
+                                    ConditionSpec(field='function', operator='in', values=(449,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -14896,7 +14931,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(69, 130)),
+                                    ConditionSpec(field='function', operator='in', values=(56, 58, 59, 79, 546, 4776)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -14912,7 +14947,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(1, 27, 32, 53, 99, 136, 162, 415, 464, 518, 519, 520, 521, 525, 526, 527, 528)),
+                                    ConditionSpec(field='function', operator='in', values=(69, 130)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -14927,19 +14962,35 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
+                                    ConditionSpec(field='function', operator='in', values=(1, 27, 32, 53, 99, 136, 162, 415, 464, 518, 519, 520, 521, 525, 526, 527, 528)),
+                                ),
+                            ),
+                            UnionVariantSpec(
+                                name='voice_type',
+                                codec='formid',
+                                fields=(
+                                    FieldSpec(
+                                        name='voice_type_voice_type',
+                                        kind='formid',
+                                        formlink_target='VTYP',
+                                        formlink_targets=('VTYP',),
+                                        authoring_label='Voice Type Voice Type',
+                                    ),
+                                ),
+                                conditions=(
                                     ConditionSpec(field='function', operator='in', values=(427,)),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='weapon',
+                                name='weather',
                                 codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='weapon_weapon',
+                                        name='weather_weather',
                                         kind='formid',
-                                        formlink_target='WEAP',
-                                        formlink_targets=('WEAP',),
-                                        authoring_label='Weapon Weapon',
+                                        formlink_target='WTHR',
+                                        formlink_targets=('WTHR',),
+                                        authoring_label='Weather Weather',
                                     ),
                                 ),
                                 conditions=(
@@ -14962,13 +15013,6 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='unnamed',
-                                codec='uint32',
-                                conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(1, 5, 6, 8, 10, 11, 12, 14, 18, 24, 25, 26, 27, 32, 35, 36, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 56, 58, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 80, 81, 84, 91, 99, 101, 102, 103, 106, 107, 108, 109, 110, 111, 112, 116, 117, 118, 123, 125, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 153, 154, 157, 159, 160, 161, 162, 163, 170, 172, 175, 176, 180, 182, 185, 190, 192, 193, 195, 197, 199, 203, 214, 215, 219, 223, 224, 225, 226, 227, 228, 229, 235, 237, 242, 244, 246, 247, 254, 255, 258, 259, 264, 265, 266, 267, 274, 277, 278, 282, 285, 286, 287, 288, 289, 300, 304, 306, 309, 310, 312, 313, 314, 315, 318, 320, 323, 327, 332, 338, 339, 353, 354, 358, 361, 362, 365, 367, 368, 370, 372, 382, 391, 392, 397, 398, 399, 403, 409, 410, 415, 416, 417, 427, 428, 430, 431, 433, 435, 436, 438, 446, 449, 450, 451, 454, 455, 459, 460, 464, 471, 474, 478, 480, 489, 492, 495, 496, 500, 503, 510, 515, 518, 519, 520, 521, 522, 523, 524, 525, 526, 527, 528, 531, 533, 546, 550, 555, 557, 558, 1024, 1025, 1028, 1082, 1165, 1166, 1213, 4640, 4644, 4645, 4653, 4665, 4696, 4700, 4715, 4768, 4776, 8471, 8473, 8474, 8486, 8547, 8548, 8549, 8550, 8551, 8552, 8553, 8575, 8597, 8610, 8613, 8616, 8619)),
-                                ),
-                            ),
-                            UnionVariantSpec(
                                 name='none',
                                 codec='struct:B,B,B,B',
                                 fields=(
@@ -14994,7 +15038,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(98,)),
+                                    ConditionSpec(field='function', operator='in', values=(1, 5, 6, 8, 10, 11, 12, 14, 18, 24, 25, 26, 27, 32, 35, 36, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 56, 58, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 80, 81, 84, 91, 99, 101, 102, 103, 106, 107, 108, 109, 110, 111, 112, 116, 117, 118, 123, 125, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 153, 154, 157, 159, 160, 161, 162, 163, 170, 172, 175, 176, 180, 182, 185, 190, 192, 193, 195, 197, 199, 203, 214, 215, 219, 223, 224, 225, 226, 227, 228, 229, 235, 237, 242, 244, 246, 247, 254, 255, 258, 259, 264, 265, 266, 267, 274, 277, 278, 282, 285, 286, 287, 288, 289, 300, 304, 306, 309, 310, 312, 313, 314, 315, 318, 320, 323, 327, 332, 338, 339, 353, 354, 358, 361, 362, 365, 367, 368, 370, 372, 382, 391, 392, 397, 398, 399, 403, 409, 410, 415, 416, 417, 427, 428, 430, 431, 433, 435, 436, 438, 446, 449, 450, 451, 454, 455, 459, 460, 464, 471, 474, 478, 480, 489, 492, 495, 496, 500, 503, 510, 515, 518, 519, 520, 521, 522, 523, 524, 525, 526, 527, 528, 531, 533, 546, 550, 555, 557, 558, 1024, 1025, 1028, 1082, 1165, 1166, 1213, 4640, 4644, 4645, 4653, 4665, 4696, 4700, 4715, 4768, 4776, 8471, 8473, 8474, 8486, 8547, 8548, 8549, 8550, 8551, 8552, 8553, 8575, 8597, 8610, 8613, 8616, 8619)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -15008,7 +15052,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(59,)),
+                                    ConditionSpec(field='function', operator='in', values=(98,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -15022,7 +15066,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(53, 79)),
+                                    ConditionSpec(field='function', operator='in', values=(59,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -15036,18 +15080,33 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
+                                    ConditionSpec(field='function', operator='in', values=(53, 79)),
+                                ),
+                            ),
+                            UnionVariantSpec(
+                                name='vats_value_param',
+                                codec='struct:I',
+                                fields=(
+                                    FieldSpec(
+                                        name='vats_value_param_vats_value_param',
+                                        kind='uint32',
+                                        authoring_label='VATS Value Param VATS Value Param',
+                                        notes='width-preserving union fallback for wbConditionVATSValueParam',
+                                    ),
+                                ),
+                                conditions=(
                                     ConditionSpec(field='function', operator='in', values=(408,)),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='creature_type',
+                                name='crime_type',
                                 codec='uint32',
                                 fields=(
                                     FieldSpec(
-                                        name='creature_type_creature_type',
+                                        name='crime_type_crime_type',
                                         kind='uint32',
-                                        enum_ref='creature_type_enum',
-                                        authoring_label='Creature Type Creature Type',
+                                        enum_ref='crime_type_enum',
+                                        authoring_label='Crime Type Crime Type',
                                     ),
                                 ),
                                 conditions=(
@@ -15055,14 +15114,14 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='equip_type',
+                                name='form_type',
                                 codec='uint32',
                                 fields=(
                                     FieldSpec(
-                                        name='equip_type_equip_type',
+                                        name='form_type_form_type',
                                         kind='uint32',
-                                        enum_ref='equip_type_enum',
-                                        authoring_label='Equip Type Equip Type',
+                                        enum_ref='form_type_enum',
+                                        authoring_label='Form Type Form Type',
                                     ),
                                 ),
                                 conditions=(
@@ -15070,32 +15129,30 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='vats_value_function',
-                                codec='uint32',
+                                name='actor',
+                                codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='vats_value_function_vats_value_function',
-                                        kind='uint32',
-                                        enum_ref='vats_value_function_enum',
-                                        authoring_label='VATS Value Function VATS Value Function',
+                                        name='actor_actor',
+                                        kind='formid',
+                                        formlink_targets=('ACHR', 'ACRE', 'PLYR', 'TRGT'),
+                                        authoring_label='Actor Actor',
                                     ),
                                 ),
                                 conditions=(
                                     ConditionSpec(field='function', operator='in', values=(60,)),
-                                    ConditionSpec(field='type', operator='bit_unset', value=2),
-                                    ConditionSpec(field='type', operator='bit_unset', value=8),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='encounter_zone',
+                                name='faction',
                                 codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='encounter_zone_encounter_zone',
+                                        name='faction_faction',
                                         kind='formid',
-                                        formlink_target='ECZN',
-                                        formlink_targets=('ECZN',),
-                                        authoring_label='Encounter Zone Encounter Zone',
+                                        formlink_target='FACT',
+                                        formlink_targets=('FACT',),
+                                        authoring_label='Faction Faction',
                                     ),
                                 ),
                                 conditions=(
@@ -15103,15 +15160,15 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='note',
+                                name='owner',
                                 codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='note_note',
+                                        name='owner_owner',
                                         kind='formid',
-                                        formlink_target='NOTE',
-                                        formlink_targets=('NOTE',),
-                                        authoring_label='Note Note',
+                                        formlink_targets=('FACT', 'NPC_'),
+                                        null_allowed=True,
+                                        authoring_label='Owner Owner',
                                     ),
                                 ),
                                 conditions=(
@@ -15119,21 +15176,18 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='race',
+                                name='reference',
                                 codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='race_race',
+                                        name='reference_reference',
                                         kind='formid',
-                                        formlink_target='RACE',
-                                        formlink_targets=('RACE',),
-                                        authoring_label='Race Race',
+                                        formlink_targets=('ACHR', 'ACRE', 'PBEA', 'PGRE', 'PLYR', 'PMIS', 'REFR', 'TRGT'),
+                                        authoring_label='Reference Reference',
                                     ),
                                 ),
                                 conditions=(
                                     ConditionSpec(field='function', operator='in', values=(230,)),
-                                    ConditionSpec(field='type', operator='bit_unset', value=2),
-                                    ConditionSpec(field='type', operator='bit_unset', value=8),
                                 ),
                             ),
                         ),
@@ -16919,7 +16973,7 @@ def build_schema() -> GameSchema:
                                 name='unnamed',
                                 codec='uint32',
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(5, 12, 18, 24, 25, 26, 35, 39, 40, 41, 46, 48, 49, 50, 61, 62, 63, 64, 65, 75, 77, 80, 81, 91, 101, 102, 103, 106, 107, 108, 110, 111, 112, 116, 117, 118, 123, 125, 127, 128, 133, 134, 135, 141, 142, 143, 144, 145, 146, 147, 148, 150, 153, 154, 157, 159, 160, 170, 175, 176, 185, 190, 192, 203, 215, 219, 224, 225, 226, 227, 229, 235, 237, 242, 244, 254, 255, 258, 259, 264, 265, 266, 267, 274, 282, 285, 286, 287, 288, 289, 300, 304, 306, 309, 310, 313, 314, 315, 318, 320, 323, 327, 332, 338, 339, 353, 354, 358, 361, 362, 365, 367, 391, 392, 397, 403, 416, 417, 428, 430, 431, 435, 436, 454, 455, 459, 460, 471, 489, 492, 496, 500, 503, 510, 522, 523, 524, 533, 550, 557, 558, 1024, 1025, 1213, 4644, 4645, 4653, 4665, 4696, 4768, 8471, 8473, 8474, 8486, 8548, 8549, 8550, 8551, 8552, 8553, 8597)),
+                                    ConditionSpec(field='function', operator='in', values=(310,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -16948,22 +17002,21 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(98, 1082, 1166, 8547, 8610, 8613, 8616, 8619)),
+                                    ConditionSpec(field='function', operator='in', values=(5, 12, 18, 24, 25, 26, 35, 39, 40, 41, 46, 48, 49, 50, 61, 62, 63, 64, 65, 75, 77, 80, 81, 91, 101, 102, 103, 106, 107, 108, 110, 111, 112, 116, 117, 118, 123, 125, 127, 128, 133, 134, 135, 141, 142, 143, 144, 145, 146, 147, 148, 150, 153, 154, 157, 159, 160, 170, 175, 176, 185, 190, 192, 203, 215, 219, 224, 225, 226, 227, 229, 235, 237, 242, 244, 254, 255, 258, 259, 264, 265, 266, 267, 274, 282, 285, 286, 287, 288, 289, 300, 304, 306, 309, 313, 314, 315, 318, 320, 323, 327, 332, 338, 339, 353, 354, 358, 361, 362, 365, 367, 391, 392, 397, 403, 416, 417, 428, 430, 431, 435, 436, 454, 455, 459, 460, 471, 489, 492, 496, 500, 503, 510, 522, 523, 524, 533, 550, 557, 558, 1024, 1025, 1213, 4644, 4645, 4653, 4665, 4696, 4768, 8471, 8473, 8474, 8486, 8548, 8549, 8550, 8551, 8552, 8553, 8597)),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='vats_value_param',
-                                codec='struct:I',
+                                name='integer',
+                                codec='int32',
                                 fields=(
                                     FieldSpec(
-                                        name='vats_value_param_vats_value_param',
-                                        kind='uint32',
-                                        authoring_label='VATS Value Param VATS Value Param',
-                                        notes='width-preserving union fallback for wbConditionVATSValueParam',
+                                        name='integer_integer',
+                                        kind='int32',
+                                        authoring_label='Integer Integer',
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(14, 109, 277, 495)),
+                                    ConditionSpec(field='function', operator='in', values=(98, 1082, 1166, 8547, 8610, 8613, 8616, 8619)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -16978,7 +17031,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(474,)),
+                                    ConditionSpec(field='function', operator='in', values=(14, 109, 277, 495)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -16993,7 +17046,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(6, 8, 10, 11)),
+                                    ConditionSpec(field='function', operator='in', values=(474,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -17008,7 +17061,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(398,)),
+                                    ConditionSpec(field='function', operator='in', values=(6, 8, 10, 11)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -17023,22 +17076,22 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(438,)),
+                                    ConditionSpec(field='function', operator='in', values=(398,)),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='crime_type',
+                                name='creature_type',
                                 codec='uint32',
                                 fields=(
                                     FieldSpec(
-                                        name='crime_type_crime_type',
+                                        name='creature_type_creature_type',
                                         kind='uint32',
-                                        enum_ref='crime_type_enum',
-                                        authoring_label='Crime Type Crime Type',
+                                        enum_ref='creature_type_enum',
+                                        authoring_label='Creature Type Creature Type',
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(531,)),
+                                    ConditionSpec(field='function', operator='in', values=(438,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -17053,7 +17106,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(480,)),
+                                    ConditionSpec(field='function', operator='in', values=(531,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -17068,7 +17121,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(247, 433)),
+                                    ConditionSpec(field='function', operator='in', values=(480,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -17083,7 +17136,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(36,)),
+                                    ConditionSpec(field='function', operator='in', values=(247, 433)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -17097,7 +17150,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(312,)),
+                                    ConditionSpec(field='function', operator='in', values=(36,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -17112,7 +17165,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(368,)),
+                                    ConditionSpec(field='function', operator='in', values=(312,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -17127,7 +17180,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(70, 131)),
+                                    ConditionSpec(field='function', operator='in', values=(368,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -17142,7 +17195,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(408,)),
+                                    ConditionSpec(field='function', operator='in', values=(70, 131)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -17157,7 +17210,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(42, 43, 44, 45, 66, 76, 122, 172, 180, 370, 409, 450, 478, 515, 4640)),
+                                    ConditionSpec(field='function', operator='in', values=(408,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -17172,7 +17225,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(84,)),
+                                    ConditionSpec(field='function', operator='in', values=(42, 43, 44, 45, 66, 76, 122, 172, 180, 370, 409, 450, 478, 515, 4640)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -17187,7 +17240,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(214,)),
+                                    ConditionSpec(field='function', operator='in', values=(84,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -17203,7 +17256,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(72, 246)),
+                                    ConditionSpec(field='function', operator='in', values=(214,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -17217,7 +17270,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(67, 230, 280)),
+                                    ConditionSpec(field='function', operator='in', values=(72, 246)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -17233,7 +17286,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(68, 129, 228)),
+                                    ConditionSpec(field='function', operator='in', values=(67, 230, 280)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -17249,7 +17302,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(223, 555, 4715)),
+                                    ConditionSpec(field='function', operator='in', values=(68, 129, 228)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -17264,7 +17317,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(446,)),
+                                    ConditionSpec(field='function', operator='in', values=(223, 555, 4715)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -17280,7 +17333,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(60, 71, 73, 132, 193, 195, 197, 199, 411)),
+                                    ConditionSpec(field='function', operator='in', values=(446,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -17296,7 +17349,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(372, 399, 410, 8571)),
+                                    ConditionSpec(field='function', operator='in', values=(60, 71, 73, 132, 193, 195, 197, 199, 411)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -17312,7 +17365,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(163,)),
+                                    ConditionSpec(field='function', operator='in', values=(372, 399, 410, 8571)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -17327,7 +17380,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(74,)),
+                                    ConditionSpec(field='function', operator='in', values=(163,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -17343,7 +17396,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(451, 4700)),
+                                    ConditionSpec(field='function', operator='in', values=(74,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -17359,7 +17412,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(47, 182, 1028, 1165)),
+                                    ConditionSpec(field='function', operator='in', values=(451, 4700)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -17374,7 +17427,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(382, 8575)),
+                                    ConditionSpec(field='function', operator='in', values=(47, 182, 1028, 1165)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -17390,7 +17443,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(278,)),
+                                    ConditionSpec(field='function', operator='in', values=(382, 8575)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -17406,7 +17459,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(161,)),
+                                    ConditionSpec(field='function', operator='in', values=(278,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -17422,7 +17475,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(449,)),
+                                    ConditionSpec(field='function', operator='in', values=(161,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -17438,7 +17491,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(56, 58, 59, 79, 546, 4776)),
+                                    ConditionSpec(field='function', operator='in', values=(449,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -17454,7 +17507,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(69, 130)),
+                                    ConditionSpec(field='function', operator='in', values=(56, 58, 59, 79, 546, 4776)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -17470,7 +17523,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(1, 27, 32, 53, 99, 136, 162, 415, 464, 518, 519, 520, 521, 525, 526, 527, 528)),
+                                    ConditionSpec(field='function', operator='in', values=(69, 130)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -17485,19 +17538,35 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
+                                    ConditionSpec(field='function', operator='in', values=(1, 27, 32, 53, 99, 136, 162, 415, 464, 518, 519, 520, 521, 525, 526, 527, 528)),
+                                ),
+                            ),
+                            UnionVariantSpec(
+                                name='voice_type',
+                                codec='formid',
+                                fields=(
+                                    FieldSpec(
+                                        name='voice_type_voice_type',
+                                        kind='formid',
+                                        formlink_target='VTYP',
+                                        formlink_targets=('VTYP',),
+                                        authoring_label='Voice Type Voice Type',
+                                    ),
+                                ),
+                                conditions=(
                                     ConditionSpec(field='function', operator='in', values=(427,)),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='weapon',
+                                name='weather',
                                 codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='weapon_weapon',
+                                        name='weather_weather',
                                         kind='formid',
-                                        formlink_target='WEAP',
-                                        formlink_targets=('WEAP',),
-                                        authoring_label='Weapon Weapon',
+                                        formlink_target='WTHR',
+                                        formlink_targets=('WTHR',),
+                                        authoring_label='Weather Weather',
                                     ),
                                 ),
                                 conditions=(
@@ -17520,13 +17589,6 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='unnamed',
-                                codec='uint32',
-                                conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(1, 5, 6, 8, 10, 11, 12, 14, 18, 24, 25, 26, 27, 32, 35, 36, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 56, 58, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 80, 81, 84, 91, 99, 101, 102, 103, 106, 107, 108, 109, 110, 111, 112, 116, 117, 118, 123, 125, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 153, 154, 157, 159, 160, 161, 162, 163, 170, 172, 175, 176, 180, 182, 185, 190, 192, 193, 195, 197, 199, 203, 214, 215, 219, 223, 224, 225, 226, 227, 228, 229, 235, 237, 242, 244, 246, 247, 254, 255, 258, 259, 264, 265, 266, 267, 274, 277, 278, 282, 285, 286, 287, 288, 289, 300, 304, 306, 309, 310, 312, 313, 314, 315, 318, 320, 323, 327, 332, 338, 339, 353, 354, 358, 361, 362, 365, 367, 368, 370, 372, 382, 391, 392, 397, 398, 399, 403, 409, 410, 415, 416, 417, 427, 428, 430, 431, 433, 435, 436, 438, 446, 449, 450, 451, 454, 455, 459, 460, 464, 471, 474, 478, 480, 489, 492, 495, 496, 500, 503, 510, 515, 518, 519, 520, 521, 522, 523, 524, 525, 526, 527, 528, 531, 533, 546, 550, 555, 557, 558, 1024, 1025, 1028, 1082, 1165, 1166, 1213, 4640, 4644, 4645, 4653, 4665, 4696, 4700, 4715, 4768, 4776, 8471, 8473, 8474, 8486, 8547, 8548, 8549, 8550, 8551, 8552, 8553, 8575, 8597, 8610, 8613, 8616, 8619)),
-                                ),
-                            ),
-                            UnionVariantSpec(
                                 name='none',
                                 codec='struct:B,B,B,B',
                                 fields=(
@@ -17552,7 +17614,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(98,)),
+                                    ConditionSpec(field='function', operator='in', values=(1, 5, 6, 8, 10, 11, 12, 14, 18, 24, 25, 26, 27, 32, 35, 36, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 56, 58, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 80, 81, 84, 91, 99, 101, 102, 103, 106, 107, 108, 109, 110, 111, 112, 116, 117, 118, 123, 125, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 153, 154, 157, 159, 160, 161, 162, 163, 170, 172, 175, 176, 180, 182, 185, 190, 192, 193, 195, 197, 199, 203, 214, 215, 219, 223, 224, 225, 226, 227, 228, 229, 235, 237, 242, 244, 246, 247, 254, 255, 258, 259, 264, 265, 266, 267, 274, 277, 278, 282, 285, 286, 287, 288, 289, 300, 304, 306, 309, 310, 312, 313, 314, 315, 318, 320, 323, 327, 332, 338, 339, 353, 354, 358, 361, 362, 365, 367, 368, 370, 372, 382, 391, 392, 397, 398, 399, 403, 409, 410, 415, 416, 417, 427, 428, 430, 431, 433, 435, 436, 438, 446, 449, 450, 451, 454, 455, 459, 460, 464, 471, 474, 478, 480, 489, 492, 495, 496, 500, 503, 510, 515, 518, 519, 520, 521, 522, 523, 524, 525, 526, 527, 528, 531, 533, 546, 550, 555, 557, 558, 1024, 1025, 1028, 1082, 1165, 1166, 1213, 4640, 4644, 4645, 4653, 4665, 4696, 4700, 4715, 4768, 4776, 8471, 8473, 8474, 8486, 8547, 8548, 8549, 8550, 8551, 8552, 8553, 8575, 8597, 8610, 8613, 8616, 8619)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -17566,7 +17628,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(59,)),
+                                    ConditionSpec(field='function', operator='in', values=(98,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -17580,7 +17642,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(53, 79)),
+                                    ConditionSpec(field='function', operator='in', values=(59,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -17594,18 +17656,33 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
+                                    ConditionSpec(field='function', operator='in', values=(53, 79)),
+                                ),
+                            ),
+                            UnionVariantSpec(
+                                name='vats_value_param',
+                                codec='struct:I',
+                                fields=(
+                                    FieldSpec(
+                                        name='vats_value_param_vats_value_param',
+                                        kind='uint32',
+                                        authoring_label='VATS Value Param VATS Value Param',
+                                        notes='width-preserving union fallback for wbConditionVATSValueParam',
+                                    ),
+                                ),
+                                conditions=(
                                     ConditionSpec(field='function', operator='in', values=(408,)),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='creature_type',
+                                name='crime_type',
                                 codec='uint32',
                                 fields=(
                                     FieldSpec(
-                                        name='creature_type_creature_type',
+                                        name='crime_type_crime_type',
                                         kind='uint32',
-                                        enum_ref='creature_type_enum',
-                                        authoring_label='Creature Type Creature Type',
+                                        enum_ref='crime_type_enum',
+                                        authoring_label='Crime Type Crime Type',
                                     ),
                                 ),
                                 conditions=(
@@ -17613,14 +17690,14 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='equip_type',
+                                name='form_type',
                                 codec='uint32',
                                 fields=(
                                     FieldSpec(
-                                        name='equip_type_equip_type',
+                                        name='form_type_form_type',
                                         kind='uint32',
-                                        enum_ref='equip_type_enum',
-                                        authoring_label='Equip Type Equip Type',
+                                        enum_ref='form_type_enum',
+                                        authoring_label='Form Type Form Type',
                                     ),
                                 ),
                                 conditions=(
@@ -17628,32 +17705,30 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='vats_value_function',
-                                codec='uint32',
+                                name='actor',
+                                codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='vats_value_function_vats_value_function',
-                                        kind='uint32',
-                                        enum_ref='vats_value_function_enum',
-                                        authoring_label='VATS Value Function VATS Value Function',
+                                        name='actor_actor',
+                                        kind='formid',
+                                        formlink_targets=('ACHR', 'ACRE', 'PLYR', 'TRGT'),
+                                        authoring_label='Actor Actor',
                                     ),
                                 ),
                                 conditions=(
                                     ConditionSpec(field='function', operator='in', values=(60,)),
-                                    ConditionSpec(field='type', operator='bit_unset', value=2),
-                                    ConditionSpec(field='type', operator='bit_unset', value=8),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='encounter_zone',
+                                name='faction',
                                 codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='encounter_zone_encounter_zone',
+                                        name='faction_faction',
                                         kind='formid',
-                                        formlink_target='ECZN',
-                                        formlink_targets=('ECZN',),
-                                        authoring_label='Encounter Zone Encounter Zone',
+                                        formlink_target='FACT',
+                                        formlink_targets=('FACT',),
+                                        authoring_label='Faction Faction',
                                     ),
                                 ),
                                 conditions=(
@@ -17661,15 +17736,15 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='note',
+                                name='owner',
                                 codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='note_note',
+                                        name='owner_owner',
                                         kind='formid',
-                                        formlink_target='NOTE',
-                                        formlink_targets=('NOTE',),
-                                        authoring_label='Note Note',
+                                        formlink_targets=('FACT', 'NPC_'),
+                                        null_allowed=True,
+                                        authoring_label='Owner Owner',
                                     ),
                                 ),
                                 conditions=(
@@ -17677,21 +17752,18 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='race',
+                                name='reference',
                                 codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='race_race',
+                                        name='reference_reference',
                                         kind='formid',
-                                        formlink_target='RACE',
-                                        formlink_targets=('RACE',),
-                                        authoring_label='Race Race',
+                                        formlink_targets=('ACHR', 'ACRE', 'PBEA', 'PGRE', 'PLYR', 'PMIS', 'REFR', 'TRGT'),
+                                        authoring_label='Reference Reference',
                                     ),
                                 ),
                                 conditions=(
                                     ConditionSpec(field='function', operator='in', values=(230,)),
-                                    ConditionSpec(field='type', operator='bit_unset', value=2),
-                                    ConditionSpec(field='type', operator='bit_unset', value=8),
                                 ),
                             ),
                         ),
@@ -20501,7 +20573,7 @@ def build_schema() -> GameSchema:
                                 name='unnamed',
                                 codec='uint32',
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(5, 12, 18, 24, 25, 26, 35, 39, 40, 41, 46, 48, 49, 50, 61, 62, 63, 64, 65, 75, 77, 80, 81, 91, 101, 102, 103, 106, 107, 108, 110, 111, 112, 116, 117, 118, 123, 125, 127, 128, 133, 134, 135, 141, 142, 143, 144, 145, 146, 147, 148, 150, 153, 154, 157, 159, 160, 170, 175, 176, 185, 190, 192, 203, 215, 219, 224, 225, 226, 227, 229, 235, 237, 242, 244, 254, 255, 258, 259, 264, 265, 266, 267, 274, 282, 285, 286, 287, 288, 289, 300, 304, 306, 309, 310, 313, 314, 315, 318, 320, 323, 327, 332, 338, 339, 353, 354, 358, 361, 362, 365, 367, 391, 392, 397, 403, 416, 417, 428, 430, 431, 435, 436, 454, 455, 459, 460, 471, 489, 492, 496, 500, 503, 510, 522, 523, 524, 533, 550, 557, 558, 1024, 1025, 1213, 4644, 4645, 4653, 4665, 4696, 4768, 8471, 8473, 8474, 8486, 8548, 8549, 8550, 8551, 8552, 8553, 8597)),
+                                    ConditionSpec(field='function', operator='in', values=(310,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -20530,22 +20602,21 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(98, 1082, 1166, 8547, 8610, 8613, 8616, 8619)),
+                                    ConditionSpec(field='function', operator='in', values=(5, 12, 18, 24, 25, 26, 35, 39, 40, 41, 46, 48, 49, 50, 61, 62, 63, 64, 65, 75, 77, 80, 81, 91, 101, 102, 103, 106, 107, 108, 110, 111, 112, 116, 117, 118, 123, 125, 127, 128, 133, 134, 135, 141, 142, 143, 144, 145, 146, 147, 148, 150, 153, 154, 157, 159, 160, 170, 175, 176, 185, 190, 192, 203, 215, 219, 224, 225, 226, 227, 229, 235, 237, 242, 244, 254, 255, 258, 259, 264, 265, 266, 267, 274, 282, 285, 286, 287, 288, 289, 300, 304, 306, 309, 313, 314, 315, 318, 320, 323, 327, 332, 338, 339, 353, 354, 358, 361, 362, 365, 367, 391, 392, 397, 403, 416, 417, 428, 430, 431, 435, 436, 454, 455, 459, 460, 471, 489, 492, 496, 500, 503, 510, 522, 523, 524, 533, 550, 557, 558, 1024, 1025, 1213, 4644, 4645, 4653, 4665, 4696, 4768, 8471, 8473, 8474, 8486, 8548, 8549, 8550, 8551, 8552, 8553, 8597)),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='vats_value_param',
-                                codec='struct:I',
+                                name='integer',
+                                codec='int32',
                                 fields=(
                                     FieldSpec(
-                                        name='vats_value_param_vats_value_param',
-                                        kind='uint32',
-                                        authoring_label='VATS Value Param VATS Value Param',
-                                        notes='width-preserving union fallback for wbConditionVATSValueParam',
+                                        name='integer_integer',
+                                        kind='int32',
+                                        authoring_label='Integer Integer',
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(14, 109, 277, 495)),
+                                    ConditionSpec(field='function', operator='in', values=(98, 1082, 1166, 8547, 8610, 8613, 8616, 8619)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -20560,7 +20631,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(474,)),
+                                    ConditionSpec(field='function', operator='in', values=(14, 109, 277, 495)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -20575,7 +20646,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(6, 8, 10, 11)),
+                                    ConditionSpec(field='function', operator='in', values=(474,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -20590,7 +20661,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(398,)),
+                                    ConditionSpec(field='function', operator='in', values=(6, 8, 10, 11)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -20605,22 +20676,22 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(438,)),
+                                    ConditionSpec(field='function', operator='in', values=(398,)),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='crime_type',
+                                name='creature_type',
                                 codec='uint32',
                                 fields=(
                                     FieldSpec(
-                                        name='crime_type_crime_type',
+                                        name='creature_type_creature_type',
                                         kind='uint32',
-                                        enum_ref='crime_type_enum',
-                                        authoring_label='Crime Type Crime Type',
+                                        enum_ref='creature_type_enum',
+                                        authoring_label='Creature Type Creature Type',
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(531,)),
+                                    ConditionSpec(field='function', operator='in', values=(438,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -20635,7 +20706,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(480,)),
+                                    ConditionSpec(field='function', operator='in', values=(531,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -20650,7 +20721,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(247, 433)),
+                                    ConditionSpec(field='function', operator='in', values=(480,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -20665,7 +20736,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(36,)),
+                                    ConditionSpec(field='function', operator='in', values=(247, 433)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -20679,7 +20750,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(312,)),
+                                    ConditionSpec(field='function', operator='in', values=(36,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -20694,7 +20765,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(368,)),
+                                    ConditionSpec(field='function', operator='in', values=(312,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -20709,7 +20780,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(70, 131)),
+                                    ConditionSpec(field='function', operator='in', values=(368,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -20724,7 +20795,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(408,)),
+                                    ConditionSpec(field='function', operator='in', values=(70, 131)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -20739,7 +20810,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(42, 43, 44, 45, 66, 76, 122, 172, 180, 370, 409, 450, 478, 515, 4640)),
+                                    ConditionSpec(field='function', operator='in', values=(408,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -20754,7 +20825,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(84,)),
+                                    ConditionSpec(field='function', operator='in', values=(42, 43, 44, 45, 66, 76, 122, 172, 180, 370, 409, 450, 478, 515, 4640)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -20769,7 +20840,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(214,)),
+                                    ConditionSpec(field='function', operator='in', values=(84,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -20785,7 +20856,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(72, 246)),
+                                    ConditionSpec(field='function', operator='in', values=(214,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -20799,7 +20870,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(67, 230, 280)),
+                                    ConditionSpec(field='function', operator='in', values=(72, 246)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -20815,7 +20886,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(68, 129, 228)),
+                                    ConditionSpec(field='function', operator='in', values=(67, 230, 280)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -20831,7 +20902,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(223, 555, 4715)),
+                                    ConditionSpec(field='function', operator='in', values=(68, 129, 228)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -20846,7 +20917,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(446,)),
+                                    ConditionSpec(field='function', operator='in', values=(223, 555, 4715)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -20862,7 +20933,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(60, 71, 73, 132, 193, 195, 197, 199, 411)),
+                                    ConditionSpec(field='function', operator='in', values=(446,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -20878,7 +20949,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(372, 399, 410, 8571)),
+                                    ConditionSpec(field='function', operator='in', values=(60, 71, 73, 132, 193, 195, 197, 199, 411)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -20894,7 +20965,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(163,)),
+                                    ConditionSpec(field='function', operator='in', values=(372, 399, 410, 8571)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -20909,7 +20980,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(74,)),
+                                    ConditionSpec(field='function', operator='in', values=(163,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -20925,7 +20996,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(451, 4700)),
+                                    ConditionSpec(field='function', operator='in', values=(74,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -20941,7 +21012,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(47, 182, 1028, 1165)),
+                                    ConditionSpec(field='function', operator='in', values=(451, 4700)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -20956,7 +21027,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(382, 8575)),
+                                    ConditionSpec(field='function', operator='in', values=(47, 182, 1028, 1165)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -20972,7 +21043,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(278,)),
+                                    ConditionSpec(field='function', operator='in', values=(382, 8575)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -20988,7 +21059,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(161,)),
+                                    ConditionSpec(field='function', operator='in', values=(278,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -21004,7 +21075,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(449,)),
+                                    ConditionSpec(field='function', operator='in', values=(161,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -21020,7 +21091,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(56, 58, 59, 79, 546, 4776)),
+                                    ConditionSpec(field='function', operator='in', values=(449,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -21036,7 +21107,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(69, 130)),
+                                    ConditionSpec(field='function', operator='in', values=(56, 58, 59, 79, 546, 4776)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -21052,7 +21123,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(1, 27, 32, 53, 99, 136, 162, 415, 464, 518, 519, 520, 521, 525, 526, 527, 528)),
+                                    ConditionSpec(field='function', operator='in', values=(69, 130)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -21067,19 +21138,35 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
+                                    ConditionSpec(field='function', operator='in', values=(1, 27, 32, 53, 99, 136, 162, 415, 464, 518, 519, 520, 521, 525, 526, 527, 528)),
+                                ),
+                            ),
+                            UnionVariantSpec(
+                                name='voice_type',
+                                codec='formid',
+                                fields=(
+                                    FieldSpec(
+                                        name='voice_type_voice_type',
+                                        kind='formid',
+                                        formlink_target='VTYP',
+                                        formlink_targets=('VTYP',),
+                                        authoring_label='Voice Type Voice Type',
+                                    ),
+                                ),
+                                conditions=(
                                     ConditionSpec(field='function', operator='in', values=(427,)),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='weapon',
+                                name='weather',
                                 codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='weapon_weapon',
+                                        name='weather_weather',
                                         kind='formid',
-                                        formlink_target='WEAP',
-                                        formlink_targets=('WEAP',),
-                                        authoring_label='Weapon Weapon',
+                                        formlink_target='WTHR',
+                                        formlink_targets=('WTHR',),
+                                        authoring_label='Weather Weather',
                                     ),
                                 ),
                                 conditions=(
@@ -21102,13 +21189,6 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='unnamed',
-                                codec='uint32',
-                                conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(1, 5, 6, 8, 10, 11, 12, 14, 18, 24, 25, 26, 27, 32, 35, 36, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 56, 58, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 80, 81, 84, 91, 99, 101, 102, 103, 106, 107, 108, 109, 110, 111, 112, 116, 117, 118, 123, 125, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 153, 154, 157, 159, 160, 161, 162, 163, 170, 172, 175, 176, 180, 182, 185, 190, 192, 193, 195, 197, 199, 203, 214, 215, 219, 223, 224, 225, 226, 227, 228, 229, 235, 237, 242, 244, 246, 247, 254, 255, 258, 259, 264, 265, 266, 267, 274, 277, 278, 282, 285, 286, 287, 288, 289, 300, 304, 306, 309, 310, 312, 313, 314, 315, 318, 320, 323, 327, 332, 338, 339, 353, 354, 358, 361, 362, 365, 367, 368, 370, 372, 382, 391, 392, 397, 398, 399, 403, 409, 410, 415, 416, 417, 427, 428, 430, 431, 433, 435, 436, 438, 446, 449, 450, 451, 454, 455, 459, 460, 464, 471, 474, 478, 480, 489, 492, 495, 496, 500, 503, 510, 515, 518, 519, 520, 521, 522, 523, 524, 525, 526, 527, 528, 531, 533, 546, 550, 555, 557, 558, 1024, 1025, 1028, 1082, 1165, 1166, 1213, 4640, 4644, 4645, 4653, 4665, 4696, 4700, 4715, 4768, 4776, 8471, 8473, 8474, 8486, 8547, 8548, 8549, 8550, 8551, 8552, 8553, 8575, 8597, 8610, 8613, 8616, 8619)),
-                                ),
-                            ),
-                            UnionVariantSpec(
                                 name='none',
                                 codec='struct:B,B,B,B',
                                 fields=(
@@ -21134,7 +21214,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(98,)),
+                                    ConditionSpec(field='function', operator='in', values=(1, 5, 6, 8, 10, 11, 12, 14, 18, 24, 25, 26, 27, 32, 35, 36, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 56, 58, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 80, 81, 84, 91, 99, 101, 102, 103, 106, 107, 108, 109, 110, 111, 112, 116, 117, 118, 123, 125, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 153, 154, 157, 159, 160, 161, 162, 163, 170, 172, 175, 176, 180, 182, 185, 190, 192, 193, 195, 197, 199, 203, 214, 215, 219, 223, 224, 225, 226, 227, 228, 229, 235, 237, 242, 244, 246, 247, 254, 255, 258, 259, 264, 265, 266, 267, 274, 277, 278, 282, 285, 286, 287, 288, 289, 300, 304, 306, 309, 310, 312, 313, 314, 315, 318, 320, 323, 327, 332, 338, 339, 353, 354, 358, 361, 362, 365, 367, 368, 370, 372, 382, 391, 392, 397, 398, 399, 403, 409, 410, 415, 416, 417, 427, 428, 430, 431, 433, 435, 436, 438, 446, 449, 450, 451, 454, 455, 459, 460, 464, 471, 474, 478, 480, 489, 492, 495, 496, 500, 503, 510, 515, 518, 519, 520, 521, 522, 523, 524, 525, 526, 527, 528, 531, 533, 546, 550, 555, 557, 558, 1024, 1025, 1028, 1082, 1165, 1166, 1213, 4640, 4644, 4645, 4653, 4665, 4696, 4700, 4715, 4768, 4776, 8471, 8473, 8474, 8486, 8547, 8548, 8549, 8550, 8551, 8552, 8553, 8575, 8597, 8610, 8613, 8616, 8619)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -21148,7 +21228,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(59,)),
+                                    ConditionSpec(field='function', operator='in', values=(98,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -21162,7 +21242,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(53, 79)),
+                                    ConditionSpec(field='function', operator='in', values=(59,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -21176,18 +21256,33 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
+                                    ConditionSpec(field='function', operator='in', values=(53, 79)),
+                                ),
+                            ),
+                            UnionVariantSpec(
+                                name='vats_value_param',
+                                codec='struct:I',
+                                fields=(
+                                    FieldSpec(
+                                        name='vats_value_param_vats_value_param',
+                                        kind='uint32',
+                                        authoring_label='VATS Value Param VATS Value Param',
+                                        notes='width-preserving union fallback for wbConditionVATSValueParam',
+                                    ),
+                                ),
+                                conditions=(
                                     ConditionSpec(field='function', operator='in', values=(408,)),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='creature_type',
+                                name='crime_type',
                                 codec='uint32',
                                 fields=(
                                     FieldSpec(
-                                        name='creature_type_creature_type',
+                                        name='crime_type_crime_type',
                                         kind='uint32',
-                                        enum_ref='creature_type_enum',
-                                        authoring_label='Creature Type Creature Type',
+                                        enum_ref='crime_type_enum',
+                                        authoring_label='Crime Type Crime Type',
                                     ),
                                 ),
                                 conditions=(
@@ -21195,14 +21290,14 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='equip_type',
+                                name='form_type',
                                 codec='uint32',
                                 fields=(
                                     FieldSpec(
-                                        name='equip_type_equip_type',
+                                        name='form_type_form_type',
                                         kind='uint32',
-                                        enum_ref='equip_type_enum',
-                                        authoring_label='Equip Type Equip Type',
+                                        enum_ref='form_type_enum',
+                                        authoring_label='Form Type Form Type',
                                     ),
                                 ),
                                 conditions=(
@@ -21210,32 +21305,30 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='vats_value_function',
-                                codec='uint32',
+                                name='actor',
+                                codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='vats_value_function_vats_value_function',
-                                        kind='uint32',
-                                        enum_ref='vats_value_function_enum',
-                                        authoring_label='VATS Value Function VATS Value Function',
+                                        name='actor_actor',
+                                        kind='formid',
+                                        formlink_targets=('ACHR', 'ACRE', 'PLYR', 'TRGT'),
+                                        authoring_label='Actor Actor',
                                     ),
                                 ),
                                 conditions=(
                                     ConditionSpec(field='function', operator='in', values=(60,)),
-                                    ConditionSpec(field='type', operator='bit_unset', value=2),
-                                    ConditionSpec(field='type', operator='bit_unset', value=8),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='encounter_zone',
+                                name='faction',
                                 codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='encounter_zone_encounter_zone',
+                                        name='faction_faction',
                                         kind='formid',
-                                        formlink_target='ECZN',
-                                        formlink_targets=('ECZN',),
-                                        authoring_label='Encounter Zone Encounter Zone',
+                                        formlink_target='FACT',
+                                        formlink_targets=('FACT',),
+                                        authoring_label='Faction Faction',
                                     ),
                                 ),
                                 conditions=(
@@ -21243,15 +21336,15 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='note',
+                                name='owner',
                                 codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='note_note',
+                                        name='owner_owner',
                                         kind='formid',
-                                        formlink_target='NOTE',
-                                        formlink_targets=('NOTE',),
-                                        authoring_label='Note Note',
+                                        formlink_targets=('FACT', 'NPC_'),
+                                        null_allowed=True,
+                                        authoring_label='Owner Owner',
                                     ),
                                 ),
                                 conditions=(
@@ -21259,21 +21352,18 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='race',
+                                name='reference',
                                 codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='race_race',
+                                        name='reference_reference',
                                         kind='formid',
-                                        formlink_target='RACE',
-                                        formlink_targets=('RACE',),
-                                        authoring_label='Race Race',
+                                        formlink_targets=('ACHR', 'ACRE', 'PBEA', 'PGRE', 'PLYR', 'PMIS', 'REFR', 'TRGT'),
+                                        authoring_label='Reference Reference',
                                     ),
                                 ),
                                 conditions=(
                                     ConditionSpec(field='function', operator='in', values=(230,)),
-                                    ConditionSpec(field='type', operator='bit_unset', value=2),
-                                    ConditionSpec(field='type', operator='bit_unset', value=8),
                                 ),
                             ),
                         ),
@@ -22437,7 +22527,7 @@ def build_schema() -> GameSchema:
                                 name='unnamed',
                                 codec='uint32',
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(5, 12, 18, 24, 25, 26, 35, 39, 40, 41, 46, 48, 49, 50, 61, 62, 63, 64, 65, 75, 77, 80, 81, 91, 101, 102, 103, 106, 107, 108, 110, 111, 112, 116, 117, 118, 123, 125, 127, 128, 133, 134, 135, 141, 142, 143, 144, 145, 146, 147, 148, 150, 153, 154, 157, 159, 160, 170, 175, 176, 185, 190, 192, 203, 215, 219, 224, 225, 226, 227, 229, 235, 237, 242, 244, 254, 255, 258, 259, 264, 265, 266, 267, 274, 282, 285, 286, 287, 288, 289, 300, 304, 306, 309, 310, 313, 314, 315, 318, 320, 323, 327, 332, 338, 339, 353, 354, 358, 361, 362, 365, 367, 391, 392, 397, 403, 416, 417, 428, 430, 431, 435, 436, 454, 455, 459, 460, 471, 489, 492, 496, 500, 503, 510, 522, 523, 524, 533, 550, 557, 558, 1024, 1025, 1213, 4644, 4645, 4653, 4665, 4696, 4768, 8471, 8473, 8474, 8486, 8548, 8549, 8550, 8551, 8552, 8553, 8597)),
+                                    ConditionSpec(field='function', operator='in', values=(310,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -22466,22 +22556,21 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(98, 1082, 1166, 8547, 8610, 8613, 8616, 8619)),
+                                    ConditionSpec(field='function', operator='in', values=(5, 12, 18, 24, 25, 26, 35, 39, 40, 41, 46, 48, 49, 50, 61, 62, 63, 64, 65, 75, 77, 80, 81, 91, 101, 102, 103, 106, 107, 108, 110, 111, 112, 116, 117, 118, 123, 125, 127, 128, 133, 134, 135, 141, 142, 143, 144, 145, 146, 147, 148, 150, 153, 154, 157, 159, 160, 170, 175, 176, 185, 190, 192, 203, 215, 219, 224, 225, 226, 227, 229, 235, 237, 242, 244, 254, 255, 258, 259, 264, 265, 266, 267, 274, 282, 285, 286, 287, 288, 289, 300, 304, 306, 309, 313, 314, 315, 318, 320, 323, 327, 332, 338, 339, 353, 354, 358, 361, 362, 365, 367, 391, 392, 397, 403, 416, 417, 428, 430, 431, 435, 436, 454, 455, 459, 460, 471, 489, 492, 496, 500, 503, 510, 522, 523, 524, 533, 550, 557, 558, 1024, 1025, 1213, 4644, 4645, 4653, 4665, 4696, 4768, 8471, 8473, 8474, 8486, 8548, 8549, 8550, 8551, 8552, 8553, 8597)),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='vats_value_param',
-                                codec='struct:I',
+                                name='integer',
+                                codec='int32',
                                 fields=(
                                     FieldSpec(
-                                        name='vats_value_param_vats_value_param',
-                                        kind='uint32',
-                                        authoring_label='VATS Value Param VATS Value Param',
-                                        notes='width-preserving union fallback for wbConditionVATSValueParam',
+                                        name='integer_integer',
+                                        kind='int32',
+                                        authoring_label='Integer Integer',
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(14, 109, 277, 495)),
+                                    ConditionSpec(field='function', operator='in', values=(98, 1082, 1166, 8547, 8610, 8613, 8616, 8619)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -22496,7 +22585,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(474,)),
+                                    ConditionSpec(field='function', operator='in', values=(14, 109, 277, 495)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -22511,7 +22600,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(6, 8, 10, 11)),
+                                    ConditionSpec(field='function', operator='in', values=(474,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -22526,7 +22615,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(398,)),
+                                    ConditionSpec(field='function', operator='in', values=(6, 8, 10, 11)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -22541,22 +22630,22 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(438,)),
+                                    ConditionSpec(field='function', operator='in', values=(398,)),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='crime_type',
+                                name='creature_type',
                                 codec='uint32',
                                 fields=(
                                     FieldSpec(
-                                        name='crime_type_crime_type',
+                                        name='creature_type_creature_type',
                                         kind='uint32',
-                                        enum_ref='crime_type_enum',
-                                        authoring_label='Crime Type Crime Type',
+                                        enum_ref='creature_type_enum',
+                                        authoring_label='Creature Type Creature Type',
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(531,)),
+                                    ConditionSpec(field='function', operator='in', values=(438,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -22571,7 +22660,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(480,)),
+                                    ConditionSpec(field='function', operator='in', values=(531,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -22586,7 +22675,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(247, 433)),
+                                    ConditionSpec(field='function', operator='in', values=(480,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -22601,7 +22690,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(36,)),
+                                    ConditionSpec(field='function', operator='in', values=(247, 433)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -22615,7 +22704,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(312,)),
+                                    ConditionSpec(field='function', operator='in', values=(36,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -22630,7 +22719,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(368,)),
+                                    ConditionSpec(field='function', operator='in', values=(312,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -22645,7 +22734,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(70, 131)),
+                                    ConditionSpec(field='function', operator='in', values=(368,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -22660,7 +22749,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(408,)),
+                                    ConditionSpec(field='function', operator='in', values=(70, 131)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -22675,7 +22764,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(42, 43, 44, 45, 66, 76, 122, 172, 180, 370, 409, 450, 478, 515, 4640)),
+                                    ConditionSpec(field='function', operator='in', values=(408,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -22690,7 +22779,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(84,)),
+                                    ConditionSpec(field='function', operator='in', values=(42, 43, 44, 45, 66, 76, 122, 172, 180, 370, 409, 450, 478, 515, 4640)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -22705,7 +22794,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(214,)),
+                                    ConditionSpec(field='function', operator='in', values=(84,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -22721,7 +22810,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(72, 246)),
+                                    ConditionSpec(field='function', operator='in', values=(214,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -22735,7 +22824,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(67, 230, 280)),
+                                    ConditionSpec(field='function', operator='in', values=(72, 246)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -22751,7 +22840,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(68, 129, 228)),
+                                    ConditionSpec(field='function', operator='in', values=(67, 230, 280)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -22767,7 +22856,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(223, 555, 4715)),
+                                    ConditionSpec(field='function', operator='in', values=(68, 129, 228)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -22782,7 +22871,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(446,)),
+                                    ConditionSpec(field='function', operator='in', values=(223, 555, 4715)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -22798,7 +22887,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(60, 71, 73, 132, 193, 195, 197, 199, 411)),
+                                    ConditionSpec(field='function', operator='in', values=(446,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -22814,7 +22903,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(372, 399, 410, 8571)),
+                                    ConditionSpec(field='function', operator='in', values=(60, 71, 73, 132, 193, 195, 197, 199, 411)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -22830,7 +22919,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(163,)),
+                                    ConditionSpec(field='function', operator='in', values=(372, 399, 410, 8571)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -22845,7 +22934,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(74,)),
+                                    ConditionSpec(field='function', operator='in', values=(163,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -22861,7 +22950,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(451, 4700)),
+                                    ConditionSpec(field='function', operator='in', values=(74,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -22877,7 +22966,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(47, 182, 1028, 1165)),
+                                    ConditionSpec(field='function', operator='in', values=(451, 4700)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -22892,7 +22981,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(382, 8575)),
+                                    ConditionSpec(field='function', operator='in', values=(47, 182, 1028, 1165)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -22908,7 +22997,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(278,)),
+                                    ConditionSpec(field='function', operator='in', values=(382, 8575)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -22924,7 +23013,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(161,)),
+                                    ConditionSpec(field='function', operator='in', values=(278,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -22940,7 +23029,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(449,)),
+                                    ConditionSpec(field='function', operator='in', values=(161,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -22956,7 +23045,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(56, 58, 59, 79, 546, 4776)),
+                                    ConditionSpec(field='function', operator='in', values=(449,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -22972,7 +23061,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(69, 130)),
+                                    ConditionSpec(field='function', operator='in', values=(56, 58, 59, 79, 546, 4776)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -22988,7 +23077,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(1, 27, 32, 53, 99, 136, 162, 415, 464, 518, 519, 520, 521, 525, 526, 527, 528)),
+                                    ConditionSpec(field='function', operator='in', values=(69, 130)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -23003,19 +23092,35 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
+                                    ConditionSpec(field='function', operator='in', values=(1, 27, 32, 53, 99, 136, 162, 415, 464, 518, 519, 520, 521, 525, 526, 527, 528)),
+                                ),
+                            ),
+                            UnionVariantSpec(
+                                name='voice_type',
+                                codec='formid',
+                                fields=(
+                                    FieldSpec(
+                                        name='voice_type_voice_type',
+                                        kind='formid',
+                                        formlink_target='VTYP',
+                                        formlink_targets=('VTYP',),
+                                        authoring_label='Voice Type Voice Type',
+                                    ),
+                                ),
+                                conditions=(
                                     ConditionSpec(field='function', operator='in', values=(427,)),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='weapon',
+                                name='weather',
                                 codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='weapon_weapon',
+                                        name='weather_weather',
                                         kind='formid',
-                                        formlink_target='WEAP',
-                                        formlink_targets=('WEAP',),
-                                        authoring_label='Weapon Weapon',
+                                        formlink_target='WTHR',
+                                        formlink_targets=('WTHR',),
+                                        authoring_label='Weather Weather',
                                     ),
                                 ),
                                 conditions=(
@@ -23038,13 +23143,6 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='unnamed',
-                                codec='uint32',
-                                conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(1, 5, 6, 8, 10, 11, 12, 14, 18, 24, 25, 26, 27, 32, 35, 36, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 56, 58, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 80, 81, 84, 91, 99, 101, 102, 103, 106, 107, 108, 109, 110, 111, 112, 116, 117, 118, 123, 125, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 153, 154, 157, 159, 160, 161, 162, 163, 170, 172, 175, 176, 180, 182, 185, 190, 192, 193, 195, 197, 199, 203, 214, 215, 219, 223, 224, 225, 226, 227, 228, 229, 235, 237, 242, 244, 246, 247, 254, 255, 258, 259, 264, 265, 266, 267, 274, 277, 278, 282, 285, 286, 287, 288, 289, 300, 304, 306, 309, 310, 312, 313, 314, 315, 318, 320, 323, 327, 332, 338, 339, 353, 354, 358, 361, 362, 365, 367, 368, 370, 372, 382, 391, 392, 397, 398, 399, 403, 409, 410, 415, 416, 417, 427, 428, 430, 431, 433, 435, 436, 438, 446, 449, 450, 451, 454, 455, 459, 460, 464, 471, 474, 478, 480, 489, 492, 495, 496, 500, 503, 510, 515, 518, 519, 520, 521, 522, 523, 524, 525, 526, 527, 528, 531, 533, 546, 550, 555, 557, 558, 1024, 1025, 1028, 1082, 1165, 1166, 1213, 4640, 4644, 4645, 4653, 4665, 4696, 4700, 4715, 4768, 4776, 8471, 8473, 8474, 8486, 8547, 8548, 8549, 8550, 8551, 8552, 8553, 8575, 8597, 8610, 8613, 8616, 8619)),
-                                ),
-                            ),
-                            UnionVariantSpec(
                                 name='none',
                                 codec='struct:B,B,B,B',
                                 fields=(
@@ -23070,7 +23168,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(98,)),
+                                    ConditionSpec(field='function', operator='in', values=(1, 5, 6, 8, 10, 11, 12, 14, 18, 24, 25, 26, 27, 32, 35, 36, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 56, 58, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 80, 81, 84, 91, 99, 101, 102, 103, 106, 107, 108, 109, 110, 111, 112, 116, 117, 118, 123, 125, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 153, 154, 157, 159, 160, 161, 162, 163, 170, 172, 175, 176, 180, 182, 185, 190, 192, 193, 195, 197, 199, 203, 214, 215, 219, 223, 224, 225, 226, 227, 228, 229, 235, 237, 242, 244, 246, 247, 254, 255, 258, 259, 264, 265, 266, 267, 274, 277, 278, 282, 285, 286, 287, 288, 289, 300, 304, 306, 309, 310, 312, 313, 314, 315, 318, 320, 323, 327, 332, 338, 339, 353, 354, 358, 361, 362, 365, 367, 368, 370, 372, 382, 391, 392, 397, 398, 399, 403, 409, 410, 415, 416, 417, 427, 428, 430, 431, 433, 435, 436, 438, 446, 449, 450, 451, 454, 455, 459, 460, 464, 471, 474, 478, 480, 489, 492, 495, 496, 500, 503, 510, 515, 518, 519, 520, 521, 522, 523, 524, 525, 526, 527, 528, 531, 533, 546, 550, 555, 557, 558, 1024, 1025, 1028, 1082, 1165, 1166, 1213, 4640, 4644, 4645, 4653, 4665, 4696, 4700, 4715, 4768, 4776, 8471, 8473, 8474, 8486, 8547, 8548, 8549, 8550, 8551, 8552, 8553, 8575, 8597, 8610, 8613, 8616, 8619)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -23084,7 +23182,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(59,)),
+                                    ConditionSpec(field='function', operator='in', values=(98,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -23098,7 +23196,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(53, 79)),
+                                    ConditionSpec(field='function', operator='in', values=(59,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -23112,18 +23210,33 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
+                                    ConditionSpec(field='function', operator='in', values=(53, 79)),
+                                ),
+                            ),
+                            UnionVariantSpec(
+                                name='vats_value_param',
+                                codec='struct:I',
+                                fields=(
+                                    FieldSpec(
+                                        name='vats_value_param_vats_value_param',
+                                        kind='uint32',
+                                        authoring_label='VATS Value Param VATS Value Param',
+                                        notes='width-preserving union fallback for wbConditionVATSValueParam',
+                                    ),
+                                ),
+                                conditions=(
                                     ConditionSpec(field='function', operator='in', values=(408,)),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='creature_type',
+                                name='crime_type',
                                 codec='uint32',
                                 fields=(
                                     FieldSpec(
-                                        name='creature_type_creature_type',
+                                        name='crime_type_crime_type',
                                         kind='uint32',
-                                        enum_ref='creature_type_enum',
-                                        authoring_label='Creature Type Creature Type',
+                                        enum_ref='crime_type_enum',
+                                        authoring_label='Crime Type Crime Type',
                                     ),
                                 ),
                                 conditions=(
@@ -23131,14 +23244,14 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='equip_type',
+                                name='form_type',
                                 codec='uint32',
                                 fields=(
                                     FieldSpec(
-                                        name='equip_type_equip_type',
+                                        name='form_type_form_type',
                                         kind='uint32',
-                                        enum_ref='equip_type_enum',
-                                        authoring_label='Equip Type Equip Type',
+                                        enum_ref='form_type_enum',
+                                        authoring_label='Form Type Form Type',
                                     ),
                                 ),
                                 conditions=(
@@ -23146,32 +23259,30 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='vats_value_function',
-                                codec='uint32',
+                                name='actor',
+                                codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='vats_value_function_vats_value_function',
-                                        kind='uint32',
-                                        enum_ref='vats_value_function_enum',
-                                        authoring_label='VATS Value Function VATS Value Function',
+                                        name='actor_actor',
+                                        kind='formid',
+                                        formlink_targets=('ACHR', 'ACRE', 'PLYR', 'TRGT'),
+                                        authoring_label='Actor Actor',
                                     ),
                                 ),
                                 conditions=(
                                     ConditionSpec(field='function', operator='in', values=(60,)),
-                                    ConditionSpec(field='type', operator='bit_unset', value=2),
-                                    ConditionSpec(field='type', operator='bit_unset', value=8),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='encounter_zone',
+                                name='faction',
                                 codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='encounter_zone_encounter_zone',
+                                        name='faction_faction',
                                         kind='formid',
-                                        formlink_target='ECZN',
-                                        formlink_targets=('ECZN',),
-                                        authoring_label='Encounter Zone Encounter Zone',
+                                        formlink_target='FACT',
+                                        formlink_targets=('FACT',),
+                                        authoring_label='Faction Faction',
                                     ),
                                 ),
                                 conditions=(
@@ -23179,15 +23290,15 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='note',
+                                name='owner',
                                 codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='note_note',
+                                        name='owner_owner',
                                         kind='formid',
-                                        formlink_target='NOTE',
-                                        formlink_targets=('NOTE',),
-                                        authoring_label='Note Note',
+                                        formlink_targets=('FACT', 'NPC_'),
+                                        null_allowed=True,
+                                        authoring_label='Owner Owner',
                                     ),
                                 ),
                                 conditions=(
@@ -23195,21 +23306,18 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='race',
+                                name='reference',
                                 codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='race_race',
+                                        name='reference_reference',
                                         kind='formid',
-                                        formlink_target='RACE',
-                                        formlink_targets=('RACE',),
-                                        authoring_label='Race Race',
+                                        formlink_targets=('ACHR', 'ACRE', 'PBEA', 'PGRE', 'PLYR', 'PMIS', 'REFR', 'TRGT'),
+                                        authoring_label='Reference Reference',
                                     ),
                                 ),
                                 conditions=(
                                     ConditionSpec(field='function', operator='in', values=(230,)),
-                                    ConditionSpec(field='type', operator='bit_unset', value=2),
-                                    ConditionSpec(field='type', operator='bit_unset', value=8),
                                 ),
                             ),
                         ),
@@ -26037,7 +26145,7 @@ def build_schema() -> GameSchema:
                                 name='unnamed',
                                 codec='uint32',
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(5, 12, 18, 24, 25, 26, 35, 39, 40, 41, 46, 48, 49, 50, 61, 62, 63, 64, 65, 75, 77, 80, 81, 91, 101, 102, 103, 106, 107, 108, 110, 111, 112, 116, 117, 118, 123, 125, 127, 128, 133, 134, 135, 141, 142, 143, 144, 145, 146, 147, 148, 150, 153, 154, 157, 159, 160, 170, 175, 176, 185, 190, 192, 203, 215, 219, 224, 225, 226, 227, 229, 235, 237, 242, 244, 254, 255, 258, 259, 264, 265, 266, 267, 274, 282, 285, 286, 287, 288, 289, 300, 304, 306, 309, 310, 313, 314, 315, 318, 320, 323, 327, 332, 338, 339, 353, 354, 358, 361, 362, 365, 367, 391, 392, 397, 403, 416, 417, 428, 430, 431, 435, 436, 454, 455, 459, 460, 471, 489, 492, 496, 500, 503, 510, 522, 523, 524, 533, 550, 557, 558, 1024, 1025, 1213, 4644, 4645, 4653, 4665, 4696, 4768, 8471, 8473, 8474, 8486, 8548, 8549, 8550, 8551, 8552, 8553, 8597)),
+                                    ConditionSpec(field='function', operator='in', values=(310,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -26066,22 +26174,21 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(98, 1082, 1166, 8547, 8610, 8613, 8616, 8619)),
+                                    ConditionSpec(field='function', operator='in', values=(5, 12, 18, 24, 25, 26, 35, 39, 40, 41, 46, 48, 49, 50, 61, 62, 63, 64, 65, 75, 77, 80, 81, 91, 101, 102, 103, 106, 107, 108, 110, 111, 112, 116, 117, 118, 123, 125, 127, 128, 133, 134, 135, 141, 142, 143, 144, 145, 146, 147, 148, 150, 153, 154, 157, 159, 160, 170, 175, 176, 185, 190, 192, 203, 215, 219, 224, 225, 226, 227, 229, 235, 237, 242, 244, 254, 255, 258, 259, 264, 265, 266, 267, 274, 282, 285, 286, 287, 288, 289, 300, 304, 306, 309, 313, 314, 315, 318, 320, 323, 327, 332, 338, 339, 353, 354, 358, 361, 362, 365, 367, 391, 392, 397, 403, 416, 417, 428, 430, 431, 435, 436, 454, 455, 459, 460, 471, 489, 492, 496, 500, 503, 510, 522, 523, 524, 533, 550, 557, 558, 1024, 1025, 1213, 4644, 4645, 4653, 4665, 4696, 4768, 8471, 8473, 8474, 8486, 8548, 8549, 8550, 8551, 8552, 8553, 8597)),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='vats_value_param',
-                                codec='struct:I',
+                                name='integer',
+                                codec='int32',
                                 fields=(
                                     FieldSpec(
-                                        name='vats_value_param_vats_value_param',
-                                        kind='uint32',
-                                        authoring_label='VATS Value Param VATS Value Param',
-                                        notes='width-preserving union fallback for wbConditionVATSValueParam',
+                                        name='integer_integer',
+                                        kind='int32',
+                                        authoring_label='Integer Integer',
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(14, 109, 277, 495)),
+                                    ConditionSpec(field='function', operator='in', values=(98, 1082, 1166, 8547, 8610, 8613, 8616, 8619)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -26096,7 +26203,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(474,)),
+                                    ConditionSpec(field='function', operator='in', values=(14, 109, 277, 495)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -26111,7 +26218,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(6, 8, 10, 11)),
+                                    ConditionSpec(field='function', operator='in', values=(474,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -26126,7 +26233,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(398,)),
+                                    ConditionSpec(field='function', operator='in', values=(6, 8, 10, 11)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -26141,22 +26248,22 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(438,)),
+                                    ConditionSpec(field='function', operator='in', values=(398,)),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='crime_type',
+                                name='creature_type',
                                 codec='uint32',
                                 fields=(
                                     FieldSpec(
-                                        name='crime_type_crime_type',
+                                        name='creature_type_creature_type',
                                         kind='uint32',
-                                        enum_ref='crime_type_enum',
-                                        authoring_label='Crime Type Crime Type',
+                                        enum_ref='creature_type_enum',
+                                        authoring_label='Creature Type Creature Type',
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(531,)),
+                                    ConditionSpec(field='function', operator='in', values=(438,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -26171,7 +26278,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(480,)),
+                                    ConditionSpec(field='function', operator='in', values=(531,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -26186,7 +26293,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(247, 433)),
+                                    ConditionSpec(field='function', operator='in', values=(480,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -26201,7 +26308,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(36,)),
+                                    ConditionSpec(field='function', operator='in', values=(247, 433)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -26215,7 +26322,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(312,)),
+                                    ConditionSpec(field='function', operator='in', values=(36,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -26230,7 +26337,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(368,)),
+                                    ConditionSpec(field='function', operator='in', values=(312,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -26245,7 +26352,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(70, 131)),
+                                    ConditionSpec(field='function', operator='in', values=(368,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -26260,7 +26367,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(408,)),
+                                    ConditionSpec(field='function', operator='in', values=(70, 131)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -26275,7 +26382,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(42, 43, 44, 45, 66, 76, 122, 172, 180, 370, 409, 450, 478, 515, 4640)),
+                                    ConditionSpec(field='function', operator='in', values=(408,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -26290,7 +26397,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(84,)),
+                                    ConditionSpec(field='function', operator='in', values=(42, 43, 44, 45, 66, 76, 122, 172, 180, 370, 409, 450, 478, 515, 4640)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -26305,7 +26412,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(214,)),
+                                    ConditionSpec(field='function', operator='in', values=(84,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -26321,7 +26428,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(72, 246)),
+                                    ConditionSpec(field='function', operator='in', values=(214,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -26335,7 +26442,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(67, 230, 280)),
+                                    ConditionSpec(field='function', operator='in', values=(72, 246)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -26351,7 +26458,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(68, 129, 228)),
+                                    ConditionSpec(field='function', operator='in', values=(67, 230, 280)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -26367,7 +26474,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(223, 555, 4715)),
+                                    ConditionSpec(field='function', operator='in', values=(68, 129, 228)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -26382,7 +26489,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(446,)),
+                                    ConditionSpec(field='function', operator='in', values=(223, 555, 4715)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -26398,7 +26505,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(60, 71, 73, 132, 193, 195, 197, 199, 411)),
+                                    ConditionSpec(field='function', operator='in', values=(446,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -26414,7 +26521,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(372, 399, 410, 8571)),
+                                    ConditionSpec(field='function', operator='in', values=(60, 71, 73, 132, 193, 195, 197, 199, 411)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -26430,7 +26537,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(163,)),
+                                    ConditionSpec(field='function', operator='in', values=(372, 399, 410, 8571)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -26445,7 +26552,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(74,)),
+                                    ConditionSpec(field='function', operator='in', values=(163,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -26461,7 +26568,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(451, 4700)),
+                                    ConditionSpec(field='function', operator='in', values=(74,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -26477,7 +26584,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(47, 182, 1028, 1165)),
+                                    ConditionSpec(field='function', operator='in', values=(451, 4700)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -26492,7 +26599,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(382, 8575)),
+                                    ConditionSpec(field='function', operator='in', values=(47, 182, 1028, 1165)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -26508,7 +26615,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(278,)),
+                                    ConditionSpec(field='function', operator='in', values=(382, 8575)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -26524,7 +26631,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(161,)),
+                                    ConditionSpec(field='function', operator='in', values=(278,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -26540,7 +26647,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(449,)),
+                                    ConditionSpec(field='function', operator='in', values=(161,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -26556,7 +26663,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(56, 58, 59, 79, 546, 4776)),
+                                    ConditionSpec(field='function', operator='in', values=(449,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -26572,7 +26679,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(69, 130)),
+                                    ConditionSpec(field='function', operator='in', values=(56, 58, 59, 79, 546, 4776)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -26588,7 +26695,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(1, 27, 32, 53, 99, 136, 162, 415, 464, 518, 519, 520, 521, 525, 526, 527, 528)),
+                                    ConditionSpec(field='function', operator='in', values=(69, 130)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -26603,19 +26710,35 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
+                                    ConditionSpec(field='function', operator='in', values=(1, 27, 32, 53, 99, 136, 162, 415, 464, 518, 519, 520, 521, 525, 526, 527, 528)),
+                                ),
+                            ),
+                            UnionVariantSpec(
+                                name='voice_type',
+                                codec='formid',
+                                fields=(
+                                    FieldSpec(
+                                        name='voice_type_voice_type',
+                                        kind='formid',
+                                        formlink_target='VTYP',
+                                        formlink_targets=('VTYP',),
+                                        authoring_label='Voice Type Voice Type',
+                                    ),
+                                ),
+                                conditions=(
                                     ConditionSpec(field='function', operator='in', values=(427,)),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='weapon',
+                                name='weather',
                                 codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='weapon_weapon',
+                                        name='weather_weather',
                                         kind='formid',
-                                        formlink_target='WEAP',
-                                        formlink_targets=('WEAP',),
-                                        authoring_label='Weapon Weapon',
+                                        formlink_target='WTHR',
+                                        formlink_targets=('WTHR',),
+                                        authoring_label='Weather Weather',
                                     ),
                                 ),
                                 conditions=(
@@ -26638,13 +26761,6 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='unnamed',
-                                codec='uint32',
-                                conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(1, 5, 6, 8, 10, 11, 12, 14, 18, 24, 25, 26, 27, 32, 35, 36, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 56, 58, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 80, 81, 84, 91, 99, 101, 102, 103, 106, 107, 108, 109, 110, 111, 112, 116, 117, 118, 123, 125, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 153, 154, 157, 159, 160, 161, 162, 163, 170, 172, 175, 176, 180, 182, 185, 190, 192, 193, 195, 197, 199, 203, 214, 215, 219, 223, 224, 225, 226, 227, 228, 229, 235, 237, 242, 244, 246, 247, 254, 255, 258, 259, 264, 265, 266, 267, 274, 277, 278, 282, 285, 286, 287, 288, 289, 300, 304, 306, 309, 310, 312, 313, 314, 315, 318, 320, 323, 327, 332, 338, 339, 353, 354, 358, 361, 362, 365, 367, 368, 370, 372, 382, 391, 392, 397, 398, 399, 403, 409, 410, 415, 416, 417, 427, 428, 430, 431, 433, 435, 436, 438, 446, 449, 450, 451, 454, 455, 459, 460, 464, 471, 474, 478, 480, 489, 492, 495, 496, 500, 503, 510, 515, 518, 519, 520, 521, 522, 523, 524, 525, 526, 527, 528, 531, 533, 546, 550, 555, 557, 558, 1024, 1025, 1028, 1082, 1165, 1166, 1213, 4640, 4644, 4645, 4653, 4665, 4696, 4700, 4715, 4768, 4776, 8471, 8473, 8474, 8486, 8547, 8548, 8549, 8550, 8551, 8552, 8553, 8575, 8597, 8610, 8613, 8616, 8619)),
-                                ),
-                            ),
-                            UnionVariantSpec(
                                 name='none',
                                 codec='struct:B,B,B,B',
                                 fields=(
@@ -26670,7 +26786,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(98,)),
+                                    ConditionSpec(field='function', operator='in', values=(1, 5, 6, 8, 10, 11, 12, 14, 18, 24, 25, 26, 27, 32, 35, 36, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 56, 58, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 80, 81, 84, 91, 99, 101, 102, 103, 106, 107, 108, 109, 110, 111, 112, 116, 117, 118, 123, 125, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 153, 154, 157, 159, 160, 161, 162, 163, 170, 172, 175, 176, 180, 182, 185, 190, 192, 193, 195, 197, 199, 203, 214, 215, 219, 223, 224, 225, 226, 227, 228, 229, 235, 237, 242, 244, 246, 247, 254, 255, 258, 259, 264, 265, 266, 267, 274, 277, 278, 282, 285, 286, 287, 288, 289, 300, 304, 306, 309, 310, 312, 313, 314, 315, 318, 320, 323, 327, 332, 338, 339, 353, 354, 358, 361, 362, 365, 367, 368, 370, 372, 382, 391, 392, 397, 398, 399, 403, 409, 410, 415, 416, 417, 427, 428, 430, 431, 433, 435, 436, 438, 446, 449, 450, 451, 454, 455, 459, 460, 464, 471, 474, 478, 480, 489, 492, 495, 496, 500, 503, 510, 515, 518, 519, 520, 521, 522, 523, 524, 525, 526, 527, 528, 531, 533, 546, 550, 555, 557, 558, 1024, 1025, 1028, 1082, 1165, 1166, 1213, 4640, 4644, 4645, 4653, 4665, 4696, 4700, 4715, 4768, 4776, 8471, 8473, 8474, 8486, 8547, 8548, 8549, 8550, 8551, 8552, 8553, 8575, 8597, 8610, 8613, 8616, 8619)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -26684,7 +26800,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(59,)),
+                                    ConditionSpec(field='function', operator='in', values=(98,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -26698,7 +26814,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(53, 79)),
+                                    ConditionSpec(field='function', operator='in', values=(59,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -26712,18 +26828,33 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
+                                    ConditionSpec(field='function', operator='in', values=(53, 79)),
+                                ),
+                            ),
+                            UnionVariantSpec(
+                                name='vats_value_param',
+                                codec='struct:I',
+                                fields=(
+                                    FieldSpec(
+                                        name='vats_value_param_vats_value_param',
+                                        kind='uint32',
+                                        authoring_label='VATS Value Param VATS Value Param',
+                                        notes='width-preserving union fallback for wbConditionVATSValueParam',
+                                    ),
+                                ),
+                                conditions=(
                                     ConditionSpec(field='function', operator='in', values=(408,)),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='creature_type',
+                                name='crime_type',
                                 codec='uint32',
                                 fields=(
                                     FieldSpec(
-                                        name='creature_type_creature_type',
+                                        name='crime_type_crime_type',
                                         kind='uint32',
-                                        enum_ref='creature_type_enum',
-                                        authoring_label='Creature Type Creature Type',
+                                        enum_ref='crime_type_enum',
+                                        authoring_label='Crime Type Crime Type',
                                     ),
                                 ),
                                 conditions=(
@@ -26731,14 +26862,14 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='equip_type',
+                                name='form_type',
                                 codec='uint32',
                                 fields=(
                                     FieldSpec(
-                                        name='equip_type_equip_type',
+                                        name='form_type_form_type',
                                         kind='uint32',
-                                        enum_ref='equip_type_enum',
-                                        authoring_label='Equip Type Equip Type',
+                                        enum_ref='form_type_enum',
+                                        authoring_label='Form Type Form Type',
                                     ),
                                 ),
                                 conditions=(
@@ -26746,32 +26877,30 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='vats_value_function',
-                                codec='uint32',
+                                name='actor',
+                                codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='vats_value_function_vats_value_function',
-                                        kind='uint32',
-                                        enum_ref='vats_value_function_enum',
-                                        authoring_label='VATS Value Function VATS Value Function',
+                                        name='actor_actor',
+                                        kind='formid',
+                                        formlink_targets=('ACHR', 'ACRE', 'PLYR', 'TRGT'),
+                                        authoring_label='Actor Actor',
                                     ),
                                 ),
                                 conditions=(
                                     ConditionSpec(field='function', operator='in', values=(60,)),
-                                    ConditionSpec(field='type', operator='bit_unset', value=2),
-                                    ConditionSpec(field='type', operator='bit_unset', value=8),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='encounter_zone',
+                                name='faction',
                                 codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='encounter_zone_encounter_zone',
+                                        name='faction_faction',
                                         kind='formid',
-                                        formlink_target='ECZN',
-                                        formlink_targets=('ECZN',),
-                                        authoring_label='Encounter Zone Encounter Zone',
+                                        formlink_target='FACT',
+                                        formlink_targets=('FACT',),
+                                        authoring_label='Faction Faction',
                                     ),
                                 ),
                                 conditions=(
@@ -26779,15 +26908,15 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='note',
+                                name='owner',
                                 codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='note_note',
+                                        name='owner_owner',
                                         kind='formid',
-                                        formlink_target='NOTE',
-                                        formlink_targets=('NOTE',),
-                                        authoring_label='Note Note',
+                                        formlink_targets=('FACT', 'NPC_'),
+                                        null_allowed=True,
+                                        authoring_label='Owner Owner',
                                     ),
                                 ),
                                 conditions=(
@@ -26795,21 +26924,18 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='race',
+                                name='reference',
                                 codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='race_race',
+                                        name='reference_reference',
                                         kind='formid',
-                                        formlink_target='RACE',
-                                        formlink_targets=('RACE',),
-                                        authoring_label='Race Race',
+                                        formlink_targets=('ACHR', 'ACRE', 'PBEA', 'PGRE', 'PLYR', 'PMIS', 'REFR', 'TRGT'),
+                                        authoring_label='Reference Reference',
                                     ),
                                 ),
                                 conditions=(
                                     ConditionSpec(field='function', operator='in', values=(230,)),
-                                    ConditionSpec(field='type', operator='bit_unset', value=2),
-                                    ConditionSpec(field='type', operator='bit_unset', value=8),
                                 ),
                             ),
                         ),
@@ -30107,7 +30233,7 @@ def build_schema() -> GameSchema:
                                 name='unnamed',
                                 codec='uint32',
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(5, 12, 18, 24, 25, 26, 35, 39, 40, 41, 46, 48, 49, 50, 61, 62, 63, 64, 65, 75, 77, 80, 81, 91, 101, 102, 103, 106, 107, 108, 110, 111, 112, 116, 117, 118, 123, 125, 127, 128, 133, 134, 135, 141, 142, 143, 144, 145, 146, 147, 148, 150, 153, 154, 157, 159, 160, 170, 175, 176, 185, 190, 192, 203, 215, 219, 224, 225, 226, 227, 229, 235, 237, 242, 244, 254, 255, 258, 259, 264, 265, 266, 267, 274, 282, 285, 286, 287, 288, 289, 300, 304, 306, 309, 310, 313, 314, 315, 318, 320, 323, 327, 332, 338, 339, 353, 354, 358, 361, 362, 365, 367, 391, 392, 397, 403, 416, 417, 428, 430, 431, 435, 436, 454, 455, 459, 460, 471, 489, 492, 496, 500, 503, 510, 522, 523, 524, 533, 550, 557, 558, 1024, 1025, 1213, 4644, 4645, 4653, 4665, 4696, 4768, 8471, 8473, 8474, 8486, 8548, 8549, 8550, 8551, 8552, 8553, 8597)),
+                                    ConditionSpec(field='function', operator='in', values=(310,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -30136,22 +30262,21 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(98, 1082, 1166, 8547, 8610, 8613, 8616, 8619)),
+                                    ConditionSpec(field='function', operator='in', values=(5, 12, 18, 24, 25, 26, 35, 39, 40, 41, 46, 48, 49, 50, 61, 62, 63, 64, 65, 75, 77, 80, 81, 91, 101, 102, 103, 106, 107, 108, 110, 111, 112, 116, 117, 118, 123, 125, 127, 128, 133, 134, 135, 141, 142, 143, 144, 145, 146, 147, 148, 150, 153, 154, 157, 159, 160, 170, 175, 176, 185, 190, 192, 203, 215, 219, 224, 225, 226, 227, 229, 235, 237, 242, 244, 254, 255, 258, 259, 264, 265, 266, 267, 274, 282, 285, 286, 287, 288, 289, 300, 304, 306, 309, 313, 314, 315, 318, 320, 323, 327, 332, 338, 339, 353, 354, 358, 361, 362, 365, 367, 391, 392, 397, 403, 416, 417, 428, 430, 431, 435, 436, 454, 455, 459, 460, 471, 489, 492, 496, 500, 503, 510, 522, 523, 524, 533, 550, 557, 558, 1024, 1025, 1213, 4644, 4645, 4653, 4665, 4696, 4768, 8471, 8473, 8474, 8486, 8548, 8549, 8550, 8551, 8552, 8553, 8597)),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='vats_value_param',
-                                codec='struct:I',
+                                name='integer',
+                                codec='int32',
                                 fields=(
                                     FieldSpec(
-                                        name='vats_value_param_vats_value_param',
-                                        kind='uint32',
-                                        authoring_label='VATS Value Param VATS Value Param',
-                                        notes='width-preserving union fallback for wbConditionVATSValueParam',
+                                        name='integer_integer',
+                                        kind='int32',
+                                        authoring_label='Integer Integer',
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(14, 109, 277, 495)),
+                                    ConditionSpec(field='function', operator='in', values=(98, 1082, 1166, 8547, 8610, 8613, 8616, 8619)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -30166,7 +30291,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(474,)),
+                                    ConditionSpec(field='function', operator='in', values=(14, 109, 277, 495)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -30181,7 +30306,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(6, 8, 10, 11)),
+                                    ConditionSpec(field='function', operator='in', values=(474,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -30196,7 +30321,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(398,)),
+                                    ConditionSpec(field='function', operator='in', values=(6, 8, 10, 11)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -30211,22 +30336,22 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(438,)),
+                                    ConditionSpec(field='function', operator='in', values=(398,)),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='crime_type',
+                                name='creature_type',
                                 codec='uint32',
                                 fields=(
                                     FieldSpec(
-                                        name='crime_type_crime_type',
+                                        name='creature_type_creature_type',
                                         kind='uint32',
-                                        enum_ref='crime_type_enum',
-                                        authoring_label='Crime Type Crime Type',
+                                        enum_ref='creature_type_enum',
+                                        authoring_label='Creature Type Creature Type',
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(531,)),
+                                    ConditionSpec(field='function', operator='in', values=(438,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -30241,7 +30366,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(480,)),
+                                    ConditionSpec(field='function', operator='in', values=(531,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -30256,7 +30381,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(247, 433)),
+                                    ConditionSpec(field='function', operator='in', values=(480,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -30271,7 +30396,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(36,)),
+                                    ConditionSpec(field='function', operator='in', values=(247, 433)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -30285,7 +30410,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(312,)),
+                                    ConditionSpec(field='function', operator='in', values=(36,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -30300,7 +30425,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(368,)),
+                                    ConditionSpec(field='function', operator='in', values=(312,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -30315,7 +30440,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(70, 131)),
+                                    ConditionSpec(field='function', operator='in', values=(368,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -30330,7 +30455,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(408,)),
+                                    ConditionSpec(field='function', operator='in', values=(70, 131)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -30345,7 +30470,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(42, 43, 44, 45, 66, 76, 122, 172, 180, 370, 409, 450, 478, 515, 4640)),
+                                    ConditionSpec(field='function', operator='in', values=(408,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -30360,7 +30485,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(84,)),
+                                    ConditionSpec(field='function', operator='in', values=(42, 43, 44, 45, 66, 76, 122, 172, 180, 370, 409, 450, 478, 515, 4640)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -30375,7 +30500,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(214,)),
+                                    ConditionSpec(field='function', operator='in', values=(84,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -30391,7 +30516,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(72, 246)),
+                                    ConditionSpec(field='function', operator='in', values=(214,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -30405,7 +30530,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(67, 230, 280)),
+                                    ConditionSpec(field='function', operator='in', values=(72, 246)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -30421,7 +30546,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(68, 129, 228)),
+                                    ConditionSpec(field='function', operator='in', values=(67, 230, 280)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -30437,7 +30562,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(223, 555, 4715)),
+                                    ConditionSpec(field='function', operator='in', values=(68, 129, 228)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -30452,7 +30577,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(446,)),
+                                    ConditionSpec(field='function', operator='in', values=(223, 555, 4715)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -30468,7 +30593,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(60, 71, 73, 132, 193, 195, 197, 199, 411)),
+                                    ConditionSpec(field='function', operator='in', values=(446,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -30484,7 +30609,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(372, 399, 410, 8571)),
+                                    ConditionSpec(field='function', operator='in', values=(60, 71, 73, 132, 193, 195, 197, 199, 411)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -30500,7 +30625,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(163,)),
+                                    ConditionSpec(field='function', operator='in', values=(372, 399, 410, 8571)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -30515,7 +30640,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(74,)),
+                                    ConditionSpec(field='function', operator='in', values=(163,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -30531,7 +30656,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(451, 4700)),
+                                    ConditionSpec(field='function', operator='in', values=(74,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -30547,7 +30672,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(47, 182, 1028, 1165)),
+                                    ConditionSpec(field='function', operator='in', values=(451, 4700)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -30562,7 +30687,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(382, 8575)),
+                                    ConditionSpec(field='function', operator='in', values=(47, 182, 1028, 1165)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -30578,7 +30703,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(278,)),
+                                    ConditionSpec(field='function', operator='in', values=(382, 8575)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -30594,7 +30719,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(161,)),
+                                    ConditionSpec(field='function', operator='in', values=(278,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -30610,7 +30735,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(449,)),
+                                    ConditionSpec(field='function', operator='in', values=(161,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -30626,7 +30751,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(56, 58, 59, 79, 546, 4776)),
+                                    ConditionSpec(field='function', operator='in', values=(449,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -30642,7 +30767,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(69, 130)),
+                                    ConditionSpec(field='function', operator='in', values=(56, 58, 59, 79, 546, 4776)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -30658,7 +30783,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(1, 27, 32, 53, 99, 136, 162, 415, 464, 518, 519, 520, 521, 525, 526, 527, 528)),
+                                    ConditionSpec(field='function', operator='in', values=(69, 130)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -30673,19 +30798,35 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
+                                    ConditionSpec(field='function', operator='in', values=(1, 27, 32, 53, 99, 136, 162, 415, 464, 518, 519, 520, 521, 525, 526, 527, 528)),
+                                ),
+                            ),
+                            UnionVariantSpec(
+                                name='voice_type',
+                                codec='formid',
+                                fields=(
+                                    FieldSpec(
+                                        name='voice_type_voice_type',
+                                        kind='formid',
+                                        formlink_target='VTYP',
+                                        formlink_targets=('VTYP',),
+                                        authoring_label='Voice Type Voice Type',
+                                    ),
+                                ),
+                                conditions=(
                                     ConditionSpec(field='function', operator='in', values=(427,)),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='weapon',
+                                name='weather',
                                 codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='weapon_weapon',
+                                        name='weather_weather',
                                         kind='formid',
-                                        formlink_target='WEAP',
-                                        formlink_targets=('WEAP',),
-                                        authoring_label='Weapon Weapon',
+                                        formlink_target='WTHR',
+                                        formlink_targets=('WTHR',),
+                                        authoring_label='Weather Weather',
                                     ),
                                 ),
                                 conditions=(
@@ -30708,13 +30849,6 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='unnamed',
-                                codec='uint32',
-                                conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(1, 5, 6, 8, 10, 11, 12, 14, 18, 24, 25, 26, 27, 32, 35, 36, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 56, 58, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 80, 81, 84, 91, 99, 101, 102, 103, 106, 107, 108, 109, 110, 111, 112, 116, 117, 118, 123, 125, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 153, 154, 157, 159, 160, 161, 162, 163, 170, 172, 175, 176, 180, 182, 185, 190, 192, 193, 195, 197, 199, 203, 214, 215, 219, 223, 224, 225, 226, 227, 228, 229, 235, 237, 242, 244, 246, 247, 254, 255, 258, 259, 264, 265, 266, 267, 274, 277, 278, 282, 285, 286, 287, 288, 289, 300, 304, 306, 309, 310, 312, 313, 314, 315, 318, 320, 323, 327, 332, 338, 339, 353, 354, 358, 361, 362, 365, 367, 368, 370, 372, 382, 391, 392, 397, 398, 399, 403, 409, 410, 415, 416, 417, 427, 428, 430, 431, 433, 435, 436, 438, 446, 449, 450, 451, 454, 455, 459, 460, 464, 471, 474, 478, 480, 489, 492, 495, 496, 500, 503, 510, 515, 518, 519, 520, 521, 522, 523, 524, 525, 526, 527, 528, 531, 533, 546, 550, 555, 557, 558, 1024, 1025, 1028, 1082, 1165, 1166, 1213, 4640, 4644, 4645, 4653, 4665, 4696, 4700, 4715, 4768, 4776, 8471, 8473, 8474, 8486, 8547, 8548, 8549, 8550, 8551, 8552, 8553, 8575, 8597, 8610, 8613, 8616, 8619)),
-                                ),
-                            ),
-                            UnionVariantSpec(
                                 name='none',
                                 codec='struct:B,B,B,B',
                                 fields=(
@@ -30740,7 +30874,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(98,)),
+                                    ConditionSpec(field='function', operator='in', values=(1, 5, 6, 8, 10, 11, 12, 14, 18, 24, 25, 26, 27, 32, 35, 36, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 56, 58, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 80, 81, 84, 91, 99, 101, 102, 103, 106, 107, 108, 109, 110, 111, 112, 116, 117, 118, 123, 125, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 153, 154, 157, 159, 160, 161, 162, 163, 170, 172, 175, 176, 180, 182, 185, 190, 192, 193, 195, 197, 199, 203, 214, 215, 219, 223, 224, 225, 226, 227, 228, 229, 235, 237, 242, 244, 246, 247, 254, 255, 258, 259, 264, 265, 266, 267, 274, 277, 278, 282, 285, 286, 287, 288, 289, 300, 304, 306, 309, 310, 312, 313, 314, 315, 318, 320, 323, 327, 332, 338, 339, 353, 354, 358, 361, 362, 365, 367, 368, 370, 372, 382, 391, 392, 397, 398, 399, 403, 409, 410, 415, 416, 417, 427, 428, 430, 431, 433, 435, 436, 438, 446, 449, 450, 451, 454, 455, 459, 460, 464, 471, 474, 478, 480, 489, 492, 495, 496, 500, 503, 510, 515, 518, 519, 520, 521, 522, 523, 524, 525, 526, 527, 528, 531, 533, 546, 550, 555, 557, 558, 1024, 1025, 1028, 1082, 1165, 1166, 1213, 4640, 4644, 4645, 4653, 4665, 4696, 4700, 4715, 4768, 4776, 8471, 8473, 8474, 8486, 8547, 8548, 8549, 8550, 8551, 8552, 8553, 8575, 8597, 8610, 8613, 8616, 8619)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -30754,7 +30888,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(59,)),
+                                    ConditionSpec(field='function', operator='in', values=(98,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -30768,7 +30902,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(53, 79)),
+                                    ConditionSpec(field='function', operator='in', values=(59,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -30782,18 +30916,33 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
+                                    ConditionSpec(field='function', operator='in', values=(53, 79)),
+                                ),
+                            ),
+                            UnionVariantSpec(
+                                name='vats_value_param',
+                                codec='struct:I',
+                                fields=(
+                                    FieldSpec(
+                                        name='vats_value_param_vats_value_param',
+                                        kind='uint32',
+                                        authoring_label='VATS Value Param VATS Value Param',
+                                        notes='width-preserving union fallback for wbConditionVATSValueParam',
+                                    ),
+                                ),
+                                conditions=(
                                     ConditionSpec(field='function', operator='in', values=(408,)),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='creature_type',
+                                name='crime_type',
                                 codec='uint32',
                                 fields=(
                                     FieldSpec(
-                                        name='creature_type_creature_type',
+                                        name='crime_type_crime_type',
                                         kind='uint32',
-                                        enum_ref='creature_type_enum',
-                                        authoring_label='Creature Type Creature Type',
+                                        enum_ref='crime_type_enum',
+                                        authoring_label='Crime Type Crime Type',
                                     ),
                                 ),
                                 conditions=(
@@ -30801,14 +30950,14 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='equip_type',
+                                name='form_type',
                                 codec='uint32',
                                 fields=(
                                     FieldSpec(
-                                        name='equip_type_equip_type',
+                                        name='form_type_form_type',
                                         kind='uint32',
-                                        enum_ref='equip_type_enum',
-                                        authoring_label='Equip Type Equip Type',
+                                        enum_ref='form_type_enum',
+                                        authoring_label='Form Type Form Type',
                                     ),
                                 ),
                                 conditions=(
@@ -30816,32 +30965,30 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='vats_value_function',
-                                codec='uint32',
+                                name='actor',
+                                codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='vats_value_function_vats_value_function',
-                                        kind='uint32',
-                                        enum_ref='vats_value_function_enum',
-                                        authoring_label='VATS Value Function VATS Value Function',
+                                        name='actor_actor',
+                                        kind='formid',
+                                        formlink_targets=('ACHR', 'ACRE', 'PLYR', 'TRGT'),
+                                        authoring_label='Actor Actor',
                                     ),
                                 ),
                                 conditions=(
                                     ConditionSpec(field='function', operator='in', values=(60,)),
-                                    ConditionSpec(field='type', operator='bit_unset', value=2),
-                                    ConditionSpec(field='type', operator='bit_unset', value=8),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='encounter_zone',
+                                name='faction',
                                 codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='encounter_zone_encounter_zone',
+                                        name='faction_faction',
                                         kind='formid',
-                                        formlink_target='ECZN',
-                                        formlink_targets=('ECZN',),
-                                        authoring_label='Encounter Zone Encounter Zone',
+                                        formlink_target='FACT',
+                                        formlink_targets=('FACT',),
+                                        authoring_label='Faction Faction',
                                     ),
                                 ),
                                 conditions=(
@@ -30849,15 +30996,15 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='note',
+                                name='owner',
                                 codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='note_note',
+                                        name='owner_owner',
                                         kind='formid',
-                                        formlink_target='NOTE',
-                                        formlink_targets=('NOTE',),
-                                        authoring_label='Note Note',
+                                        formlink_targets=('FACT', 'NPC_'),
+                                        null_allowed=True,
+                                        authoring_label='Owner Owner',
                                     ),
                                 ),
                                 conditions=(
@@ -30865,21 +31012,18 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='race',
+                                name='reference',
                                 codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='race_race',
+                                        name='reference_reference',
                                         kind='formid',
-                                        formlink_target='RACE',
-                                        formlink_targets=('RACE',),
-                                        authoring_label='Race Race',
+                                        formlink_targets=('ACHR', 'ACRE', 'PBEA', 'PGRE', 'PLYR', 'PMIS', 'REFR', 'TRGT'),
+                                        authoring_label='Reference Reference',
                                     ),
                                 ),
                                 conditions=(
                                     ConditionSpec(field='function', operator='in', values=(230,)),
-                                    ConditionSpec(field='type', operator='bit_unset', value=2),
-                                    ConditionSpec(field='type', operator='bit_unset', value=8),
                                 ),
                             ),
                         ),
@@ -33466,7 +33610,7 @@ def build_schema() -> GameSchema:
                                 name='unnamed',
                                 codec='uint32',
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(5, 12, 18, 24, 25, 26, 35, 39, 40, 41, 46, 48, 49, 50, 61, 62, 63, 64, 65, 75, 77, 80, 81, 91, 101, 102, 103, 106, 107, 108, 110, 111, 112, 116, 117, 118, 123, 125, 127, 128, 133, 134, 135, 141, 142, 143, 144, 145, 146, 147, 148, 150, 153, 154, 157, 159, 160, 170, 175, 176, 185, 190, 192, 203, 215, 219, 224, 225, 226, 227, 229, 235, 237, 242, 244, 254, 255, 258, 259, 264, 265, 266, 267, 274, 282, 285, 286, 287, 288, 289, 300, 304, 306, 309, 310, 313, 314, 315, 318, 320, 323, 327, 332, 338, 339, 353, 354, 358, 361, 362, 365, 367, 391, 392, 397, 403, 416, 417, 428, 430, 431, 435, 436, 454, 455, 459, 460, 471, 489, 492, 496, 500, 503, 510, 522, 523, 524, 533, 550, 557, 558, 1024, 1025, 1213, 4644, 4645, 4653, 4665, 4696, 4768, 8471, 8473, 8474, 8486, 8548, 8549, 8550, 8551, 8552, 8553, 8597)),
+                                    ConditionSpec(field='function', operator='in', values=(310,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -33495,22 +33639,21 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(98, 1082, 1166, 8547, 8610, 8613, 8616, 8619)),
+                                    ConditionSpec(field='function', operator='in', values=(5, 12, 18, 24, 25, 26, 35, 39, 40, 41, 46, 48, 49, 50, 61, 62, 63, 64, 65, 75, 77, 80, 81, 91, 101, 102, 103, 106, 107, 108, 110, 111, 112, 116, 117, 118, 123, 125, 127, 128, 133, 134, 135, 141, 142, 143, 144, 145, 146, 147, 148, 150, 153, 154, 157, 159, 160, 170, 175, 176, 185, 190, 192, 203, 215, 219, 224, 225, 226, 227, 229, 235, 237, 242, 244, 254, 255, 258, 259, 264, 265, 266, 267, 274, 282, 285, 286, 287, 288, 289, 300, 304, 306, 309, 313, 314, 315, 318, 320, 323, 327, 332, 338, 339, 353, 354, 358, 361, 362, 365, 367, 391, 392, 397, 403, 416, 417, 428, 430, 431, 435, 436, 454, 455, 459, 460, 471, 489, 492, 496, 500, 503, 510, 522, 523, 524, 533, 550, 557, 558, 1024, 1025, 1213, 4644, 4645, 4653, 4665, 4696, 4768, 8471, 8473, 8474, 8486, 8548, 8549, 8550, 8551, 8552, 8553, 8597)),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='vats_value_param',
-                                codec='struct:I',
+                                name='integer',
+                                codec='int32',
                                 fields=(
                                     FieldSpec(
-                                        name='vats_value_param_vats_value_param',
-                                        kind='uint32',
-                                        authoring_label='VATS Value Param VATS Value Param',
-                                        notes='width-preserving union fallback for wbConditionVATSValueParam',
+                                        name='integer_integer',
+                                        kind='int32',
+                                        authoring_label='Integer Integer',
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(14, 109, 277, 495)),
+                                    ConditionSpec(field='function', operator='in', values=(98, 1082, 1166, 8547, 8610, 8613, 8616, 8619)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -33525,7 +33668,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(474,)),
+                                    ConditionSpec(field='function', operator='in', values=(14, 109, 277, 495)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -33540,7 +33683,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(6, 8, 10, 11)),
+                                    ConditionSpec(field='function', operator='in', values=(474,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -33555,7 +33698,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(398,)),
+                                    ConditionSpec(field='function', operator='in', values=(6, 8, 10, 11)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -33570,22 +33713,22 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(438,)),
+                                    ConditionSpec(field='function', operator='in', values=(398,)),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='crime_type',
+                                name='creature_type',
                                 codec='uint32',
                                 fields=(
                                     FieldSpec(
-                                        name='crime_type_crime_type',
+                                        name='creature_type_creature_type',
                                         kind='uint32',
-                                        enum_ref='crime_type_enum',
-                                        authoring_label='Crime Type Crime Type',
+                                        enum_ref='creature_type_enum',
+                                        authoring_label='Creature Type Creature Type',
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(531,)),
+                                    ConditionSpec(field='function', operator='in', values=(438,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -33600,7 +33743,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(480,)),
+                                    ConditionSpec(field='function', operator='in', values=(531,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -33615,7 +33758,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(247, 433)),
+                                    ConditionSpec(field='function', operator='in', values=(480,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -33630,7 +33773,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(36,)),
+                                    ConditionSpec(field='function', operator='in', values=(247, 433)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -33644,7 +33787,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(312,)),
+                                    ConditionSpec(field='function', operator='in', values=(36,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -33659,7 +33802,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(368,)),
+                                    ConditionSpec(field='function', operator='in', values=(312,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -33674,7 +33817,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(70, 131)),
+                                    ConditionSpec(field='function', operator='in', values=(368,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -33689,7 +33832,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(408,)),
+                                    ConditionSpec(field='function', operator='in', values=(70, 131)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -33704,7 +33847,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(42, 43, 44, 45, 66, 76, 122, 172, 180, 370, 409, 450, 478, 515, 4640)),
+                                    ConditionSpec(field='function', operator='in', values=(408,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -33719,7 +33862,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(84,)),
+                                    ConditionSpec(field='function', operator='in', values=(42, 43, 44, 45, 66, 76, 122, 172, 180, 370, 409, 450, 478, 515, 4640)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -33734,7 +33877,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(214,)),
+                                    ConditionSpec(field='function', operator='in', values=(84,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -33750,7 +33893,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(72, 246)),
+                                    ConditionSpec(field='function', operator='in', values=(214,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -33764,7 +33907,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(67, 230, 280)),
+                                    ConditionSpec(field='function', operator='in', values=(72, 246)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -33780,7 +33923,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(68, 129, 228)),
+                                    ConditionSpec(field='function', operator='in', values=(67, 230, 280)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -33796,7 +33939,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(223, 555, 4715)),
+                                    ConditionSpec(field='function', operator='in', values=(68, 129, 228)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -33811,7 +33954,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(446,)),
+                                    ConditionSpec(field='function', operator='in', values=(223, 555, 4715)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -33827,7 +33970,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(60, 71, 73, 132, 193, 195, 197, 199, 411)),
+                                    ConditionSpec(field='function', operator='in', values=(446,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -33843,7 +33986,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(372, 399, 410, 8571)),
+                                    ConditionSpec(field='function', operator='in', values=(60, 71, 73, 132, 193, 195, 197, 199, 411)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -33859,7 +34002,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(163,)),
+                                    ConditionSpec(field='function', operator='in', values=(372, 399, 410, 8571)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -33874,7 +34017,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(74,)),
+                                    ConditionSpec(field='function', operator='in', values=(163,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -33890,7 +34033,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(451, 4700)),
+                                    ConditionSpec(field='function', operator='in', values=(74,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -33906,7 +34049,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(47, 182, 1028, 1165)),
+                                    ConditionSpec(field='function', operator='in', values=(451, 4700)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -33921,7 +34064,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(382, 8575)),
+                                    ConditionSpec(field='function', operator='in', values=(47, 182, 1028, 1165)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -33937,7 +34080,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(278,)),
+                                    ConditionSpec(field='function', operator='in', values=(382, 8575)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -33953,7 +34096,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(161,)),
+                                    ConditionSpec(field='function', operator='in', values=(278,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -33969,7 +34112,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(449,)),
+                                    ConditionSpec(field='function', operator='in', values=(161,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -33985,7 +34128,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(56, 58, 59, 79, 546, 4776)),
+                                    ConditionSpec(field='function', operator='in', values=(449,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -34001,7 +34144,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(69, 130)),
+                                    ConditionSpec(field='function', operator='in', values=(56, 58, 59, 79, 546, 4776)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -34017,7 +34160,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(1, 27, 32, 53, 99, 136, 162, 415, 464, 518, 519, 520, 521, 525, 526, 527, 528)),
+                                    ConditionSpec(field='function', operator='in', values=(69, 130)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -34032,19 +34175,35 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
+                                    ConditionSpec(field='function', operator='in', values=(1, 27, 32, 53, 99, 136, 162, 415, 464, 518, 519, 520, 521, 525, 526, 527, 528)),
+                                ),
+                            ),
+                            UnionVariantSpec(
+                                name='voice_type',
+                                codec='formid',
+                                fields=(
+                                    FieldSpec(
+                                        name='voice_type_voice_type',
+                                        kind='formid',
+                                        formlink_target='VTYP',
+                                        formlink_targets=('VTYP',),
+                                        authoring_label='Voice Type Voice Type',
+                                    ),
+                                ),
+                                conditions=(
                                     ConditionSpec(field='function', operator='in', values=(427,)),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='weapon',
+                                name='weather',
                                 codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='weapon_weapon',
+                                        name='weather_weather',
                                         kind='formid',
-                                        formlink_target='WEAP',
-                                        formlink_targets=('WEAP',),
-                                        authoring_label='Weapon Weapon',
+                                        formlink_target='WTHR',
+                                        formlink_targets=('WTHR',),
+                                        authoring_label='Weather Weather',
                                     ),
                                 ),
                                 conditions=(
@@ -34067,13 +34226,6 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='unnamed',
-                                codec='uint32',
-                                conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(1, 5, 6, 8, 10, 11, 12, 14, 18, 24, 25, 26, 27, 32, 35, 36, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 56, 58, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 80, 81, 84, 91, 99, 101, 102, 103, 106, 107, 108, 109, 110, 111, 112, 116, 117, 118, 123, 125, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 153, 154, 157, 159, 160, 161, 162, 163, 170, 172, 175, 176, 180, 182, 185, 190, 192, 193, 195, 197, 199, 203, 214, 215, 219, 223, 224, 225, 226, 227, 228, 229, 235, 237, 242, 244, 246, 247, 254, 255, 258, 259, 264, 265, 266, 267, 274, 277, 278, 282, 285, 286, 287, 288, 289, 300, 304, 306, 309, 310, 312, 313, 314, 315, 318, 320, 323, 327, 332, 338, 339, 353, 354, 358, 361, 362, 365, 367, 368, 370, 372, 382, 391, 392, 397, 398, 399, 403, 409, 410, 415, 416, 417, 427, 428, 430, 431, 433, 435, 436, 438, 446, 449, 450, 451, 454, 455, 459, 460, 464, 471, 474, 478, 480, 489, 492, 495, 496, 500, 503, 510, 515, 518, 519, 520, 521, 522, 523, 524, 525, 526, 527, 528, 531, 533, 546, 550, 555, 557, 558, 1024, 1025, 1028, 1082, 1165, 1166, 1213, 4640, 4644, 4645, 4653, 4665, 4696, 4700, 4715, 4768, 4776, 8471, 8473, 8474, 8486, 8547, 8548, 8549, 8550, 8551, 8552, 8553, 8575, 8597, 8610, 8613, 8616, 8619)),
-                                ),
-                            ),
-                            UnionVariantSpec(
                                 name='none',
                                 codec='struct:B,B,B,B',
                                 fields=(
@@ -34099,7 +34251,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(98,)),
+                                    ConditionSpec(field='function', operator='in', values=(1, 5, 6, 8, 10, 11, 12, 14, 18, 24, 25, 26, 27, 32, 35, 36, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 56, 58, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 80, 81, 84, 91, 99, 101, 102, 103, 106, 107, 108, 109, 110, 111, 112, 116, 117, 118, 123, 125, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 153, 154, 157, 159, 160, 161, 162, 163, 170, 172, 175, 176, 180, 182, 185, 190, 192, 193, 195, 197, 199, 203, 214, 215, 219, 223, 224, 225, 226, 227, 228, 229, 235, 237, 242, 244, 246, 247, 254, 255, 258, 259, 264, 265, 266, 267, 274, 277, 278, 282, 285, 286, 287, 288, 289, 300, 304, 306, 309, 310, 312, 313, 314, 315, 318, 320, 323, 327, 332, 338, 339, 353, 354, 358, 361, 362, 365, 367, 368, 370, 372, 382, 391, 392, 397, 398, 399, 403, 409, 410, 415, 416, 417, 427, 428, 430, 431, 433, 435, 436, 438, 446, 449, 450, 451, 454, 455, 459, 460, 464, 471, 474, 478, 480, 489, 492, 495, 496, 500, 503, 510, 515, 518, 519, 520, 521, 522, 523, 524, 525, 526, 527, 528, 531, 533, 546, 550, 555, 557, 558, 1024, 1025, 1028, 1082, 1165, 1166, 1213, 4640, 4644, 4645, 4653, 4665, 4696, 4700, 4715, 4768, 4776, 8471, 8473, 8474, 8486, 8547, 8548, 8549, 8550, 8551, 8552, 8553, 8575, 8597, 8610, 8613, 8616, 8619)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -34113,7 +34265,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(59,)),
+                                    ConditionSpec(field='function', operator='in', values=(98,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -34127,7 +34279,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(53, 79)),
+                                    ConditionSpec(field='function', operator='in', values=(59,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -34141,18 +34293,33 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
+                                    ConditionSpec(field='function', operator='in', values=(53, 79)),
+                                ),
+                            ),
+                            UnionVariantSpec(
+                                name='vats_value_param',
+                                codec='struct:I',
+                                fields=(
+                                    FieldSpec(
+                                        name='vats_value_param_vats_value_param',
+                                        kind='uint32',
+                                        authoring_label='VATS Value Param VATS Value Param',
+                                        notes='width-preserving union fallback for wbConditionVATSValueParam',
+                                    ),
+                                ),
+                                conditions=(
                                     ConditionSpec(field='function', operator='in', values=(408,)),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='creature_type',
+                                name='crime_type',
                                 codec='uint32',
                                 fields=(
                                     FieldSpec(
-                                        name='creature_type_creature_type',
+                                        name='crime_type_crime_type',
                                         kind='uint32',
-                                        enum_ref='creature_type_enum',
-                                        authoring_label='Creature Type Creature Type',
+                                        enum_ref='crime_type_enum',
+                                        authoring_label='Crime Type Crime Type',
                                     ),
                                 ),
                                 conditions=(
@@ -34160,14 +34327,14 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='equip_type',
+                                name='form_type',
                                 codec='uint32',
                                 fields=(
                                     FieldSpec(
-                                        name='equip_type_equip_type',
+                                        name='form_type_form_type',
                                         kind='uint32',
-                                        enum_ref='equip_type_enum',
-                                        authoring_label='Equip Type Equip Type',
+                                        enum_ref='form_type_enum',
+                                        authoring_label='Form Type Form Type',
                                     ),
                                 ),
                                 conditions=(
@@ -34175,32 +34342,30 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='vats_value_function',
-                                codec='uint32',
+                                name='actor',
+                                codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='vats_value_function_vats_value_function',
-                                        kind='uint32',
-                                        enum_ref='vats_value_function_enum',
-                                        authoring_label='VATS Value Function VATS Value Function',
+                                        name='actor_actor',
+                                        kind='formid',
+                                        formlink_targets=('ACHR', 'ACRE', 'PLYR', 'TRGT'),
+                                        authoring_label='Actor Actor',
                                     ),
                                 ),
                                 conditions=(
                                     ConditionSpec(field='function', operator='in', values=(60,)),
-                                    ConditionSpec(field='type', operator='bit_unset', value=2),
-                                    ConditionSpec(field='type', operator='bit_unset', value=8),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='encounter_zone',
+                                name='faction',
                                 codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='encounter_zone_encounter_zone',
+                                        name='faction_faction',
                                         kind='formid',
-                                        formlink_target='ECZN',
-                                        formlink_targets=('ECZN',),
-                                        authoring_label='Encounter Zone Encounter Zone',
+                                        formlink_target='FACT',
+                                        formlink_targets=('FACT',),
+                                        authoring_label='Faction Faction',
                                     ),
                                 ),
                                 conditions=(
@@ -34208,15 +34373,15 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='note',
+                                name='owner',
                                 codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='note_note',
+                                        name='owner_owner',
                                         kind='formid',
-                                        formlink_target='NOTE',
-                                        formlink_targets=('NOTE',),
-                                        authoring_label='Note Note',
+                                        formlink_targets=('FACT', 'NPC_'),
+                                        null_allowed=True,
+                                        authoring_label='Owner Owner',
                                     ),
                                 ),
                                 conditions=(
@@ -34224,21 +34389,18 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='race',
+                                name='reference',
                                 codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='race_race',
+                                        name='reference_reference',
                                         kind='formid',
-                                        formlink_target='RACE',
-                                        formlink_targets=('RACE',),
-                                        authoring_label='Race Race',
+                                        formlink_targets=('ACHR', 'ACRE', 'PBEA', 'PGRE', 'PLYR', 'PMIS', 'REFR', 'TRGT'),
+                                        authoring_label='Reference Reference',
                                     ),
                                 ),
                                 conditions=(
                                     ConditionSpec(field='function', operator='in', values=(230,)),
-                                    ConditionSpec(field='type', operator='bit_unset', value=2),
-                                    ConditionSpec(field='type', operator='bit_unset', value=8),
                                 ),
                             ),
                         ),
@@ -34553,7 +34715,7 @@ def build_schema() -> GameSchema:
                                 name='unnamed',
                                 codec='uint32',
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(5, 12, 18, 24, 25, 26, 35, 39, 40, 41, 46, 48, 49, 50, 61, 62, 63, 64, 65, 75, 77, 80, 81, 91, 101, 102, 103, 106, 107, 108, 110, 111, 112, 116, 117, 118, 123, 125, 127, 128, 133, 134, 135, 141, 142, 143, 144, 145, 146, 147, 148, 150, 153, 154, 157, 159, 160, 170, 175, 176, 185, 190, 192, 203, 215, 219, 224, 225, 226, 227, 229, 235, 237, 242, 244, 254, 255, 258, 259, 264, 265, 266, 267, 274, 282, 285, 286, 287, 288, 289, 300, 304, 306, 309, 310, 313, 314, 315, 318, 320, 323, 327, 332, 338, 339, 353, 354, 358, 361, 362, 365, 367, 391, 392, 397, 403, 416, 417, 428, 430, 431, 435, 436, 454, 455, 459, 460, 471, 489, 492, 496, 500, 503, 510, 522, 523, 524, 533, 550, 557, 558, 1024, 1025, 1213, 4644, 4645, 4653, 4665, 4696, 4768, 8471, 8473, 8474, 8486, 8548, 8549, 8550, 8551, 8552, 8553, 8597)),
+                                    ConditionSpec(field='function', operator='in', values=(310,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -34582,22 +34744,21 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(98, 1082, 1166, 8547, 8610, 8613, 8616, 8619)),
+                                    ConditionSpec(field='function', operator='in', values=(5, 12, 18, 24, 25, 26, 35, 39, 40, 41, 46, 48, 49, 50, 61, 62, 63, 64, 65, 75, 77, 80, 81, 91, 101, 102, 103, 106, 107, 108, 110, 111, 112, 116, 117, 118, 123, 125, 127, 128, 133, 134, 135, 141, 142, 143, 144, 145, 146, 147, 148, 150, 153, 154, 157, 159, 160, 170, 175, 176, 185, 190, 192, 203, 215, 219, 224, 225, 226, 227, 229, 235, 237, 242, 244, 254, 255, 258, 259, 264, 265, 266, 267, 274, 282, 285, 286, 287, 288, 289, 300, 304, 306, 309, 313, 314, 315, 318, 320, 323, 327, 332, 338, 339, 353, 354, 358, 361, 362, 365, 367, 391, 392, 397, 403, 416, 417, 428, 430, 431, 435, 436, 454, 455, 459, 460, 471, 489, 492, 496, 500, 503, 510, 522, 523, 524, 533, 550, 557, 558, 1024, 1025, 1213, 4644, 4645, 4653, 4665, 4696, 4768, 8471, 8473, 8474, 8486, 8548, 8549, 8550, 8551, 8552, 8553, 8597)),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='vats_value_param',
-                                codec='struct:I',
+                                name='integer',
+                                codec='int32',
                                 fields=(
                                     FieldSpec(
-                                        name='vats_value_param_vats_value_param',
-                                        kind='uint32',
-                                        authoring_label='VATS Value Param VATS Value Param',
-                                        notes='width-preserving union fallback for wbConditionVATSValueParam',
+                                        name='integer_integer',
+                                        kind='int32',
+                                        authoring_label='Integer Integer',
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(14, 109, 277, 495)),
+                                    ConditionSpec(field='function', operator='in', values=(98, 1082, 1166, 8547, 8610, 8613, 8616, 8619)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -34612,7 +34773,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(474,)),
+                                    ConditionSpec(field='function', operator='in', values=(14, 109, 277, 495)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -34627,7 +34788,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(6, 8, 10, 11)),
+                                    ConditionSpec(field='function', operator='in', values=(474,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -34642,7 +34803,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(398,)),
+                                    ConditionSpec(field='function', operator='in', values=(6, 8, 10, 11)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -34657,22 +34818,22 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(438,)),
+                                    ConditionSpec(field='function', operator='in', values=(398,)),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='crime_type',
+                                name='creature_type',
                                 codec='uint32',
                                 fields=(
                                     FieldSpec(
-                                        name='crime_type_crime_type',
+                                        name='creature_type_creature_type',
                                         kind='uint32',
-                                        enum_ref='crime_type_enum',
-                                        authoring_label='Crime Type Crime Type',
+                                        enum_ref='creature_type_enum',
+                                        authoring_label='Creature Type Creature Type',
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(531,)),
+                                    ConditionSpec(field='function', operator='in', values=(438,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -34687,7 +34848,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(480,)),
+                                    ConditionSpec(field='function', operator='in', values=(531,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -34702,7 +34863,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(247, 433)),
+                                    ConditionSpec(field='function', operator='in', values=(480,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -34717,7 +34878,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(36,)),
+                                    ConditionSpec(field='function', operator='in', values=(247, 433)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -34731,7 +34892,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(312,)),
+                                    ConditionSpec(field='function', operator='in', values=(36,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -34746,7 +34907,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(368,)),
+                                    ConditionSpec(field='function', operator='in', values=(312,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -34761,7 +34922,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(70, 131)),
+                                    ConditionSpec(field='function', operator='in', values=(368,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -34776,7 +34937,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(408,)),
+                                    ConditionSpec(field='function', operator='in', values=(70, 131)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -34791,7 +34952,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(42, 43, 44, 45, 66, 76, 122, 172, 180, 370, 409, 450, 478, 515, 4640)),
+                                    ConditionSpec(field='function', operator='in', values=(408,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -34806,7 +34967,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(84,)),
+                                    ConditionSpec(field='function', operator='in', values=(42, 43, 44, 45, 66, 76, 122, 172, 180, 370, 409, 450, 478, 515, 4640)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -34821,7 +34982,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(214,)),
+                                    ConditionSpec(field='function', operator='in', values=(84,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -34837,7 +34998,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(72, 246)),
+                                    ConditionSpec(field='function', operator='in', values=(214,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -34851,7 +35012,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(67, 230, 280)),
+                                    ConditionSpec(field='function', operator='in', values=(72, 246)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -34867,7 +35028,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(68, 129, 228)),
+                                    ConditionSpec(field='function', operator='in', values=(67, 230, 280)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -34883,7 +35044,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(223, 555, 4715)),
+                                    ConditionSpec(field='function', operator='in', values=(68, 129, 228)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -34898,7 +35059,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(446,)),
+                                    ConditionSpec(field='function', operator='in', values=(223, 555, 4715)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -34914,7 +35075,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(60, 71, 73, 132, 193, 195, 197, 199, 411)),
+                                    ConditionSpec(field='function', operator='in', values=(446,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -34930,7 +35091,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(372, 399, 410, 8571)),
+                                    ConditionSpec(field='function', operator='in', values=(60, 71, 73, 132, 193, 195, 197, 199, 411)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -34946,7 +35107,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(163,)),
+                                    ConditionSpec(field='function', operator='in', values=(372, 399, 410, 8571)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -34961,7 +35122,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(74,)),
+                                    ConditionSpec(field='function', operator='in', values=(163,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -34977,7 +35138,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(451, 4700)),
+                                    ConditionSpec(field='function', operator='in', values=(74,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -34993,7 +35154,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(47, 182, 1028, 1165)),
+                                    ConditionSpec(field='function', operator='in', values=(451, 4700)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -35008,7 +35169,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(382, 8575)),
+                                    ConditionSpec(field='function', operator='in', values=(47, 182, 1028, 1165)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -35024,7 +35185,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(278,)),
+                                    ConditionSpec(field='function', operator='in', values=(382, 8575)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -35040,7 +35201,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(161,)),
+                                    ConditionSpec(field='function', operator='in', values=(278,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -35056,7 +35217,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(449,)),
+                                    ConditionSpec(field='function', operator='in', values=(161,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -35072,7 +35233,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(56, 58, 59, 79, 546, 4776)),
+                                    ConditionSpec(field='function', operator='in', values=(449,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -35088,7 +35249,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(69, 130)),
+                                    ConditionSpec(field='function', operator='in', values=(56, 58, 59, 79, 546, 4776)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -35104,7 +35265,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(1, 27, 32, 53, 99, 136, 162, 415, 464, 518, 519, 520, 521, 525, 526, 527, 528)),
+                                    ConditionSpec(field='function', operator='in', values=(69, 130)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -35119,19 +35280,35 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
+                                    ConditionSpec(field='function', operator='in', values=(1, 27, 32, 53, 99, 136, 162, 415, 464, 518, 519, 520, 521, 525, 526, 527, 528)),
+                                ),
+                            ),
+                            UnionVariantSpec(
+                                name='voice_type',
+                                codec='formid',
+                                fields=(
+                                    FieldSpec(
+                                        name='voice_type_voice_type',
+                                        kind='formid',
+                                        formlink_target='VTYP',
+                                        formlink_targets=('VTYP',),
+                                        authoring_label='Voice Type Voice Type',
+                                    ),
+                                ),
+                                conditions=(
                                     ConditionSpec(field='function', operator='in', values=(427,)),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='weapon',
+                                name='weather',
                                 codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='weapon_weapon',
+                                        name='weather_weather',
                                         kind='formid',
-                                        formlink_target='WEAP',
-                                        formlink_targets=('WEAP',),
-                                        authoring_label='Weapon Weapon',
+                                        formlink_target='WTHR',
+                                        formlink_targets=('WTHR',),
+                                        authoring_label='Weather Weather',
                                     ),
                                 ),
                                 conditions=(
@@ -35154,13 +35331,6 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='unnamed',
-                                codec='uint32',
-                                conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(1, 5, 6, 8, 10, 11, 12, 14, 18, 24, 25, 26, 27, 32, 35, 36, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 56, 58, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 80, 81, 84, 91, 99, 101, 102, 103, 106, 107, 108, 109, 110, 111, 112, 116, 117, 118, 123, 125, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 153, 154, 157, 159, 160, 161, 162, 163, 170, 172, 175, 176, 180, 182, 185, 190, 192, 193, 195, 197, 199, 203, 214, 215, 219, 223, 224, 225, 226, 227, 228, 229, 235, 237, 242, 244, 246, 247, 254, 255, 258, 259, 264, 265, 266, 267, 274, 277, 278, 282, 285, 286, 287, 288, 289, 300, 304, 306, 309, 310, 312, 313, 314, 315, 318, 320, 323, 327, 332, 338, 339, 353, 354, 358, 361, 362, 365, 367, 368, 370, 372, 382, 391, 392, 397, 398, 399, 403, 409, 410, 415, 416, 417, 427, 428, 430, 431, 433, 435, 436, 438, 446, 449, 450, 451, 454, 455, 459, 460, 464, 471, 474, 478, 480, 489, 492, 495, 496, 500, 503, 510, 515, 518, 519, 520, 521, 522, 523, 524, 525, 526, 527, 528, 531, 533, 546, 550, 555, 557, 558, 1024, 1025, 1028, 1082, 1165, 1166, 1213, 4640, 4644, 4645, 4653, 4665, 4696, 4700, 4715, 4768, 4776, 8471, 8473, 8474, 8486, 8547, 8548, 8549, 8550, 8551, 8552, 8553, 8575, 8597, 8610, 8613, 8616, 8619)),
-                                ),
-                            ),
-                            UnionVariantSpec(
                                 name='none',
                                 codec='struct:B,B,B,B',
                                 fields=(
@@ -35186,7 +35356,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(98,)),
+                                    ConditionSpec(field='function', operator='in', values=(1, 5, 6, 8, 10, 11, 12, 14, 18, 24, 25, 26, 27, 32, 35, 36, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 56, 58, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 80, 81, 84, 91, 99, 101, 102, 103, 106, 107, 108, 109, 110, 111, 112, 116, 117, 118, 123, 125, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 153, 154, 157, 159, 160, 161, 162, 163, 170, 172, 175, 176, 180, 182, 185, 190, 192, 193, 195, 197, 199, 203, 214, 215, 219, 223, 224, 225, 226, 227, 228, 229, 235, 237, 242, 244, 246, 247, 254, 255, 258, 259, 264, 265, 266, 267, 274, 277, 278, 282, 285, 286, 287, 288, 289, 300, 304, 306, 309, 310, 312, 313, 314, 315, 318, 320, 323, 327, 332, 338, 339, 353, 354, 358, 361, 362, 365, 367, 368, 370, 372, 382, 391, 392, 397, 398, 399, 403, 409, 410, 415, 416, 417, 427, 428, 430, 431, 433, 435, 436, 438, 446, 449, 450, 451, 454, 455, 459, 460, 464, 471, 474, 478, 480, 489, 492, 495, 496, 500, 503, 510, 515, 518, 519, 520, 521, 522, 523, 524, 525, 526, 527, 528, 531, 533, 546, 550, 555, 557, 558, 1024, 1025, 1028, 1082, 1165, 1166, 1213, 4640, 4644, 4645, 4653, 4665, 4696, 4700, 4715, 4768, 4776, 8471, 8473, 8474, 8486, 8547, 8548, 8549, 8550, 8551, 8552, 8553, 8575, 8597, 8610, 8613, 8616, 8619)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -35200,7 +35370,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(59,)),
+                                    ConditionSpec(field='function', operator='in', values=(98,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -35214,7 +35384,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(53, 79)),
+                                    ConditionSpec(field='function', operator='in', values=(59,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -35228,18 +35398,33 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
+                                    ConditionSpec(field='function', operator='in', values=(53, 79)),
+                                ),
+                            ),
+                            UnionVariantSpec(
+                                name='vats_value_param',
+                                codec='struct:I',
+                                fields=(
+                                    FieldSpec(
+                                        name='vats_value_param_vats_value_param',
+                                        kind='uint32',
+                                        authoring_label='VATS Value Param VATS Value Param',
+                                        notes='width-preserving union fallback for wbConditionVATSValueParam',
+                                    ),
+                                ),
+                                conditions=(
                                     ConditionSpec(field='function', operator='in', values=(408,)),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='creature_type',
+                                name='crime_type',
                                 codec='uint32',
                                 fields=(
                                     FieldSpec(
-                                        name='creature_type_creature_type',
+                                        name='crime_type_crime_type',
                                         kind='uint32',
-                                        enum_ref='creature_type_enum',
-                                        authoring_label='Creature Type Creature Type',
+                                        enum_ref='crime_type_enum',
+                                        authoring_label='Crime Type Crime Type',
                                     ),
                                 ),
                                 conditions=(
@@ -35247,14 +35432,14 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='equip_type',
+                                name='form_type',
                                 codec='uint32',
                                 fields=(
                                     FieldSpec(
-                                        name='equip_type_equip_type',
+                                        name='form_type_form_type',
                                         kind='uint32',
-                                        enum_ref='equip_type_enum',
-                                        authoring_label='Equip Type Equip Type',
+                                        enum_ref='form_type_enum',
+                                        authoring_label='Form Type Form Type',
                                     ),
                                 ),
                                 conditions=(
@@ -35262,32 +35447,30 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='vats_value_function',
-                                codec='uint32',
+                                name='actor',
+                                codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='vats_value_function_vats_value_function',
-                                        kind='uint32',
-                                        enum_ref='vats_value_function_enum',
-                                        authoring_label='VATS Value Function VATS Value Function',
+                                        name='actor_actor',
+                                        kind='formid',
+                                        formlink_targets=('ACHR', 'ACRE', 'PLYR', 'TRGT'),
+                                        authoring_label='Actor Actor',
                                     ),
                                 ),
                                 conditions=(
                                     ConditionSpec(field='function', operator='in', values=(60,)),
-                                    ConditionSpec(field='type', operator='bit_unset', value=2),
-                                    ConditionSpec(field='type', operator='bit_unset', value=8),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='encounter_zone',
+                                name='faction',
                                 codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='encounter_zone_encounter_zone',
+                                        name='faction_faction',
                                         kind='formid',
-                                        formlink_target='ECZN',
-                                        formlink_targets=('ECZN',),
-                                        authoring_label='Encounter Zone Encounter Zone',
+                                        formlink_target='FACT',
+                                        formlink_targets=('FACT',),
+                                        authoring_label='Faction Faction',
                                     ),
                                 ),
                                 conditions=(
@@ -35295,15 +35478,15 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='note',
+                                name='owner',
                                 codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='note_note',
+                                        name='owner_owner',
                                         kind='formid',
-                                        formlink_target='NOTE',
-                                        formlink_targets=('NOTE',),
-                                        authoring_label='Note Note',
+                                        formlink_targets=('FACT', 'NPC_'),
+                                        null_allowed=True,
+                                        authoring_label='Owner Owner',
                                     ),
                                 ),
                                 conditions=(
@@ -35311,21 +35494,18 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='race',
+                                name='reference',
                                 codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='race_race',
+                                        name='reference_reference',
                                         kind='formid',
-                                        formlink_target='RACE',
-                                        formlink_targets=('RACE',),
-                                        authoring_label='Race Race',
+                                        formlink_targets=('ACHR', 'ACRE', 'PBEA', 'PGRE', 'PLYR', 'PMIS', 'REFR', 'TRGT'),
+                                        authoring_label='Reference Reference',
                                     ),
                                 ),
                                 conditions=(
                                     ConditionSpec(field='function', operator='in', values=(230,)),
-                                    ConditionSpec(field='type', operator='bit_unset', value=2),
-                                    ConditionSpec(field='type', operator='bit_unset', value=8),
                                 ),
                             ),
                         ),
@@ -38402,7 +38582,7 @@ def build_schema() -> GameSchema:
                                 name='unnamed',
                                 codec='uint32',
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(5, 12, 18, 24, 25, 26, 35, 39, 40, 41, 46, 48, 49, 50, 61, 62, 63, 64, 65, 75, 77, 80, 81, 91, 101, 102, 103, 106, 107, 108, 110, 111, 112, 116, 117, 118, 123, 125, 127, 128, 133, 134, 135, 141, 142, 143, 144, 145, 146, 147, 148, 150, 153, 154, 157, 159, 160, 170, 175, 176, 185, 190, 192, 203, 215, 219, 224, 225, 226, 227, 229, 235, 237, 242, 244, 254, 255, 258, 259, 264, 265, 266, 267, 274, 282, 285, 286, 287, 288, 289, 300, 304, 306, 309, 310, 313, 314, 315, 318, 320, 323, 327, 332, 338, 339, 353, 354, 358, 361, 362, 365, 367, 391, 392, 397, 403, 416, 417, 428, 430, 431, 435, 436, 454, 455, 459, 460, 471, 489, 492, 496, 500, 503, 510, 522, 523, 524, 533, 550, 557, 558, 1024, 1025, 1213, 4644, 4645, 4653, 4665, 4696, 4768, 8471, 8473, 8474, 8486, 8548, 8549, 8550, 8551, 8552, 8553, 8597)),
+                                    ConditionSpec(field='function', operator='in', values=(310,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -38431,22 +38611,21 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(98, 1082, 1166, 8547, 8610, 8613, 8616, 8619)),
+                                    ConditionSpec(field='function', operator='in', values=(5, 12, 18, 24, 25, 26, 35, 39, 40, 41, 46, 48, 49, 50, 61, 62, 63, 64, 65, 75, 77, 80, 81, 91, 101, 102, 103, 106, 107, 108, 110, 111, 112, 116, 117, 118, 123, 125, 127, 128, 133, 134, 135, 141, 142, 143, 144, 145, 146, 147, 148, 150, 153, 154, 157, 159, 160, 170, 175, 176, 185, 190, 192, 203, 215, 219, 224, 225, 226, 227, 229, 235, 237, 242, 244, 254, 255, 258, 259, 264, 265, 266, 267, 274, 282, 285, 286, 287, 288, 289, 300, 304, 306, 309, 313, 314, 315, 318, 320, 323, 327, 332, 338, 339, 353, 354, 358, 361, 362, 365, 367, 391, 392, 397, 403, 416, 417, 428, 430, 431, 435, 436, 454, 455, 459, 460, 471, 489, 492, 496, 500, 503, 510, 522, 523, 524, 533, 550, 557, 558, 1024, 1025, 1213, 4644, 4645, 4653, 4665, 4696, 4768, 8471, 8473, 8474, 8486, 8548, 8549, 8550, 8551, 8552, 8553, 8597)),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='vats_value_param',
-                                codec='struct:I',
+                                name='integer',
+                                codec='int32',
                                 fields=(
                                     FieldSpec(
-                                        name='vats_value_param_vats_value_param',
-                                        kind='uint32',
-                                        authoring_label='VATS Value Param VATS Value Param',
-                                        notes='width-preserving union fallback for wbConditionVATSValueParam',
+                                        name='integer_integer',
+                                        kind='int32',
+                                        authoring_label='Integer Integer',
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(14, 109, 277, 495)),
+                                    ConditionSpec(field='function', operator='in', values=(98, 1082, 1166, 8547, 8610, 8613, 8616, 8619)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -38461,7 +38640,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(474,)),
+                                    ConditionSpec(field='function', operator='in', values=(14, 109, 277, 495)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -38476,7 +38655,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(6, 8, 10, 11)),
+                                    ConditionSpec(field='function', operator='in', values=(474,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -38491,7 +38670,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(398,)),
+                                    ConditionSpec(field='function', operator='in', values=(6, 8, 10, 11)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -38506,22 +38685,22 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(438,)),
+                                    ConditionSpec(field='function', operator='in', values=(398,)),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='crime_type',
+                                name='creature_type',
                                 codec='uint32',
                                 fields=(
                                     FieldSpec(
-                                        name='crime_type_crime_type',
+                                        name='creature_type_creature_type',
                                         kind='uint32',
-                                        enum_ref='crime_type_enum',
-                                        authoring_label='Crime Type Crime Type',
+                                        enum_ref='creature_type_enum',
+                                        authoring_label='Creature Type Creature Type',
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(531,)),
+                                    ConditionSpec(field='function', operator='in', values=(438,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -38536,7 +38715,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(480,)),
+                                    ConditionSpec(field='function', operator='in', values=(531,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -38551,7 +38730,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(247, 433)),
+                                    ConditionSpec(field='function', operator='in', values=(480,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -38566,7 +38745,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(36,)),
+                                    ConditionSpec(field='function', operator='in', values=(247, 433)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -38580,7 +38759,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(312,)),
+                                    ConditionSpec(field='function', operator='in', values=(36,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -38595,7 +38774,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(368,)),
+                                    ConditionSpec(field='function', operator='in', values=(312,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -38610,7 +38789,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(70, 131)),
+                                    ConditionSpec(field='function', operator='in', values=(368,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -38625,7 +38804,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(408,)),
+                                    ConditionSpec(field='function', operator='in', values=(70, 131)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -38640,7 +38819,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(42, 43, 44, 45, 66, 76, 122, 172, 180, 370, 409, 450, 478, 515, 4640)),
+                                    ConditionSpec(field='function', operator='in', values=(408,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -38655,7 +38834,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(84,)),
+                                    ConditionSpec(field='function', operator='in', values=(42, 43, 44, 45, 66, 76, 122, 172, 180, 370, 409, 450, 478, 515, 4640)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -38670,7 +38849,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(214,)),
+                                    ConditionSpec(field='function', operator='in', values=(84,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -38686,7 +38865,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(72, 246)),
+                                    ConditionSpec(field='function', operator='in', values=(214,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -38700,7 +38879,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(67, 230, 280)),
+                                    ConditionSpec(field='function', operator='in', values=(72, 246)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -38716,7 +38895,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(68, 129, 228)),
+                                    ConditionSpec(field='function', operator='in', values=(67, 230, 280)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -38732,7 +38911,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(223, 555, 4715)),
+                                    ConditionSpec(field='function', operator='in', values=(68, 129, 228)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -38747,7 +38926,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(446,)),
+                                    ConditionSpec(field='function', operator='in', values=(223, 555, 4715)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -38763,7 +38942,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(60, 71, 73, 132, 193, 195, 197, 199, 411)),
+                                    ConditionSpec(field='function', operator='in', values=(446,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -38779,7 +38958,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(372, 399, 410, 8571)),
+                                    ConditionSpec(field='function', operator='in', values=(60, 71, 73, 132, 193, 195, 197, 199, 411)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -38795,7 +38974,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(163,)),
+                                    ConditionSpec(field='function', operator='in', values=(372, 399, 410, 8571)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -38810,7 +38989,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(74,)),
+                                    ConditionSpec(field='function', operator='in', values=(163,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -38826,7 +39005,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(451, 4700)),
+                                    ConditionSpec(field='function', operator='in', values=(74,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -38842,7 +39021,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(47, 182, 1028, 1165)),
+                                    ConditionSpec(field='function', operator='in', values=(451, 4700)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -38857,7 +39036,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(382, 8575)),
+                                    ConditionSpec(field='function', operator='in', values=(47, 182, 1028, 1165)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -38873,7 +39052,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(278,)),
+                                    ConditionSpec(field='function', operator='in', values=(382, 8575)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -38889,7 +39068,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(161,)),
+                                    ConditionSpec(field='function', operator='in', values=(278,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -38905,7 +39084,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(449,)),
+                                    ConditionSpec(field='function', operator='in', values=(161,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -38921,7 +39100,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(56, 58, 59, 79, 546, 4776)),
+                                    ConditionSpec(field='function', operator='in', values=(449,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -38937,7 +39116,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(69, 130)),
+                                    ConditionSpec(field='function', operator='in', values=(56, 58, 59, 79, 546, 4776)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -38953,7 +39132,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(1, 27, 32, 53, 99, 136, 162, 415, 464, 518, 519, 520, 521, 525, 526, 527, 528)),
+                                    ConditionSpec(field='function', operator='in', values=(69, 130)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -38968,19 +39147,35 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
+                                    ConditionSpec(field='function', operator='in', values=(1, 27, 32, 53, 99, 136, 162, 415, 464, 518, 519, 520, 521, 525, 526, 527, 528)),
+                                ),
+                            ),
+                            UnionVariantSpec(
+                                name='voice_type',
+                                codec='formid',
+                                fields=(
+                                    FieldSpec(
+                                        name='voice_type_voice_type',
+                                        kind='formid',
+                                        formlink_target='VTYP',
+                                        formlink_targets=('VTYP',),
+                                        authoring_label='Voice Type Voice Type',
+                                    ),
+                                ),
+                                conditions=(
                                     ConditionSpec(field='function', operator='in', values=(427,)),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='weapon',
+                                name='weather',
                                 codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='weapon_weapon',
+                                        name='weather_weather',
                                         kind='formid',
-                                        formlink_target='WEAP',
-                                        formlink_targets=('WEAP',),
-                                        authoring_label='Weapon Weapon',
+                                        formlink_target='WTHR',
+                                        formlink_targets=('WTHR',),
+                                        authoring_label='Weather Weather',
                                     ),
                                 ),
                                 conditions=(
@@ -39003,13 +39198,6 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='unnamed',
-                                codec='uint32',
-                                conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(1, 5, 6, 8, 10, 11, 12, 14, 18, 24, 25, 26, 27, 32, 35, 36, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 56, 58, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 80, 81, 84, 91, 99, 101, 102, 103, 106, 107, 108, 109, 110, 111, 112, 116, 117, 118, 123, 125, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 153, 154, 157, 159, 160, 161, 162, 163, 170, 172, 175, 176, 180, 182, 185, 190, 192, 193, 195, 197, 199, 203, 214, 215, 219, 223, 224, 225, 226, 227, 228, 229, 235, 237, 242, 244, 246, 247, 254, 255, 258, 259, 264, 265, 266, 267, 274, 277, 278, 282, 285, 286, 287, 288, 289, 300, 304, 306, 309, 310, 312, 313, 314, 315, 318, 320, 323, 327, 332, 338, 339, 353, 354, 358, 361, 362, 365, 367, 368, 370, 372, 382, 391, 392, 397, 398, 399, 403, 409, 410, 415, 416, 417, 427, 428, 430, 431, 433, 435, 436, 438, 446, 449, 450, 451, 454, 455, 459, 460, 464, 471, 474, 478, 480, 489, 492, 495, 496, 500, 503, 510, 515, 518, 519, 520, 521, 522, 523, 524, 525, 526, 527, 528, 531, 533, 546, 550, 555, 557, 558, 1024, 1025, 1028, 1082, 1165, 1166, 1213, 4640, 4644, 4645, 4653, 4665, 4696, 4700, 4715, 4768, 4776, 8471, 8473, 8474, 8486, 8547, 8548, 8549, 8550, 8551, 8552, 8553, 8575, 8597, 8610, 8613, 8616, 8619)),
-                                ),
-                            ),
-                            UnionVariantSpec(
                                 name='none',
                                 codec='struct:B,B,B,B',
                                 fields=(
@@ -39035,7 +39223,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(98,)),
+                                    ConditionSpec(field='function', operator='in', values=(1, 5, 6, 8, 10, 11, 12, 14, 18, 24, 25, 26, 27, 32, 35, 36, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 56, 58, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 80, 81, 84, 91, 99, 101, 102, 103, 106, 107, 108, 109, 110, 111, 112, 116, 117, 118, 123, 125, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 153, 154, 157, 159, 160, 161, 162, 163, 170, 172, 175, 176, 180, 182, 185, 190, 192, 193, 195, 197, 199, 203, 214, 215, 219, 223, 224, 225, 226, 227, 228, 229, 235, 237, 242, 244, 246, 247, 254, 255, 258, 259, 264, 265, 266, 267, 274, 277, 278, 282, 285, 286, 287, 288, 289, 300, 304, 306, 309, 310, 312, 313, 314, 315, 318, 320, 323, 327, 332, 338, 339, 353, 354, 358, 361, 362, 365, 367, 368, 370, 372, 382, 391, 392, 397, 398, 399, 403, 409, 410, 415, 416, 417, 427, 428, 430, 431, 433, 435, 436, 438, 446, 449, 450, 451, 454, 455, 459, 460, 464, 471, 474, 478, 480, 489, 492, 495, 496, 500, 503, 510, 515, 518, 519, 520, 521, 522, 523, 524, 525, 526, 527, 528, 531, 533, 546, 550, 555, 557, 558, 1024, 1025, 1028, 1082, 1165, 1166, 1213, 4640, 4644, 4645, 4653, 4665, 4696, 4700, 4715, 4768, 4776, 8471, 8473, 8474, 8486, 8547, 8548, 8549, 8550, 8551, 8552, 8553, 8575, 8597, 8610, 8613, 8616, 8619)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -39049,7 +39237,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(59,)),
+                                    ConditionSpec(field='function', operator='in', values=(98,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -39063,7 +39251,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(53, 79)),
+                                    ConditionSpec(field='function', operator='in', values=(59,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -39077,18 +39265,33 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
+                                    ConditionSpec(field='function', operator='in', values=(53, 79)),
+                                ),
+                            ),
+                            UnionVariantSpec(
+                                name='vats_value_param',
+                                codec='struct:I',
+                                fields=(
+                                    FieldSpec(
+                                        name='vats_value_param_vats_value_param',
+                                        kind='uint32',
+                                        authoring_label='VATS Value Param VATS Value Param',
+                                        notes='width-preserving union fallback for wbConditionVATSValueParam',
+                                    ),
+                                ),
+                                conditions=(
                                     ConditionSpec(field='function', operator='in', values=(408,)),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='creature_type',
+                                name='crime_type',
                                 codec='uint32',
                                 fields=(
                                     FieldSpec(
-                                        name='creature_type_creature_type',
+                                        name='crime_type_crime_type',
                                         kind='uint32',
-                                        enum_ref='creature_type_enum',
-                                        authoring_label='Creature Type Creature Type',
+                                        enum_ref='crime_type_enum',
+                                        authoring_label='Crime Type Crime Type',
                                     ),
                                 ),
                                 conditions=(
@@ -39096,14 +39299,14 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='equip_type',
+                                name='form_type',
                                 codec='uint32',
                                 fields=(
                                     FieldSpec(
-                                        name='equip_type_equip_type',
+                                        name='form_type_form_type',
                                         kind='uint32',
-                                        enum_ref='equip_type_enum',
-                                        authoring_label='Equip Type Equip Type',
+                                        enum_ref='form_type_enum',
+                                        authoring_label='Form Type Form Type',
                                     ),
                                 ),
                                 conditions=(
@@ -39111,32 +39314,30 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='vats_value_function',
-                                codec='uint32',
+                                name='actor',
+                                codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='vats_value_function_vats_value_function',
-                                        kind='uint32',
-                                        enum_ref='vats_value_function_enum',
-                                        authoring_label='VATS Value Function VATS Value Function',
+                                        name='actor_actor',
+                                        kind='formid',
+                                        formlink_targets=('ACHR', 'ACRE', 'PLYR', 'TRGT'),
+                                        authoring_label='Actor Actor',
                                     ),
                                 ),
                                 conditions=(
                                     ConditionSpec(field='function', operator='in', values=(60,)),
-                                    ConditionSpec(field='type', operator='bit_unset', value=2),
-                                    ConditionSpec(field='type', operator='bit_unset', value=8),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='encounter_zone',
+                                name='faction',
                                 codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='encounter_zone_encounter_zone',
+                                        name='faction_faction',
                                         kind='formid',
-                                        formlink_target='ECZN',
-                                        formlink_targets=('ECZN',),
-                                        authoring_label='Encounter Zone Encounter Zone',
+                                        formlink_target='FACT',
+                                        formlink_targets=('FACT',),
+                                        authoring_label='Faction Faction',
                                     ),
                                 ),
                                 conditions=(
@@ -39144,15 +39345,15 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='note',
+                                name='owner',
                                 codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='note_note',
+                                        name='owner_owner',
                                         kind='formid',
-                                        formlink_target='NOTE',
-                                        formlink_targets=('NOTE',),
-                                        authoring_label='Note Note',
+                                        formlink_targets=('FACT', 'NPC_'),
+                                        null_allowed=True,
+                                        authoring_label='Owner Owner',
                                     ),
                                 ),
                                 conditions=(
@@ -39160,21 +39361,18 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='race',
+                                name='reference',
                                 codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='race_race',
+                                        name='reference_reference',
                                         kind='formid',
-                                        formlink_target='RACE',
-                                        formlink_targets=('RACE',),
-                                        authoring_label='Race Race',
+                                        formlink_targets=('ACHR', 'ACRE', 'PBEA', 'PGRE', 'PLYR', 'PMIS', 'REFR', 'TRGT'),
+                                        authoring_label='Reference Reference',
                                     ),
                                 ),
                                 conditions=(
                                     ConditionSpec(field='function', operator='in', values=(230,)),
-                                    ConditionSpec(field='type', operator='bit_unset', value=2),
-                                    ConditionSpec(field='type', operator='bit_unset', value=8),
                                 ),
                             ),
                         ),
@@ -39358,7 +39556,7 @@ def build_schema() -> GameSchema:
                                 name='unnamed',
                                 codec='uint32',
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(5, 12, 18, 24, 25, 26, 35, 39, 40, 41, 46, 48, 49, 50, 61, 62, 63, 64, 65, 75, 77, 80, 81, 91, 101, 102, 103, 106, 107, 108, 110, 111, 112, 116, 117, 118, 123, 125, 127, 128, 133, 134, 135, 141, 142, 143, 144, 145, 146, 147, 148, 150, 153, 154, 157, 159, 160, 170, 175, 176, 185, 190, 192, 203, 215, 219, 224, 225, 226, 227, 229, 235, 237, 242, 244, 254, 255, 258, 259, 264, 265, 266, 267, 274, 282, 285, 286, 287, 288, 289, 300, 304, 306, 309, 310, 313, 314, 315, 318, 320, 323, 327, 332, 338, 339, 353, 354, 358, 361, 362, 365, 367, 391, 392, 397, 403, 416, 417, 428, 430, 431, 435, 436, 454, 455, 459, 460, 471, 489, 492, 496, 500, 503, 510, 522, 523, 524, 533, 550, 557, 558, 1024, 1025, 1213, 4644, 4645, 4653, 4665, 4696, 4768, 8471, 8473, 8474, 8486, 8548, 8549, 8550, 8551, 8552, 8553, 8597)),
+                                    ConditionSpec(field='function', operator='in', values=(310,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -39387,22 +39585,21 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(98, 1082, 1166, 8547, 8610, 8613, 8616, 8619)),
+                                    ConditionSpec(field='function', operator='in', values=(5, 12, 18, 24, 25, 26, 35, 39, 40, 41, 46, 48, 49, 50, 61, 62, 63, 64, 65, 75, 77, 80, 81, 91, 101, 102, 103, 106, 107, 108, 110, 111, 112, 116, 117, 118, 123, 125, 127, 128, 133, 134, 135, 141, 142, 143, 144, 145, 146, 147, 148, 150, 153, 154, 157, 159, 160, 170, 175, 176, 185, 190, 192, 203, 215, 219, 224, 225, 226, 227, 229, 235, 237, 242, 244, 254, 255, 258, 259, 264, 265, 266, 267, 274, 282, 285, 286, 287, 288, 289, 300, 304, 306, 309, 313, 314, 315, 318, 320, 323, 327, 332, 338, 339, 353, 354, 358, 361, 362, 365, 367, 391, 392, 397, 403, 416, 417, 428, 430, 431, 435, 436, 454, 455, 459, 460, 471, 489, 492, 496, 500, 503, 510, 522, 523, 524, 533, 550, 557, 558, 1024, 1025, 1213, 4644, 4645, 4653, 4665, 4696, 4768, 8471, 8473, 8474, 8486, 8548, 8549, 8550, 8551, 8552, 8553, 8597)),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='vats_value_param',
-                                codec='struct:I',
+                                name='integer',
+                                codec='int32',
                                 fields=(
                                     FieldSpec(
-                                        name='vats_value_param_vats_value_param',
-                                        kind='uint32',
-                                        authoring_label='VATS Value Param VATS Value Param',
-                                        notes='width-preserving union fallback for wbConditionVATSValueParam',
+                                        name='integer_integer',
+                                        kind='int32',
+                                        authoring_label='Integer Integer',
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(14, 109, 277, 495)),
+                                    ConditionSpec(field='function', operator='in', values=(98, 1082, 1166, 8547, 8610, 8613, 8616, 8619)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -39417,7 +39614,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(474,)),
+                                    ConditionSpec(field='function', operator='in', values=(14, 109, 277, 495)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -39432,7 +39629,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(6, 8, 10, 11)),
+                                    ConditionSpec(field='function', operator='in', values=(474,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -39447,7 +39644,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(398,)),
+                                    ConditionSpec(field='function', operator='in', values=(6, 8, 10, 11)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -39462,22 +39659,22 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(438,)),
+                                    ConditionSpec(field='function', operator='in', values=(398,)),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='crime_type',
+                                name='creature_type',
                                 codec='uint32',
                                 fields=(
                                     FieldSpec(
-                                        name='crime_type_crime_type',
+                                        name='creature_type_creature_type',
                                         kind='uint32',
-                                        enum_ref='crime_type_enum',
-                                        authoring_label='Crime Type Crime Type',
+                                        enum_ref='creature_type_enum',
+                                        authoring_label='Creature Type Creature Type',
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(531,)),
+                                    ConditionSpec(field='function', operator='in', values=(438,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -39492,7 +39689,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(480,)),
+                                    ConditionSpec(field='function', operator='in', values=(531,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -39507,7 +39704,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(247, 433)),
+                                    ConditionSpec(field='function', operator='in', values=(480,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -39522,7 +39719,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(36,)),
+                                    ConditionSpec(field='function', operator='in', values=(247, 433)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -39536,7 +39733,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(312,)),
+                                    ConditionSpec(field='function', operator='in', values=(36,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -39551,7 +39748,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(368,)),
+                                    ConditionSpec(field='function', operator='in', values=(312,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -39566,7 +39763,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(70, 131)),
+                                    ConditionSpec(field='function', operator='in', values=(368,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -39581,7 +39778,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(408,)),
+                                    ConditionSpec(field='function', operator='in', values=(70, 131)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -39596,7 +39793,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(42, 43, 44, 45, 66, 76, 122, 172, 180, 370, 409, 450, 478, 515, 4640)),
+                                    ConditionSpec(field='function', operator='in', values=(408,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -39611,7 +39808,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(84,)),
+                                    ConditionSpec(field='function', operator='in', values=(42, 43, 44, 45, 66, 76, 122, 172, 180, 370, 409, 450, 478, 515, 4640)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -39626,7 +39823,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(214,)),
+                                    ConditionSpec(field='function', operator='in', values=(84,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -39642,7 +39839,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(72, 246)),
+                                    ConditionSpec(field='function', operator='in', values=(214,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -39656,7 +39853,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(67, 230, 280)),
+                                    ConditionSpec(field='function', operator='in', values=(72, 246)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -39672,7 +39869,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(68, 129, 228)),
+                                    ConditionSpec(field='function', operator='in', values=(67, 230, 280)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -39688,7 +39885,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(223, 555, 4715)),
+                                    ConditionSpec(field='function', operator='in', values=(68, 129, 228)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -39703,7 +39900,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(446,)),
+                                    ConditionSpec(field='function', operator='in', values=(223, 555, 4715)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -39719,7 +39916,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(60, 71, 73, 132, 193, 195, 197, 199, 411)),
+                                    ConditionSpec(field='function', operator='in', values=(446,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -39735,7 +39932,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(372, 399, 410, 8571)),
+                                    ConditionSpec(field='function', operator='in', values=(60, 71, 73, 132, 193, 195, 197, 199, 411)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -39751,7 +39948,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(163,)),
+                                    ConditionSpec(field='function', operator='in', values=(372, 399, 410, 8571)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -39766,7 +39963,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(74,)),
+                                    ConditionSpec(field='function', operator='in', values=(163,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -39782,7 +39979,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(451, 4700)),
+                                    ConditionSpec(field='function', operator='in', values=(74,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -39798,7 +39995,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(47, 182, 1028, 1165)),
+                                    ConditionSpec(field='function', operator='in', values=(451, 4700)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -39813,7 +40010,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(382, 8575)),
+                                    ConditionSpec(field='function', operator='in', values=(47, 182, 1028, 1165)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -39829,7 +40026,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(278,)),
+                                    ConditionSpec(field='function', operator='in', values=(382, 8575)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -39845,7 +40042,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(161,)),
+                                    ConditionSpec(field='function', operator='in', values=(278,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -39861,7 +40058,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(449,)),
+                                    ConditionSpec(field='function', operator='in', values=(161,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -39877,7 +40074,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(56, 58, 59, 79, 546, 4776)),
+                                    ConditionSpec(field='function', operator='in', values=(449,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -39893,7 +40090,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(69, 130)),
+                                    ConditionSpec(field='function', operator='in', values=(56, 58, 59, 79, 546, 4776)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -39909,7 +40106,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(1, 27, 32, 53, 99, 136, 162, 415, 464, 518, 519, 520, 521, 525, 526, 527, 528)),
+                                    ConditionSpec(field='function', operator='in', values=(69, 130)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -39924,19 +40121,35 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
+                                    ConditionSpec(field='function', operator='in', values=(1, 27, 32, 53, 99, 136, 162, 415, 464, 518, 519, 520, 521, 525, 526, 527, 528)),
+                                ),
+                            ),
+                            UnionVariantSpec(
+                                name='voice_type',
+                                codec='formid',
+                                fields=(
+                                    FieldSpec(
+                                        name='voice_type_voice_type',
+                                        kind='formid',
+                                        formlink_target='VTYP',
+                                        formlink_targets=('VTYP',),
+                                        authoring_label='Voice Type Voice Type',
+                                    ),
+                                ),
+                                conditions=(
                                     ConditionSpec(field='function', operator='in', values=(427,)),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='weapon',
+                                name='weather',
                                 codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='weapon_weapon',
+                                        name='weather_weather',
                                         kind='formid',
-                                        formlink_target='WEAP',
-                                        formlink_targets=('WEAP',),
-                                        authoring_label='Weapon Weapon',
+                                        formlink_target='WTHR',
+                                        formlink_targets=('WTHR',),
+                                        authoring_label='Weather Weather',
                                     ),
                                 ),
                                 conditions=(
@@ -39959,13 +40172,6 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='unnamed',
-                                codec='uint32',
-                                conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(1, 5, 6, 8, 10, 11, 12, 14, 18, 24, 25, 26, 27, 32, 35, 36, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 56, 58, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 80, 81, 84, 91, 99, 101, 102, 103, 106, 107, 108, 109, 110, 111, 112, 116, 117, 118, 123, 125, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 153, 154, 157, 159, 160, 161, 162, 163, 170, 172, 175, 176, 180, 182, 185, 190, 192, 193, 195, 197, 199, 203, 214, 215, 219, 223, 224, 225, 226, 227, 228, 229, 235, 237, 242, 244, 246, 247, 254, 255, 258, 259, 264, 265, 266, 267, 274, 277, 278, 282, 285, 286, 287, 288, 289, 300, 304, 306, 309, 310, 312, 313, 314, 315, 318, 320, 323, 327, 332, 338, 339, 353, 354, 358, 361, 362, 365, 367, 368, 370, 372, 382, 391, 392, 397, 398, 399, 403, 409, 410, 415, 416, 417, 427, 428, 430, 431, 433, 435, 436, 438, 446, 449, 450, 451, 454, 455, 459, 460, 464, 471, 474, 478, 480, 489, 492, 495, 496, 500, 503, 510, 515, 518, 519, 520, 521, 522, 523, 524, 525, 526, 527, 528, 531, 533, 546, 550, 555, 557, 558, 1024, 1025, 1028, 1082, 1165, 1166, 1213, 4640, 4644, 4645, 4653, 4665, 4696, 4700, 4715, 4768, 4776, 8471, 8473, 8474, 8486, 8547, 8548, 8549, 8550, 8551, 8552, 8553, 8575, 8597, 8610, 8613, 8616, 8619)),
-                                ),
-                            ),
-                            UnionVariantSpec(
                                 name='none',
                                 codec='struct:B,B,B,B',
                                 fields=(
@@ -39991,7 +40197,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(98,)),
+                                    ConditionSpec(field='function', operator='in', values=(1, 5, 6, 8, 10, 11, 12, 14, 18, 24, 25, 26, 27, 32, 35, 36, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 56, 58, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 80, 81, 84, 91, 99, 101, 102, 103, 106, 107, 108, 109, 110, 111, 112, 116, 117, 118, 123, 125, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 153, 154, 157, 159, 160, 161, 162, 163, 170, 172, 175, 176, 180, 182, 185, 190, 192, 193, 195, 197, 199, 203, 214, 215, 219, 223, 224, 225, 226, 227, 228, 229, 235, 237, 242, 244, 246, 247, 254, 255, 258, 259, 264, 265, 266, 267, 274, 277, 278, 282, 285, 286, 287, 288, 289, 300, 304, 306, 309, 310, 312, 313, 314, 315, 318, 320, 323, 327, 332, 338, 339, 353, 354, 358, 361, 362, 365, 367, 368, 370, 372, 382, 391, 392, 397, 398, 399, 403, 409, 410, 415, 416, 417, 427, 428, 430, 431, 433, 435, 436, 438, 446, 449, 450, 451, 454, 455, 459, 460, 464, 471, 474, 478, 480, 489, 492, 495, 496, 500, 503, 510, 515, 518, 519, 520, 521, 522, 523, 524, 525, 526, 527, 528, 531, 533, 546, 550, 555, 557, 558, 1024, 1025, 1028, 1082, 1165, 1166, 1213, 4640, 4644, 4645, 4653, 4665, 4696, 4700, 4715, 4768, 4776, 8471, 8473, 8474, 8486, 8547, 8548, 8549, 8550, 8551, 8552, 8553, 8575, 8597, 8610, 8613, 8616, 8619)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -40005,7 +40211,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(59,)),
+                                    ConditionSpec(field='function', operator='in', values=(98,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -40019,7 +40225,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(53, 79)),
+                                    ConditionSpec(field='function', operator='in', values=(59,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -40033,18 +40239,33 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
+                                    ConditionSpec(field='function', operator='in', values=(53, 79)),
+                                ),
+                            ),
+                            UnionVariantSpec(
+                                name='vats_value_param',
+                                codec='struct:I',
+                                fields=(
+                                    FieldSpec(
+                                        name='vats_value_param_vats_value_param',
+                                        kind='uint32',
+                                        authoring_label='VATS Value Param VATS Value Param',
+                                        notes='width-preserving union fallback for wbConditionVATSValueParam',
+                                    ),
+                                ),
+                                conditions=(
                                     ConditionSpec(field='function', operator='in', values=(408,)),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='creature_type',
+                                name='crime_type',
                                 codec='uint32',
                                 fields=(
                                     FieldSpec(
-                                        name='creature_type_creature_type',
+                                        name='crime_type_crime_type',
                                         kind='uint32',
-                                        enum_ref='creature_type_enum',
-                                        authoring_label='Creature Type Creature Type',
+                                        enum_ref='crime_type_enum',
+                                        authoring_label='Crime Type Crime Type',
                                     ),
                                 ),
                                 conditions=(
@@ -40052,14 +40273,14 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='equip_type',
+                                name='form_type',
                                 codec='uint32',
                                 fields=(
                                     FieldSpec(
-                                        name='equip_type_equip_type',
+                                        name='form_type_form_type',
                                         kind='uint32',
-                                        enum_ref='equip_type_enum',
-                                        authoring_label='Equip Type Equip Type',
+                                        enum_ref='form_type_enum',
+                                        authoring_label='Form Type Form Type',
                                     ),
                                 ),
                                 conditions=(
@@ -40067,32 +40288,30 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='vats_value_function',
-                                codec='uint32',
+                                name='actor',
+                                codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='vats_value_function_vats_value_function',
-                                        kind='uint32',
-                                        enum_ref='vats_value_function_enum',
-                                        authoring_label='VATS Value Function VATS Value Function',
+                                        name='actor_actor',
+                                        kind='formid',
+                                        formlink_targets=('ACHR', 'ACRE', 'PLYR', 'TRGT'),
+                                        authoring_label='Actor Actor',
                                     ),
                                 ),
                                 conditions=(
                                     ConditionSpec(field='function', operator='in', values=(60,)),
-                                    ConditionSpec(field='type', operator='bit_unset', value=2),
-                                    ConditionSpec(field='type', operator='bit_unset', value=8),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='encounter_zone',
+                                name='faction',
                                 codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='encounter_zone_encounter_zone',
+                                        name='faction_faction',
                                         kind='formid',
-                                        formlink_target='ECZN',
-                                        formlink_targets=('ECZN',),
-                                        authoring_label='Encounter Zone Encounter Zone',
+                                        formlink_target='FACT',
+                                        formlink_targets=('FACT',),
+                                        authoring_label='Faction Faction',
                                     ),
                                 ),
                                 conditions=(
@@ -40100,15 +40319,15 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='note',
+                                name='owner',
                                 codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='note_note',
+                                        name='owner_owner',
                                         kind='formid',
-                                        formlink_target='NOTE',
-                                        formlink_targets=('NOTE',),
-                                        authoring_label='Note Note',
+                                        formlink_targets=('FACT', 'NPC_'),
+                                        null_allowed=True,
+                                        authoring_label='Owner Owner',
                                     ),
                                 ),
                                 conditions=(
@@ -40116,21 +40335,18 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='race',
+                                name='reference',
                                 codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='race_race',
+                                        name='reference_reference',
                                         kind='formid',
-                                        formlink_target='RACE',
-                                        formlink_targets=('RACE',),
-                                        authoring_label='Race Race',
+                                        formlink_targets=('ACHR', 'ACRE', 'PBEA', 'PGRE', 'PLYR', 'PMIS', 'REFR', 'TRGT'),
+                                        authoring_label='Reference Reference',
                                     ),
                                 ),
                                 conditions=(
                                     ConditionSpec(field='function', operator='in', values=(230,)),
-                                    ConditionSpec(field='type', operator='bit_unset', value=2),
-                                    ConditionSpec(field='type', operator='bit_unset', value=8),
                                 ),
                             ),
                         ),
@@ -40678,7 +40894,7 @@ def build_schema() -> GameSchema:
                                 name='unnamed',
                                 codec='uint32',
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(5, 12, 18, 24, 25, 26, 35, 39, 40, 41, 46, 48, 49, 50, 61, 62, 63, 64, 65, 75, 77, 80, 81, 91, 101, 102, 103, 106, 107, 108, 110, 111, 112, 116, 117, 118, 123, 125, 127, 128, 133, 134, 135, 141, 142, 143, 144, 145, 146, 147, 148, 150, 153, 154, 157, 159, 160, 170, 175, 176, 185, 190, 192, 203, 215, 219, 224, 225, 226, 227, 229, 235, 237, 242, 244, 254, 255, 258, 259, 264, 265, 266, 267, 274, 282, 285, 286, 287, 288, 289, 300, 304, 306, 309, 310, 313, 314, 315, 318, 320, 323, 327, 332, 338, 339, 353, 354, 358, 361, 362, 365, 367, 391, 392, 397, 403, 416, 417, 428, 430, 431, 435, 436, 454, 455, 459, 460, 471, 489, 492, 496, 500, 503, 510, 522, 523, 524, 533, 550, 557, 558, 1024, 1025, 1213, 4644, 4645, 4653, 4665, 4696, 4768, 8471, 8473, 8474, 8486, 8548, 8549, 8550, 8551, 8552, 8553, 8597)),
+                                    ConditionSpec(field='function', operator='in', values=(310,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -40707,22 +40923,21 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(98, 1082, 1166, 8547, 8610, 8613, 8616, 8619)),
+                                    ConditionSpec(field='function', operator='in', values=(5, 12, 18, 24, 25, 26, 35, 39, 40, 41, 46, 48, 49, 50, 61, 62, 63, 64, 65, 75, 77, 80, 81, 91, 101, 102, 103, 106, 107, 108, 110, 111, 112, 116, 117, 118, 123, 125, 127, 128, 133, 134, 135, 141, 142, 143, 144, 145, 146, 147, 148, 150, 153, 154, 157, 159, 160, 170, 175, 176, 185, 190, 192, 203, 215, 219, 224, 225, 226, 227, 229, 235, 237, 242, 244, 254, 255, 258, 259, 264, 265, 266, 267, 274, 282, 285, 286, 287, 288, 289, 300, 304, 306, 309, 313, 314, 315, 318, 320, 323, 327, 332, 338, 339, 353, 354, 358, 361, 362, 365, 367, 391, 392, 397, 403, 416, 417, 428, 430, 431, 435, 436, 454, 455, 459, 460, 471, 489, 492, 496, 500, 503, 510, 522, 523, 524, 533, 550, 557, 558, 1024, 1025, 1213, 4644, 4645, 4653, 4665, 4696, 4768, 8471, 8473, 8474, 8486, 8548, 8549, 8550, 8551, 8552, 8553, 8597)),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='vats_value_param',
-                                codec='struct:I',
+                                name='integer',
+                                codec='int32',
                                 fields=(
                                     FieldSpec(
-                                        name='vats_value_param_vats_value_param',
-                                        kind='uint32',
-                                        authoring_label='VATS Value Param VATS Value Param',
-                                        notes='width-preserving union fallback for wbConditionVATSValueParam',
+                                        name='integer_integer',
+                                        kind='int32',
+                                        authoring_label='Integer Integer',
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(14, 109, 277, 495)),
+                                    ConditionSpec(field='function', operator='in', values=(98, 1082, 1166, 8547, 8610, 8613, 8616, 8619)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -40737,7 +40952,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(474,)),
+                                    ConditionSpec(field='function', operator='in', values=(14, 109, 277, 495)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -40752,7 +40967,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(6, 8, 10, 11)),
+                                    ConditionSpec(field='function', operator='in', values=(474,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -40767,7 +40982,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(398,)),
+                                    ConditionSpec(field='function', operator='in', values=(6, 8, 10, 11)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -40782,22 +40997,22 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(438,)),
+                                    ConditionSpec(field='function', operator='in', values=(398,)),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='crime_type',
+                                name='creature_type',
                                 codec='uint32',
                                 fields=(
                                     FieldSpec(
-                                        name='crime_type_crime_type',
+                                        name='creature_type_creature_type',
                                         kind='uint32',
-                                        enum_ref='crime_type_enum',
-                                        authoring_label='Crime Type Crime Type',
+                                        enum_ref='creature_type_enum',
+                                        authoring_label='Creature Type Creature Type',
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(531,)),
+                                    ConditionSpec(field='function', operator='in', values=(438,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -40812,7 +41027,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(480,)),
+                                    ConditionSpec(field='function', operator='in', values=(531,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -40827,7 +41042,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(247, 433)),
+                                    ConditionSpec(field='function', operator='in', values=(480,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -40842,7 +41057,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(36,)),
+                                    ConditionSpec(field='function', operator='in', values=(247, 433)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -40856,7 +41071,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(312,)),
+                                    ConditionSpec(field='function', operator='in', values=(36,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -40871,7 +41086,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(368,)),
+                                    ConditionSpec(field='function', operator='in', values=(312,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -40886,7 +41101,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(70, 131)),
+                                    ConditionSpec(field='function', operator='in', values=(368,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -40901,7 +41116,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(408,)),
+                                    ConditionSpec(field='function', operator='in', values=(70, 131)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -40916,7 +41131,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(42, 43, 44, 45, 66, 76, 122, 172, 180, 370, 409, 450, 478, 515, 4640)),
+                                    ConditionSpec(field='function', operator='in', values=(408,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -40931,7 +41146,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(84,)),
+                                    ConditionSpec(field='function', operator='in', values=(42, 43, 44, 45, 66, 76, 122, 172, 180, 370, 409, 450, 478, 515, 4640)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -40946,7 +41161,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(214,)),
+                                    ConditionSpec(field='function', operator='in', values=(84,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -40962,7 +41177,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(72, 246)),
+                                    ConditionSpec(field='function', operator='in', values=(214,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -40976,7 +41191,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(67, 230, 280)),
+                                    ConditionSpec(field='function', operator='in', values=(72, 246)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -40992,7 +41207,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(68, 129, 228)),
+                                    ConditionSpec(field='function', operator='in', values=(67, 230, 280)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -41008,7 +41223,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(223, 555, 4715)),
+                                    ConditionSpec(field='function', operator='in', values=(68, 129, 228)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -41023,7 +41238,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(446,)),
+                                    ConditionSpec(field='function', operator='in', values=(223, 555, 4715)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -41039,7 +41254,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(60, 71, 73, 132, 193, 195, 197, 199, 411)),
+                                    ConditionSpec(field='function', operator='in', values=(446,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -41055,7 +41270,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(372, 399, 410, 8571)),
+                                    ConditionSpec(field='function', operator='in', values=(60, 71, 73, 132, 193, 195, 197, 199, 411)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -41071,7 +41286,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(163,)),
+                                    ConditionSpec(field='function', operator='in', values=(372, 399, 410, 8571)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -41086,7 +41301,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(74,)),
+                                    ConditionSpec(field='function', operator='in', values=(163,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -41102,7 +41317,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(451, 4700)),
+                                    ConditionSpec(field='function', operator='in', values=(74,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -41118,7 +41333,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(47, 182, 1028, 1165)),
+                                    ConditionSpec(field='function', operator='in', values=(451, 4700)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -41133,7 +41348,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(382, 8575)),
+                                    ConditionSpec(field='function', operator='in', values=(47, 182, 1028, 1165)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -41149,7 +41364,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(278,)),
+                                    ConditionSpec(field='function', operator='in', values=(382, 8575)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -41165,7 +41380,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(161,)),
+                                    ConditionSpec(field='function', operator='in', values=(278,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -41181,7 +41396,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(449,)),
+                                    ConditionSpec(field='function', operator='in', values=(161,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -41197,7 +41412,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(56, 58, 59, 79, 546, 4776)),
+                                    ConditionSpec(field='function', operator='in', values=(449,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -41213,7 +41428,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(69, 130)),
+                                    ConditionSpec(field='function', operator='in', values=(56, 58, 59, 79, 546, 4776)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -41229,7 +41444,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(1, 27, 32, 53, 99, 136, 162, 415, 464, 518, 519, 520, 521, 525, 526, 527, 528)),
+                                    ConditionSpec(field='function', operator='in', values=(69, 130)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -41244,19 +41459,35 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
+                                    ConditionSpec(field='function', operator='in', values=(1, 27, 32, 53, 99, 136, 162, 415, 464, 518, 519, 520, 521, 525, 526, 527, 528)),
+                                ),
+                            ),
+                            UnionVariantSpec(
+                                name='voice_type',
+                                codec='formid',
+                                fields=(
+                                    FieldSpec(
+                                        name='voice_type_voice_type',
+                                        kind='formid',
+                                        formlink_target='VTYP',
+                                        formlink_targets=('VTYP',),
+                                        authoring_label='Voice Type Voice Type',
+                                    ),
+                                ),
+                                conditions=(
                                     ConditionSpec(field='function', operator='in', values=(427,)),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='weapon',
+                                name='weather',
                                 codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='weapon_weapon',
+                                        name='weather_weather',
                                         kind='formid',
-                                        formlink_target='WEAP',
-                                        formlink_targets=('WEAP',),
-                                        authoring_label='Weapon Weapon',
+                                        formlink_target='WTHR',
+                                        formlink_targets=('WTHR',),
+                                        authoring_label='Weather Weather',
                                     ),
                                 ),
                                 conditions=(
@@ -41279,13 +41510,6 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='unnamed',
-                                codec='uint32',
-                                conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(1, 5, 6, 8, 10, 11, 12, 14, 18, 24, 25, 26, 27, 32, 35, 36, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 56, 58, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 80, 81, 84, 91, 99, 101, 102, 103, 106, 107, 108, 109, 110, 111, 112, 116, 117, 118, 123, 125, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 153, 154, 157, 159, 160, 161, 162, 163, 170, 172, 175, 176, 180, 182, 185, 190, 192, 193, 195, 197, 199, 203, 214, 215, 219, 223, 224, 225, 226, 227, 228, 229, 235, 237, 242, 244, 246, 247, 254, 255, 258, 259, 264, 265, 266, 267, 274, 277, 278, 282, 285, 286, 287, 288, 289, 300, 304, 306, 309, 310, 312, 313, 314, 315, 318, 320, 323, 327, 332, 338, 339, 353, 354, 358, 361, 362, 365, 367, 368, 370, 372, 382, 391, 392, 397, 398, 399, 403, 409, 410, 415, 416, 417, 427, 428, 430, 431, 433, 435, 436, 438, 446, 449, 450, 451, 454, 455, 459, 460, 464, 471, 474, 478, 480, 489, 492, 495, 496, 500, 503, 510, 515, 518, 519, 520, 521, 522, 523, 524, 525, 526, 527, 528, 531, 533, 546, 550, 555, 557, 558, 1024, 1025, 1028, 1082, 1165, 1166, 1213, 4640, 4644, 4645, 4653, 4665, 4696, 4700, 4715, 4768, 4776, 8471, 8473, 8474, 8486, 8547, 8548, 8549, 8550, 8551, 8552, 8553, 8575, 8597, 8610, 8613, 8616, 8619)),
-                                ),
-                            ),
-                            UnionVariantSpec(
                                 name='none',
                                 codec='struct:B,B,B,B',
                                 fields=(
@@ -41311,7 +41535,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(98,)),
+                                    ConditionSpec(field='function', operator='in', values=(1, 5, 6, 8, 10, 11, 12, 14, 18, 24, 25, 26, 27, 32, 35, 36, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 56, 58, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 80, 81, 84, 91, 99, 101, 102, 103, 106, 107, 108, 109, 110, 111, 112, 116, 117, 118, 123, 125, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 153, 154, 157, 159, 160, 161, 162, 163, 170, 172, 175, 176, 180, 182, 185, 190, 192, 193, 195, 197, 199, 203, 214, 215, 219, 223, 224, 225, 226, 227, 228, 229, 235, 237, 242, 244, 246, 247, 254, 255, 258, 259, 264, 265, 266, 267, 274, 277, 278, 282, 285, 286, 287, 288, 289, 300, 304, 306, 309, 310, 312, 313, 314, 315, 318, 320, 323, 327, 332, 338, 339, 353, 354, 358, 361, 362, 365, 367, 368, 370, 372, 382, 391, 392, 397, 398, 399, 403, 409, 410, 415, 416, 417, 427, 428, 430, 431, 433, 435, 436, 438, 446, 449, 450, 451, 454, 455, 459, 460, 464, 471, 474, 478, 480, 489, 492, 495, 496, 500, 503, 510, 515, 518, 519, 520, 521, 522, 523, 524, 525, 526, 527, 528, 531, 533, 546, 550, 555, 557, 558, 1024, 1025, 1028, 1082, 1165, 1166, 1213, 4640, 4644, 4645, 4653, 4665, 4696, 4700, 4715, 4768, 4776, 8471, 8473, 8474, 8486, 8547, 8548, 8549, 8550, 8551, 8552, 8553, 8575, 8597, 8610, 8613, 8616, 8619)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -41325,7 +41549,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(59,)),
+                                    ConditionSpec(field='function', operator='in', values=(98,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -41339,7 +41563,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(53, 79)),
+                                    ConditionSpec(field='function', operator='in', values=(59,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -41353,18 +41577,33 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
+                                    ConditionSpec(field='function', operator='in', values=(53, 79)),
+                                ),
+                            ),
+                            UnionVariantSpec(
+                                name='vats_value_param',
+                                codec='struct:I',
+                                fields=(
+                                    FieldSpec(
+                                        name='vats_value_param_vats_value_param',
+                                        kind='uint32',
+                                        authoring_label='VATS Value Param VATS Value Param',
+                                        notes='width-preserving union fallback for wbConditionVATSValueParam',
+                                    ),
+                                ),
+                                conditions=(
                                     ConditionSpec(field='function', operator='in', values=(408,)),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='creature_type',
+                                name='crime_type',
                                 codec='uint32',
                                 fields=(
                                     FieldSpec(
-                                        name='creature_type_creature_type',
+                                        name='crime_type_crime_type',
                                         kind='uint32',
-                                        enum_ref='creature_type_enum',
-                                        authoring_label='Creature Type Creature Type',
+                                        enum_ref='crime_type_enum',
+                                        authoring_label='Crime Type Crime Type',
                                     ),
                                 ),
                                 conditions=(
@@ -41372,14 +41611,14 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='equip_type',
+                                name='form_type',
                                 codec='uint32',
                                 fields=(
                                     FieldSpec(
-                                        name='equip_type_equip_type',
+                                        name='form_type_form_type',
                                         kind='uint32',
-                                        enum_ref='equip_type_enum',
-                                        authoring_label='Equip Type Equip Type',
+                                        enum_ref='form_type_enum',
+                                        authoring_label='Form Type Form Type',
                                     ),
                                 ),
                                 conditions=(
@@ -41387,32 +41626,30 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='vats_value_function',
-                                codec='uint32',
+                                name='actor',
+                                codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='vats_value_function_vats_value_function',
-                                        kind='uint32',
-                                        enum_ref='vats_value_function_enum',
-                                        authoring_label='VATS Value Function VATS Value Function',
+                                        name='actor_actor',
+                                        kind='formid',
+                                        formlink_targets=('ACHR', 'ACRE', 'PLYR', 'TRGT'),
+                                        authoring_label='Actor Actor',
                                     ),
                                 ),
                                 conditions=(
                                     ConditionSpec(field='function', operator='in', values=(60,)),
-                                    ConditionSpec(field='type', operator='bit_unset', value=2),
-                                    ConditionSpec(field='type', operator='bit_unset', value=8),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='encounter_zone',
+                                name='faction',
                                 codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='encounter_zone_encounter_zone',
+                                        name='faction_faction',
                                         kind='formid',
-                                        formlink_target='ECZN',
-                                        formlink_targets=('ECZN',),
-                                        authoring_label='Encounter Zone Encounter Zone',
+                                        formlink_target='FACT',
+                                        formlink_targets=('FACT',),
+                                        authoring_label='Faction Faction',
                                     ),
                                 ),
                                 conditions=(
@@ -41420,15 +41657,15 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='note',
+                                name='owner',
                                 codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='note_note',
+                                        name='owner_owner',
                                         kind='formid',
-                                        formlink_target='NOTE',
-                                        formlink_targets=('NOTE',),
-                                        authoring_label='Note Note',
+                                        formlink_targets=('FACT', 'NPC_'),
+                                        null_allowed=True,
+                                        authoring_label='Owner Owner',
                                     ),
                                 ),
                                 conditions=(
@@ -41436,21 +41673,18 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='race',
+                                name='reference',
                                 codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='race_race',
+                                        name='reference_reference',
                                         kind='formid',
-                                        formlink_target='RACE',
-                                        formlink_targets=('RACE',),
-                                        authoring_label='Race Race',
+                                        formlink_targets=('ACHR', 'ACRE', 'PBEA', 'PGRE', 'PLYR', 'PMIS', 'REFR', 'TRGT'),
+                                        authoring_label='Reference Reference',
                                     ),
                                 ),
                                 conditions=(
                                     ConditionSpec(field='function', operator='in', values=(230,)),
-                                    ConditionSpec(field='type', operator='bit_unset', value=2),
-                                    ConditionSpec(field='type', operator='bit_unset', value=8),
                                 ),
                             ),
                         ),
@@ -45903,7 +46137,7 @@ def build_schema() -> GameSchema:
                                 name='unnamed',
                                 codec='uint32',
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(5, 12, 18, 24, 25, 26, 35, 39, 40, 41, 46, 48, 49, 50, 61, 62, 63, 64, 65, 75, 77, 80, 81, 91, 101, 102, 103, 106, 107, 108, 110, 111, 112, 116, 117, 118, 123, 125, 127, 128, 133, 134, 135, 141, 142, 143, 144, 145, 146, 147, 148, 150, 153, 154, 157, 159, 160, 170, 175, 176, 185, 190, 192, 203, 215, 219, 224, 225, 226, 227, 229, 235, 237, 242, 244, 254, 255, 258, 259, 264, 265, 266, 267, 274, 282, 285, 286, 287, 288, 289, 300, 304, 306, 309, 310, 313, 314, 315, 318, 320, 323, 327, 332, 338, 339, 353, 354, 358, 361, 362, 365, 367, 391, 392, 397, 403, 416, 417, 428, 430, 431, 435, 436, 454, 455, 459, 460, 471, 489, 492, 496, 500, 503, 510, 522, 523, 524, 533, 550, 557, 558, 1024, 1025, 1213, 4644, 4645, 4653, 4665, 4696, 4768, 8471, 8473, 8474, 8486, 8548, 8549, 8550, 8551, 8552, 8553, 8597)),
+                                    ConditionSpec(field='function', operator='in', values=(310,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -45932,22 +46166,21 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(98, 1082, 1166, 8547, 8610, 8613, 8616, 8619)),
+                                    ConditionSpec(field='function', operator='in', values=(5, 12, 18, 24, 25, 26, 35, 39, 40, 41, 46, 48, 49, 50, 61, 62, 63, 64, 65, 75, 77, 80, 81, 91, 101, 102, 103, 106, 107, 108, 110, 111, 112, 116, 117, 118, 123, 125, 127, 128, 133, 134, 135, 141, 142, 143, 144, 145, 146, 147, 148, 150, 153, 154, 157, 159, 160, 170, 175, 176, 185, 190, 192, 203, 215, 219, 224, 225, 226, 227, 229, 235, 237, 242, 244, 254, 255, 258, 259, 264, 265, 266, 267, 274, 282, 285, 286, 287, 288, 289, 300, 304, 306, 309, 313, 314, 315, 318, 320, 323, 327, 332, 338, 339, 353, 354, 358, 361, 362, 365, 367, 391, 392, 397, 403, 416, 417, 428, 430, 431, 435, 436, 454, 455, 459, 460, 471, 489, 492, 496, 500, 503, 510, 522, 523, 524, 533, 550, 557, 558, 1024, 1025, 1213, 4644, 4645, 4653, 4665, 4696, 4768, 8471, 8473, 8474, 8486, 8548, 8549, 8550, 8551, 8552, 8553, 8597)),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='vats_value_param',
-                                codec='struct:I',
+                                name='integer',
+                                codec='int32',
                                 fields=(
                                     FieldSpec(
-                                        name='vats_value_param_vats_value_param',
-                                        kind='uint32',
-                                        authoring_label='VATS Value Param VATS Value Param',
-                                        notes='width-preserving union fallback for wbConditionVATSValueParam',
+                                        name='integer_integer',
+                                        kind='int32',
+                                        authoring_label='Integer Integer',
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(14, 109, 277, 495)),
+                                    ConditionSpec(field='function', operator='in', values=(98, 1082, 1166, 8547, 8610, 8613, 8616, 8619)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -45962,7 +46195,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(474,)),
+                                    ConditionSpec(field='function', operator='in', values=(14, 109, 277, 495)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -45977,7 +46210,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(6, 8, 10, 11)),
+                                    ConditionSpec(field='function', operator='in', values=(474,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -45992,7 +46225,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(398,)),
+                                    ConditionSpec(field='function', operator='in', values=(6, 8, 10, 11)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -46007,22 +46240,22 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(438,)),
+                                    ConditionSpec(field='function', operator='in', values=(398,)),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='crime_type',
+                                name='creature_type',
                                 codec='uint32',
                                 fields=(
                                     FieldSpec(
-                                        name='crime_type_crime_type',
+                                        name='creature_type_creature_type',
                                         kind='uint32',
-                                        enum_ref='crime_type_enum',
-                                        authoring_label='Crime Type Crime Type',
+                                        enum_ref='creature_type_enum',
+                                        authoring_label='Creature Type Creature Type',
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(531,)),
+                                    ConditionSpec(field='function', operator='in', values=(438,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -46037,7 +46270,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(480,)),
+                                    ConditionSpec(field='function', operator='in', values=(531,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -46052,7 +46285,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(247, 433)),
+                                    ConditionSpec(field='function', operator='in', values=(480,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -46067,7 +46300,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(36,)),
+                                    ConditionSpec(field='function', operator='in', values=(247, 433)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -46081,7 +46314,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(312,)),
+                                    ConditionSpec(field='function', operator='in', values=(36,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -46096,7 +46329,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(368,)),
+                                    ConditionSpec(field='function', operator='in', values=(312,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -46111,7 +46344,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(70, 131)),
+                                    ConditionSpec(field='function', operator='in', values=(368,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -46126,7 +46359,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(408,)),
+                                    ConditionSpec(field='function', operator='in', values=(70, 131)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -46141,7 +46374,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(42, 43, 44, 45, 66, 76, 122, 172, 180, 370, 409, 450, 478, 515, 4640)),
+                                    ConditionSpec(field='function', operator='in', values=(408,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -46156,7 +46389,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(84,)),
+                                    ConditionSpec(field='function', operator='in', values=(42, 43, 44, 45, 66, 76, 122, 172, 180, 370, 409, 450, 478, 515, 4640)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -46171,7 +46404,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(214,)),
+                                    ConditionSpec(field='function', operator='in', values=(84,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -46187,7 +46420,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(72, 246)),
+                                    ConditionSpec(field='function', operator='in', values=(214,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -46201,7 +46434,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(67, 230, 280)),
+                                    ConditionSpec(field='function', operator='in', values=(72, 246)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -46217,7 +46450,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(68, 129, 228)),
+                                    ConditionSpec(field='function', operator='in', values=(67, 230, 280)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -46233,7 +46466,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(223, 555, 4715)),
+                                    ConditionSpec(field='function', operator='in', values=(68, 129, 228)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -46248,7 +46481,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(446,)),
+                                    ConditionSpec(field='function', operator='in', values=(223, 555, 4715)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -46264,7 +46497,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(60, 71, 73, 132, 193, 195, 197, 199, 411)),
+                                    ConditionSpec(field='function', operator='in', values=(446,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -46280,7 +46513,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(372, 399, 410, 8571)),
+                                    ConditionSpec(field='function', operator='in', values=(60, 71, 73, 132, 193, 195, 197, 199, 411)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -46296,7 +46529,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(163,)),
+                                    ConditionSpec(field='function', operator='in', values=(372, 399, 410, 8571)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -46311,7 +46544,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(74,)),
+                                    ConditionSpec(field='function', operator='in', values=(163,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -46327,7 +46560,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(451, 4700)),
+                                    ConditionSpec(field='function', operator='in', values=(74,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -46343,7 +46576,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(47, 182, 1028, 1165)),
+                                    ConditionSpec(field='function', operator='in', values=(451, 4700)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -46358,7 +46591,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(382, 8575)),
+                                    ConditionSpec(field='function', operator='in', values=(47, 182, 1028, 1165)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -46374,7 +46607,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(278,)),
+                                    ConditionSpec(field='function', operator='in', values=(382, 8575)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -46390,7 +46623,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(161,)),
+                                    ConditionSpec(field='function', operator='in', values=(278,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -46406,7 +46639,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(449,)),
+                                    ConditionSpec(field='function', operator='in', values=(161,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -46422,7 +46655,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(56, 58, 59, 79, 546, 4776)),
+                                    ConditionSpec(field='function', operator='in', values=(449,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -46438,7 +46671,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(69, 130)),
+                                    ConditionSpec(field='function', operator='in', values=(56, 58, 59, 79, 546, 4776)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -46454,7 +46687,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(1, 27, 32, 53, 99, 136, 162, 415, 464, 518, 519, 520, 521, 525, 526, 527, 528)),
+                                    ConditionSpec(field='function', operator='in', values=(69, 130)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -46469,19 +46702,35 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
+                                    ConditionSpec(field='function', operator='in', values=(1, 27, 32, 53, 99, 136, 162, 415, 464, 518, 519, 520, 521, 525, 526, 527, 528)),
+                                ),
+                            ),
+                            UnionVariantSpec(
+                                name='voice_type',
+                                codec='formid',
+                                fields=(
+                                    FieldSpec(
+                                        name='voice_type_voice_type',
+                                        kind='formid',
+                                        formlink_target='VTYP',
+                                        formlink_targets=('VTYP',),
+                                        authoring_label='Voice Type Voice Type',
+                                    ),
+                                ),
+                                conditions=(
                                     ConditionSpec(field='function', operator='in', values=(427,)),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='weapon',
+                                name='weather',
                                 codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='weapon_weapon',
+                                        name='weather_weather',
                                         kind='formid',
-                                        formlink_target='WEAP',
-                                        formlink_targets=('WEAP',),
-                                        authoring_label='Weapon Weapon',
+                                        formlink_target='WTHR',
+                                        formlink_targets=('WTHR',),
+                                        authoring_label='Weather Weather',
                                     ),
                                 ),
                                 conditions=(
@@ -46504,13 +46753,6 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='unnamed',
-                                codec='uint32',
-                                conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(1, 5, 6, 8, 10, 11, 12, 14, 18, 24, 25, 26, 27, 32, 35, 36, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 56, 58, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 80, 81, 84, 91, 99, 101, 102, 103, 106, 107, 108, 109, 110, 111, 112, 116, 117, 118, 123, 125, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 153, 154, 157, 159, 160, 161, 162, 163, 170, 172, 175, 176, 180, 182, 185, 190, 192, 193, 195, 197, 199, 203, 214, 215, 219, 223, 224, 225, 226, 227, 228, 229, 235, 237, 242, 244, 246, 247, 254, 255, 258, 259, 264, 265, 266, 267, 274, 277, 278, 282, 285, 286, 287, 288, 289, 300, 304, 306, 309, 310, 312, 313, 314, 315, 318, 320, 323, 327, 332, 338, 339, 353, 354, 358, 361, 362, 365, 367, 368, 370, 372, 382, 391, 392, 397, 398, 399, 403, 409, 410, 415, 416, 417, 427, 428, 430, 431, 433, 435, 436, 438, 446, 449, 450, 451, 454, 455, 459, 460, 464, 471, 474, 478, 480, 489, 492, 495, 496, 500, 503, 510, 515, 518, 519, 520, 521, 522, 523, 524, 525, 526, 527, 528, 531, 533, 546, 550, 555, 557, 558, 1024, 1025, 1028, 1082, 1165, 1166, 1213, 4640, 4644, 4645, 4653, 4665, 4696, 4700, 4715, 4768, 4776, 8471, 8473, 8474, 8486, 8547, 8548, 8549, 8550, 8551, 8552, 8553, 8575, 8597, 8610, 8613, 8616, 8619)),
-                                ),
-                            ),
-                            UnionVariantSpec(
                                 name='none',
                                 codec='struct:B,B,B,B',
                                 fields=(
@@ -46536,7 +46778,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(98,)),
+                                    ConditionSpec(field='function', operator='in', values=(1, 5, 6, 8, 10, 11, 12, 14, 18, 24, 25, 26, 27, 32, 35, 36, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 56, 58, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 80, 81, 84, 91, 99, 101, 102, 103, 106, 107, 108, 109, 110, 111, 112, 116, 117, 118, 123, 125, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 153, 154, 157, 159, 160, 161, 162, 163, 170, 172, 175, 176, 180, 182, 185, 190, 192, 193, 195, 197, 199, 203, 214, 215, 219, 223, 224, 225, 226, 227, 228, 229, 235, 237, 242, 244, 246, 247, 254, 255, 258, 259, 264, 265, 266, 267, 274, 277, 278, 282, 285, 286, 287, 288, 289, 300, 304, 306, 309, 310, 312, 313, 314, 315, 318, 320, 323, 327, 332, 338, 339, 353, 354, 358, 361, 362, 365, 367, 368, 370, 372, 382, 391, 392, 397, 398, 399, 403, 409, 410, 415, 416, 417, 427, 428, 430, 431, 433, 435, 436, 438, 446, 449, 450, 451, 454, 455, 459, 460, 464, 471, 474, 478, 480, 489, 492, 495, 496, 500, 503, 510, 515, 518, 519, 520, 521, 522, 523, 524, 525, 526, 527, 528, 531, 533, 546, 550, 555, 557, 558, 1024, 1025, 1028, 1082, 1165, 1166, 1213, 4640, 4644, 4645, 4653, 4665, 4696, 4700, 4715, 4768, 4776, 8471, 8473, 8474, 8486, 8547, 8548, 8549, 8550, 8551, 8552, 8553, 8575, 8597, 8610, 8613, 8616, 8619)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -46550,7 +46792,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(59,)),
+                                    ConditionSpec(field='function', operator='in', values=(98,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -46564,7 +46806,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(53, 79)),
+                                    ConditionSpec(field='function', operator='in', values=(59,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -46578,18 +46820,33 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
+                                    ConditionSpec(field='function', operator='in', values=(53, 79)),
+                                ),
+                            ),
+                            UnionVariantSpec(
+                                name='vats_value_param',
+                                codec='struct:I',
+                                fields=(
+                                    FieldSpec(
+                                        name='vats_value_param_vats_value_param',
+                                        kind='uint32',
+                                        authoring_label='VATS Value Param VATS Value Param',
+                                        notes='width-preserving union fallback for wbConditionVATSValueParam',
+                                    ),
+                                ),
+                                conditions=(
                                     ConditionSpec(field='function', operator='in', values=(408,)),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='creature_type',
+                                name='crime_type',
                                 codec='uint32',
                                 fields=(
                                     FieldSpec(
-                                        name='creature_type_creature_type',
+                                        name='crime_type_crime_type',
                                         kind='uint32',
-                                        enum_ref='creature_type_enum',
-                                        authoring_label='Creature Type Creature Type',
+                                        enum_ref='crime_type_enum',
+                                        authoring_label='Crime Type Crime Type',
                                     ),
                                 ),
                                 conditions=(
@@ -46597,14 +46854,14 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='equip_type',
+                                name='form_type',
                                 codec='uint32',
                                 fields=(
                                     FieldSpec(
-                                        name='equip_type_equip_type',
+                                        name='form_type_form_type',
                                         kind='uint32',
-                                        enum_ref='equip_type_enum',
-                                        authoring_label='Equip Type Equip Type',
+                                        enum_ref='form_type_enum',
+                                        authoring_label='Form Type Form Type',
                                     ),
                                 ),
                                 conditions=(
@@ -46612,32 +46869,30 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='vats_value_function',
-                                codec='uint32',
+                                name='actor',
+                                codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='vats_value_function_vats_value_function',
-                                        kind='uint32',
-                                        enum_ref='vats_value_function_enum',
-                                        authoring_label='VATS Value Function VATS Value Function',
+                                        name='actor_actor',
+                                        kind='formid',
+                                        formlink_targets=('ACHR', 'ACRE', 'PLYR', 'TRGT'),
+                                        authoring_label='Actor Actor',
                                     ),
                                 ),
                                 conditions=(
                                     ConditionSpec(field='function', operator='in', values=(60,)),
-                                    ConditionSpec(field='type', operator='bit_unset', value=2),
-                                    ConditionSpec(field='type', operator='bit_unset', value=8),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='encounter_zone',
+                                name='faction',
                                 codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='encounter_zone_encounter_zone',
+                                        name='faction_faction',
                                         kind='formid',
-                                        formlink_target='ECZN',
-                                        formlink_targets=('ECZN',),
-                                        authoring_label='Encounter Zone Encounter Zone',
+                                        formlink_target='FACT',
+                                        formlink_targets=('FACT',),
+                                        authoring_label='Faction Faction',
                                     ),
                                 ),
                                 conditions=(
@@ -46645,15 +46900,15 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='note',
+                                name='owner',
                                 codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='note_note',
+                                        name='owner_owner',
                                         kind='formid',
-                                        formlink_target='NOTE',
-                                        formlink_targets=('NOTE',),
-                                        authoring_label='Note Note',
+                                        formlink_targets=('FACT', 'NPC_'),
+                                        null_allowed=True,
+                                        authoring_label='Owner Owner',
                                     ),
                                 ),
                                 conditions=(
@@ -46661,21 +46916,18 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='race',
+                                name='reference',
                                 codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='race_race',
+                                        name='reference_reference',
                                         kind='formid',
-                                        formlink_target='RACE',
-                                        formlink_targets=('RACE',),
-                                        authoring_label='Race Race',
+                                        formlink_targets=('ACHR', 'ACRE', 'PBEA', 'PGRE', 'PLYR', 'PMIS', 'REFR', 'TRGT'),
+                                        authoring_label='Reference Reference',
                                     ),
                                 ),
                                 conditions=(
                                     ConditionSpec(field='function', operator='in', values=(230,)),
-                                    ConditionSpec(field='type', operator='bit_unset', value=2),
-                                    ConditionSpec(field='type', operator='bit_unset', value=8),
                                 ),
                             ),
                         ),
@@ -48128,7 +48380,7 @@ def build_schema() -> GameSchema:
                                 name='unnamed',
                                 codec='uint32',
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(5, 12, 18, 24, 25, 26, 35, 39, 40, 41, 46, 48, 49, 50, 61, 62, 63, 64, 65, 75, 77, 80, 81, 91, 101, 102, 103, 106, 107, 108, 110, 111, 112, 116, 117, 118, 123, 125, 127, 128, 133, 134, 135, 141, 142, 143, 144, 145, 146, 147, 148, 150, 153, 154, 157, 159, 160, 170, 175, 176, 185, 190, 192, 203, 215, 219, 224, 225, 226, 227, 229, 235, 237, 242, 244, 254, 255, 258, 259, 264, 265, 266, 267, 274, 282, 285, 286, 287, 288, 289, 300, 304, 306, 309, 310, 313, 314, 315, 318, 320, 323, 327, 332, 338, 339, 353, 354, 358, 361, 362, 365, 367, 391, 392, 397, 403, 416, 417, 428, 430, 431, 435, 436, 454, 455, 459, 460, 471, 489, 492, 496, 500, 503, 510, 522, 523, 524, 533, 550, 557, 558, 1024, 1025, 1213, 4644, 4645, 4653, 4665, 4696, 4768, 8471, 8473, 8474, 8486, 8548, 8549, 8550, 8551, 8552, 8553, 8597)),
+                                    ConditionSpec(field='function', operator='in', values=(310,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -48157,22 +48409,21 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(98, 1082, 1166, 8547, 8610, 8613, 8616, 8619)),
+                                    ConditionSpec(field='function', operator='in', values=(5, 12, 18, 24, 25, 26, 35, 39, 40, 41, 46, 48, 49, 50, 61, 62, 63, 64, 65, 75, 77, 80, 81, 91, 101, 102, 103, 106, 107, 108, 110, 111, 112, 116, 117, 118, 123, 125, 127, 128, 133, 134, 135, 141, 142, 143, 144, 145, 146, 147, 148, 150, 153, 154, 157, 159, 160, 170, 175, 176, 185, 190, 192, 203, 215, 219, 224, 225, 226, 227, 229, 235, 237, 242, 244, 254, 255, 258, 259, 264, 265, 266, 267, 274, 282, 285, 286, 287, 288, 289, 300, 304, 306, 309, 313, 314, 315, 318, 320, 323, 327, 332, 338, 339, 353, 354, 358, 361, 362, 365, 367, 391, 392, 397, 403, 416, 417, 428, 430, 431, 435, 436, 454, 455, 459, 460, 471, 489, 492, 496, 500, 503, 510, 522, 523, 524, 533, 550, 557, 558, 1024, 1025, 1213, 4644, 4645, 4653, 4665, 4696, 4768, 8471, 8473, 8474, 8486, 8548, 8549, 8550, 8551, 8552, 8553, 8597)),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='vats_value_param',
-                                codec='struct:I',
+                                name='integer',
+                                codec='int32',
                                 fields=(
                                     FieldSpec(
-                                        name='vats_value_param_vats_value_param',
-                                        kind='uint32',
-                                        authoring_label='VATS Value Param VATS Value Param',
-                                        notes='width-preserving union fallback for wbConditionVATSValueParam',
+                                        name='integer_integer',
+                                        kind='int32',
+                                        authoring_label='Integer Integer',
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(14, 109, 277, 495)),
+                                    ConditionSpec(field='function', operator='in', values=(98, 1082, 1166, 8547, 8610, 8613, 8616, 8619)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -48187,7 +48438,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(474,)),
+                                    ConditionSpec(field='function', operator='in', values=(14, 109, 277, 495)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -48202,7 +48453,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(6, 8, 10, 11)),
+                                    ConditionSpec(field='function', operator='in', values=(474,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -48217,7 +48468,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(398,)),
+                                    ConditionSpec(field='function', operator='in', values=(6, 8, 10, 11)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -48232,22 +48483,22 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(438,)),
+                                    ConditionSpec(field='function', operator='in', values=(398,)),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='crime_type',
+                                name='creature_type',
                                 codec='uint32',
                                 fields=(
                                     FieldSpec(
-                                        name='crime_type_crime_type',
+                                        name='creature_type_creature_type',
                                         kind='uint32',
-                                        enum_ref='crime_type_enum',
-                                        authoring_label='Crime Type Crime Type',
+                                        enum_ref='creature_type_enum',
+                                        authoring_label='Creature Type Creature Type',
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(531,)),
+                                    ConditionSpec(field='function', operator='in', values=(438,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -48262,7 +48513,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(480,)),
+                                    ConditionSpec(field='function', operator='in', values=(531,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -48277,7 +48528,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(247, 433)),
+                                    ConditionSpec(field='function', operator='in', values=(480,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -48292,7 +48543,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(36,)),
+                                    ConditionSpec(field='function', operator='in', values=(247, 433)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -48306,7 +48557,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(312,)),
+                                    ConditionSpec(field='function', operator='in', values=(36,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -48321,7 +48572,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(368,)),
+                                    ConditionSpec(field='function', operator='in', values=(312,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -48336,7 +48587,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(70, 131)),
+                                    ConditionSpec(field='function', operator='in', values=(368,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -48351,7 +48602,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(408,)),
+                                    ConditionSpec(field='function', operator='in', values=(70, 131)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -48366,7 +48617,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(42, 43, 44, 45, 66, 76, 122, 172, 180, 370, 409, 450, 478, 515, 4640)),
+                                    ConditionSpec(field='function', operator='in', values=(408,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -48381,7 +48632,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(84,)),
+                                    ConditionSpec(field='function', operator='in', values=(42, 43, 44, 45, 66, 76, 122, 172, 180, 370, 409, 450, 478, 515, 4640)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -48396,7 +48647,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(214,)),
+                                    ConditionSpec(field='function', operator='in', values=(84,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -48412,7 +48663,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(72, 246)),
+                                    ConditionSpec(field='function', operator='in', values=(214,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -48426,7 +48677,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(67, 230, 280)),
+                                    ConditionSpec(field='function', operator='in', values=(72, 246)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -48442,7 +48693,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(68, 129, 228)),
+                                    ConditionSpec(field='function', operator='in', values=(67, 230, 280)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -48458,7 +48709,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(223, 555, 4715)),
+                                    ConditionSpec(field='function', operator='in', values=(68, 129, 228)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -48473,7 +48724,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(446,)),
+                                    ConditionSpec(field='function', operator='in', values=(223, 555, 4715)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -48489,7 +48740,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(60, 71, 73, 132, 193, 195, 197, 199, 411)),
+                                    ConditionSpec(field='function', operator='in', values=(446,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -48505,7 +48756,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(372, 399, 410, 8571)),
+                                    ConditionSpec(field='function', operator='in', values=(60, 71, 73, 132, 193, 195, 197, 199, 411)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -48521,7 +48772,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(163,)),
+                                    ConditionSpec(field='function', operator='in', values=(372, 399, 410, 8571)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -48536,7 +48787,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(74,)),
+                                    ConditionSpec(field='function', operator='in', values=(163,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -48552,7 +48803,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(451, 4700)),
+                                    ConditionSpec(field='function', operator='in', values=(74,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -48568,7 +48819,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(47, 182, 1028, 1165)),
+                                    ConditionSpec(field='function', operator='in', values=(451, 4700)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -48583,7 +48834,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(382, 8575)),
+                                    ConditionSpec(field='function', operator='in', values=(47, 182, 1028, 1165)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -48599,7 +48850,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(278,)),
+                                    ConditionSpec(field='function', operator='in', values=(382, 8575)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -48615,7 +48866,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(161,)),
+                                    ConditionSpec(field='function', operator='in', values=(278,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -48631,7 +48882,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(449,)),
+                                    ConditionSpec(field='function', operator='in', values=(161,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -48647,7 +48898,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(56, 58, 59, 79, 546, 4776)),
+                                    ConditionSpec(field='function', operator='in', values=(449,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -48663,7 +48914,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(69, 130)),
+                                    ConditionSpec(field='function', operator='in', values=(56, 58, 59, 79, 546, 4776)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -48679,7 +48930,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(1, 27, 32, 53, 99, 136, 162, 415, 464, 518, 519, 520, 521, 525, 526, 527, 528)),
+                                    ConditionSpec(field='function', operator='in', values=(69, 130)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -48694,19 +48945,35 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
+                                    ConditionSpec(field='function', operator='in', values=(1, 27, 32, 53, 99, 136, 162, 415, 464, 518, 519, 520, 521, 525, 526, 527, 528)),
+                                ),
+                            ),
+                            UnionVariantSpec(
+                                name='voice_type',
+                                codec='formid',
+                                fields=(
+                                    FieldSpec(
+                                        name='voice_type_voice_type',
+                                        kind='formid',
+                                        formlink_target='VTYP',
+                                        formlink_targets=('VTYP',),
+                                        authoring_label='Voice Type Voice Type',
+                                    ),
+                                ),
+                                conditions=(
                                     ConditionSpec(field='function', operator='in', values=(427,)),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='weapon',
+                                name='weather',
                                 codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='weapon_weapon',
+                                        name='weather_weather',
                                         kind='formid',
-                                        formlink_target='WEAP',
-                                        formlink_targets=('WEAP',),
-                                        authoring_label='Weapon Weapon',
+                                        formlink_target='WTHR',
+                                        formlink_targets=('WTHR',),
+                                        authoring_label='Weather Weather',
                                     ),
                                 ),
                                 conditions=(
@@ -48729,13 +48996,6 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='unnamed',
-                                codec='uint32',
-                                conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(1, 5, 6, 8, 10, 11, 12, 14, 18, 24, 25, 26, 27, 32, 35, 36, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 56, 58, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 80, 81, 84, 91, 99, 101, 102, 103, 106, 107, 108, 109, 110, 111, 112, 116, 117, 118, 123, 125, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 153, 154, 157, 159, 160, 161, 162, 163, 170, 172, 175, 176, 180, 182, 185, 190, 192, 193, 195, 197, 199, 203, 214, 215, 219, 223, 224, 225, 226, 227, 228, 229, 235, 237, 242, 244, 246, 247, 254, 255, 258, 259, 264, 265, 266, 267, 274, 277, 278, 282, 285, 286, 287, 288, 289, 300, 304, 306, 309, 310, 312, 313, 314, 315, 318, 320, 323, 327, 332, 338, 339, 353, 354, 358, 361, 362, 365, 367, 368, 370, 372, 382, 391, 392, 397, 398, 399, 403, 409, 410, 415, 416, 417, 427, 428, 430, 431, 433, 435, 436, 438, 446, 449, 450, 451, 454, 455, 459, 460, 464, 471, 474, 478, 480, 489, 492, 495, 496, 500, 503, 510, 515, 518, 519, 520, 521, 522, 523, 524, 525, 526, 527, 528, 531, 533, 546, 550, 555, 557, 558, 1024, 1025, 1028, 1082, 1165, 1166, 1213, 4640, 4644, 4645, 4653, 4665, 4696, 4700, 4715, 4768, 4776, 8471, 8473, 8474, 8486, 8547, 8548, 8549, 8550, 8551, 8552, 8553, 8575, 8597, 8610, 8613, 8616, 8619)),
-                                ),
-                            ),
-                            UnionVariantSpec(
                                 name='none',
                                 codec='struct:B,B,B,B',
                                 fields=(
@@ -48761,7 +49021,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(98,)),
+                                    ConditionSpec(field='function', operator='in', values=(1, 5, 6, 8, 10, 11, 12, 14, 18, 24, 25, 26, 27, 32, 35, 36, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 56, 58, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 80, 81, 84, 91, 99, 101, 102, 103, 106, 107, 108, 109, 110, 111, 112, 116, 117, 118, 123, 125, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 153, 154, 157, 159, 160, 161, 162, 163, 170, 172, 175, 176, 180, 182, 185, 190, 192, 193, 195, 197, 199, 203, 214, 215, 219, 223, 224, 225, 226, 227, 228, 229, 235, 237, 242, 244, 246, 247, 254, 255, 258, 259, 264, 265, 266, 267, 274, 277, 278, 282, 285, 286, 287, 288, 289, 300, 304, 306, 309, 310, 312, 313, 314, 315, 318, 320, 323, 327, 332, 338, 339, 353, 354, 358, 361, 362, 365, 367, 368, 370, 372, 382, 391, 392, 397, 398, 399, 403, 409, 410, 415, 416, 417, 427, 428, 430, 431, 433, 435, 436, 438, 446, 449, 450, 451, 454, 455, 459, 460, 464, 471, 474, 478, 480, 489, 492, 495, 496, 500, 503, 510, 515, 518, 519, 520, 521, 522, 523, 524, 525, 526, 527, 528, 531, 533, 546, 550, 555, 557, 558, 1024, 1025, 1028, 1082, 1165, 1166, 1213, 4640, 4644, 4645, 4653, 4665, 4696, 4700, 4715, 4768, 4776, 8471, 8473, 8474, 8486, 8547, 8548, 8549, 8550, 8551, 8552, 8553, 8575, 8597, 8610, 8613, 8616, 8619)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -48775,7 +49035,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(59,)),
+                                    ConditionSpec(field='function', operator='in', values=(98,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -48789,7 +49049,7 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
-                                    ConditionSpec(field='function', operator='in', values=(53, 79)),
+                                    ConditionSpec(field='function', operator='in', values=(59,)),
                                 ),
                             ),
                             UnionVariantSpec(
@@ -48803,18 +49063,33 @@ def build_schema() -> GameSchema:
                                     ),
                                 ),
                                 conditions=(
+                                    ConditionSpec(field='function', operator='in', values=(53, 79)),
+                                ),
+                            ),
+                            UnionVariantSpec(
+                                name='vats_value_param',
+                                codec='struct:I',
+                                fields=(
+                                    FieldSpec(
+                                        name='vats_value_param_vats_value_param',
+                                        kind='uint32',
+                                        authoring_label='VATS Value Param VATS Value Param',
+                                        notes='width-preserving union fallback for wbConditionVATSValueParam',
+                                    ),
+                                ),
+                                conditions=(
                                     ConditionSpec(field='function', operator='in', values=(408,)),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='creature_type',
+                                name='crime_type',
                                 codec='uint32',
                                 fields=(
                                     FieldSpec(
-                                        name='creature_type_creature_type',
+                                        name='crime_type_crime_type',
                                         kind='uint32',
-                                        enum_ref='creature_type_enum',
-                                        authoring_label='Creature Type Creature Type',
+                                        enum_ref='crime_type_enum',
+                                        authoring_label='Crime Type Crime Type',
                                     ),
                                 ),
                                 conditions=(
@@ -48822,14 +49097,14 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='equip_type',
+                                name='form_type',
                                 codec='uint32',
                                 fields=(
                                     FieldSpec(
-                                        name='equip_type_equip_type',
+                                        name='form_type_form_type',
                                         kind='uint32',
-                                        enum_ref='equip_type_enum',
-                                        authoring_label='Equip Type Equip Type',
+                                        enum_ref='form_type_enum',
+                                        authoring_label='Form Type Form Type',
                                     ),
                                 ),
                                 conditions=(
@@ -48837,32 +49112,30 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='vats_value_function',
-                                codec='uint32',
+                                name='actor',
+                                codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='vats_value_function_vats_value_function',
-                                        kind='uint32',
-                                        enum_ref='vats_value_function_enum',
-                                        authoring_label='VATS Value Function VATS Value Function',
+                                        name='actor_actor',
+                                        kind='formid',
+                                        formlink_targets=('ACHR', 'ACRE', 'PLYR', 'TRGT'),
+                                        authoring_label='Actor Actor',
                                     ),
                                 ),
                                 conditions=(
                                     ConditionSpec(field='function', operator='in', values=(60,)),
-                                    ConditionSpec(field='type', operator='bit_unset', value=2),
-                                    ConditionSpec(field='type', operator='bit_unset', value=8),
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='encounter_zone',
+                                name='faction',
                                 codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='encounter_zone_encounter_zone',
+                                        name='faction_faction',
                                         kind='formid',
-                                        formlink_target='ECZN',
-                                        formlink_targets=('ECZN',),
-                                        authoring_label='Encounter Zone Encounter Zone',
+                                        formlink_target='FACT',
+                                        formlink_targets=('FACT',),
+                                        authoring_label='Faction Faction',
                                     ),
                                 ),
                                 conditions=(
@@ -48870,15 +49143,15 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='note',
+                                name='owner',
                                 codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='note_note',
+                                        name='owner_owner',
                                         kind='formid',
-                                        formlink_target='NOTE',
-                                        formlink_targets=('NOTE',),
-                                        authoring_label='Note Note',
+                                        formlink_targets=('FACT', 'NPC_'),
+                                        null_allowed=True,
+                                        authoring_label='Owner Owner',
                                     ),
                                 ),
                                 conditions=(
@@ -48886,21 +49159,18 @@ def build_schema() -> GameSchema:
                                 ),
                             ),
                             UnionVariantSpec(
-                                name='race',
+                                name='reference',
                                 codec='formid',
                                 fields=(
                                     FieldSpec(
-                                        name='race_race',
+                                        name='reference_reference',
                                         kind='formid',
-                                        formlink_target='RACE',
-                                        formlink_targets=('RACE',),
-                                        authoring_label='Race Race',
+                                        formlink_targets=('ACHR', 'ACRE', 'PBEA', 'PGRE', 'PLYR', 'PMIS', 'REFR', 'TRGT'),
+                                        authoring_label='Reference Reference',
                                     ),
                                 ),
                                 conditions=(
                                     ConditionSpec(field='function', operator='in', values=(230,)),
-                                    ConditionSpec(field='type', operator='bit_unset', value=2),
-                                    ConditionSpec(field='type', operator='bit_unset', value=8),
                                 ),
                             ),
                         ),

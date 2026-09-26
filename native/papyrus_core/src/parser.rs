@@ -167,26 +167,12 @@ impl Parser {
         }
     }
 
-    fn bump(&mut self) -> Token {
-        let t = self.tokens[self.pos].clone();
-        if !matches!(t.kind, TokenKind::Eof) {
-            self.pos += 1;
-        }
-        t
-    }
-
     fn at_eof(&self) -> bool {
         matches!(self.peek(), TokenKind::Eof)
     }
 
     fn skip_newlines(&mut self) {
         while matches!(self.peek(), TokenKind::Newline) {
-            self.pos += 1;
-        }
-    }
-
-    fn eat_newline(&mut self) {
-        if matches!(self.peek(), TokenKind::Newline) {
             self.pos += 1;
         }
     }
@@ -796,11 +782,20 @@ impl Parser {
     fn parse_event(&mut self) -> EventDef {
         let start = self.cur_pos();
         self.expect(&TokenKind::KwEvent, "`Event`");
-        // event_name: NAME ("." NAME)?
+        // event_name: NAME (":" NAME)* ("." NAME)?  — custom events of namespaced scripts,
+        // e.g. `Event B21:QuestTimer.QuestTimerEnded(...)`.
         let mut name = String::new();
         if let TokenKind::Name(n) = self.peek() {
             name.push_str(n);
             self.pos += 1;
+        }
+        while matches!(self.peek(), TokenKind::Colon) && matches!(self.peek_at(1), TokenKind::Name(_)) {
+            self.pos += 1;
+            if let TokenKind::Name(n) = self.peek() {
+                name.push(':');
+                name.push_str(n);
+                self.pos += 1;
+            }
         }
         if matches!(self.peek(), TokenKind::Dot) && matches!(self.peek_at(1), TokenKind::Name(_)) {
             self.pos += 1;
@@ -1702,7 +1697,7 @@ mod tests {
     fn parse_ok(text: &str) -> ScriptNode {
         let r = parse_script(text);
         if !r.errors.is_empty() {
-            panic!("unexpected errors: {:?}", r.errors);
+            panic!("unexpected errors for {text:?}: {:?}", r.errors);
         }
         r.ast.expect("expected AST")
     }
@@ -1715,213 +1710,102 @@ mod tests {
     }
 
     #[test]
-    fn parse_simple_script_header() {
-        let s = parse_ok("ScriptName Foo extends Bar\n");
-        assert_eq!(s.name, "Foo");
-        assert_eq!(s.parent.as_deref(), Some("Bar"));
-    }
-
-    #[test]
-    fn parse_native_hidden_flags() {
-        let s = parse_ok("Scriptname Game Native Hidden\n");
-        assert_eq!(s.name, "Game");
-        assert!(s.flags.iter().any(|f| f == "Native"));
-        assert!(s.flags.iter().any(|f| f == "Hidden"));
-    }
-
-    #[test]
-    fn parse_namespaced_script_name() {
-        let s = parse_ok("ScriptName B21:B21_AC_AmmoConverter extends ObjectReference\n");
-        assert_eq!(s.name, "B21:B21_AC_AmmoConverter");
-        assert_eq!(s.parent.as_deref(), Some("ObjectReference"));
-    }
-
-    #[test]
-    fn parse_struct_with_member_flags_and_defaults() {
-        let s = parse_ok(
-            "ScriptName Foo\nStruct Data\n  Int A\n  Bool B hidden\n  Float C = 0.5\n  Int D = -1 Const\nEndStruct\n",
-        );
-        let st = s.structs.iter().find(|s| s.name == "Data").expect("struct");
-        assert_eq!(st.members.len(), 4);
-        assert_eq!(st.members[1].name, "B");
-        assert!(st.members[1].flags.iter().any(|f| f == "Hidden"));
-        assert!(st.members[3].flags.iter().any(|f| f == "Const"));
-    }
-
-    #[test]
-    fn parse_namespaced_static_call_receiver() {
-        // A `:`-namespaced script name as a static-call receiver in a statement.
-        let s = parse_ok(
-            "ScriptName Foo\nFunction F()\n  AutoTestShared:Utilities.SetGameHour(0)\nEndFunction\n",
-        );
-        let f = s.functions.iter().find(|f| f.name == "F").expect("fn");
-        assert_eq!(f.body.len(), 1);
-    }
-
-    #[test]
-    fn parse_multi_segment_namespaced_type() {
-        // FO76 types can carry several `:` namespace segments.
-        let s = parse_ok("ScriptName Foo\nquests:_default:progressbar:masterscript ProgressBar\n");
-        let v = s
-            .variables
-            .iter()
-            .find(|v| v.name == "ProgressBar")
-            .expect("var");
-        assert_eq!(v.ty, "quests:_default:progressbar:masterscript");
-    }
-
-    #[test]
-    fn parse_multi_segment_namespaced_local_type() {
-        let s = parse_ok(
-            "ScriptName Foo\nFunction F()\n  Quests:U01A_Brewing:MasterScript master = None\nEndFunction\n",
-        );
-        let f = s.functions.iter().find(|f| f.name == "F").expect("fn");
-        let Stmt::LocalVarStmt { name, ty, .. } = &f.body[0] else {
-            panic!("expected local declaration");
-        };
-        assert_eq!(name, "master");
-        assert_eq!(ty, "Quests:U01A_Brewing:MasterScript");
-    }
-
-    #[test]
-    fn case_insensitive_keywords() {
-        let s = parse_ok("scriptname Foo EXTENDS Bar\n");
-        assert_eq!(s.name, "Foo");
-        assert_eq!(s.parent.as_deref(), Some("Bar"));
-    }
-
-    #[test]
-    fn auto_property() {
-        let s = parse_ok("ScriptName Foo\nInt Property MyProp Auto\n");
-        assert_eq!(s.properties.len(), 1);
-        assert_eq!(s.properties[0].name, "MyProp");
-        assert_eq!(s.properties[0].ty, "Int");
-        assert!(s.properties[0].flags.iter().any(|f| f == "Auto"));
-    }
-
-    #[test]
-    fn auto_const_mandatory() {
-        let s = parse_ok("ScriptName Foo\nKeyword Property pLink Auto Const Mandatory\n");
-        let p = &s.properties[0];
-        assert_eq!(p.ty, "Keyword");
-        for want in ["Auto", "Const", "Mandatory"] {
-            assert!(p.flags.iter().any(|f| f == want), "missing {want}");
+    fn parses_script_headers() {
+        let cases: &[(&str, &str, Option<&str>, &[&str])] = &[
+            ("ScriptName Foo extends Bar\n", "Foo", Some("Bar"), &[]),
+            ("scriptname Foo EXTENDS Bar\n", "Foo", Some("Bar"), &[]),
+            ("Scriptname Game Native Hidden\n", "Game", None, &["Native", "Hidden"]),
+            (
+                "ScriptName B21:B21_AC_AmmoConverter extends ObjectReference\n",
+                "B21:B21_AC_AmmoConverter",
+                Some("ObjectReference"),
+                &[],
+            ),
+            (
+                "; top-level comment\nScriptName Foo extends Bar ; trailing\n; another\n",
+                "Foo",
+                Some("Bar"),
+                &[],
+            ),
+        ];
+        for (src, name, parent, flags) in cases {
+            let s = parse_ok(src);
+            assert_eq!(s.name, *name, "{src:?}");
+            assert_eq!(s.parent.as_deref(), *parent, "{src:?}");
+            for f in *flags {
+                assert!(s.flags.iter().any(|x| x == f), "{src:?} missing {f}");
+            }
         }
     }
 
     #[test]
-    fn property_default_value() {
-        let s = parse_ok("ScriptName Foo\nFloat Property MyVal = 1.5 Auto\n");
-        let p = &s.properties[0];
-        assert_eq!(p.name, "MyVal");
-        assert!(p.default.is_some());
-    }
-
-    #[test]
-    fn array_property() {
-        let s = parse_ok("ScriptName Foo\nString[] Property Names Auto\n");
-        assert_eq!(s.properties[0].ty, "String[]");
-    }
-
-    #[test]
-    fn simple_function() {
-        let s = parse_ok("ScriptName Foo\nFunction DoThing()\nEndFunction\n");
-        assert_eq!(s.functions.len(), 1);
-        assert_eq!(s.functions[0].name, "DoThing");
-    }
-
-    #[test]
-    fn function_with_return_type() {
-        let s = parse_ok("ScriptName Foo\nInt Function GetCount()\n  Return 5\nEndFunction\n");
-        assert_eq!(s.functions[0].return_type, "Int");
-    }
-
-    #[test]
-    fn native_global_function_no_body() {
-        let s = parse_ok("ScriptName Foo Native Hidden\nFunction DoThing() native global\n");
-        let f = &s.functions[0];
-        assert!(f.is_native);
-        assert!(f.is_global);
-        assert!(f.body.is_empty());
-    }
-
-    #[test]
-    fn function_with_params() {
-        let s =
-            parse_ok("ScriptName Foo\nFunction DoThing(Int aiCount, String asName)\nEndFunction\n");
-        let f = &s.functions[0];
-        assert_eq!(f.params.len(), 2);
-        assert_eq!(f.params[0].name, "aiCount");
-        assert_eq!(f.params[0].ty, "Int");
-    }
-
-    #[test]
-    fn function_default_params() {
+    fn parses_declarations() {
         let s = parse_ok(
-            "ScriptName Foo\nFunction DoThing(Float afPower = 0.5, Bool abFlag = true)\nEndFunction\n",
+            "ScriptName Foo\n\
+             Import Game\n\
+             Int myVar = 42\n\
+             quests:_default:progressbar:masterscript ProgressBar\n\
+             Struct Data\n  Int A\n  Bool B hidden\n  Float C = 0.5\n  Int D = -1 Const\nEndStruct\n\
+             Int Property AutoProp Auto\n\
+             Keyword Property pLink Auto Const Mandatory\n\
+             Float Property MyVal = 1.5 Auto\n\
+             String[] Property Names Auto\n\
+             Group MyGroup\n  Int Property G1 Auto\n  Int Property G2 Auto\nEndGroup\n\
+             Int Property Counter\n\
+             Int Function Get()\n  Return 0\nEndFunction\n\
+             Function Set(Int aiVal)\nEndFunction\n\
+             EndProperty\n",
         );
-        let f = &s.functions[0];
-        assert!(f.params[0].default.is_some());
-        assert!(f.params[1].default.is_some());
+        assert_eq!(s.imports[0].script_name, "Game");
+        let var = |n: &str| s.variables.iter().find(|v| v.name == n).expect(n);
+        assert_eq!(var("myVar").ty, "Int");
+        assert!(var("myVar").value.is_some());
+        assert_eq!(var("ProgressBar").ty, "quests:_default:progressbar:masterscript");
+
+        let st = s.structs.iter().find(|s| s.name == "Data").expect("struct");
+        assert_eq!(st.members.len(), 4);
+        assert!(st.members[1].flags.iter().any(|f| f == "Hidden"));
+        assert!(st.members[3].flags.iter().any(|f| f == "Const"));
+
+        let prop = |n: &str| s.properties.iter().find(|p| p.name == n).expect(n);
+        assert_eq!(s.properties.len(), 7);
+        assert!(prop("AutoProp").flags.iter().any(|f| f == "Auto"));
+        for want in ["Auto", "Const", "Mandatory"] {
+            assert!(prop("pLink").flags.iter().any(|f| f == want), "missing {want}");
+        }
+        assert!(prop("MyVal").default.is_some());
+        assert_eq!(prop("Names").ty, "String[]");
+        prop("G1");
+        prop("G2");
+        assert!(prop("Counter").getter.is_some());
+        assert!(prop("Counter").setter.is_some());
     }
 
     #[test]
-    fn event_definition() {
-        let s =
-            parse_ok("ScriptName Foo\nEvent OnActivate(ObjectReference akActionRef)\nEndEvent\n");
-        assert_eq!(s.events.len(), 1);
-        assert_eq!(s.events[0].name, "OnActivate");
-    }
-
-    #[test]
-    fn dot_call_expression() {
-        let r = parse_script("ScriptName Foo\nFunction Bar()\n  Game.GetPlayer()\nEndFunction\n");
-        assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
-    }
-
-    #[test]
-    fn chained_dot_call() {
-        let r = parse_script(
-            "ScriptName Foo\nFunction Bar()\n  Game.GetPlayer().GetActorBase()\nEndFunction\n",
-        );
-        assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
-    }
-
-    #[test]
-    fn cast_expression() {
-        let r =
-            parse_script("ScriptName Foo\nFunction Bar()\n  Int x = akRef as Int\nEndFunction\n");
-        assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
-    }
-
-    #[test]
-    fn array_access_expression() {
-        let r = parse_script(
-            "ScriptName Foo\nFunction Bar()\n  String[] arr = new String[5]\n  String s = arr[0]\nEndFunction\n",
-        );
-        assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
-    }
-
-    #[test]
-    fn comparison_and_logical() {
-        let r = parse_script(
-            "ScriptName Foo\nFunction Bar()\n  If x > 0 && y != None\n  EndIf\nEndFunction\n",
-        );
-        assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
-    }
-
-    #[test]
-    fn string_concat() {
-        let r = parse_script(
-            "ScriptName Foo\nFunction Bar()\n  String s = \"hello \" + \"world\"\nEndFunction\n",
-        );
-        assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
-    }
-
-    #[test]
-    fn auto_state_block() {
+    fn parses_functions_events_and_states() {
         let s = parse_ok(
-            "ScriptName Foo\nAuto State Waiting\n  Event OnActivate(ObjectReference akRef)\n  EndEvent\nEndState\n",
+            "ScriptName Foo\n\
+             Int Function GetCount()\n  Return 5\nEndFunction\n\
+             Function DoNative() native global\n\
+             Function DoThing(Int aiCount, String asName, Float afPower = 0.5, Int x = -1)\nEndFunction\n\
+             Event OnActivate(ObjectReference akActionRef)\nEndEvent\n\
+             Event Actor.OnSit(Actor akSender)\nEndEvent\n\
+             Event B21:QuestTimer.QuestTimerEnded(B21:QuestTimer akSender, Var[] akArgs)\nEndEvent\n\
+             Auto State Waiting\n  Event OnActivate(ObjectReference akRef)\n  EndEvent\nEndState\n",
+        );
+        let func = |n: &str| s.functions.iter().find(|f| f.name == n).expect(n);
+        assert_eq!(func("GetCount").return_type, "Int");
+        let native = func("DoNative");
+        assert!(native.is_native && native.is_global && native.body.is_empty());
+        let p = &func("DoThing").params;
+        assert_eq!(p.len(), 4);
+        assert_eq!((p[0].name.as_str(), p[0].ty.as_str()), ("aiCount", "Int"));
+        assert!(p[2].default.is_some() && p[3].default.is_some());
+
+        let events: Vec<&str> = s.events.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(
+            events,
+            ["OnActivate", "Actor.OnSit", "B21:QuestTimer.QuestTimerEnded"]
         );
         assert_eq!(s.states.len(), 1);
         assert!(s.states[0].is_auto);
@@ -1929,117 +1813,47 @@ mod tests {
     }
 
     #[test]
-    fn parse_from_text_basic_property() {
-        let s = parse_ok("ScriptName Foo\n\nInt Property Bar Auto\n");
-        assert_eq!(s.name, "Foo");
-        assert_eq!(s.properties.len(), 1);
+    fn parses_statement_bodies_without_errors() {
+        let bodies = [
+            "Game.GetPlayer().GetActorBase()",
+            "AutoTestShared:Utilities.SetGameHour(0)",
+            "Int x = akRef as Int",
+            "String[] arr = new String[5]\n  String s = arr[0]",
+            "If x > 0 && y != None\n  EndIf",
+            "String s = \"hello \" + \"world\"",
+            "While x < 10\n    x = x + 1\n  EndWhile",
+            "If x == 0\n    x = 1\n  ElseIf x == 1\n    x = 2\n  Else\n    x = 3\n  EndIf",
+            "x += 1",
+            "Int x = -5",
+        ];
+        for body in bodies {
+            let s = parse_ok(&format!(
+                "ScriptName Foo\nFunction Bar()\n  {body}\nEndFunction\n"
+            ));
+            assert!(!s.functions[0].body.is_empty(), "{body:?}");
+        }
     }
 
     #[test]
-    fn full_property_with_getter_setter() {
-        let s = parse_ok(
-            "ScriptName Foo\n\
-             Int Property Counter\n\
-             Int Function Get()\n\
-               Return 0\n\
-             EndFunction\n\
-             Function Set(Int aiVal)\n\
-             EndFunction\n\
-             EndProperty\n",
-        );
-        assert_eq!(s.properties.len(), 1);
-        assert!(s.properties[0].getter.is_some());
-        assert!(s.properties[0].setter.is_some());
-    }
-
-    #[test]
-    fn import_statement() {
-        let s = parse_ok("ScriptName Foo\nImport Game\n");
-        assert_eq!(s.imports.len(), 1);
-        assert_eq!(s.imports[0].script_name, "Game");
-    }
-
-    #[test]
-    fn variable_with_init() {
-        let s = parse_ok("ScriptName Foo\nInt myVar = 42\n");
-        assert_eq!(s.variables.len(), 1);
-        assert_eq!(s.variables[0].name, "myVar");
-        assert_eq!(s.variables[0].ty, "Int");
-        assert!(s.variables[0].value.is_some());
-    }
-
-    #[test]
-    fn var_array_local_does_not_hang() {
-        // The local-declaration lookahead must match `Var[] name`, not only
-        // `Var name`; otherwise the statement parser loops forever.
-        let r = parse_script(
-            "ScriptName Foo\nFunction Bar()\n  Var[] kargs = new Var[3]\nEndFunction\n",
-        );
-        assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
-        let body = &r.ast.unwrap().functions[0].body;
-        assert!(matches!(body[0], Stmt::LocalVarStmt { .. }));
-    }
-
-    #[test]
-    fn while_loop() {
-        let r = parse_script(
-            "ScriptName Foo\nFunction Bar()\n  While x < 10\n    x = x + 1\n  EndWhile\nEndFunction\n",
-        );
-        assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
-    }
-
-    #[test]
-    fn if_elseif_else() {
-        let r = parse_script(
-            "ScriptName Foo\nFunction Bar()\n  If x == 0\n    x = 1\n  ElseIf x == 1\n    x = 2\n  Else\n    x = 3\n  EndIf\nEndFunction\n",
-        );
-        assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
-    }
-
-    #[test]
-    fn assignment_with_compound_op() {
-        let r = parse_script("ScriptName Foo\nFunction Bar()\n  x += 1\nEndFunction\n");
-        assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
-    }
-
-    #[test]
-    fn remote_event_with_dotted_name() {
-        let s = parse_ok("ScriptName Foo\nEvent Actor.OnSit(Actor akSender)\nEndEvent\n");
-        assert_eq!(s.events[0].name, "Actor.OnSit");
-    }
-
-    #[test]
-    fn group_extracts_properties() {
-        let s = parse_ok(
-            "ScriptName Foo\nGroup MyGroup\n  Int Property A Auto\n  Int Property B Auto\nEndGroup\n",
-        );
-        assert_eq!(s.properties.len(), 2);
-    }
-
-    #[test]
-    fn struct_def_is_discarded() {
-        let r = parse_script("ScriptName Foo\nStruct Point\n  Float X\n  Float Y\nEndStruct\n");
-        assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
-    }
-
-    #[test]
-    fn unary_minus_in_expression() {
-        let r = parse_script("ScriptName Foo\nFunction Bar()\n  Int x = -5\nEndFunction\n");
-        assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
-    }
-
-    #[test]
-    fn string_literal_with_default_param_negative() {
-        let s = parse_ok("ScriptName Foo\nFunction Bar(Int x = -1, Float y = 2.5)\nEndFunction\n");
-        assert!(s.functions[0].params[0].default.is_some());
-    }
-
-    #[test]
-    fn comment_handling_does_not_break_parsing() {
-        let r =
-            parse_script("; top-level comment\nScriptName Foo extends Bar ; trailing\n; another\n");
-        assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
-        assert_eq!(r.ast.unwrap().name, "Foo");
+    fn parses_local_declarations() {
+        // `Var[] name` must hit the local-declaration lookahead, or the statement parser loops forever.
+        for (body, want_name, want_ty) in [
+            ("Var[] kargs = new Var[3]", "kargs", "Var[]"),
+            (
+                "Quests:U01A_Brewing:MasterScript master = None",
+                "master",
+                "Quests:U01A_Brewing:MasterScript",
+            ),
+        ] {
+            let s = parse_ok(&format!(
+                "ScriptName Foo\nFunction F()\n  {body}\nEndFunction\n"
+            ));
+            let Stmt::LocalVarStmt { name, ty, .. } = &s.functions[0].body[0] else {
+                panic!("expected local declaration for {body:?}");
+            };
+            assert_eq!(name, want_name);
+            assert_eq!(ty, want_ty);
+        }
     }
 }
 
@@ -2104,51 +1918,23 @@ mod filename_tests {
     use super::*;
 
     #[test]
-    fn matching_simple_name() {
-        assert!(validate_filename("/path/to/MyScript.psc", "MyScript").is_none());
-    }
-
-    #[test]
-    fn matching_case_insensitive() {
-        assert!(validate_filename("/path/to/myscript.psc", "MyScript").is_none());
-    }
-
-    #[test]
-    fn mismatched_simple_name() {
-        let err = validate_filename("/path/to/WrongName.psc", "MyScript").unwrap();
-        assert!(err.message.contains("WrongName"));
-        assert!(err.message.contains("MyScript"));
-    }
-
-    #[test]
-    fn matching_namespace() {
-        assert!(validate_filename("/path/to/B21/TestScript.psc", "B21:TestScript").is_none());
-    }
-
-    #[test]
-    fn mismatched_namespace_folder() {
-        let err = validate_filename("/path/to/Wrong/TestScript.psc", "B21:TestScript").unwrap();
-        assert!(err.message.contains("B21"));
-    }
-
-    #[test]
-    fn matching_fragment_namespace() {
-        assert!(
-            validate_filename(
+    fn validates_filename_against_script_name() {
+        for (path, name) in [
+            ("/path/to/MyScript.psc", "MyScript"),
+            ("/path/to/myscript.psc", "MyScript"),
+            ("/path/to/B21/TestScript.psc", "B21:TestScript"),
+            (
                 "/Scripts/Source/Base/Fragments/Quests/QF_MQ101_0001ED86.psc",
                 "Fragments:Quests:QF_MQ101_0001ED86",
-            )
-            .is_none()
-        );
-    }
-
-    #[test]
-    fn empty_path_returns_none() {
-        assert!(validate_filename("", "Foo").is_none());
-    }
-
-    #[test]
-    fn empty_name_returns_none() {
-        assert!(validate_filename("/path/to/Foo.psc", "").is_none());
+            ),
+            ("", "Foo"),
+            ("/path/to/Foo.psc", ""),
+        ] {
+            assert!(validate_filename(path, name).is_none(), "{path} / {name}");
+        }
+        let err = validate_filename("/path/to/WrongName.psc", "MyScript").unwrap();
+        assert!(err.message.contains("WrongName") && err.message.contains("MyScript"));
+        let err = validate_filename("/path/to/Wrong/TestScript.psc", "B21:TestScript").unwrap();
+        assert!(err.message.contains("B21"));
     }
 }

@@ -85,6 +85,14 @@ pub struct BodyMeta {
     /// motion cinfo instead of the AABB box approximation. `None` for statics
     /// and any body whose distribution couldn't be decoded.
     pub mass_distribution: Option<super::mass_properties::SourceMassDistribution>,
+    /// Simulate this body dynamically regardless of `layer`. `None` keeps the
+    /// CLUTTER-layer rule; FO4 weapon parts are dynamic on WEAPON (5), and a
+    /// part on CLUTTER stays behind when the assembled gun is dropped.
+    pub dynamic: Option<bool>,
+}
+
+fn body_meta_is_dynamic(meta: &BodyMeta) -> bool {
+    meta.dynamic.unwrap_or(meta.layer == FO4_CLUTTER_LAYER)
 }
 
 impl Default for BodyMeta {
@@ -100,6 +108,7 @@ impl Default for BodyMeta {
             motion_type: BodyMotionType::Static,
             body_mass: None,
             mass_distribution: None,
+            dynamic: None,
         }
     }
 }
@@ -411,7 +420,7 @@ pub fn build_fo4_multi_body_collision_with_constraints(
                 .is_some_and(|flags| flags & BODY_FLAGS_DYNAMIC != 0);
         // Bodies the solver simulates dynamically: loose clutter, or a constrained
         // assembly's moving chain segments.
-        let is_dynamic = meta.layer == FO4_CLUTTER_LAYER || constrained_dynamic;
+        let is_dynamic = body_meta_is_dynamic(&meta) || constrained_dynamic;
         let source_filter = meta
             .collision_filter_info
             .unwrap_or_else(|| u32::from(meta.layer));
@@ -858,7 +867,10 @@ fn options_for_body(
     // non-zero finite mass: mass 0 → inverse_mass 0 → divide-by-zero NaN on
     // attach, which freezes the cell's physics and sound. Use the FO4 vanilla
     // density-1.0 mass so real mass, inertia and center of mass get filled.
-    if body_layer == FO4_CLUTTER_LAYER {
+    let is_dynamic = body_metas
+        .and_then(|metas| metas.get(body_index))
+        .map_or(body_layer == FO4_CLUTTER_LAYER, body_meta_is_dynamic);
+    if is_dynamic {
         let source_body_mass = body_metas
             .and_then(|metas| metas.get(body_index))
             .and_then(|meta| meta.body_mass)
@@ -974,6 +986,30 @@ mod tests {
         ]
     }
 
+    fn polytope() -> MultiBodyShape {
+        MultiBodyShape::Polytope {
+            vertices: unit_cube_vertices(),
+        }
+    }
+
+    fn cube_mesh() -> MultiBodyShape {
+        MultiBodyShape::CompressedMesh {
+            vertices: unit_cube_vertices(),
+            triangles: unit_cube_triangles(),
+        }
+    }
+
+    fn polytope_compound() -> MultiBodyShape {
+        MultiBodyShape::Compound {
+            children: vec![CompoundChild {
+                transform: CompoundChild::identity_transform(),
+                kind: CompoundChildKind::Polytope {
+                    vertices: unit_cube_vertices(),
+                },
+            }],
+        }
+    }
+
     fn find_psd(file: &HkxFile) -> &HkxObject {
         file.objects()
             .iter()
@@ -981,15 +1017,36 @@ mod tests {
             .expect("hknpPhysicsSystemData missing")
     }
 
-    fn body_member_i64(body: &HkxValue, name: &str) -> i64 {
-        let HkxValue::Object(members) = body else {
-            panic!("body must be inline object");
-        };
-        let m = members
+    fn psd_array<'a>(psd: &'a HkxObject, name: &str) -> &'a [HkxValue] {
+        match &psd
+            .members
             .iter()
             .find(|m| m.name == name)
-            .unwrap_or_else(|| panic!("body member {name} missing"));
-        match &m.value {
+            .unwrap_or_else(|| panic!("{name} missing"))
+            .value
+        {
+            HkxValue::Array(values) => values,
+            other => panic!("{name} is not an array: {other:?}"),
+        }
+    }
+
+    fn inline_members(value: &HkxValue) -> &[HkxMember] {
+        match value {
+            HkxValue::Object(m) | HkxValue::TypedObject { members: m, .. } => m,
+            other => panic!("expected inline struct, got {other:?}"),
+        }
+    }
+
+    fn member_value<'a>(value: &'a HkxValue, name: &str) -> &'a HkxValue {
+        &inline_members(value)
+            .iter()
+            .find(|m| m.name == name)
+            .unwrap_or_else(|| panic!("member {name} missing"))
+            .value
+    }
+
+    fn member_i64(value: &HkxValue, name: &str) -> i64 {
+        match member_value(value, name) {
             HkxValue::I32(v) => i64::from(*v),
             HkxValue::U32(v) => i64::from(*v),
             HkxValue::I16(v) => i64::from(*v),
@@ -998,1591 +1055,587 @@ mod tests {
             HkxValue::I8(v) => i64::from(*v),
             HkxValue::I64(v) => *v,
             HkxValue::U64(v) => *v as i64,
-            other => panic!("body.{name} is not an int: {other:?}"),
+            other => panic!("{name} is not an int: {other:?}"),
         }
     }
 
-    fn body_member_vec4(body: &HkxValue, name: &str) -> Vec<f32> {
-        let HkxValue::Object(members) = body else {
-            panic!("body must be inline object");
-        };
-        let m = members
-            .iter()
-            .find(|m| m.name == name)
-            .expect("member missing");
-        let HkxValue::F32List(values) = &m.value else {
-            panic!("body.{name} is not F32List");
-        };
-        values.clone()
+    fn member_f32(value: &HkxValue, name: &str) -> f32 {
+        match member_value(value, name) {
+            HkxValue::F32(v) | HkxValue::Half(v) => *v,
+            other => panic!("{name} is not a float: {other:?}"),
+        }
     }
 
+    fn member_vec4(value: &HkxValue, name: &str) -> Vec<f32> {
+        match member_value(value, name) {
+            HkxValue::F32List(values) => values.clone(),
+            other => panic!("{name} is not F32List: {other:?}"),
+        }
+    }
+
+    fn build_parsed(
+        bodies: &[MultiBodyShape],
+        opts: &BuildOptions,
+        crcs: Option<&[Option<u32>]>,
+        metas: Option<&[BodyMeta]>,
+    ) -> HkxFile {
+        let blob = build_fo4_multi_body_collision(bodies, opts, crcs, metas).expect("build");
+        HkxFile::read(&blob).expect("parse")
+    }
+
+    /// `HkxFile::save()` echoes `source_bytes` verbatim unless the model is dirty,
+    /// which would silently bypass the writer.
+    fn force_writer_roundtrip(blob: &[u8]) -> Vec<u8> {
+        let mut file = HkxFile::read(blob).expect("parse blob for forced writer roundtrip");
+        let _ = file.objects_mut();
+        file.save()
+    }
+
+    /// A CLUTTER body is simulated dynamically by the game; a zero mass or a
+    /// keyframed-style cinfo (inverseMass=0, motionPropertiesId=0xFFFF) NaNs on
+    /// attach and freezes cell physics.
     #[test]
-    fn clutter_polytope_body_gets_nonzero_density_mass() {
-        // A CLUTTER (layer 4) convex body is a loose item the game makes dynamic;
-        // it MUST carry a non-zero mass (vanilla density-1.0 = AABB volume), else
-        // inverse_mass=0 → NaN on attach → cell physics/sound freeze.
-        let body = MultiBodyShape::Polytope {
-            vertices: unit_cube_vertices(),
-        };
-        let metas = [BodyMeta {
-            collision_filter_info: None,
+    fn clutter_bodies_get_real_mass_and_motion_cinfo() {
+        let clutter = |body_mass| BodyMeta {
             layer: FO4_CLUTTER_LAYER,
+            body_mass,
             ..BodyMeta::default()
-        }];
-        let opts = BuildOptions::default(); // mass 0.0
-        let body_opts = options_for_body(&opts, &body, None, Some(&metas), 0);
-        assert!(
-            body_opts.mass > 0.0,
-            "clutter body must get a non-zero mass"
-        );
+        };
+        let opts = BuildOptions::default();
+        let volume_mass = options_for_body(&opts, &polytope(), None, Some(&[clutter(None)]), 0);
         assert_eq!(
-            body_opts.mass,
+            volume_mass.mass,
             clutter_mass_from_volume(&unit_cube_vertices())
         );
-    }
+        assert!(volume_mass.mass > 0.0);
+        let compound_mass = options_for_body(
+            &opts,
+            &polytope_compound(),
+            None,
+            Some(&[clutter(Some(2.0))]),
+            0,
+        );
+        assert_eq!(compound_mass.mass, 2.0);
+        let static_meta = [BodyMeta {
+            layer: 1,
+            ..BodyMeta::default()
+        }];
+        assert_eq!(
+            options_for_body(&opts, &polytope(), None, Some(&static_meta), 0).mass,
+            0.0,
+            "STATIC layer must stay massless"
+        );
 
-    #[test]
-    fn dynamic_clutter_motion_cinfo_carries_real_mass_and_inertia() {
-        // The keyframed/zero cinfo (inverseMass=0, inverseInertiaLocal=0,
-        // motionPropertiesId=0xFFFF) froze the physics world for a body the game
-        // simulates dynamically. A CLUTTER motionCinfo must carry real values and
-        // index motionProperties[0].
-        let body = MultiBodyShape::Polytope {
-            vertices: unit_cube_vertices(),
-        };
-        let cinfo =
-            build_dynamic_clutter_motion_cinfo(&body, [0.0; 4], [0.0, 0.0, 0.0, 1.0], None, None);
-        let HkxValue::TypedObject {
-            class_name,
-            members,
-        } = &cinfo
-        else {
+        let cinfo = build_dynamic_clutter_motion_cinfo(
+            &polytope(),
+            [0.0; 4],
+            [0.0, 0.0, 0.0, 1.0],
+            None,
+            None,
+        );
+        let HkxValue::TypedObject { class_name, .. } = &cinfo else {
             panic!("cinfo must be a TypedObject");
         };
         assert_eq!(class_name, "hknpMotionCinfo");
-        let find = |name: &str| &members.iter().find(|m| m.name == name).unwrap().value;
-        assert!(
-            matches!(find("motionPropertiesId"), HkxValue::U16(0)),
-            "must index motionProperties[0], not 0xFFFF"
-        );
-        let HkxValue::F32(inv_mass) = *find("inverseMass") else {
-            panic!("inverseMass not F32");
-        };
-        assert!(inv_mass > 0.0, "dynamic body needs non-zero inverse mass");
-        let HkxValue::F32List(inv_inertia) = find("inverseInertiaLocal") else {
-            panic!("inverseInertiaLocal not F32List");
-        };
-        assert_eq!(inv_inertia.len(), 4);
-        assert!(
-            inv_inertia[0] > 0.0 && inv_inertia[1] > 0.0 && inv_inertia[2] > 0.0,
-            "inverse inertia must be non-zero so the body can rotate, got {inv_inertia:?}"
-        );
-        assert_eq!(
-            inv_inertia[3], 1.0,
-            "inverseInertiaLocal.w sentinel must be 1.0"
-        );
-    }
+        assert_eq!(member_i64(&cinfo, "motionPropertiesId"), 0);
+        assert!(member_f32(&cinfo, "inverseMass") > 0.0);
+        let inv_inertia = member_vec4(&cinfo, "inverseInertiaLocal");
+        assert!(inv_inertia[..3].iter().all(|v| *v > 0.0), "{inv_inertia:?}");
+        assert_eq!(inv_inertia[3], 1.0, "inverseInertiaLocal.w sentinel");
 
-    #[test]
-    fn dynamic_clutter_motion_cinfo_uses_source_body_mass() {
-        let body = MultiBodyShape::Polytope {
-            vertices: unit_cube_vertices(),
-        };
-        let cinfo = build_dynamic_clutter_motion_cinfo(
-            &body,
+        let source_mass = build_dynamic_clutter_motion_cinfo(
+            &polytope(),
             [0.0; 4],
             [0.0, 0.0, 0.0, 1.0],
             Some(2.0),
             None,
         );
-        let HkxValue::TypedObject { members, .. } = &cinfo else {
-            panic!("cinfo must be a TypedObject");
-        };
-        let f32_member = |name: &str| -> f32 {
-            match &members
-                .iter()
-                .find(|member| member.name == name)
-                .unwrap_or_else(|| panic!("{name} member missing"))
-                .value
-            {
-                HkxValue::F32(value) => *value,
-                HkxValue::Half(value) => *value,
-                other => panic!("{name} is not an F32: {other:?}"),
-            }
-        };
+        assert!((member_f32(&source_mass, "inverseMass") - 0.5).abs() < 1e-6);
+        assert!((member_f32(&source_mass, "massFactor") - 2.0).abs() < 1e-6);
 
-        assert!((f32_member("inverseMass") - 0.5).abs() < 1e-6);
-        assert!((f32_member("massFactor") - 2.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn dynamic_clutter_motion_cinfo_rotates_local_center_of_mass_into_body_frame() {
-        let body = MultiBodyShape::Polytope {
-            vertices: unit_cube_vertices(),
-        };
-        let mass_distribution = crate::collision::SourceMassDistribution {
+        let distribution = crate::collision::SourceMassDistribution {
             center_of_mass: [1.0, 0.0, 0.0],
             volume: 8.0,
             unit_inertia: [1.0, 1.0, 1.0],
             major_axis_space: [0.0, 0.0, 0.0, 1.0],
         };
         let half_sqrt_two = 0.5_f32.sqrt();
-        let cinfo = build_dynamic_clutter_motion_cinfo(
-            &body,
+        let rotated = build_dynamic_clutter_motion_cinfo(
+            &polytope(),
             [10.0, 20.0, 30.0, 0.0],
             [0.0, 0.0, half_sqrt_two, half_sqrt_two],
             Some(2.0),
-            Some(&mass_distribution),
+            Some(&distribution),
         );
-        let HkxValue::TypedObject { members, .. } = cinfo else {
-            panic!("cinfo must be a TypedObject");
-        };
-        let HkxValue::F32List(center) = &members
-            .iter()
-            .find(|member| member.name == "centerOfMassWorld")
-            .expect("centerOfMassWorld member")
-            .value
-        else {
-            panic!("centerOfMassWorld must be F32List");
-        };
+        let center = member_vec4(&rotated, "centerOfMassWorld");
+        for (axis, expected) in [10.0, 21.0, 30.0].into_iter().enumerate() {
+            assert!((center[axis] - expected).abs() < 1e-5, "{center:?}");
+        }
 
-        assert!((center[0] - 10.0).abs() < 1e-5, "{center:?}");
-        assert!((center[1] - 21.0).abs() < 1e-5, "{center:?}");
-        assert!((center[2] - 30.0).abs() < 1e-5, "{center:?}");
-    }
-
-    #[test]
-    fn clutter_compound_body_uses_source_body_mass() {
-        let body = MultiBodyShape::Compound {
-            children: vec![CompoundChild {
-                transform: CompoundChild::identity_transform(),
-                kind: CompoundChildKind::Polytope {
-                    vertices: unit_cube_vertices(),
-                },
-            }],
-        };
-        let metas = [BodyMeta {
-            collision_filter_info: None,
-            layer: FO4_CLUTTER_LAYER,
-            body_mass: Some(2.0),
-            ..BodyMeta::default()
-        }];
-        let body_opts = options_for_body(&BuildOptions::default(), &body, None, Some(&metas), 0);
-
-        assert_eq!(body_opts.mass, 2.0);
-    }
-
-    #[test]
-    fn clutter_build_emits_dynamic_body_flag_and_motion_properties() {
-        let body = MultiBodyShape::Polytope {
-            vertices: unit_cube_vertices(),
-        };
-        let metas = [BodyMeta {
-            collision_filter_info: None,
-            layer: FO4_CLUTTER_LAYER,
-            ..BodyMeta::default()
-        }];
-        let blob =
-            build_fo4_multi_body_collision(&[body], &BuildOptions::default(), None, Some(&metas))
-                .expect("build clutter body");
-        let file = HkxFile::read(&blob).expect("parse");
-        let psd = find_psd(&file);
-
-        let body_cinfos = match &psd
-            .members
-            .iter()
-            .find(|m| m.name == "bodyCinfos")
-            .unwrap()
-            .value
-        {
-            HkxValue::Array(v) => v.clone(),
-            _ => panic!("bodyCinfos not array"),
-        };
-        assert_eq!(
-            body_member_i64(&body_cinfos[0], "flags"),
-            128,
-            "clutter body must be flagged dynamic"
-        );
-        assert_eq!(body_member_i64(&body_cinfos[0], "motionId"), 0);
-
-        // motionProperties must be populated (the game indexes [0]); an empty table
-        // is what froze the physics world on cell attach.
-        let mp_len = match &psd
-            .members
-            .iter()
-            .find(|m| m.name == "motionProperties")
-            .unwrap()
-            .value
-        {
-            HkxValue::Array(v) => v.len(),
-            _ => panic!("motionProperties not array"),
-        };
-        assert_eq!(
-            mp_len, 1,
-            "dynamic clutter must ship a motionProperties entry"
-        );
-
-        let motion_properties = match &psd
-            .members
-            .iter()
-            .find(|m| m.name == "motionProperties")
-            .unwrap()
-            .value
-        {
-            HkxValue::Array(values) => values,
-            _ => unreachable!("motionProperties must be an array"),
-        };
-        let HkxValue::Object(members) = &motion_properties[0] else {
-            panic!("motionProperties[0] must be an inline object");
-        };
-        let gravity = members
-            .iter()
-            .find(|member| member.name == "gravityFactor")
-            .map(|member| &member.value)
-            .unwrap_or_else(|| panic!("gravityFactor missing"));
-        assert!(
-            matches!(gravity, HkxValue::F32(value) if (*value - 1.0).abs() < 1e-6),
-            "dynamic clutter gravityFactor must round-trip as 1.0, got {gravity:?}"
-        );
-    }
-
-    #[test]
-    fn static_trigger_body_preserves_source_body_and_material_flags() {
-        let body = MultiBodyShape::Polytope {
-            vertices: unit_cube_vertices(),
-        };
-        let metas = [BodyMeta {
-            collision_filter_info: None,
-            layer: 12,
-            body_flags: Some(16),
-            material_flags: Some(1 << 21),
-            material_trigger_type: Some(2),
-            ..BodyMeta::default()
-        }];
-        let blob =
-            build_fo4_multi_body_collision(&[body], &BuildOptions::default(), None, Some(&metas))
-                .expect("build trigger body");
-        let file = HkxFile::read(&blob).expect("parse");
-        let psd = find_psd(&file);
-
-        let body_cinfos = match &psd
-            .members
-            .iter()
-            .find(|m| m.name == "bodyCinfos")
-            .unwrap()
-            .value
-        {
-            HkxValue::Array(v) => v.clone(),
-            _ => panic!("bodyCinfos not array"),
-        };
-        assert_eq!(body_member_i64(&body_cinfos[0], "collisionFilterInfo"), 12);
-        assert_eq!(body_member_i64(&body_cinfos[0], "flags"), 16);
-        assert_eq!(
-            body_member_i64(&body_cinfos[0], "motionId"),
-            i64::from(MOTION_ID_INVALID)
-        );
-
-        let materials = match &psd
-            .members
-            .iter()
-            .find(|m| m.name == "materials")
-            .unwrap()
-            .value
-        {
-            HkxValue::Array(values) => values,
-            _ => panic!("materials not array"),
-        };
-        assert_eq!(body_member_i64(&materials[0], "flags"), 1 << 21);
-        assert_eq!(body_member_i64(&materials[0], "triggerType"), 2);
-
-        let motion_cinfo_len = match &psd
-            .members
-            .iter()
-            .find(|m| m.name == "motionCinfos")
-            .unwrap()
-            .value
-        {
-            HkxValue::Array(v) => v.len(),
-            _ => panic!("motionCinfos not array"),
-        };
-        assert_eq!(motion_cinfo_len, 0);
-    }
-
-    #[test]
-    fn grafted_constraints_emit_constraint_cinfos_and_preserve_filter() {
-        use crate::collision::{GraftCinfo, GraftedConstraints};
-
-        // Two dynamic chain bodies linked by one constraint — the shape of an
-        // articulated trap segment. Regression guard for the FO76 bone-chime fix:
-        // constraints (and their full 0x81xx group filter) must survive the
-        // re-encode instead of being dropped.
-        let bodies = [
-            MultiBodyShape::Polytope {
-                vertices: unit_cube_vertices(),
-            },
-            MultiBodyShape::Polytope {
-                vertices: unit_cube_vertices(),
-            },
-        ];
-        let metas = [
-            BodyMeta {
-                collision_filter_info: Some(0x810a),
-                layer: 10,
-                body_flags: Some(BODY_FLAGS_DYNAMIC),
-                ..BodyMeta::default()
-            },
-            BodyMeta {
-                collision_filter_info: Some(0x820a),
-                layer: 10,
-                body_flags: Some(BODY_FLAGS_DYNAMIC),
-                ..BodyMeta::default()
-            },
-        ];
-        let constraint_data = HkxObject {
-            name: None,
-            offset: 0,
-            signature: 0,
-            class_name: "hkpPositionConstraintMotor".to_string(),
-            members: vec![
-                HkxMember {
-                    name: "type".to_string(),
-                    value: HkxValue::I32(3),
-                },
-                HkxMember {
-                    name: "tau".to_string(),
-                    value: HkxValue::F32(0.8),
-                },
+        let thin_panel = MultiBodyShape::Polytope {
+            vertices: vec![
+                [-0.5, -0.5, -0.0002],
+                [0.5, -0.5, -0.0002],
+                [-0.5, 0.5, -0.0002],
+                [0.5, 0.5, -0.0002],
+                [-0.5, -0.5, 0.0002],
+                [0.5, -0.5, 0.0002],
+                [-0.5, 0.5, 0.0002],
+                [0.5, 0.5, 0.0002],
             ],
         };
-        let grafted = GraftedConstraints {
-            objects: vec![constraint_data],
-            cinfos: vec![GraftCinfo {
-                body_a: 1,
-                body_b: 0,
-                data_object: 0,
-                flags: 0,
-            }],
-        };
-
-        let blob = build_fo4_multi_body_collision_with_constraints(
-            &bodies,
-            &BuildOptions::default(),
+        let thin = build_dynamic_clutter_motion_cinfo(
+            &thin_panel,
+            [0.0; 4],
+            [0.0, 0.0, 0.0, 1.0],
             None,
-            Some(&metas),
-            Some(&grafted),
-        )
-        .expect("build constrained assembly");
-        let file = HkxFile::read(&blob).expect("parse");
-        let psd = find_psd(&file);
-
-        let body_cinfos = match &psd
-            .members
-            .iter()
-            .find(|m| m.name == "bodyCinfos")
-            .unwrap()
-            .value
-        {
-            HkxValue::Array(v) => v.clone(),
-            _ => panic!("bodyCinfos not array"),
-        };
-        assert_eq!(
-            body_member_i64(&body_cinfos[0], "collisionFilterInfo"),
-            0x810a,
-            "full source filter (group bits) must be preserved, not demoted to layer"
+            None,
         );
-        assert_eq!(
-            body_member_i64(&body_cinfos[1], "collisionFilterInfo"),
-            0x820a
-        );
-
-        let constraint_cinfos = match &psd
-            .members
-            .iter()
-            .find(|m| m.name == "constraintCinfos")
-            .expect("constraintCinfos must be emitted")
-            .value
-        {
-            HkxValue::Array(v) => v.clone(),
-            _ => panic!("constraintCinfos not array"),
-        };
-        assert_eq!(constraint_cinfos.len(), 1);
-        let HkxValue::Object(members) = &constraint_cinfos[0] else {
-            panic!("constraint cinfo must be inline object");
-        };
-        let field = |name: &str| members.iter().find(|m| m.name == name).map(|m| &m.value);
-        assert!(matches!(field("bodyA"), Some(HkxValue::U32(1))));
-        assert!(matches!(field("bodyB"), Some(HkxValue::U32(0))));
-        assert!(
-            matches!(field("constraintData"), Some(HkxValue::Pointer(Some(_)))),
-            "constraintData must resolve to the grafted object"
-        );
-        assert!(
-            file.objects()
-                .iter()
-                .any(|o| o.class_name == "hkpPositionConstraintMotor"),
-            "grafted constraint object must be appended to the system"
-        );
+        assert!(member_f32(&thin, "massFactor") <= 100.0 + 1e-3);
     }
 
     #[test]
-    fn constrained_bodies_without_source_part_bits_get_vanilla_part_filters() {
-        use crate::collision::{GraftCinfo, GraftedConstraints};
-
-        // TireSwing02 shape: FO76 ships the anchor (layer 15) and chain (layer 4)
-        // with BARE layer filters, relying on runtime constraint-pair filtering
-        // FO4 doesn't do. The re-encode must synthesize the vanilla part numbering
-        // (0x8000 | body_index<<8 | layer) for every constrained body; an
-        // unconstrained body in the same system keeps its bare filter.
-        let bodies = [
-            MultiBodyShape::Polytope {
-                vertices: unit_cube_vertices(),
-            },
-            MultiBodyShape::Polytope {
-                vertices: unit_cube_vertices(),
-            },
-            MultiBodyShape::Polytope {
-                vertices: unit_cube_vertices(),
-            },
-        ];
-        let metas = [
-            BodyMeta {
-                collision_filter_info: Some(0x000f),
-                layer: 15,
-                ..BodyMeta::default()
-            },
-            BodyMeta {
-                collision_filter_info: Some(0x0004),
-                layer: 4,
-                body_flags: Some(BODY_FLAGS_DYNAMIC),
-                ..BodyMeta::default()
-            },
-            BodyMeta {
-                collision_filter_info: Some(0x0004),
-                layer: 4,
-                body_flags: Some(BODY_FLAGS_DYNAMIC),
-                ..BodyMeta::default()
-            },
-        ];
-        let constraint_data = HkxObject {
-            name: None,
-            offset: 0,
-            signature: 0,
-            class_name: "hkpRagdollConstraintData".to_string(),
-            members: vec![HkxMember {
-                name: "userData".to_string(),
-                value: HkxValue::U64(0),
-            }],
-        };
-        let grafted = GraftedConstraints {
-            objects: vec![constraint_data],
-            cinfos: vec![GraftCinfo {
-                body_a: 1,
-                body_b: 0,
-                data_object: 0,
-                flags: 0,
-            }],
-        };
-
-        let blob = build_fo4_multi_body_collision_with_constraints(
-            &bodies,
+    fn clutter_build_emits_dynamic_body_and_source_inertia() {
+        let file = build_parsed(
+            &[polytope()],
             &BuildOptions::default(),
             None,
-            Some(&metas),
-            Some(&grafted),
-        )
-        .expect("build constrained assembly");
-        let file = HkxFile::read(&blob).expect("parse");
+            Some(&[BodyMeta {
+                layer: FO4_CLUTTER_LAYER,
+                ..BodyMeta::default()
+            }]),
+        );
         let psd = find_psd(&file);
-        let body_cinfos = match &psd
-            .members
-            .iter()
-            .find(|m| m.name == "bodyCinfos")
-            .unwrap()
-            .value
-        {
-            HkxValue::Array(v) => v.clone(),
-            _ => panic!("bodyCinfos not array"),
-        };
-        assert_eq!(
-            body_member_i64(&body_cinfos[0], "collisionFilterInfo"),
-            0x800f,
-            "constrained anchor must gain the vanilla part filter"
-        );
-        assert_eq!(
-            body_member_i64(&body_cinfos[1], "collisionFilterInfo"),
-            0x8104,
-            "constrained chain body must gain part<<8 over its source layer"
-        );
-        assert_eq!(
-            body_member_i64(&body_cinfos[2], "collisionFilterInfo"),
-            0x0004,
-            "unconstrained body must keep its bare source filter"
-        );
-    }
+        let bodies = psd_array(psd, "bodyCinfos");
+        assert_eq!(member_i64(&bodies[0], "flags"), 128);
+        assert_eq!(member_i64(&bodies[0], "motionId"), 0);
+        // An empty motionProperties table froze the physics world on cell attach.
+        let motion_properties = psd_array(psd, "motionProperties");
+        assert_eq!(motion_properties.len(), 1);
+        assert!((member_f32(&motion_properties[0], "gravityFactor") - 1.0).abs() < 1e-6);
 
-    #[test]
-    fn source_mass_distribution_inertia_solves_at_body_mass() {
-        use crate::collision::mass_properties::SourceMassDistribution;
-
-        // TireSwing02 rope link: volume 0.000577 sits far below the massFactor
-        // floor (0.1). The inertia solve happens at the volume-mass, so the
-        // rescale to the source body mass must use that same mass — flooring it
-        // first inflated inverse inertia 173× and locked constrained chains.
-        let dist = SourceMassDistribution {
+        // TireSwing02 rope link: volume far below the massFactor floor. The inertia
+        // rescale must use the source body mass; flooring first inflated inverse
+        // inertia 173x and locked constrained chains.
+        let dist = crate::collision::mass_properties::SourceMassDistribution {
             center_of_mass: [0.0, 0.0, 0.05],
             volume: 0.000577,
             unit_inertia: [0.018935, 0.019039, 0.000386],
             major_axis_space: [0.0, 0.0, 0.0, 1.0],
         };
         let body_mass = 2.0_f32;
-        let metas = [BodyMeta {
-            layer: FO4_CLUTTER_LAYER,
-            body_flags: Some(BODY_FLAGS_DYNAMIC),
-            body_mass: Some(body_mass),
-            mass_distribution: Some(dist),
-            ..BodyMeta::default()
-        }];
-        let body = MultiBodyShape::Polytope {
-            vertices: unit_cube_vertices(),
-        };
-        let blob =
-            build_fo4_multi_body_collision(&[body], &BuildOptions::default(), None, Some(&metas))
-                .expect("build dynamic body");
-        let file = HkxFile::read(&blob).expect("parse");
-        let psd = find_psd(&file);
-        let motion_cinfos = match &psd
-            .members
-            .iter()
-            .find(|m| m.name == "motionCinfos")
-            .unwrap()
-            .value
-        {
-            HkxValue::Array(v) => v.clone(),
-            _ => panic!("motionCinfos not array"),
-        };
-        assert_eq!(motion_cinfos.len(), 1);
-        let HkxValue::Object(members) = &motion_cinfos[0] else {
-            panic!("motion cinfo must be inline object");
-        };
-        let find = |name: &str| members.iter().find(|m| m.name == name).map(|m| &m.value);
-        let HkxValue::F32List(inv_inertia) = find("inverseInertiaLocal").unwrap() else {
-            panic!("inverseInertiaLocal not F32List");
-        };
+        let file = build_parsed(
+            &[polytope()],
+            &BuildOptions::default(),
+            None,
+            Some(&[BodyMeta {
+                layer: FO4_CLUTTER_LAYER,
+                body_flags: Some(BODY_FLAGS_DYNAMIC),
+                body_mass: Some(body_mass),
+                mass_distribution: Some(dist),
+                ..BodyMeta::default()
+            }]),
+        );
+        let motions = psd_array(find_psd(&file), "motionCinfos");
+        assert_eq!(motions.len(), 1);
+        let inv_inertia = member_vec4(&motions[0], "inverseInertiaLocal");
         for (axis, unit) in dist.unit_inertia.iter().enumerate() {
             let expected = 1.0 / (unit * body_mass);
-            let actual = inv_inertia[axis];
             assert!(
-                (actual - expected).abs() / expected < 1e-3,
-                "axis {axis}: inverse inertia {actual} must solve at body mass (expected {expected})"
+                (inv_inertia[axis] - expected).abs() / expected < 1e-3,
+                "axis {axis}: {} vs {expected}",
+                inv_inertia[axis]
             );
         }
-        assert!(
-            matches!(find("inverseMass"), Some(HkxValue::F32(v)) if (*v - 0.5).abs() < 1e-6),
-            "inverseMass must stay 1/body_mass"
-        );
+        assert!((member_f32(&motions[0], "inverseMass") - 0.5).abs() < 1e-6);
     }
 
     #[test]
-    fn non_clutter_body_does_not_preserve_dynamic_body_flag() {
-        let body = MultiBodyShape::Polytope {
-            vertices: unit_cube_vertices(),
-        };
-        let metas = [BodyMeta {
-            collision_filter_info: None,
-            layer: 12,
-            body_flags: Some(BODY_FLAGS_DYNAMIC | 16),
+    fn dynamic_override_simulates_weapon_layer_body() {
+        let weapon = |dynamic| BodyMeta {
+            layer: 5,
+            dynamic,
             ..BodyMeta::default()
-        }];
-        let blob =
-            build_fo4_multi_body_collision(&[body], &BuildOptions::default(), None, Some(&metas))
-                .expect("build trigger body");
-        let file = HkxFile::read(&blob).expect("parse");
+        };
+        let file = build_parsed(&[polytope()], &BuildOptions::default(), None, Some(&[weapon(Some(true))]));
         let psd = find_psd(&file);
-        let body_cinfos = match &psd
-            .members
-            .iter()
-            .find(|m| m.name == "bodyCinfos")
-            .unwrap()
-            .value
-        {
-            HkxValue::Array(v) => v.clone(),
-            _ => panic!("bodyCinfos not array"),
-        };
-        assert_eq!(body_member_i64(&body_cinfos[0], "flags"), 16);
-    }
+        let bodies = psd_array(psd, "bodyCinfos");
+        assert_eq!(member_i64(&bodies[0], "collisionFilterInfo"), 5);
+        assert_eq!(member_i64(&bodies[0], "flags"), 128);
+        assert_eq!(member_i64(&bodies[0], "motionId"), 0);
+        assert!(member_f32(&psd_array(psd, "motionCinfos")[0], "inverseMass") > 0.0);
 
-    #[test]
-    fn static_polytope_body_keeps_zero_mass() {
-        // Layer 1 (STATIC) must stay mass 0 — only movable CLUTTER gets a mass.
-        let body = MultiBodyShape::Polytope {
-            vertices: unit_cube_vertices(),
-        };
-        let metas = [BodyMeta {
-            collision_filter_info: None,
-            layer: 1,
-            ..BodyMeta::default()
-        }];
-        let opts = BuildOptions::default();
-        let body_opts = options_for_body(&opts, &body, None, Some(&metas), 0);
-        assert_eq!(body_opts.mass, 0.0);
-    }
-
-    #[test]
-    fn keyframed_body_emits_motion_cinfo_and_unique_material() {
-        let verts = unit_cube_vertices();
-        let tris = unit_cube_triangles();
-        let opts = BuildOptions::default();
-        let metas = vec![
-            BodyMeta {
-                collision_filter_info: None,
-                layer: 1,
-                body_flags: None,
-                material_flags: None,
-                material_trigger_type: None,
-                position: [0.0, 0.0, 0.0, 0.0],
-                orientation: [0.0, 0.0, 0.0, 1.0],
-                motion_type: BodyMotionType::Static,
-                body_mass: None,
-                mass_distribution: None,
-            },
-            BodyMeta {
-                collision_filter_info: None,
-                layer: 2,
-                body_flags: None,
-                material_flags: None,
-                material_trigger_type: None,
-                position: [0.3, -0.3, 0.6, 0.0],
-                orientation: [0.0, 0.0, -0.707, 0.707],
-                motion_type: BodyMotionType::Keyframed,
-                body_mass: None,
-                mass_distribution: None,
-            },
-        ];
-        let blob = build_fo4_multi_body_collision(
-            &[
-                MultiBodyShape::CompressedMesh {
-                    vertices: verts.clone(),
-                    triangles: tris.clone(),
-                },
-                MultiBodyShape::Polytope { vertices: verts },
-            ],
-            &opts,
-            None,
-            Some(&metas),
-        )
-        .expect("build keyframed multi-body");
-
-        let file = HkxFile::read(&blob).expect("parse");
-        let psd = find_psd(&file);
-
-        let body_cinfos = psd
-            .members
-            .iter()
-            .find(|m| m.name == "bodyCinfos")
-            .map(|m| match &m.value {
-                HkxValue::Array(v) => v.clone(),
-                _ => panic!("bodyCinfos not array"),
-            })
-            .expect("bodyCinfos present");
-        assert_eq!(body_cinfos.len(), 2, "two bodies expected");
-
-        // Body 0: Static CM base — vanilla Safe01 emits motionId=HK_INVALID and
-        // NO motionCinfo for it.
-        assert_eq!(
-            body_member_i64(&body_cinfos[0], "motionId"),
-            i64::from(MOTION_ID_INVALID),
-            "static CM base in a keyframed system must be motionId=HK_INVALID (Safe01 parity)"
-        );
-        assert_eq!(body_member_i64(&body_cinfos[0], "materialId"), 0);
-        assert_eq!(body_member_i64(&body_cinfos[0], "collisionFilterInfo"), 1);
-
-        // Body 1: Keyframed door — motionId points at the single motionCinfos[0].
-        assert_eq!(
-            body_member_i64(&body_cinfos[1], "motionId"),
-            0,
-            "keyframed body must point at the sole motionCinfos[0]"
-        );
-        assert_eq!(
-            body_member_i64(&body_cinfos[1], "materialId"),
-            1,
-            "body 1 must point at materials[1], not the shared slot 0"
-        );
-        assert_eq!(
-            body_member_i64(&body_cinfos[1], "collisionFilterInfo"),
-            2,
-            "keyframed body must carry its own layer (ANIMSTATIC=2)"
-        );
-        let pos = body_member_vec4(&body_cinfos[1], "position");
-        assert!((pos[0] - 0.3).abs() < 1e-5 && (pos[2] - 0.6).abs() < 1e-5);
-
-        // Only the keyframed door gets a motionCinfo (vanilla Safe01 has exactly 1).
-        let motion_cinfos = psd
-            .members
-            .iter()
-            .find(|m| m.name == "motionCinfos")
-            .map(|m| match &m.value {
-                HkxValue::Array(v) => v.clone(),
-                _ => panic!("motionCinfos not array"),
-            })
-            .expect("motionCinfos present");
-        assert_eq!(
-            motion_cinfos.len(),
-            1,
-            "only the keyframed body emits a motionCinfo (Safe01 parity); \
-             the static base must not"
-        );
-        // Reader resolves TypedObject -> Object once the descriptor knows the
-        // array element class; accept either shape.
-        let members: &[HkxMember] = match &motion_cinfos[0] {
-            HkxValue::Object(m) | HkxValue::TypedObject { members: m, .. } => m,
-            other => panic!("motionCinfo must be an inline struct: {other:?}"),
-        };
-        let com_member = members
-            .iter()
-            .find(|m| m.name == "centerOfMassWorld")
-            .expect("centerOfMassWorld present");
-        let HkxValue::F32List(com) = &com_member.value else {
-            panic!("centerOfMassWorld must be F32List");
-        };
-        assert!((com[0] - 0.3).abs() < 1e-5);
-        assert!((com[2] - 0.6).abs() < 1e-5);
-    }
-
-    /// Safe01 parity: in a static-base + keyframed-door system the motionCinfos
-    /// count equals the keyframed body count (1) and every Static body has
-    /// motionId=HK_INVALID (vanilla base motionId=0x7FFFFFFF). A static-body
-    /// motionCinfo causes the workshop-sweep CTD at Fallout4.exe+13E82D0.
-    #[test]
-    fn safe01_parity_static_base_emits_no_motion_cinfo() {
-        let verts = unit_cube_vertices();
-        let tris = unit_cube_triangles();
-        let opts = BuildOptions::default();
-        let metas = vec![
-            BodyMeta {
-                collision_filter_info: None,
-                layer: 1,
-                motion_type: BodyMotionType::Static,
-                ..BodyMeta::default()
-            },
-            BodyMeta {
-                collision_filter_info: None,
-                layer: 2,
-                body_flags: None,
-                material_flags: None,
-                material_trigger_type: None,
-                position: [1.0, 2.0, 3.0, 0.0],
-                orientation: [0.0, 0.0, 0.0, 1.0],
-                motion_type: BodyMotionType::Keyframed,
-                body_mass: None,
-                mass_distribution: None,
-            },
-        ];
-        let blob = build_fo4_multi_body_collision(
-            &[
-                MultiBodyShape::CompressedMesh {
-                    vertices: verts.clone(),
-                    triangles: tris,
-                },
-                MultiBodyShape::Polytope { vertices: verts },
-            ],
-            &opts,
-            None,
-            Some(&metas),
-        )
-        .expect("build static-base + keyframed-door system");
-
-        let file = HkxFile::read(&blob).expect("parse");
-        let psd = find_psd(&file);
-
-        let motion_cinfos_len = psd
-            .members
-            .iter()
-            .find(|m| m.name == "motionCinfos")
-            .map(|m| match &m.value {
-                HkxValue::Array(v) => v.len(),
-                _ => panic!("motionCinfos not array"),
-            })
-            .expect("motionCinfos present");
-        assert_eq!(
-            motion_cinfos_len, 1,
-            "exactly one motionCinfo (the keyframed door), matching vanilla Safe01"
-        );
-
-        let body_cinfos = psd
-            .members
-            .iter()
-            .find(|m| m.name == "bodyCinfos")
-            .map(|m| match &m.value {
-                HkxValue::Array(v) => v.clone(),
-                _ => panic!("bodyCinfos not array"),
-            })
-            .expect("bodyCinfos present");
-        assert_eq!(
-            body_member_i64(&body_cinfos[0], "motionId"),
-            i64::from(MOTION_ID_INVALID),
-            "static base must be HK_INVALID, never a synthesized motion frame"
-        );
-        assert_eq!(
-            body_member_i64(&body_cinfos[1], "motionId"),
-            0,
-            "keyframed door points at the sole motionCinfos[0]"
-        );
-    }
-
-    /// Force the writer to actually run on `blob` by dirtying the model.
-    /// `HkxFile::save()` echoes `source_bytes` verbatim when `model_dirty` is
-    /// false, which makes the naive read→save→read pattern silently bypass
-    /// the writer.
-    fn force_writer_roundtrip(blob: &[u8]) -> Vec<u8> {
-        let mut file = HkxFile::read(blob).expect("parse blob for forced writer roundtrip");
-        let _ = file.objects_mut(); // marks model_dirty=true → writer runs on save
-        file.save()
-    }
-
-    /// Single-body packfile: force the writer through HkxFile::save and confirm
-    /// the Half-typed material members survive (counterpart to the multi-body
-    /// regression).
-    #[test]
-    fn single_body_writer_preserves_material_halves() {
-        use crate::collision::polytope::build_fo4_polytope_collision;
-        let blob =
-            build_fo4_polytope_collision(&unit_cube_vertices(), &BuildOptions::default()).unwrap();
-        let out = force_writer_roundtrip(&blob);
-        let file2 = HkxFile::read(&out).unwrap();
-        let psd = file2
-            .objects()
-            .iter()
-            .find(|o| o.class_name == "hknpPhysicsSystemData")
-            .unwrap();
-        let mat_arr = psd.members.iter().find(|m| m.name == "materials").unwrap();
-        let HkxValue::Array(arr) = &mat_arr.value else {
-            panic!("materials not array")
-        };
-        let mems = match &arr[0] {
-            HkxValue::Object(m) | HkxValue::TypedObject { members: m, .. } => m,
-            other => panic!("material[0] not inline: {other:?}"),
-        };
-        let read_f = |name: &str| -> f32 {
-            mems.iter()
-                .find(|m| m.name == name)
-                .map(|m| match m.value {
-                    HkxValue::Half(v) => v,
-                    HkxValue::F32(v) => v,
-                    _ => -1.0,
-                })
-                .unwrap_or(-1.0)
-        };
-        assert!(
-            read_f("dynamicFriction") > 0.0,
-            "writer lost dynamicFriction"
-        );
-        assert!(
-            read_f("weldingTolerance") > 0.0,
-            "writer lost weldingTolerance"
-        );
-    }
-
-    /// Diagnostic: inspect what HkxFile actually parses for a single polytope's
-    /// material[0] members. Logged via --nocapture to debug the friction-loss
-    /// issue.
-    #[test]
-    fn probe_single_polytope_material_members() {
-        use crate::collision::polytope::build_fo4_polytope_collision;
-        let opts = BuildOptions::default();
-        let blob = build_fo4_polytope_collision(&unit_cube_vertices(), &opts).unwrap();
-        let file = HkxFile::read(&blob).unwrap();
-        let psd = file
-            .objects()
-            .iter()
-            .find(|o| o.class_name == "hknpPhysicsSystemData")
-            .unwrap();
-        let mat_arr = psd.members.iter().find(|m| m.name == "materials").unwrap();
-        let HkxValue::Array(arr) = &mat_arr.value else {
-            panic!()
-        };
-        for (i, m) in arr.iter().enumerate() {
-            let mems = match m {
-                HkxValue::Object(m) | HkxValue::TypedObject { members: m, .. } => m,
-                _ => panic!("material {i} not inline"),
-            };
-            println!("material[{i}]:");
-            for member in mems {
-                println!("  {} = {:?}", member.name, member.value);
-            }
-        }
-    }
-
-    /// Mixed-shape static multi-body must follow vanilla static set-dressing:
-    /// no zero-mass motionCinfos. FO4 vending machines use HK_INVALID for their
-    /// static hknpDynamicCompoundShape and layer-49 convex body.
-    #[test]
-    fn mixed_static_cm_and_polytope_do_not_emit_motion_cinfos() {
-        let verts = unit_cube_vertices();
-        let tris = unit_cube_triangles();
-        let opts = BuildOptions::default();
-        let blob = build_fo4_multi_body_collision(
-            &[
-                MultiBodyShape::CompressedMesh {
-                    vertices: verts.clone(),
-                    triangles: tris,
-                },
-                MultiBodyShape::Polytope { vertices: verts },
-            ],
-            &opts,
-            None,
-            None, // no metas → defaults: all static
-        )
-        .expect("build static multi-body");
-
-        let file = HkxFile::read(&blob).expect("parse");
-        let psd = find_psd(&file);
-        let motion_cinfos = psd
-            .members
-            .iter()
-            .find(|m| m.name == "motionCinfos")
-            .map(|m| match &m.value {
-                HkxValue::Array(v) => v.len(),
-                _ => panic!("motionCinfos not array"),
-            })
-            .expect("motionCinfos present");
-        assert_eq!(
-            motion_cinfos, 0,
-            "static mixed CM + polytope must not emit zero-mass motionCinfos"
-        );
-
-        let body_cinfos = psd
-            .members
-            .iter()
-            .find(|m| m.name == "bodyCinfos")
-            .map(|m| match &m.value {
-                HkxValue::Array(v) => v.clone(),
-                _ => panic!(),
-            })
-            .unwrap();
-        assert_eq!(
-            body_member_i64(&body_cinfos[0], "motionId"),
-            i64::from(MOTION_ID_INVALID),
-            "static mixed CM body must be HK_INVALID"
-        );
-        assert_eq!(
-            body_member_i64(&body_cinfos[1], "motionId"),
-            i64::from(MOTION_ID_INVALID),
-            "static polytope body must be HK_INVALID"
-        );
-    }
-
-    #[test]
-    fn multi_compressed_mesh_bodies_share_system_and_emit_motion_cinfos() {
-        let verts = unit_cube_vertices();
-        let tris = unit_cube_triangles();
-        let opts = BuildOptions::default();
-        let metas = vec![
-            BodyMeta {
-                collision_filter_info: None,
-                layer: 1,
-                body_flags: None,
-                material_flags: None,
-                material_trigger_type: None,
-                position: [0.0, 0.0, 0.0, 0.0],
-                orientation: [0.0, 0.0, 0.0, 1.0],
-                motion_type: BodyMotionType::Static,
-                body_mass: None,
-                mass_distribution: None,
-            },
-            BodyMeta {
-                collision_filter_info: None,
-                layer: 31,
-                body_flags: None,
-                material_flags: None,
-                material_trigger_type: None,
-                position: [0.0, 0.0, 0.0, 0.0],
-                orientation: [0.0, 0.0, 0.0, 1.0],
-                motion_type: BodyMotionType::Static,
-                body_mass: None,
-                mass_distribution: None,
-            },
-            BodyMeta {
-                collision_filter_info: None,
-                layer: 3,
-                body_flags: None,
-                material_flags: None,
-                material_trigger_type: None,
-                position: [0.0, 0.0, 0.0, 0.0],
-                orientation: [0.0, 0.0, 0.0, 1.0],
-                motion_type: BodyMotionType::Static,
-                body_mass: None,
-                mass_distribution: None,
-            },
-        ];
-        let blob = build_fo4_multi_body_collision(
-            &[
-                MultiBodyShape::CompressedMesh {
-                    vertices: verts.clone(),
-                    triangles: tris.clone(),
-                },
-                MultiBodyShape::CompressedMesh {
-                    vertices: verts.clone(),
-                    triangles: tris.clone(),
-                },
-                MultiBodyShape::CompressedMesh {
-                    vertices: verts,
-                    triangles: tris,
-                },
-            ],
-            &opts,
-            None,
-            Some(&metas),
-        )
-        .expect("build shared multi-compressed-mesh collision");
-
-        let file = HkxFile::read(&blob).expect("parse");
-        let psd = find_psd(&file);
-        let body_cinfos = psd
-            .members
-            .iter()
-            .find(|m| m.name == "bodyCinfos")
-            .map(|m| match &m.value {
-                HkxValue::Array(v) => v.clone(),
-                _ => panic!("bodyCinfos not array"),
-            })
-            .expect("bodyCinfos present");
-        assert_eq!(body_cinfos.len(), 3, "three shared bodies expected");
-        assert_eq!(
-            body_member_i64(&body_cinfos[0], "motionId"),
-            0,
-            "primary shared static CM must point at motionCinfos[0]"
-        );
-        assert_eq!(
-            body_member_i64(&body_cinfos[1], "motionId"),
-            1,
-            "secondary CM must point at motionCinfos[1]"
-        );
-        assert_eq!(
-            body_member_i64(&body_cinfos[2], "motionId"),
-            2,
-            "third CM must point at motionCinfos[2]"
-        );
-        assert_eq!(body_member_i64(&body_cinfos[1], "collisionFilterInfo"), 31);
-        assert_eq!(body_member_i64(&body_cinfos[2], "collisionFilterInfo"), 3);
-
-        let motion_cinfos = psd
-            .members
-            .iter()
-            .find(|m| m.name == "motionCinfos")
-            .map(|m| match &m.value {
-                HkxValue::Array(v) => v.len(),
-                _ => panic!("motionCinfos not array"),
-            })
-            .expect("motionCinfos present");
-        assert_eq!(
-            motion_cinfos, 3,
-            "multi-CM systems need one motionCinfo per shared CM body"
-        );
-    }
-
-    #[test]
-    fn mixed_static_compressed_and_compound_bodies_do_not_emit_motion_cinfos() {
-        let verts = unit_cube_vertices();
-        let tris = unit_cube_triangles();
-        let opts = BuildOptions::default();
-        let blob = build_fo4_multi_body_collision(
-            &[
-                MultiBodyShape::CompressedMesh {
-                    vertices: verts.clone(),
-                    triangles: tris.clone(),
-                },
-                MultiBodyShape::CompressedMesh {
-                    vertices: verts.clone(),
-                    triangles: tris,
-                },
-                MultiBodyShape::Compound {
-                    children: vec![CompoundChild {
-                        transform: CompoundChild::identity_transform(),
-                        kind: CompoundChildKind::Polytope { vertices: verts },
-                    }],
-                },
-            ],
-            &opts,
-            None,
-            None,
-        )
-        .expect("build shared compressed+compound collision");
-
-        let file = HkxFile::read(&blob).expect("parse");
-        let psd = find_psd(&file);
-        let body_cinfos = psd
-            .members
-            .iter()
-            .find(|m| m.name == "bodyCinfos")
-            .map(|m| match &m.value {
-                HkxValue::Array(v) => v.clone(),
-                _ => panic!("bodyCinfos not array"),
-            })
-            .expect("bodyCinfos present");
-        assert_eq!(body_cinfos.len(), 3, "three shared bodies expected");
-        assert_eq!(
-            body_member_i64(&body_cinfos[0], "motionId"),
-            i64::from(MOTION_ID_INVALID),
-            "primary static CM in a mixed system must be HK_INVALID"
-        );
-        assert_eq!(
-            body_member_i64(&body_cinfos[1], "motionId"),
-            i64::from(MOTION_ID_INVALID),
-            "secondary static CM in a mixed system must be HK_INVALID"
-        );
-        assert_eq!(
-            body_member_i64(&body_cinfos[2], "motionId"),
-            i64::from(MOTION_ID_INVALID),
-            "static compound body must be HK_INVALID"
-        );
-
-        let motion_cinfos = psd
-            .members
-            .iter()
-            .find(|m| m.name == "motionCinfos")
-            .map(|m| match &m.value {
-                HkxValue::Array(v) => v.len(),
-                _ => panic!("motionCinfos not array"),
-            })
-            .expect("motionCinfos present");
-        assert_eq!(
-            motion_cinfos, 0,
-            "static mixed CM + compound systems must not emit zero-mass motionCinfos"
-        );
-    }
-
-    /// Standalone (single-body) static polytope must match vanilla set-dressing
-    /// (BarrelFlammable.nif; Safe01/bank.nif bases): motionId=HK_INVALID and NO
-    /// motionCinfo. A synthesized zero-mass cinfo makes a non-unit-scaled placed
-    /// ref NaN — FO4 wraps the convex in a runtime hknpScaledConvexShape and
-    /// derives scaled mass from inverseMass=0 → convexRadius=-nan → solver-island
-    /// invalidPos cascade (live capture: Firewood01 0.9, Fancy_Chandelier 0.69).
-    #[test]
-    fn single_static_polytope_is_hk_invalid_without_motion_cinfo() {
-        let verts = unit_cube_vertices();
-        let opts = BuildOptions::default();
-        let blob = build_fo4_multi_body_collision(
-            &[MultiBodyShape::Polytope { vertices: verts }],
-            &opts,
-            None,
-            None, // defaults to Static
-        )
-        .expect("build standalone static polytope");
-
-        let file = HkxFile::read(&blob).expect("parse");
-        let psd = find_psd(&file);
-        let motion_cinfos = psd
-            .members
-            .iter()
-            .find(|m| m.name == "motionCinfos")
-            .map(|m| match &m.value {
-                HkxValue::Array(v) => v.len(),
-                _ => panic!("motionCinfos not array"),
-            })
-            .expect("motionCinfos present");
-        assert_eq!(
-            motion_cinfos, 0,
-            "standalone static polytope must emit NO motionCinfo (vanilla parity); \
-             a synthesized cinfo NaNs scaled refs via runtime hknpScaledConvexShape"
-        );
-
-        let body_cinfos = psd
-            .members
-            .iter()
-            .find(|m| m.name == "bodyCinfos")
-            .map(|m| match &m.value {
-                HkxValue::Array(v) => v.clone(),
-                _ => panic!(),
-            })
-            .unwrap();
-        assert_eq!(body_cinfos.len(), 1);
-        assert_eq!(
-            body_member_i64(&body_cinfos[0], "motionId"),
-            i64::from(MOTION_ID_INVALID),
-            "standalone static polytope's body must be HK_INVALID (no motion frame)"
-        );
-    }
-
-    /// The merged multi-body PSD must keep the hkHalf material fields
-    /// (dynamicFriction, weldingTolerance, massChangerHeavyObjectFactor,
-    /// disablingCollisionsBetweenCvxCvxDynamicObjectsDistance, ...). Vanilla
-    /// Safe01.nif has 1.75 / 1.32 / 1.875 / 2.3125; zeroed fields make the Havok
-    /// broadphase null-deref on workshop sweep / filter init (bank.nif, FO4+13E82D0).
-    #[test]
-    fn multi_body_preserves_material_half_fields() {
-        let verts = unit_cube_vertices();
-        let tris = unit_cube_triangles();
-        let opts = BuildOptions::default();
-        let blob = build_fo4_multi_body_collision(
-            &[
-                MultiBodyShape::CompressedMesh {
-                    vertices: verts.clone(),
-                    triangles: tris,
-                },
-                MultiBodyShape::Polytope { vertices: verts },
-            ],
-            &opts,
-            None,
-            None,
-        )
-        .expect("build multi-body");
-
-        let file = HkxFile::read(&blob).expect("parse merged blob");
-        let psd = find_psd(&file);
-        let mat_arr = psd
-            .members
-            .iter()
-            .find(|m| m.name == "materials")
-            .expect("materials present");
-        let HkxValue::Array(arr) = &mat_arr.value else {
-            panic!("materials not array");
-        };
-        for (i, mat) in arr.iter().enumerate() {
-            let mems = match mat {
-                HkxValue::Object(m) | HkxValue::TypedObject { members: m, .. } => m,
-                _ => panic!("material[{i}] not inline"),
-            };
-            let read_f = |name: &str| -> f32 {
-                mems.iter()
-                    .find(|m| m.name == name)
-                    .map(|m| match m.value {
-                        HkxValue::Half(v) => v,
-                        HkxValue::F32(v) => v,
-                        _ => -1.0,
-                    })
-                    .unwrap_or(-1.0)
-            };
-            let dyn_fric = read_f("dynamicFriction");
-            let stat_fric = read_f("staticFriction");
-            let weld = read_f("weldingTolerance");
-            println!("merged material[{i}]: dynFric={dyn_fric} statFric={stat_fric} weld={weld}");
-            assert!(
-                dyn_fric > 0.0,
-                "merged material[{i}].dynamicFriction lost in writer round-trip: {dyn_fric}"
-            );
-            assert!(
-                weld > 0.0,
-                "merged material[{i}].weldingTolerance lost in writer round-trip: {weld}"
-            );
-        }
-    }
-
-    /// `hknpBSMaterialProperties.MaterialA[i].uiFilterInfo` must
-    /// equal the body's `collisionFilterInfo`, which comes from
-    /// `body_metas[i].layer` — NOT the shared `opts.layer`. Mismatch leaves
-    /// the body's material unresolvable (Havok scans `MaterialA` for
-    /// `filterInfo == body.collisionFilterInfo`); a null material lookup then
-    /// crashes the broadphase on workshop sphere casts (Fallout4.exe+13E82D0).
-    ///
-    /// Setup: opts.layer=2 (the new polytope), body 0 = CompressedMesh
-    /// preserved on layer 1; body 0's MaterialA entry must not get uiFilterInfo=2
-    /// while its body's collisionFilterInfo=1.
-    #[test]
-    fn per_body_bs_material_filter_info_matches_body_layer() {
-        let verts = unit_cube_vertices();
-        let tris = unit_cube_triangles();
-        let opts = BuildOptions {
-            layer: 2, // shared "new body" layer (would have been polytope)
-            ..BuildOptions::default()
-        };
-        let metas = vec![
-            BodyMeta {
-                collision_filter_info: None,
-                layer: 1, // preserved CompressedMesh on STATIC
-                body_flags: None,
-                material_flags: None,
-                material_trigger_type: None,
-                position: [0.0, 0.0, 0.0, 0.0],
-                orientation: [0.0, 0.0, 0.0, 1.0],
-                motion_type: BodyMotionType::Static,
-                body_mass: None,
-                mass_distribution: None,
-            },
-            BodyMeta {
-                collision_filter_info: None,
-                layer: 2, // new polytope on ANIMSTATIC
-                body_flags: None,
-                material_flags: None,
-                material_trigger_type: None,
-                position: [0.3, -0.3, 0.6, 0.0],
-                orientation: [0.0, 0.0, -0.707, 0.707],
-                motion_type: BodyMotionType::Keyframed,
-                body_mass: None,
-                mass_distribution: None,
-            },
-        ];
-        let material_crcs: Vec<Option<u32>> = vec![Some(0xC0EB_623D), Some(0xC0EB_623D)];
-        let blob = build_fo4_multi_body_collision(
-            &[
-                MultiBodyShape::CompressedMesh {
-                    vertices: verts.clone(),
-                    triangles: tris,
-                },
-                MultiBodyShape::Polytope { vertices: verts },
-            ],
-            &opts,
-            Some(&material_crcs),
-            Some(&metas),
-        )
-        .expect("build multi-body with per-body crcs + metas");
-
-        let file = HkxFile::read(&blob).expect("parse merged blob");
-        let psd = find_psd(&file);
-
-        // The merged BS material array (in hknpBSMaterialProperties.MaterialA)
-        // is reachable through the per-body hkRefCountedProperties; for the
-        // smoke test we read the body 0 source's surviving filter_info via
-        // havok_collision_summary, which decodes both bodies' bs_materials.
-        let summary_json = crate::api::havok_collision_summary(&blob).expect("summary");
-        let summary: serde_json::Value = serde_json::from_str(&summary_json).expect("summary JSON");
-        let bodies = summary["bodies"].as_array().expect("bodies array");
-        assert_eq!(bodies.len(), 2);
-
-        // Body 0 (CompressedMesh): collision_filter_info=1, BSMaterial filter
-        // info must also be 1 — they must match for Havok to resolve material.
-        let body0_filter = bodies[0]["collision_filter_info"].as_u64().unwrap();
-        let body0_bs_filter = bodies[0]["bs_materials"][0]["filter_info"]
-            .as_u64()
-            .expect("body 0 BSMaterial filter_info");
-        assert_eq!(body0_filter, 1, "body 0 collisionFilterInfo");
-        assert_eq!(
-            body0_bs_filter, body0_filter,
-            "body 0 BSMaterial filter_info must match body's collisionFilterInfo; \
-             mismatched values (uiFilterInfo={body0_bs_filter}, filter={body0_filter}) \
-             reproduce the workshop-sweep broadphase null-deref CTD"
-        );
-
-        // PSD-level materials array: each body owns its own slot, and slot i's
-        // filter info equals body i's layer. (Polytopes don't carry their own
-        // BSMaterial in vanilla, but the cinfo's collisionFilterInfo must still
-        // match its meta.)
-        let body1_filter = bodies[1]["collision_filter_info"].as_u64().unwrap();
-        assert_eq!(body1_filter, 2, "body 1 collisionFilterInfo");
-
-        // Sanity: ensure body 0 didn't accidentally get the polytope's layer.
+        let file = build_parsed(&[polytope()], &BuildOptions::default(), None, Some(&[weapon(None)]));
+        let bodies = psd_array(find_psd(&file), "bodyCinfos");
         assert_ne!(
-            body0_filter, body1_filter,
-            "bodies must keep distinct collision layers"
+            member_i64(&bodies[0], "motionId"),
+            0,
+            "without the override a non-CLUTTER body must stay static"
         );
-        let _ = psd;
     }
 
-    /// hknpMaterial carries two `hkUFloat8` inline structs
-    /// (`triggerManifoldTolerance` at offset 17, `softContactSeperationVelocity`
-    /// at offset 44), each a single 1-byte UINT8 member. With a missing or
-    /// mistyped descriptor, `calc_inline_struct_size` returns 0 and every half
-    /// field after offset 17 shifts, zeroing the hkHalf material fields.
     #[test]
-    fn writer_preserves_hk_ufloat8_inline_struct() {
-        use crate::collision::polytope::build_fo4_polytope_collision;
-        let blob =
-            build_fo4_polytope_collision(&unit_cube_vertices(), &BuildOptions::default()).unwrap();
+    fn body_and_material_flags_follow_source_meta() {
+        let trigger = build_parsed(
+            &[polytope()],
+            &BuildOptions::default(),
+            None,
+            Some(&[BodyMeta {
+                layer: 12,
+                body_flags: Some(16),
+                material_flags: Some(1 << 21),
+                material_trigger_type: Some(2),
+                ..BodyMeta::default()
+            }]),
+        );
+        let psd = find_psd(&trigger);
+        let body = &psd_array(psd, "bodyCinfos")[0];
+        assert_eq!(member_i64(body, "collisionFilterInfo"), 12);
+        assert_eq!(member_i64(body, "flags"), 16);
+        assert_eq!(member_i64(body, "motionId"), i64::from(MOTION_ID_INVALID));
+        let material = &psd_array(psd, "materials")[0];
+        assert_eq!(member_i64(material, "flags"), 1 << 21);
+        assert_eq!(member_i64(material, "triggerType"), 2);
+        assert!(psd_array(psd, "motionCinfos").is_empty());
 
-        let read_ufloat8 = |bytes: &[u8], field: &str| -> Option<u8> {
-            let file = HkxFile::read(bytes).ok()?;
-            let psd = file
+        let non_clutter = build_parsed(
+            &[polytope()],
+            &BuildOptions::default(),
+            None,
+            Some(&[BodyMeta {
+                layer: 12,
+                body_flags: Some(BODY_FLAGS_DYNAMIC | 16),
+                ..BodyMeta::default()
+            }]),
+        );
+        assert_eq!(
+            member_i64(&psd_array(find_psd(&non_clutter), "bodyCinfos")[0], "flags"),
+            16,
+            "only clutter keeps the dynamic body flag"
+        );
+    }
+
+    #[test]
+    fn grafted_constraints_preserve_filters_and_synthesize_part_bits() {
+        use crate::collision::{GraftCinfo, GraftedConstraints};
+
+        fn build(metas: &[BodyMeta], constraint_class: &str) -> HkxFile {
+            let bodies: Vec<MultiBodyShape> = metas.iter().map(|_| polytope()).collect();
+            let grafted = GraftedConstraints {
+                objects: vec![HkxObject {
+                    name: None,
+                    offset: 0,
+                    signature: 0,
+                    class_name: constraint_class.to_string(),
+                    members: vec![HkxMember {
+                        name: "type".to_string(),
+                        value: HkxValue::I32(3),
+                    }],
+                }],
+                cinfos: vec![GraftCinfo {
+                    body_a: 1,
+                    body_b: 0,
+                    data_object: 0,
+                    flags: 0,
+                }],
+            };
+            let blob = build_fo4_multi_body_collision_with_constraints(
+                &bodies,
+                &BuildOptions::default(),
+                None,
+                Some(metas),
+                Some(&grafted),
+            )
+            .expect("build constrained assembly");
+            HkxFile::read(&blob).expect("parse")
+        }
+        let meta = |filter: u32, layer: u8, dynamic: bool| BodyMeta {
+            collision_filter_info: Some(filter),
+            layer,
+            body_flags: dynamic.then_some(BODY_FLAGS_DYNAMIC),
+            ..BodyMeta::default()
+        };
+
+        // FO76 bone-chime: full 0x81xx group filters must survive the re-encode.
+        let chime = build(
+            &[meta(0x810a, 10, true), meta(0x820a, 10, true)],
+            "hkpPositionConstraintMotor",
+        );
+        let psd = find_psd(&chime);
+        let bodies = psd_array(psd, "bodyCinfos");
+        assert_eq!(member_i64(&bodies[0], "collisionFilterInfo"), 0x810a);
+        assert_eq!(member_i64(&bodies[1], "collisionFilterInfo"), 0x820a);
+        let constraints = psd_array(psd, "constraintCinfos");
+        assert_eq!(constraints.len(), 1);
+        assert!(matches!(
+            member_value(&constraints[0], "bodyA"),
+            HkxValue::U32(1)
+        ));
+        assert!(matches!(
+            member_value(&constraints[0], "bodyB"),
+            HkxValue::U32(0)
+        ));
+        assert!(matches!(
+            member_value(&constraints[0], "constraintData"),
+            HkxValue::Pointer(Some(_))
+        ));
+        assert!(
+            chime
                 .objects()
                 .iter()
-                .find(|o| o.class_name == "hknpPhysicsSystemData")?;
-            let mat_arr = psd.members.iter().find(|m| m.name == "materials")?;
-            let HkxValue::Array(arr) = &mat_arr.value else {
-                return None;
-            };
-            let members = arr[0].as_object_members()?;
-            let m = members.iter().find(|m| m.name == field)?;
-            let inner = m.value.as_object_members()?;
-            let val_member = inner.iter().find(|m| m.name == "value")?;
-            match val_member.value {
-                HkxValue::U8(v) => Some(v),
+                .any(|o| o.class_name == "hkpPositionConstraintMotor")
+        );
+
+        // TireSwing02: bare layer filters on constrained bodies gain vanilla part
+        // numbering (0x8000 | index<<8 | layer); unconstrained bodies stay bare.
+        let swing = build(
+            &[
+                meta(0x000f, 15, false),
+                meta(0x0004, 4, true),
+                meta(0x0004, 4, true),
+            ],
+            "hkpRagdollConstraintData",
+        );
+        let filters: Vec<i64> = psd_array(find_psd(&swing), "bodyCinfos")
+            .iter()
+            .map(|b| member_i64(b, "collisionFilterInfo"))
+            .collect();
+        assert_eq!(filters, vec![0x800f, 0x8104, 0x0004]);
+    }
+
+    /// Vanilla parity for motion cinfos: static bodies are HK_INVALID with no
+    /// cinfo (a static cinfo is the workshop-sweep CTD at Fallout4.exe+13E82D0;
+    /// a zero-mass cinfo NaNs scaled placed refs), keyframed bodies and shared
+    /// multi-CM bodies get one each.
+    #[test]
+    fn motion_cinfo_layout_matches_vanilla() {
+        let invalid = i64::from(MOTION_ID_INVALID);
+        let meta = |layer: u8, motion_type| BodyMeta {
+            layer,
+            motion_type,
+            ..BodyMeta::default()
+        };
+        let cases: Vec<(
+            &str,
+            Vec<MultiBodyShape>,
+            Option<Vec<BodyMeta>>,
+            Vec<i64>,
+            usize,
+        )> = vec![
+            (
+                "single static polytope",
+                vec![polytope()],
+                None,
+                vec![invalid],
+                0,
+            ),
+            (
+                "static CM + polytope",
+                vec![cube_mesh(), polytope()],
+                None,
+                vec![invalid, invalid],
+                0,
+            ),
+            (
+                "static CM x2 + compound",
+                vec![cube_mesh(), cube_mesh(), polytope_compound()],
+                None,
+                vec![invalid, invalid, invalid],
+                0,
+            ),
+            (
+                "shared multi CM",
+                vec![cube_mesh(), cube_mesh(), cube_mesh()],
+                Some(vec![
+                    meta(1, BodyMotionType::Static),
+                    meta(31, BodyMotionType::Static),
+                    meta(3, BodyMotionType::Static),
+                ]),
+                vec![0, 1, 2],
+                3,
+            ),
+        ];
+        for (label, bodies, metas, motion_ids, cinfo_count) in cases {
+            let file = build_parsed(&bodies, &BuildOptions::default(), None, metas.as_deref());
+            let psd = find_psd(&file);
+            let ids: Vec<i64> = psd_array(psd, "bodyCinfos")
+                .iter()
+                .map(|b| member_i64(b, "motionId"))
+                .collect();
+            assert_eq!(ids, motion_ids, "{label}: motionIds");
+            assert_eq!(psd_array(psd, "motionCinfos").len(), cinfo_count, "{label}");
+        }
+
+        // Safe01: static CM base + keyframed door.
+        let door = BodyMeta {
+            layer: 2,
+            position: [0.3, -0.3, 0.6, 0.0],
+            orientation: [0.0, 0.0, -0.707, 0.707],
+            motion_type: BodyMotionType::Keyframed,
+            ..BodyMeta::default()
+        };
+        let file = build_parsed(
+            &[cube_mesh(), polytope()],
+            &BuildOptions::default(),
+            None,
+            Some(&[meta(1, BodyMotionType::Static), door]),
+        );
+        let psd = find_psd(&file);
+        let bodies = psd_array(psd, "bodyCinfos");
+        assert_eq!(member_i64(&bodies[0], "motionId"), invalid);
+        assert_eq!(member_i64(&bodies[0], "materialId"), 0);
+        assert_eq!(member_i64(&bodies[0], "collisionFilterInfo"), 1);
+        assert_eq!(member_i64(&bodies[1], "motionId"), 0);
+        assert_eq!(member_i64(&bodies[1], "materialId"), 1);
+        assert_eq!(member_i64(&bodies[1], "collisionFilterInfo"), 2);
+        let pos = member_vec4(&bodies[1], "position");
+        assert!((pos[0] - 0.3).abs() < 1e-5 && (pos[2] - 0.6).abs() < 1e-5);
+        let motions = psd_array(psd, "motionCinfos");
+        assert_eq!(motions.len(), 1);
+        let com = member_vec4(&motions[0], "centerOfMassWorld");
+        assert!((com[0] - 0.3).abs() < 1e-5 && (com[2] - 0.6).abs() < 1e-5);
+    }
+
+    /// Zeroed hkHalf material fields or a BS material filter that does not match
+    /// the body's collisionFilterInfo null-deref the broadphase on workshop sweep
+    /// (bank.nif, Fallout4.exe+13E82D0).
+    #[test]
+    fn material_fields_survive_writer_and_match_body_filters() {
+        use crate::collision::polytope::build_fo4_polytope_collision;
+        let assert_halves = |file: &HkxFile, label: &str| {
+            for (i, material) in psd_array(find_psd(file), "materials").iter().enumerate() {
+                assert!(
+                    member_f32(material, "dynamicFriction") > 0.0,
+                    "{label} [{i}]"
+                );
+                assert!(
+                    member_f32(material, "weldingTolerance") > 0.0,
+                    "{label} [{i}]"
+                );
+            }
+        };
+        let single =
+            build_fo4_polytope_collision(&unit_cube_vertices(), &BuildOptions::default()).unwrap();
+        let rewritten = force_writer_roundtrip(&single);
+        assert_halves(&HkxFile::read(&rewritten).unwrap(), "single body");
+        let merged = build_parsed(
+            &[cube_mesh(), polytope()],
+            &BuildOptions::default(),
+            None,
+            None,
+        );
+        assert_halves(&merged, "multi body");
+
+        // hkUFloat8 inline structs: a missing descriptor shifts every later half.
+        let read_ufloat8 = |bytes: &[u8], field: &str| -> Option<u8> {
+            let file = HkxFile::read(bytes).ok()?;
+            let material = psd_array(find_psd(&file), "materials")[0].clone();
+            match member_value(member_value(&material, field), "value") {
+                HkxValue::U8(v) => Some(*v),
                 _ => None,
             }
         };
+        for field in ["triggerManifoldTolerance", "softContactSeperationVelocity"] {
+            let before = read_ufloat8(&single, field);
+            assert!(before.is_some(), "{field} not decoded");
+            assert_eq!(read_ufloat8(&rewritten, field), before, "{field}");
+        }
 
-        let pre_trigger = read_ufloat8(&blob, "triggerManifoldTolerance");
-        let pre_softvel = read_ufloat8(&blob, "softContactSeperationVelocity");
-        assert!(
-            pre_trigger.is_some() && pre_softvel.is_some(),
-            "hkUFloat8 descriptor missing — reader produced None for triggerManifoldTolerance={pre_trigger:?} / softContactSeperationVelocity={pre_softvel:?}",
-        );
-
-        let out = force_writer_roundtrip(&blob);
-        let post_trigger = read_ufloat8(&out, "triggerManifoldTolerance");
-        let post_softvel = read_ufloat8(&out, "softContactSeperationVelocity");
-        assert_eq!(
-            post_trigger, pre_trigger,
-            "writer dropped hkUFloat8 triggerManifoldTolerance"
-        );
-        assert_eq!(
-            post_softvel, pre_softvel,
-            "writer dropped hkUFloat8 softContactSeperationVelocity"
-        );
-    }
-
-    /// Single-body sphere routes through the short-circuit path in
-    /// `build_fo4_multi_body_collision` and returns the raw sphere blob
-    /// directly so the descriptor-unknown trailer bytes (0x30 marker, 0x4C
-    /// trailer float) survive — they don't round-trip through HkxFile::save.
-    #[test]
-    fn single_body_sphere_preserves_trailer_bytes() {
-        let metas = vec![BodyMeta {
-            collision_filter_info: None,
-            layer: 5,
-            body_flags: None,
-            material_flags: None,
-            material_trigger_type: None,
-            position: [1.0, 2.0, 3.0, 0.0],
-            orientation: [0.0, 0.0, 0.0, 1.0],
-            motion_type: BodyMotionType::Static,
-            body_mass: None,
-            mass_distribution: None,
-        }];
-        let blob = build_fo4_multi_body_collision(
-            &[MultiBodyShape::Sphere {
-                radius: 0.5,
-                position: [0.0, 0.0, 0.0], // overridden by meta
-            }],
-            &BuildOptions::default(),
-            None,
-            Some(&metas),
-        )
-        .expect("build single-body sphere via multi-body API");
-
-        let file = HkxFile::read(&blob).expect("parse sphere packfile");
-        assert!(
-            file.objects()
-                .iter()
-                .any(|o| o.class_name == "hknpSphereShape"),
-            "sphere shape missing from multi-body sphere blob"
-        );
-
-        // BodyMeta position must override the radius/position param on the
-        // enum so the caller's world transform wins.
-        let psd = file
-            .objects()
-            .iter()
-            .find(|o| o.class_name == "hknpPhysicsSystemData")
-            .expect("PSD present");
-        let body_cinfos = psd
-            .members
-            .iter()
-            .find(|m| m.name == "bodyCinfos")
-            .expect("bodyCinfos");
-        let HkxValue::Array(arr) = &body_cinfos.value else {
-            panic!("bodyCinfos not array");
-        };
-        let pos = body_member_vec4(&arr[0], "position");
-        assert!((pos[0] - 1.0).abs() < 1e-5 && (pos[2] - 3.0).abs() < 1e-5);
-    }
-
-    /// `BuildOptions::body_props_raw` overrides body_props bytes 0x10-0x1F (as
-    /// pynifly does, refs/io_scene_nifly/nif/collision.py:1318), so a re-exported
-    /// vanilla mesh keeps its damping, max-velocity and Bethesda flag bits.
-    #[test]
-    fn body_props_raw_overrides_reconstructed_material_bytes() {
-        use crate::collision::polytope::build_fo4_polytope_collision;
-        // Pynifly default sentinel: 00ff003f003fcd3e01024c3deeff7f7f
+        // body_props_raw (pynifly sentinel) must land verbatim.
         let raw: [u8; 16] = [
             0x00, 0xff, 0x00, 0x3f, 0x00, 0x3f, 0xcd, 0x3e, 0x01, 0x02, 0x4c, 0x3d, 0xee, 0xff,
             0x7f, 0x7f,
         ];
-        let opts = BuildOptions {
-            body_props_raw: Some(raw),
-            ..BuildOptions::default()
-        };
-        let blob = build_fo4_polytope_collision(&unit_cube_vertices(), &opts).unwrap();
-        // The single-body builder runs the writer (from_tagxml), so the raw
-        // bytes must appear verbatim in the packfile.
-        let mut found = false;
-        for window in blob.windows(16) {
-            if window == raw {
-                found = true;
-                break;
-            }
-        }
-        assert!(
-            found,
-            "body_props_raw sentinel bytes not found in output blob — override silently dropped"
+        let with_raw = build_fo4_polytope_collision(
+            &unit_cube_vertices(),
+            &BuildOptions {
+                body_props_raw: Some(raw),
+                ..BuildOptions::default()
+            },
+        )
+        .unwrap();
+        assert!(with_raw.windows(16).any(|w| w == raw));
+
+        let metas = [
+            BodyMeta {
+                layer: 1,
+                ..BodyMeta::default()
+            },
+            BodyMeta {
+                layer: 2,
+                position: [0.3, -0.3, 0.6, 0.0],
+                orientation: [0.0, 0.0, -0.707, 0.707],
+                motion_type: BodyMotionType::Keyframed,
+                ..BodyMeta::default()
+            },
+        ];
+        let blob = build_fo4_multi_body_collision(
+            &[cube_mesh(), polytope()],
+            &BuildOptions {
+                layer: 2,
+                ..BuildOptions::default()
+            },
+            Some(&[Some(0xC0EB_623D), Some(0xC0EB_623D)]),
+            Some(&metas),
+        )
+        .unwrap();
+        let summary: serde_json::Value =
+            serde_json::from_str(&crate::api::havok_collision_summary(&blob).unwrap()).unwrap();
+        let bodies = summary["bodies"].as_array().expect("bodies array");
+        assert_eq!(bodies[0]["collision_filter_info"].as_u64(), Some(1));
+        assert_eq!(
+            bodies[0]["bs_materials"][0]["filter_info"].as_u64(),
+            Some(1)
         );
+        assert_eq!(bodies[1]["collision_filter_info"].as_u64(), Some(2));
     }
 
-    /// `[Sphere, Polytope]` and `[CompressedMesh, Sphere]` have no vanilla
-    /// precedent — must be rejected loudly with a clear message.
     #[test]
-    fn sphere_mixed_with_other_bodies_is_rejected() {
-        let verts = unit_cube_vertices();
+    fn sphere_must_be_sole_body_and_keeps_meta_position() {
+        let sphere = MultiBodyShape::Sphere {
+            radius: 0.5,
+            position: [0.0, 0.0, 0.0],
+        };
+        let file = build_parsed(
+            &[sphere.clone()],
+            &BuildOptions::default(),
+            None,
+            Some(&[BodyMeta {
+                layer: 5,
+                position: [1.0, 2.0, 3.0, 0.0],
+                ..BodyMeta::default()
+            }]),
+        );
+        assert!(
+            file.objects()
+                .iter()
+                .any(|o| o.class_name == "hknpSphereShape")
+        );
+        let pos = member_vec4(&psd_array(find_psd(&file), "bodyCinfos")[0], "position");
+        assert!((pos[0] - 1.0).abs() < 1e-5 && (pos[2] - 3.0).abs() < 1e-5);
+
         let err = build_fo4_multi_body_collision(
-            &[
-                MultiBodyShape::Sphere {
-                    radius: 0.5,
-                    position: [0.0, 0.0, 0.0],
-                },
-                MultiBodyShape::Polytope { vertices: verts },
-            ],
+            &[sphere, polytope()],
             &BuildOptions::default(),
             None,
             None,
         )
         .expect_err("sphere + polytope must be rejected");
         let msg = format!("{err:?}");
-        assert!(
-            msg.contains("Sphere") && msg.contains("sole body"),
-            "expected rejection mentioning Sphere/sole-body, got: {msg}"
-        );
+        assert!(msg.contains("Sphere") && msg.contains("sole body"), "{msg}");
     }
 
-    fn irregular_cloud() -> Vec<[f32; 3]> {
-        // Deterministic pseudo-random cloud (LCG) producing a richer hull with
-        // many facets and coplanarity ties — exercises Quickhull paths a
-        // symmetric cube does not.
-        let mut s: u32 = 0x1234_5678;
+    fn lcg_cloud(seed: u32, count: usize, scale: f32, offset: f32) -> Vec<[f32; 3]> {
+        let mut s = seed;
         let mut next = || {
             s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            ((s >> 8) as f32 / 16_777_216.0) * 2.0 - 1.0
+            ((s >> 8) as f32 / 16_777_216.0) * scale + offset
         };
-        (0..40).map(|_| [next(), next(), next()]).collect()
+        (0..count).map(|_| [next(), next(), next()]).collect()
     }
 
-    #[test]
-    fn build_large_compressed_mesh_is_byte_deterministic() {
-        // >128 triangles forces multi-section splitting + AABB-tree node build,
-        // a path the 12-triangle cube canary never reaches.
-        let mut s: u32 = 0x9E37_79B9;
-        let mut next = || {
-            s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            ((s >> 8) as f32 / 16_777_216.0) * 10.0
-        };
-        let n_verts = 300usize;
-        let verts: Vec<[f32; 3]> = (0..n_verts).map(|_| [next(), next(), next()]).collect();
-        let tris: Vec<[u32; 3]> = (0..400)
-            .map(|i| {
-                let a = (i * 7) % n_verts;
-                let b = (i * 13 + 1) % n_verts;
-                let c = (i * 17 + 2) % n_verts;
-                [a as u32, b as u32, c as u32]
-            })
-            .collect();
-        let bodies = vec![MultiBodyShape::CompressedMesh {
-            vertices: verts,
-            triangles: tris,
-        }];
-        let metas = vec![BodyMeta::default()];
-        let crcs: Vec<Option<u32>> = vec![Some(0xC0EB623D)];
-        let opts = BuildOptions::default();
-        let first = match build_fo4_multi_body_collision(&bodies, &opts, Some(&crcs), Some(&metas))
-        {
-            Ok(b) => b,
-            Err(_) => return, // degenerate random mesh rejected — not the test's concern
-        };
-        for round in 0..32 {
-            let again =
-                build_fo4_multi_body_collision(&bodies, &opts, Some(&crcs), Some(&metas)).unwrap();
-            assert_eq!(
-                again, first,
-                "round {round}: large CM not byte-deterministic"
-            );
-        }
-    }
-
+    /// Real FO76 thin-slab hull (boslpleftarmpart07.nif) whose near-coplanar
+    /// vertices triggered nondeterministic Quickhull facet ordering.
     fn boslp_thin_hull() -> Vec<[f32; 3]> {
         vec![
             [0.015272981f32, -0.1211541f32, 0.31871527f32],
@@ -2624,174 +1677,111 @@ mod tests {
         ]
     }
 
-    /// Regression: a real FO76 thin-slab collision hull (boslpleftarmpart07.nif)
-    /// whose near-coplanar vertices triggered nondeterministic Quickhull facet
-    /// ordering the synthetic cube/irregular canaries did not reach.
+    /// Covers the hull boundary-loop HashMap-start nondeterminism (coplanar cube
+    /// faces), Quickhull ties (irregular / thin-slab hulls), multi-section CM
+    /// splitting (>128 triangles) and the keyframed motion-cinfo branch.
     #[test]
-    fn build_boslp_thin_hull_is_byte_deterministic() {
-        let bodies = vec![MultiBodyShape::Polytope {
-            vertices: boslp_thin_hull(),
-        }];
-        let metas = vec![BodyMeta {
-            collision_filter_info: None,
-            layer: 1,
+    fn build_is_byte_deterministic() {
+        let large_verts = lcg_cloud(0x9E37_79B9, 300, 10.0, 0.0);
+        let large_tris: Vec<[u32; 3]> = (0..400)
+            .map(|i| {
+                [
+                    ((i * 7) % 300) as u32,
+                    ((i * 13 + 1) % 300) as u32,
+                    ((i * 17 + 2) % 300) as u32,
+                ]
+            })
+            .collect();
+        let keyframed_second = |i: usize| BodyMeta {
+            motion_type: if i == 1 {
+                BodyMotionType::Keyframed
+            } else {
+                BodyMotionType::Static
+            },
             ..BodyMeta::default()
-        }];
-        let crcs: Vec<Option<u32>> = vec![Some(104858580)];
-        let opts = BuildOptions {
-            layer: 1,
-            convex_radius: 0.01,
-            ..BuildOptions::default()
         };
-        let first = build_fo4_multi_body_collision(&bodies, &opts, Some(&crcs), Some(&metas))
-            .expect("build");
-        for round in 0..32 {
-            let again =
-                build_fo4_multi_body_collision(&bodies, &opts, Some(&crcs), Some(&metas)).unwrap();
-            assert_eq!(
-                again, first,
-                "round {round}: boslp thin hull not byte-deterministic"
-            );
-        }
-    }
-
-    #[test]
-    fn build_irregular_hull_is_byte_deterministic() {
-        let bodies = vec![MultiBodyShape::Polytope {
-            vertices: irregular_cloud(),
-        }];
-        let metas = vec![BodyMeta::default()];
-        let crcs: Vec<Option<u32>> = vec![Some(0xC0EB623D)];
-        let opts = BuildOptions::default();
-        let first = build_fo4_multi_body_collision(&bodies, &opts, Some(&crcs), Some(&metas))
-            .expect("build");
-        for round in 0..32 {
-            let again =
-                build_fo4_multi_body_collision(&bodies, &opts, Some(&crcs), Some(&metas)).unwrap();
-            assert_eq!(
-                again, first,
-                "round {round}: irregular hull not byte-deterministic"
-            );
-        }
-    }
-
-    /// Identical build requests must produce identical bytes. A cube hull has
-    /// coplanar triangle pairs per face, exercising hull::extract_boundary_loop
-    /// where the HashMap-start nondeterminism lived.
-    #[test]
-    fn build_is_byte_deterministic_across_repeated_builds() {
-        let cases: Vec<Vec<MultiBodyShape>> = vec![
-            // single static polytope (boundary-loop path)
-            vec![MultiBodyShape::Polytope {
-                vertices: unit_cube_vertices(),
-            }],
-            // single compressed mesh
-            vec![MultiBodyShape::CompressedMesh {
-                vertices: unit_cube_vertices(),
-                triangles: unit_cube_triangles(),
-            }],
-            // compound of two polytopes
-            vec![MultiBodyShape::Compound {
-                children: vec![
-                    CompoundChild {
-                        transform: CompoundChild::identity_transform(),
-                        kind: CompoundChildKind::Polytope {
-                            vertices: unit_cube_vertices(),
-                        },
-                    },
-                    CompoundChild {
-                        transform: CompoundChild::identity_transform(),
-                        kind: CompoundChildKind::Polytope {
-                            vertices: unit_cube_vertices(),
-                        },
-                    },
-                ],
-            }],
-            // mixed CM + polytope with a keyframed body (Safe01 pattern)
-            vec![
-                MultiBodyShape::CompressedMesh {
-                    vertices: unit_cube_vertices(),
-                    triangles: unit_cube_triangles(),
+        let cases: Vec<(&str, Vec<MultiBodyShape>, BuildOptions, u32)> = vec![
+            (
+                "cube polytope",
+                vec![polytope()],
+                BuildOptions::default(),
+                0xC0EB623D,
+            ),
+            (
+                "cube mesh",
+                vec![cube_mesh()],
+                BuildOptions::default(),
+                0xC0EB623D,
+            ),
+            (
+                "two-polytope compound",
+                vec![MultiBodyShape::Compound {
+                    children: (0..2)
+                        .map(|_| CompoundChild {
+                            transform: CompoundChild::identity_transform(),
+                            kind: CompoundChildKind::Polytope {
+                                vertices: unit_cube_vertices(),
+                            },
+                        })
+                        .collect(),
+                }],
+                BuildOptions::default(),
+                0xC0EB623D,
+            ),
+            (
+                "CM + keyframed polytope",
+                vec![cube_mesh(), polytope()],
+                BuildOptions::default(),
+                0xC0EB623D,
+            ),
+            (
+                "irregular hull",
+                vec![MultiBodyShape::Polytope {
+                    vertices: lcg_cloud(0x1234_5678, 40, 2.0, -1.0),
+                }],
+                BuildOptions::default(),
+                0xC0EB623D,
+            ),
+            (
+                "boslp thin hull",
+                vec![MultiBodyShape::Polytope {
+                    vertices: boslp_thin_hull(),
+                }],
+                BuildOptions {
+                    layer: 1,
+                    convex_radius: 0.01,
+                    ..BuildOptions::default()
                 },
-                MultiBodyShape::Polytope {
-                    vertices: unit_cube_vertices(),
-                },
-            ],
+                104858580,
+            ),
+            (
+                "large multi-section CM",
+                vec![MultiBodyShape::CompressedMesh {
+                    vertices: large_verts,
+                    triangles: large_tris,
+                }],
+                BuildOptions::default(),
+                0xC0EB623D,
+            ),
         ];
-        for (case_index, bodies) in cases.iter().enumerate() {
-            let metas: Vec<BodyMeta> = bodies
-                .iter()
-                .enumerate()
-                .map(|(i, _)| BodyMeta {
-                    collision_filter_info: None,
-                    // case 3: second body keyframed (ANIMSTATIC) to cover the
-                    // has_keyframed motion-cinfo branch
-                    motion_type: if case_index == 3 && i == 1 {
-                        BodyMotionType::Keyframed
-                    } else {
-                        BodyMotionType::Static
-                    },
-                    ..BodyMeta::default()
-                })
-                .collect();
-            let material_crcs: Vec<Option<u32>> = bodies.iter().map(|_| Some(0xC0EB623D)).collect();
-            let opts = BuildOptions::default();
+        for (label, bodies, opts, crc) in cases {
+            let metas: Vec<BodyMeta> = (0..bodies.len()).map(keyframed_second).collect();
+            let crcs: Vec<Option<u32>> = bodies.iter().map(|_| Some(crc)).collect();
             let first =
-                build_fo4_multi_body_collision(bodies, &opts, Some(&material_crcs), Some(&metas))
-                    .unwrap_or_else(|e| panic!("case {case_index}: {e}"));
-            for round in 0..16 {
-                let again = build_fo4_multi_body_collision(
-                    bodies,
-                    &opts,
-                    Some(&material_crcs),
-                    Some(&metas),
-                )
-                .unwrap();
+                match build_fo4_multi_body_collision(&bodies, &opts, Some(&crcs), Some(&metas)) {
+                    Ok(blob) => blob,
+                    Err(_) if label == "large multi-section CM" => continue,
+                    Err(e) => panic!("{label}: {e}"),
+                };
+            for round in 0..8 {
+                let again =
+                    build_fo4_multi_body_collision(&bodies, &opts, Some(&crcs), Some(&metas))
+                        .unwrap();
                 assert_eq!(
                     again, first,
-                    "case {case_index} round {round}: build output not byte-deterministic"
+                    "{label} round {round}: not byte-deterministic"
                 );
             }
         }
-    }
-
-    fn typed_member_f32(value: &HkxValue, name: &str) -> Option<f32> {
-        let HkxValue::TypedObject { members, .. } = value else {
-            return None;
-        };
-        members
-            .iter()
-            .find(|m| m.name == name)
-            .and_then(|m| match m.value {
-                HkxValue::F32(v) => Some(v),
-                _ => None,
-            })
-    }
-
-    fn thin_panel_havok_vertices() -> Vec<[f32; 3]> {
-        vec![
-            [-0.5, -0.5, -0.0002],
-            [0.5, -0.5, -0.0002],
-            [-0.5, 0.5, -0.0002],
-            [0.5, 0.5, -0.0002],
-            [-0.5, -0.5, 0.0002],
-            [0.5, -0.5, 0.0002],
-            [-0.5, 0.5, 0.0002],
-            [0.5, 0.5, 0.0002],
-        ]
-    }
-
-    #[test]
-    fn dynamic_clutter_mass_factor_is_bounded() {
-        let body = MultiBodyShape::Polytope {
-            vertices: thin_panel_havok_vertices(),
-        };
-        let cinfo =
-            build_dynamic_clutter_motion_cinfo(&body, [0.0; 4], [0.0, 0.0, 0.0, 1.0], None, None);
-        let mf = typed_member_f32(&cinfo, "massFactor").expect("massFactor present");
-        assert!(
-            mf <= 100.0 + 1e-3,
-            "massFactor must be clamped to <= ~100, got {mf}"
-        );
     }
 }

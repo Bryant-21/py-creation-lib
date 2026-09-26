@@ -30,7 +30,7 @@ def _make_img(w: int = 64, h: int = 64) -> Image.Image:
     return Image.frombytes("RGBA", (w, h), bytes(px))
 
 
-def test_bc7_gpu_and_cpu_both_produce_valid_dds(tmp_path):
+def test_bc7_gpu_and_cpu_both_produce_valid_dds_and_cpu_is_deterministic(tmp_path):
     img = _make_img()
     gpu = tmp_path / "g.dds"
     cpu = tmp_path / "c.dds"
@@ -41,14 +41,10 @@ def test_bc7_gpu_and_cpu_both_produce_valid_dds(tmp_path):
         back = dds_io.load_dds(str(p))
         assert back.size == (64, 64)
 
-
-def test_cpu_path_is_deterministic(tmp_path):
-    img = _make_img()
-    a = tmp_path / "a.dds"
-    b = tmp_path / "b.dds"
-    dds_io.save_image(img, str(a), format="BC7", use_gpu=False)
-    dds_io.save_image(img, str(b), format="BC7", use_gpu=False)
-    assert a.read_bytes() == b.read_bytes()
+    # A second CPU-path encode of the same image must be byte-identical.
+    cpu2 = tmp_path / "c2.dds"
+    dds_io.save_image(img, str(cpu2), format="BC7", use_gpu=False)
+    assert cpu.read_bytes() == cpu2.read_bytes()
 
 
 def test_non_bc7_is_unaffected_by_use_gpu(tmp_path):

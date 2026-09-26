@@ -56,21 +56,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn packet_mode_is_the_leading_bits() {
+    fn audio_packets_regain_mode_and_window_bits() {
         assert_eq!(packet_mode(&[0b0000_0110], 2).unwrap(), 2);
         assert!(packet_mode(&[], 1).is_err());
-    }
-
-    #[test]
-    fn short_block_packet_gains_a_leading_audio_type_bit() {
         assert_eq!(
             rebuild_audio_packet(&[0xAA], 1, None).unwrap(),
             vec![0x54, 0x01]
         );
-    }
-
-    #[test]
-    fn long_block_packet_gains_neighbouring_window_flags() {
         let window = LongWindow {
             previous_long: true,
             next_long: false,

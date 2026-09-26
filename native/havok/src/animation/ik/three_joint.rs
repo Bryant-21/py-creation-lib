@@ -1,12 +1,12 @@
-use super::two_bone::{TwoBoneParams, TwoBoneResult, solve_two_bone};
+use super::two_bone::{TwoBoneParams, solve_two_bone};
 /// Three-joint analytic IK solver.
 ///
 /// Extends two-bone IK by adding a third (base) joint. The solver first
 /// positions joints 1–2–3 using two-bone IK, then adjusts joint 0 to
 /// orient the chain toward the target. Useful for tail/spine/finger chains.
 use crate::animation::pose::{
-    quat_conjugate, quat_from_axis_angle, quat_mul, quat_normalize, quat_rotate, vec3_add,
-    vec3_cross, vec3_dot, vec3_len, vec3_normalize, vec3_scale, vec3_sub,
+    quat_from_axis_angle, quat_mul, quat_normalize, vec3_cross, vec3_dot, vec3_len, vec3_normalize,
+    vec3_sub,
 };
 
 #[derive(Debug, Clone)]
@@ -41,11 +41,6 @@ pub fn solve_three_joint(
     rot2_ws: &[f32; 4],
     params: &ThreeJointParams,
 ) -> ThreeJointResult {
-    // Segment lengths.
-    let len01 = vec3_len(&vec3_sub(&params.joint1_ws, &params.joint0_ws));
-    let len12 = vec3_len(&vec3_sub(&params.joint2_ws, &params.joint1_ws));
-    let len23 = vec3_len(&vec3_sub(&params.joint3_ws, &params.joint2_ws));
-
     // Sub-target for the inner two-bone chain [1,2,3]: place joint3 at target.
     // Solve inner chain first (joints 1,2 → end at joint3 position = target).
     let inner = solve_two_bone(
@@ -86,49 +81,48 @@ pub fn solve_three_joint(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::animation::pose::vec3_len;
 
     #[test]
-    fn three_joint_solve_returns_normalized_quats() {
-        let params = ThreeJointParams {
-            joint0_ws: [0.0, 0.0, 0.0],
-            joint1_ws: [1.0, 0.0, 0.0],
-            joint2_ws: [2.0, 0.0, 0.0],
-            joint3_ws: [3.0, 0.0, 0.0],
-            target_ws: [2.0, 1.5, 0.0],
-            pole_ws: [0.0, 1.0, 0.0],
-            gain: 1.0,
-        };
-        let id = [0.0f32, 0.0, 0.0, 1.0];
-        let result = solve_three_joint(&id, &id, &id, &params);
+    fn three_joint_solve() {
+        {
+            let params = ThreeJointParams {
+                joint0_ws: [0.0, 0.0, 0.0],
+                joint1_ws: [1.0, 0.0, 0.0],
+                joint2_ws: [2.0, 0.0, 0.0],
+                joint3_ws: [3.0, 0.0, 0.0],
+                target_ws: [2.0, 1.5, 0.0],
+                pole_ws: [0.0, 1.0, 0.0],
+                gain: 1.0,
+            };
+            let id = [0.0f32, 0.0, 0.0, 1.0];
+            let result = solve_three_joint(&id, &id, &id, &params);
 
-        let check_normalized = |q: [f32; 4]| {
-            let len = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt();
-            assert!(
-                (len - 1.0).abs() < 1e-4,
-                "quaternion not normalized: len={len}"
-            );
-        };
-        check_normalized(result.joint0_new_rot_ws);
-        check_normalized(result.joint1_new_rot_ws);
-        check_normalized(result.joint2_new_rot_ws);
-    }
-
-    #[test]
-    fn three_joint_solve_straight_chain_to_target() {
-        // Straight chain along X, target at (1.5, 0, 0). Already aligned, near-identity result.
-        let params = ThreeJointParams {
-            joint0_ws: [0.0, 0.0, 0.0],
-            joint1_ws: [1.0, 0.0, 0.0],
-            joint2_ws: [2.0, 0.0, 0.0],
-            joint3_ws: [3.0, 0.0, 0.0],
-            target_ws: [3.0, 0.0, 0.0],
-            pole_ws: [0.0, 1.0, 0.0],
-            gain: 1.0,
-        };
-        let id = [0.0f32, 0.0, 0.0, 1.0];
-        let result = solve_three_joint(&id, &id, &id, &params);
-        // Already at target — joint0 delta should be near-identity.
-        assert!((result.joint0_new_rot_ws[3] - 1.0).abs() < 0.1);
+            let check_normalized = |q: [f32; 4]| {
+                let len = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt();
+                assert!(
+                    (len - 1.0).abs() < 1e-4,
+                    "quaternion not normalized: len={len}"
+                );
+            };
+            check_normalized(result.joint0_new_rot_ws);
+            check_normalized(result.joint1_new_rot_ws);
+            check_normalized(result.joint2_new_rot_ws);
+        }
+        {
+            // Straight chain along X, target at (1.5, 0, 0). Already aligned, near-identity result.
+            let params = ThreeJointParams {
+                joint0_ws: [0.0, 0.0, 0.0],
+                joint1_ws: [1.0, 0.0, 0.0],
+                joint2_ws: [2.0, 0.0, 0.0],
+                joint3_ws: [3.0, 0.0, 0.0],
+                target_ws: [3.0, 0.0, 0.0],
+                pole_ws: [0.0, 1.0, 0.0],
+                gain: 1.0,
+            };
+            let id = [0.0f32, 0.0, 0.0, 1.0];
+            let result = solve_three_joint(&id, &id, &id, &params);
+            // Already at target — joint0 delta should be near-identity.
+            assert!((result.joint0_new_rot_ws[3] - 1.0).abs() < 0.1);
+        }
     }
 }

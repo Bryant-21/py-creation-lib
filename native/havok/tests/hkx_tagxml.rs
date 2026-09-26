@@ -4,8 +4,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use havok_native::hkx::descriptors::{
     ClassDescriptor, ClassKind, DescriptorRegistry, MemberTemplate,
 };
-use havok_native::hkx::tagxml::{read_tagxml_string, write_tagxml_string};
-use havok_native::hkx::types::HkxValue;
+use havok_native::hkx::tagxml::{
+    read_tagxml_string, read_tagxml_string_with_registry, write_tagxml_string,
+    write_tagxml_string_with_registry,
+};
+use havok_native::hkx::types::{HkxType, HkxValue};
 use havok_native::hkx::{HkxFile, HkxMember, HkxObject};
 
 const SAMPLE_XML: &str = r##"<?xml version="1.0" encoding="ASCII" standalone="no"?>
@@ -50,197 +53,185 @@ fn write_temp_classxml(dir: &Path, filename: &str, xml: &str) {
     std::fs::write(dir.join(filename), xml).expect("write temp classxml");
 }
 
-#[test]
-fn parses_basic_tagxml_file() {
-    let hkx = read_tagxml_string(SAMPLE_XML).expect("parse sample XML");
-
-    assert_eq!(hkx.class_version(), 11);
-    assert_eq!(hkx.contents_version(), "hk_2014.1.0-r1");
-    assert_eq!(hkx.objects().len(), 2);
+fn registry_with(name: &str, files: &[(&str, &str)]) -> DescriptorRegistry {
+    let dir = temp_classxml_dir(name);
+    for (file, xml) in files {
+        write_temp_classxml(&dir, file, xml);
+    }
+    DescriptorRegistry::from_dir(&dir).expect("temp descriptors")
 }
 
-#[test]
-fn parses_object_names_and_classes() {
-    let hkx = read_tagxml_string(SAMPLE_XML).expect("parse sample XML");
-
-    let names: Vec<_> = hkx
-        .objects()
-        .iter()
-        .map(|object| object.name.as_deref())
-        .collect();
-    let classes: Vec<_> = hkx
-        .objects()
-        .iter()
-        .map(|object| object.class_name.as_str())
-        .collect();
-
-    assert!(names.contains(&Some("#0001")));
-    assert!(names.contains(&Some("#0002")));
-    assert!(classes.contains(&"hkRootLevelContainer"));
-    assert!(classes.contains(&"TestClass"));
+fn single_object_packfile(class: &str, signature: &str, params: &str) -> String {
+    format!(
+        r##"<hkpackfile classversion="11" contentsversion="hk_2014.1.0-r1"><hksection name="__data__"><hkobject name="#0001" class="{class}" signature="{signature}">{params}</hkobject></hksection></hkpackfile>"##
+    )
 }
 
-#[test]
-fn writes_empty_tagxml_file() {
-    let hkx = HkxFile::from_tagxml(11, "hk_2014.1.0-r1", Vec::new());
-
-    let xml = write_tagxml_string(&hkx).expect("write XML");
-
-    assert!(xml.contains("<hkpackfile"));
-    assert!(xml.contains("classversion=\"11\""));
-    assert!(xml.contains("contentsversion=\"hk_2014.1.0-r1\""));
-    assert!(xml.contains("<hksection name=\"__data__\">"));
-}
-
-#[test]
-fn writes_direct_string_and_array_members() {
-    let hkx = HkxFile::from_tagxml(
+fn single_object_file(class: &str, signature: u32, members: Vec<HkxMember>) -> HkxFile {
+    HkxFile::from_tagxml(
         11,
         "hk_2014.1.0-r1",
         vec![HkxObject {
             name: Some("#0001".to_string()),
             offset: 0,
-            signature: 0,
-            class_name: "TestClass".to_string(),
-            members: vec![
-                HkxMember {
-                    name: "value".to_string(),
-                    value: HkxValue::I32(42),
-                },
-                HkxMember {
-                    name: "scale".to_string(),
-                    value: HkxValue::F32(1.5),
-                },
-                HkxMember {
-                    name: "name".to_string(),
-                    value: HkxValue::String {
-                        value: "Hello & Goodbye".to_string(),
-                        is_null: false,
-                    },
-                },
-                HkxMember {
-                    name: "flags".to_string(),
-                    value: HkxValue::Array(vec![
-                        HkxValue::I32(1),
-                        HkxValue::I32(2),
-                        HkxValue::I32(3),
-                    ]),
-                },
-            ],
+            signature,
+            class_name: class.to_string(),
+            members,
         }],
-    );
+    )
+}
 
-    let xml = write_tagxml_string(&hkx).expect("write XML");
+fn member(name: &str, value: HkxValue) -> HkxMember {
+    HkxMember {
+        name: name.to_string(),
+        value,
+    }
+}
 
-    assert!(xml.contains("class=\"TestClass\""));
-    assert!(xml.contains("<hkparam name=\"value\">42</hkparam>"));
-    assert!(xml.contains("<hkparam name=\"scale\">1.500000</hkparam>"));
-    assert!(xml.contains("Hello &amp; Goodbye"));
-    assert!(xml.contains("<hkparam name=\"flags\" numelements=\"3\">1 2 3</hkparam>"));
+fn string(value: &str) -> HkxValue {
+    HkxValue::String {
+        value: value.to_string(),
+        is_null: false,
+    }
 }
 
 #[test]
-fn round_trips_tagxml_through_model_structurally() {
+fn sample_xml_parses_and_round_trips_structurally() {
     let first = read_tagxml_string(SAMPLE_XML).expect("parse sample XML");
-
-    let xml = write_tagxml_string(&first).expect("write XML");
-    let second = read_tagxml_string(&xml).expect("parse written XML");
-
-    assert_eq!(second.class_version(), first.class_version());
-    assert_eq!(second.contents_version(), first.contents_version());
-    assert_eq!(second.objects(), first.objects());
-}
-
-#[test]
-fn preserves_object_signatures_across_parse_write_parse() {
-    let first = read_tagxml_string(SAMPLE_XML).expect("parse sample XML");
+    assert_eq!(first.class_version(), 11);
+    assert_eq!(first.contents_version(), "hk_2014.1.0-r1");
+    let names: Vec<_> = first.objects().iter().map(|o| o.name.as_deref()).collect();
+    let classes: Vec<_> = first
+        .objects()
+        .iter()
+        .map(|o| o.class_name.as_str())
+        .collect();
+    assert_eq!(names, [Some("#0001"), Some("#0002")]);
+    assert_eq!(classes, ["hkRootLevelContainer", "TestClass"]);
     assert_eq!(first.objects()[0].signature, 0x2772c11e);
 
-    let xml = write_tagxml_string(&first).expect("write XML");
-    assert!(xml.contains("signature=\"0x2772c11e\""));
-    let second = read_tagxml_string(&xml).expect("parse written XML");
-
-    assert_eq!(second.objects()[0].signature, 0x2772c11e);
-}
-
-#[test]
-fn parses_pointer_and_null_scalars_without_descriptors() {
-    let hkx = read_tagxml_string(SAMPLE_XML).expect("parse sample XML");
-    let HkxValue::Array(variants) = &hkx.objects()[0].members[0].value else {
+    let HkxValue::Array(variants) = &first.objects()[0].members[0].value else {
         panic!("namedVariants should parse as an array");
     };
     let HkxValue::Object(members) = &variants[0] else {
         panic!("namedVariants element should parse as an object");
     };
-    let variant = members
-        .iter()
-        .find(|member| member.name == "variant")
-        .unwrap();
+    let variant = members.iter().find(|m| m.name == "variant").unwrap();
     assert_eq!(variant.value, HkxValue::Pointer(Some(1)));
 
-    let xml = r##"<hkpackfile classversion="11" contentsversion="hk_2014.1.0-r1"><hksection name="__data__"><hkobject name="#0001" class="Unknown" signature="0x00000000"><hkparam name="target">null</hkparam></hkobject></hksection></hkpackfile>"##;
-    let hkx = read_tagxml_string(xml).expect("parse null pointer XML");
+    let xml = write_tagxml_string(&first).expect("write XML");
+    assert!(xml.contains("signature=\"0x2772c11e\""));
+    assert!(xml.contains("<hkparam name=\"variant\">#0002</hkparam>"));
+    let second = read_tagxml_string(&xml).expect("parse written XML");
+    assert_eq!(second.class_version(), first.class_version());
+    assert_eq!(second.contents_version(), first.contents_version());
+    assert_eq!(second.objects(), first.objects());
+
+    let null_target = single_object_packfile(
+        "Unknown",
+        "0x00000000",
+        r#"<hkparam name="target">null</hkparam>"#,
+    );
+    let hkx = read_tagxml_string(&null_target).expect("parse null pointer XML");
     assert_eq!(hkx.objects()[0].members[0].value, HkxValue::Pointer(None));
 }
 
 #[test]
-fn round_trips_pointer_members() {
-    let first = read_tagxml_string(SAMPLE_XML).expect("parse sample XML");
+fn writer_emits_header_and_direct_members_and_rejects_mixed_arrays() {
+    let empty = write_tagxml_string(&HkxFile::from_tagxml(11, "hk_2014.1.0-r1", Vec::new()))
+        .expect("write empty XML");
+    for needle in [
+        "<hkpackfile",
+        "classversion=\"11\"",
+        "contentsversion=\"hk_2014.1.0-r1\"",
+        "<hksection name=\"__data__\">",
+    ] {
+        assert!(empty.contains(needle), "{needle}");
+    }
 
-    let xml = write_tagxml_string(&first).expect("write XML");
-    assert!(xml.contains("<hkparam name=\"variant\">#0002</hkparam>"));
-    let second = read_tagxml_string(&xml).expect("parse written XML");
-
-    assert_eq!(
-        second.objects()[0].members[0],
-        first.objects()[0].members[0]
+    let hkx = single_object_file(
+        "TestClass",
+        0,
+        vec![
+            member("value", HkxValue::I32(42)),
+            member("scale", HkxValue::F32(1.5)),
+            member("name", string("Hello & Goodbye")),
+            member(
+                "flags",
+                HkxValue::Array(vec![HkxValue::I32(1), HkxValue::I32(2), HkxValue::I32(3)]),
+            ),
+        ],
     );
+    let xml = write_tagxml_string(&hkx).expect("write XML");
+    for needle in [
+        "class=\"TestClass\"",
+        "<hkparam name=\"value\">42</hkparam>",
+        "<hkparam name=\"scale\">1.500000</hkparam>",
+        "Hello &amp; Goodbye",
+        "<hkparam name=\"flags\" numelements=\"3\">1 2 3</hkparam>",
+    ] {
+        assert!(xml.contains(needle), "{needle}");
+    }
+
+    let mixed = single_object_file(
+        "TestClass",
+        0,
+        vec![member(
+            "mixed",
+            HkxValue::Array(vec![
+                HkxValue::Object(vec![member("name", string("nested"))]),
+                HkxValue::I32(7),
+            ]),
+        )],
+    );
+    let error = write_tagxml_string(&mixed).expect_err("mixed arrays should be rejected");
+    assert!(error.to_string().contains("mixed object/scalar array"));
 }
 
 #[test]
-fn descriptor_backed_parser_uses_declared_scalar_types() {
-    let dir = temp_classxml_dir("descriptor_scalars");
-    write_temp_classxml(
-        &dir,
-        "TestDescriptor_0.xml",
-        "<class name='TestDescriptor' version='0' signature='0x12345678'><members><member name='enabled' offset='0' vtype='TYPE_BOOL' vsubtype='TYPE_VOID'/><member name='count' offset='1' vtype='TYPE_UINT32' vsubtype='TYPE_VOID'/><member name='ratio' offset='5' vtype='TYPE_REAL' vsubtype='TYPE_VOID'/><member name='label' offset='9' vtype='TYPE_STRINGPTR' vsubtype='TYPE_VOID'/><member name='target' offset='17' vtype='TYPE_POINTER' vsubtype='TYPE_VOID'/></members></class>",
+fn descriptor_backed_parser_uses_declared_types_and_resolves_object_labels() {
+    let mut registry = registry_with(
+        "descriptor_scalars",
+        &[
+            (
+                "TestDescriptor_0.xml",
+                "<class name='TestDescriptor' version='0' signature='0x12345678'><members><member name='enabled' offset='0' vtype='TYPE_BOOL' vsubtype='TYPE_VOID'/><member name='count' offset='1' vtype='TYPE_UINT32' vsubtype='TYPE_VOID'/><member name='ratio' offset='5' vtype='TYPE_REAL' vsubtype='TYPE_VOID'/><member name='label' offset='9' vtype='TYPE_STRINGPTR' vsubtype='TYPE_VOID'/><member name='target' offset='17' vtype='TYPE_POINTER' vsubtype='TYPE_VOID'/></members></class>",
+            ),
+            (
+                "PointerOwner_0.xml",
+                "<class name='PointerOwner' version='0' signature='0x12345678'><members><member name='target' offset='0' vtype='TYPE_POINTER' vsubtype='TYPE_STRUCT' ctype='PointerTarget'/></members></class>",
+            ),
+        ],
     );
-    let mut registry = DescriptorRegistry::from_dir(&dir).expect("temp descriptors");
-    let xml = r##"<hkpackfile classversion="11" contentsversion="hk_2014.1.0-r1"><hksection name="__data__"><hkobject name="#0001" class="TestDescriptor" signature="0x12345678"><hkparam name="enabled">true</hkparam><hkparam name="count">4294967295</hkparam><hkparam name="ratio">1.25</hkparam><hkparam name="label">null</hkparam><hkparam name="target">#0001</hkparam></hkobject></hksection></hkpackfile>"##;
-
-    let hkx = havok_native::hkx::tagxml::read_tagxml_string_with_registry(xml, &mut registry)
-        .expect("parse descriptor-backed XML");
-
-    assert_eq!(hkx.objects()[0].members[0].value, HkxValue::Bool(true));
-    assert_eq!(hkx.objects()[0].members[1].value, HkxValue::U32(u32::MAX));
-    assert_eq!(hkx.objects()[0].members[2].value, HkxValue::F32(1.25));
+    let xml = single_object_packfile(
+        "TestDescriptor",
+        "0x12345678",
+        r#"<hkparam name="enabled">true</hkparam><hkparam name="count">4294967295</hkparam><hkparam name="ratio">1.25</hkparam><hkparam name="label">null</hkparam><hkparam name="target">#0001</hkparam>"#,
+    );
+    let hkx =
+        read_tagxml_string_with_registry(&xml, &mut registry).expect("parse descriptor-backed XML");
+    let values: Vec<_> = hkx.objects()[0]
+        .members
+        .iter()
+        .map(|m| m.value.clone())
+        .collect();
     assert_eq!(
-        hkx.objects()[0].members[3].value,
-        HkxValue::String {
-            value: String::new(),
-            is_null: true,
-        }
+        values,
+        vec![
+            HkxValue::Bool(true),
+            HkxValue::U32(u32::MAX),
+            HkxValue::F32(1.25),
+            HkxValue::String {
+                value: String::new(),
+                is_null: true,
+            },
+            HkxValue::Pointer(Some(0)),
+        ]
     );
-    assert_eq!(
-        hkx.objects()[0].members[4].value,
-        HkxValue::Pointer(Some(0))
-    );
-}
 
-#[test]
-fn descriptor_backed_parser_resolves_non_positional_object_names() {
-    let dir = temp_classxml_dir("non_positional_pointer");
-    write_temp_classxml(
-        &dir,
-        "PointerOwner_0.xml",
-        "<class name='PointerOwner' version='0' signature='0x12345678'><members><member name='target' offset='0' vtype='TYPE_POINTER' vsubtype='TYPE_STRUCT' ctype='PointerTarget'/></members></class>",
-    );
-    let mut registry = DescriptorRegistry::from_dir(&dir).expect("temp descriptors");
-    let xml = r##"<hkpackfile classversion="11" contentsversion="hk_2014.1.0-r1"><hksection name="__data__"><hkobject name="#0090" class="PointerOwner" signature="0x12345678"><hkparam name="target">#0100</hkparam></hkobject><hkobject name="#0100" class="PointerTarget" signature="0x00000000"/></hksection></hkpackfile>"##;
-
-    let hkx = havok_native::hkx::tagxml::read_tagxml_string_with_registry(xml, &mut registry)
+    let non_positional = r##"<hkpackfile classversion="11" contentsversion="hk_2014.1.0-r1"><hksection name="__data__"><hkobject name="#0090" class="PointerOwner" signature="0x12345678"><hkparam name="target">#0100</hkparam></hkobject><hkobject name="#0100" class="PointerTarget" signature="0x00000000"/></hksection></hkpackfile>"##;
+    let hkx = read_tagxml_string_with_registry(non_positional, &mut registry)
         .expect("parse non-positional object labels");
-
     assert_eq!(
         hkx.objects()[0].members[0].value,
         HkxValue::Pointer(Some(1))
@@ -248,54 +239,26 @@ fn descriptor_backed_parser_resolves_non_positional_object_names() {
 }
 
 #[test]
-fn rejects_mixed_object_and_scalar_arrays() {
-    let hkx = HkxFile::from_tagxml(
-        11,
-        "hk_2014.1.0-r1",
-        vec![HkxObject {
-            name: Some("#0001".to_string()),
-            offset: 0,
-            signature: 0,
-            class_name: "TestClass".to_string(),
-            members: vec![HkxMember {
-                name: "mixed".to_string(),
-                value: HkxValue::Array(vec![
-                    HkxValue::Object(vec![HkxMember {
-                        name: "name".to_string(),
-                        value: HkxValue::String {
-                            value: "nested".to_string(),
-                            is_null: false,
-                        },
-                    }]),
-                    HkxValue::I32(7),
-                ]),
-            }],
-        }],
-    );
-
-    let error = write_tagxml_string(&hkx).expect_err("mixed arrays should be rejected");
-
-    assert!(error.to_string().contains("mixed object/scalar array"));
-}
-
-#[test]
 fn descriptor_backed_parser_preserves_direct_inline_structs() {
-    let dir = temp_classxml_dir("inline_struct");
-    write_temp_classxml(
-        &dir,
-        "NestedStruct_0.xml",
-        "<struct name='NestedStruct' version='0' signature='0x00000002'><members><member name='id' offset='0' vtype='TYPE_INT32' vsubtype='TYPE_VOID'/></members></struct>",
+    let files = [
+        (
+            "NestedStruct_0.xml",
+            "<struct name='NestedStruct' version='0' signature='0x00000002'><members><member name='id' offset='0' vtype='TYPE_INT32' vsubtype='TYPE_VOID'/></members></struct>",
+        ),
+        (
+            "ContainerClass_0.xml",
+            "<class name='ContainerClass' version='0' signature='0x00000001'><members><member name='nested' offset='0' vtype='TYPE_STRUCT' vsubtype='TYPE_VOID' ctype='NestedStruct'/></members></class>",
+        ),
+    ];
+    let mut registry = registry_with("inline_struct", &files);
+    let xml = single_object_packfile(
+        "ContainerClass",
+        "0x00000001",
+        r#"<hkparam name="nested"><hkobject><hkparam name="id">7</hkparam></hkobject></hkparam>"#,
     );
-    write_temp_classxml(
-        &dir,
-        "ContainerClass_0.xml",
-        "<class name='ContainerClass' version='0' signature='0x00000001'><members><member name='nested' offset='0' vtype='TYPE_STRUCT' vsubtype='TYPE_VOID' ctype='NestedStruct'/></members></class>",
-    );
-    let mut registry = DescriptorRegistry::from_dir(&dir).expect("temp descriptors");
-    let xml = r##"<hkpackfile classversion="11" contentsversion="hk_2014.1.0-r1"><hksection name="__data__"><hkobject name="#0001" class="ContainerClass" signature="0x00000001"><hkparam name="nested"><hkobject><hkparam name="id">7</hkparam></hkobject></hkparam></hkobject></hksection></hkpackfile>"##;
 
-    let first = havok_native::hkx::tagxml::read_tagxml_string_with_registry(xml, &mut registry)
-        .expect("parse inline struct XML");
+    let first =
+        read_tagxml_string_with_registry(&xml, &mut registry).expect("parse inline struct XML");
     let HkxValue::Object(members) = &first.objects()[0].members[0].value else {
         panic!("direct inline struct should parse as object value");
     };
@@ -307,10 +270,9 @@ fn descriptor_backed_parser_preserves_direct_inline_structs() {
     assert!(written.contains("<hkobject>"));
     assert!(written.contains("<hkparam name=\"id\">7</hkparam>"));
 
-    let mut registry = DescriptorRegistry::from_dir(&dir).expect("temp descriptors");
-    let second =
-        havok_native::hkx::tagxml::read_tagxml_string_with_registry(&written, &mut registry)
-            .expect("parse written inline struct XML");
+    let mut registry = registry_with("inline_struct_reread", &files);
+    let second = read_tagxml_string_with_registry(&written, &mut registry)
+        .expect("parse written inline struct XML");
     assert_eq!(
         second.objects()[0].members[0],
         first.objects()[0].members[0]
@@ -319,141 +281,83 @@ fn descriptor_backed_parser_preserves_direct_inline_structs() {
 
 #[test]
 fn descriptor_backed_round_trip_preserves_textual_enum_names() {
-    // Verify that an enum member whose tagxml value is a textual enumitem
-    // name (e.g. HK_SPLINE_COMPRESSED_ANIMATION) round-trips with the name
-    // preserved, not collapsed to its integer value. Mirrors Python
-    // `HKXEnumMember.value`.
-    let dir = temp_classxml_dir("textual_enum");
-    write_temp_classxml(
-        &dir,
-        "EnumOwner_0.xml",
-        "<class name='EnumOwner' version='0' signature='0xdeadbeef'>\
-            <enums>\
-                <enum name='AnimationType'>\
+    let mut registry = registry_with(
+        "textual_enum",
+        &[(
+            "EnumOwner_0.xml",
+            "<class name='EnumOwner' version='0' signature='0xdeadbeef'>\
+                <enums><enum name='AnimationType'>\
                     <enumitem name='HK_UNKNOWN_ANIMATION' value='0'/>\
-                    <enumitem name='HK_INTERLEAVED_ANIMATION' value='1'/>\
-                    <enumitem name='HK_DELTA_COMPRESSED_ANIMATION' value='2'/>\
-                    <enumitem name='HK_WAVELET_COMPRESSED_ANIMATION' value='3'/>\
-                    <enumitem name='HK_MIRRORED_ANIMATION' value='4'/>\
                     <enumitem name='HK_SPLINE_COMPRESSED_ANIMATION' value='5'/>\
-                </enum>\
-            </enums>\
-            <members>\
-                <member name='kind' offset='0' vtype='TYPE_ENUM' vsubtype='TYPE_INT32' etype='AnimationType'/>\
-            </members>\
-        </class>",
+                </enum></enums>\
+                <members><member name='kind' offset='0' vtype='TYPE_ENUM' vsubtype='TYPE_INT32' etype='AnimationType'/></members>\
+            </class>",
+        )],
     );
-    let mut registry = DescriptorRegistry::from_dir(&dir).expect("temp descriptors");
-    let xml = r##"<hkpackfile classversion="11" contentsversion="hk_2014.1.0-r1"><hksection name="__data__"><hkobject name="#0001" class="EnumOwner" signature="0xdeadbeef"><hkparam name="kind">HK_SPLINE_COMPRESSED_ANIMATION</hkparam></hkobject></hksection></hkpackfile>"##;
+    let xml = single_object_packfile(
+        "EnumOwner",
+        "0xdeadbeef",
+        r#"<hkparam name="kind">HK_SPLINE_COMPRESSED_ANIMATION</hkparam>"#,
+    );
 
-    let first = havok_native::hkx::tagxml::read_tagxml_string_with_registry(xml, &mut registry)
-        .expect("parse textual enum");
-    // Stored internally as the integer.
+    let first = read_tagxml_string_with_registry(&xml, &mut registry).expect("parse textual enum");
     assert_eq!(first.objects()[0].members[0].value, HkxValue::I32(5));
 
-    // Round-trip writer must emit the textual name, not "5".
     let written =
-        havok_native::hkx::tagxml::write_tagxml_string_with_registry(&first, &mut registry)
-            .expect("write textual enum");
-    assert!(
-        written.contains("HK_SPLINE_COMPRESSED_ANIMATION"),
-        "writer did not preserve textual enum name; xml=\n{}",
-        written
-    );
-    assert!(
-        !written.contains(">5</hkparam>"),
-        "writer collapsed enum to integer; xml=\n{}",
-        written
-    );
+        write_tagxml_string_with_registry(&first, &mut registry).expect("write textual enum");
+    assert!(written.contains("HK_SPLINE_COMPRESSED_ANIMATION"), "{written}");
+    assert!(!written.contains(">5</hkparam>"), "{written}");
 
-    // And re-parsing the written XML yields the same value.
     let second =
-        havok_native::hkx::tagxml::read_tagxml_string_with_registry(&written, &mut registry)
-            .expect("re-parse textual enum");
+        read_tagxml_string_with_registry(&written, &mut registry).expect("re-parse textual enum");
     assert_eq!(second.objects()[0].members[0].value, HkxValue::I32(5));
 }
 
 #[test]
-fn descriptor_backed_parser_decodes_packed_hex_uint8_array() {
-    // hkxpack-cli emits small-int arrays (hkArray<hkUint8> etc.) as a packed
-    // hex blob with no whitespace separators. Verify our reader falls back to
-    // that format when the standard whitespace-separated decode fails.
-    let dir = temp_classxml_dir("packed_hex_uint8");
-    write_temp_classxml(
-        &dir,
-        "PackedHexClass_0.xml",
-        "<class name='PackedHexClass' version='0' signature='0xdeadbeef'><members><member name='blob' offset='0' vtype='TYPE_ARRAY' vsubtype='TYPE_UINT8'/></members></class>",
+fn small_int_arrays_decode_packed_hex_or_decimal_forms() {
+    // hkxpack-cli emits small-int arrays as a packed hex blob with no
+    // separators; the reader falls back to it when whitespace decode fails.
+    let mut registry = registry_with(
+        "packed_hex",
+        &[
+            (
+                "U8Array_0.xml",
+                "<class name='U8Array' version='0' signature='0xdeadbeef'><members><member name='blob' offset='0' vtype='TYPE_ARRAY' vsubtype='TYPE_UINT8'/></members></class>",
+            ),
+            (
+                "I8Array_0.xml",
+                "<class name='I8Array' version='0' signature='0xdeadbeef'><members><member name='blob' offset='0' vtype='TYPE_ARRAY' vsubtype='TYPE_INT8'/></members></class>",
+            ),
+        ],
     );
-    let mut registry = DescriptorRegistry::from_dir(&dir).expect("temp descriptors");
-    // Bytes: 0x00, 0xFF, 0x10, 0x80, 0x7F — packed hex string is "00ff10807f".
-    let xml = r##"<hkpackfile classversion="11" contentsversion="hk_2014.1.0-r1"><hksection name="__data__"><hkobject name="#0001" class="PackedHexClass" signature="0xdeadbeef"><hkparam name="blob" numelements="5">00ff10807f</hkparam></hkobject></hksection></hkpackfile>"##;
-
-    let hkx = havok_native::hkx::tagxml::read_tagxml_string_with_registry(xml, &mut registry)
-        .expect("parse packed-hex uint8 array");
-
-    let HkxValue::Array(values) = &hkx.objects()[0].members[0].value else {
-        panic!("expected array");
-    };
-    assert_eq!(values.len(), 5);
-    assert_eq!(values[0], HkxValue::U8(0x00));
-    assert_eq!(values[1], HkxValue::U8(0xFF));
-    assert_eq!(values[2], HkxValue::U8(0x10));
-    assert_eq!(values[3], HkxValue::U8(0x80));
-    assert_eq!(values[4], HkxValue::U8(0x7F));
-}
-
-#[test]
-fn descriptor_backed_parser_decodes_packed_hex_int8_signed_values() {
-    // Verify two's-complement decoding for signed small ints. Bytes:
-    //   0xFF -> -1, 0x80 -> -128, 0x7F -> 127, 0x00 -> 0.
-    let dir = temp_classxml_dir("packed_hex_int8");
-    write_temp_classxml(
-        &dir,
-        "PackedHexI8Class_0.xml",
-        "<class name='PackedHexI8Class' version='0' signature='0xdeadbeef'><members><member name='blob' offset='0' vtype='TYPE_ARRAY' vsubtype='TYPE_INT8'/></members></class>",
-    );
-    let mut registry = DescriptorRegistry::from_dir(&dir).expect("temp descriptors");
-    let xml = r##"<hkpackfile classversion="11" contentsversion="hk_2014.1.0-r1"><hksection name="__data__"><hkobject name="#0001" class="PackedHexI8Class" signature="0xdeadbeef"><hkparam name="blob" numelements="4">ff807f00</hkparam></hkobject></hksection></hkpackfile>"##;
-
-    let hkx = havok_native::hkx::tagxml::read_tagxml_string_with_registry(xml, &mut registry)
-        .expect("parse packed-hex int8 array");
-
-    let HkxValue::Array(values) = &hkx.objects()[0].members[0].value else {
-        panic!("expected array");
-    };
-    assert_eq!(
-        values,
-        &vec![
-            HkxValue::I8(-1),
-            HkxValue::I8(-128),
-            HkxValue::I8(127),
-            HkxValue::I8(0),
-        ]
-    );
-}
-
-#[test]
-fn descriptor_backed_parser_falls_back_to_packed_hex_when_decimal_fails() {
-    // The legacy whitespace-decimal form should still parse (control case).
-    let dir = temp_classxml_dir("packed_hex_decimal_form");
-    write_temp_classxml(
-        &dir,
-        "DecArr_0.xml",
-        "<class name='DecArr' version='0' signature='0xdeadbeef'><members><member name='blob' offset='0' vtype='TYPE_ARRAY' vsubtype='TYPE_UINT8'/></members></class>",
-    );
-    let mut registry = DescriptorRegistry::from_dir(&dir).expect("temp descriptors");
-    let xml = r##"<hkpackfile classversion="11" contentsversion="hk_2014.1.0-r1"><hksection name="__data__"><hkobject name="#0001" class="DecArr" signature="0xdeadbeef"><hkparam name="blob" numelements="3">1 2 3</hkparam></hkobject></hksection></hkpackfile>"##;
-
-    let hkx = havok_native::hkx::tagxml::read_tagxml_string_with_registry(xml, &mut registry)
-        .expect("parse decimal uint8 array");
-
-    let HkxValue::Array(values) = &hkx.objects()[0].members[0].value else {
-        panic!("expected array");
-    };
-    assert_eq!(
-        values,
-        &vec![HkxValue::U8(1), HkxValue::U8(2), HkxValue::U8(3)]
-    );
+    for (class, count, text, expected) in [
+        (
+            "U8Array",
+            5,
+            "00ff10807f",
+            [0x00, 0xFF, 0x10, 0x80, 0x7F].map(HkxValue::U8).to_vec(),
+        ),
+        (
+            "I8Array",
+            4,
+            "ff807f00",
+            [-1, -128, 127, 0].map(HkxValue::I8).to_vec(),
+        ),
+        ("U8Array", 3, "1 2 3", [1, 2, 3].map(HkxValue::U8).to_vec()),
+    ] {
+        let xml = single_object_packfile(
+            class,
+            "0xdeadbeef",
+            &format!(r#"<hkparam name="blob" numelements="{count}">{text}</hkparam>"#),
+        );
+        let hkx = read_tagxml_string_with_registry(&xml, &mut registry)
+            .unwrap_or_else(|error| panic!("{text}: {error}"));
+        assert_eq!(
+            hkx.objects()[0].members[0].value,
+            HkxValue::Array(expected),
+            "{text}"
+        );
+    }
 }
 
 #[test]
@@ -462,12 +366,20 @@ fn binary_model_tagxml_roundtrip_preserves_representative_shape() {
         std::fs::read(repo_path("native/havok/tests/fixtures/skeleton.hkx")).expect("read fixture");
     let first = havok_native::hkx::read_packfile(&data).expect("read binary HKX");
     let first_object = first.objects().first().expect("fixture has objects");
-    let first_member_kinds: Vec<_> = first_object.members.iter().map(member_kind).collect();
+    let first_member_kinds: Vec<_> = first_object
+        .members
+        .iter()
+        .map(|m| std::mem::discriminant(&m.value))
+        .collect();
 
     let xml = write_tagxml_string(&first).expect("write XML");
     let second = read_tagxml_string(&xml).expect("parse written XML");
     let second_object = second.objects().first().expect("roundtrip has objects");
-    let second_member_kinds: Vec<_> = second_object.members.iter().map(member_kind).collect();
+    let second_member_kinds: Vec<_> = second_object
+        .members
+        .iter()
+        .map(|m| std::mem::discriminant(&m.value))
+        .collect();
 
     assert_eq!(second.objects().len(), first.objects().len());
     assert_eq!(
@@ -479,37 +391,18 @@ fn binary_model_tagxml_roundtrip_preserves_representative_shape() {
     assert_eq!(second_member_kinds, first_member_kinds);
 }
 
-fn member_kind(member: &HkxMember) -> &'static str {
-    match member.value {
-        HkxValue::Void => "void",
-        HkxValue::Bool(_) => "bool",
-        HkxValue::I8(_) => "i8",
-        HkxValue::U8(_) => "u8",
-        HkxValue::I16(_) => "i16",
-        HkxValue::U16(_) => "u16",
-        HkxValue::I32(_) => "i32",
-        HkxValue::U32(_) => "u32",
-        HkxValue::I64(_) => "i64",
-        HkxValue::U64(_) => "u64",
-        HkxValue::F32(_) => "f32",
-        HkxValue::Half(_) => "half",
-        HkxValue::F32List(_) => "f32list",
-        HkxValue::String { .. } => "string",
-        HkxValue::Pointer(_) => "pointer",
-        HkxValue::Array(_) => "array",
-        HkxValue::Object(_) => "object",
-        HkxValue::TypedObject { .. } => "typed_object",
-        HkxValue::PendingPtr(_) => "pending_ptr",
-    }
-}
-
-// ---------------------------------------------------------------------------
-// per-field defaulted-init metadata
-// ---------------------------------------------------------------------------
-
-#[test]
-fn writer_omits_members_matching_template_default() {
-    // Build a registry with a class descriptor that has a default value.
+fn defaulted_registry(optional_default: i32) -> DescriptorRegistry {
+    let template = |name: &str, offset, default| MemberTemplate {
+        name: name.to_string(),
+        offset,
+        vtype: HkxType::Int32,
+        vsubtype: HkxType::Void,
+        ctype: String::new(),
+        arrsize: 0,
+        flags: "FLAGS_NONE".to_string(),
+        etype: String::new(),
+        default,
+    };
     let mut registry = DescriptorRegistry::new();
     registry.insert(ClassDescriptor {
         name: "DefaultedClass".to_string(),
@@ -518,398 +411,167 @@ fn writer_omits_members_matching_template_default() {
         parent: None,
         is_struct: false,
         members: vec![
-            MemberTemplate {
-                name: "required".to_string(),
-                offset: 0,
-                vtype: havok_native::hkx::types::HkxType::Int32,
-                vsubtype: havok_native::hkx::types::HkxType::Void,
-                ctype: String::new(),
-                arrsize: 0,
-                flags: "FLAGS_NONE".to_string(),
-                etype: String::new(),
-                default: None,
-            },
-            MemberTemplate {
-                name: "optional".to_string(),
-                offset: 4,
-                vtype: havok_native::hkx::types::HkxType::Int32,
-                vsubtype: havok_native::hkx::types::HkxType::Void,
-                ctype: String::new(),
-                arrsize: 0,
-                flags: "FLAGS_NONE".to_string(),
-                etype: String::new(),
-                default: Some(HkxValue::I32(0)),
-            },
+            template("required", 0, None),
+            template("optional", 4, Some(HkxValue::I32(optional_default))),
         ],
         enums: std::collections::HashMap::new(),
         kind: ClassKind::Runtime,
     });
+    registry
+}
 
-    let hkx = havok_native::hkx::HkxFile::from_tagxml(
-        11,
-        "hk_2014.1.0-r1",
-        vec![havok_native::hkx::HkxObject {
-            name: Some("#0001".to_string()),
-            offset: 0,
-            signature: 0xaabbccdd,
-            class_name: "DefaultedClass".to_string(),
-            members: vec![
-                havok_native::hkx::HkxMember {
-                    name: "required".to_string(),
-                    value: HkxValue::I32(42),
-                },
-                havok_native::hkx::HkxMember {
-                    name: "optional".to_string(),
-                    value: HkxValue::I32(0), // matches default
-                },
-            ],
-        }],
+#[test]
+fn template_defaults_are_omitted_on_write_and_filled_on_read() {
+    let mut registry = defaulted_registry(0);
+    let hkx = single_object_file(
+        "DefaultedClass",
+        0xaabbccdd,
+        vec![
+            member("required", HkxValue::I32(42)),
+            member("optional", HkxValue::I32(0)),
+        ],
     );
-
-    let xml = havok_native::hkx::tagxml::write_tagxml_string_with_registry(&hkx, &mut registry)
-        .expect("write with defaults");
-
-    // required=42 must appear
+    let xml = write_tagxml_string_with_registry(&hkx, &mut registry).expect("write with defaults");
     assert!(
         xml.contains("<hkparam name=\"required\">42</hkparam>"),
-        "required member must appear; xml=\n{xml}"
+        "{xml}"
     );
-    // optional=0 matches the template default and must be omitted
-    assert!(
-        !xml.contains("optional"),
-        "defaulted member must be omitted; xml=\n{xml}"
+    assert!(!xml.contains("optional"), "{xml}");
+
+    let mut registry = defaulted_registry(99);
+    let xml = single_object_packfile(
+        "DefaultedClass",
+        "0xaabbccdd",
+        r#"<hkparam name="required">7</hkparam>"#,
     );
-}
-
-#[test]
-fn reader_fills_in_defaulted_member_absent_from_xml() {
-    // Same descriptor with a default on "optional".
-    let mut registry = DescriptorRegistry::new();
-    registry.insert(ClassDescriptor {
-        name: "DefaultedClass".to_string(),
-        version: 0,
-        signature: "0xaabbccdd".to_string(),
-        parent: None,
-        is_struct: false,
-        members: vec![
-            MemberTemplate {
-                name: "required".to_string(),
-                offset: 0,
-                vtype: havok_native::hkx::types::HkxType::Int32,
-                vsubtype: havok_native::hkx::types::HkxType::Void,
-                ctype: String::new(),
-                arrsize: 0,
-                flags: "FLAGS_NONE".to_string(),
-                etype: String::new(),
-                default: None,
-            },
-            MemberTemplate {
-                name: "optional".to_string(),
-                offset: 4,
-                vtype: havok_native::hkx::types::HkxType::Int32,
-                vsubtype: havok_native::hkx::types::HkxType::Void,
-                ctype: String::new(),
-                arrsize: 0,
-                flags: "FLAGS_NONE".to_string(),
-                etype: String::new(),
-                default: Some(HkxValue::I32(99)),
-            },
-        ],
-        enums: std::collections::HashMap::new(),
-        kind: ClassKind::Runtime,
-    });
-
-    // XML that omits "optional"
-    let xml = r##"<hkpackfile classversion="11" contentsversion="hk_2014.1.0-r1"><hksection name="__data__"><hkobject name="#0001" class="DefaultedClass" signature="0xaabbccdd"><hkparam name="required">7</hkparam></hkobject></hksection></hkpackfile>"##;
-
-    let hkx = havok_native::hkx::tagxml::read_tagxml_string_with_registry(xml, &mut registry)
+    let hkx = read_tagxml_string_with_registry(&xml, &mut registry)
         .expect("parse xml with omitted defaulted member");
-
-    let members = &hkx.objects()[0].members;
-    assert_eq!(members.len(), 2, "reader must inject the defaulted member");
-
-    let required = members.iter().find(|m| m.name == "required").unwrap();
-    assert_eq!(required.value, HkxValue::I32(7));
-
-    let optional = members.iter().find(|m| m.name == "optional").unwrap();
     assert_eq!(
-        optional.value,
-        HkxValue::I32(99),
-        "defaulted member must be filled in with the template default"
-    );
-}
-
-// ---------------------------------------------------------------------------
-// COMPLEX (Vector4 / QsTransform / Matrix4) Python-compatible format
-// ---------------------------------------------------------------------------
-
-#[test]
-fn writes_vector4_in_parenthesized_form_matching_python_tagwriter() {
-    let dir = temp_classxml_dir("vector4");
-    write_temp_classxml(
-        &dir,
-        "VecHolder_0.xml",
-        "<class name='VecHolder' version='0' signature='0x00000010'><members><member name='translation' offset='0' vtype='TYPE_VECTOR4' vsubtype='TYPE_VOID'/></members></class>",
-    );
-    let mut registry = DescriptorRegistry::from_dir(&dir).expect("temp descriptors");
-    let hkx = HkxFile::from_tagxml(
-        11,
-        "hk_2014.1.0-r1",
-        vec![HkxObject {
-            name: Some("#0001".to_string()),
-            offset: 0,
-            signature: 0x00000010,
-            class_name: "VecHolder".to_string(),
-            members: vec![HkxMember {
-                name: "translation".to_string(),
-                value: HkxValue::F32List(vec![1.0, 2.0, 3.0, 1.0]),
-            }],
-        }],
-    );
-
-    let xml = havok_native::hkx::tagxml::write_tagxml_string_with_registry(&hkx, &mut registry)
-        .expect("write XML");
-    assert!(
-        xml.contains("(1.000000 2.000000 3.000000 1.000000)"),
-        "Vector4 should emit in parenthesized form, got:\n{xml}"
+        hkx.objects()[0].members,
+        vec![
+            member("required", HkxValue::I32(7)),
+            member("optional", HkxValue::I32(99)),
+        ]
     );
 }
 
 #[test]
-fn writes_qstransform_array_with_per_element_parens_matching_python_tagwriter() {
-    // Mirrors `py_creation_lib/python/creation_lib/hkxpack/tagwriter.py:164-169`: arrays of COMPLEX subtype
-    // wrap each element (which is a flat 12-float list for QsTransform) in
-    // ONE pair of parens. NOT three groups of four. Python's tagreader
-    // regex `\(([^)]+)\)` then yields one element per parenthesized group,
-    // recovering the original element count.
-    let dir = temp_classxml_dir("qst_array");
-    write_temp_classxml(
-        &dir,
-        "Pose_0.xml",
-        "<class name='Pose' version='0' signature='0x00000020'><members><member name='referencePose' offset='0' vtype='TYPE_ARRAY' vsubtype='TYPE_QSTRANSFORM'/></members></class>",
+fn complex_values_use_one_paren_group_per_element() {
+    // Mirrors hkxpack/tagwriter.py: each COMPLEX element (a flat 12-float list
+    // for QsTransform) is ONE paren group, so the reader recovers the count.
+    let mut registry = registry_with(
+        "complex",
+        &[
+            (
+                "VecHolder_0.xml",
+                "<class name='VecHolder' version='0' signature='0x00000010'><members><member name='translation' offset='0' vtype='TYPE_VECTOR4' vsubtype='TYPE_VOID'/></members></class>",
+            ),
+            (
+                "Pose_0.xml",
+                "<class name='Pose' version='0' signature='0x00000020'><members><member name='pose' offset='0' vtype='TYPE_ARRAY' vsubtype='TYPE_QSTRANSFORM'/></members></class>",
+            ),
+            (
+                "VecArray_0.xml",
+                "<class name='VecArray' version='0' signature='0x00000030'><members><member name='vectors' offset='0' vtype='TYPE_ARRAY' vsubtype='TYPE_VECTOR4'/></members></class>",
+            ),
+        ],
     );
-    let mut registry = DescriptorRegistry::from_dir(&dir).expect("temp descriptors");
-    let hkx = HkxFile::from_tagxml(
-        11,
-        "hk_2014.1.0-r1",
-        vec![HkxObject {
-            name: Some("#0001".to_string()),
-            offset: 0,
-            signature: 0x00000020,
-            class_name: "Pose".to_string(),
-            members: vec![HkxMember {
-                name: "referencePose".to_string(),
-                value: HkxValue::Array(vec![
-                    HkxValue::F32List(vec![
-                        0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,
-                    ]),
-                    HkxValue::F32List(vec![
-                        2.0, 2.0, 2.0, 1.0, 0.5, 0.5, 0.5, 0.5, 1.0, 1.0, 1.0, 1.0,
-                    ]),
+
+    let vector = "(1.500000 -2.250000 3.875000 1.000000)";
+    let qs_a = "(0.000000 0.000000 0.000000 1.000000 0.000000 0.000000 0.000000 1.000000 1.000000 1.000000 1.000000 1.000000)";
+    let qs_b = "(2.000000 2.000000 2.000000 1.000000 0.500000 0.500000 0.500000 0.500000 1.000000 1.000000 1.000000 1.000000)";
+    for (class, signature, param, expected) in [
+        (
+            "VecHolder",
+            "0x00000010",
+            format!(r#"<hkparam name="translation">{vector}</hkparam>"#),
+            HkxValue::F32List(vec![1.5, -2.25, 3.875, 1.0]),
+        ),
+        (
+            "Pose",
+            "0x00000020",
+            format!("<hkparam name=\"pose\" numelements=\"2\">{qs_a}\n{qs_b}</hkparam>"),
+            HkxValue::Array(vec![
+                HkxValue::F32List(vec![
+                    0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,
                 ]),
-            }],
-        }],
-    );
-
-    let xml = havok_native::hkx::tagxml::write_tagxml_string_with_registry(&hkx, &mut registry)
-        .expect("write XML");
-    let expected_first = "(0.000000 0.000000 0.000000 1.000000 0.000000 0.000000 0.000000 1.000000 1.000000 1.000000 1.000000 1.000000)";
-    let expected_second = "(2.000000 2.000000 2.000000 1.000000 0.500000 0.500000 0.500000 0.500000 1.000000 1.000000 1.000000 1.000000)";
-    assert!(
-        xml.contains(expected_first),
-        "first QsTransform should be one paren group, got:\n{xml}"
-    );
-    assert!(
-        xml.contains(expected_second),
-        "second QsTransform should be one paren group, got:\n{xml}"
-    );
-    // numelements="2" — the array has two elements, not six.
-    assert!(xml.contains("numelements=\"2\""));
-}
-
-#[test]
-fn round_trips_parenthesized_vector4_through_parse_and_write() {
-    let dir = temp_classxml_dir("vector4_rt");
-    write_temp_classxml(
-        &dir,
-        "VecHolder_0.xml",
-        "<class name='VecHolder' version='0' signature='0x00000010'><members><member name='translation' offset='0' vtype='TYPE_VECTOR4' vsubtype='TYPE_VOID'/></members></class>",
-    );
-    let xml_in = r##"<hkpackfile classversion="11" contentsversion="hk_2014.1.0-r1"><hksection name="__data__"><hkobject name="#0001" class="VecHolder" signature="0x00000010"><hkparam name="translation">(1.500000 -2.250000 3.875000 1.000000)</hkparam></hkobject></hksection></hkpackfile>"##;
-    let mut registry = DescriptorRegistry::from_dir(&dir).expect("temp descriptors");
-    let parsed = havok_native::hkx::tagxml::read_tagxml_string_with_registry(xml_in, &mut registry)
-        .expect("parse parenthesized Vector4");
-    let HkxValue::F32List(values) = &parsed.objects()[0].members[0].value else {
-        panic!(
-            "expected F32List, got {:?}",
-            parsed.objects()[0].members[0].value
-        );
-    };
-    assert_eq!(values.len(), 4);
-    assert!((values[0] - 1.5).abs() < 1e-6);
-    assert!((values[1] - -2.25).abs() < 1e-6);
-    assert!((values[2] - 3.875).abs() < 1e-6);
-    assert!((values[3] - 1.0).abs() < 1e-6);
-
-    let xml_out =
-        havok_native::hkx::tagxml::write_tagxml_string_with_registry(&parsed, &mut registry)
-            .expect("write XML");
-    assert!(xml_out.contains("(1.500000 -2.250000 3.875000 1.000000)"));
-}
-
-#[test]
-fn round_trips_qstransform_array_through_parse_and_write() {
-    let dir = temp_classxml_dir("qst_rt");
-    write_temp_classxml(
-        &dir,
-        "Pose_0.xml",
-        "<class name='Pose' version='0' signature='0x00000020'><members><member name='pose' offset='0' vtype='TYPE_ARRAY' vsubtype='TYPE_QSTRANSFORM'/></members></class>",
-    );
-    // Each QsTransform element is wrapped in ONE paren group with all 12 floats.
-    let xml_in = r##"<hkpackfile classversion="11" contentsversion="hk_2014.1.0-r1"><hksection name="__data__"><hkobject name="#0001" class="Pose" signature="0x00000020"><hkparam name="pose" numelements="2">(0.000000 0.000000 0.000000 1.000000 0.000000 0.000000 0.000000 1.000000 1.000000 1.000000 1.000000 1.000000)
-(2.000000 2.000000 2.000000 1.000000 0.500000 0.500000 0.500000 0.500000 1.000000 1.000000 1.000000 1.000000)</hkparam></hkobject></hksection></hkpackfile>"##;
-    let mut registry = DescriptorRegistry::from_dir(&dir).expect("temp descriptors");
-    let parsed = havok_native::hkx::tagxml::read_tagxml_string_with_registry(xml_in, &mut registry)
-        .expect("parse QsTransform array");
-    let HkxValue::Array(values) = &parsed.objects()[0].members[0].value else {
-        panic!(
-            "expected Array, got {:?}",
-            parsed.objects()[0].members[0].value
-        );
-    };
-    assert_eq!(values.len(), 2);
-    for value in values {
-        let HkxValue::F32List(floats) = value else {
-            panic!("each QsTransform element should be F32List, got {value:?}");
-        };
-        assert_eq!(floats.len(), 12);
+                HkxValue::F32List(vec![
+                    2.0, 2.0, 2.0, 1.0, 0.5, 0.5, 0.5, 0.5, 1.0, 1.0, 1.0, 1.0,
+                ]),
+            ]),
+        ),
+    ] {
+        let xml = single_object_packfile(class, signature, &param);
+        let parsed = read_tagxml_string_with_registry(&xml, &mut registry)
+            .unwrap_or_else(|error| panic!("{class}: {error}"));
+        assert_eq!(parsed.objects()[0].members[0].value, expected, "{class}");
+        let written = write_tagxml_string_with_registry(&parsed, &mut registry)
+            .unwrap_or_else(|error| panic!("{class} write: {error}"));
+        if class == "Pose" {
+            assert!(written.contains(qs_a) && written.contains(qs_b), "{written}");
+            assert!(written.contains("numelements=\"2\""), "{written}");
+        } else {
+            assert!(written.contains(vector), "{written}");
+        }
     }
 
-    let xml_out =
-        havok_native::hkx::tagxml::write_tagxml_string_with_registry(&parsed, &mut registry)
-            .expect("write XML");
-    assert!(xml_out.contains(
-        "(2.000000 2.000000 2.000000 1.000000 0.500000 0.500000 0.500000 0.500000 1.000000 1.000000 1.000000 1.000000)"
-    ));
-}
-
-#[test]
-fn flat_complex_array_input_decodes_into_per_element_groups() {
-    // Flat space-separated COMPLEX arrays (from non-Python emitters) must still
-    // parse: the parser rebundles flat float runs into per-element F32List
-    // groups.
-    let dir = temp_classxml_dir("flat_complex");
-    write_temp_classxml(
-        &dir,
-        "Pose_0.xml",
-        "<class name='Pose' version='0' signature='0x00000020'><members><member name='pose' offset='0' vtype='TYPE_ARRAY' vsubtype='TYPE_VECTOR4'/></members></class>",
+    // Flat COMPLEX arrays from non-Python emitters are rebundled per element.
+    let flat = single_object_packfile(
+        "VecArray",
+        "0x00000030",
+        r#"<hkparam name="vectors" numelements="2">1.000000 2.000000 3.000000 4.000000 5.000000 6.000000 7.000000 8.000000</hkparam>"#,
     );
-    let xml_in = r##"<hkpackfile classversion="11" contentsversion="hk_2014.1.0-r1"><hksection name="__data__"><hkobject name="#0001" class="Pose" signature="0x00000020"><hkparam name="pose" numelements="2">1.000000 2.000000 3.000000 4.000000 5.000000 6.000000 7.000000 8.000000</hkparam></hkobject></hksection></hkpackfile>"##;
-    let mut registry = DescriptorRegistry::from_dir(&dir).expect("temp descriptors");
-    let parsed = havok_native::hkx::tagxml::read_tagxml_string_with_registry(xml_in, &mut registry)
-        .expect("parse flat Vector4 array");
-    let HkxValue::Array(values) = &parsed.objects()[0].members[0].value else {
-        panic!(
-            "expected Array, got {:?}",
-            parsed.objects()[0].members[0].value
-        );
-    };
-    assert_eq!(values.len(), 2);
-    let HkxValue::F32List(first) = &values[0] else {
-        panic!("first element should be F32List");
-    };
-    assert_eq!(first, &vec![1.0, 2.0, 3.0, 4.0]);
-    let HkxValue::F32List(second) = &values[1] else {
-        panic!("second element should be F32List");
-    };
-    assert_eq!(second, &vec![5.0, 6.0, 7.0, 8.0]);
-}
-
-#[test]
-fn round_trips_string_array_hkcstring_children() {
-    let dir = temp_classxml_dir("string_array_hkcstring");
-    write_temp_classxml(
-        &dir,
-        "StringArrayHolder_0.xml",
-        "<class name='StringArrayHolder' version='0' signature='0x00000030'><members><member name='names' offset='0' vtype='TYPE_ARRAY' vsubtype='TYPE_STRINGPTR'/></members></class>",
-    );
-    let xml_in = r##"<hkpackfile classversion="11" contentsversion="hk_2014.1.0-r1"><hksection name="__data__"><hkobject name="#0001" class="StringArrayHolder" signature="0x00000030"><hkparam name="names" numelements="2"><hkcstring>first value</hkcstring><hkcstring>second value</hkcstring></hkparam></hkobject></hksection></hkpackfile>"##;
-    let mut registry = DescriptorRegistry::from_dir(&dir).expect("temp descriptors");
-    let parsed = havok_native::hkx::tagxml::read_tagxml_string_with_registry(xml_in, &mut registry)
-        .expect("parse string array");
-    let HkxValue::Array(values) = &parsed.objects()[0].members[0].value else {
-        panic!("expected string array");
-    };
-    assert_eq!(values.len(), 2);
-    assert!(matches!(
-        &values[0],
-        HkxValue::String { value, is_null: false } if value == "first value"
-    ));
-    assert!(matches!(
-        &values[1],
-        HkxValue::String { value, is_null: false } if value == "second value"
-    ));
-
-    let xml_out =
-        havok_native::hkx::tagxml::write_tagxml_string_with_registry(&parsed, &mut registry)
-            .expect("write XML");
-    assert!(xml_out.contains("<hkcstring>first value</hkcstring>"));
-    assert!(xml_out.contains("<hkcstring>second value</hkcstring>"));
-}
-
-#[test]
-fn round_trips_string_with_xml_special_characters() {
-    // strings containing XML special characters must survive a
-    // write→read round-trip without corruption or parse failure.
-    let special = "a < b & c > d \" e ' f\ng";
-    let dir = temp_classxml_dir("special_chars");
-    write_temp_classxml(
-        &dir,
-        "StrHolder_0.xml",
-        "<class name='StrHolder' version='0' signature='0x00000040'><members><member name='label' offset='0' vtype='TYPE_STRINGPTR' vsubtype='TYPE_VOID'/></members></class>",
-    );
-    let mut registry = DescriptorRegistry::from_dir(&dir).expect("temp descriptors");
-    let hkx = HkxFile::from_tagxml(
-        11,
-        "hk_2014.1.0-r1",
-        vec![HkxObject {
-            name: Some("#0001".to_string()),
-            offset: 0,
-            signature: 0x00000040,
-            class_name: "StrHolder".to_string(),
-            members: vec![HkxMember {
-                name: "label".to_string(),
-                value: HkxValue::String {
-                    value: special.to_string(),
-                    is_null: false,
-                },
-            }],
-        }],
-    );
-
-    let xml = havok_native::hkx::tagxml::write_tagxml_string_with_registry(&hkx, &mut registry)
-        .expect("write must succeed with special chars");
-
-    // The raw special characters must not appear unescaped in text content.
-    // (The writer must escape them before emitting.)
-    assert!(!xml.contains(" < "), "unescaped < in xml");
-    assert!(!xml.contains(" > "), "unescaped > in xml");
-
-    let parsed = havok_native::hkx::tagxml::read_tagxml_string_with_registry(&xml, &mut registry)
-        .expect("re-parse must succeed");
-
-    let HkxValue::String {
-        value,
-        is_null: false,
-    } = &parsed.objects()[0].members[0].value
-    else {
-        panic!(
-            "expected String, got {:?}",
-            parsed.objects()[0].members[0].value
-        );
-    };
+    let parsed =
+        read_tagxml_string_with_registry(&flat, &mut registry).expect("parse flat Vector4 array");
     assert_eq!(
-        value, special,
-        "round-trip must preserve all special chars exactly"
+        parsed.objects()[0].members[0].value,
+        HkxValue::Array(vec![
+            HkxValue::F32List(vec![1.0, 2.0, 3.0, 4.0]),
+            HkxValue::F32List(vec![5.0, 6.0, 7.0, 8.0]),
+        ])
     );
+}
+
+#[test]
+fn strings_round_trip_as_hkcstring_arrays_and_with_xml_special_characters() {
+    let mut registry = registry_with(
+        "strings",
+        &[
+            (
+                "StringArrayHolder_0.xml",
+                "<class name='StringArrayHolder' version='0' signature='0x00000030'><members><member name='names' offset='0' vtype='TYPE_ARRAY' vsubtype='TYPE_STRINGPTR'/></members></class>",
+            ),
+            (
+                "StrHolder_0.xml",
+                "<class name='StrHolder' version='0' signature='0x00000040'><members><member name='label' offset='0' vtype='TYPE_STRINGPTR' vsubtype='TYPE_VOID'/></members></class>",
+            ),
+        ],
+    );
+    let xml = single_object_packfile(
+        "StringArrayHolder",
+        "0x00000030",
+        r#"<hkparam name="names" numelements="2"><hkcstring>first value</hkcstring><hkcstring>second value</hkcstring></hkparam>"#,
+    );
+    let parsed = read_tagxml_string_with_registry(&xml, &mut registry).expect("parse string array");
+    assert_eq!(
+        parsed.objects()[0].members[0].value,
+        HkxValue::Array(vec![string("first value"), string("second value")])
+    );
+    let written = write_tagxml_string_with_registry(&parsed, &mut registry).expect("write XML");
+    assert!(written.contains("<hkcstring>first value</hkcstring>"));
+    assert!(written.contains("<hkcstring>second value</hkcstring>"));
+
+    let special = "a < b & c > d \" e ' f\ng";
+    let hkx = single_object_file(
+        "StrHolder",
+        0x00000040,
+        vec![member("label", string(special))],
+    );
+    let written = write_tagxml_string_with_registry(&hkx, &mut registry)
+        .expect("write must succeed with special chars");
+    assert!(!written.contains(" < "), "unescaped < in xml");
+    assert!(!written.contains(" > "), "unescaped > in xml");
+    let parsed =
+        read_tagxml_string_with_registry(&written, &mut registry).expect("re-parse must succeed");
+    assert_eq!(parsed.objects()[0].members[0].value, string(special));
 }

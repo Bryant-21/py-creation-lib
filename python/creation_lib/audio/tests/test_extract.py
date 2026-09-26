@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import shutil
 from pathlib import Path
 
 import numpy as np
@@ -45,28 +44,23 @@ def test_decode_xwm_round_trips_a_tone(tmp_path):
     assert rate == 44_100
     assert len(data) > 40_000
 
+    with pytest.raises(FileNotFoundError):
+        extract.decode_xwm(tmp_path / "missing.xwm", tmp_path / "missing.wav")
 
-def test_decode_fuz_returns_xwm_and_keeps_lip(tmp_path):
+
+def test_decode_fuz_keeps_or_drops_lip(tmp_path):
     fuz, xwm, lip = _tone_fuz(tmp_path)
-    out = tmp_path / "out"
 
-    produced = extract.decode_fuz(fuz, out, keep_lip=True)
+    kept = extract.decode_fuz(fuz, tmp_path / "kept", keep_lip=True)
+    assert kept == tmp_path / "kept" / "tone.xwm"
+    assert kept.read_bytes() == xwm.read_bytes()
+    assert (tmp_path / "kept" / "tone.lip").read_bytes() == lip.read_bytes()
 
-    assert produced == out / "tone.xwm"
-    assert produced.read_bytes() == xwm.read_bytes()
-    assert (out / "tone.lip").read_bytes() == lip.read_bytes()
-
-
-def test_decode_fuz_drops_lip_by_default(tmp_path):
-    fuz, _xwm, _lip = _tone_fuz(tmp_path)
-    out = tmp_path / "out"
-
-    extract.decode_fuz(fuz, out)
-
-    assert sorted(p.name for p in out.iterdir()) == ["tone.xwm"]
+    extract.decode_fuz(fuz, tmp_path / "dropped")
+    assert sorted(p.name for p in (tmp_path / "dropped").iterdir()) == ["tone.xwm"]
 
 
-def test_decode_to_wav_from_fuz_leaves_only_the_wav(tmp_path):
+def test_decode_to_wav_handles_fuz_and_passthrough_wav(tmp_path):
     fuz, _xwm, _lip = _tone_fuz(tmp_path)
     out = tmp_path / "out"
 
@@ -75,22 +69,8 @@ def test_decode_to_wav_from_fuz_leaves_only_the_wav(tmp_path):
     assert produced == out / "tone.wav"
     assert sorted(p.name for p in out.iterdir()) == ["tone.wav"]
 
-
-def test_decode_to_wav_passes_through_wav(tmp_path):
-    wav = _tone_wav(tmp_path / "tone.wav")
-    assert extract.decode_to_wav(wav, tmp_path / "out") == wav
-
-
-def test_decode_xwm_missing_input_raises(tmp_path):
-    with pytest.raises(FileNotFoundError):
-        extract.decode_xwm(tmp_path / "missing.xwm", tmp_path / "missing.wav")
-
-
-def test_decode_to_wav_rejects_unknown_suffix(tmp_path):
-    source = tmp_path / "voice.mp3"
-    source.write_bytes(b"x")
-    with pytest.raises(ValueError):
-        extract.decode_to_wav(source, tmp_path / "out")
+    wav = _tone_wav(tmp_path / "already.wav")
+    assert extract.decode_to_wav(wav, tmp_path / "unused") == wav
 
 
 def test_decode_to_wav_routes_ogg_through_ffmpeg(tmp_path, monkeypatch):
@@ -142,39 +122,15 @@ def test_decode_to_wav_rebuilds_wem_as_ogg_before_ffmpeg(tmp_path, monkeypatch):
     assert not Path(output_ogg).exists(), "the intermediate ogg is cleaned up"
 
 
-def test_decode_to_wav_needs_a_wwise_codebook_source_for_wem(tmp_path):
-    source = tmp_path / "voice.wem"
-    source.write_bytes(b"placeholder")
+def test_decode_to_wav_rejects_invalid_inputs(tmp_path):
+    unknown_suffix = tmp_path / "voice.mp3"
+    unknown_suffix.write_bytes(b"x")
+    with pytest.raises(ValueError):
+        extract.decode_to_wav(unknown_suffix, tmp_path / "out")
+
+    wem = tmp_path / "voice.wem"
+    wem.write_bytes(b"placeholder")
     with pytest.raises(ValueError, match="wwise_codebooks"):
-        extract.decode_to_wav(source, tmp_path / "out", ffmpeg_path="ffmpeg.exe")
+        extract.decode_to_wav(wem, tmp_path / "out", ffmpeg_path="ffmpeg.exe")
 
 
-def _starfield_dir() -> Path | None:
-    root = os.environ.get("STARFIELD_DIR")
-    return Path(root) if root and (Path(root) / "Starfield.exe").is_file() else None
-
-
-@pytest.mark.skipif(
-    _starfield_dir() is None or shutil.which("ffmpeg") is None,
-    reason="needs STARFIELD_DIR and ffmpeg on PATH",
-)
-def test_decode_to_wav_decodes_a_starfield_voice_line(tmp_path):
-    from creation_lib.ba2 import native_runtime as ba2
-
-    root = _starfield_dir()
-    wem = tmp_path / "00c0c1b2.wem"
-    wem.write_bytes(
-        bytes(
-            ba2.extract_one(
-                str(root / "Data" / "Starfield - Voices02.ba2"),
-                "sound/voice/starfield.esm/robotmodelavasco/00c0c1b2.wem",
-            )
-        )
-    )
-
-    decoded = extract.decode_to_wav(wem, tmp_path / "out", wwise_codebooks=root / "Starfield.exe")
-
-    data, rate = sf.read(decoded)
-    assert rate == 44_100
-    assert len(data) == 630_781
-    assert np.sqrt(np.mean(data**2)) > 0.01

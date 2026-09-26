@@ -10,6 +10,7 @@ const SLSF1_GREYSCALE_COLOR: u64 = 1 << 4;
 const SLSF1_GREYSCALE_ALPHA: u64 = 1 << 5;
 const SLSF1_ENVIRONMENT_MAPPING: u64 = 1 << 7;
 const SLSF1_RECEIVE_SHADOWS: u64 = 1 << 8;
+#[cfg(test)]
 const SLSF1_CAST_SHADOWS: u64 = 1 << 9;
 const SLSF1_MODEL_SPACE_NORMALS: u64 = 1 << 12;
 const SLSF1_OWN_EMIT: u64 = 1 << 22;

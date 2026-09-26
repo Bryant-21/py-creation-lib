@@ -187,11 +187,8 @@ fn cloth_simulate_setup_round_trips_grid() {
 }
 
 #[test]
-fn cloth_bake_treats_vertex_selection_channel_as_indices() {
+fn cloth_bake_resolves_vertex_selection_channel_kinds() {
+    // kind 2 = channel indices, kind 3 = inverted channel indices.
     assert_eq!(baked_fixed_indices(build_selection_setup(2)), vec![1, 3]);
-}
-
-#[test]
-fn cloth_bake_inverts_vertex_selection_channel_indices() {
     assert_eq!(baked_fixed_indices(build_selection_setup(3)), vec![0, 2]);
 }

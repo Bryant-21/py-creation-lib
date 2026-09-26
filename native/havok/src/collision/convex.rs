@@ -159,7 +159,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn source_convex_round_trip_keeps_native_class_vertices_and_radius() {
+    fn source_convex_keeps_native_class_and_support_layout() {
         let shape = SourceConvexShape {
             vertices: vec![
                 [-1.0, 0.0, 0.0, 0.5],
@@ -202,10 +202,6 @@ mod tests {
                 .map(|member| &member.value),
             Some(&HkxValue::F32(shape.convex_radius))
         );
-    }
-
-    #[test]
-    fn single_vertex_convex_uses_havok_sphere_support_layout() {
         let shape = SourceConvexShape {
             vertices: vec![[1.0, 2.0, 3.0, 0.5]],
             convex_radius: 0.25,

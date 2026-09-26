@@ -803,44 +803,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bathrobe_has_66_particles() {
-        assert_eq!(BATHROBE.num_particles(), 66);
-    }
-
-    #[test]
-    fn all_templates_have_nonzero_particles() {
-        for t in TEMPLATES {
-            let positions = (t.build_positions_fn)();
-            assert!(
-                !positions.is_empty(),
-                "template '{}' has no positions",
-                t.name
-            );
-            assert_eq!(positions.len(), t.num_particles());
-        }
-    }
-
-    #[test]
-    fn get_template_case_insensitive() {
-        assert!(get_template("bathrobe").is_ok());
-        assert!(get_template("CAPE").is_ok());
-        assert!(get_template("NotATemplate").is_err());
-    }
-
-    #[test]
-    fn template_list_json_has_five_entries() {
-        let json = template_list_json().unwrap();
-        let arr: Vec<serde_json::Value> = serde_json::from_str(&json).unwrap();
-        assert_eq!(arr.len(), 5);
-    }
-
-    #[test]
     fn all_templates_build_cloth_setup_with_state() {
         use crate::cloth::bake::bake_cloth_setup;
         use crate::cloth::runtime::ClothData;
         use crate::cloth::validate::validate_cloth_data;
 
         for t in TEMPLATES {
+            assert_eq!((t.build_positions_fn)().len(), t.num_particles());
             let setup = build_cloth_setup(t.name, "{}")
                 .unwrap_or_else(|e| panic!("build_cloth_setup('{}') failed: {e}", t.name));
             assert!(

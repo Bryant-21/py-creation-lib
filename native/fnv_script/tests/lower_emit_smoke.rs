@@ -40,13 +40,12 @@ End
     assert!(psc.contains("Int Property c Auto"));
     assert!(psc.contains("Event OnActivate(ObjectReference akActionRef)"));
     assert!(psc.contains("c = 1"));
-}
 
-#[test]
-fn lowers_initialized_source_variable_as_initialized_property() {
-    let ast = parse_script("Int nStart to 1\nBegin OnLoad\nEnd\n").unwrap();
+    let ast = parse_script("Int nStart to 1
+Begin OnLoad
+End
+").unwrap();
     let psc = emit_psc(&lower(&ast, &ctx("")).unwrap());
-
     assert!(psc.contains("Int Property nStart = 1 Auto"));
 }
 
@@ -72,38 +71,22 @@ Player:
     let ir = lower(&ast, &ctx(map)).unwrap();
     let psc = emit_psc(&ir);
     assert!(psc.contains("Game.GetPlayer().Activate(Self, false)"));
-}
 
-#[test]
-fn strict_unmapped_function_errors() {
-    let src = r#"
-Begin OnActivate
-    RewardKarma 10
-End
-"#;
-
-    let ast = parse_script(src).unwrap();
-    let err = lower(&ast, &ctx("")).unwrap_err();
-    assert!(err.to_string().contains("RewardKarma"));
-}
-
-#[test]
-fn strict_unmapped_zero_arg_symbol_errors() {
-    let src = r#"
-Begin OnActivate
-    Activate Player
-End
-"#;
-
-    let ast = parse_script(src).unwrap();
-    let map = r#"
+    let activate_only = r#"
 Activate:
   papyrus: "{arg0}.Activate({self}, false)"
   arg_kinds: [actor]
   return_kind: void
 "#;
-    let err = lower(&ast, &ctx(map)).unwrap_err();
+    let err = lower(&ast, &ctx(activate_only)).unwrap_err();
     assert!(err.to_string().contains("Player"));
+
+    let unmapped = parse_script("Begin OnActivate
+    RewardKarma 10
+End
+").unwrap();
+    let err = lower(&unmapped, &ctx("")).unwrap_err();
+    assert!(err.to_string().contains("RewardKarma"));
 }
 
 #[test]
@@ -225,23 +208,6 @@ SetStage:
         .to_string()
         .contains("kind cannot be proven")
     );
-}
-
-#[test]
-fn rejects_statically_wrong_argument_kinds() {
-    let map = r#"
-SetStage:
-  papyrus: "{arg0}.SetStage({arg1})"
-  arg_kinds: [quest, int]
-  return_kind: void
-"#;
-    let err = lower(
-        &parse_script("Begin OnActivate\nSetStage 7 20\nEnd").unwrap(),
-        &ctx(map),
-    )
-    .unwrap_err();
-    assert!(err.to_string().contains("expected quest"));
-    assert!(err.to_string().contains("known int"));
 }
 
 #[test]

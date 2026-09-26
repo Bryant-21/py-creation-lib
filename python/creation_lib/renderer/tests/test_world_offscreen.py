@@ -20,7 +20,7 @@ class _WorldReport:
     ok: bool
 
 
-def test_offscreen_render_writes_png(tmp_path) -> None:
+def test_offscreen_render_writes_png_and_validates_positive_dimensions(tmp_path) -> None:
     scene = _WorldScene()
     output_path = tmp_path / "tiny.png"
 
@@ -35,8 +35,6 @@ def test_offscreen_render_writes_png(tmp_path) -> None:
     assert png.startswith(b"\x89PNG\r\n\x1a\n")
     assert struct.unpack(">II", png[16:24]) == (64, 64)
 
-
-def test_offscreen_render_validates_positive_dimensions(tmp_path) -> None:
     with pytest.raises(ValueError, match="width and height must be positive"):
         render_world_scene_offscreen(
             _WorldScene(),

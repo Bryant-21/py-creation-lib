@@ -318,133 +318,44 @@ mod tests {
         }
     }
 
-    #[test]
-    fn rest_pose_produces_chain_translations() {
-        let skel = three_bone_skeleton();
-        let pose = SkeletonPose::from_skeleton_rest(&skel);
-        let setup = SkeletonTransformSetSetup {
-            name: "TS".into(),
-            world_from_model: identity_mat4(),
-            selected_bones: vec![],
-        };
-        let bridge = AnimationBridge::new(&skel, &setup);
+    fn fill(pose: &SkeletonPose, skel: &Skeleton, setup: &SkeletonTransformSetSetup) -> TransformSetBuffer {
+        let bridge = AnimationBridge::new(skel, setup);
         let mut buf = TransformSetBuffer::with_capacity(0);
-        bridge.fill_transform_set(&pose, &mut buf);
-
-        assert_eq!(buf.transforms.len(), 3);
-        // Root at origin.
-        assert!((buf.transforms[0][0][3] - 0.0).abs() < 1e-6);
-        assert!((buf.transforms[0][1][3] - 0.0).abs() < 1e-6);
-        // Spine at +y=1.
-        assert!((buf.transforms[1][1][3] - 1.0).abs() < 1e-6);
-        // Hand at +y=2 (chain).
-        assert!((buf.transforms[2][1][3] - 2.0).abs() < 1e-6);
+        bridge.fill_transform_set(pose, &mut buf);
+        buf
     }
 
     #[test]
-    fn rotated_root_propagates_to_descendants() {
-        let skel = three_bone_skeleton();
-        let mut pose = SkeletonPose::from_skeleton_rest(&skel);
-        // Rotate root by 90° around Z.
-        pose.local_transforms[0] = rotation_z(std::f32::consts::FRAC_PI_2);
-
-        let setup = SkeletonTransformSetSetup::default();
-        let bridge = AnimationBridge::new(&skel, &setup);
-        let mut buf = TransformSetBuffer::with_capacity(3);
-        bridge.fill_transform_set(&pose, &mut buf);
-
-        // After 90° Z rotation, Spine local +y=1 becomes model-space -x=1,
-        // and Hand should be at -x=2.
-        assert!(
-            (buf.transforms[1][0][3] - -1.0).abs() < 1e-5,
-            "Spine x = {}",
-            buf.transforms[1][0][3]
-        );
-        assert!(
-            (buf.transforms[2][0][3] - -2.0).abs() < 1e-5,
-            "Hand x = {}",
-            buf.transforms[2][0][3]
-        );
-    }
-
-    #[test]
-    fn world_from_model_translates_output() {
+    fn rest_pose_chains_translations_and_applies_world_from_model() {
         let skel = three_bone_skeleton();
         let pose = SkeletonPose::from_skeleton_rest(&skel);
-        let setup = SkeletonTransformSetSetup {
-            name: "TS".into(),
-            world_from_model: translation(10.0, 0.0, 0.0),
-            selected_bones: vec![],
-        };
-        let bridge = AnimationBridge::new(&skel, &setup);
-        let mut buf = TransformSetBuffer::with_capacity(3);
-        bridge.fill_transform_set(&pose, &mut buf);
-
-        // Every output bone gets +10 on x.
-        for t in &buf.transforms {
-            assert!((t[0][3] - 10.0).abs() < 1e-6);
+        for world_x in [0.0, 10.0] {
+            let setup = SkeletonTransformSetSetup {
+                name: "TS".into(),
+                world_from_model: translation(world_x, 0.0, 0.0),
+                selected_bones: vec![],
+            };
+            let buf = fill(&pose, &skel, &setup);
+            assert_eq!(buf.transforms.len(), 3);
+            for (bone, expected_y) in [(0, 0.0), (1, 1.0), (2, 2.0)] {
+                assert!((buf.transforms[bone][0][3] - world_x).abs() < 1e-6);
+                assert!((buf.transforms[bone][1][3] - expected_y).abs() < 1e-6);
+            }
         }
     }
 
     #[test]
-    fn subset_transform_set_only_emits_selected_bones() {
-        let skel = three_bone_skeleton();
-        let pose = SkeletonPose::from_skeleton_rest(&skel);
-        let setup = SkeletonTransformSetSetup {
-            name: "TS".into(),
-            world_from_model: identity_mat4(),
-            selected_bones: vec!["Root".into(), "Hand".into()],
-        };
-        let bridge = AnimationBridge::new(&skel, &setup);
-        let mut buf = TransformSetBuffer::with_capacity(0);
-        bridge.fill_transform_set(&pose, &mut buf);
-
-        assert_eq!(buf.transforms.len(), 2);
-        // Hand still at y=2 (model-space), even though Spine is unbound.
-        assert!((buf.transforms[1][1][3] - 2.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn subset_parent_indices_skip_unselected() {
-        let skel = three_bone_skeleton();
-        let setup = SkeletonTransformSetSetup {
-            name: "TS".into(),
-            selected_bones: vec!["Root".into(), "Hand".into()],
-            ..Default::default()
-        };
-        let parents = setup.transform_parent_indices(&skel);
-        assert_eq!(parents.len(), 2);
-        // Root has no parent.
-        assert_eq!(parents[0], -1);
-        // Hand's nearest selected ancestor is Root (skipping unselected Spine).
-        assert_eq!(parents[1], 0);
-    }
-
-    #[test]
-    fn create_transform_set_setup_propagates_skeleton_name() {
-        let skel = three_bone_skeleton();
-        let setup = SkeletonTransformSetSetup {
-            name: "MyTS".into(),
-            ..Default::default()
-        };
-        let ts = setup.create_transform_set_setup(&skel);
-        assert_eq!(ts.name, "MyTS");
-        assert_eq!(ts.skeleton_name, "TestSkel");
-        assert_eq!(ts.bone_names, skel.bone_names);
-    }
-
-    #[test]
-    fn inverse_transposes_match_rotation_block() {
+    fn rotated_root_propagates_and_inverse_transposes_match() {
         let skel = three_bone_skeleton();
         let mut pose = SkeletonPose::from_skeleton_rest(&skel);
-        pose.local_transforms[0] = rotation_z(std::f32::consts::FRAC_PI_4);
-        let setup = SkeletonTransformSetSetup::default();
-        let bridge = AnimationBridge::new(&skel, &setup);
-        let mut buf = TransformSetBuffer::with_capacity(3);
-        bridge.fill_transform_set(&pose, &mut buf);
+        pose.local_transforms[0] = rotation_z(std::f32::consts::FRAC_PI_2);
+        let buf = fill(&pose, &skel, &SkeletonTransformSetSetup::default());
 
-        // For orthonormal inputs the inverse-transpose's 3x3 equals the
-        // model-space 3x3 (because R^-T = R for orthonormal R).
+        // 90° Z rotation maps Spine's local +y=1 to model -x=1, Hand to -x=2.
+        assert!((buf.transforms[1][0][3] - -1.0).abs() < 1e-5);
+        assert!((buf.transforms[2][0][3] - -2.0).abs() < 1e-5);
+
+        // R^-T = R for orthonormal R.
         for i in 0..3 {
             for r in 0..3 {
                 for c in 0..3 {
@@ -455,5 +366,23 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn subset_transform_set_emits_selected_bones_with_remapped_parents() {
+        let skel = three_bone_skeleton();
+        let pose = SkeletonPose::from_skeleton_rest(&skel);
+        let setup = SkeletonTransformSetSetup {
+            name: "TS".into(),
+            world_from_model: identity_mat4(),
+            selected_bones: vec!["Root".into(), "Hand".into()],
+        };
+        let buf = fill(&pose, &skel, &setup);
+
+        assert_eq!(buf.transforms.len(), 2);
+        // Hand stays at model-space y=2 although Spine is unbound.
+        assert!((buf.transforms[1][1][3] - 2.0).abs() < 1e-6);
+        // Hand's nearest selected ancestor is Root.
+        assert_eq!(setup.transform_parent_indices(&skel), vec![-1, 0]);
     }
 }

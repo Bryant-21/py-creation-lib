@@ -728,26 +728,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn mesh_relative_paths_accept_explicit_mesh_roots_only() {
-        assert_eq!(
-            mesh_relative_path("Meshes/Actors/Canis/Behaviors/Core.hkx").unwrap(),
-            "actors/canis/behaviors/core.hkx"
-        );
-        assert_eq!(
-            mesh_relative_path("Actors\\Canis\\Behaviors\\Core.hkx").unwrap(),
-            "actors/canis/behaviors/core.hkx"
-        );
-        assert!(mesh_relative_path("Meshes/../Core.hkx").is_err());
-    }
-
-    #[test]
-    fn expected_family_contract_rejects_case_duplicates() {
-        assert!(
-            expected_families(&["Family-Canis".to_string(), "family-canis".to_string()]).is_err()
-        );
-    }
-
-    #[test]
     fn record_commit_document_accepts_canonical_ledger_envelope() {
         let document: RecordCommitDocument = serde_json::from_value(serde_json::json!({
             "version": 2,
@@ -768,58 +748,6 @@ mod tests {
     }
 
     #[test]
-    fn record_receipt_accepts_matching_zero_attack_pair() {
-        let expected = expected_families(&["family-passive".to_string()]).unwrap();
-        let receipt = RecordCommitReceipt {
-            family_ids: vec!["family-passive".to_string()],
-            families: vec![RecordFamilyReceipt {
-                family_id: "family-passive".to_string(),
-                record_count: 2,
-                mapping_count: 1,
-                primary_mappings: vec![serde_json::json!({})],
-                races: vec![RecordRaceReceipt {
-                    form_key: "000800@Target.esp".to_string(),
-                    attack_events: Vec::new(),
-                    attack_data_entries: 0,
-                }],
-            }],
-            record_count: 2,
-            mapping_count: 1,
-            reserved_form_keys: vec![
-                "000800@Target.esp".to_string(),
-                "000801@Target.esp".to_string(),
-            ],
-        };
-        assert!(validate_record_receipt(&receipt, &expected).is_ok());
-    }
-
-    #[test]
-    fn record_receipt_requires_every_race_attack_pair() {
-        let expected = expected_families(&["family-canis".to_string()]).unwrap();
-        let receipt = RecordCommitReceipt {
-            family_ids: vec!["family-canis".to_string()],
-            families: vec![RecordFamilyReceipt {
-                family_id: "family-canis".to_string(),
-                record_count: 2,
-                mapping_count: 1,
-                primary_mappings: vec![serde_json::json!({})],
-                races: vec![RecordRaceReceipt {
-                    form_key: "000800@Target.esp".to_string(),
-                    attack_events: vec!["attackStart".to_string()],
-                    attack_data_entries: 0,
-                }],
-            }],
-            record_count: 2,
-            mapping_count: 1,
-            reserved_form_keys: vec![
-                "000800@Target.esp".to_string(),
-                "000801@Target.esp".to_string(),
-            ],
-        };
-        assert!(validate_record_receipt(&receipt, &expected).is_err());
-    }
-
-    #[test]
     fn anim_text_tree_publish_replaces_only_after_staging() {
         let temp = tempfile::tempdir().unwrap();
         let output = temp.path().join("output/Meshes");
@@ -836,5 +764,55 @@ mod tests {
             b"new"
         );
         assert!(!output.join("AnimTextData/old.txt").exists());
+    }
+
+    #[test]
+    fn mesh_paths_and_family_ids_are_validated() {
+        assert_eq!(
+            mesh_relative_path("Meshes/Actors/Canis/Behaviors/Core.hkx").unwrap(),
+            "actors/canis/behaviors/core.hkx"
+        );
+        assert_eq!(
+            mesh_relative_path("Actors\\Canis\\Behaviors\\Core.hkx").unwrap(),
+            "actors/canis/behaviors/core.hkx"
+        );
+        assert!(mesh_relative_path("Meshes/../Core.hkx").is_err());
+        assert!(
+            expected_families(&["Family-Canis".to_string(), "family-canis".to_string()]).is_err()
+        );
+    }
+
+    #[test]
+    fn record_receipt_requires_every_race_attack_pair() {
+        let receipt = |family: &str, attack_events: Vec<String>| RecordCommitReceipt {
+            family_ids: vec![family.to_string()],
+            families: vec![RecordFamilyReceipt {
+                family_id: family.to_string(),
+                record_count: 2,
+                mapping_count: 1,
+                primary_mappings: vec![serde_json::json!({})],
+                races: vec![RecordRaceReceipt {
+                    form_key: "000800@Target.esp".to_string(),
+                    attack_events,
+                    attack_data_entries: 0,
+                }],
+            }],
+            record_count: 2,
+            mapping_count: 1,
+            reserved_form_keys: vec![
+                "000800@Target.esp".to_string(),
+                "000801@Target.esp".to_string(),
+            ],
+        };
+        let passive = expected_families(&["family-passive".to_string()]).unwrap();
+        assert!(validate_record_receipt(&receipt("family-passive", Vec::new()), &passive).is_ok());
+        let canis = expected_families(&["family-canis".to_string()]).unwrap();
+        assert!(
+            validate_record_receipt(
+                &receipt("family-canis", vec!["attackStart".to_string()]),
+                &canis
+            )
+            .is_err()
+        );
     }
 }

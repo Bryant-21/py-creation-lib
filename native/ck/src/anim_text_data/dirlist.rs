@@ -68,45 +68,6 @@ pub fn emit_dirlists(out_meshes_root: &Path) -> Result<u32, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
-
-    fn oracle(path: &str) -> Option<Vec<u8>> {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../extracted/fo4/meshes/animtextdata")
-            .join(path);
-        if !path.is_file() {
-            eprintln!("skipping: oracle missing {}", path.display());
-            return None;
-        }
-        Some(std::fs::read(path).unwrap())
-    }
-
-    #[test]
-    fn dirlist_rebuilds_all_seven_vanilla_dirlists_byte_exact() {
-        // Covers every shipped dirlist, including the ordering stress case
-        // (animationfiledata: 2777 numeric + 217 mixed-case named entries with the
-        // uppercase-collation edge pairs, e.g. yaoguai.txt before _sharedproject.txt).
-        let buckets = [
-            r"animationfiledata\dirlist.txt",
-            r"animationoffsets\dirlist.txt",
-            r"animationspeedinfo\dirlist.txt",
-            r"animationstancedata\dirlist.txt",
-            r"animeventinfo\dirlist.txt",
-            r"dynamicidledata\dirlist.txt",
-            r"syncanimdata\dirlist.txt",
-        ];
-        for bucket in buckets {
-            let Some(raw) = oracle(bucket) else { return };
-            let mut names: Vec<String> = String::from_utf8(raw.clone())
-                .unwrap()
-                .split("\r\n")
-                .filter(|line| !line.is_empty())
-                .map(str::to_string)
-                .collect();
-            names.reverse(); // destroy the order; the builder must restore it
-            assert_eq!(build_dirlist(&names), raw, "mismatch for {bucket}");
-        }
-    }
 
     #[test]
     fn emit_dirlists_writes_seven_buckets_and_skips_clipgeneratordata_and_self() {

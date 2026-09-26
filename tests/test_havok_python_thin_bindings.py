@@ -5,14 +5,15 @@ from pathlib import Path
 from creation_lib.animation.models import AnimationClip, AnimationEvent, AnimationKeyframe, BoneChannel
 
 
-def test_parse_skeleton_delegates_to_native(monkeypatch, tmp_path):
+def test_parse_skeleton_and_discover_havok_files_delegate_to_native(monkeypatch, tmp_path):
     from creation_lib.havok import native_runtime
     from creation_lib.havok.parsers.skeleton import parse_skeleton
+    from creation_lib.havok.discovery import discover_havok_files
 
-    calls: list[str] = []
+    skeleton_calls: list[str] = []
 
     def parse_skeleton_xml_native(xml: str) -> dict:
-        calls.append(xml)
+        skeleton_calls.append(xml)
         return {
             "name": "NativeSkeleton",
             "bone_count": 1,
@@ -32,20 +33,15 @@ def test_parse_skeleton_delegates_to_native(monkeypatch, tmp_path):
 
     result = parse_skeleton(path)
 
-    assert calls == ["<hkpackfile />"]
+    assert skeleton_calls == ["<hkpackfile />"]
     assert result.name == "NativeSkeleton"
     assert result.bone_names == ["Root"]
     assert result.partition_names == ["Body"]
 
-
-def test_discover_havok_files_delegates_to_native(monkeypatch, tmp_path):
-    from creation_lib.havok import native_runtime
-    from creation_lib.havok.discovery import discover_havok_files
-
-    calls: list[tuple[str, str]] = []
+    discover_calls: list[tuple[str, str]] = []
 
     def walk_meshes_dir_native(root_path: str, source: str) -> list[dict]:
-        calls.append((root_path, source))
+        discover_calls.append((root_path, source))
         return [
             {
                 "rel_path": "UniqueBehaviors/Test/Behaviors/Behavior.xml",
@@ -60,7 +56,7 @@ def test_discover_havok_files_delegates_to_native(monkeypatch, tmp_path):
 
     entries = discover_havok_files(tmp_path, source="fo4")
 
-    assert calls == [(str(tmp_path), "fo4")]
+    assert discover_calls == [(str(tmp_path), "fo4")]
     assert entries[0].abs_path == tmp_path / "UniqueBehaviors" / "Test" / "Behaviors" / "Behavior.xml"
     assert entries[0].role == "behavior"
 

@@ -244,15 +244,12 @@ class TestParseMaterialTextures:
         assert "NormalTexture" not in result["textures"]
         assert "DiffuseTexture" in result["textures"]
 
-    def test_returns_none_for_missing_file(self):
-        result = parse_material_textures("/nonexistent/path.bgsm")
-        assert result is None
+    def test_returns_none_for_missing_or_invalid_file(self, tmp_path):
+        assert parse_material_textures("/nonexistent/path.bgsm") is None
 
-    def test_returns_none_for_invalid_file(self, tmp_path):
         bad = tmp_path / "bad.bgsm"
         bad.write_bytes(b"not a valid bgsm")
-        result = parse_material_textures(str(bad))
-        assert result is None
+        assert parse_material_textures(str(bad)) is None
 
     def test_normalizes_paths(self, tmp_path):
         bgsm_path = tmp_path / "test.bgsm"
@@ -267,8 +264,7 @@ import sqlite3
 
 
 class TestPreprocessNifsMaterialTextures:
-    def test_creates_material_textures_table(self, tmp_path):
-        """Verify the new table exists in freshly created DB."""
+    def test_creates_material_textures_table_with_expected_columns(self, tmp_path):
         from creation_lib.preprocessor.nifs import CREATE_TABLES_DDL
 
         db_path = tmp_path / "test_nifs.db"
@@ -281,19 +277,8 @@ class TestPreprocessNifsMaterialTextures:
             ).fetchall()
         }
         assert "nif_material_textures" in tables
-        conn.close()
 
-    def test_material_textures_schema(self, tmp_path):
-        """Verify table columns and PK."""
-        from creation_lib.preprocessor.nifs import CREATE_TABLES_DDL
-
-        db_path = tmp_path / "test_nifs.db"
-        conn = sqlite3.connect(db_path)
-        conn.executescript(CREATE_TABLES_DDL)
         info = conn.execute("PRAGMA table_info(nif_material_textures)").fetchall()
         col_names = {r[1] for r in info}
-        assert "material_path" in col_names
-        assert "material_type" in col_names
-        assert "texture_slot" in col_names
-        assert "texture_path" in col_names
+        assert {"material_path", "material_type", "texture_slot", "texture_path"} <= col_names
         conn.close()

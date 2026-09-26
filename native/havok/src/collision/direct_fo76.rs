@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use super::compound::{
     SHAPE_INST_DEPRECATED, SHAPE_INST_HAS_ROTATION, SHAPE_INST_HAS_SCALE,
@@ -119,7 +119,7 @@ pub fn convert_fo76_embedded_static_collision_direct(blob: &[u8]) -> HavokResult
     normalize_polytopes(&mut source)?;
     normalize_capsules(&mut source)?;
     normalize_compounds(&mut source)?;
-    normalize_collision_materials(&mut source);
+    normalize_collision_materials(source.objects_mut());
     normalize_compressed_mass_properties(&mut source);
     strip_connectivity(&mut source);
     source.set_class_version(11);
@@ -1041,20 +1041,18 @@ fn normalize_compressed_mass_properties(hkx: &mut HkxFile) {
     }
 }
 
-fn normalize_collision_materials(hkx: &mut HkxFile) {
-    for object in hkx.objects_mut() {
-        if matches!(
-            object.class_name.as_str(),
-            "hknpCompressedMeshShape"
-                | "hknpDynamicCompoundShape"
-                | "hknpConvexPolytopeShape"
-                | "hknpCapsuleShape"
-        ) {
-            if let Some(material_crc) = member_value(&object.members, "userData")
-                .and_then(integer)
-                .and_then(|value| u32::try_from(value).ok())
-                .filter(|value| *value != 0)
-            {
+const MATERIAL_SHAPE_CLASSES: &[&str] = &[
+    "hknpCompressedMeshShape",
+    "hknpDynamicCompoundShape",
+    "hknpConvexPolytopeShape",
+    "hknpCapsuleShape",
+];
+
+fn normalize_collision_materials(objects: &mut [HkxObject]) {
+    let shape_materials = shape_materials_by_bs_properties(objects);
+    for (index, object) in objects.iter_mut().enumerate() {
+        if MATERIAL_SHAPE_CLASSES.contains(&object.class_name.as_str()) {
+            if let Some(material_crc) = shape_user_data_material(object) {
                 set_or_add_member(
                     &mut object.members,
                     "userData",
@@ -1082,13 +1080,59 @@ fn normalize_collision_materials(hkx: &mut HkxFile) {
             else {
                 continue;
             };
-            set_or_add_member(
-                members,
-                "uiMaterialCRC",
-                HkxValue::U32(remap_fo76_collision_material_for_fo4(material_crc)),
-            );
+            // FO76 leaves the BS material 0 when the shape's userData alone names
+            // the surface (shelter terrain: userData = dirt). FO4 reads its footstep
+            // and impact material from here, so 0 must not become the metal default.
+            let remapped = match (material_crc, shape_materials.get(&index)) {
+                (0, Some(&shape_material)) => shape_material,
+                _ => remap_fo76_collision_material_for_fo4(material_crc),
+            };
+            set_or_add_member(members, "uiMaterialCRC", HkxValue::U32(remapped));
         }
     }
+}
+
+fn shape_user_data_material(shape: &HkxObject) -> Option<u32> {
+    member_value(&shape.members, "userData")
+        .and_then(integer)
+        .and_then(|value| u32::try_from(value).ok())
+        .filter(|value| *value != 0)
+}
+
+/// The remapped `userData` surface of the shape that owns each
+/// `hknpBSMaterialProperties`, keyed by the properties object's index.
+fn shape_materials_by_bs_properties(objects: &[HkxObject]) -> HashMap<usize, u32> {
+    let mut materials = HashMap::new();
+    for shape in objects
+        .iter()
+        .filter(|object| MATERIAL_SHAPE_CLASSES.contains(&object.class_name.as_str()))
+    {
+        let Some(material_crc) = shape_user_data_material(shape) else {
+            continue;
+        };
+        let Some(HkxValue::Pointer(Some(properties_index))) =
+            member_value(&shape.members, "properties")
+        else {
+            continue;
+        };
+        let Some(properties) = objects.get(*properties_index) else {
+            continue;
+        };
+        for entry in member_array_from_members(&properties.members, "entries").unwrap_or(&[]) {
+            let Some(HkxValue::Pointer(Some(target))) =
+                object_members(entry).and_then(|members| member_value(members, "object"))
+            else {
+                continue;
+            };
+            if objects
+                .get(*target)
+                .is_some_and(|object| object.class_name == "hknpBSMaterialProperties")
+            {
+                materials.insert(*target, remap_fo76_collision_material_for_fo4(material_crc));
+            }
+        }
+    }
+    materials
 }
 
 fn strip_connectivity(hkx: &mut HkxFile) {
@@ -2002,4 +2046,84 @@ fn direct_error(message: impl Into<String>) -> HavokError {
         "direct FO76 static collision transcode: {}",
         message.into()
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MATERIAL_DIRT: u32 = 0xB923_3EAA;
+
+    fn object(class_name: &str, members: Vec<(&str, HkxValue)>) -> HkxObject {
+        HkxObject {
+            name: None,
+            offset: 0,
+            signature: 0,
+            class_name: class_name.to_string(),
+            members: members
+                .into_iter()
+                .map(|(name, value)| HkxMember {
+                    name: name.to_string(),
+                    value,
+                })
+                .collect(),
+        }
+    }
+
+    fn single_member_object(name: &str, value: HkxValue) -> HkxValue {
+        HkxValue::Object(vec![HkxMember {
+            name: name.to_string(),
+            value,
+        }])
+    }
+
+    /// A dirt-surfaced compressed mesh (as in FO76 shelter terrain) whose BS
+    /// material entry carries `bs_material`.
+    fn normalized_bs_material(bs_material: u32) -> u32 {
+        let mut objects = vec![
+            object(
+                "hknpCompressedMeshShape",
+                vec![
+                    ("userData", HkxValue::U64(MATERIAL_DIRT.into())),
+                    ("properties", HkxValue::Pointer(Some(1))),
+                ],
+            ),
+            object(
+                "hkRefCountedProperties",
+                vec![(
+                    "entries",
+                    HkxValue::Array(vec![single_member_object(
+                        "object",
+                        HkxValue::Pointer(Some(2)),
+                    )]),
+                )],
+            ),
+            object(
+                "hknpBSMaterialProperties",
+                vec![(
+                    "MaterialA",
+                    HkxValue::Array(vec![single_member_object(
+                        "uiMaterialCRC",
+                        HkxValue::U32(bs_material),
+                    )]),
+                )],
+            ),
+        ];
+        normalize_collision_materials(&mut objects);
+        let materials = member_array_from_members(&objects[2].members, "MaterialA").unwrap();
+        let crc = member_value(object_members(&materials[0]).unwrap(), "uiMaterialCRC")
+            .and_then(integer)
+            .unwrap();
+        u32::try_from(crc).unwrap()
+    }
+
+    #[test]
+    fn unset_bs_material_takes_the_shape_user_data_surface() {
+        assert_eq!(normalized_bs_material(0), MATERIAL_DIRT);
+    }
+
+    #[test]
+    fn set_bs_material_is_kept_over_the_shape_user_data() {
+        assert_eq!(normalized_bs_material(0xF172_3C21), 0xF172_3C21);
+    }
 }

@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from creation_lib.core.gog_install import GogInstallResult, validate_gog_install_for_game
 
 
@@ -59,8 +61,20 @@ def test_validate_gog_install_accepts_info_manifest_with_matching_play_task(tmp_
         message="Fallout 4 GOG install verified.",
     )
 
+    # A DLC .info manifest without playTasks must be skipped in favor of the
+    # base game's manifest rather than causing a false rejection.
+    dlc_root = _gog_fo4_root(tmp_path / "dlc-case")
+    _write_info(dlc_root, product_id="1000000001", play_task_path=None)
+    base_info = _write_info(dlc_root, product_id="1998527297")
 
-def test_validate_gog_install_accepts_backslash_play_task_path(tmp_path):
+    dlc_result = validate_gog_install_for_game("fo4", str(dlc_root))
+
+    assert dlc_result.ok is True
+    assert dlc_result.info_path == str(base_info)
+    assert dlc_result.product_id == "1998527297"
+
+
+def test_validate_gog_install_accepts_backslash_play_task_path_and_data_dir_input(tmp_path):
     root = _gog_fo4_root(tmp_path)
     (root / "bin").mkdir()
     (root / "bin" / "launcher.exe").write_bytes(b"exe")
@@ -70,52 +84,25 @@ def test_validate_gog_install_accepts_backslash_play_task_path(tmp_path):
 
     assert result.ok is True
 
+    data_dir_root = _gog_fo4_root(tmp_path / "data-dir-case")
+    _write_info(data_dir_root)
+    data_dir_result = validate_gog_install_for_game("fo4", str(data_dir_root / "Data"))
+    assert data_dir_result.ok is True
+    assert data_dir_result.root_dir == str(data_dir_root)
 
-def test_validate_gog_install_accepts_bom_encoded_info(tmp_path):
+
+@pytest.mark.parametrize("encoding", ["utf-8-sig", "utf-8"])
+@pytest.mark.parametrize("game_id_value", ["1998527297", 1998527297])
+def test_validate_gog_install_accepts_info_encoding_and_game_id_variants(
+    tmp_path, encoding, game_id_value
+):
     root = _gog_fo4_root(tmp_path)
     payload = {
-        "gameId": "1998527297",
+        "gameId": game_id_value,
         "playTasks": [{"path": "Fallout4.exe", "type": "FileTask"}],
     }
     (root / "goggame-1998527297.info").write_text(
-        json.dumps(payload), encoding="utf-8-sig"
-    )
-
-    result = validate_gog_install_for_game("fo4", str(root))
-
-    assert result.ok is True
-
-
-def test_validate_gog_install_skips_dlc_info_without_play_tasks(tmp_path):
-    root = _gog_fo4_root(tmp_path)
-    _write_info(root, product_id="1000000001", play_task_path=None)
-    base_info = _write_info(root, product_id="1998527297")
-
-    result = validate_gog_install_for_game("fo4", str(root))
-
-    assert result.ok is True
-    assert result.info_path == str(base_info)
-    assert result.product_id == "1998527297"
-
-
-def test_validate_gog_install_accepts_data_dir_input(tmp_path):
-    root = _gog_fo4_root(tmp_path)
-    _write_info(root)
-
-    result = validate_gog_install_for_game("fo4", str(root / "Data"))
-
-    assert result.ok is True
-    assert result.root_dir == str(root)
-
-
-def test_validate_gog_install_accepts_integer_game_id(tmp_path):
-    root = _gog_fo4_root(tmp_path)
-    payload = {
-        "gameId": 1998527297,
-        "playTasks": [{"path": "Fallout4.exe", "type": "FileTask"}],
-    }
-    (root / "goggame-1998527297.info").write_text(
-        json.dumps(payload), encoding="utf-8"
+        json.dumps(payload), encoding=encoding
     )
 
     result = validate_gog_install_for_game("fo4", str(root))
@@ -124,57 +111,71 @@ def test_validate_gog_install_accepts_integer_game_id(tmp_path):
     assert result.product_id == "1998527297"
 
 
-def test_validate_gog_install_rejects_missing_info_manifest(tmp_path):
-    root = _gog_fo4_root(tmp_path)
-
-    result = validate_gog_install_for_game("fo4", str(root))
-
-    assert result.ok is False
-    assert result.local_install_valid is True
-    assert result.info_present is False
-    assert result.message == (
-        "No GOG goggame-*.info manifest was found in the Fallout 4 folder."
-    )
+def _setup_missing_info_manifest(tmp_path: Path) -> Path:
+    return _gog_fo4_root(tmp_path)
 
 
-def test_validate_gog_install_rejects_malformed_info_manifest(tmp_path):
+def _setup_malformed_info_manifest(tmp_path: Path) -> Path:
     root = _gog_fo4_root(tmp_path)
     (root / "goggame-1998527297.info").write_text("{not json", encoding="utf-8")
-
-    result = validate_gog_install_for_game("fo4", str(root))
-
-    assert result.ok is False
-    assert result.info_present is True
-    assert result.info_parsed is False
-    assert "could not be read or has no gameId" in result.message
+    return root
 
 
-def test_validate_gog_install_rejects_info_without_game_id(tmp_path):
+def _setup_info_without_game_id(tmp_path: Path) -> Path:
     root = _gog_fo4_root(tmp_path)
     (root / "goggame-1998527297.info").write_text(
         json.dumps({"name": "Fallout 4"}), encoding="utf-8"
     )
-
-    result = validate_gog_install_for_game("fo4", str(root))
-
-    assert result.ok is False
-    assert result.info_parsed is False
+    return root
 
 
-def test_validate_gog_install_rejects_play_task_exe_not_in_folder(tmp_path):
+def _setup_play_task_exe_not_in_folder(tmp_path: Path) -> Path:
     root = _gog_fo4_root(tmp_path)
     _write_info(root, play_task_path="NotHere.exe")
+    return root
+
+
+@pytest.mark.parametrize(
+    ("setup_fn", "field", "message_substring", "extra_checks"),
+    [
+        (
+            _setup_missing_info_manifest,
+            "info_present",
+            "No GOG goggame-*.info manifest was found in the Fallout 4 folder.",
+            {"local_install_valid": True},
+        ),
+        (
+            _setup_malformed_info_manifest,
+            "info_parsed",
+            "could not be read or has no gameId",
+            {"info_present": True},
+        ),
+        (_setup_info_without_game_id, "info_parsed", None, {}),
+        (
+            _setup_play_task_exe_not_in_folder,
+            "play_task_present",
+            "does not launch any executable",
+            {"info_parsed": True},
+        ),
+    ],
+)
+def test_validate_gog_install_rejects_invalid_manifests(
+    tmp_path, setup_fn, field, message_substring, extra_checks
+):
+    root = setup_fn(tmp_path)
 
     result = validate_gog_install_for_game("fo4", str(root))
 
     assert result.ok is False
-    assert result.info_parsed is True
-    assert result.play_task_present is False
-    assert "does not launch any executable" in result.message
+    assert getattr(result, field) is False
+    if message_substring is not None:
+        assert message_substring in result.message
+    for extra_field, expected_value in extra_checks.items():
+        assert getattr(result, extra_field) is expected_value
 
 
-def test_validate_gog_install_rejects_gog_artifacts_for_wrong_game(tmp_path):
-    root = _gog_fo4_root(tmp_path)
+def test_validate_gog_install_rejects_wrong_game_and_missing_local_install(tmp_path):
+    root = _gog_fo4_root(tmp_path / "wrong-game-case")
     _write_info(root)
 
     result = validate_gog_install_for_game("fo76", str(root))
@@ -183,11 +184,9 @@ def test_validate_gog_install_rejects_gog_artifacts_for_wrong_game(tmp_path):
     assert result.local_install_valid is False
     assert "install is invalid" in result.message
 
+    missing_result = validate_gog_install_for_game("fo4", str(tmp_path / "Fallout 4"))
 
-def test_validate_gog_install_fails_before_gog_checks_when_local_install_invalid(tmp_path):
-    result = validate_gog_install_for_game("fo4", str(tmp_path / "Fallout 4"))
-
-    assert result.ok is False
-    assert result.local_install_valid is False
-    assert result.info_present is False
-    assert "install is invalid" in result.message
+    assert missing_result.ok is False
+    assert missing_result.local_install_valid is False
+    assert missing_result.info_present is False
+    assert "install is invalid" in missing_result.message

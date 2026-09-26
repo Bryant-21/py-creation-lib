@@ -193,12 +193,11 @@ pub(crate) enum VisitedKind {
 
 /// Wider context handed to the visitor so checks can inspect the element.
 pub(crate) enum WalkContext<'a> {
-    Group(&'a ParsedGroup),
+    Group,
     Record(&'a ParsedRecord),
     Subrecord {
         record: &'a ParsedRecord,
         sub: &'a ParsedSubrecord,
-        index: usize,
     },
 }
 
@@ -234,7 +233,7 @@ fn walk_item<F>(
                 group_label_with_parent(g, index, preceding_record)
             };
             path.push(label);
-            visitor(path, VisitedKind::Group, WalkContext::Group(g));
+            visitor(path, VisitedKind::Group, WalkContext::Group);
             // Track the most-recent record sibling so nested child groups can
             // refer to their parent. The standard layout is `[Record, Group]`
             // pairs inside `g.children`.
@@ -258,7 +257,6 @@ fn walk_item<F>(
                     WalkContext::Subrecord {
                         record: r,
                         sub,
-                        index: i,
                     },
                 );
                 path.pop();
@@ -462,6 +460,29 @@ pub(crate) fn subrecord_order_errors(
     for sub in &record.subrecords {
         let sub_sig = sub.signature.as_str();
         if let Some(scope) = active_scope {
+            // QUST aliases are a union array in fill order, not three arrays
+            // grouped by type. A completed alias may be followed by any type.
+            if is_qust_alias_scope(record_sig, specs, scope.start)
+                && qust_alias_anchor(sub_sig).is_some()
+                && !scope.poisoned
+                && scope.next > scope.start
+                && specs[scope.next - 1].id.as_str() == "ALED"
+            {
+                if let Some(pos) = specs.iter().position(|spec| {
+                    spec.scope_id.as_deref() == Some("aliases") && spec.id.as_str() == sub_sig
+                }) {
+                    let (start, end) = scope_segment_bounds(record_sig, specs, pos);
+                    active_scope = Some(ActiveScope {
+                        start,
+                        end,
+                        next: start + 1,
+                        anchor_count: 1,
+                        batched: false,
+                        poisoned: false,
+                    });
+                    continue;
+                }
+            }
             let anchor_sig = specs[scope.start].id.as_str();
             if sub_sig == anchor_sig {
                 active_scope = Some(ActiveScope {
@@ -1182,169 +1203,177 @@ mod tests {
     }
 
     #[test]
-    fn path_builder_empty_renders_empty() {
-        let p = PathBuilder::new();
-        assert_eq!(p.render(), "");
+    fn path_builder_and_labels() {
+        // path_builder_empty_renders_empty
+        {
+            let p = PathBuilder::new();
+            assert_eq!(p.render(), "");
+
+        }
+        // path_builder_renders_xedit_format
+        {
+            let mut p = PathBuilder::new();
+            p.push("[01] B21_AppalachiaCell00Compare.esp".to_string());
+            p.push("[8] GRUP Top \"WRLD\"".to_string());
+            p.push("[1] GRUP World Children of APPALACHIA [WRLD:0125DA15]".to_string());
+            assert_eq!(
+                p.render(),
+                " \\ [01] B21_AppalachiaCell00Compare.esp \\ [8] GRUP Top \"WRLD\" \\ [1] GRUP World Children of APPALACHIA [WRLD:0125DA15]"
+            );
+
+        }
+        // path_builder_pop_drops_last_component
+        {
+            let mut p = PathBuilder::new();
+            p.push("A".to_string());
+            p.push("B".to_string());
+            p.pop();
+            assert_eq!(p.render(), " \\ A");
+
+        }
+        // label_top_group_uses_signature
+        {
+            let g = ParsedGroup {
+                label: *b"WRLD",
+                group_type: 0,
+                tail: Bytes::new(),
+                children: Vec::new(),
+            };
+            assert_eq!(group_label(&g, 8), "[8] GRUP Top \"WRLD\"");
+
+        }
+        // label_world_children_uses_parent_edid_and_formid
+        {
+            let g = ParsedGroup {
+                label: [0x15, 0xDA, 0x25, 0x01], // little-endian 0x0125DA15
+                group_type: 1,
+                tail: Bytes::new(),
+                children: Vec::new(),
+            };
+            let parent = record("WRLD", 0x0125_DA15, Some("APPALACHIA"));
+            assert_eq!(
+                group_label_with_parent(&g, 1, Some(&parent)),
+                "[1] GRUP World Children of APPALACHIA [WRLD:0125DA15]"
+            );
+
+        }
+        // label_record_has_signature_and_form_id
+        {
+            let r = record("WRLD", 0x0125_DA15, Some("APPALACHIA"));
+            assert_eq!(record_label(&r, 0), "[0] [WRLD:0125DA15]");
+
+        }
+        // label_subrecord_has_index_sig_and_display_label
+        {
+            let s = empty_subrec("XPDD");
+            assert_eq!(
+                subrecord_label(&s, 4, Some("Projected Decal")),
+                "[4] XPDD - Projected Decal"
+            );
+            assert_eq!(subrecord_label(&s, 4, None), "[4] XPDD");
+
+        }
     }
 
     #[test]
-    fn path_builder_renders_xedit_format() {
-        let mut p = PathBuilder::new();
-        p.push("[01] B21_AppalachiaCell00Compare.esp".to_string());
-        p.push("[8] GRUP Top \"WRLD\"".to_string());
-        p.push("[1] GRUP World Children of APPALACHIA [WRLD:0125DA15]".to_string());
-        assert_eq!(
-            p.render(),
-            " \\ [01] B21_AppalachiaCell00Compare.esp \\ [8] GRUP Top \"WRLD\" \\ [1] GRUP World Children of APPALACHIA [WRLD:0125DA15]"
-        );
-    }
+    fn walker_visits_records() {
+        // walker_visits_top_level_record
+        {
+            let plugin = ParsedPlugin {
+                plugin_name: "p.esp".to_string(),
+                file_path: String::new(),
+                header_size: 0,
+                header: ParsedPluginHeader::default_for_test(),
+                root_items: vec![ParsedItem::Record(record(
+                    "GMST",
+                    0x0000_0001,
+                    Some("MyGMST"),
+                ))],
+                game: None,
+            };
+            let mut visited = Vec::new();
+            let mut collector = |path: &PathBuilder, kind: VisitedKind| {
+                visited.push((path.render(), kind));
+            };
+            walk_plugin_for_test(&plugin, 1, &mut collector);
+            // 1 record + 1 subrecord (EDID) = 2 visits
+            assert_eq!(visited.len(), 2);
+            assert_eq!(visited[0].1, VisitedKind::Record);
+            assert!(visited[0].0.contains("[GMST:00000001]"));
 
-    #[test]
-    fn path_builder_pop_drops_last_component() {
-        let mut p = PathBuilder::new();
-        p.push("A".to_string());
-        p.push("B".to_string());
-        p.pop();
-        assert_eq!(p.render(), " \\ A");
-    }
+        }
+        // walker_visits_nested_cell_in_wrld
+        {
+            let wrld_record = record("WRLD", 0x0125_DA15, Some("APPALACHIA"));
+            let cell_record = record("CELL", 0x0126_28FE, Some("OriginExt"));
+            let refr_record = record("REFR", 0x0131_B717, None);
 
-    #[test]
-    fn label_top_group_uses_signature() {
-        let g = ParsedGroup {
-            label: *b"WRLD",
-            group_type: 0,
-            tail: Bytes::new(),
-            children: Vec::new(),
-        };
-        assert_eq!(group_label(&g, 8), "[8] GRUP Top \"WRLD\"");
-    }
+            let cell_children = ParsedItem::Group(ParsedGroup {
+                label: 0x0126_28FE_u32.to_le_bytes(),
+                group_type: 6,
+                tail: Bytes::new(),
+                children: vec![ParsedItem::Record(refr_record)],
+            });
+            let world_children = ParsedItem::Group(ParsedGroup {
+                label: 0x0125_DA15_u32.to_le_bytes(),
+                group_type: 1,
+                tail: Bytes::new(),
+                children: vec![ParsedItem::Record(cell_record), cell_children],
+            });
+            let top_wrld = ParsedItem::Group(ParsedGroup {
+                label: *b"WRLD",
+                group_type: 0,
+                tail: Bytes::new(),
+                children: vec![ParsedItem::Record(wrld_record), world_children],
+            });
+            let plugin = ParsedPlugin {
+                plugin_name: "p.esp".to_string(),
+                file_path: String::new(),
+                header_size: 0,
+                header: ParsedPluginHeader::default_for_test(),
+                root_items: vec![top_wrld],
+                game: None,
+            };
 
-    #[test]
-    fn label_world_children_uses_parent_edid_and_formid() {
-        let g = ParsedGroup {
-            label: [0x15, 0xDA, 0x25, 0x01], // little-endian 0x0125DA15
-            group_type: 1,
-            tail: Bytes::new(),
-            children: Vec::new(),
-        };
-        let parent = record("WRLD", 0x0125_DA15, Some("APPALACHIA"));
-        assert_eq!(
-            group_label_with_parent(&g, 1, Some(&parent)),
-            "[1] GRUP World Children of APPALACHIA [WRLD:0125DA15]"
-        );
-    }
-
-    #[test]
-    fn label_record_has_signature_and_form_id() {
-        let r = record("WRLD", 0x0125_DA15, Some("APPALACHIA"));
-        assert_eq!(record_label(&r, 0), "[0] [WRLD:0125DA15]");
-    }
-
-    #[test]
-    fn label_subrecord_has_index_sig_and_display_label() {
-        let s = empty_subrec("XPDD");
-        assert_eq!(
-            subrecord_label(&s, 4, Some("Projected Decal")),
-            "[4] XPDD - Projected Decal"
-        );
-        assert_eq!(subrecord_label(&s, 4, None), "[4] XPDD");
-    }
-
-    #[test]
-    fn walker_visits_top_level_record() {
-        let plugin = ParsedPlugin {
-            plugin_name: "p.esp".to_string(),
-            file_path: String::new(),
-            header_size: 0,
-            header: ParsedPluginHeader::default_for_test(),
-            root_items: vec![ParsedItem::Record(record(
-                "GMST",
-                0x0000_0001,
-                Some("MyGMST"),
-            ))],
-            game: None,
-        };
-        let mut visited = Vec::new();
-        let mut collector = |path: &PathBuilder, kind: VisitedKind| {
-            visited.push((path.render(), kind));
-        };
-        walk_plugin_for_test(&plugin, 1, &mut collector);
-        // 1 record + 1 subrecord (EDID) = 2 visits
-        assert_eq!(visited.len(), 2);
-        assert_eq!(visited[0].1, VisitedKind::Record);
-        assert!(visited[0].0.contains("[GMST:00000001]"));
-    }
-
-    #[test]
-    fn walker_visits_nested_cell_in_wrld() {
-        let wrld_record = record("WRLD", 0x0125_DA15, Some("APPALACHIA"));
-        let cell_record = record("CELL", 0x0126_28FE, Some("OriginExt"));
-        let refr_record = record("REFR", 0x0131_B717, None);
-
-        let cell_children = ParsedItem::Group(ParsedGroup {
-            label: 0x0126_28FE_u32.to_le_bytes(),
-            group_type: 6,
-            tail: Bytes::new(),
-            children: vec![ParsedItem::Record(refr_record)],
-        });
-        let world_children = ParsedItem::Group(ParsedGroup {
-            label: 0x0125_DA15_u32.to_le_bytes(),
-            group_type: 1,
-            tail: Bytes::new(),
-            children: vec![ParsedItem::Record(cell_record), cell_children],
-        });
-        let top_wrld = ParsedItem::Group(ParsedGroup {
-            label: *b"WRLD",
-            group_type: 0,
-            tail: Bytes::new(),
-            children: vec![ParsedItem::Record(wrld_record), world_children],
-        });
-        let plugin = ParsedPlugin {
-            plugin_name: "p.esp".to_string(),
-            file_path: String::new(),
-            header_size: 0,
-            header: ParsedPluginHeader::default_for_test(),
-            root_items: vec![top_wrld],
-            game: None,
-        };
-
-        let mut record_paths: Vec<(String, String)> = Vec::new();
-        let mut collector = |path: &PathBuilder, kind: VisitedKind| {
-            if kind == VisitedKind::Record {
-                record_paths.push((
-                    path.render(),
-                    path.components.last().cloned().unwrap_or_default(),
-                ));
-            }
-        };
-        walk_plugin_for_test(&plugin, 1, &mut collector);
-
-        // We expect 3 records visited: WRLD, CELL, REFR.
-        let sigs: Vec<&str> = record_paths
-            .iter()
-            .map(|(_, last)| {
-                if last.contains("[WRLD") {
-                    "WRLD"
-                } else if last.contains("[CELL") {
-                    "CELL"
-                } else if last.contains("[REFR") {
-                    "REFR"
-                } else {
-                    "?"
+            let mut record_paths: Vec<(String, String)> = Vec::new();
+            let mut collector = |path: &PathBuilder, kind: VisitedKind| {
+                if kind == VisitedKind::Record {
+                    record_paths.push((
+                        path.render(),
+                        path.components.last().cloned().unwrap_or_default(),
+                    ));
                 }
-            })
-            .collect();
-        assert_eq!(sigs, vec!["WRLD", "CELL", "REFR"]);
+            };
+            walk_plugin_for_test(&plugin, 1, &mut collector);
 
-        let refr_path = &record_paths[2].0;
-        assert!(
-            refr_path.contains("GRUP World Children of APPALACHIA [WRLD:0125DA15]"),
-            "got: {refr_path}"
-        );
-        assert!(
-            refr_path.contains("GRUP Cell Children of OriginExt [CELL:012628FE]"),
-            "got: {refr_path}"
-        );
+            // We expect 3 records visited: WRLD, CELL, REFR.
+            let sigs: Vec<&str> = record_paths
+                .iter()
+                .map(|(_, last)| {
+                    if last.contains("[WRLD") {
+                        "WRLD"
+                    } else if last.contains("[CELL") {
+                        "CELL"
+                    } else if last.contains("[REFR") {
+                        "REFR"
+                    } else {
+                        "?"
+                    }
+                })
+                .collect();
+            assert_eq!(sigs, vec!["WRLD", "CELL", "REFR"]);
+
+            let refr_path = &record_paths[2].0;
+            assert!(
+                refr_path.contains("GRUP World Children of APPALACHIA [WRLD:0125DA15]"),
+                "got: {refr_path}"
+            );
+            assert!(
+                refr_path.contains("GRUP Cell Children of OriginExt [CELL:012628FE]"),
+                "got: {refr_path}"
+            );
+
+        }
     }
 
     fn make_subrec_spec(id: &str, repeatable: bool) -> SchemaSubrecordJson {
@@ -1369,693 +1398,727 @@ mod tests {
     }
 
     #[test]
-    fn unused_data_check_no_warning_for_exact_size_u32() {
-        let spec = spec_with_codec("DATA", "u32");
-        let sub = ParsedSubrecord {
-            signature: SmolStr::new("DATA"),
-            data: Bytes::from(vec![1, 2, 3, 4]),
-            semantic_type: None,
-        };
-        assert_eq!(subrecord_unused_byte_count(&sub, &spec), None);
-    }
+    fn unused_data_check_cases() {
+        // unused_data_check_no_warning_for_exact_size_u32
+        {
+            let spec = spec_with_codec("DATA", "u32");
+            let sub = ParsedSubrecord {
+                signature: SmolStr::new("DATA"),
+                data: Bytes::from(vec![1, 2, 3, 4]),
+                semantic_type: None,
+            };
+            assert_eq!(subrecord_unused_byte_count(&sub, &spec), None);
 
-    #[test]
-    fn unused_data_check_warns_when_payload_exceeds_declared_size() {
-        let spec = spec_with_codec("XPDD", "f32"); // 4 bytes
-        let sub = ParsedSubrecord {
-            signature: SmolStr::new("XPDD"),
-            data: Bytes::from(vec![0u8; 8]),
-            semantic_type: None,
-        };
-        assert_eq!(subrecord_unused_byte_count(&sub, &spec), Some(4));
-    }
-
-    #[test]
-    fn unused_data_check_no_warning_for_variable_length_codec() {
-        let spec = spec_with_codec("EDID", "zstring");
-        let sub = ParsedSubrecord {
-            signature: SmolStr::new("EDID"),
-            data: Bytes::from(b"FooBar\0".to_vec()),
-            semantic_type: Some("zstring".to_string()),
-        };
-        assert_eq!(subrecord_unused_byte_count(&sub, &spec), None);
-    }
-
-    #[test]
-    fn unused_data_check_handles_struct_codec_size() {
-        // struct:I I f → 3*4 = 12 bytes.
-        let spec = spec_with_codec("OBTS", "struct:I I f");
-        let sub_exact = ParsedSubrecord {
-            signature: SmolStr::new("OBTS"),
-            data: Bytes::from(vec![0u8; 12]),
-            semantic_type: None,
-        };
-        assert_eq!(subrecord_unused_byte_count(&sub_exact, &spec), None);
-
-        let sub_over = ParsedSubrecord {
-            signature: SmolStr::new("OBTS"),
-            data: Bytes::from(vec![0u8; 16]),
-            semantic_type: None,
-        };
-        assert_eq!(subrecord_unused_byte_count(&sub_over, &spec), Some(4));
-    }
-
-    #[test]
-    fn order_check_passes_when_subrecords_match_schema() {
-        let specs = vec![
-            make_subrec_spec("EDID", false),
-            make_subrec_spec("OBND", false),
-            make_subrec_spec("FULL", false),
-        ];
-        let mut rec = record("ARMO", 0x0001_2345, Some("test"));
-        rec.subrecords.push(empty_subrec("OBND"));
-        rec.subrecords.push(empty_subrec("FULL"));
-        let errors = subrecord_order_errors(&rec, &specs);
-        assert!(errors.is_empty(), "got: {errors:?}");
-    }
-
-    #[test]
-    fn order_check_flags_unknown_subrecord() {
-        let specs = vec![
-            make_subrec_spec("EDID", false),
-            make_subrec_spec("OBND", false),
-        ];
-        let mut rec = record("CELL", 0x0001_2345, Some("test"));
-        rec.subrecords.push(empty_subrec("XILS"));
-        let errors = subrecord_order_errors(&rec, &specs);
-        assert_eq!(errors.len(), 1);
-        assert_eq!(
-            errors[0],
-            "Error: record CELL contains unexpected (or out of order) subrecord XILS 534C4958"
-        );
-    }
-
-    #[test]
-    fn order_check_accepts_land_multi_alpha_layers() {
-        // LAND 'layers' is a repeating union: per quadrant a BTXT base plus N
-        // ATXT+VTXT alpha layers. The schema lists BTXT/ATXT/VTXT once each
-        // under scope_id "layers"; the walker must accept the repeats.
-        let specs = vec![
-            make_subrec_spec("DATA", false),
-            make_subrec_spec("VNML", false),
-            make_subrec_spec("VHGT", false),
-            make_scoped_subrec_spec("BTXT", "layers"),
-            make_scoped_subrec_spec("ATXT", "layers"),
-            make_scoped_subrec_spec("VTXT", "layers"),
-            make_subrec_spec("MPCD", true),
-        ];
-        let mut rec = record("LAND", 0x0001_2345, None);
-        for sig in ["DATA", "VNML", "VHGT"] {
-            rec.subrecords.push(empty_subrec(sig));
         }
-        // Two quadrants, each: BTXT + 3x (ATXT, VTXT).
-        for _quadrant in 0..2 {
-            rec.subrecords.push(empty_subrec("BTXT"));
-            for _layer in 0..3 {
-                rec.subrecords.push(empty_subrec("ATXT"));
-                rec.subrecords.push(empty_subrec("VTXT"));
+        // unused_data_check_warns_when_payload_exceeds_declared_size
+        {
+            let spec = spec_with_codec("XPDD", "f32"); // 4 bytes
+            let sub = ParsedSubrecord {
+                signature: SmolStr::new("XPDD"),
+                data: Bytes::from(vec![0u8; 8]),
+                semantic_type: None,
+            };
+            assert_eq!(subrecord_unused_byte_count(&sub, &spec), Some(4));
+
+        }
+        // unused_data_check_no_warning_for_variable_length_codec
+        {
+            let spec = spec_with_codec("EDID", "zstring");
+            let sub = ParsedSubrecord {
+                signature: SmolStr::new("EDID"),
+                data: Bytes::from(b"FooBar\0".to_vec()),
+                semantic_type: Some("zstring".to_string()),
+            };
+            assert_eq!(subrecord_unused_byte_count(&sub, &spec), None);
+
+        }
+        // unused_data_check_handles_struct_codec_size
+        {
+            // struct:I I f → 3*4 = 12 bytes.
+            let spec = spec_with_codec("OBTS", "struct:I I f");
+            let sub_exact = ParsedSubrecord {
+                signature: SmolStr::new("OBTS"),
+                data: Bytes::from(vec![0u8; 12]),
+                semantic_type: None,
+            };
+            assert_eq!(subrecord_unused_byte_count(&sub_exact, &spec), None);
+
+            let sub_over = ParsedSubrecord {
+                signature: SmolStr::new("OBTS"),
+                data: Bytes::from(vec![0u8; 16]),
+                semantic_type: None,
+            };
+            assert_eq!(subrecord_unused_byte_count(&sub_over, &spec), Some(4));
+
+        }
+    }
+
+    #[test]
+    fn order_check_generic() {
+        // order_check_passes_when_subrecords_match_schema
+        {
+            let specs = vec![
+                make_subrec_spec("EDID", false),
+                make_subrec_spec("OBND", false),
+                make_subrec_spec("FULL", false),
+            ];
+            let mut rec = record("ARMO", 0x0001_2345, Some("test"));
+            rec.subrecords.push(empty_subrec("OBND"));
+            rec.subrecords.push(empty_subrec("FULL"));
+            let errors = subrecord_order_errors(&rec, &specs);
+            assert!(errors.is_empty(), "got: {errors:?}");
+
+        }
+        // order_check_flags_unknown_subrecord
+        {
+            let specs = vec![
+                make_subrec_spec("EDID", false),
+                make_subrec_spec("OBND", false),
+            ];
+            let mut rec = record("CELL", 0x0001_2345, Some("test"));
+            rec.subrecords.push(empty_subrec("XILS"));
+            let errors = subrecord_order_errors(&rec, &specs);
+            assert_eq!(errors.len(), 1);
+            assert_eq!(
+                errors[0],
+                "Error: record CELL contains unexpected (or out of order) subrecord XILS 534C4958"
+            );
+
+        }
+        // order_check_accepts_land_multi_alpha_layers
+        {
+            // LAND 'layers' is a repeating union: per quadrant a BTXT base plus N
+            // ATXT+VTXT alpha layers. The schema lists BTXT/ATXT/VTXT once each
+            // under scope_id "layers"; the walker must accept the repeats.
+            let specs = vec![
+                make_subrec_spec("DATA", false),
+                make_subrec_spec("VNML", false),
+                make_subrec_spec("VHGT", false),
+                make_scoped_subrec_spec("BTXT", "layers"),
+                make_scoped_subrec_spec("ATXT", "layers"),
+                make_scoped_subrec_spec("VTXT", "layers"),
+                make_subrec_spec("MPCD", true),
+            ];
+            let mut rec = record("LAND", 0x0001_2345, None);
+            for sig in ["DATA", "VNML", "VHGT"] {
+                rec.subrecords.push(empty_subrec(sig));
             }
+            // Two quadrants, each: BTXT + 3x (ATXT, VTXT).
+            for _quadrant in 0..2 {
+                rec.subrecords.push(empty_subrec("BTXT"));
+                for _layer in 0..3 {
+                    rec.subrecords.push(empty_subrec("ATXT"));
+                    rec.subrecords.push(empty_subrec("VTXT"));
+                }
+            }
+            let errors = subrecord_order_errors(&rec, &specs);
+            assert!(errors.is_empty(), "got: {errors:?}");
+
         }
-        let errors = subrecord_order_errors(&rec, &specs);
-        assert!(errors.is_empty(), "got: {errors:?}");
+        // order_check_flags_out_of_order_subrecord
+        {
+            let specs = vec![
+                make_subrec_spec("EDID", false),
+                make_subrec_spec("OBND", false),
+                make_subrec_spec("FULL", false),
+            ];
+            let mut rec = record("ARMO", 0x0001_2345, Some("test"));
+            rec.subrecords.push(empty_subrec("FULL"));
+            rec.subrecords.push(empty_subrec("OBND")); // out of order
+            let errors = subrecord_order_errors(&rec, &specs);
+            assert_eq!(errors.len(), 1);
+            assert_eq!(
+                errors[0],
+                "Error: record ARMO contains unexpected (or out of order) subrecord OBND 444E424F"
+            );
+
+        }
+        // order_check_allows_repeatable_subrecord
+        {
+            let specs = vec![
+                make_subrec_spec("EDID", false),
+                make_subrec_spec("LVLO", true),
+                make_subrec_spec("LLCT", false),
+            ];
+            let mut rec = record("LVLI", 0x0001_2345, Some("test"));
+            rec.subrecords.push(empty_subrec("LVLO"));
+            rec.subrecords.push(empty_subrec("LVLO"));
+            rec.subrecords.push(empty_subrec("LVLO"));
+            rec.subrecords.push(empty_subrec("LLCT"));
+            let errors = subrecord_order_errors(&rec, &specs);
+            assert!(errors.is_empty(), "got: {errors:?}");
+
+        }
+        // order_check_allows_interleaved_scoped_segment
+        {
+            let specs = vec![
+                make_subrec_spec("EDID", false),
+                make_scoped_subrec_spec("EFID", "effects"),
+                make_scoped_subrec_spec("EFIT", "effects"),
+            ];
+            let mut rec = record("SPEL", 0x0001_2345, Some("test"));
+            rec.subrecords.push(empty_subrec("EFID"));
+            rec.subrecords.push(empty_subrec("EFIT"));
+            rec.subrecords.push(empty_subrec("EFID"));
+            rec.subrecords.push(empty_subrec("EFIT"));
+
+            let errors = subrecord_order_errors(&rec, &specs);
+
+            assert!(errors.is_empty(), "got: {errors:?}");
+
+        }
+        // order_check_flags_deinterleaved_scoped_children
+        {
+            let specs = vec![
+                make_subrec_spec("EDID", false),
+                make_scoped_subrec_spec("EFID", "effects"),
+                make_scoped_subrec_spec("EFIT", "effects"),
+            ];
+            let mut rec = record("SPEL", 0x0001_2345, Some("test"));
+            rec.subrecords.push(empty_subrec("EFID"));
+            rec.subrecords.push(empty_subrec("EFID"));
+            rec.subrecords.push(empty_subrec("EFIT"));
+            rec.subrecords.push(empty_subrec("EFIT"));
+
+            let errors = subrecord_order_errors(&rec, &specs);
+
+            assert_eq!(errors.len(), 1);
+            assert_eq!(
+                errors[0],
+                "Error: record SPEL contains unexpected (or out of order) subrecord EFIT 54494645"
+            );
+
+        }
+        // order_check_flags_scoped_child_without_anchor
+        {
+            let specs = vec![
+                make_subrec_spec("EDID", false),
+                make_scoped_subrec_spec("INDX", "stages"),
+                make_scoped_subrec_spec("QSDT", "stages"),
+            ];
+            let mut rec = record("QUST", 0x0001_2345, Some("test"));
+            rec.subrecords.push(empty_subrec("QSDT"));
+
+            let errors = subrecord_order_errors(&rec, &specs);
+
+            assert_eq!(errors.len(), 1);
+            assert_eq!(
+                errors[0],
+                "Error: record QUST contains unexpected (or out of order) subrecord QSDT 54445351"
+            );
+
+        }
+        // order_check_uses_later_unscoped_duplicate_after_skipped_scope
+        {
+            let specs = vec![
+                make_subrec_spec("EDID", false),
+                make_subrec_spec("AIDT", false),
+                make_scoped_subrec_spec("OBTE", "object_template"),
+                make_scoped_subrec_spec("FULL", "object_template"),
+                make_subrec_spec("CNAM", false),
+                make_subrec_spec("FULL", false),
+                make_subrec_spec("DATA", false),
+            ];
+            let mut rec = record("NPC_", 0x0001_2345, Some("test"));
+            rec.subrecords.push(empty_subrec("AIDT"));
+            rec.subrecords.push(empty_subrec("FULL"));
+            rec.subrecords.push(empty_subrec("DATA"));
+
+            let errors = subrecord_order_errors(&rec, &specs);
+
+            assert!(errors.is_empty(), "got: {errors:?}");
+
+        }
+        // order_check_rejects_generic_scoped_recurrence_despite_later_duplicate_slot
+        {
+            let specs = vec![
+                make_scoped_subrec_spec("ANCH", "rows"),
+                make_scoped_subrec_spec("DUPL", "rows"),
+                make_scoped_subrec_spec("TAIL", "rows"),
+                make_subrec_spec("DUPL", false),
+            ];
+            let mut rec = record("TEST", 0x0001_2345, None);
+            for sig in ["ANCH", "DUPL", "DUPL"] {
+                rec.subrecords.push(empty_subrec(sig));
+            }
+
+            let errors = subrecord_order_errors(&rec, &specs);
+
+            assert_eq!(
+                errors,
+                vec![
+                    "Error: record TEST contains unexpected (or out of order) subrecord DUPL 4C505544"
+                        .to_string()
+                ]
+            );
+
+        }
     }
 
     #[test]
-    fn order_check_flags_out_of_order_subrecord() {
-        let specs = vec![
-            make_subrec_spec("EDID", false),
-            make_subrec_spec("OBND", false),
-            make_subrec_spec("FULL", false),
-        ];
-        let mut rec = record("ARMO", 0x0001_2345, Some("test"));
-        rec.subrecords.push(empty_subrec("FULL"));
-        rec.subrecords.push(empty_subrec("OBND")); // out of order
-        let errors = subrecord_order_errors(&rec, &specs);
-        assert_eq!(errors.len(), 1);
-        assert_eq!(
-            errors[0],
-            "Error: record ARMO contains unexpected (or out of order) subrecord OBND 444E424F"
-        );
-    }
+    fn order_check_repeated_blocks() {
+        // order_check_accepts_repeated_magic_effect_conditions
+        {
+            let schema = crate::plugin_runtime::compiled_schema_for_game("fo4")
+                .expect("fo4 schema must compile");
 
-    #[test]
-    fn order_check_allows_repeatable_subrecord() {
-        let specs = vec![
-            make_subrec_spec("EDID", false),
-            make_subrec_spec("LVLO", true),
-            make_subrec_spec("LLCT", false),
-        ];
-        let mut rec = record("LVLI", 0x0001_2345, Some("test"));
-        rec.subrecords.push(empty_subrec("LVLO"));
-        rec.subrecords.push(empty_subrec("LVLO"));
-        rec.subrecords.push(empty_subrec("LVLO"));
-        rec.subrecords.push(empty_subrec("LLCT"));
-        let errors = subrecord_order_errors(&rec, &specs);
-        assert!(errors.is_empty(), "got: {errors:?}");
-    }
+            for record_sig in ["ALCH", "ENCH", "SPEL"] {
+                let specs = &schema
+                    .records
+                    .get(record_sig)
+                    .expect("fo4 schema must contain magic record")
+                    .subrecords;
+                let mut rec = record(record_sig, 0x001F_2D3E, Some("test"));
+                for sig in [
+                    "EFID", "EFIT", "CTDA", "CIS1", "CIS2", "CTDA", "CIS1", "CTDA", "CIS2", "EFID",
+                    "EFIT", "CTDA",
+                ] {
+                    rec.subrecords.push(empty_subrec(sig));
+                }
 
-    #[test]
-    fn order_check_allows_interleaved_scoped_segment() {
-        let specs = vec![
-            make_subrec_spec("EDID", false),
-            make_scoped_subrec_spec("EFID", "effects"),
-            make_scoped_subrec_spec("EFIT", "effects"),
-        ];
-        let mut rec = record("SPEL", 0x0001_2345, Some("test"));
-        rec.subrecords.push(empty_subrec("EFID"));
-        rec.subrecords.push(empty_subrec("EFIT"));
-        rec.subrecords.push(empty_subrec("EFID"));
-        rec.subrecords.push(empty_subrec("EFIT"));
+                let errors = subrecord_order_errors(&rec, specs);
 
-        let errors = subrecord_order_errors(&rec, &specs);
+                assert!(errors.is_empty(), "{record_sig}: {errors:?}");
+            }
 
-        assert!(errors.is_empty(), "got: {errors:?}");
-    }
+        }
+        // order_check_accepts_multiple_object_template_combinations
+        {
+            // Object Template: OBTE count + RArray of [OBTF, FULL, OBTS] + STOP.
+            // OBTF starts each combination yet is not the scope's first member.
+            let specs = vec![
+                make_subrec_spec("EDID", false),
+                make_scoped_subrec_spec("OBTE", "object_template"),
+                make_scoped_subrec_spec("OBTF", "object_template"),
+                make_scoped_subrec_spec("FULL", "object_template"),
+                make_scoped_subrec_spec("OBTS", "object_template"),
+                make_scoped_subrec_spec("STOP", "object_template"),
+            ];
+            let mut rec = record("WEAP", 0x0001_2345, Some("test"));
+            rec.subrecords.push(empty_subrec("OBTE"));
+            for _combination in 0..2 {
+                rec.subrecords.push(empty_subrec("OBTF"));
+                rec.subrecords.push(empty_subrec("FULL"));
+                rec.subrecords.push(empty_subrec("OBTS"));
+            }
+            rec.subrecords.push(empty_subrec("STOP"));
+            let errors = subrecord_order_errors(&rec, &specs);
+            assert!(errors.is_empty(), "got: {errors:?}");
 
-    #[test]
-    fn order_check_flags_deinterleaved_scoped_children() {
-        let specs = vec![
-            make_subrec_spec("EDID", false),
-            make_scoped_subrec_spec("EFID", "effects"),
-            make_scoped_subrec_spec("EFIT", "effects"),
-        ];
-        let mut rec = record("SPEL", 0x0001_2345, Some("test"));
-        rec.subrecords.push(empty_subrec("EFID"));
-        rec.subrecords.push(empty_subrec("EFID"));
-        rec.subrecords.push(empty_subrec("EFIT"));
-        rec.subrecords.push(empty_subrec("EFIT"));
-
-        let errors = subrecord_order_errors(&rec, &specs);
-
-        assert_eq!(errors.len(), 1);
-        assert_eq!(
-            errors[0],
-            "Error: record SPEL contains unexpected (or out of order) subrecord EFIT 54494645"
-        );
-    }
-
-    #[test]
-    fn order_check_accepts_repeated_magic_effect_conditions() {
-        let schema = crate::plugin_runtime::compiled_schema_for_game("fo4")
-            .expect("fo4 schema must compile");
-
-        for record_sig in ["ALCH", "ENCH", "SPEL"] {
+        }
+        // order_check_accepts_repeated_term_menu_item_conditions
+        {
+            let schema = crate::plugin_runtime::compiled_schema_for_game("fo4")
+                .expect("fo4 schema must compile");
             let specs = &schema
                 .records
-                .get(record_sig)
-                .expect("fo4 schema must contain magic record")
+                .get("TERM")
+                .expect("fo4 schema must contain TERM")
                 .subrecords;
-            let mut rec = record(record_sig, 0x001F_2D3E, Some("test"));
+            let mut rec = record("TERM", 0x0716_6B54, Some("HVRamosTerminal"));
+
             for sig in [
-                "EFID", "EFIT", "CTDA", "CIS1", "CIS2", "CTDA", "CIS1", "CTDA", "CIS2", "EFID",
-                "EFIT", "CTDA",
+                "OBND", "FULL", "MODL", "SNAM", "ITXT", "RNAM", "ANAM", "CTDA", "CTDA", "ITXT", "RNAM",
+                "ANAM", "CTDA",
             ] {
                 rec.subrecords.push(empty_subrec(sig));
             }
 
             let errors = subrecord_order_errors(&rec, specs);
 
-            assert!(errors.is_empty(), "{record_sig}: {errors:?}");
+            assert!(errors.is_empty(), "got: {errors:?}");
+
+        }
+        // order_check_accepts_repeated_destruction_stages
+        {
+            let schema = crate::plugin_runtime::compiled_schema_for_game("fo4")
+                .expect("fo4 schema must compile");
+            let specs = &schema
+                .records
+                .get("ACTI")
+                .expect("fo4 schema must contain ACTI")
+                .subrecords;
+            let mut rec = record("ACTI", 0x0714_B67F, Some("VHDLegionOliverGenerator01"));
+
+            for sig in [
+                "OBND", "FULL", "MODL", "DEST", "DSTD", "DSTF", "DSTD", "DSTF", "DSTD", "DMDL", "DSTF",
+                "DSTD", "DSTF",
+            ] {
+                rec.subrecords.push(empty_subrec(sig));
+            }
+
+            let errors = subrecord_order_errors(&rec, specs);
+
+            assert!(errors.is_empty(), "got: {errors:?}");
+
+        }
+        // order_check_still_rejects_destruction_stage_without_dest_anchor
+        {
+            let schema = crate::plugin_runtime::compiled_schema_for_game("fo4")
+                .expect("fo4 schema must compile");
+            let specs = &schema
+                .records
+                .get("ACTI")
+                .expect("fo4 schema must contain ACTI")
+                .subrecords;
+            let mut rec = record("ACTI", 0x0001_2345, Some("test"));
+            rec.subrecords.push(empty_subrec("DSTD"));
+
+            let errors = subrecord_order_errors(&rec, specs);
+
+            assert_eq!(
+                errors,
+                vec![
+                    "Error: record ACTI contains unexpected (or out of order) subrecord DSTD 44545344"
+                        .to_string()
+                ]
+            );
+
+        }
+        // order_check_accepts_race_transition_between_body_and_behavior_scopes
+        {
+            let schema = crate::plugin_runtime::compiled_schema_for_game("fo4")
+                .expect("fo4 schema must compile");
+            let specs = &schema
+                .records
+                .get("RACE")
+                .expect("fo4 schema must contain RACE")
+                .subrecords;
+            let mut rec = record("RACE", 0x0709_87DF, Some("CaucasianOldAged"));
+
+            for sig in [
+                "FULL", "DESC", "MNAM", "MODT", "FNAM", "MODT", "VTCK", "PNAM", "UNAM", "NAM1", "MNAM",
+                "INDX", "MODL", "MODT", "FNAM", "INDX", "MODL", "MODT", "MNAM", "MODL", "MODT", "FNAM",
+                "MODL", "MODT", "CNAM",
+            ] {
+                rec.subrecords.push(empty_subrec(sig));
+            }
+
+            let errors = subrecord_order_errors(&rec, specs);
+
+            assert!(errors.is_empty(), "got: {errors:?}");
+
+        }
+        // order_check_rejects_malformed_race_body_model_recurrence
+        {
+            let schema = crate::plugin_runtime::compiled_schema_for_game("fo4")
+                .expect("fo4 schema must compile");
+            let specs = &schema
+                .records
+                .get("RACE")
+                .expect("fo4 schema must contain RACE")
+                .subrecords;
+            let mut rec = record("RACE", 0x0001_2345, Some("test"));
+            for sig in ["NAM1", "MNAM", "INDX", "MODL", "MODL"] {
+                rec.subrecords.push(empty_subrec(sig));
+            }
+
+            let errors = subrecord_order_errors(&rec, specs);
+
+            assert_eq!(
+                errors,
+                vec![
+                    "Error: record RACE contains unexpected (or out of order) subrecord MODL 4C444F4D"
+                        .to_string()
+                ]
+            );
+
         }
     }
 
     #[test]
-    fn order_check_accepts_multiple_object_template_combinations() {
-        // Object Template: OBTE count + RArray of [OBTF, FULL, OBTS] + STOP.
-        // OBTF starts each combination yet is not the scope's first member.
-        let specs = vec![
-            make_subrec_spec("EDID", false),
-            make_scoped_subrec_spec("OBTE", "object_template"),
-            make_scoped_subrec_spec("OBTF", "object_template"),
-            make_scoped_subrec_spec("FULL", "object_template"),
-            make_scoped_subrec_spec("OBTS", "object_template"),
-            make_scoped_subrec_spec("STOP", "object_template"),
-        ];
-        let mut rec = record("WEAP", 0x0001_2345, Some("test"));
-        rec.subrecords.push(empty_subrec("OBTE"));
-        for _combination in 0..2 {
-            rec.subrecords.push(empty_subrec("OBTF"));
-            rec.subrecords.push(empty_subrec("FULL"));
-            rec.subrecords.push(empty_subrec("OBTS"));
+    fn order_check_qust() {
+        // order_check_accepts_repeated_qust_stage_logs_conditions_and_objective_targets
+        {
+            let schema = crate::plugin_runtime::compiled_schema_for_game("fo4")
+                .expect("fo4 schema must compile");
+            let specs = &schema
+                .records
+                .get("QUST")
+                .expect("fo4 schema must contain QUST")
+                .subrecords;
+            let mut rec = record("QUST", 0x0715_72E8, Some("vDialogueEDE"));
+
+            for sig in [
+                "FULL", "CTDA", "CTDA", "INDX", "QSDT", "CTDA", "CTDA", "CNAM", "QSDT", "CTDA", "CNAM",
+                "QOBJ", "NNAM", "QSTA", "QSTA", "QOBJ", "NNAM", "QSTA",
+            ] {
+                rec.subrecords.push(empty_subrec(sig));
+            }
+
+            let errors = subrecord_order_errors(&rec, specs);
+
+            assert!(errors.is_empty(), "got: {errors:?}");
+
         }
-        rec.subrecords.push(empty_subrec("STOP"));
-        let errors = subrecord_order_errors(&rec, &specs);
-        assert!(errors.is_empty(), "got: {errors:?}");
-    }
+        // order_check_rejects_qust_stage_condition_without_log_anchor
+        {
+            let schema = crate::plugin_runtime::compiled_schema_for_game("fo4")
+                .expect("fo4 schema must compile");
+            let specs = &schema
+                .records
+                .get("QUST")
+                .expect("fo4 schema must contain QUST")
+                .subrecords;
+            let mut rec = record("QUST", 0x0001_2345, Some("test"));
+            for sig in ["INDX", "CTDA"] {
+                rec.subrecords.push(empty_subrec(sig));
+            }
 
-    #[test]
-    fn order_check_accepts_repeated_qust_stage_logs_conditions_and_objective_targets() {
-        let schema = crate::plugin_runtime::compiled_schema_for_game("fo4")
-            .expect("fo4 schema must compile");
-        let specs = &schema
-            .records
-            .get("QUST")
-            .expect("fo4 schema must contain QUST")
-            .subrecords;
-        let mut rec = record("QUST", 0x0715_72E8, Some("vDialogueEDE"));
+            let errors = subrecord_order_errors(&rec, specs);
 
-        for sig in [
-            "FULL", "CTDA", "CTDA", "INDX", "QSDT", "CTDA", "CTDA", "CNAM", "QSDT", "CTDA", "CNAM",
-            "QOBJ", "NNAM", "QSTA", "QSTA", "QOBJ", "NNAM", "QSTA",
-        ] {
-            rec.subrecords.push(empty_subrec(sig));
+            assert_eq!(
+                errors,
+                vec![
+                    "Error: record QUST contains unexpected (or out of order) subrecord CTDA 41445443"
+                        .to_string()
+                ]
+            );
+
         }
+        // order_check_rejects_qust_objective_condition_without_target_anchor
+        {
+            let schema = crate::plugin_runtime::compiled_schema_for_game("fo4")
+                .expect("fo4 schema must compile");
+            let specs = &schema
+                .records
+                .get("QUST")
+                .expect("fo4 schema must contain QUST")
+                .subrecords;
+            let mut rec = record("QUST", 0x0001_2345, Some("test"));
+            for sig in ["QOBJ", "CTDA"] {
+                rec.subrecords.push(empty_subrec(sig));
+            }
 
-        let errors = subrecord_order_errors(&rec, specs);
+            let errors = subrecord_order_errors(&rec, specs);
 
-        assert!(errors.is_empty(), "got: {errors:?}");
-    }
+            assert_eq!(
+                errors,
+                vec![
+                    "Error: record QUST contains unexpected (or out of order) subrecord CTDA 41445443"
+                        .to_string()
+                ]
+            );
 
-    #[test]
-    fn order_check_rejects_qust_stage_condition_without_log_anchor() {
-        let schema = crate::plugin_runtime::compiled_schema_for_game("fo4")
-            .expect("fo4 schema must compile");
-        let specs = &schema
-            .records
-            .get("QUST")
-            .expect("fo4 schema must contain QUST")
-            .subrecords;
-        let mut rec = record("QUST", 0x0001_2345, Some("test"));
-        for sig in ["INDX", "CTDA"] {
-            rec.subrecords.push(empty_subrec(sig));
         }
+        // order_check_rejects_qust_target_without_objective_anchor
+        {
+            let schema = crate::plugin_runtime::compiled_schema_for_game("fo4")
+                .expect("fo4 schema must compile");
+            let specs = &schema
+                .records
+                .get("QUST")
+                .expect("fo4 schema must contain QUST")
+                .subrecords;
+            let mut rec = record("QUST", 0x0001_2345, Some("test"));
+            rec.subrecords.push(empty_subrec("QSTA"));
 
-        let errors = subrecord_order_errors(&rec, specs);
+            let errors = subrecord_order_errors(&rec, specs);
 
-        assert_eq!(
-            errors,
-            vec![
-                "Error: record QUST contains unexpected (or out of order) subrecord CTDA 41445443"
-                    .to_string()
-            ]
-        );
-    }
+            assert_eq!(
+                errors,
+                vec![
+                    "Error: record QUST contains unexpected (or out of order) subrecord QSTA 41545351"
+                        .to_string()
+                ]
+            );
 
-    #[test]
-    fn order_check_rejects_qust_objective_condition_without_target_anchor() {
-        let schema = crate::plugin_runtime::compiled_schema_for_game("fo4")
-            .expect("fo4 schema must compile");
-        let specs = &schema
-            .records
-            .get("QUST")
-            .expect("fo4 schema must contain QUST")
-            .subrecords;
-        let mut rec = record("QUST", 0x0001_2345, Some("test"));
-        for sig in ["QOBJ", "CTDA"] {
-            rec.subrecords.push(empty_subrec(sig));
         }
+        // order_check_rejects_qust_stage_condition_after_log_text
+        {
+            let schema = crate::plugin_runtime::compiled_schema_for_game("fo4")
+                .expect("fo4 schema must compile");
+            let specs = &schema
+                .records
+                .get("QUST")
+                .expect("fo4 schema must contain QUST")
+                .subrecords;
+            let mut rec = record("QUST", 0x0001_2345, Some("test"));
+            for sig in ["INDX", "QSDT", "CNAM", "CTDA"] {
+                rec.subrecords.push(empty_subrec(sig));
+            }
 
-        let errors = subrecord_order_errors(&rec, specs);
+            let errors = subrecord_order_errors(&rec, specs);
 
-        assert_eq!(
-            errors,
-            vec![
-                "Error: record QUST contains unexpected (or out of order) subrecord CTDA 41445443"
-                    .to_string()
-            ]
-        );
-    }
+            assert_eq!(
+                errors,
+                vec![
+                    "Error: record QUST contains unexpected (or out of order) subrecord CTDA 41445443"
+                        .to_string()
+                ]
+            );
 
-    #[test]
-    fn order_check_rejects_qust_target_without_objective_anchor() {
-        let schema = crate::plugin_runtime::compiled_schema_for_game("fo4")
-            .expect("fo4 schema must compile");
-        let specs = &schema
-            .records
-            .get("QUST")
-            .expect("fo4 schema must contain QUST")
-            .subrecords;
-        let mut rec = record("QUST", 0x0001_2345, Some("test"));
-        rec.subrecords.push(empty_subrec("QSTA"));
-
-        let errors = subrecord_order_errors(&rec, specs);
-
-        assert_eq!(
-            errors,
-            vec![
-                "Error: record QUST contains unexpected (or out of order) subrecord QSTA 41545351"
-                    .to_string()
-            ]
-        );
-    }
-
-    #[test]
-    fn order_check_rejects_qust_stage_condition_after_log_text() {
-        let schema = crate::plugin_runtime::compiled_schema_for_game("fo4")
-            .expect("fo4 schema must compile");
-        let specs = &schema
-            .records
-            .get("QUST")
-            .expect("fo4 schema must contain QUST")
-            .subrecords;
-        let mut rec = record("QUST", 0x0001_2345, Some("test"));
-        for sig in ["INDX", "QSDT", "CNAM", "CTDA"] {
-            rec.subrecords.push(empty_subrec(sig));
         }
+        // fo4_qust_batched_alias_fields_match_xedit_errors
+        {
+            let schema = crate::plugin_runtime::compiled_schema_for_game("fo4")
+                .expect("fo4 schema must compile");
+            let specs = &schema
+                .records
+                .get("QUST")
+                .expect("fo4 schema must contain QUST")
+                .subrecords;
+            let mut rec = record("QUST", 0x0700_8E69, Some("RE_ObjectKMK01"));
 
-        let errors = subrecord_order_errors(&rec, specs);
+            for sig in ["VMAD", "FULL", "ENAM", "FLTR", "NEXT", "ANAM"] {
+                rec.subrecords.push(empty_subrec(sig));
+            }
+            for _ in 0..6 {
+                rec.subrecords.push(empty_subrec("ALST"));
+            }
+            for _ in 0..4 {
+                rec.subrecords.push(empty_subrec("ALCO"));
+            }
+            for _ in 0..4 {
+                rec.subrecords.push(empty_subrec("ALCL"));
+            }
+            for _ in 0..4 {
+                rec.subrecords.push(empty_subrec("ALNT"));
+            }
+            for _ in 0..4 {
+                rec.subrecords.push(empty_subrec("ALLA"));
+            }
+            for _ in 0..2 {
+                rec.subrecords.push(empty_subrec("ALDN"));
+            }
+            rec.subrecords.push(empty_subrec("ALPC"));
+            for _ in 0..3 {
+                rec.subrecords.push(empty_subrec("VTCK"));
+            }
+            rec.subrecords.push(empty_subrec("ALCS"));
+            rec.subrecords.push(empty_subrec("ALMI"));
 
-        assert_eq!(
-            errors,
-            vec![
-                "Error: record QUST contains unexpected (or out of order) subrecord CTDA 41445443"
-                    .to_string()
-            ]
-        );
-    }
+            let errors = subrecord_order_errors(&rec, specs);
 
-    #[test]
-    fn order_check_accepts_repeated_term_menu_item_conditions() {
-        let schema = crate::plugin_runtime::compiled_schema_for_game("fo4")
-            .expect("fo4 schema must compile");
-        let specs = &schema
-            .records
-            .get("TERM")
-            .expect("fo4 schema must contain TERM")
-            .subrecords;
-        let mut rec = record("TERM", 0x0716_6B54, Some("HVRamosTerminal"));
+            let expected = vec![
+                "Error: record QUST contains unexpected (or out of order) subrecord ALDN 4E444C41"
+                    .to_string(),
+                "Error: record QUST contains unexpected (or out of order) subrecord ALDN 4E444C41"
+                    .to_string(),
+                "Error: record QUST contains unexpected (or out of order) subrecord ALPC 43504C41"
+                    .to_string(),
+                "Error: record QUST contains unexpected (or out of order) subrecord VTCK 4B435456"
+                    .to_string(),
+                "Error: record QUST contains unexpected (or out of order) subrecord VTCK 4B435456"
+                    .to_string(),
+                "Error: record QUST contains unexpected (or out of order) subrecord VTCK 4B435456"
+                    .to_string(),
+                "Error: record QUST contains unexpected (or out of order) subrecord ALCS 53434C41"
+                    .to_string(),
+                "Error: record QUST contains unexpected (or out of order) subrecord ALMI 494D4C41"
+                    .to_string(),
+            ];
+            assert_eq!(errors, expected);
 
-        for sig in [
-            "OBND", "FULL", "MODL", "SNAM", "ITXT", "RNAM", "ANAM", "CTDA", "CTDA", "ITXT", "RNAM",
-            "ANAM", "CTDA",
-        ] {
-            rec.subrecords.push(empty_subrec(sig));
         }
+        // order_check_qust_reference_alias_scope_resets_batched_state
+        {
+            let schema = crate::plugin_runtime::compiled_schema_for_game("fo4")
+                .expect("fo4 schema must compile");
+            let specs = &schema
+                .records
+                .get("QUST")
+                .expect("fo4 schema must contain QUST")
+                .subrecords;
+            let mut rec = record("QUST", 0x0001_2345, Some("test"));
 
-        let errors = subrecord_order_errors(&rec, specs);
+            for sig in ["ALST", "ALST", "ALCO", "ALCO", "ALST", "ALDN"] {
+                rec.subrecords.push(empty_subrec(sig));
+            }
 
-        assert!(errors.is_empty(), "got: {errors:?}");
-    }
+            let errors = subrecord_order_errors(&rec, specs);
 
-    #[test]
-    fn order_check_accepts_repeated_destruction_stages() {
-        let schema = crate::plugin_runtime::compiled_schema_for_game("fo4")
-            .expect("fo4 schema must compile");
-        let specs = &schema
-            .records
-            .get("ACTI")
-            .expect("fo4 schema must contain ACTI")
-            .subrecords;
-        let mut rec = record("ACTI", 0x0714_B67F, Some("VHDLegionOliverGenerator01"));
+            assert!(errors.is_empty(), "got: {errors:?}");
 
-        for sig in [
-            "OBND", "FULL", "MODL", "DEST", "DSTD", "DSTF", "DSTD", "DSTF", "DSTD", "DMDL", "DSTF",
-            "DSTD", "DSTF",
-        ] {
-            rec.subrecords.push(empty_subrec(sig));
         }
+        // order_check_accepts_repeated_qust_alias_conditions_with_cis_children
+        {
+            let schema = crate::plugin_runtime::compiled_schema_for_game("fo4")
+                .expect("fo4 schema must compile");
+            let specs = &schema
+                .records
+                .get("QUST")
+                .expect("fo4 schema must contain QUST")
+                .subrecords;
+            let mut rec = record("QUST", 0x0001_2345, Some("test"));
 
-        let errors = subrecord_order_errors(&rec, specs);
+            for sig in [
+                "ALST", "CTDA", "CIS1", "CIS2", "CTDA", "CIS1", "CIS2", "ALDN",
+            ] {
+                rec.subrecords.push(empty_subrec(sig));
+            }
 
-        assert!(errors.is_empty(), "got: {errors:?}");
-    }
+            let errors = subrecord_order_errors(&rec, specs);
 
-    #[test]
-    fn order_check_still_rejects_destruction_stage_without_dest_anchor() {
-        let schema = crate::plugin_runtime::compiled_schema_for_game("fo4")
-            .expect("fo4 schema must compile");
-        let specs = &schema
-            .records
-            .get("ACTI")
-            .expect("fo4 schema must contain ACTI")
-            .subrecords;
-        let mut rec = record("ACTI", 0x0001_2345, Some("test"));
-        rec.subrecords.push(empty_subrec("DSTD"));
+            assert!(errors.is_empty(), "got: {errors:?}");
 
-        let errors = subrecord_order_errors(&rec, specs);
-
-        assert_eq!(
-            errors,
-            vec![
-                "Error: record ACTI contains unexpected (or out of order) subrecord DSTD 44545344"
-                    .to_string()
-            ]
-        );
-    }
-
-    #[test]
-    fn order_check_accepts_race_transition_between_body_and_behavior_scopes() {
-        let schema = crate::plugin_runtime::compiled_schema_for_game("fo4")
-            .expect("fo4 schema must compile");
-        let specs = &schema
-            .records
-            .get("RACE")
-            .expect("fo4 schema must contain RACE")
-            .subrecords;
-        let mut rec = record("RACE", 0x0709_87DF, Some("CaucasianOldAged"));
-
-        for sig in [
-            "FULL", "DESC", "MNAM", "MODT", "FNAM", "MODT", "VTCK", "PNAM", "UNAM", "NAM1", "MNAM",
-            "INDX", "MODL", "MODT", "FNAM", "INDX", "MODL", "MODT", "MNAM", "MODL", "MODT", "FNAM",
-            "MODL", "MODT", "CNAM",
-        ] {
-            rec.subrecords.push(empty_subrec(sig));
         }
+        // order_check_rejects_qust_alias_condition_after_later_alias_field
+        {
+            let schema = crate::plugin_runtime::compiled_schema_for_game("fo4")
+                .expect("fo4 schema must compile");
+            let specs = &schema
+                .records
+                .get("QUST")
+                .expect("fo4 schema must contain QUST")
+                .subrecords;
+            let mut rec = record("QUST", 0x0001_2345, Some("test"));
 
-        let errors = subrecord_order_errors(&rec, specs);
+            for sig in ["ALST", "CTDA", "ALDN", "CTDA"] {
+                rec.subrecords.push(empty_subrec(sig));
+            }
 
-        assert!(errors.is_empty(), "got: {errors:?}");
-    }
+            let errors = subrecord_order_errors(&rec, specs);
 
-    #[test]
-    fn order_check_rejects_generic_scoped_recurrence_despite_later_duplicate_slot() {
-        let specs = vec![
-            make_scoped_subrec_spec("ANCH", "rows"),
-            make_scoped_subrec_spec("DUPL", "rows"),
-            make_scoped_subrec_spec("TAIL", "rows"),
-            make_subrec_spec("DUPL", false),
-        ];
-        let mut rec = record("TEST", 0x0001_2345, None);
-        for sig in ["ANCH", "DUPL", "DUPL"] {
-            rec.subrecords.push(empty_subrec(sig));
+            assert_eq!(
+                errors,
+                vec![
+                    "Error: record QUST contains unexpected (or out of order) subrecord CTDA 41445443"
+                        .to_string()
+                ]
+            );
+
         }
+        // order_check_qust_can_recover_to_different_alias_anchor_after_batched_reference
+        {
+            let schema = crate::plugin_runtime::compiled_schema_for_game("fo4")
+                .expect("fo4 schema must compile");
+            let specs = &schema
+                .records
+                .get("QUST")
+                .expect("fo4 schema must contain QUST")
+                .subrecords;
+            let mut rec = record("QUST", 0x0001_2345, Some("test"));
 
-        let errors = subrecord_order_errors(&rec, &specs);
+            for sig in [
+                "ALST", "ALST", "ALCO", "ALCO", "ALLS", "ALID", "ALCS", "ALMI",
+            ] {
+                rec.subrecords.push(empty_subrec(sig));
+            }
 
-        assert_eq!(
-            errors,
-            vec![
-                "Error: record TEST contains unexpected (or out of order) subrecord DUPL 4C505544"
-                    .to_string()
-            ]
-        );
-    }
+            let errors = subrecord_order_errors(&rec, specs);
 
-    #[test]
-    fn order_check_rejects_malformed_race_body_model_recurrence() {
-        let schema = crate::plugin_runtime::compiled_schema_for_game("fo4")
-            .expect("fo4 schema must compile");
-        let specs = &schema
-            .records
-            .get("RACE")
-            .expect("fo4 schema must contain RACE")
-            .subrecords;
-        let mut rec = record("RACE", 0x0001_2345, Some("test"));
-        for sig in ["NAM1", "MNAM", "INDX", "MODL", "MODL"] {
-            rec.subrecords.push(empty_subrec(sig));
+            assert!(errors.is_empty(), "got: {errors:?}");
+
         }
+        // order_check_qust_alias_types_can_interleave_in_dependency_order
+        {
+            let schema = crate::plugin_runtime::compiled_schema_for_game("fo4").unwrap();
+            let specs = &schema.records.get("QUST").unwrap().subrecords;
+            let mut rec = record("QUST", 0x0001_2345, Some("test"));
+            for sig in [
+                "ALST", "ALID", "FNAM", "ALFR", "ALED",
+                "ALLS", "ALID", "FNAM", "ALFL", "ALED",
+                "ALST", "ALID", "FNAM", "ALFA", "ALRT", "ALED",
+                "ALLS", "ALID", "FNAM", "ALFL", "ALED",
+                "ALST", "ALID", "FNAM", "ALFA", "ALRT", "ALED",
+            ] {
+                rec.subrecords.push(empty_subrec(sig));
+            }
+            let errors = subrecord_order_errors(&rec, specs);
+            assert!(errors.is_empty(), "got: {errors:?}");
 
-        let errors = subrecord_order_errors(&rec, specs);
-
-        assert_eq!(
-            errors,
-            vec![
-                "Error: record RACE contains unexpected (or out of order) subrecord MODL 4C444F4D"
-                    .to_string()
-            ]
-        );
-    }
-
-    #[test]
-    fn order_check_flags_scoped_child_without_anchor() {
-        let specs = vec![
-            make_subrec_spec("EDID", false),
-            make_scoped_subrec_spec("INDX", "stages"),
-            make_scoped_subrec_spec("QSDT", "stages"),
-        ];
-        let mut rec = record("QUST", 0x0001_2345, Some("test"));
-        rec.subrecords.push(empty_subrec("QSDT"));
-
-        let errors = subrecord_order_errors(&rec, &specs);
-
-        assert_eq!(errors.len(), 1);
-        assert_eq!(
-            errors[0],
-            "Error: record QUST contains unexpected (or out of order) subrecord QSDT 54445351"
-        );
-    }
-
-    #[test]
-    fn order_check_uses_later_unscoped_duplicate_after_skipped_scope() {
-        let specs = vec![
-            make_subrec_spec("EDID", false),
-            make_subrec_spec("AIDT", false),
-            make_scoped_subrec_spec("OBTE", "object_template"),
-            make_scoped_subrec_spec("FULL", "object_template"),
-            make_subrec_spec("CNAM", false),
-            make_subrec_spec("FULL", false),
-            make_subrec_spec("DATA", false),
-        ];
-        let mut rec = record("NPC_", 0x0001_2345, Some("test"));
-        rec.subrecords.push(empty_subrec("AIDT"));
-        rec.subrecords.push(empty_subrec("FULL"));
-        rec.subrecords.push(empty_subrec("DATA"));
-
-        let errors = subrecord_order_errors(&rec, &specs);
-
-        assert!(errors.is_empty(), "got: {errors:?}");
-    }
-
-    #[test]
-    fn fo4_qust_batched_alias_fields_match_xedit_errors() {
-        let schema = crate::plugin_runtime::compiled_schema_for_game("fo4")
-            .expect("fo4 schema must compile");
-        let specs = &schema
-            .records
-            .get("QUST")
-            .expect("fo4 schema must contain QUST")
-            .subrecords;
-        let mut rec = record("QUST", 0x0700_8E69, Some("RE_ObjectKMK01"));
-
-        for sig in ["VMAD", "FULL", "ENAM", "FLTR", "NEXT", "ANAM"] {
-            rec.subrecords.push(empty_subrec(sig));
         }
-        for _ in 0..6 {
-            rec.subrecords.push(empty_subrec("ALST"));
-        }
-        for _ in 0..4 {
-            rec.subrecords.push(empty_subrec("ALCO"));
-        }
-        for _ in 0..4 {
-            rec.subrecords.push(empty_subrec("ALCL"));
-        }
-        for _ in 0..4 {
-            rec.subrecords.push(empty_subrec("ALNT"));
-        }
-        for _ in 0..4 {
-            rec.subrecords.push(empty_subrec("ALLA"));
-        }
-        for _ in 0..2 {
-            rec.subrecords.push(empty_subrec("ALDN"));
-        }
-        rec.subrecords.push(empty_subrec("ALPC"));
-        for _ in 0..3 {
-            rec.subrecords.push(empty_subrec("VTCK"));
-        }
-        rec.subrecords.push(empty_subrec("ALCS"));
-        rec.subrecords.push(empty_subrec("ALMI"));
-
-        let errors = subrecord_order_errors(&rec, specs);
-
-        let expected = vec![
-            "Error: record QUST contains unexpected (or out of order) subrecord ALDN 4E444C41"
-                .to_string(),
-            "Error: record QUST contains unexpected (or out of order) subrecord ALDN 4E444C41"
-                .to_string(),
-            "Error: record QUST contains unexpected (or out of order) subrecord ALPC 43504C41"
-                .to_string(),
-            "Error: record QUST contains unexpected (or out of order) subrecord VTCK 4B435456"
-                .to_string(),
-            "Error: record QUST contains unexpected (or out of order) subrecord VTCK 4B435456"
-                .to_string(),
-            "Error: record QUST contains unexpected (or out of order) subrecord VTCK 4B435456"
-                .to_string(),
-            "Error: record QUST contains unexpected (or out of order) subrecord ALCS 53434C41"
-                .to_string(),
-            "Error: record QUST contains unexpected (or out of order) subrecord ALMI 494D4C41"
-                .to_string(),
-        ];
-        assert_eq!(errors, expected);
-    }
-
-    #[test]
-    fn order_check_qust_reference_alias_scope_resets_batched_state() {
-        let schema = crate::plugin_runtime::compiled_schema_for_game("fo4")
-            .expect("fo4 schema must compile");
-        let specs = &schema
-            .records
-            .get("QUST")
-            .expect("fo4 schema must contain QUST")
-            .subrecords;
-        let mut rec = record("QUST", 0x0001_2345, Some("test"));
-
-        for sig in ["ALST", "ALST", "ALCO", "ALCO", "ALST", "ALDN"] {
-            rec.subrecords.push(empty_subrec(sig));
-        }
-
-        let errors = subrecord_order_errors(&rec, specs);
-
-        assert!(errors.is_empty(), "got: {errors:?}");
-    }
-
-    #[test]
-    fn order_check_accepts_repeated_qust_alias_conditions_with_cis_children() {
-        let schema = crate::plugin_runtime::compiled_schema_for_game("fo4")
-            .expect("fo4 schema must compile");
-        let specs = &schema
-            .records
-            .get("QUST")
-            .expect("fo4 schema must contain QUST")
-            .subrecords;
-        let mut rec = record("QUST", 0x0001_2345, Some("test"));
-
-        for sig in [
-            "ALST", "CTDA", "CIS1", "CIS2", "CTDA", "CIS1", "CIS2", "ALDN",
-        ] {
-            rec.subrecords.push(empty_subrec(sig));
-        }
-
-        let errors = subrecord_order_errors(&rec, specs);
-
-        assert!(errors.is_empty(), "got: {errors:?}");
-    }
-
-    #[test]
-    fn order_check_rejects_qust_alias_condition_after_later_alias_field() {
-        let schema = crate::plugin_runtime::compiled_schema_for_game("fo4")
-            .expect("fo4 schema must compile");
-        let specs = &schema
-            .records
-            .get("QUST")
-            .expect("fo4 schema must contain QUST")
-            .subrecords;
-        let mut rec = record("QUST", 0x0001_2345, Some("test"));
-
-        for sig in ["ALST", "CTDA", "ALDN", "CTDA"] {
-            rec.subrecords.push(empty_subrec(sig));
-        }
-
-        let errors = subrecord_order_errors(&rec, specs);
-
-        assert_eq!(
-            errors,
-            vec![
-                "Error: record QUST contains unexpected (or out of order) subrecord CTDA 41445443"
-                    .to_string()
-            ]
-        );
-    }
-
-    #[test]
-    fn order_check_qust_can_recover_to_different_alias_anchor_after_batched_reference() {
-        let schema = crate::plugin_runtime::compiled_schema_for_game("fo4")
-            .expect("fo4 schema must compile");
-        let specs = &schema
-            .records
-            .get("QUST")
-            .expect("fo4 schema must contain QUST")
-            .subrecords;
-        let mut rec = record("QUST", 0x0001_2345, Some("test"));
-
-        for sig in [
-            "ALST", "ALST", "ALCO", "ALCO", "ALLS", "ALID", "ALCS", "ALMI",
-        ] {
-            rec.subrecords.push(empty_subrec(sig));
-        }
-
-        let errors = subrecord_order_errors(&rec, specs);
-
-        assert!(errors.is_empty(), "got: {errors:?}");
     }
 
     fn fake_schema_for_cell() -> CompiledSchema {
@@ -2094,66 +2157,104 @@ mod tests {
     }
 
     #[test]
-    fn walk_and_check_fires_cell_unexpected_subrecord() {
-        let mut cell = record("CELL", 0x0126_28FE, Some("OriginExt"));
-        cell.subrecords.push(empty_subrec("XILS"));
+    fn walk_and_check_fires_expected_errors() {
+        // walk_and_check_fires_cell_unexpected_subrecord
+        {
+            let mut cell = record("CELL", 0x0126_28FE, Some("OriginExt"));
+            cell.subrecords.push(empty_subrec("XILS"));
 
-        let plugin = ParsedPlugin {
-            plugin_name: "p.esp".to_string(),
-            file_path: String::new(),
-            header_size: 0,
-            header: ParsedPluginHeader::default_for_test(),
-            root_items: vec![ParsedItem::Group(ParsedGroup {
-                label: *b"CELL",
-                group_type: 0,
-                tail: Bytes::new(),
-                children: vec![ParsedItem::Record(cell)],
-            })],
-            game: None,
-        };
-        let schema = fake_schema_for_cell();
-        let messages = walk_and_check_for_test(&plugin, 1, &schema);
-        assert!(
-            messages.iter().any(|m| m == "Error: record CELL contains unexpected (or out of order) subrecord XILS 534C4958"),
-            "got messages: {messages:?}"
-        );
-    }
+            let plugin = ParsedPlugin {
+                plugin_name: "p.esp".to_string(),
+                file_path: String::new(),
+                header_size: 0,
+                header: ParsedPluginHeader::default_for_test(),
+                root_items: vec![ParsedItem::Group(ParsedGroup {
+                    label: *b"CELL",
+                    group_type: 0,
+                    tail: Bytes::new(),
+                    children: vec![ParsedItem::Record(cell)],
+                })],
+                game: None,
+            };
+            let schema = fake_schema_for_cell();
+            let messages = walk_and_check_for_test(&plugin, 1, &schema);
+            assert!(
+                messages.iter().any(|m| m == "Error: record CELL contains unexpected (or out of order) subrecord XILS 534C4958"),
+                "got messages: {messages:?}"
+            );
 
-    #[test]
-    fn walk_and_check_fires_refr_xpdd_unused_data() {
-        let mut refr = record("REFR", 0x0131_B717, None);
-        refr.subrecords.push(empty_subrec("EDID"));
-        refr.subrecords.push(empty_subrec("NAME"));
-        refr.subrecords.push(ParsedSubrecord {
-            signature: SmolStr::new("XPDD"),
-            data: Bytes::from(vec![0u8; 8]), // 4 declared + 4 trailing
-            semantic_type: None,
-        });
+        }
+        // walk_and_check_fires_refr_xpdd_unused_data
+        {
+            let mut refr = record("REFR", 0x0131_B717, None);
+            refr.subrecords.push(empty_subrec("EDID"));
+            refr.subrecords.push(empty_subrec("NAME"));
+            refr.subrecords.push(ParsedSubrecord {
+                signature: SmolStr::new("XPDD"),
+                data: Bytes::from(vec![0u8; 8]), // 4 declared + 4 trailing
+                semantic_type: None,
+            });
 
-        let plugin = ParsedPlugin {
-            plugin_name: "p.esp".to_string(),
-            file_path: String::new(),
-            header_size: 0,
-            header: ParsedPluginHeader::default_for_test(),
-            root_items: vec![ParsedItem::Group(ParsedGroup {
-                label: *b"REFR",
-                group_type: 0,
-                tail: Bytes::new(),
-                children: vec![ParsedItem::Record(refr)],
-            })],
-            game: None,
-        };
-        let schema = fake_schema_for_cell();
-        let messages = walk_and_check_for_test(&plugin, 1, &schema);
-        let xpdd_warning = messages
-            .iter()
-            .find(|m| m.contains("Unused data in") && m.contains("XPDD"));
-        assert!(xpdd_warning.is_some(), "got: {messages:?}");
-        let msg = xpdd_warning.unwrap();
-        assert!(msg.starts_with("<Warning: Unused data in:"));
-        assert!(msg.ends_with(">"));
-        assert!(msg.contains("[REFR:0131B717]"));
-        assert!(msg.contains("XPDD"));
+            let plugin = ParsedPlugin {
+                plugin_name: "p.esp".to_string(),
+                file_path: String::new(),
+                header_size: 0,
+                header: ParsedPluginHeader::default_for_test(),
+                root_items: vec![ParsedItem::Group(ParsedGroup {
+                    label: *b"REFR",
+                    group_type: 0,
+                    tail: Bytes::new(),
+                    children: vec![ParsedItem::Record(refr)],
+                })],
+                game: None,
+            };
+            let schema = fake_schema_for_cell();
+            let messages = walk_and_check_for_test(&plugin, 1, &schema);
+            let xpdd_warning = messages
+                .iter()
+                .find(|m| m.contains("Unused data in") && m.contains("XPDD"));
+            assert!(xpdd_warning.is_some(), "got: {messages:?}");
+            let msg = xpdd_warning.unwrap();
+            assert!(msg.starts_with("<Warning: Unused data in:"));
+            assert!(msg.ends_with(">"));
+            assert!(msg.contains("[REFR:0131B717]"));
+            assert!(msg.contains("XPDD"));
+
+        }
+        // walk_and_check_fires_kywd_tnam_unknown_enum
+        {
+            let mut tnam_spec = enum_subrec_spec("TNAM", "uint32", "keyword_type_enum");
+            tnam_spec.display_label = Some("Type".to_string());
+            let schema = schema_with_record_and_enum(
+                "KYWD",
+                vec![make_subrec_spec("EDID", false), tnam_spec],
+                keyword_type_enum_0_18(),
+            );
+
+            let mut kywd = record("KYWD", 0x078B_0962, Some("Scrap_Ball_PTS"));
+            kywd.subrecords
+                .push(subrec_with_data("TNAM", 24u32.to_le_bytes().to_vec()));
+
+            let plugin = ParsedPlugin {
+                plugin_name: "p.esp".to_string(),
+                file_path: String::new(),
+                header_size: 0,
+                header: ParsedPluginHeader::default_for_test(),
+                root_items: vec![ParsedItem::Group(ParsedGroup {
+                    label: *b"KYWD",
+                    group_type: 0,
+                    tail: Bytes::new(),
+                    children: vec![ParsedItem::Record(kywd)],
+                })],
+                game: None,
+            };
+            let messages = walk_and_check_for_test(&plugin, 1, &schema);
+            assert!(
+                messages.iter().any(|m| m == "<Unknown: 24 $18>"),
+                "got: {messages:?}"
+            );
+
+        }
     }
 
     // ----- D / A2 / A1 parity helpers + byte-exact cases -----
@@ -2268,218 +2369,222 @@ mod tests {
     // ---- Class A2: unknown scalar enum value (subrecord-level + struct-nested) ----
 
     #[test]
-    fn member_enum_unknown_kywd_tnam_24() {
-        // "KYWD \ TNAM - Type -> <Unknown: 24 $18>". TNAM = uint32 single enum field.
-        let schema = member_schema(
-            "KYWD",
-            "TNAM",
-            "uint32",
-            vec![enum_field("type", "uint32", Some("keyword_type_enum"))],
-            vec![keyword_type_enum_0_18()],
-        );
-        let sub = subrec_with_data("TNAM", 24u32.to_le_bytes().to_vec());
-        let msgs: Vec<_> = struct_member_errors("KYWD", &sub, None, &schema)
-            .into_iter()
-            .map(|m| (m.category, m.message))
-            .collect();
-        assert_eq!(
-            msgs,
-            vec![("unknown_enum", "<Unknown: 24 $18>".to_string())]
-        );
-    }
+    fn member_value_checks() {
+        // member_enum_unknown_kywd_tnam_24
+        {
+            // "KYWD \ TNAM - Type -> <Unknown: 24 $18>". TNAM = uint32 single enum field.
+            let schema = member_schema(
+                "KYWD",
+                "TNAM",
+                "uint32",
+                vec![enum_field("type", "uint32", Some("keyword_type_enum"))],
+                vec![keyword_type_enum_0_18()],
+            );
+            let sub = subrec_with_data("TNAM", 24u32.to_le_bytes().to_vec());
+            let msgs: Vec<_> = struct_member_errors("KYWD", &sub, None, &schema)
+                .into_iter()
+                .map(|m| (m.category, m.message))
+                .collect();
+            assert_eq!(
+                msgs,
+                vec![("unknown_enum", "<Unknown: 24 $18>".to_string())]
+            );
 
-    /// QUST.FNAM is scope-overloaded. The layout is resolved by SIG, so an
-    /// alias FNAM arrives bound to the 2-bit OBJECTIVE flag enum and every real
-    /// alias flag above bit 1 was reported as unknown. Ground-truthed on
-    /// mods/B21_MusicPlayer/B21_MusicPlayer.esp, whose one alias FNAM is
-    /// 0x4000 (`matching_ref_closest`) and produced "<Unknown: 14 $E>".
-    #[test]
-    fn qust_alias_fnam_flags_are_not_reported_unknown() {
-        let schema =
-            crate::plugin_runtime::compiled_schema_for_game_str("fo4").expect("fo4 schema");
-        for raw in [0x4000_u32, 0x4, 0x10, 0x40, 0x80_0000, 0x0100_0000] {
-            let sub = subrec_with_data("FNAM", raw.to_le_bytes().to_vec());
+        }
+        // qust_alias_fnam_flags_are_not_reported_unknown
+        // QUST.FNAM is scope-overloaded. The layout is resolved by SIG, so an
+        // alias FNAM arrives bound to the 2-bit OBJECTIVE flag enum and every real
+        // alias flag above bit 1 was reported as unknown. Ground-truthed on
+        // mods/B21_MusicPlayer/B21_MusicPlayer.esp, whose one alias FNAM is
+        // 0x4000 (`matching_ref_closest`) and produced "<Unknown: 14 $E>".
+        {
+            let schema =
+                crate::plugin_runtime::compiled_schema_for_game_str("fo4").expect("fo4 schema");
+            for raw in [0x4000_u32, 0x4, 0x10, 0x40, 0x80_0000, 0x0100_0000] {
+                let sub = subrec_with_data("FNAM", raw.to_le_bytes().to_vec());
+                let msgs: Vec<_> = struct_member_errors("QUST", &sub, Some(131), &schema)
+                    .into_iter()
+                    .map(|m| m.message)
+                    .collect();
+                assert!(
+                    msgs.is_empty(),
+                    "alias flag {raw:#x} falsely reported unknown: {msgs:?}"
+                );
+            }
+            // A bit valid under NEITHER scope is still reported.
+            let sub = subrec_with_data("FNAM", 0x8000_0000_u32.to_le_bytes().to_vec());
             let msgs: Vec<_> = struct_member_errors("QUST", &sub, Some(131), &schema)
+                .into_iter()
+                .map(|m| m.category)
+                .collect();
+            assert_eq!(msgs, vec!["unknown_flag"]);
+
+        }
+        // member_enum_known_value_no_error
+        {
+            let schema = member_schema(
+                "KYWD",
+                "TNAM",
+                "uint32",
+                vec![enum_field("type", "uint32", Some("keyword_type_enum"))],
+                vec![keyword_type_enum_0_18()],
+            );
+            let sub = subrec_with_data("TNAM", 6u32.to_le_bytes().to_vec());
+            assert!(struct_member_errors("KYWD", &sub, None, &schema).is_empty());
+
+        }
+        // member_enum_nested_struct_field_offset
+        {
+            // A2 on a NESTED struct field: struct:I,I with the enum on the SECOND
+            // field (offset 4) — proves we read at the field's offset, not 0.
+            let schema = member_schema(
+                "REC",
+                "DNAM",
+                "struct:I,I",
+                vec![
+                    enum_field("first", "uint32", None),
+                    enum_field("type", "uint32", Some("keyword_type_enum")),
+                ],
+                vec![keyword_type_enum_0_18()],
+            );
+            // first=6 (would be "known" if read here), second=24 (unknown).
+            let mut data = 6u32.to_le_bytes().to_vec();
+            data.extend_from_slice(&24u32.to_le_bytes());
+            let sub = subrec_with_data("DNAM", data);
+            let msgs: Vec<_> = struct_member_errors("REC", &sub, None, &schema)
+                .into_iter()
+                .map(|m| (m.category, m.message))
+                .collect();
+            assert_eq!(
+                msgs,
+                vec![("unknown_enum", "<Unknown: 24 $18>".to_string())]
+            );
+
+        }
+        // member_flag_book_dnam_nested_bit5
+        {
+            // BOOK.DNAM struct:B,I,I,I, flags field at offset 0 (the real BOOK.DNAM).
+            // FO76 sets bit 5 ($20) -> "<Unknown: 5 $5>".
+            let schema = member_schema(
+                "BOOK",
+                "DNAM",
+                "struct:B,I,I,I",
+                vec![
+                    enum_field("flags", "uint8", Some("book_dnam_flags")),
+                    enum_field("teaches", "uint32", None),
+                    enum_field("ox", "uint32", None),
+                    enum_field("oy", "uint32", None),
+                ],
+                vec![book_dnam_flags_0_4()],
+            );
+            let mut data = vec![0x20u8]; // flags byte: bit 5
+            data.extend_from_slice(&[0u8; 12]); // teaches + ox + oy
+            let sub = subrec_with_data("DNAM", data);
+            let msgs: Vec<_> = struct_member_errors("BOOK", &sub, None, &schema)
+                .into_iter()
+                .map(|m| (m.category, m.message))
+                .collect();
+            assert_eq!(msgs, vec![("unknown_flag", "<Unknown: 5 $5>".to_string())]);
+
+        }
+        // member_flag_multi_bit_comma_joined
+        {
+            // RACE DATA Flags2-shape: u32 flags field, bits 25/26/27 unknown.
+            let schema = member_schema(
+                "RACE",
+                "DATA",
+                "uint32",
+                vec![enum_field("flags", "uint32", Some("f"))],
+                vec![make_enum("f", "flags", 4, vec![enum_value(1, "b0")])],
+            );
+            let value = (1u32 << 25) | (1u32 << 26) | (1u32 << 27);
+            let sub = subrec_with_data("DATA", value.to_le_bytes().to_vec());
+            let msgs: Vec<_> = struct_member_errors("RACE", &sub, None, &schema)
                 .into_iter()
                 .map(|m| m.message)
                 .collect();
-            assert!(
-                msgs.is_empty(),
-                "alias flag {raw:#x} falsely reported unknown: {msgs:?}"
+            assert_eq!(
+                msgs,
+                vec!["<Unknown: 25 $19>, <Unknown: 26 $1A>, <Unknown: 27 $1B>".to_string()]
             );
+
         }
-        // A bit valid under NEITHER scope is still reported.
-        let sub = subrec_with_data("FNAM", 0x8000_0000_u32.to_le_bytes().to_vec());
-        let msgs: Vec<_> = struct_member_errors("QUST", &sub, Some(131), &schema)
-            .into_iter()
-            .map(|m| m.category)
-            .collect();
-        assert_eq!(msgs, vec!["unknown_flag"]);
-    }
+        // member_flag_known_bits_no_error
+        {
+            let schema = member_schema(
+                "REC",
+                "DNAM",
+                "uint32",
+                vec![enum_field("flags", "uint32", Some("f"))],
+                vec![make_enum(
+                    "f",
+                    "flags",
+                    4,
+                    vec![
+                        enum_value(1, "b0"),
+                        enum_value(2, "b1"),
+                        enum_value(4, "b2"),
+                    ],
+                )],
+            );
+            let sub = subrec_with_data("DNAM", 0x7u32.to_le_bytes().to_vec());
+            assert!(struct_member_errors("REC", &sub, None, &schema).is_empty());
 
-    #[test]
-    fn member_enum_known_value_no_error() {
-        let schema = member_schema(
-            "KYWD",
-            "TNAM",
-            "uint32",
-            vec![enum_field("type", "uint32", Some("keyword_type_enum"))],
-            vec![keyword_type_enum_0_18()],
-        );
-        let sub = subrec_with_data("TNAM", 6u32.to_le_bytes().to_vec());
-        assert!(struct_member_errors("KYWD", &sub, None, &schema).is_empty());
-    }
+        }
+        // member_data_size_short_struct_member
+        {
+            // struct:H,H — a 2-byte member at offset 2 with only the first present
+            // -> "Expected 2 bytes of data, found 0" for the second member.
+            let schema = member_schema(
+                "SNDR",
+                "BNAM",
+                "struct:H,H",
+                vec![
+                    enum_field("first", "uint16", None),
+                    enum_field("static_attenuation", "uint16", None),
+                ],
+                vec![],
+            );
+            let sub = subrec_with_data("BNAM", vec![0, 0]); // only first member present
+            let msgs: Vec<_> = struct_member_errors("SNDR", &sub, None, &schema)
+                .into_iter()
+                .map(|m| (m.category, m.message))
+                .collect();
+            assert_eq!(
+                msgs,
+                vec![("data_size", "Expected 2 bytes of data, found 0".to_string())]
+            );
 
-    #[test]
-    fn member_enum_nested_struct_field_offset() {
-        // A2 on a NESTED struct field: struct:I,I with the enum on the SECOND
-        // field (offset 4) — proves we read at the field's offset, not 0.
-        let schema = member_schema(
-            "REC",
-            "DNAM",
-            "struct:I,I",
-            vec![
-                enum_field("first", "uint32", None),
-                enum_field("type", "uint32", Some("keyword_type_enum")),
-            ],
-            vec![keyword_type_enum_0_18()],
-        );
-        // first=6 (would be "known" if read here), second=24 (unknown).
-        let mut data = 6u32.to_le_bytes().to_vec();
-        data.extend_from_slice(&24u32.to_le_bytes());
-        let sub = subrec_with_data("DNAM", data);
-        let msgs: Vec<_> = struct_member_errors("REC", &sub, None, &schema)
-            .into_iter()
-            .map(|m| (m.category, m.message))
-            .collect();
-        assert_eq!(
-            msgs,
-            vec![("unknown_enum", "<Unknown: 24 $18>".to_string())]
-        );
+        }
+        // member_data_size_no_error_when_full
+        {
+            let schema = member_schema(
+                "SNDR",
+                "BNAM",
+                "struct:H,H",
+                vec![
+                    enum_field("first", "uint16", None),
+                    enum_field("static_attenuation", "uint16", None),
+                ],
+                vec![],
+            );
+            let sub = subrec_with_data("BNAM", vec![0, 0, 0, 0]);
+            assert!(struct_member_errors("SNDR", &sub, None, &schema).is_empty());
+
+        }
+        // unknown_int_string_zero_has_no_hex
+        {
+            // xEdit IntToHex(0).TrimLeft(['0']) == "" ⇒ no $hex segment.
+            assert_eq!(unknown_int_string(0), "<Unknown: 0>");
+            assert_eq!(unknown_int_string(11), "<Unknown: 11 $B>");
+            assert_eq!(unknown_int_string(27), "<Unknown: 27 $1B>");
+
+        }
     }
 
     // ---- Class A1: nested struct-field flags (the 8,896-error case) ----
 
-    #[test]
-    fn member_flag_book_dnam_nested_bit5() {
-        // BOOK.DNAM struct:B,I,I,I, flags field at offset 0 (the real BOOK.DNAM).
-        // FO76 sets bit 5 ($20) -> "<Unknown: 5 $5>".
-        let schema = member_schema(
-            "BOOK",
-            "DNAM",
-            "struct:B,I,I,I",
-            vec![
-                enum_field("flags", "uint8", Some("book_dnam_flags")),
-                enum_field("teaches", "uint32", None),
-                enum_field("ox", "uint32", None),
-                enum_field("oy", "uint32", None),
-            ],
-            vec![book_dnam_flags_0_4()],
-        );
-        let mut data = vec![0x20u8]; // flags byte: bit 5
-        data.extend_from_slice(&[0u8; 12]); // teaches + ox + oy
-        let sub = subrec_with_data("DNAM", data);
-        let msgs: Vec<_> = struct_member_errors("BOOK", &sub, None, &schema)
-            .into_iter()
-            .map(|m| (m.category, m.message))
-            .collect();
-        assert_eq!(msgs, vec![("unknown_flag", "<Unknown: 5 $5>".to_string())]);
-    }
-
-    #[test]
-    fn member_flag_multi_bit_comma_joined() {
-        // RACE DATA Flags2-shape: u32 flags field, bits 25/26/27 unknown.
-        let schema = member_schema(
-            "RACE",
-            "DATA",
-            "uint32",
-            vec![enum_field("flags", "uint32", Some("f"))],
-            vec![make_enum("f", "flags", 4, vec![enum_value(1, "b0")])],
-        );
-        let value = (1u32 << 25) | (1u32 << 26) | (1u32 << 27);
-        let sub = subrec_with_data("DATA", value.to_le_bytes().to_vec());
-        let msgs: Vec<_> = struct_member_errors("RACE", &sub, None, &schema)
-            .into_iter()
-            .map(|m| m.message)
-            .collect();
-        assert_eq!(
-            msgs,
-            vec!["<Unknown: 25 $19>, <Unknown: 26 $1A>, <Unknown: 27 $1B>".to_string()]
-        );
-    }
-
-    #[test]
-    fn member_flag_known_bits_no_error() {
-        let schema = member_schema(
-            "REC",
-            "DNAM",
-            "uint32",
-            vec![enum_field("flags", "uint32", Some("f"))],
-            vec![make_enum(
-                "f",
-                "flags",
-                4,
-                vec![
-                    enum_value(1, "b0"),
-                    enum_value(2, "b1"),
-                    enum_value(4, "b2"),
-                ],
-            )],
-        );
-        let sub = subrec_with_data("DNAM", 0x7u32.to_le_bytes().to_vec());
-        assert!(struct_member_errors("REC", &sub, None, &schema).is_empty());
-    }
-
     // ---- Class D: short struct member (SNDR.BNAM "Static Attenuation" shape) ----
-
-    #[test]
-    fn member_data_size_short_struct_member() {
-        // struct:H,H — a 2-byte member at offset 2 with only the first present
-        // -> "Expected 2 bytes of data, found 0" for the second member.
-        let schema = member_schema(
-            "SNDR",
-            "BNAM",
-            "struct:H,H",
-            vec![
-                enum_field("first", "uint16", None),
-                enum_field("static_attenuation", "uint16", None),
-            ],
-            vec![],
-        );
-        let sub = subrec_with_data("BNAM", vec![0, 0]); // only first member present
-        let msgs: Vec<_> = struct_member_errors("SNDR", &sub, None, &schema)
-            .into_iter()
-            .map(|m| (m.category, m.message))
-            .collect();
-        assert_eq!(
-            msgs,
-            vec![("data_size", "Expected 2 bytes of data, found 0".to_string())]
-        );
-    }
-
-    #[test]
-    fn member_data_size_no_error_when_full() {
-        let schema = member_schema(
-            "SNDR",
-            "BNAM",
-            "struct:H,H",
-            vec![
-                enum_field("first", "uint16", None),
-                enum_field("static_attenuation", "uint16", None),
-            ],
-            vec![],
-        );
-        let sub = subrec_with_data("BNAM", vec![0, 0, 0, 0]);
-        assert!(struct_member_errors("SNDR", &sub, None, &schema).is_empty());
-    }
-
-    #[test]
-    fn unknown_int_string_zero_has_no_hex() {
-        // xEdit IntToHex(0).TrimLeft(['0']) == "" ⇒ no $hex segment.
-        assert_eq!(unknown_int_string(0), "<Unknown: 0>");
-        assert_eq!(unknown_int_string(11), "<Unknown: 11 $B>");
-        assert_eq!(unknown_int_string(27), "<Unknown: 27 $1B>");
-    }
 
     // ---- Class A1: record-header flags ----
 
@@ -2496,44 +2601,48 @@ mod tests {
     }
 
     #[test]
-    fn record_flag_unknown_kywd_bit11() {
-        // xedit_errors.txt: "KYWD \ Record Header \ Record Flags -> <Unknown: 11 $B>".
-        // KYWD valid_mask 0x9020 (bits 5,12,15). FO76 sets bit 11 ($800).
-        let spec = record_spec_with_flags("KYWD", 0x9020, false);
-        let mut rec = record("KYWD", 0x078B_0962, None);
-        rec.flags = 0x0000_0800; // bit 11
-        assert_eq!(
-            record_flag_error(&rec, &spec).as_deref(),
-            Some("<Unknown: 11 $B>")
-        );
-    }
+    fn record_flag_checks() {
+        // record_flag_unknown_kywd_bit11
+        {
+            // xedit_errors.txt: "KYWD \ Record Header \ Record Flags -> <Unknown: 11 $B>".
+            // KYWD valid_mask 0x9020 (bits 5,12,15). FO76 sets bit 11 ($800).
+            let spec = record_spec_with_flags("KYWD", 0x9020, false);
+            let mut rec = record("KYWD", 0x078B_0962, None);
+            rec.flags = 0x0000_0800; // bit 11
+            assert_eq!(
+                record_flag_error(&rec, &spec).as_deref(),
+                Some("<Unknown: 11 $B>")
+            );
 
-    #[test]
-    fn record_flag_valid_bits_no_error() {
-        let spec = record_spec_with_flags("KYWD", 0x9020, false);
-        let mut rec = record("KYWD", 0x1, None);
-        rec.flags = 0x0000_8020; // bits 5 + 15 — both valid
-        assert_eq!(record_flag_error(&rec, &spec), None);
-    }
+        }
+        // record_flag_valid_bits_no_error
+        {
+            let spec = record_spec_with_flags("KYWD", 0x9020, false);
+            let mut rec = record("KYWD", 0x1, None);
+            rec.flags = 0x0000_8020; // bits 5 + 15 — both valid
+            assert_eq!(record_flag_error(&rec, &spec), None);
 
-    #[test]
-    fn record_flag_permissive_never_errors() {
-        let spec = record_spec_with_flags("REFR", 0x0000_0020, true);
-        let mut rec = record("REFR", 0x1, None);
-        rec.flags = 0xFFFF_FFFF;
-        assert_eq!(record_flag_error(&rec, &spec), None);
-    }
+        }
+        // record_flag_permissive_never_errors
+        {
+            let spec = record_spec_with_flags("REFR", 0x0000_0020, true);
+            let mut rec = record("REFR", 0x1, None);
+            rec.flags = 0xFFFF_FFFF;
+            assert_eq!(record_flag_error(&rec, &spec), None);
 
-    #[test]
-    fn record_flag_none_metadata_no_error() {
-        // record_flags() == None ⇒ warn-only contract ⇒ no emission.
-        let spec = SchemaRecordJson {
-            id: "REFR".to_string(),
-            ..Default::default()
-        };
-        let mut rec = record("REFR", 0x1, None);
-        rec.flags = 0xFFFF_FFFF;
-        assert_eq!(record_flag_error(&rec, &spec), None);
+        }
+        // record_flag_none_metadata_no_error
+        {
+            // record_flags() == None ⇒ warn-only contract ⇒ no emission.
+            let spec = SchemaRecordJson {
+                id: "REFR".to_string(),
+                ..Default::default()
+            };
+            let mut rec = record("REFR", 0x1, None);
+            rec.flags = 0xFFFF_FFFF;
+            assert_eq!(record_flag_error(&rec, &spec), None);
+
+        }
     }
 
     // ---- End-to-end through the walker ----
@@ -2557,37 +2666,4 @@ mod tests {
         CompiledSchema { records, enums }
     }
 
-    #[test]
-    fn walk_and_check_fires_kywd_tnam_unknown_enum() {
-        let mut tnam_spec = enum_subrec_spec("TNAM", "uint32", "keyword_type_enum");
-        tnam_spec.display_label = Some("Type".to_string());
-        let schema = schema_with_record_and_enum(
-            "KYWD",
-            vec![make_subrec_spec("EDID", false), tnam_spec],
-            keyword_type_enum_0_18(),
-        );
-
-        let mut kywd = record("KYWD", 0x078B_0962, Some("Scrap_Ball_PTS"));
-        kywd.subrecords
-            .push(subrec_with_data("TNAM", 24u32.to_le_bytes().to_vec()));
-
-        let plugin = ParsedPlugin {
-            plugin_name: "p.esp".to_string(),
-            file_path: String::new(),
-            header_size: 0,
-            header: ParsedPluginHeader::default_for_test(),
-            root_items: vec![ParsedItem::Group(ParsedGroup {
-                label: *b"KYWD",
-                group_type: 0,
-                tail: Bytes::new(),
-                children: vec![ParsedItem::Record(kywd)],
-            })],
-            game: None,
-        };
-        let messages = walk_and_check_for_test(&plugin, 1, &schema);
-        assert!(
-            messages.iter().any(|m| m == "<Unknown: 24 $18>"),
-            "got: {messages:?}"
-        );
-    }
 }

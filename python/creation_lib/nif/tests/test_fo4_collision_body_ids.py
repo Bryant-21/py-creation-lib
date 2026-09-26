@@ -66,7 +66,7 @@ def test_fo4_box_collision_emits_eight_aabb_corners():
     assert shape["n_vertices"] == 8
 
 
-def test_fo4_generating_multiple_nodes_uses_one_shared_physics_system():
+def test_fo4_generating_multiple_nodes_uses_one_shared_physics_system_and_replace_keeps_others_shared():
     nif = NifFile()
     node_a = _add_collision_source(nif, "Body")
     node_b = _add_collision_source(nif, "Door")
@@ -99,19 +99,7 @@ def test_fo4_generating_multiple_nodes_uses_one_shared_physics_system():
     assert collisions[0].get_field("Data") == collisions[1].get_field("Data")
     assert len([block for block in nif.blocks if block.type_name == "bhkPhysicsSystem"]) == 1
 
-
-def test_fo4_replace_existing_target_keeps_other_bodies_shared():
-    nif = NifFile()
-    node_a = _add_collision_source(nif, "Body")
-    node_b = _add_collision_source(nif, "Door")
-    profile = SimpleNamespace(
-        id="fo4",
-        collision_layer_enum="Fallout4Layer",
-        havok_scale=69.99125,
-    )
-
-    assert generate_collision(nif, node_a.block_id, shape_type="convex_fit", profile=profile).success
-    assert generate_collision(nif, node_b.block_id, shape_type="convex_fit", profile=profile).success
+    # Replacing one body's collision must keep both bodies sharing the physics system.
     assert generate_collision(
         nif,
         node_b.block_id,

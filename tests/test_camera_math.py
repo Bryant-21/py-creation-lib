@@ -3,8 +3,8 @@ import glm
 import pytest
 
 
-def test_default_camera_view_matrix_is_valid():
-    """Default camera should produce a valid view matrix (not identity, invertible)."""
+def test_default_camera_view_and_projection_matrices_are_valid():
+    """Default camera should produce valid view/projection matrices (not identity, invertible)."""
     from creation_lib.renderer.camera import OrbitCamera
     cam = OrbitCamera()
     view = cam.get_view_matrix()
@@ -12,11 +12,6 @@ def test_default_camera_view_matrix_is_valid():
     assert view != glm.mat4(1.0)  # not identity
     assert abs(glm.determinant(view)) > 1e-6  # invertible
 
-
-def test_camera_projection_matrix():
-    """Projection matrix should be valid perspective."""
-    from creation_lib.renderer.camera import OrbitCamera
-    cam = OrbitCamera()
     proj = cam.get_projection_matrix(16.0 / 9.0)
     assert isinstance(proj, glm.mat4)
     assert abs(glm.determinant(proj)) > 1e-6

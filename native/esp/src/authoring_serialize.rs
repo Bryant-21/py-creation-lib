@@ -583,19 +583,34 @@ fn condition_value_to_selector(value: &serde_json::Value) -> Option<crate::Condi
     }
 }
 
-fn variant_to_selector_condition(
+fn variant_to_selector_conditions(
     variant: &SchemaUnionVariantJson,
+) -> Option<Vec<(String, crate::SelectorCondition)>> {
+    variant
+        .conditions
+        .iter()
+        .map(|condition| Some((condition.field.clone(), schema_condition_to_selector(condition)?)))
+        .collect()
+}
+
+fn schema_condition_to_selector(
+    condition: &SchemaConditionJson,
 ) -> Option<crate::SelectorCondition> {
-    if variant.conditions.is_empty() {
-        return Some(crate::SelectorCondition::Always);
+    let operator = condition_default_operator(&condition.operator);
+    if matches!(operator.as_str(), "in" | "not_in") {
+        let values = condition
+            .values
+            .iter()
+            .map(condition_value_to_selector)
+            .collect::<Option<Vec<_>>>()?;
+        return Some(if operator == "in" {
+            crate::SelectorCondition::In(values)
+        } else {
+            crate::SelectorCondition::NotIn(values)
+        });
     }
-    // Take the first condition as the discriminator; ignore additional
-    // refinement conditions for now (NAVI/RACE/WTHR use single-condition
-    // discriminators).
-    let condition = &variant.conditions[0];
     let value = condition.value.as_ref()?;
     let cv = condition_value_to_selector(value)?;
-    let operator = condition_default_operator(&condition.operator);
     match operator.as_str() {
         "eq" => Some(crate::SelectorCondition::Equals(cv)),
         "ne" => Some(crate::SelectorCondition::NotEquals(cv)),
@@ -603,6 +618,8 @@ fn variant_to_selector_condition(
         "lte" => Some(crate::SelectorCondition::LessThanOrEqual(cv)),
         "gt" => Some(crate::SelectorCondition::GreaterThan(cv)),
         "gte" => Some(crate::SelectorCondition::GreaterThanOrEqual(cv)),
+        "bit_set" => match cv { crate::ConditionValue::Int(mask) => Some(crate::SelectorCondition::BitSet(mask)), _ => None },
+        "bit_unset" => match cv { crate::ConditionValue::Int(mask) => Some(crate::SelectorCondition::BitUnset(mask)), _ => None },
         _ => None,
     }
 }
@@ -747,15 +764,12 @@ fn build_var_segment(sig: &str, field: &SchemaFieldJson) -> Option<crate::VarSeg
     }
     // Sibling-discriminated union.
     if !field.union_variants.is_empty() {
-        let selector_name = field
-            .union_variants
-            .iter()
-            .filter_map(|v| v.conditions.first())
-            .map(|c| c.field.clone())
-            .next()?;
+        if field.union_variants.iter().all(|v| v.conditions.is_empty()) {
+            return None;
+        }
         let mut variants = Vec::with_capacity(field.union_variants.len());
         for variant in &field.union_variants {
-            let condition = variant_to_selector_condition(variant)?;
+            let conditions = variant_to_selector_conditions(variant)?;
             let codec = variant.codec.as_deref()?;
             let spec = if codec == "empty" {
                 crate::DecodeSpec::Empty {
@@ -767,13 +781,12 @@ fn build_var_segment(sig: &str, field: &SchemaFieldJson) -> Option<crate::VarSeg
             variants.push(crate::VarUnionVariant {
                 name: variant.id.clone(),
                 spec,
-                condition,
+                conditions,
             });
         }
         return Some(crate::VarSegment::Union {
             name: field.id.clone(),
             variants,
-            selector: crate::SelectorRef::Sibling(selector_name),
             presence_conditions,
         });
     }
@@ -1518,14 +1531,9 @@ fn decode_var_segment_json(
                 _ => None,
             }
         }
-        crate::VarSegment::Union {
-            variants, selector, ..
-        } => {
-            let selector_val = match selector {
-                crate::SelectorRef::Sibling(name) => cond_ctx.get(name)?,
-            };
+        crate::VarSegment::Union { variants, .. } => {
             for variant in variants {
-                if !var_selector_matches(&variant.condition, selector_val) {
+                if !var_union_variant_matches(variant, cond_ctx)? {
                     continue;
                 }
                 let (consumed, decoded) =
@@ -1639,9 +1647,21 @@ fn decode_variant_with_length(
     }
 }
 
+/// `None` when a condition names a field that has not been decoded yet.
+fn var_union_variant_matches(
+    variant: &crate::VarUnionVariant,
+    cond_ctx: &std::collections::HashMap<String, serde_json::Value>,
+) -> Option<bool> {
+    for (field, condition) in &variant.conditions {
+        if !var_selector_matches(condition, cond_ctx.get(field)?) {
+            return Some(false);
+        }
+    }
+    Some(true)
+}
+
 fn var_selector_matches(condition: &crate::SelectorCondition, actual: &serde_json::Value) -> bool {
     match condition {
-        crate::SelectorCondition::Always => true,
         crate::SelectorCondition::Equals(expected) => {
             json_matches_condition_value(actual, expected)
         }
@@ -1660,6 +1680,14 @@ fn var_selector_matches(condition: &crate::SelectorCondition, actual: &serde_jso
         crate::SelectorCondition::GreaterThanOrEqual(expected) => {
             json_compare_condition_value(actual, expected).is_some_and(|ordering| !ordering.is_lt())
         }
+        crate::SelectorCondition::BitSet(mask) => json_value_as_i128(actual).is_some_and(|value| value & mask == *mask),
+        crate::SelectorCondition::BitUnset(mask) => json_value_as_i128(actual).is_some_and(|value| value & mask == 0),
+        crate::SelectorCondition::In(expected) => expected
+            .iter()
+            .any(|value| json_matches_condition_value(actual, value)),
+        crate::SelectorCondition::NotIn(expected) => !expected
+            .iter()
+            .any(|value| json_matches_condition_value(actual, value)),
     }
 }
 
@@ -3420,7 +3448,20 @@ fn serialize_field_value_json(
                 );
                 if let Some(variant) = field.union_variants.iter().find(|v| &v.id == variant_name) {
                     if let Some(inner_val) = m.get("value") {
-                        if !variant.fields.is_empty() {
+                        if let [variant_field] = variant.fields.as_slice()
+                            && variant_field.kind == "formid"
+                            && !inner_val.is_object()
+                        {
+                            // A bare FormID keeps its load-order-dependent master byte; emit a FormKey.
+                            let serialized = serialize_field_value_json(
+                                inner_val,
+                                variant_field,
+                                schema,
+                                masters,
+                                plugin_name,
+                            );
+                            out.insert("value".to_string(), serialized);
+                        } else if !variant.fields.is_empty() {
                             let serialized = serialize_struct_value_json(
                                 inner_val,
                                 &variant.fields,
@@ -3724,10 +3765,16 @@ fn read_array_count_codec_json(data: &[u8], offset: &mut usize, codec: &str) -> 
     Some(value)
 }
 
-fn apply_array_count_transform_json(count: usize, transform: Option<&str>) -> Option<usize> {
+pub(crate) fn apply_array_count_transform_json(
+    count: usize,
+    transform: Option<&str>,
+) -> Option<usize> {
     match transform {
         None => Some(count),
         Some("square") => count.checked_mul(count),
+        // An odd word count cannot describe whole rows; refuse so the caller
+        // keeps the bytes raw instead of silently dropping a word.
+        Some("half") => (count % 2 == 0).then_some(count / 2),
         Some(_) => None,
     }
 }
@@ -4157,7 +4204,22 @@ fn compact_typed_value_json(
                 );
                 if let Some(variant) = spec.union_variants.iter().find(|v| &v.id == variant_name) {
                     if let Some(inner_val) = m.get("value") {
-                        if !variant.fields.is_empty() {
+                        if let [variant_field] = variant.fields.as_slice()
+                            && variant_field.kind == "formid"
+                            && !inner_val.is_object()
+                        {
+                            // Same as the field-level union path: a bare FormID
+                            // (PERK DATA ability, EPFD spell / leveled item) keeps
+                            // the source master byte; emit a FormKey.
+                            let serialized = serialize_field_value_json(
+                                inner_val,
+                                variant_field,
+                                schema,
+                                masters,
+                                plugin_name,
+                            );
+                            out.insert("value".to_string(), serialized);
+                        } else if !variant.fields.is_empty() {
                             let serialized = serialize_struct_value_json(
                                 inner_val,
                                 &variant.fields,
@@ -4415,7 +4477,8 @@ pub fn extract_nested_form_ids(
                 (map.get("variant"), map.get("value"))
             {
                 if let Some(variant) = sub_spec.union_variants.iter().find(|v| &v.id == name) {
-                    walker_collect_formids_from_fields(&variant.fields, inner, out);
+                    if variant.codec.as_deref() == Some("formid") { walker_emit_formid(inner, out); }
+                    else { walker_collect_formids_from_fields(&variant.fields, inner, out); }
                 }
             }
         }
@@ -4780,6 +4843,19 @@ fn rewrite_struct_with_arrays_form_ids(
     let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     let mut offset = 0usize;
     let mut token_index = 0usize;
+    // Struct rows are only rewritten when the whole payload decodes exactly,
+    // i.e. exactly when `extract_nested_form_ids` reports those FormIDs, so a
+    // schema that misdescribes a row layout can never move bytes it would not
+    // also read.
+    let struct_rows_verified = decode_schema_struct_with_arrays_partial_json(
+        data,
+        &mut 0usize,
+        codec,
+        fields,
+        true,
+        None,
+    )
+    .is_some();
 
     for field in fields {
         while token_index < tokens.len() && tokens[token_index] == "x" {
@@ -4798,6 +4874,7 @@ fn rewrite_struct_with_arrays_form_ids(
                 count,
                 data,
                 &mut offset,
+                struct_rows_verified,
                 rewrite_formid,
             );
             continue;
@@ -4836,14 +4913,15 @@ fn array_row_count(
     token_index: &mut usize,
 ) -> Option<usize> {
     if let Some(count_field) = array.count_field.as_deref() {
-        return counts.get(count_field).copied();
+        let count = counts.get(count_field).copied()?;
+        return apply_array_count_transform_json(count, array.count_transform.as_deref());
     }
 
     let count_codec = array.count_codec.as_deref()?;
     let count = read_count_value(data, *offset, count_codec)?;
     *offset = offset.checked_add(scalar_width(count_codec)?)?;
     *token_index = token_index.checked_add(1)?;
-    Some(count)
+    apply_array_count_transform_json(count, array.count_transform.as_deref())
 }
 
 fn rewrite_array_field_form_ids(
@@ -4852,6 +4930,7 @@ fn rewrite_array_field_form_ids(
     count: usize,
     data: &mut [u8],
     offset: &mut usize,
+    rewrite_struct_rows: bool,
     rewrite_formid: &mut dyn FnMut(u32) -> Option<u32>,
 ) -> bool {
     let Some(element_codec) = array.element_codec.as_deref() else {
@@ -4877,18 +4956,23 @@ fn rewrite_array_field_form_ids(
     }
 
     if field.kind == "struct" {
-        let row_size = struct_row_size(element_codec);
+        // Element codecs are bare token lists ("I,I"); the row helpers parse
+        // `struct:` codecs, the same prefix the row decoder adds.
+        let row_codec = format!("struct:{element_codec}");
+        let row_size = struct_row_size(&row_codec);
         if row_size == 0 {
             return false;
         }
-        for index in 0..count {
-            changed |= rewrite_fixed_struct_row_form_ids(
-                element_codec,
-                &field.fields,
-                data,
-                *offset + index * row_size,
-                rewrite_formid,
-            );
+        if rewrite_struct_rows {
+            for index in 0..count {
+                changed |= rewrite_fixed_struct_row_form_ids(
+                    &row_codec,
+                    &field.fields,
+                    data,
+                    *offset + index * row_size,
+                    rewrite_formid,
+                );
+            }
         }
         *offset = (*offset).saturating_add(count.saturating_mul(row_size));
         return changed;
@@ -5068,7 +5152,8 @@ fn walker_collect_formids_from_field(
                     return;
                 };
                 if let Some(variant) = field.union_variants.iter().find(|v| &v.id == name) {
-                    walker_collect_formids_from_fields(&variant.fields, inner, out);
+                    if variant.codec.as_deref() == Some("formid") { walker_emit_formid(inner, out); }
+                    else { walker_collect_formids_from_fields(&variant.fields, inner, out); }
                 }
             }
         }
@@ -5094,63 +5179,57 @@ mod tests {
     use crate::plugin_runtime::{SchemaEnumLabelJson, SchemaEnumValueJson, encode_model_info_json};
 
     #[test]
-    fn display_name_matches_python_mapping() {
-        assert_eq!(language_display_name("en"), "English");
-        assert_eq!(language_display_name("fr"), "French");
-        assert_eq!(language_display_name("esmx"), "Spanish_Mexico");
-        assert_eq!(language_display_name("zhhans"), "ChineseSimplified");
-        // Unknown codes pass through unchanged.
-        assert_eq!(language_display_name("xx"), "xx");
-    }
+    fn codec_accepts_payload_length_cases() {
+        // codec_accepts_payload_length_fixed_size_scalars
+        {
+            assert_eq!(codec_accepts_payload_length("formid", 4), Some(true));
+            assert_eq!(codec_accepts_payload_length("formid", 24), Some(false));
+            assert_eq!(codec_accepts_payload_length("uint16", 2), Some(true));
+            assert_eq!(codec_accepts_payload_length("uint16", 1), Some(false));
+            assert_eq!(codec_accepts_payload_length("uint8", 1), Some(true));
+            assert_eq!(codec_accepts_payload_length("uint8", 4), Some(false));
+            assert_eq!(
+                codec_accepts_payload_length("fixed_string:12", 12),
+                Some(true)
+            );
+            assert_eq!(
+                codec_accepts_payload_length("fixed_string:12", 8),
+                Some(false)
+            );
 
-    #[test]
-    fn codec_accepts_payload_length_fixed_size_scalars() {
-        assert_eq!(codec_accepts_payload_length("formid", 4), Some(true));
-        assert_eq!(codec_accepts_payload_length("formid", 24), Some(false));
-        assert_eq!(codec_accepts_payload_length("uint16", 2), Some(true));
-        assert_eq!(codec_accepts_payload_length("uint16", 1), Some(false));
-        assert_eq!(codec_accepts_payload_length("uint8", 1), Some(true));
-        assert_eq!(codec_accepts_payload_length("uint8", 4), Some(false));
-        assert_eq!(
-            codec_accepts_payload_length("fixed_string:12", 12),
-            Some(true)
-        );
-        assert_eq!(
-            codec_accepts_payload_length("fixed_string:12", 8),
-            Some(false)
-        );
-    }
+        }
+        // codec_accepts_payload_length_struct_codecs
+        {
+            // struct:I,H = 4+2 = 6
+            assert_eq!(codec_accepts_payload_length("struct:I,H", 6), Some(true));
+            assert_eq!(codec_accepts_payload_length("struct:I,H", 5), Some(false));
+            // struct:f,f,f = 12
+            assert_eq!(codec_accepts_payload_length("struct:f,f,f", 12), Some(true));
 
-    #[test]
-    fn codec_accepts_payload_length_struct_codecs() {
-        // struct:I,H = 4+2 = 6
-        assert_eq!(codec_accepts_payload_length("struct:I,H", 6), Some(true));
-        assert_eq!(codec_accepts_payload_length("struct:I,H", 5), Some(false));
-        // struct:f,f,f = 12
-        assert_eq!(codec_accepts_payload_length("struct:f,f,f", 12), Some(true));
-    }
+        }
+        // codec_accepts_payload_length_array_struct_marker_params
+        {
+            // TERM Marker Parameters: 4*f + I + 4*B = 24 bytes per row.
+            let codec = "array_struct:f,f,f,f,I,B,B,B,B";
+            assert_eq!(codec_accepts_payload_length(codec, 24), Some(true));
+            assert_eq!(codec_accepts_payload_length(codec, 48), Some(true));
+            assert_eq!(codec_accepts_payload_length(codec, 4), Some(false));
+            assert_eq!(codec_accepts_payload_length(codec, 25), Some(false));
+            // Empty payload is technically a multiple of 24; that case is rare in
+            // practice and the dispatcher's caller filters for >=2 candidates.
+            assert_eq!(codec_accepts_payload_length(codec, 0), Some(true));
 
-    #[test]
-    fn codec_accepts_payload_length_array_struct_marker_params() {
-        // TERM Marker Parameters: 4*f + I + 4*B = 24 bytes per row.
-        let codec = "array_struct:f,f,f,f,I,B,B,B,B";
-        assert_eq!(codec_accepts_payload_length(codec, 24), Some(true));
-        assert_eq!(codec_accepts_payload_length(codec, 48), Some(true));
-        assert_eq!(codec_accepts_payload_length(codec, 4), Some(false));
-        assert_eq!(codec_accepts_payload_length(codec, 25), Some(false));
-        // Empty payload is technically a multiple of 24; that case is rare in
-        // practice and the dispatcher's caller filters for >=2 candidates.
-        assert_eq!(codec_accepts_payload_length(codec, 0), Some(true));
-    }
+        }
+        // codec_accepts_payload_length_variable_codecs_return_none
+        {
+            assert_eq!(codec_accepts_payload_length("zstring", 4), None);
+            assert_eq!(codec_accepts_payload_length("lstring", 4), None);
+            assert_eq!(codec_accepts_payload_length("bytes", 4), None);
+            assert_eq!(codec_accepts_payload_length("formid_array", 8), None);
+            assert_eq!(codec_accepts_payload_length("", 4), None);
+            assert_eq!(codec_accepts_payload_length("unknown_codec", 4), None);
 
-    #[test]
-    fn codec_accepts_payload_length_variable_codecs_return_none() {
-        assert_eq!(codec_accepts_payload_length("zstring", 4), None);
-        assert_eq!(codec_accepts_payload_length("lstring", 4), None);
-        assert_eq!(codec_accepts_payload_length("bytes", 4), None);
-        assert_eq!(codec_accepts_payload_length("formid_array", 8), None);
-        assert_eq!(codec_accepts_payload_length("", 4), None);
-        assert_eq!(codec_accepts_payload_length("unknown_codec", 4), None);
+        }
     }
 
     #[test]
@@ -5245,125 +5324,109 @@ mod tests {
     }
 
     #[test]
-    fn decode_model_info_reads_textures_addon_nodes_and_materials() {
-        // TERM DN035_RobotControlTerminal MODT (13CB50:Fallout4.esm), captured
-        // via `modkit esp export --mode lossless` against DLCRobot.esm: 21
-        // textures (ext "dds"), 1 addon node, srgb_count=13, 3 materials
-        // (ext "bgsm").
-        let data = hex::decode(
-            "0400000015000000010000000D000000030000004B25D0F3646473008FBEDB9F9249D690\
-             646473008FBEDB9F7C4F12F2646473008FBEDB9FA5231491646473008FBEDB9F25F154F0\
-             646473008FBEDB9FFC9D5293646473008FBEDB9F77F33006646473007B24D06CBF79ECA7\
-             64647300BE643C4C3C60073E646473008FBEDB9F9308AE366464730038973CEA24389F9F\
-             646473001CDB88C5B076E385646473007B24D06CFF6512FD6464730038973CEA7EEF02FC\
-             64647300582C5533C80FD0FC6464730038973CEAE2748773646473008FBEDB9FD000F877\
-             646473001CDB88C5BBCAC171646473008FBEDB9F8CA00370646473008FBEDB9F62F091FC\
-             6464730038973CEAD1A562886464730038973CEAC3000000E0FECFBC6267736D12D53ECB\
-             5AAFC6256267736D12D53ECBCC9FC1526267736D12D53ECB",
-        )
-        .expect("valid hex fixture");
+    fn model_info_decode_and_roundtrip() {
+        // decode_model_info_reads_textures_addon_nodes_and_materials
+        {
+            // TERM DN035_RobotControlTerminal MODT (13CB50:Fallout4.esm), captured
+            // via `modkit esp export --mode lossless` against DLCRobot.esm: 21
+            // textures (ext "dds"), 1 addon node, srgb_count=13, 3 materials
+            // (ext "bgsm").
+            let data = hex::decode(
+                "0400000015000000010000000D000000030000004B25D0F3646473008FBEDB9F9249D690\
+                 646473008FBEDB9F7C4F12F2646473008FBEDB9FA5231491646473008FBEDB9F25F154F0\
+                 646473008FBEDB9FFC9D5293646473008FBEDB9F77F33006646473007B24D06CBF79ECA7\
+                 64647300BE643C4C3C60073E646473008FBEDB9F9308AE366464730038973CEA24389F9F\
+                 646473001CDB88C5B076E385646473007B24D06CFF6512FD6464730038973CEA7EEF02FC\
+                 64647300582C5533C80FD0FC6464730038973CEAE2748773646473008FBEDB9FD000F877\
+                 646473001CDB88C5BBCAC171646473008FBEDB9F8CA00370646473008FBEDB9F62F091FC\
+                 6464730038973CEAD1A562886464730038973CEAC3000000E0FECFBC6267736D12D53ECB\
+                 5AAFC6256267736D12D53ECBCC9FC1526267736D12D53ECB",
+            )
+            .expect("valid hex fixture");
 
-        let decoded =
-            decode_model_info_to_field_map_json(&data).expect("well-formed MODT should decode");
-        let object = decoded.as_object().expect("decoded object");
-        assert_eq!(object["textures"].as_array().unwrap().len(), 21);
-        assert_eq!(object["textures"][0]["extension"], "dds");
-        assert_eq!(object["addon_nodes"].as_array().unwrap().len(), 1);
-        assert_eq!(object["addon_nodes"][0], 195_u32);
-        assert_eq!(object["srgb_count"], 13_u32);
-        let materials = object["materials"].as_array().unwrap();
-        assert_eq!(materials.len(), 3);
-        assert_eq!(materials[0]["extension"], "bgsm");
-    }
+            let decoded =
+                decode_model_info_to_field_map_json(&data).expect("well-formed MODT should decode");
+            let object = decoded.as_object().expect("decoded object");
+            assert_eq!(object["textures"].as_array().unwrap().len(), 21);
+            assert_eq!(object["textures"][0]["extension"], "dds");
+            assert_eq!(object["addon_nodes"].as_array().unwrap().len(), 1);
+            assert_eq!(object["addon_nodes"][0], 195_u32);
+            assert_eq!(object["srgb_count"], 13_u32);
+            let materials = object["materials"].as_array().unwrap();
+            assert_eq!(materials.len(), 3);
+            assert_eq!(materials[0]["extension"], "bgsm");
 
-    #[test]
-    fn model_info_roundtrips_textures_and_single_material() {
-        // STAT MetalBarrel01Fire01_Static MODT (048280:Fallout4.esm), captured
-        // via `modkit esp get-record --authoring` against Fallout4.esm: 19
-        // textures (ext "dds"), 0 addon nodes, srgb_count=15, 1 material
-        // (ext "bgsm").
-        let data = hex::decode(
-            "0400000013000000000000000F0000000100000075DB5AEF6464730038973CEAB3AEEF3B\
-             646473007A7C3A5ADAE0E40B646473000BD80002038CE268646473000BD800020717F56F\
-             6464730038973CEA2D0D94F664647300582C55331D653788646473000BD80002B92277AE\
-             646473001CDB88C54D1A1046646473001CDB88C5528FF9866464730038973CEA29F70F00\
-             64647300582C5533AD473ADB646473007A7C3A5A791608CF646473000786F88DF6E39FC7\
-             64647300582C5533F4441C8564647300582C553332A999016464730038973CEA7F44DDF8\
-             64647300582C553362F091FC6464730038973CEAE8C1B2DE6464730038973CEA7FFC0CAC\
-             6267736DC23D6406",
-        )
-        .expect("valid hex fixture");
+        }
+        // model_info_roundtrips_textures_and_single_material
+        {
+            // STAT MetalBarrel01Fire01_Static MODT (048280:Fallout4.esm), captured
+            // via `modkit esp get-record --authoring` against Fallout4.esm: 19
+            // textures (ext "dds"), 0 addon nodes, srgb_count=15, 1 material
+            // (ext "bgsm").
+            let data = hex::decode(
+                "0400000013000000000000000F0000000100000075DB5AEF6464730038973CEAB3AEEF3B\
+                 646473007A7C3A5ADAE0E40B646473000BD80002038CE268646473000BD800020717F56F\
+                 6464730038973CEA2D0D94F664647300582C55331D653788646473000BD80002B92277AE\
+                 646473001CDB88C54D1A1046646473001CDB88C5528FF9866464730038973CEA29F70F00\
+                 64647300582C5533AD473ADB646473007A7C3A5A791608CF646473000786F88DF6E39FC7\
+                 64647300582C5533F4441C8564647300582C553332A999016464730038973CEA7F44DDF8\
+                 64647300582C553362F091FC6464730038973CEAE8C1B2DE6464730038973CEA7FFC0CAC\
+                 6267736DC23D6406",
+            )
+            .expect("valid hex fixture");
 
-        let decoded =
-            decode_model_info_to_field_map_json(&data).expect("well-formed MODT should decode");
-        let mapping = decoded.as_object().expect("decoded object").clone();
-        let spec = model_info_test_spec();
-        let encoded =
-            encode_model_info_json(&spec, &mapping, "MODT").expect("model_info should re-encode");
-        assert_eq!(encoded, data, "byte-exact round-trip failed");
-    }
+            let decoded =
+                decode_model_info_to_field_map_json(&data).expect("well-formed MODT should decode");
+            let mapping = decoded.as_object().expect("decoded object").clone();
+            let spec = model_info_test_spec();
+            let encoded =
+                encode_model_info_json(&spec, &mapping, "MODT").expect("model_info should re-encode");
+            assert_eq!(encoded, data, "byte-exact round-trip failed");
 
-    #[test]
-    fn model_info_roundtrips_addon_nodes_and_multiple_materials() {
-        // TERM DN035_RobotControlTerminal MODT (13CB50:Fallout4.esm), same
-        // fixture as the decode test above — exercises addon_nodes and a
-        // multi-row materials array in the same round trip.
-        let data = hex::decode(
-            "0400000015000000010000000D000000030000004B25D0F3646473008FBEDB9F9249D690\
-             646473008FBEDB9F7C4F12F2646473008FBEDB9FA5231491646473008FBEDB9F25F154F0\
-             646473008FBEDB9FFC9D5293646473008FBEDB9F77F33006646473007B24D06CBF79ECA7\
-             64647300BE643C4C3C60073E646473008FBEDB9F9308AE366464730038973CEA24389F9F\
-             646473001CDB88C5B076E385646473007B24D06CFF6512FD6464730038973CEA7EEF02FC\
-             64647300582C5533C80FD0FC6464730038973CEAE2748773646473008FBEDB9FD000F877\
-             646473001CDB88C5BBCAC171646473008FBEDB9F8CA00370646473008FBEDB9F62F091FC\
-             6464730038973CEAD1A562886464730038973CEAC3000000E0FECFBC6267736D12D53ECB\
-             5AAFC6256267736D12D53ECBCC9FC1526267736D12D53ECB",
-        )
-        .expect("valid hex fixture");
+        }
+        // model_info_roundtrips_addon_nodes_and_multiple_materials
+        {
+            // TERM DN035_RobotControlTerminal MODT (13CB50:Fallout4.esm), same
+            // fixture as the decode test above — exercises addon_nodes and a
+            // multi-row materials array in the same round trip.
+            let data = hex::decode(
+                "0400000015000000010000000D000000030000004B25D0F3646473008FBEDB9F9249D690\
+                 646473008FBEDB9F7C4F12F2646473008FBEDB9FA5231491646473008FBEDB9F25F154F0\
+                 646473008FBEDB9FFC9D5293646473008FBEDB9F77F33006646473007B24D06CBF79ECA7\
+                 64647300BE643C4C3C60073E646473008FBEDB9F9308AE366464730038973CEA24389F9F\
+                 646473001CDB88C5B076E385646473007B24D06CFF6512FD6464730038973CEA7EEF02FC\
+                 64647300582C5533C80FD0FC6464730038973CEAE2748773646473008FBEDB9FD000F877\
+                 646473001CDB88C5BBCAC171646473008FBEDB9F8CA00370646473008FBEDB9F62F091FC\
+                 6464730038973CEAD1A562886464730038973CEAC3000000E0FECFBC6267736D12D53ECB\
+                 5AAFC6256267736D12D53ECBCC9FC1526267736D12D53ECB",
+            )
+            .expect("valid hex fixture");
 
-        let decoded =
-            decode_model_info_to_field_map_json(&data).expect("well-formed MODT should decode");
-        let mapping = decoded.as_object().expect("decoded object").clone();
-        let spec = model_info_test_spec();
-        let encoded =
-            encode_model_info_json(&spec, &mapping, "MODT").expect("model_info should re-encode");
-        assert_eq!(encoded, data, "byte-exact round-trip failed");
-    }
+            let decoded =
+                decode_model_info_to_field_map_json(&data).expect("well-formed MODT should decode");
+            let mapping = decoded.as_object().expect("decoded object").clone();
+            let spec = model_info_test_spec();
+            let encoded =
+                encode_model_info_json(&spec, &mapping, "MODT").expect("model_info should re-encode");
+            assert_eq!(encoded, data, "byte-exact round-trip failed");
 
-    #[test]
-    fn model_info_roundtrips_all_zero_counters() {
-        // WEAP "10mm" MODT (004822:Fallout4.esm): header-only edge case with
-        // no texture/addon-node/material rows at all.
-        let data =
-            hex::decode("0400000000000000000000000000000000000000").expect("valid hex fixture");
+        }
+        // model_info_roundtrips_all_zero_counters
+        {
+            // WEAP "10mm" MODT (004822:Fallout4.esm): header-only edge case with
+            // no texture/addon-node/material rows at all.
+            let data =
+                hex::decode("0400000000000000000000000000000000000000").expect("valid hex fixture");
 
-        let decoded =
-            decode_model_info_to_field_map_json(&data).expect("well-formed MODT should decode");
-        let mapping = decoded.as_object().expect("decoded object").clone();
-        let spec = model_info_test_spec();
-        let encoded =
-            encode_model_info_json(&spec, &mapping, "MODT").expect("model_info should re-encode");
-        assert_eq!(encoded, data, "byte-exact round-trip failed");
-    }
+            let decoded =
+                decode_model_info_to_field_map_json(&data).expect("well-formed MODT should decode");
+            let mapping = decoded.as_object().expect("decoded object").clone();
+            let spec = model_info_test_spec();
+            let encoded =
+                encode_model_info_json(&spec, &mapping, "MODT").expect("model_info should re-encode");
+            assert_eq!(encoded, data, "byte-exact round-trip failed");
 
-    #[test]
-    fn language_display_order_has_fourteen_entries() {
-        // Guards against accidental additions/removals that would break
-        // byte-exact YAML output matching py_creation_lib/python/creation_lib/esp/strings.LANGUAGE_DISPLAY_ORDER.
-        assert_eq!(LANGUAGE_DISPLAY_ORDER.len(), 14);
-        assert_eq!(LANGUAGE_DISPLAY_ORDER[4], "English");
-    }
-
-    #[test]
-    fn authoring_key_names_are_camel_case() {
-        assert_eq!(
-            authoring_key_name(Some("Don't Use All"), "don_t_use_all"),
-            "DontUseAll"
-        );
-        assert_eq!(
-            authoring_key_name(Some("Editor ID"), "editor_id"),
-            "EditorID"
-        );
+        }
     }
 
     fn make_subrecord_spec(id: &str, required: bool, repeatable: bool) -> SchemaSubrecordJson {
@@ -5476,6 +5539,48 @@ mod tests {
         }
     }
 
+    /// CELL.XCRI as generated: `references_count` counts u32 words, two per
+    /// row. One mesh key (deliberately equal to a FormID the policy would
+    /// rewrite, to prove mesh keys are not treated as references) and two
+    /// `{reference, combined_mesh}` rows.
+    fn xcri_half_count_fixture() -> (SchemaSubrecordJson, Vec<u8>) {
+        let mut meshes = make_field("meshes", "uint32", "Meshes");
+        meshes.array = Some(SchemaArrayJson {
+            _layout: "row_array".to_string(),
+            element_codec: Some("I".to_string()),
+            count_field: Some("meshes_count".to_string()),
+            count_codec: None,
+            count_transform: None,
+            count_record_field: None,
+        });
+        let mut references = make_field("references", "struct", "References");
+        references.fields = vec![
+            make_field("reference", "formid", "Reference"),
+            make_field("combined_mesh", "uint32", "Combined Mesh"),
+        ];
+        references.array = Some(SchemaArrayJson {
+            _layout: "row_array".to_string(),
+            element_codec: Some("I,I".to_string()),
+            count_field: Some("references_count".to_string()),
+            count_codec: None,
+            count_transform: Some("half".to_string()),
+            count_record_field: None,
+        });
+        let spec = parsed_subrecord_spec(
+            "XCRI",
+            "struct:I,I",
+            vec![
+                make_field("meshes_count", "uint32", "Meshes Count"),
+                make_field("references_count", "uint32", "References Count"),
+                meshes,
+                references,
+            ],
+        );
+        let words = [1_u32, 4, 0x0012_3456, 0x0012_3456, 0x0012_3456, 0x0056_789A, 0];
+        let data = words.iter().flat_map(|word| word.to_le_bytes()).collect();
+        (spec, data)
+    }
+
     fn parsed_subrecord_spec(
         id: &str,
         codec: &str,
@@ -5489,127 +5594,215 @@ mod tests {
     }
 
     #[test]
-    fn rewrite_schema_form_ids_rewrites_top_level_formid() {
-        let schema = make_empty_schema();
-        let spec =
-            parsed_subrecord_spec("XNAM", "formid", vec![make_field("ref", "formid", "Ref")]);
-        let mut data = 0x0012_3456_u32.to_le_bytes().to_vec();
+    fn rewrite_schema_form_ids_cases() {
+        // rewrite_schema_form_ids_rewrites_top_level_formid
+        {
+            let schema = make_empty_schema();
+            let spec =
+                parsed_subrecord_spec("XNAM", "formid", vec![make_field("ref", "formid", "Ref")]);
+            let mut data = 0x0012_3456_u32.to_le_bytes().to_vec();
 
-        assert!(rewrite_schema_form_ids_in_subrecord(
-            &spec,
-            &schema,
-            &mut data,
-            &mut rewrite_test_policy
-        ));
-        assert_eq!(
-            u32::from_le_bytes(data[0..4].try_into().unwrap()),
-            0x0712_3456
-        );
-    }
+            assert!(rewrite_schema_form_ids_in_subrecord(
+                &spec,
+                &schema,
+                &mut data,
+                &mut rewrite_test_policy
+            ));
+            assert_eq!(
+                u32::from_le_bytes(data[0..4].try_into().unwrap()),
+                0x0712_3456
+            );
 
-    #[test]
-    fn rewrite_schema_form_ids_rewrites_nested_struct_formid_only() {
-        let schema = make_empty_schema();
-        let spec = parsed_subrecord_spec(
-            "DATA",
-            "struct:I,I",
-            vec![
-                make_field("material_swap", "formid", "Material Swap"),
-                make_field("not_a_ref", "uint32", "Not A Ref"),
-            ],
-        );
-        let mut data = Vec::new();
-        data.extend_from_slice(&0x0012_3456_u32.to_le_bytes());
-        data.extend_from_slice(&0x0056_789A_u32.to_le_bytes());
+        }
+        // rewrite_schema_form_ids_rewrites_nested_struct_formid_only
+        {
+            let schema = make_empty_schema();
+            let spec = parsed_subrecord_spec(
+                "DATA",
+                "struct:I,I",
+                vec![
+                    make_field("material_swap", "formid", "Material Swap"),
+                    make_field("not_a_ref", "uint32", "Not A Ref"),
+                ],
+            );
+            let mut data = Vec::new();
+            data.extend_from_slice(&0x0012_3456_u32.to_le_bytes());
+            data.extend_from_slice(&0x0056_789A_u32.to_le_bytes());
 
-        assert!(rewrite_schema_form_ids_in_subrecord(
-            &spec,
-            &schema,
-            &mut data,
-            &mut rewrite_test_policy
-        ));
-        assert_eq!(
-            u32::from_le_bytes(data[0..4].try_into().unwrap()),
-            0x0712_3456
-        );
-        assert_eq!(
-            u32::from_le_bytes(data[4..8].try_into().unwrap()),
-            0x0056_789A
-        );
-    }
+            assert!(rewrite_schema_form_ids_in_subrecord(
+                &spec,
+                &schema,
+                &mut data,
+                &mut rewrite_test_policy
+            ));
+            assert_eq!(
+                u32::from_le_bytes(data[0..4].try_into().unwrap()),
+                0x0712_3456
+            );
+            assert_eq!(
+                u32::from_le_bytes(data[4..8].try_into().unwrap()),
+                0x0056_789A
+            );
 
-    #[test]
-    fn rewrite_schema_form_ids_rewrites_array_struct_rows() {
-        let schema = make_empty_schema();
-        let spec = parsed_subrecord_spec(
-            "RDWT",
-            "array_struct:I,I",
-            vec![
-                make_field("weather", "formid", "Weather"),
-                make_field("chance", "uint32", "Chance"),
-            ],
-        );
-        let mut data = Vec::new();
-        data.extend_from_slice(&0x0012_3456_u32.to_le_bytes());
-        data.extend_from_slice(&25_u32.to_le_bytes());
-        data.extend_from_slice(&0x0056_789A_u32.to_le_bytes());
-        data.extend_from_slice(&75_u32.to_le_bytes());
+        }
+        // rewrite_schema_form_ids_rewrites_array_struct_rows
+        {
+            let schema = make_empty_schema();
+            let spec = parsed_subrecord_spec(
+                "RDWT",
+                "array_struct:I,I",
+                vec![
+                    make_field("weather", "formid", "Weather"),
+                    make_field("chance", "uint32", "Chance"),
+                ],
+            );
+            let mut data = Vec::new();
+            data.extend_from_slice(&0x0012_3456_u32.to_le_bytes());
+            data.extend_from_slice(&25_u32.to_le_bytes());
+            data.extend_from_slice(&0x0056_789A_u32.to_le_bytes());
+            data.extend_from_slice(&75_u32.to_le_bytes());
 
-        assert!(rewrite_schema_form_ids_in_subrecord(
-            &spec,
-            &schema,
-            &mut data,
-            &mut rewrite_test_policy
-        ));
-        assert_eq!(
-            u32::from_le_bytes(data[0..4].try_into().unwrap()),
-            0x0712_3456
-        );
-        assert_eq!(u32::from_le_bytes(data[4..8].try_into().unwrap()), 25);
-        assert_eq!(
-            u32::from_le_bytes(data[8..12].try_into().unwrap()),
-            0x0756_789A
-        );
-        assert_eq!(u32::from_le_bytes(data[12..16].try_into().unwrap()), 75);
-    }
+            assert!(rewrite_schema_form_ids_in_subrecord(
+                &spec,
+                &schema,
+                &mut data,
+                &mut rewrite_test_policy
+            ));
+            assert_eq!(
+                u32::from_le_bytes(data[0..4].try_into().unwrap()),
+                0x0712_3456
+            );
+            assert_eq!(u32::from_le_bytes(data[4..8].try_into().unwrap()), 25);
+            assert_eq!(
+                u32::from_le_bytes(data[8..12].try_into().unwrap()),
+                0x0756_789A
+            );
+            assert_eq!(u32::from_le_bytes(data[12..16].try_into().unwrap()), 75);
 
-    #[test]
-    fn rewrite_schema_form_ids_rewrites_counted_formid_array_field() {
-        let schema = make_empty_schema();
-        let mut refs = make_field("refs", "formid", "Refs");
-        refs.array = Some(SchemaArrayJson {
-            _layout: "row_array".to_string(),
-            element_codec: Some("I".to_string()),
-            count_field: Some("count".to_string()),
-            count_codec: None,
-            count_transform: None,
-            count_record_field: None,
-        });
-        let spec = parsed_subrecord_spec(
-            "DATA",
-            "struct:I",
-            vec![make_field("count", "uint32", "Count"), refs],
-        );
-        let mut data = Vec::new();
-        data.extend_from_slice(&2_u32.to_le_bytes());
-        data.extend_from_slice(&0x0012_3456_u32.to_le_bytes());
-        data.extend_from_slice(&0x0056_789A_u32.to_le_bytes());
+        }
+        // rewrite_schema_form_ids_rewrites_counted_formid_array_field
+        {
+            let schema = make_empty_schema();
+            let mut refs = make_field("refs", "formid", "Refs");
+            refs.array = Some(SchemaArrayJson {
+                _layout: "row_array".to_string(),
+                element_codec: Some("I".to_string()),
+                count_field: Some("count".to_string()),
+                count_codec: None,
+                count_transform: None,
+                count_record_field: None,
+            });
+            let spec = parsed_subrecord_spec(
+                "DATA",
+                "struct:I",
+                vec![make_field("count", "uint32", "Count"), refs],
+            );
+            let mut data = Vec::new();
+            data.extend_from_slice(&2_u32.to_le_bytes());
+            data.extend_from_slice(&0x0012_3456_u32.to_le_bytes());
+            data.extend_from_slice(&0x0056_789A_u32.to_le_bytes());
 
-        assert!(rewrite_schema_form_ids_in_subrecord(
-            &spec,
-            &schema,
-            &mut data,
-            &mut rewrite_test_policy
-        ));
-        assert_eq!(u32::from_le_bytes(data[0..4].try_into().unwrap()), 2);
-        assert_eq!(
-            u32::from_le_bytes(data[4..8].try_into().unwrap()),
-            0x0712_3456
-        );
-        assert_eq!(
-            u32::from_le_bytes(data[8..12].try_into().unwrap()),
-            0x0756_789A
-        );
+            assert!(rewrite_schema_form_ids_in_subrecord(
+                &spec,
+                &schema,
+                &mut data,
+                &mut rewrite_test_policy
+            ));
+            assert_eq!(u32::from_le_bytes(data[0..4].try_into().unwrap()), 2);
+            assert_eq!(
+                u32::from_le_bytes(data[4..8].try_into().unwrap()),
+                0x0712_3456
+            );
+            assert_eq!(
+                u32::from_le_bytes(data[8..12].try_into().unwrap()),
+                0x0756_789A
+            );
+
+        }
+        // xcri_half_count_rows_are_extracted_and_rewritten
+        {
+            let schema = make_empty_schema();
+            let (spec, mut data) = xcri_half_count_fixture();
+
+            let mut extracted = Vec::new();
+            extract_nested_form_ids(&spec, &schema, &data, &mut extracted);
+            assert_eq!(extracted, vec![0x0012_3456, 0x0056_789A]);
+
+            assert!(rewrite_schema_form_ids_in_subrecord(
+                &spec,
+                &schema,
+                &mut data,
+                &mut rewrite_test_policy
+            ));
+            let words: Vec<u32> = data
+                .chunks_exact(4)
+                .map(|chunk| u32::from_le_bytes(chunk.try_into().unwrap()))
+                .collect();
+            assert_eq!(
+                words,
+                vec![1, 4, 0x0012_3456, 0x0712_3456, 0x0012_3456, 0x0756_789A, 0]
+            );
+        }
+        // xcri_odd_word_count_does_not_decode
+        {
+            let schema = make_empty_schema();
+            let (spec, mut data) = xcri_half_count_fixture();
+            data[4..8].copy_from_slice(&3_u32.to_le_bytes());
+            let mut extracted = Vec::new();
+            extract_nested_form_ids(&spec, &schema, &data, &mut extracted);
+            assert!(extracted.is_empty());
+        }
+        // rewrite_schema_form_ids_rewrites_nvnm_door_refs_and_parent
+        {
+            let spec = make_nvnm_subrecord_spec();
+            let schema = make_empty_schema();
+            let mut bytes = build_nvnm_bytes_with_door_and_exterior_parent();
+            let original_len = bytes.len();
+            let mut rewrite = |raw: u32| -> Option<u32> {
+                // Add 0x01000000 to every FormID.
+                Some(raw.wrapping_add(0x0100_0000))
+            };
+            let changed =
+                rewrite_schema_form_ids_in_subrecord(&spec, &schema, &mut bytes, &mut rewrite);
+            assert!(changed, "expected NVNM rewrite to report mutation");
+            assert_eq!(
+                bytes.len(),
+                original_len,
+                "NVNM length must be preserved by FormID rewrite"
+            );
+            let reparsed = crate::nvnm::parse_nvnm(&bytes).expect("reparse");
+            match reparsed.parent {
+                crate::nvnm::NvnmParent::Exterior {
+                    world,
+                    grid_x,
+                    grid_y,
+                } => {
+                    assert_eq!(world, 0x0125_DA15, "world form_id must be remapped");
+                    assert_eq!(grid_x, 1);
+                    assert_eq!(grid_y, 2);
+                }
+                _ => panic!("expected Exterior parent"),
+            }
+            assert_eq!(reparsed.door_refs.len(), 2);
+            assert_eq!(reparsed.door_refs[0].door_ref_form_id, 0x0110_0042);
+            assert_eq!(reparsed.door_refs[1].door_ref_form_id, 0x0120_5678);
+            // Padding bytes survive the FormID-only rewrite (codec is structural).
+            assert_eq!(reparsed.door_refs[0].padding, [0xAA, 0xBB, 0xCC, 0xDD]);
+
+        }
+        // rewrite_schema_form_ids_nvnm_returns_false_when_policy_keeps_all
+        {
+            let spec = make_nvnm_subrecord_spec();
+            let schema = make_empty_schema();
+            let mut bytes = build_nvnm_bytes_with_door_and_exterior_parent();
+            let original = bytes.clone();
+            let mut rewrite = |_raw: u32| -> Option<u32> { None };
+            let changed =
+                rewrite_schema_form_ids_in_subrecord(&spec, &schema, &mut bytes, &mut rewrite);
+            assert!(!changed);
+            assert_eq!(bytes, original);
+
+        }
     }
 
     fn make_form_version_condition(operator: &str, value: u64) -> SchemaConditionJson {
@@ -5715,330 +5908,300 @@ mod tests {
     }
 
     #[test]
-    fn enum_payload_compacts_bool_enum_to_yaml_bool() {
-        let enum_def = make_enum("bool_enum", "enum");
-        assert_eq!(
-            enum_payload_to_json(&enum_def, 1),
-            serde_json::Value::Bool(true)
-        );
-        assert_eq!(
-            enum_payload_to_json(&enum_def, 0),
-            serde_json::Value::Bool(false)
-        );
-    }
+    fn enum_payload_compaction() {
+        // enum_payload_compacts_bool_enum_to_yaml_bool
+        {
+            let enum_def = make_enum("bool_enum", "enum");
+            assert_eq!(
+                enum_payload_to_json(&enum_def, 1),
+                serde_json::Value::Bool(true)
+            );
+            assert_eq!(
+                enum_payload_to_json(&enum_def, 0),
+                serde_json::Value::Bool(false)
+            );
 
-    #[test]
-    fn enum_payload_compacts_scalar_enum_to_camel_case_label() {
-        let enum_def = SchemaEnumJson {
-            id: "stagger_enum".to_string(),
-            values: vec![SchemaEnumValueJson {
-                value: 1,
-                id: "small".to_string(),
-            }],
-            labels: vec![SchemaEnumLabelJson {
-                value: 1,
-                label: "Small".to_string(),
-            }],
-            aliases: Vec::new(),
-            scope: "scoped".to_string(),
-            storage_kind: "enum".to_string(),
-            byte_width: 4,
-            default_value: None,
-        };
-        assert_eq!(
-            enum_payload_to_json(&enum_def, 1),
-            serde_json::Value::String("Small".to_string())
-        );
-    }
+        }
+        // enum_payload_compacts_scalar_enum_to_camel_case_label
+        {
+            let enum_def = SchemaEnumJson {
+                id: "stagger_enum".to_string(),
+                values: vec![SchemaEnumValueJson {
+                    value: 1,
+                    id: "small".to_string(),
+                }],
+                labels: vec![SchemaEnumLabelJson {
+                    value: 1,
+                    label: "Small".to_string(),
+                }],
+                aliases: Vec::new(),
+                scope: "scoped".to_string(),
+                storage_kind: "enum".to_string(),
+                byte_width: 4,
+                default_value: None,
+            };
+            assert_eq!(
+                enum_payload_to_json(&enum_def, 1),
+                serde_json::Value::String("Small".to_string())
+            );
 
-    #[test]
-    fn enum_payload_keeps_numeric_value_when_display_text_is_ambiguous() {
-        let enum_def = SchemaEnumJson {
-            id: "DIAL.DATA.subtype".to_string(),
-            values: vec![
-                SchemaEnumValueJson {
-                    value: 0,
-                    id: "custom".to_string(),
-                },
-                SchemaEnumValueJson {
-                    value: 3,
-                    id: "custom".to_string(),
-                },
-            ],
-            labels: vec![
-                SchemaEnumLabelJson {
-                    value: 0,
-                    label: "Custom".to_string(),
-                },
-                SchemaEnumLabelJson {
-                    value: 3,
-                    label: "Custom".to_string(),
-                },
-            ],
-            aliases: Vec::new(),
-            scope: "scoped".to_string(),
-            storage_kind: "enum".to_string(),
-            byte_width: 2,
-            default_value: None,
-        };
-
-        assert_eq!(
-            enum_payload_to_json(&enum_def, 3),
-            serde_json::json!({
-                "value": 3,
-                "token": "custom",
-                "label": "Custom",
-                "enum": "DIAL.DATA.subtype",
-                "scope": "scoped"
-            })
-        );
-    }
-
-    #[test]
-    fn enum_payload_compacts_flags_to_camel_case_label_list() {
-        let enum_def = SchemaEnumJson {
-            id: "WEAP.DNAM.flags".to_string(),
-            values: vec![
-                SchemaEnumValueJson {
-                    value: 256,
-                    id: "crit_effect_on_death".to_string(),
-                },
-                SchemaEnumValueJson {
-                    value: 4_194_304,
-                    id: "bolt_action".to_string(),
-                },
-            ],
-            labels: vec![
-                SchemaEnumLabelJson {
-                    value: 256,
-                    label: "Crit Effect - on Death".to_string(),
-                },
-                SchemaEnumLabelJson {
-                    value: 4_194_304,
-                    label: "Bolt Action".to_string(),
-                },
-            ],
-            aliases: Vec::new(),
-            scope: "scoped".to_string(),
-            storage_kind: "flags".to_string(),
-            byte_width: 4,
-            default_value: None,
-        };
-        assert_eq!(
-            enum_payload_to_json(&enum_def, 4_194_560),
-            serde_json::Value::Array(vec![
-                serde_json::Value::String("CritEffectOnDeath".to_string()),
-                serde_json::Value::String("BoltAction".to_string()),
-            ])
-        );
-    }
-
-    #[test]
-    fn enum_payload_compacts_blank_flag_labels_to_unknown_bit_names() {
-        let enum_def = SchemaEnumJson {
-            id: "MGEF.DATA.flags".to_string(),
-            values: vec![
-                SchemaEnumValueJson {
-                    value: 8,
-                    id: "value".to_string(),
-                },
-                SchemaEnumValueJson {
-                    value: 536_870_912,
-                    id: "value".to_string(),
-                },
-            ],
-            labels: vec![
-                SchemaEnumLabelJson {
-                    value: 8,
-                    label: "".to_string(),
-                },
-                SchemaEnumLabelJson {
-                    value: 536_870_912,
-                    label: "????".to_string(),
-                },
-            ],
-            aliases: vec![],
-            scope: "scoped".to_string(),
-            storage_kind: "flags".to_string(),
-            byte_width: 4,
-            default_value: None,
-        };
-
-        assert_eq!(
-            enum_payload_to_json(&enum_def, 536_870_920),
-            serde_json::Value::Array(vec![
-                serde_json::Value::String("Unknown3".to_string()),
-                serde_json::Value::String("Unknown29".to_string()),
-            ])
-        );
-    }
-
-    #[test]
-    fn compact_subrecord_decodes_raw_lvlo_entry_layout() {
-        let spec = make_subrecord_spec("LVLO", false, true);
-        let schema = make_empty_schema();
-        let masters = vec!["Fallout4.esm".to_string()];
-        let data = [
-            0x01, 0x00, 0x00, 0x00, 0xF1, 0x62, 0x24, 0x00, 0x01, 0x00, 0x00, 0x00,
-        ];
-
-        let decoded = compact_subrecord_to_json(
-            &data,
-            None,
-            Some((&spec, &schema)),
-            &LocalizedStringsState::default(),
-            &masters,
-            "Patch.esp",
-            None,
-            None,
-            None,
-        );
-
-        assert_eq!(
-            decoded,
-            serde_json::json!({
-                "Data": {
-                    "Level": 1,
-                    "Reference": {
-                        "reference": {
-                            "plugin": "Fallout4.esm",
-                            "object_id": "2462F1"
-                        }
+        }
+        // enum_payload_keeps_numeric_value_when_display_text_is_ambiguous
+        {
+            let enum_def = SchemaEnumJson {
+                id: "DIAL.DATA.subtype".to_string(),
+                values: vec![
+                    SchemaEnumValueJson {
+                        value: 0,
+                        id: "custom".to_string(),
                     },
-                    "Count": 1
-                },
-                "raw_hex": "01000000F162240001000000"
-            })
-        );
+                    SchemaEnumValueJson {
+                        value: 3,
+                        id: "custom".to_string(),
+                    },
+                ],
+                labels: vec![
+                    SchemaEnumLabelJson {
+                        value: 0,
+                        label: "Custom".to_string(),
+                    },
+                    SchemaEnumLabelJson {
+                        value: 3,
+                        label: "Custom".to_string(),
+                    },
+                ],
+                aliases: Vec::new(),
+                scope: "scoped".to_string(),
+                storage_kind: "enum".to_string(),
+                byte_width: 2,
+                default_value: None,
+            };
+
+            assert_eq!(
+                enum_payload_to_json(&enum_def, 3),
+                serde_json::json!({
+                    "value": 3,
+                    "token": "custom",
+                    "label": "Custom",
+                    "enum": "DIAL.DATA.subtype",
+                    "scope": "scoped"
+                })
+            );
+
+        }
+        // enum_payload_compacts_flags_to_camel_case_label_list
+        {
+            let enum_def = SchemaEnumJson {
+                id: "WEAP.DNAM.flags".to_string(),
+                values: vec![
+                    SchemaEnumValueJson {
+                        value: 256,
+                        id: "crit_effect_on_death".to_string(),
+                    },
+                    SchemaEnumValueJson {
+                        value: 4_194_304,
+                        id: "bolt_action".to_string(),
+                    },
+                ],
+                labels: vec![
+                    SchemaEnumLabelJson {
+                        value: 256,
+                        label: "Crit Effect - on Death".to_string(),
+                    },
+                    SchemaEnumLabelJson {
+                        value: 4_194_304,
+                        label: "Bolt Action".to_string(),
+                    },
+                ],
+                aliases: Vec::new(),
+                scope: "scoped".to_string(),
+                storage_kind: "flags".to_string(),
+                byte_width: 4,
+                default_value: None,
+            };
+            assert_eq!(
+                enum_payload_to_json(&enum_def, 4_194_560),
+                serde_json::Value::Array(vec![
+                    serde_json::Value::String("CritEffectOnDeath".to_string()),
+                    serde_json::Value::String("BoltAction".to_string()),
+                ])
+            );
+
+        }
+        // enum_payload_compacts_blank_flag_labels_to_unknown_bit_names
+        {
+            let enum_def = SchemaEnumJson {
+                id: "MGEF.DATA.flags".to_string(),
+                values: vec![
+                    SchemaEnumValueJson {
+                        value: 8,
+                        id: "value".to_string(),
+                    },
+                    SchemaEnumValueJson {
+                        value: 536_870_912,
+                        id: "value".to_string(),
+                    },
+                ],
+                labels: vec![
+                    SchemaEnumLabelJson {
+                        value: 8,
+                        label: "".to_string(),
+                    },
+                    SchemaEnumLabelJson {
+                        value: 536_870_912,
+                        label: "????".to_string(),
+                    },
+                ],
+                aliases: vec![],
+                scope: "scoped".to_string(),
+                storage_kind: "flags".to_string(),
+                byte_width: 4,
+                default_value: None,
+            };
+
+            assert_eq!(
+                enum_payload_to_json(&enum_def, 536_870_920),
+                serde_json::Value::Array(vec![
+                    serde_json::Value::String("Unknown3".to_string()),
+                    serde_json::Value::String("Unknown29".to_string()),
+                ])
+            );
+
+        }
     }
 
     #[test]
-    fn compact_subrecord_emits_null_for_null_formid() {
-        // FormID 0x00000000 (null reference) must NOT fall back to raw_hex.
-        // The encoder accepts JSON null and re-encodes to four zero bytes.
-        let mut spec = make_subrecord_spec("MNAM", false, false);
-        spec.kind = "parsed".to_string();
-        spec.codec = Some("formid".to_string());
-        spec.fields = vec![make_field(
-            "precipitation_type",
-            "formid",
-            "Precipitation Type",
-        )];
-        let schema = make_empty_schema();
-        let data = [0x00, 0x00, 0x00, 0x00];
+    fn compact_subrecord_cases() {
+        // compact_subrecord_decodes_raw_lvlo_entry_layout
+        {
+            let spec = make_subrecord_spec("LVLO", false, true);
+            let schema = make_empty_schema();
+            let masters = vec!["Fallout4.esm".to_string()];
+            let data = [
+                0x01, 0x00, 0x00, 0x00, 0xF1, 0x62, 0x24, 0x00, 0x01, 0x00, 0x00, 0x00,
+            ];
 
-        let decode_spec = schema_subrecord_to_decode_spec(&spec, &schema)
-            .expect("formid subrecord must produce a decode spec");
+            let decoded = compact_subrecord_to_json(
+                &data,
+                None,
+                Some((&spec, &schema)),
+                &LocalizedStringsState::default(),
+                &masters,
+                "Patch.esp",
+                None,
+                None,
+                None,
+            );
 
-        let decoded = compact_subrecord_to_json(
-            &data,
-            Some(&decode_spec),
-            Some((&spec, &schema)),
-            &LocalizedStringsState::default(),
-            &[],
-            "Patch.esp",
-            None,
-            None,
-            None,
-        );
+            assert_eq!(
+                decoded,
+                serde_json::json!({
+                    "Data": {
+                        "Level": 1,
+                        "Reference": {
+                            "reference": {
+                                "plugin": "Fallout4.esm",
+                                "object_id": "2462F1"
+                            }
+                        },
+                        "Count": 1
+                    },
+                    "raw_hex": "01000000F162240001000000"
+                })
+            );
 
-        // kind=parsed → bare null, no raw_hex wrapper, no fallback object.
-        assert_eq!(decoded, serde_json::Value::Null);
-    }
+        }
+        // compact_subrecord_emits_null_for_null_formid
+        {
+            // FormID 0x00000000 (null reference) must NOT fall back to raw_hex.
+            // The encoder accepts JSON null and re-encodes to four zero bytes.
+            let mut spec = make_subrecord_spec("MNAM", false, false);
+            spec.kind = "parsed".to_string();
+            spec.codec = Some("formid".to_string());
+            spec.fields = vec![make_field(
+                "precipitation_type",
+                "formid",
+                "Precipitation Type",
+            )];
+            let schema = make_empty_schema();
+            let data = [0x00, 0x00, 0x00, 0x00];
 
-    #[test]
-    fn compact_subrecord_decodes_vmad_scripts_and_omits_raw_hex_when_roundtrip_clean() {
-        // When the parsed payload re-encodes byte-exactly the
-        // decoder omits `raw_hex`. The encoder reconstructs the bytes from
-        // the parsed value via build_vmad_bytes_from_payload. raw_hex is now
-        // only emitted when the round-trip would lose data (unparsed tail or
-        // re-encode mismatch).
-        let spec = make_vmad_subrecord_spec();
-        let schema = make_empty_schema();
-        let data = [
-            0x06, 0x00, 0x02, 0x00, 0x01, 0x00, // header + script count
-            0x08, 0x00, b'M', b'y', b'S', b'c', b'r', b'i', b'p', b't', // script name
-            0x00, 0x02, 0x00, // flags + property count
-            0x08, 0x00, b'G', b'r', b'e', b'e', b't', b'i', b'n', b'g', // property name
-            0x02, 0x00, // string type + flags
-            0x05, 0x00, b'H', b'e', b'l', b'l', b'o', // string value
-            0x07, 0x00, b'E', b'n', b'a', b'b', b'l', b'e', b'd', // property name
-            0x05, 0x01, 0x01, // bool type + flags + value
-        ];
+            let decode_spec = schema_subrecord_to_decode_spec(&spec, &schema)
+                .expect("formid subrecord must produce a decode spec");
 
-        let decoded = compact_subrecord_to_json(
-            &data,
-            None,
-            Some((&spec, &schema)),
-            &LocalizedStringsState::default(),
-            &[],
-            "Patch.esp",
-            None,
-            None,
-            None,
-        );
+            let decoded = compact_subrecord_to_json(
+                &data,
+                Some(&decode_spec),
+                Some((&spec, &schema)),
+                &LocalizedStringsState::default(),
+                &[],
+                "Patch.esp",
+                None,
+                None,
+                None,
+            );
 
-        assert_eq!(decoded["Version"], serde_json::json!(6));
-        assert_eq!(decoded["Object Format"], serde_json::json!(2));
-        assert_eq!(
-            decoded["Scripts"][0]["ScriptName"],
-            serde_json::json!("MyScript")
-        );
-        assert_eq!(
-            decoded["Scripts"][0]["Properties"][0]["Value"],
-            serde_json::json!("Hello")
-        );
-        assert_eq!(
-            decoded["Scripts"][0]["Properties"][1]["Flags"],
-            serde_json::json!(1)
-        );
-        assert_eq!(decoded.get("raw_hex"), None);
-        assert_eq!(decoded.get("tail_hex"), None);
-    }
+            // kind=parsed → bare null, no raw_hex wrapper, no fallback object.
+            assert_eq!(decoded, serde_json::Value::Null);
 
-    #[test]
-    fn compact_subrecord_adds_function_metadata_for_ctda_formkey_params() {
-        let spec = make_ctda_spec();
-        let schema = make_empty_schema();
-        let decode_spec = schema_subrecord_to_decode_spec(&spec, &schema);
-        let masters = vec!["Fallout4.esm".to_string()];
-        let data = make_ctda_bytes(277, 0x0000_02C7);
+        }
+        // compact_subrecord_decodes_vmad_scripts_and_omits_raw_hex_when_roundtrip_clean
+        {
+            // When the parsed payload re-encodes byte-exactly the
+            // decoder omits `raw_hex`. The encoder reconstructs the bytes from
+            // the parsed value via build_vmad_bytes_from_payload. raw_hex is now
+            // only emitted when the round-trip would lose data (unparsed tail or
+            // re-encode mismatch).
+            let spec = make_vmad_subrecord_spec();
+            let schema = make_empty_schema();
+            let data = [
+                0x06, 0x00, 0x02, 0x00, 0x01, 0x00, // header + script count
+                0x08, 0x00, b'M', b'y', b'S', b'c', b'r', b'i', b'p', b't', // script name
+                0x00, 0x02, 0x00, // flags + property count
+                0x08, 0x00, b'G', b'r', b'e', b'e', b't', b'i', b'n', b'g', // property name
+                0x02, 0x00, // string type + flags
+                0x05, 0x00, b'H', b'e', b'l', b'l', b'o', // string value
+                0x07, 0x00, b'E', b'n', b'a', b'b', b'l', b'e', b'd', // property name
+                0x05, 0x01, 0x01, // bool type + flags + value
+            ];
 
-        let decoded = compact_subrecord_to_json(
-            &data,
-            decode_spec.as_ref(),
-            Some((&spec, &schema)),
-            &LocalizedStringsState::default(),
-            &masters,
-            "Patch.esp",
-            None,
-            None,
-            None,
-        );
+            let decoded = compact_subrecord_to_json(
+                &data,
+                None,
+                Some((&spec, &schema)),
+                &LocalizedStringsState::default(),
+                &[],
+                "Patch.esp",
+                None,
+                None,
+                None,
+            );
 
-        assert_eq!(decoded["Function"], serde_json::json!(277));
-        assert_eq!(decoded["FunctionName"], serde_json::json!("GetBaseValue"));
-        assert_eq!(
-            decoded["ParameterOneRecord"],
-            serde_json::json!({
-                "reference": {
-                    "plugin": "Fallout4.esm",
-                    "object_id": "0002C7"
-                }
-            })
-        );
-        assert_eq!(decoded["ParameterOneNumber"], serde_json::json!(711));
-    }
+            assert_eq!(decoded["Version"], serde_json::json!(6));
+            assert_eq!(decoded["Object Format"], serde_json::json!(2));
+            assert_eq!(
+                decoded["Scripts"][0]["ScriptName"],
+                serde_json::json!("MyScript")
+            );
+            assert_eq!(
+                decoded["Scripts"][0]["Properties"][0]["Value"],
+                serde_json::json!("Hello")
+            );
+            assert_eq!(
+                decoded["Scripts"][0]["Properties"][1]["Flags"],
+                serde_json::json!(1)
+            );
+            assert_eq!(decoded.get("raw_hex"), None);
+            assert_eq!(decoded.get("tail_hex"), None);
 
-    #[test]
-    fn compact_subrecord_uses_starfield_first_parameter_key_for_quest_completed() {
-        let spec = make_ctda_spec();
-        let schema = make_empty_schema();
-        let decode_spec = schema_subrecord_to_decode_spec(&spec, &schema);
-        let masters = vec!["Starfield.esm".to_string()];
-
-        for function_id in [56, 543] {
-            let data = make_ctda_bytes(function_id, 0x000B_8633);
+        }
+        // compact_subrecord_adds_function_metadata_for_ctda_formkey_params
+        {
+            let spec = make_ctda_spec();
+            let schema = make_empty_schema();
+            let decode_spec = schema_subrecord_to_decode_spec(&spec, &schema);
+            let masters = vec!["Fallout4.esm".to_string()];
+            let data = make_ctda_bytes(277, 0x0000_02C7);
 
             let decoded = compact_subrecord_to_json(
                 &data,
@@ -6052,202 +6215,343 @@ mod tests {
                 None,
             );
 
+            assert_eq!(decoded["Function"], serde_json::json!(277));
+            assert_eq!(decoded["FunctionName"], serde_json::json!("GetBaseValue"));
             assert_eq!(
-                decoded["FunctionName"],
-                serde_json::json!("GetQuestCompletedConditionData")
-            );
-            assert_eq!(
-                decoded["FirstParameter"],
+                decoded["ParameterOneRecord"],
                 serde_json::json!({
                     "reference": {
-                        "plugin": "Starfield.esm",
-                        "object_id": "0B8633"
+                        "plugin": "Fallout4.esm",
+                        "object_id": "0002C7"
                     }
                 })
             );
-            assert!(decoded.get("ParameterOneNumber").is_none());
+            assert_eq!(decoded["ParameterOneNumber"], serde_json::json!(711));
+
+        }
+        // compact_subrecord_uses_starfield_first_parameter_key_for_quest_completed
+        {
+            let spec = make_ctda_spec();
+            let schema = make_empty_schema();
+            let decode_spec = schema_subrecord_to_decode_spec(&spec, &schema);
+            let masters = vec!["Starfield.esm".to_string()];
+
+            for function_id in [56, 543] {
+                let data = make_ctda_bytes(function_id, 0x000B_8633);
+
+                let decoded = compact_subrecord_to_json(
+                    &data,
+                    decode_spec.as_ref(),
+                    Some((&spec, &schema)),
+                    &LocalizedStringsState::default(),
+                    &masters,
+                    "Patch.esp",
+                    None,
+                    None,
+                    None,
+                );
+
+                assert_eq!(
+                    decoded["FunctionName"],
+                    serde_json::json!("GetQuestCompletedConditionData")
+                );
+                assert_eq!(
+                    decoded["FirstParameter"],
+                    serde_json::json!({
+                        "reference": {
+                            "plugin": "Starfield.esm",
+                            "object_id": "0B8633"
+                        }
+                    })
+                );
+                assert!(decoded.get("ParameterOneNumber").is_none());
+            }
+
+        }
+        // compact_subrecord_selects_ctda_parameter_variant_from_function_lists
+        {
+            let spec = make_ctda_parameter_union_spec();
+            let schema = make_empty_schema();
+            let decode_spec = schema_subrecord_to_decode_spec(&spec, &schema)
+                .expect("in/not_in and multi-condition field unions must build a decode spec");
+            let masters = vec!["Fallout4.esm".to_string()];
+            let decode = |data: &[u8]| {
+                compact_subrecord_to_json(
+                    data,
+                    Some(&decode_spec),
+                    Some((&spec, &schema)),
+                    &LocalizedStringsState::default(),
+                    &masters,
+                    "Patch.esp",
+                    None,
+                    None,
+                    None,
+                )
+            };
+
+            let global = decode(&make_ctda_bytes(74, 0x0100_0801));
+            assert!(global.get("raw_hex").is_none(), "fell back to raw_hex: {global}");
+            assert_eq!(
+                global["Parameter1"],
+                serde_json::json!({
+                    "variant": "global",
+                    "value": {"reference": {"plugin": "Patch.esp", "object_id": "000801"}}
+                })
+            );
+
+            let mut alias = make_ctda_bytes(448, 7);
+            alias[0] = 0x02;
+            assert_eq!(
+                decode(&alias)["Parameter1"],
+                serde_json::json!({"variant": "alias", "value": 7})
+            );
+
+            assert_eq!(
+                decode(&make_ctda_bytes(448, 0x0000_0014))["Parameter1"]["variant"],
+                serde_json::json!("actor")
+            );
+
+        }
+        // compact_subrecord_keeps_lvlo_unknown_words_when_nonzero
+        {
+            let spec = make_subrecord_spec("LVLO", false, true);
+            let schema = make_empty_schema();
+            let masters = vec!["FalloutNV.esm".to_string()];
+            let data = [
+                0x01, 0x00, 0x0C, 0x0B, 0xA9, 0xB5, 0x0C, 0x00, 0x05, 0x00, 0x0C, 0x0B,
+            ];
+
+            let decoded = compact_subrecord_to_json(
+                &data,
+                None,
+                Some((&spec, &schema)),
+                &LocalizedStringsState::default(),
+                &masters,
+                "Patch.esp",
+                None,
+                None,
+                None,
+            );
+
+            assert_eq!(
+                decoded,
+                serde_json::json!({
+                    "Data": {
+                        "Level": 1,
+                        "Unknown1": 2828,
+                        "Reference": {
+                            "reference": {
+                                "plugin": "FalloutNV.esm",
+                                "object_id": "0CB5A9"
+                            }
+                        },
+                        "Count": 5,
+                        "Unknown2": 2828
+                    },
+                    "raw_hex": "01000C0BA9B50C0005000C0B"
+                })
+            );
+
+        }
+        // compact_subrecord_leaves_unsupported_lvlo_size_raw
+        {
+            let spec = make_subrecord_spec("LVLO", false, true);
+            let schema = make_empty_schema();
+            let data = [0x01, 0x00, 0x00, 0x00];
+
+            let decoded = compact_subrecord_to_json(
+                &data,
+                None,
+                Some((&spec, &schema)),
+                &LocalizedStringsState::default(),
+                &[],
+                "Patch.esp",
+                None,
+                None,
+                None,
+            );
+
+            assert_eq!(
+                decoded,
+                serde_json::json!({
+                    "raw_hex": "01000000"
+                })
+            );
+
+        }
+    }
+
+    fn make_ctda_parameter_union_spec() -> SchemaSubrecordJson {
+        let condition = |field: &str, operator: &str, value: Option<u64>, values: &[u64]| {
+            SchemaConditionJson {
+                field: field.to_string(),
+                operator: operator.to_string(),
+                value: value.map(|value| serde_json::json!(value)),
+                values: values.iter().map(|value| serde_json::json!(value)).collect(),
+            }
+        };
+        let variant = |id: &str, codec: &str, conditions: Vec<SchemaConditionJson>| {
+            SchemaUnionVariantJson {
+                id: id.to_string(),
+                codec: Some(codec.to_string()),
+                enum_ref: None,
+                fields: vec![make_field(&format!("{id}_{id}"), codec, id)],
+                conditions,
+            }
+        };
+        let mut spec = make_ctda_spec();
+        spec.fields[8] = SchemaFieldJson {
+            union_variants: vec![
+                SchemaUnionVariantJson {
+                    id: "unnamed".to_string(),
+                    codec: Some("uint32".to_string()),
+                    enum_ref: None,
+                    fields: Vec::new(),
+                    conditions: vec![condition("function", "not_in", None, &[74, 448])],
+                },
+                variant("global", "formid", vec![condition("function", "in", None, &[74])]),
+                variant(
+                    "alias",
+                    "int32",
+                    vec![
+                        condition("function", "in", None, &[448]),
+                        condition("type", "bit_set", Some(2), &[]),
+                    ],
+                ),
+                variant(
+                    "actor",
+                    "formid",
+                    vec![
+                        condition("function", "in", None, &[448]),
+                        condition("type", "bit_unset", Some(2), &[]),
+                    ],
+                ),
+            ],
+            ..make_field("parameter_1", "union", "Parameter #1")
+        };
+        spec
+    }
+
+    #[test]
+    fn localized_value_payload_to_json_cases() {
+        // localized_value_payload_to_json_preserves_raw_hex
+        {
+            let mut strings = LocalizedStringsState::default();
+            strings.default_language = "en".to_string();
+            strings
+                .by_language
+                .entry("en".to_string())
+                .or_default()
+                .insert(0x1234, "Far Harbor".to_string());
+            strings
+                .by_language
+                .entry("fr".to_string())
+                .or_default()
+                .insert(0x1234, "Far Harbor FR".to_string());
+
+            let payload =
+                localized_value_payload_to_json(&strings, 0x9999, "99990000", Some("localized_string"));
+
+            assert_eq!(payload["raw_hex"], serde_json::json!("99990000"));
+            assert_eq!(
+                payload["semantic_type"],
+                serde_json::json!("localized_string")
+            );
+            assert!(payload.get("TargetLanguage").is_none());
+            assert!(payload.get("Values").is_none());
+
+        }
+        // localized_value_payload_to_json_emits_values_without_raw_hex
+        {
+            let mut strings = LocalizedStringsState::default();
+            strings.default_language = "en".to_string();
+            strings
+                .by_language
+                .entry("en".to_string())
+                .or_default()
+                .insert(0x1234, "Far Harbor".to_string());
+            strings
+                .by_language
+                .entry("fr".to_string())
+                .or_default()
+                .insert(0x1234, "Far Harbor FR".to_string());
+
+            let payload = localized_value_payload_to_json(&strings, 0x1234, "", None);
+
+            assert_eq!(payload["TargetLanguage"], serde_json::json!("English"));
+            assert_eq!(
+                payload["Values"][0]["Language"],
+                serde_json::json!("English")
+            );
+            assert_eq!(
+                payload["Values"][0]["String"],
+                serde_json::json!("Far Harbor")
+            );
+
         }
     }
 
     #[test]
-    fn compact_subrecord_keeps_lvlo_unknown_words_when_nonzero() {
-        let spec = make_subrecord_spec("LVLO", false, true);
-        let schema = make_empty_schema();
-        let masters = vec!["FalloutNV.esm".to_string()];
-        let data = [
-            0x01, 0x00, 0x0C, 0x0B, 0xA9, 0xB5, 0x0C, 0x00, 0x05, 0x00, 0x0C, 0x0B,
-        ];
+    fn validate_record_cases() {
+        // validate_record_passes_for_required_present
+        {
+            let spec = make_record_spec(vec![
+                make_subrecord_spec("EDID", true, false),
+                make_subrecord_spec("FULL", false, false),
+            ]);
+            assert!(validate_record_signatures("TEST", &["EDID", "FULL"], &spec).is_ok());
 
-        let decoded = compact_subrecord_to_json(
-            &data,
-            None,
-            Some((&spec, &schema)),
-            &LocalizedStringsState::default(),
-            &masters,
-            "Patch.esp",
-            None,
-            None,
-            None,
-        );
+        }
+        // validate_record_passes_for_missing_optional
+        {
+            let spec = make_record_spec(vec![
+                make_subrecord_spec("EDID", true, false),
+                make_subrecord_spec("FULL", false, false),
+            ]);
+            assert!(validate_record_signatures("TEST", &["EDID"], &spec).is_ok());
 
-        assert_eq!(
-            decoded,
-            serde_json::json!({
-                "Data": {
-                    "Level": 1,
-                    "Unknown1": 2828,
-                    "Reference": {
-                        "reference": {
-                            "plugin": "FalloutNV.esm",
-                            "object_id": "0CB5A9"
-                        }
-                    },
-                    "Count": 5,
-                    "Unknown2": 2828
-                },
-                "raw_hex": "01000C0BA9B50C0005000C0B"
-            })
-        );
-    }
+        }
+        // validate_record_detects_missing_required
+        {
+            let spec = make_record_spec(vec![make_subrecord_spec("EDID", true, false)]);
+            let err = validate_record_signatures("TEST", &["FULL"], &spec).unwrap_err();
+            assert_eq!(err, "TEST is missing required subrecords: EDID");
 
-    #[test]
-    fn compact_subrecord_leaves_unsupported_lvlo_size_raw() {
-        let spec = make_subrecord_spec("LVLO", false, true);
-        let schema = make_empty_schema();
-        let data = [0x01, 0x00, 0x00, 0x00];
+        }
+        // validate_record_detects_duplicate_non_repeatable
+        {
+            let spec = make_record_spec(vec![make_subrecord_spec("EDID", true, false)]);
+            let err = validate_record_signatures("TEST", &["EDID", "EDID"], &spec).unwrap_err();
+            assert_eq!(err, "TEST has duplicate non-repeatable subrecords: EDID");
 
-        let decoded = compact_subrecord_to_json(
-            &data,
-            None,
-            Some((&spec, &schema)),
-            &LocalizedStringsState::default(),
-            &[],
-            "Patch.esp",
-            None,
-            None,
-            None,
-        );
+        }
+        // validate_record_allows_duplicate_repeatable
+        {
+            let spec = make_record_spec(vec![make_subrecord_spec("KWDA", false, true)]);
+            assert!(validate_record_signatures("TEST", &["KWDA", "KWDA"], &spec).is_ok());
 
-        assert_eq!(
-            decoded,
-            serde_json::json!({
-                "raw_hex": "01000000"
-            })
-        );
-    }
+        }
+        // validate_record_ignores_unknown_signatures
+        {
+            // Python counts only for signatures in the repeatable map.
+            let spec = make_record_spec(vec![make_subrecord_spec("EDID", false, false)]);
+            assert!(validate_record_signatures("TEST", &["EDID", "UNKN", "UNKN"], &spec).is_ok());
 
-    #[test]
-    fn localized_value_payload_to_json_preserves_raw_hex() {
-        let mut strings = LocalizedStringsState::default();
-        strings.default_language = "en".to_string();
-        strings
-            .by_language
-            .entry("en".to_string())
-            .or_default()
-            .insert(0x1234, "Far Harbor".to_string());
-        strings
-            .by_language
-            .entry("fr".to_string())
-            .or_default()
-            .insert(0x1234, "Far Harbor FR".to_string());
+        }
+        // validate_record_reports_duplicates_sorted
+        {
+            let spec = make_record_spec(vec![
+                make_subrecord_spec("ZZZZ", false, false),
+                make_subrecord_spec("AAAA", false, false),
+            ]);
+            let err = validate_record_signatures("TEST", &["ZZZZ", "ZZZZ", "AAAA", "AAAA"], &spec)
+                .unwrap_err();
+            assert_eq!(
+                err,
+                "TEST has duplicate non-repeatable subrecords: AAAA, ZZZZ"
+            );
 
-        let payload =
-            localized_value_payload_to_json(&strings, 0x9999, "99990000", Some("localized_string"));
-
-        assert_eq!(payload["raw_hex"], serde_json::json!("99990000"));
-        assert_eq!(
-            payload["semantic_type"],
-            serde_json::json!("localized_string")
-        );
-        assert!(payload.get("TargetLanguage").is_none());
-        assert!(payload.get("Values").is_none());
-    }
-
-    #[test]
-    fn localized_value_payload_to_json_emits_values_without_raw_hex() {
-        let mut strings = LocalizedStringsState::default();
-        strings.default_language = "en".to_string();
-        strings
-            .by_language
-            .entry("en".to_string())
-            .or_default()
-            .insert(0x1234, "Far Harbor".to_string());
-        strings
-            .by_language
-            .entry("fr".to_string())
-            .or_default()
-            .insert(0x1234, "Far Harbor FR".to_string());
-
-        let payload = localized_value_payload_to_json(&strings, 0x1234, "", None);
-
-        assert_eq!(payload["TargetLanguage"], serde_json::json!("English"));
-        assert_eq!(
-            payload["Values"][0]["Language"],
-            serde_json::json!("English")
-        );
-        assert_eq!(
-            payload["Values"][0]["String"],
-            serde_json::json!("Far Harbor")
-        );
-    }
-
-    #[test]
-    fn validate_record_passes_for_required_present() {
-        let spec = make_record_spec(vec![
-            make_subrecord_spec("EDID", true, false),
-            make_subrecord_spec("FULL", false, false),
-        ]);
-        assert!(validate_record_signatures("TEST", &["EDID", "FULL"], &spec).is_ok());
-    }
-
-    #[test]
-    fn validate_record_passes_for_missing_optional() {
-        let spec = make_record_spec(vec![
-            make_subrecord_spec("EDID", true, false),
-            make_subrecord_spec("FULL", false, false),
-        ]);
-        assert!(validate_record_signatures("TEST", &["EDID"], &spec).is_ok());
-    }
-
-    #[test]
-    fn validate_record_detects_missing_required() {
-        let spec = make_record_spec(vec![make_subrecord_spec("EDID", true, false)]);
-        let err = validate_record_signatures("TEST", &["FULL"], &spec).unwrap_err();
-        assert_eq!(err, "TEST is missing required subrecords: EDID");
-    }
-
-    #[test]
-    fn validate_record_detects_duplicate_non_repeatable() {
-        let spec = make_record_spec(vec![make_subrecord_spec("EDID", true, false)]);
-        let err = validate_record_signatures("TEST", &["EDID", "EDID"], &spec).unwrap_err();
-        assert_eq!(err, "TEST has duplicate non-repeatable subrecords: EDID");
-    }
-
-    #[test]
-    fn validate_record_allows_duplicate_repeatable() {
-        let spec = make_record_spec(vec![make_subrecord_spec("KWDA", false, true)]);
-        assert!(validate_record_signatures("TEST", &["KWDA", "KWDA"], &spec).is_ok());
-    }
-
-    #[test]
-    fn validate_record_ignores_unknown_signatures() {
-        // Python counts only for signatures in the repeatable map.
-        let spec = make_record_spec(vec![make_subrecord_spec("EDID", false, false)]);
-        assert!(validate_record_signatures("TEST", &["EDID", "UNKN", "UNKN"], &spec).is_ok());
-    }
-
-    #[test]
-    fn validate_record_reports_duplicates_sorted() {
-        let spec = make_record_spec(vec![
-            make_subrecord_spec("ZZZZ", false, false),
-            make_subrecord_spec("AAAA", false, false),
-        ]);
-        let err = validate_record_signatures("TEST", &["ZZZZ", "ZZZZ", "AAAA", "AAAA"], &spec)
-            .unwrap_err();
-        assert_eq!(
-            err,
-            "TEST has duplicate non-repeatable subrecords: AAAA, ZZZZ"
-        );
+        }
     }
 
     // ----- VMAD property type 11-15 round-trip ----------
@@ -6291,65 +6595,160 @@ mod tests {
     }
 
     #[test]
-    fn vmad_property_type_11_array_of_object_round_trip() {
-        // count=2, each object is 8 bytes at object_format=2
-        // object1: unused=0, alias=-1 (0xFFFF), formid=0xFF000123 (own plugin)
-        // object2: unused=0, alias=0,        formid=0x00000456 (master[0])
-        // Note: with masters=[], own plugin is index 0 -> 0x00000123. Use no masters.
-        let mut payload = Vec::new();
-        payload.extend_from_slice(&2i32.to_le_bytes());
-        payload.extend_from_slice(&0u16.to_le_bytes());
-        payload.extend_from_slice(&(-1i16).to_le_bytes());
-        payload.extend_from_slice(&0x00000123u32.to_le_bytes());
-        payload.extend_from_slice(&0u16.to_le_bytes());
-        payload.extend_from_slice(&0i16.to_le_bytes());
-        payload.extend_from_slice(&0x00000456u32.to_le_bytes());
-        let blob = build_synthetic_vmad(11, "MyArray", &payload);
-        assert_vmad_roundtrip(&blob);
-    }
+    fn vmad_property_types_round_trip() {
+        // vmad_property_type_11_array_of_object_round_trip
+        {
+            // count=2, each object is 8 bytes at object_format=2
+            // object1: unused=0, alias=-1 (0xFFFF), formid=0xFF000123 (own plugin)
+            // object2: unused=0, alias=0,        formid=0x00000456 (master[0])
+            // Note: with masters=[], own plugin is index 0 -> 0x00000123. Use no masters.
+            let mut payload = Vec::new();
+            payload.extend_from_slice(&2i32.to_le_bytes());
+            payload.extend_from_slice(&0u16.to_le_bytes());
+            payload.extend_from_slice(&(-1i16).to_le_bytes());
+            payload.extend_from_slice(&0x00000123u32.to_le_bytes());
+            payload.extend_from_slice(&0u16.to_le_bytes());
+            payload.extend_from_slice(&0i16.to_le_bytes());
+            payload.extend_from_slice(&0x00000456u32.to_le_bytes());
+            let blob = build_synthetic_vmad(11, "MyArray", &payload);
+            assert_vmad_roundtrip(&blob);
 
-    #[test]
-    fn vmad_property_type_12_array_of_string_round_trip() {
-        let mut payload = Vec::new();
-        payload.extend_from_slice(&3i32.to_le_bytes());
-        payload.extend(vmad_string_bytes("alpha"));
-        payload.extend(vmad_string_bytes(""));
-        payload.extend(vmad_string_bytes("gamma"));
-        let blob = build_synthetic_vmad(12, "MyStrings", &payload);
-        assert_vmad_roundtrip(&blob);
-    }
-
-    #[test]
-    fn vmad_property_type_13_array_of_int32_round_trip() {
-        let mut payload = Vec::new();
-        payload.extend_from_slice(&4i32.to_le_bytes());
-        for v in [0i32, -1, 42, i32::MIN] {
-            payload.extend_from_slice(&v.to_le_bytes());
         }
-        let blob = build_synthetic_vmad(13, "MyInts", &payload);
-        assert_vmad_roundtrip(&blob);
-    }
+        // vmad_property_type_12_array_of_string_round_trip
+        {
+            let mut payload = Vec::new();
+            payload.extend_from_slice(&3i32.to_le_bytes());
+            payload.extend(vmad_string_bytes("alpha"));
+            payload.extend(vmad_string_bytes(""));
+            payload.extend(vmad_string_bytes("gamma"));
+            let blob = build_synthetic_vmad(12, "MyStrings", &payload);
+            assert_vmad_roundtrip(&blob);
 
-    #[test]
-    fn vmad_property_type_14_array_of_float_round_trip() {
-        let mut payload = Vec::new();
-        payload.extend_from_slice(&3i32.to_le_bytes());
-        for v in [0.0f32, 1.5, -3.25] {
-            payload.extend_from_slice(&v.to_le_bytes());
         }
-        let blob = build_synthetic_vmad(14, "MyFloats", &payload);
-        assert_vmad_roundtrip(&blob);
-    }
+        // vmad_property_type_13_array_of_int32_round_trip
+        {
+            let mut payload = Vec::new();
+            payload.extend_from_slice(&4i32.to_le_bytes());
+            for v in [0i32, -1, 42, i32::MIN] {
+                payload.extend_from_slice(&v.to_le_bytes());
+            }
+            let blob = build_synthetic_vmad(13, "MyInts", &payload);
+            assert_vmad_roundtrip(&blob);
 
-    #[test]
-    fn vmad_property_type_15_array_of_bool_round_trip() {
-        let mut payload = Vec::new();
-        payload.extend_from_slice(&5i32.to_le_bytes());
-        for v in [0u8, 1, 0, 1, 1] {
-            payload.push(v);
         }
-        let blob = build_synthetic_vmad(15, "MyBools", &payload);
-        assert_vmad_roundtrip(&blob);
+        // vmad_property_type_14_array_of_float_round_trip
+        {
+            let mut payload = Vec::new();
+            payload.extend_from_slice(&3i32.to_le_bytes());
+            for v in [0.0f32, 1.5, -3.25] {
+                payload.extend_from_slice(&v.to_le_bytes());
+            }
+            let blob = build_synthetic_vmad(14, "MyFloats", &payload);
+            assert_vmad_roundtrip(&blob);
+
+        }
+        // vmad_property_type_15_array_of_bool_round_trip
+        {
+            let mut payload = Vec::new();
+            payload.extend_from_slice(&5i32.to_le_bytes());
+            for v in [0u8, 1, 0, 1, 1] {
+                payload.push(v);
+            }
+            let blob = build_synthetic_vmad(15, "MyBools", &payload);
+            assert_vmad_roundtrip(&blob);
+
+        }
+        // vmad_property_type_6_variable_round_trip
+        {
+            // Type 6 ("Variable" per xEdit) carries no payload bytes; the prior
+            // decoder labelled it "None", which collided with type 0 on encode
+            // and corrupted the byte. Distinct labels close the round-trip.
+            let blob = build_synthetic_vmad(6, "MaybeSet", &[]);
+            let payload = compact_vmad_payload_json(&blob, &[], "Patch.esp", None)
+                .expect("decoder should produce a payload");
+            assert_eq!(
+                payload["Scripts"][0]["Properties"][0]["Type"],
+                serde_json::json!("Variable")
+            );
+            assert_vmad_roundtrip(&blob);
+
+        }
+        // vmad_property_type_7_struct_round_trip
+        {
+            // Single Struct property: i32 member_count, then members.
+            // Members: u16 name_len + name + u8 type + u8 flags + value bytes.
+            let mut payload = Vec::new();
+            payload.extend_from_slice(&2i32.to_le_bytes());
+            payload.extend(vmad_struct_member_bytes(
+                "Count",
+                3,
+                0,
+                &42i32.to_le_bytes(),
+            ));
+            let s_value = vmad_string_bytes("hello");
+            payload.extend(vmad_struct_member_bytes("Greeting", 2, 1, &s_value));
+            let blob = build_synthetic_vmad(7, "MyStruct", &payload);
+            assert_vmad_roundtrip(&blob);
+
+        }
+        // vmad_property_type_16_array_of_variable_round_trip
+        {
+            // xEdit models type 16 as a single u32 element count, no element bytes.
+            let mut payload = Vec::new();
+            payload.extend_from_slice(&3u32.to_le_bytes());
+            let blob = build_synthetic_vmad(16, "MaybeList", &payload);
+            assert_vmad_roundtrip(&blob);
+
+        }
+        // vmad_property_type_17_array_of_struct_round_trip
+        {
+            // Two struct elements, each with two members of mixed types.
+            let mut struct1 = Vec::new();
+            struct1.extend_from_slice(&2i32.to_le_bytes());
+            struct1.extend(vmad_struct_member_bytes("Index", 3, 0, &7i32.to_le_bytes()));
+            struct1.extend(vmad_struct_member_bytes(
+                "Ratio",
+                4,
+                0,
+                &0.5f32.to_le_bytes(),
+            ));
+
+            let mut struct2 = Vec::new();
+            struct2.extend_from_slice(&1i32.to_le_bytes());
+            struct2.extend(vmad_struct_member_bytes("Active", 5, 0, &[1u8]));
+
+            let mut payload = Vec::new();
+            payload.extend_from_slice(&2i32.to_le_bytes());
+            payload.extend_from_slice(&struct1);
+            payload.extend_from_slice(&struct2);
+            let blob = build_synthetic_vmad(17, "Items", &payload);
+            assert_vmad_roundtrip(&blob);
+
+        }
+        // vmad_property_type_17_nested_struct_round_trip
+        {
+            // Type-17 payload whose member is itself a type-7 struct exercises
+            // recursion through write_vmad_struct → write_vmad_property_value → write_vmad_struct.
+            let mut inner = Vec::new();
+            inner.extend_from_slice(&1i32.to_le_bytes());
+            inner.extend(vmad_struct_member_bytes(
+                "InnerInt",
+                3,
+                0,
+                &99i32.to_le_bytes(),
+            ));
+
+            let mut outer_struct = Vec::new();
+            outer_struct.extend_from_slice(&1i32.to_le_bytes());
+            outer_struct.extend(vmad_struct_member_bytes("Nested", 7, 0, &inner));
+
+            let mut payload = Vec::new();
+            payload.extend_from_slice(&1i32.to_le_bytes());
+            payload.extend_from_slice(&outer_struct);
+            let blob = build_synthetic_vmad(17, "Outer", &payload);
+            assert_vmad_roundtrip(&blob);
+
+        }
     }
 
     fn vmad_struct_member_bytes(
@@ -6363,97 +6762,6 @@ mod tests {
         out.push(member_flags);
         out.extend_from_slice(value_payload);
         out
-    }
-
-    #[test]
-    fn vmad_property_type_6_variable_round_trip() {
-        // Type 6 ("Variable" per xEdit) carries no payload bytes; the prior
-        // decoder labelled it "None", which collided with type 0 on encode
-        // and corrupted the byte. Distinct labels close the round-trip.
-        let blob = build_synthetic_vmad(6, "MaybeSet", &[]);
-        let payload = compact_vmad_payload_json(&blob, &[], "Patch.esp", None)
-            .expect("decoder should produce a payload");
-        assert_eq!(
-            payload["Scripts"][0]["Properties"][0]["Type"],
-            serde_json::json!("Variable")
-        );
-        assert_vmad_roundtrip(&blob);
-    }
-
-    #[test]
-    fn vmad_property_type_7_struct_round_trip() {
-        // Single Struct property: i32 member_count, then members.
-        // Members: u16 name_len + name + u8 type + u8 flags + value bytes.
-        let mut payload = Vec::new();
-        payload.extend_from_slice(&2i32.to_le_bytes());
-        payload.extend(vmad_struct_member_bytes(
-            "Count",
-            3,
-            0,
-            &42i32.to_le_bytes(),
-        ));
-        let s_value = vmad_string_bytes("hello");
-        payload.extend(vmad_struct_member_bytes("Greeting", 2, 1, &s_value));
-        let blob = build_synthetic_vmad(7, "MyStruct", &payload);
-        assert_vmad_roundtrip(&blob);
-    }
-
-    #[test]
-    fn vmad_property_type_16_array_of_variable_round_trip() {
-        // xEdit models type 16 as a single u32 element count, no element bytes.
-        let mut payload = Vec::new();
-        payload.extend_from_slice(&3u32.to_le_bytes());
-        let blob = build_synthetic_vmad(16, "MaybeList", &payload);
-        assert_vmad_roundtrip(&blob);
-    }
-
-    #[test]
-    fn vmad_property_type_17_array_of_struct_round_trip() {
-        // Two struct elements, each with two members of mixed types.
-        let mut struct1 = Vec::new();
-        struct1.extend_from_slice(&2i32.to_le_bytes());
-        struct1.extend(vmad_struct_member_bytes("Index", 3, 0, &7i32.to_le_bytes()));
-        struct1.extend(vmad_struct_member_bytes(
-            "Ratio",
-            4,
-            0,
-            &0.5f32.to_le_bytes(),
-        ));
-
-        let mut struct2 = Vec::new();
-        struct2.extend_from_slice(&1i32.to_le_bytes());
-        struct2.extend(vmad_struct_member_bytes("Active", 5, 0, &[1u8]));
-
-        let mut payload = Vec::new();
-        payload.extend_from_slice(&2i32.to_le_bytes());
-        payload.extend_from_slice(&struct1);
-        payload.extend_from_slice(&struct2);
-        let blob = build_synthetic_vmad(17, "Items", &payload);
-        assert_vmad_roundtrip(&blob);
-    }
-
-    #[test]
-    fn vmad_property_type_17_nested_struct_round_trip() {
-        // Type-17 payload whose member is itself a type-7 struct exercises
-        // recursion through write_vmad_struct → write_vmad_property_value → write_vmad_struct.
-        let mut inner = Vec::new();
-        inner.extend_from_slice(&1i32.to_le_bytes());
-        inner.extend(vmad_struct_member_bytes(
-            "InnerInt",
-            3,
-            0,
-            &99i32.to_le_bytes(),
-        ));
-
-        let mut outer_struct = Vec::new();
-        outer_struct.extend_from_slice(&1i32.to_le_bytes());
-        outer_struct.extend(vmad_struct_member_bytes("Nested", 7, 0, &inner));
-
-        let mut payload = Vec::new();
-        payload.extend_from_slice(&1i32.to_le_bytes());
-        payload.extend_from_slice(&outer_struct);
-        let blob = build_synthetic_vmad(17, "Outer", &payload);
-        assert_vmad_roundtrip(&blob);
     }
 
     // ----- VMAD fragment round-trip --------------------
@@ -6496,145 +6804,149 @@ mod tests {
     }
 
     #[test]
-    fn vmad_fragments_info_round_trip() {
-        // INFO/PACK fragment block: version i8, flags u8, ScriptEntry,
-        // popcount(flags) Fragment rows.
-        let mut tail = Vec::new();
-        tail.push(3); // version
-        tail.push(0b011); // flags = OnBegin | OnEnd → 2 fragments
-        tail.extend(empty_script_entry_bytes("FragScript"));
-        // Fragment 1
-        tail.push(0); // unknown i8
-        tail.extend(vmad_string_bytes("FragScript"));
-        tail.extend(vmad_string_bytes("Fragment_0"));
-        // Fragment 2
-        tail.push(1);
-        tail.extend(vmad_string_bytes("FragScript"));
-        tail.extend(vmad_string_bytes("Fragment_1"));
-        let blob = build_vmad_with_fragments_tail(None, &tail);
-        assert_vmad_fragments_roundtrip(&blob, "INFO");
-    }
+    fn vmad_fragments_round_trip() {
+        // vmad_fragments_info_round_trip
+        {
+            // INFO/PACK fragment block: version i8, flags u8, ScriptEntry,
+            // popcount(flags) Fragment rows.
+            let mut tail = Vec::new();
+            tail.push(3); // version
+            tail.push(0b011); // flags = OnBegin | OnEnd → 2 fragments
+            tail.extend(empty_script_entry_bytes("FragScript"));
+            // Fragment 1
+            tail.push(0); // unknown i8
+            tail.extend(vmad_string_bytes("FragScript"));
+            tail.extend(vmad_string_bytes("Fragment_0"));
+            // Fragment 2
+            tail.push(1);
+            tail.extend(vmad_string_bytes("FragScript"));
+            tail.extend(vmad_string_bytes("Fragment_1"));
+            let blob = build_vmad_with_fragments_tail(None, &tail);
+            assert_vmad_fragments_roundtrip(&blob, "INFO");
 
-    #[test]
-    fn vmad_fragments_pack_round_trip() {
-        // PACK adds bit 4 (OnChange); binary layout matches INFO.
-        let mut tail = Vec::new();
-        tail.push(3);
-        tail.push(0b101); // OnBegin | OnChange = 2 fragments
-        tail.extend(empty_script_entry_bytes("PackScript"));
-        tail.push(-1i8 as u8);
-        tail.extend(vmad_string_bytes("PackScript"));
-        tail.extend(vmad_string_bytes("Frag_OnBegin"));
-        tail.push(2);
-        tail.extend(vmad_string_bytes("PackScript"));
-        tail.extend(vmad_string_bytes("Frag_OnChange"));
-        let blob = build_vmad_with_fragments_tail(None, &tail);
-        assert_vmad_fragments_roundtrip(&blob, "PACK");
-    }
+        }
+        // vmad_fragments_pack_round_trip
+        {
+            // PACK adds bit 4 (OnChange); binary layout matches INFO.
+            let mut tail = Vec::new();
+            tail.push(3);
+            tail.push(0b101); // OnBegin | OnChange = 2 fragments
+            tail.extend(empty_script_entry_bytes("PackScript"));
+            tail.push(-1i8 as u8);
+            tail.extend(vmad_string_bytes("PackScript"));
+            tail.extend(vmad_string_bytes("Frag_OnBegin"));
+            tail.push(2);
+            tail.extend(vmad_string_bytes("PackScript"));
+            tail.extend(vmad_string_bytes("Frag_OnChange"));
+            let blob = build_vmad_with_fragments_tail(None, &tail);
+            assert_vmad_fragments_roundtrip(&blob, "PACK");
 
-    #[test]
-    fn vmad_fragments_scen_round_trip() {
-        let mut tail = Vec::new();
-        tail.push(3);
-        tail.push(0b001); // 1 fragment
-        tail.extend(empty_script_entry_bytes("ScenScript"));
-        tail.push(0);
-        tail.extend(vmad_string_bytes("ScenScript"));
-        tail.extend(vmad_string_bytes("Begin"));
-        // Phase Fragments u16 count + 1 entry
-        tail.extend_from_slice(&1u16.to_le_bytes());
-        tail.push(0b01); // phase flag (OnStart)
-        tail.push(0); // phase index
-        tail.extend_from_slice(&0i16.to_le_bytes()); // unknown s16
-        tail.push(0); // unknown s8 a
-        tail.push(0); // unknown s8 b
-        tail.extend(vmad_string_bytes("ScenScript"));
-        tail.extend(vmad_string_bytes("Phase_OnStart_0"));
-        let blob = build_vmad_with_fragments_tail(None, &tail);
-        assert_vmad_fragments_roundtrip(&blob, "SCEN");
-    }
+        }
+        // vmad_fragments_scen_round_trip
+        {
+            let mut tail = Vec::new();
+            tail.push(3);
+            tail.push(0b001); // 1 fragment
+            tail.extend(empty_script_entry_bytes("ScenScript"));
+            tail.push(0);
+            tail.extend(vmad_string_bytes("ScenScript"));
+            tail.extend(vmad_string_bytes("Begin"));
+            // Phase Fragments u16 count + 1 entry
+            tail.extend_from_slice(&1u16.to_le_bytes());
+            tail.push(0b01); // phase flag (OnStart)
+            tail.push(0); // phase index
+            tail.extend_from_slice(&0i16.to_le_bytes()); // unknown s16
+            tail.push(0); // unknown s8 a
+            tail.push(0); // unknown s8 b
+            tail.extend(vmad_string_bytes("ScenScript"));
+            tail.extend(vmad_string_bytes("Phase_OnStart_0"));
+            let blob = build_vmad_with_fragments_tail(None, &tail);
+            assert_vmad_fragments_roundtrip(&blob, "SCEN");
 
-    #[test]
-    fn vmad_fragments_perk_round_trip() {
-        // wbScriptFragments: version i8, ScriptEntry, u16 count, fragment rows.
-        let mut tail = Vec::new();
-        tail.push(3);
-        tail.extend(empty_script_entry_bytes("PerkScript"));
-        tail.extend_from_slice(&2u16.to_le_bytes()); // 2 fragments
-        // Fragment 0
-        tail.extend_from_slice(&0u16.to_le_bytes()); // fragment index
-        tail.extend_from_slice(&0i16.to_le_bytes()); // unused
-        tail.push(0); // unknown i8
-        tail.extend(vmad_string_bytes("PerkScript"));
-        tail.extend(vmad_string_bytes("Fragment_0"));
-        // Fragment 1
-        tail.extend_from_slice(&1u16.to_le_bytes());
-        tail.extend_from_slice(&0i16.to_le_bytes());
-        tail.push(1);
-        tail.extend(vmad_string_bytes("PerkScript"));
-        tail.extend(vmad_string_bytes("Fragment_1"));
-        let blob = build_vmad_with_fragments_tail(None, &tail);
-        assert_vmad_fragments_roundtrip(&blob, "PERK");
-    }
+        }
+        // vmad_fragments_perk_round_trip
+        {
+            // wbScriptFragments: version i8, ScriptEntry, u16 count, fragment rows.
+            let mut tail = Vec::new();
+            tail.push(3);
+            tail.extend(empty_script_entry_bytes("PerkScript"));
+            tail.extend_from_slice(&2u16.to_le_bytes()); // 2 fragments
+            // Fragment 0
+            tail.extend_from_slice(&0u16.to_le_bytes()); // fragment index
+            tail.extend_from_slice(&0i16.to_le_bytes()); // unused
+            tail.push(0); // unknown i8
+            tail.extend(vmad_string_bytes("PerkScript"));
+            tail.extend(vmad_string_bytes("Fragment_0"));
+            // Fragment 1
+            tail.extend_from_slice(&1u16.to_le_bytes());
+            tail.extend_from_slice(&0i16.to_le_bytes());
+            tail.push(1);
+            tail.extend(vmad_string_bytes("PerkScript"));
+            tail.extend(vmad_string_bytes("Fragment_1"));
+            let blob = build_vmad_with_fragments_tail(None, &tail);
+            assert_vmad_fragments_roundtrip(&blob, "PERK");
 
-    #[test]
-    fn vmad_fragments_term_round_trip_zero_fragments() {
-        // TERM uses the same shape as PERK; this exercises the empty-fragment
-        // path (count=0, no rows).
-        let mut tail = Vec::new();
-        tail.push(3);
-        tail.extend(empty_script_entry_bytes("TermScript"));
-        tail.extend_from_slice(&0u16.to_le_bytes());
-        let blob = build_vmad_with_fragments_tail(None, &tail);
-        assert_vmad_fragments_roundtrip(&blob, "TERM");
-    }
+        }
+        // vmad_fragments_term_round_trip_zero_fragments
+        {
+            // TERM uses the same shape as PERK; this exercises the empty-fragment
+            // path (count=0, no rows).
+            let mut tail = Vec::new();
+            tail.push(3);
+            tail.extend(empty_script_entry_bytes("TermScript"));
+            tail.extend_from_slice(&0u16.to_le_bytes());
+            let blob = build_vmad_with_fragments_tail(None, &tail);
+            assert_vmad_fragments_roundtrip(&blob, "TERM");
 
-    #[test]
-    fn vmad_fragments_quest_round_trip_with_aliases() {
-        // QUST: version i8, fragment_count u16, scriptname,
-        // (if scriptname != "") flags u8 + properties u16-prefixed,
-        // then fragment_count rows, then alias_count u16 + aliases.
-        let mut tail = Vec::new();
-        tail.push(3);
-        tail.extend_from_slice(&1u16.to_le_bytes()); // 1 fragment
-        tail.extend(vmad_string_bytes("QuestScript"));
-        tail.push(0); // script flags
-        tail.extend_from_slice(&0u16.to_le_bytes()); // property count
-        // 1 fragment row
-        tail.extend_from_slice(&10u16.to_le_bytes()); // quest stage
-        tail.extend_from_slice(&0i16.to_le_bytes()); // unknown s16
-        tail.extend_from_slice(&0i32.to_le_bytes()); // quest stage index
-        tail.push(0); // unknown s8
-        tail.extend(vmad_string_bytes("QuestScript"));
-        tail.extend(vmad_string_bytes("Fragment_Stage10"));
-        // alias_count = 1
-        tail.extend_from_slice(&1u16.to_le_bytes());
-        // alias.Object — object_format=2 layout is u16 unused, i16 alias, u32 formid
-        tail.extend_from_slice(&0u16.to_le_bytes()); // unused
-        tail.extend_from_slice(&(-1i16).to_le_bytes()); // alias
-        tail.extend_from_slice(&0x00000123u32.to_le_bytes()); // formid
-        // alias version + object_format
-        tail.extend_from_slice(&6i16.to_le_bytes());
-        tail.extend_from_slice(&2i16.to_le_bytes());
-        // alias_script_count
-        tail.extend_from_slice(&1u16.to_le_bytes());
-        tail.extend(empty_script_entry_bytes("AliasScript"));
-        let blob = build_vmad_with_fragments_tail(None, &tail);
-        assert_vmad_fragments_roundtrip(&blob, "QUST");
-    }
+        }
+        // vmad_fragments_quest_round_trip_with_aliases
+        {
+            // QUST: version i8, fragment_count u16, scriptname,
+            // (if scriptname != "") flags u8 + properties u16-prefixed,
+            // then fragment_count rows, then alias_count u16 + aliases.
+            let mut tail = Vec::new();
+            tail.push(3);
+            tail.extend_from_slice(&1u16.to_le_bytes()); // 1 fragment
+            tail.extend(vmad_string_bytes("QuestScript"));
+            tail.push(0); // script flags
+            tail.extend_from_slice(&0u16.to_le_bytes()); // property count
+            // 1 fragment row
+            tail.extend_from_slice(&10u16.to_le_bytes()); // quest stage
+            tail.extend_from_slice(&0i16.to_le_bytes()); // unknown s16
+            tail.extend_from_slice(&0i32.to_le_bytes()); // quest stage index
+            tail.push(0); // unknown s8
+            tail.extend(vmad_string_bytes("QuestScript"));
+            tail.extend(vmad_string_bytes("Fragment_Stage10"));
+            // alias_count = 1
+            tail.extend_from_slice(&1u16.to_le_bytes());
+            // alias.Object — object_format=2 layout is u16 unused, i16 alias, u32 formid
+            tail.extend_from_slice(&0u16.to_le_bytes()); // unused
+            tail.extend_from_slice(&(-1i16).to_le_bytes()); // alias
+            tail.extend_from_slice(&0x00000123u32.to_le_bytes()); // formid
+            // alias version + object_format
+            tail.extend_from_slice(&6i16.to_le_bytes());
+            tail.extend_from_slice(&2i16.to_le_bytes());
+            // alias_script_count
+            tail.extend_from_slice(&1u16.to_le_bytes());
+            tail.extend(empty_script_entry_bytes("AliasScript"));
+            let blob = build_vmad_with_fragments_tail(None, &tail);
+            assert_vmad_fragments_roundtrip(&blob, "QUST");
 
-    #[test]
-    fn vmad_fragments_quest_round_trip_empty_script() {
-        // QUST allows scriptname == "" — flags+properties are skipped per
-        // wbScriptFragmentsEmptyScriptDecider.
-        let mut tail = Vec::new();
-        tail.push(3);
-        tail.extend_from_slice(&0u16.to_le_bytes()); // fragment count = 0
-        tail.extend(vmad_string_bytes("")); // empty scriptname
-        // No flags/properties because scriptname is empty.
-        tail.extend_from_slice(&0u16.to_le_bytes()); // alias count
-        let blob = build_vmad_with_fragments_tail(None, &tail);
-        assert_vmad_fragments_roundtrip(&blob, "QUST");
+        }
+        // vmad_fragments_quest_round_trip_empty_script
+        {
+            // QUST allows scriptname == "" — flags+properties are skipped per
+            // wbScriptFragmentsEmptyScriptDecider.
+            let mut tail = Vec::new();
+            tail.push(3);
+            tail.extend_from_slice(&0u16.to_le_bytes()); // fragment count = 0
+            tail.extend(vmad_string_bytes("")); // empty scriptname
+            // No flags/properties because scriptname is empty.
+            tail.extend_from_slice(&0u16.to_le_bytes()); // alias count
+            let blob = build_vmad_with_fragments_tail(None, &tail);
+            assert_vmad_fragments_roundtrip(&blob, "QUST");
+
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -6674,78 +6986,234 @@ mod tests {
     }
 
     #[test]
-    fn stag_tnam_decode_spec_emits_zstring_tail_segment() {
-        let spec = make_stag_tnam_spec();
-        let schema = make_empty_schema();
-        let decode_spec = schema_subrecord_to_decode_spec(&spec, &schema)
-            .expect("STAG.TNAM should build a DecodeSpec with a zstring tail");
-        match decode_spec {
-            crate::DecodeSpec::Struct {
-                row_size,
-                segments,
-                tail_segment,
-                parse_partial,
-            } => {
-                assert_eq!(row_size, 4, "row_size = formid width");
-                assert_eq!(segments.len(), 1, "single segment for `sound` formid");
-                assert_eq!(segments[0].name, "sound");
-                assert!(!parse_partial);
-                let tail = tail_segment.expect("tail_segment present for trailing zstring");
-                assert_eq!(tail.name, "action");
-                assert_eq!(tail.offset, 4);
-                assert_eq!(tail.kind, "zstring");
+    fn variable_width_struct_decoding() {
+        // stag_tnam_decode_spec_emits_zstring_tail_segment
+        {
+            let spec = make_stag_tnam_spec();
+            let schema = make_empty_schema();
+            let decode_spec = schema_subrecord_to_decode_spec(&spec, &schema)
+                .expect("STAG.TNAM should build a DecodeSpec with a zstring tail");
+            match decode_spec {
+                crate::DecodeSpec::Struct {
+                    row_size,
+                    segments,
+                    tail_segment,
+                    parse_partial,
+                } => {
+                    assert_eq!(row_size, 4, "row_size = formid width");
+                    assert_eq!(segments.len(), 1, "single segment for `sound` formid");
+                    assert_eq!(segments[0].name, "sound");
+                    assert!(!parse_partial);
+                    let tail = tail_segment.expect("tail_segment present for trailing zstring");
+                    assert_eq!(tail.name, "action");
+                    assert_eq!(tail.offset, 4);
+                    assert_eq!(tail.kind, "zstring");
+                }
+                _ => panic!("expected DecodeSpec::Struct, got something else"),
             }
-            _ => panic!("expected DecodeSpec::Struct, got something else"),
+
         }
-    }
+        // stag_tnam_decode_row_decodes_zstring_action
+        {
+            // Real Fallout4.esm STAG.TNAM payload:
+            //   formid = 0x00219C25 (little-endian "259C2100")
+            //   action = "NPCRobotAssaultronAttackPowerStanding\x00"
+            let payload = hex::decode(
+                "259C21004E5043526F626F7441737361756C74726F6E41747461636B506F7765725374616E64696E6700",
+            )
+            .unwrap();
+            let spec = make_stag_tnam_spec();
+            let schema = make_empty_schema();
+            let decode_spec = schema_subrecord_to_decode_spec(&spec, &schema).unwrap();
+            let ctx: std::collections::HashMap<String, serde_json::Value> =
+                std::collections::HashMap::new();
+            let value = decode_subrecord_json(&decode_spec, &payload, &ctx)
+                .expect("STAG.TNAM payload should decode");
+            let obj = value.as_object().unwrap();
+            assert_eq!(
+                obj.get("sound").and_then(|v| v.as_u64()),
+                Some(0x0021_9C25),
+                "sound formid decodes as integer"
+            );
+            assert_eq!(
+                obj.get("action").and_then(|v| v.as_str()),
+                Some("NPCRobotAssaultronAttackPowerStanding"),
+                "action zstring decodes (NUL stripped)"
+            );
 
-    #[test]
-    fn stag_tnam_decode_row_decodes_zstring_action() {
-        // Real Fallout4.esm STAG.TNAM payload:
-        //   formid = 0x00219C25 (little-endian "259C2100")
-        //   action = "NPCRobotAssaultronAttackPowerStanding\x00"
-        let payload = hex::decode(
-            "259C21004E5043526F626F7441737361756C74726F6E41747461636B506F7765725374616E64696E6700",
-        )
-        .unwrap();
-        let spec = make_stag_tnam_spec();
-        let schema = make_empty_schema();
-        let decode_spec = schema_subrecord_to_decode_spec(&spec, &schema).unwrap();
-        let ctx: std::collections::HashMap<String, serde_json::Value> =
-            std::collections::HashMap::new();
-        let value = decode_subrecord_json(&decode_spec, &payload, &ctx)
-            .expect("STAG.TNAM payload should decode");
-        let obj = value.as_object().unwrap();
-        assert_eq!(
-            obj.get("sound").and_then(|v| v.as_u64()),
-            Some(0x0021_9C25),
-            "sound formid decodes as integer"
-        );
-        assert_eq!(
-            obj.get("action").and_then(|v| v.as_str()),
-            Some("NPCRobotAssaultronAttackPowerStanding"),
-            "action zstring decodes (NUL stripped)"
-        );
-    }
+        }
+        // stag_tnam_decode_row_handles_null_formid_action
+        {
+            // Also-real payload with NULL formid + non-empty action
+            // (e.g. NPCRadscorpionATS "TunnelExit"): formid=00000000,
+            // action="TunnelExit\x00".
+            let payload = hex::decode("0000000054756E6E656C4578697400").unwrap();
+            let spec = make_stag_tnam_spec();
+            let schema = make_empty_schema();
+            let decode_spec = schema_subrecord_to_decode_spec(&spec, &schema).unwrap();
+            let ctx: std::collections::HashMap<String, serde_json::Value> =
+                std::collections::HashMap::new();
+            let value = decode_subrecord_json(&decode_spec, &payload, &ctx).unwrap();
+            let obj = value.as_object().unwrap();
+            assert_eq!(obj.get("sound").and_then(|v| v.as_u64()), Some(0));
+            assert_eq!(
+                obj.get("action").and_then(|v| v.as_str()),
+                Some("TunnelExit")
+            );
 
-    #[test]
-    fn stag_tnam_decode_row_handles_null_formid_action() {
-        // Also-real payload with NULL formid + non-empty action
-        // (e.g. NPCRadscorpionATS "TunnelExit"): formid=00000000,
-        // action="TunnelExit\x00".
-        let payload = hex::decode("0000000054756E6E656C4578697400").unwrap();
-        let spec = make_stag_tnam_spec();
-        let schema = make_empty_schema();
-        let decode_spec = schema_subrecord_to_decode_spec(&spec, &schema).unwrap();
-        let ctx: std::collections::HashMap<String, serde_json::Value> =
-            std::collections::HashMap::new();
-        let value = decode_subrecord_json(&decode_spec, &payload, &ctx).unwrap();
-        let obj = value.as_object().unwrap();
-        assert_eq!(obj.get("sound").and_then(|v| v.as_u64()), Some(0));
-        assert_eq!(
-            obj.get("action").and_then(|v| v.as_str()),
-            Some("TunnelExit")
-        );
+        }
+        // variable_struct_decodes_interior_zstring
+        {
+            let payload = [75, b'M', b'e', b's', b'h', 0, 1];
+            let spec = make_debr_data_spec();
+            let schema = make_empty_schema();
+            let decode_spec = schema_subrecord_to_decode_spec(&spec, &schema)
+                .expect("DEBR.DATA should build a variable struct decode spec");
+            match &decode_spec {
+                crate::DecodeSpec::VariableStruct { segments, .. } => {
+                    assert_eq!(segments.len(), 3);
+                }
+                _ => panic!("expected DecodeSpec::VariableStruct"),
+            }
+            let ctx: std::collections::HashMap<String, serde_json::Value> =
+                std::collections::HashMap::new();
+            let value = decode_subrecord_json(&decode_spec, &payload, &ctx)
+                .expect("DEBR.DATA payload should decode");
+            assert_eq!(
+                value,
+                serde_json::json!({
+                    "percentage": 75,
+                    "model_file_name": "Mesh",
+                    "has_collision": 1
+                })
+            );
+
+        }
+        // variable_struct_decode_spec_skips_absent_conditional_bytes_field
+        {
+            let mut future_bytes = make_field("future_bytes", "bytes", "Future Bytes");
+            future_bytes
+                .presence_conditions
+                .push(make_form_version_condition("gte", 208));
+            let spec = SchemaSubrecordJson {
+                id: "BPND".to_string(),
+                kind: "parsed_with_raw_fallback".to_string(),
+                display_label: Some("Node Data".to_string()),
+                codec: Some("struct:B".to_string()),
+                fields: vec![
+                    make_array_field("values", "uint8", "B", "Values"),
+                    future_bytes,
+                ],
+                repeatable: true,
+                required: false,
+                localized: false,
+                enum_ref: None,
+                formlink_target: None,
+                formlink_targets: Vec::new(),
+                null_allowed: false,
+                union_selector: None,
+                union_variants: Vec::new(),
+                _array: None,
+                row_label: None,
+                authoring_layout: None,
+                authoring_key: None,
+                scope_id: None,
+            };
+            let schema = make_empty_schema();
+            let decode_spec = schema_subrecord_to_decode_spec(&spec, &schema)
+                .expect("absent conditional bytes field must not disable structured decode");
+            let mut context = std::collections::HashMap::new();
+            context.insert("record_form_version".to_string(), serde_json::json!(131));
+
+            let value = decode_subrecord_json(&decode_spec, &[2, 0xAA, 0xBB], &context)
+                .expect("form-version 131 payload should decode without the future bytes tail");
+            let obj = value.as_object().unwrap();
+            assert_eq!(obj.get("values"), Some(&serde_json::json!([0xAA, 0xBB])));
+            assert!(!obj.contains_key("future_bytes"));
+
+        }
+        // bpnd_like_field_union_uses_variable_width_decode
+        {
+            let mut future_bytes = make_field("future_bytes", "bytes", "Future Bytes");
+            future_bytes
+                .presence_conditions
+                .push(make_form_version_condition("gte", 208));
+            let spec = SchemaSubrecordJson {
+                id: "BPND".to_string(),
+                kind: "parsed_with_raw_fallback".to_string(),
+                display_label: Some("Node Data".to_string()),
+                codec: Some("struct:B,B,B".to_string()),
+                fields: vec![
+                    make_field("prefix", "uint8", "Prefix"),
+                    make_actor_value_union_field(),
+                    make_field("after", "uint8", "After"),
+                    future_bytes,
+                ],
+                repeatable: true,
+                required: false,
+                localized: false,
+                enum_ref: None,
+                formlink_target: None,
+                formlink_targets: Vec::new(),
+                null_allowed: false,
+                union_selector: None,
+                union_variants: Vec::new(),
+                _array: None,
+                row_label: None,
+                authoring_layout: None,
+                authoring_key: None,
+                scope_id: None,
+            };
+            let schema = make_empty_schema();
+            let decode_spec = schema_subrecord_to_decode_spec(&spec, &schema)
+                .expect("BPND-like field union should build a decode spec");
+            let mut context = std::collections::HashMap::new();
+            context.insert("record_form_version".to_string(), serde_json::json!(131));
+
+            let value = decode_subrecord_json(
+                &decode_spec,
+                &[0x11, 0x78, 0x56, 0x34, 0x12, 0x22],
+                &context,
+            )
+            .expect("form-version 131 union payload should decode as prefix + formid + after");
+            let obj = value.as_object().unwrap();
+            assert_eq!(obj.get("prefix"), Some(&serde_json::json!(0x11)));
+            assert_eq!(
+                obj.get("actor_value"),
+                Some(&serde_json::json!({
+                    "variant": "actor_value",
+                    "value": 0x12345678_u64
+                }))
+            );
+            assert_eq!(obj.get("after"), Some(&serde_json::json!(0x22)));
+            assert!(!obj.contains_key("future_bytes"));
+
+        }
+        // fo76_bpnd_schema_uses_variable_struct_decode_spec
+        {
+            let schema = compiled_schema_for_game("fo76").unwrap();
+            let record = schema.records.get("BPTD").unwrap();
+            let spec = record
+                .subrecords
+                .iter()
+                .find(|subrecord| subrecord.id == "BPND")
+                .unwrap();
+            let decode_spec = schema_subrecord_to_decode_spec(spec, schema.as_ref())
+                .expect("FO76 BPTD.BPND should build a structured decode spec");
+
+            match decode_spec {
+                crate::DecodeSpec::VariableStruct { segments, .. } => {
+                    assert!(
+                        segments
+                            .iter()
+                            .any(|segment| segment.name() == "actor_value")
+                    );
+                    assert!(segments.iter().any(|segment| segment.name() == "bytes_37"));
+                }
+                _ => panic!("FO76 BPTD.BPND must use VariableStruct for the actor_value union"),
+            }
+
+        }
     }
 
     fn make_debr_data_spec() -> SchemaSubrecordJson {
@@ -6773,158 +7241,6 @@ mod tests {
             authoring_layout: None,
             authoring_key: None,
             scope_id: Some("models".to_string()),
-        }
-    }
-
-    #[test]
-    fn variable_struct_decodes_interior_zstring() {
-        let payload = [75, b'M', b'e', b's', b'h', 0, 1];
-        let spec = make_debr_data_spec();
-        let schema = make_empty_schema();
-        let decode_spec = schema_subrecord_to_decode_spec(&spec, &schema)
-            .expect("DEBR.DATA should build a variable struct decode spec");
-        match &decode_spec {
-            crate::DecodeSpec::VariableStruct { segments, .. } => {
-                assert_eq!(segments.len(), 3);
-            }
-            _ => panic!("expected DecodeSpec::VariableStruct"),
-        }
-        let ctx: std::collections::HashMap<String, serde_json::Value> =
-            std::collections::HashMap::new();
-        let value = decode_subrecord_json(&decode_spec, &payload, &ctx)
-            .expect("DEBR.DATA payload should decode");
-        assert_eq!(
-            value,
-            serde_json::json!({
-                "percentage": 75,
-                "model_file_name": "Mesh",
-                "has_collision": 1
-            })
-        );
-    }
-
-    #[test]
-    fn variable_struct_decode_spec_skips_absent_conditional_bytes_field() {
-        let mut future_bytes = make_field("future_bytes", "bytes", "Future Bytes");
-        future_bytes
-            .presence_conditions
-            .push(make_form_version_condition("gte", 208));
-        let spec = SchemaSubrecordJson {
-            id: "BPND".to_string(),
-            kind: "parsed_with_raw_fallback".to_string(),
-            display_label: Some("Node Data".to_string()),
-            codec: Some("struct:B".to_string()),
-            fields: vec![
-                make_array_field("values", "uint8", "B", "Values"),
-                future_bytes,
-            ],
-            repeatable: true,
-            required: false,
-            localized: false,
-            enum_ref: None,
-            formlink_target: None,
-            formlink_targets: Vec::new(),
-            null_allowed: false,
-            union_selector: None,
-            union_variants: Vec::new(),
-            _array: None,
-            row_label: None,
-            authoring_layout: None,
-            authoring_key: None,
-            scope_id: None,
-        };
-        let schema = make_empty_schema();
-        let decode_spec = schema_subrecord_to_decode_spec(&spec, &schema)
-            .expect("absent conditional bytes field must not disable structured decode");
-        let mut context = std::collections::HashMap::new();
-        context.insert("record_form_version".to_string(), serde_json::json!(131));
-
-        let value = decode_subrecord_json(&decode_spec, &[2, 0xAA, 0xBB], &context)
-            .expect("form-version 131 payload should decode without the future bytes tail");
-        let obj = value.as_object().unwrap();
-        assert_eq!(obj.get("values"), Some(&serde_json::json!([0xAA, 0xBB])));
-        assert!(!obj.contains_key("future_bytes"));
-    }
-
-    #[test]
-    fn bpnd_like_field_union_uses_variable_width_decode() {
-        let mut future_bytes = make_field("future_bytes", "bytes", "Future Bytes");
-        future_bytes
-            .presence_conditions
-            .push(make_form_version_condition("gte", 208));
-        let spec = SchemaSubrecordJson {
-            id: "BPND".to_string(),
-            kind: "parsed_with_raw_fallback".to_string(),
-            display_label: Some("Node Data".to_string()),
-            codec: Some("struct:B,B,B".to_string()),
-            fields: vec![
-                make_field("prefix", "uint8", "Prefix"),
-                make_actor_value_union_field(),
-                make_field("after", "uint8", "After"),
-                future_bytes,
-            ],
-            repeatable: true,
-            required: false,
-            localized: false,
-            enum_ref: None,
-            formlink_target: None,
-            formlink_targets: Vec::new(),
-            null_allowed: false,
-            union_selector: None,
-            union_variants: Vec::new(),
-            _array: None,
-            row_label: None,
-            authoring_layout: None,
-            authoring_key: None,
-            scope_id: None,
-        };
-        let schema = make_empty_schema();
-        let decode_spec = schema_subrecord_to_decode_spec(&spec, &schema)
-            .expect("BPND-like field union should build a decode spec");
-        let mut context = std::collections::HashMap::new();
-        context.insert("record_form_version".to_string(), serde_json::json!(131));
-
-        let value = decode_subrecord_json(
-            &decode_spec,
-            &[0x11, 0x78, 0x56, 0x34, 0x12, 0x22],
-            &context,
-        )
-        .expect("form-version 131 union payload should decode as prefix + formid + after");
-        let obj = value.as_object().unwrap();
-        assert_eq!(obj.get("prefix"), Some(&serde_json::json!(0x11)));
-        assert_eq!(
-            obj.get("actor_value"),
-            Some(&serde_json::json!({
-                "variant": "actor_value",
-                "value": 0x12345678_u64
-            }))
-        );
-        assert_eq!(obj.get("after"), Some(&serde_json::json!(0x22)));
-        assert!(!obj.contains_key("future_bytes"));
-    }
-
-    #[test]
-    fn fo76_bpnd_schema_uses_variable_struct_decode_spec() {
-        let schema = compiled_schema_for_game("fo76").unwrap();
-        let record = schema.records.get("BPTD").unwrap();
-        let spec = record
-            .subrecords
-            .iter()
-            .find(|subrecord| subrecord.id == "BPND")
-            .unwrap();
-        let decode_spec = schema_subrecord_to_decode_spec(spec, schema.as_ref())
-            .expect("FO76 BPTD.BPND should build a structured decode spec");
-
-        match decode_spec {
-            crate::DecodeSpec::VariableStruct { segments, .. } => {
-                assert!(
-                    segments
-                        .iter()
-                        .any(|segment| segment.name() == "actor_value")
-                );
-                assert!(segments.iter().any(|segment| segment.name() == "bytes_37"));
-            }
-            _ => panic!("FO76 BPTD.BPND must use VariableStruct for the actor_value union"),
         }
     }
 
@@ -7015,54 +7331,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn rewrite_schema_form_ids_rewrites_nvnm_door_refs_and_parent() {
-        let spec = make_nvnm_subrecord_spec();
-        let schema = make_empty_schema();
-        let mut bytes = build_nvnm_bytes_with_door_and_exterior_parent();
-        let original_len = bytes.len();
-        let mut rewrite = |raw: u32| -> Option<u32> {
-            // Add 0x01000000 to every FormID.
-            Some(raw.wrapping_add(0x0100_0000))
-        };
-        let changed =
-            rewrite_schema_form_ids_in_subrecord(&spec, &schema, &mut bytes, &mut rewrite);
-        assert!(changed, "expected NVNM rewrite to report mutation");
-        assert_eq!(
-            bytes.len(),
-            original_len,
-            "NVNM length must be preserved by FormID rewrite"
-        );
-        let reparsed = crate::nvnm::parse_nvnm(&bytes).expect("reparse");
-        match reparsed.parent {
-            crate::nvnm::NvnmParent::Exterior {
-                world,
-                grid_x,
-                grid_y,
-            } => {
-                assert_eq!(world, 0x0125_DA15, "world form_id must be remapped");
-                assert_eq!(grid_x, 1);
-                assert_eq!(grid_y, 2);
-            }
-            _ => panic!("expected Exterior parent"),
-        }
-        assert_eq!(reparsed.door_refs.len(), 2);
-        assert_eq!(reparsed.door_refs[0].door_ref_form_id, 0x0110_0042);
-        assert_eq!(reparsed.door_refs[1].door_ref_form_id, 0x0120_5678);
-        // Padding bytes survive the FormID-only rewrite (codec is structural).
-        assert_eq!(reparsed.door_refs[0].padding, [0xAA, 0xBB, 0xCC, 0xDD]);
-    }
-
-    #[test]
-    fn rewrite_schema_form_ids_nvnm_returns_false_when_policy_keeps_all() {
-        let spec = make_nvnm_subrecord_spec();
-        let schema = make_empty_schema();
-        let mut bytes = build_nvnm_bytes_with_door_and_exterior_parent();
-        let original = bytes.clone();
-        let mut rewrite = |_raw: u32| -> Option<u32> { None };
-        let changed =
-            rewrite_schema_form_ids_in_subrecord(&spec, &schema, &mut bytes, &mut rewrite);
-        assert!(!changed);
-        assert_eq!(bytes, original);
-    }
 }

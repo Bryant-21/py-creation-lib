@@ -6,8 +6,8 @@ from creation_lib.world_renderer import WorldReport
 from creation_lib.world_renderer.render import cli
 
 
-def test_render_entrypoint_validates_size() -> None:
-    result = CliRunner().invoke(
+def test_render_entrypoint_loads_scene_and_prints_report(monkeypatch, tmp_path) -> None:
+    invalid_size = CliRunner().invoke(
         cli,
         [
             "out.png",
@@ -21,12 +21,9 @@ def test_render_entrypoint_validates_size() -> None:
             "128",
         ],
     )
+    assert invalid_size.exit_code != 0
+    assert "width and height must be positive" in invalid_size.output
 
-    assert result.exit_code != 0
-    assert "width and height must be positive" in result.output
-
-
-def test_render_entrypoint_loads_scene_and_prints_report(monkeypatch, tmp_path) -> None:
     calls: list[tuple] = []
 
     class FakeScene:

@@ -178,9 +178,7 @@ fn directed_edges(tri: &Tri) -> [(u32, u32); 3] {
 mod tests {
     use super::*;
 
-    fn two_tri_quad_consistent() -> SetupMesh {
-        // Two CCW triangles sharing edge (1, 2) — one directs 1→2, other 2→1.
-        // Verts: 0=(0,0), 1=(1,0), 2=(1,1), 3=(0,1)
+    fn quad(triangles: Vec<[u32; 3]>) -> SetupMesh {
         let mut m = SetupMesh::default();
         m.positions = vec![
             [0.0, 0.0, 0.0, 1.0],
@@ -188,119 +186,49 @@ mod tests {
             [1.0, 1.0, 0.0, 1.0],
             [0.0, 1.0, 0.0, 1.0],
         ];
-        m.triangles = vec![[0, 1, 2], [0, 2, 3]];
-        m
-    }
-
-    fn two_tri_quad_flipped() -> SetupMesh {
-        // Same geometry but second triangle is wound backwards. Both
-        // triangles emit the directed edge 2→0 on shared edge (0,2) → mismatch.
-        let mut m = SetupMesh::default();
-        m.positions = vec![
-            [0.0, 0.0, 0.0, 1.0],
-            [1.0, 0.0, 0.0, 1.0],
-            [1.0, 1.0, 0.0, 1.0],
-            [0.0, 1.0, 0.0, 1.0],
-        ];
-        m.triangles = vec![[0, 1, 2], [3, 2, 0]];
+        m.triangles = triangles;
         m
     }
 
     #[test]
-    fn check_winding_clean_quad_has_no_issues() {
-        let mesh = two_tri_quad_consistent();
-        let issues = check_winding(&mesh);
-        assert!(issues.is_empty(), "unexpected issues: {issues:?}");
-    }
-
-    #[test]
-    fn check_winding_flagged_when_neighbor_is_flipped() {
-        let mesh = two_tri_quad_flipped();
-        let issues = check_winding(&mesh);
+    fn check_winding_flags_only_flipped_neighbors() {
+        assert!(check_winding(&SetupMesh::default()).is_empty());
+        let clean = check_winding(&quad(vec![[0, 1, 2], [0, 2, 3]]));
+        assert!(clean.is_empty(), "unexpected issues: {clean:?}");
+        // Both triangles emit directed edge 2→0 on the shared edge.
+        let flipped = check_winding(&quad(vec![[0, 1, 2], [3, 2, 0]]));
         assert!(
-            issues.iter().any(|i| i.code == "WINDING_FLIP"),
-            "expected WINDING_FLIP, got {issues:?}"
+            flipped.iter().any(|i| i.code == "WINDING_FLIP"),
+            "expected WINDING_FLIP, got {flipped:?}"
         );
     }
 
     #[test]
-    fn find_redundant_links_groups_duplicates() {
-        let links = vec![
-            LinkLite {
-                particle_a: 0,
-                particle_b: 1,
-                rest_length: 1.0,
-            },
-            LinkLite {
-                particle_a: 1,
-                particle_b: 0,
-                rest_length: 1.001,
-            },
-            LinkLite {
-                particle_a: 2,
-                particle_b: 3,
-                rest_length: 1.0,
-            },
-        ];
-        let groups = find_redundant_links(&links, 1e-2);
-        assert_eq!(groups.len(), 1);
+    fn redundant_links_group_and_split_by_rest_length_overlap() {
+        let link = |a, b, rest_length| LinkLite {
+            particle_a: a,
+            particle_b: b,
+            rest_length,
+        };
+        assert!(find_redundant_links(&[], 1e-3).is_empty());
+
+        let groups = find_redundant_links(
+            &[link(0, 1, 1.0), link(1, 0, 1.001), link(2, 3, 1.0), link(2, 3, 5.0)],
+            1e-2,
+        );
+        assert_eq!(groups.len(), 2);
         let g = &groups[0];
-        assert_eq!(g.particle_a, 0);
-        assert_eq!(g.particle_b, 1);
+        assert_eq!((g.particle_a, g.particle_b), (0, 1));
         assert_eq!(g.link_indices.len(), 2);
         assert!(g.rest_lengths_overlap);
-    }
+        assert!(!groups[1].rest_lengths_overlap);
+        assert_eq!(groups[1].rest_length_range, (1.0, 5.0));
 
-    #[test]
-    fn find_redundant_links_flags_divergent_rest_length() {
-        let links = vec![
-            LinkLite {
-                particle_a: 0,
-                particle_b: 1,
-                rest_length: 1.0,
-            },
-            LinkLite {
-                particle_a: 0,
-                particle_b: 1,
-                rest_length: 5.0,
-            },
-        ];
-        let groups = find_redundant_links(&links, 1e-3);
-        assert_eq!(groups.len(), 1);
-        assert!(!groups[0].rest_lengths_overlap);
-        assert_eq!(groups[0].rest_length_range, (1.0, 5.0));
-    }
-
-    #[test]
-    fn redundant_links_to_issues_severity_split() {
-        let groups = vec![
-            RedundantLinkGroup {
-                particle_a: 0,
-                particle_b: 1,
-                link_indices: vec![0, 1],
-                rest_lengths_overlap: true,
-                rest_length_range: (1.0, 1.001),
-            },
-            RedundantLinkGroup {
-                particle_a: 2,
-                particle_b: 3,
-                link_indices: vec![2, 3],
-                rest_lengths_overlap: false,
-                rest_length_range: (1.0, 5.0),
-            },
-        ];
         let issues = redundant_links_to_issues(&groups);
         assert_eq!(issues.len(), 2);
         assert_eq!(issues[0].severity, Severity::Warning);
         assert_eq!(issues[0].code, "REDUNDANT_LINK_MERGEABLE");
         assert_eq!(issues[1].severity, Severity::Info);
         assert_eq!(issues[1].code, "REDUNDANT_LINK_DIVERGENT");
-    }
-
-    #[test]
-    fn empty_inputs_produce_empty_outputs() {
-        let mesh = SetupMesh::default();
-        assert!(check_winding(&mesh).is_empty());
-        assert!(find_redundant_links(&[], 1e-3).is_empty());
     }
 }

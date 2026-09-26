@@ -111,41 +111,39 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cube_top_face_normal_points_up() {
-        // Single quad (2 triangles) on the XY plane at Z=1
-        let verts = vec![
-            [0.0f32, 0.0, 1.0],
-            [1.0, 0.0, 1.0],
-            [1.0, 1.0, 1.0],
-            [0.0, 1.0, 1.0],
-        ];
-        let tris = vec![[0u32, 1, 2], [0, 2, 3]];
-        let normals = compute_normals(&verts, &tris);
-        for n in &normals {
-            assert!(
-                (n[2] - 1.0).abs() < 1e-5,
-                "Z component must be ~1.0, got {:?}",
-                n
-            );
-            assert!(n[0].abs() < 1e-5);
-            assert!(n[1].abs() < 1e-5);
+    fn vertex_normals_cube_isolated_and_flat() {
+        {
+            // Single quad (2 triangles) on the XY plane at Z=1
+            let verts = vec![
+                [0.0f32, 0.0, 1.0],
+                [1.0, 0.0, 1.0],
+                [1.0, 1.0, 1.0],
+                [0.0, 1.0, 1.0],
+            ];
+            let tris = vec![[0u32, 1, 2], [0, 2, 3]];
+            let normals = compute_normals(&verts, &tris);
+            for n in &normals {
+                assert!(
+                    (n[2] - 1.0).abs() < 1e-5,
+                    "Z component must be ~1.0, got {:?}",
+                    n
+                );
+                assert!(n[0].abs() < 1e-5);
+                assert!(n[1].abs() < 1e-5);
+            }
         }
-    }
-
-    #[test]
-    fn isolated_vertex_gets_default_normal() {
-        let verts = vec![[0.0f32, 0.0, 0.0]];
-        let tris: Vec<[u32; 3]> = vec![];
-        let normals = compute_normals(&verts, &tris);
-        assert_eq!(normals[0], [0.0, 0.0, 1.0]);
-    }
-
-    #[test]
-    fn flat_normal_matches_z_up_plane() {
-        let verts = vec![[0.0f32, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
-        let tris = vec![[0u32, 1, 2]];
-        let normals = compute_flat_normals(&verts, &tris);
-        assert_eq!(normals.len(), 1);
-        assert!((normals[0][2] - 1.0).abs() < 1e-5, "{:?}", normals[0]);
+        {
+            let verts = vec![[0.0f32, 0.0, 0.0]];
+            let tris: Vec<[u32; 3]> = vec![];
+            let normals = compute_normals(&verts, &tris);
+            assert_eq!(normals[0], [0.0, 0.0, 1.0]);
+        }
+        {
+            let verts = vec![[0.0f32, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+            let tris = vec![[0u32, 1, 2]];
+            let normals = compute_flat_normals(&verts, &tris);
+            assert_eq!(normals.len(), 1);
+            assert!((normals[0][2] - 1.0).abs() < 1e-5, "{:?}", normals[0]);
+        }
     }
 }

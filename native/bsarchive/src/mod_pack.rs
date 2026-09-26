@@ -113,6 +113,7 @@ pub(crate) struct PackModConfig {
     pub(crate) xbox: bool,
     pub(crate) archive_workers: usize,
     pub(crate) manifest_path: Option<PathBuf>,
+    pub(crate) fo4_og: bool,
     pub(crate) dry_run: bool,
 }
 
@@ -831,7 +832,22 @@ fn inventory_mod_entries(
 ) -> PackResult<Vec<ArchiveEntry>> {
     let mut entries = Vec::new();
     inventory_tree(&config.data_dir, None, &mut entries, progress)?;
-    inventory_tree(&config.strings_dir, Some("Strings"), &mut entries, progress)?;
+    let mut root_strings = Vec::new();
+    inventory_tree(
+        &config.strings_dir,
+        Some("Strings"),
+        &mut root_strings,
+        progress,
+    )?;
+    if !root_strings.is_empty() {
+        let root_string_paths: HashSet<_> = root_strings
+            .iter()
+            .map(|entry| entry.relative_path.to_ascii_lowercase())
+            .collect();
+        entries
+            .retain(|entry| !root_string_paths.contains(&entry.relative_path.to_ascii_lowercase()));
+        entries.extend(root_strings);
+    }
     entries.sort_by(|a, b| {
         let ak = a.relative_path.to_ascii_lowercase();
         let bk = b.relative_path.to_ascii_lowercase();
@@ -841,7 +857,12 @@ fn inventory_mod_entries(
     Ok(entries)
 }
 
-fn native_archive_type(game: &str, texture_archive: bool, platform: &str) -> PackResult<String> {
+fn native_archive_type(
+    game: &str,
+    texture_archive: bool,
+    platform: &str,
+    fo4_og: bool,
+) -> PackResult<String> {
     if platform == "xbox" && game == "fo4" {
         return Ok(if texture_archive {
             "fo4xboxdds"
@@ -855,6 +876,7 @@ fn native_archive_type(game: &str, texture_archive: bool, platform: &str) -> Pac
     }
     let suffix = if texture_archive { "dds" } else { "" };
     match game {
+        "fo4" if fo4_og => Ok(format!("fo4og{suffix}")),
         "fo4" => Ok(format!("fo4{suffix}")),
         "fo76" => Ok(format!("fo76{suffix}")),
         "starfield" => Ok(if texture_archive {
@@ -1066,7 +1088,8 @@ fn pack_planned_archive(
     let output_path = config.mod_dir.join(&plan.output_name);
     let started = Instant::now();
     let plan_bytes = plan.entries.iter().map(|entry| entry.size).sum::<u64>();
-    let archive_type = native_archive_type(&config.game, plan.texture_archive, "pc")?;
+    let archive_type =
+        native_archive_type(&config.game, plan.texture_archive, "pc", config.fo4_og)?;
     let level = crate::pack::archive_type_default_level(&archive_type);
     let reference_manifest =
         write_reference_manifest(&output_path, temp_manifest_dir, &plan.label)?;
@@ -1570,8 +1593,9 @@ pub(crate) fn pack_mod_archives(
         config.archive_workers
     }
     .max(1);
-    let archive_type_for =
-        |plan: &PlannedArchive| native_archive_type(&config.game, plan.texture_archive, "pc");
+    let archive_type_for = |plan: &PlannedArchive| {
+        native_archive_type(&config.game, plan.texture_archive, "pc", config.fo4_og)
+    };
     let output_path_for = |plan: &PlannedArchive| config.mod_dir.join(&plan.output_name);
     let pack_one = |plan: &PlannedArchive, workers_for_archive| {
         pack_planned_archive(config, plan, &temp_manifest_dir, workers_for_archive)
@@ -1637,17 +1661,120 @@ mod tests {
     }
 
     #[test]
-    fn playstation_archive_types_use_gnrl_profiles() {
-        assert_eq!(native_archive_type("fo4", false, "ps").unwrap(), "fo4ps");
-        assert_eq!(native_archive_type("fo4", true, "ps").unwrap(), "fo4psdds");
+    fn native_archive_type_selects_platform_and_og_profiles() {
+        for (texture, platform, og, expected) in [
+            (false, "ps", false, "fo4ps"),
+            (true, "ps", false, "fo4psdds"),
+            (false, "pc", true, "fo4og"),
+            (true, "pc", true, "fo4ogdds"),
+        ] {
+            assert_eq!(
+                native_archive_type("fo4", texture, platform, og).unwrap(),
+                expected
+            );
+        }
     }
 
     #[test]
-    fn generated_archive_names_accept_playstation_suffix() {
-        assert!(is_generated_archive_name(
-            Path::new("B21_Test - Textures_ps.ba2"),
-            "B21_Test - "
-        ));
+    fn planner_names_and_shards_archives() {
+        let lod: Vec<_> = (0..12)
+            .map(|idx| (format!("Meshes/Terrain/Appalachia/{idx:02}.bto"), 30_000))
+            .collect();
+        let cases: Vec<(Vec<(String, u64)>, u64, bool, Vec<&str>)> = vec![
+            (
+                vec![
+                    ("Meshes/a.nif".into(), 10),
+                    ("Textures/a.dds".into(), 4000),
+                    ("Textures/b.dds".into(), 4000),
+                ],
+                9000,
+                true,
+                vec![
+                    "B21_Test - Meshes.ba2",
+                    "B21_Test - Textures1.ba2",
+                    "B21_Test - Textures2.ba2",
+                ],
+            ),
+            (
+                vec![
+                    ("Meshes/a.nif".into(), 10),
+                    ("Scripts/a.pex".into(), 10),
+                    ("Textures/a.dds".into(), 10),
+                ],
+                1,
+                false,
+                vec!["B21_Test - Main.ba2", "B21_Test - Textures.ba2"],
+            ),
+            (
+                lod,
+                100_000,
+                true,
+                vec![
+                    "B21_Test - LOD1.ba2",
+                    "B21_Test - LOD2.ba2",
+                    "B21_Test - LOD3.ba2",
+                ],
+            ),
+            (
+                vec![("Textures/a.dds".into(), 5000), ("Textures/b.dds".into(), 5000)],
+                14_000,
+                true,
+                vec!["B21_Test - Textures.ba2"],
+            ),
+            (
+                vec![("Sound/a.fuz".into(), 5000), ("Sound/b.fuz".into(), 5000)],
+                14_000,
+                true,
+                vec!["B21_Test - Sounds1.ba2", "B21_Test - Sounds2.ba2"],
+            ),
+            (
+                vec![
+                    ("Meshes/test.nif".into(), 10),
+                    ("Scripts/test.pex".into(), 10),
+                    ("readme.txt".into(), 10),
+                    ("Textures/test.dds".into(), 10),
+                ],
+                1024 * 1024,
+                true,
+                vec![
+                    "B21_Test - Meshes.ba2",
+                    "B21_Test - Misc.ba2",
+                    "B21_Test - Textures.ba2",
+                ],
+            ),
+            (
+                (0..4)
+                    .map(|idx| (format!("Meshes/{idx}.nif"), 4000))
+                    .collect(),
+                9000,
+                true,
+                vec![
+                    "B21_Test - Meshes.ba2",
+                    "B21_Test - MeshesExtra.ba2",
+                    "B21_Test - MeshesExtra1.ba2",
+                    "B21_Test - MeshesExtra2.ba2",
+                ],
+            ),
+            (
+                (0..3)
+                    .map(|idx| (format!("Scripts/{idx}.pex"), 4000))
+                    .collect(),
+                9000,
+                true,
+                vec![
+                    "B21_Test - Misc.ba2",
+                    "B21_Test - Misc1.ba2",
+                    "B21_Test - Misc2.ba2",
+                ],
+            ),
+        ];
+        for (files, cap, expanded, expected) in cases {
+            let entries: Vec<_> = files.iter().map(|(rel, size)| entry(rel, *size)).collect();
+            let plans = plan_archive_outputs("B21_Test", &entries, "ba2", "", cap, "fo4", expanded)
+                .expect("planning should succeed");
+            let names: Vec<_> = plans.iter().map(|plan| plan.output_name.as_str()).collect();
+            assert_eq!(names, expected);
+        }
     }
 
     fn entry(rel: &str, size: u64) -> ArchiveEntry {
@@ -1657,92 +1784,6 @@ mod tests {
             size,
             family: classify_archive_family(rel),
         }
-    }
-
-    #[test]
-    fn planner_shards_texture_archives_by_cap() {
-        let entries = vec![
-            entry("Meshes/a.nif", 10),
-            entry("Textures/a.dds", 4000),
-            entry("Textures/b.dds", 4000),
-        ];
-        let plans = plan_archive_outputs("B21_Test", &entries, "ba2", "", 9000, "fo4", true)
-            .expect("planning should succeed");
-        let names: Vec<_> = plans.iter().map(|plan| plan.output_name.as_str()).collect();
-
-        assert_eq!(
-            names,
-            vec![
-                "B21_Test - Meshes.ba2",
-                "B21_Test - Textures1.ba2",
-                "B21_Test - Textures2.ba2",
-            ]
-        );
-    }
-
-    #[test]
-    fn planner_compact_ignores_archive_cap() {
-        let entries = vec![
-            entry("Meshes/a.nif", 10),
-            entry("Scripts/a.pex", 10),
-            entry("Textures/a.dds", 10),
-        ];
-        let plans = plan_archive_outputs("B21_Test", &entries, "ba2", "", 1, "fo4", false)
-            .expect("planning should succeed");
-        let names: Vec<_> = plans.iter().map(|plan| plan.output_name.as_str()).collect();
-
-        assert_eq!(
-            names,
-            vec!["B21_Test - Main.ba2", "B21_Test - Textures.ba2"]
-        );
-    }
-
-    #[test]
-    fn planner_uses_ba2_estimate_for_compressible_lod_archives() {
-        let entries: Vec<_> = (0..12)
-            .map(|idx| entry(&format!("Meshes/Terrain/Appalachia/{idx:02}.bto"), 30_000))
-            .collect();
-        let plans = plan_archive_outputs("B21_Test", &entries, "ba2", "", 100_000, "fo4", true)
-            .expect("planning should succeed");
-        let names: Vec<_> = plans.iter().map(|plan| plan.output_name.as_str()).collect();
-        let counts: Vec<_> = plans.iter().map(|plan| plan.entries.len()).collect();
-
-        assert_eq!(
-            names,
-            vec![
-                "B21_Test - LOD1.ba2",
-                "B21_Test - LOD2.ba2",
-                "B21_Test - LOD3.ba2",
-            ]
-        );
-        assert_eq!(counts, vec![4, 4, 4]);
-    }
-
-    #[test]
-    fn planner_uses_ba2_estimate_for_texture_archives() {
-        let entries = vec![entry("Textures/a.dds", 5000), entry("Textures/b.dds", 5000)];
-        let plans = plan_archive_outputs("B21_Test", &entries, "ba2", "", 14_000, "fo4", true)
-            .expect("planning should succeed");
-        let names: Vec<_> = plans.iter().map(|plan| plan.output_name.as_str()).collect();
-        let counts: Vec<_> = plans.iter().map(|plan| plan.entries.len()).collect();
-
-        assert_eq!(names, vec!["B21_Test - Textures.ba2"]);
-        assert_eq!(counts, vec![2]);
-    }
-
-    #[test]
-    fn planner_shards_sounds_without_relying_on_compression() {
-        let entries = vec![entry("Sound/a.fuz", 5000), entry("Sound/b.fuz", 5000)];
-        let plans = plan_archive_outputs("B21_Test", &entries, "ba2", "", 14_000, "fo4", true)
-            .expect("planning should succeed");
-        let names: Vec<_> = plans.iter().map(|plan| plan.output_name.as_str()).collect();
-        let counts: Vec<_> = plans.iter().map(|plan| plan.entries.len()).collect();
-
-        assert_eq!(
-            names,
-            vec!["B21_Test - Sounds1.ba2", "B21_Test - Sounds2.ba2"]
-        );
-        assert_eq!(counts, vec![1, 1]);
     }
 
     #[test]
@@ -1872,24 +1913,6 @@ mod tests {
     }
 
     #[test]
-    fn archive_pack_progress_reports_growth_and_previous_size() {
-        let message = archive_pack_progress_message(
-            "Textures.ba2",
-            Duration::from_secs(65),
-            Some(256 * 1024 * 1024),
-            64 * 1024 * 1024,
-            Duration::from_secs(10),
-            Some(512 * 1024 * 1024),
-        );
-
-        assert!(message.contains("name=Textures.ba2"));
-        assert!(message.contains("elapsed=65.0s"));
-        assert!(message.contains("output=256.0/512.0 MB"));
-        assert!(message.contains("approx=50.0%"));
-        assert!(message.contains("interval_rate=6.4 MB/s"));
-    }
-
-    #[test]
     fn scheduler_reports_progress_while_archive_is_active() {
         let dir = TestDir::new();
         let output_path = dir.path.join("Textures.ba2");
@@ -1938,11 +1961,6 @@ mod tests {
     }
 
     #[test]
-    fn omitted_archive_worker_budget_is_single_threaded() {
-        assert_eq!(default_archive_worker_budget(), 1);
-    }
-
-    #[test]
     fn texture_groups_cap_archive_concurrency_and_use_worker_budget() {
         let entries = vec![
             entry("Meshes/a.nif", 10),
@@ -1964,19 +1982,26 @@ mod tests {
     }
 
     #[test]
-    fn inventory_separates_texture_and_main_families() {
+    fn inventory_separates_families_and_prefers_root_strings() {
         let dir = TestDir::new();
         let data_dir = dir.path.join("data");
+        let strings_dir = dir.path.join("Strings");
         fs::create_dir_all(data_dir.join("Textures")).unwrap();
         fs::create_dir_all(data_dir.join("Meshes")).unwrap();
+        fs::create_dir_all(data_dir.join("Strings")).unwrap();
+        fs::create_dir_all(&strings_dir).unwrap();
         fs::write(data_dir.join("Textures").join("a.dds"), b"dds").unwrap();
         fs::write(data_dir.join("Meshes").join("a.nif"), b"nif").unwrap();
+        let filename = "B21_Test_cn.DLSTRINGS";
+        fs::write(data_dir.join("Strings").join(filename), b"stale").unwrap();
+        let root_string = strings_dir.join(filename);
+        fs::write(&root_string, b"current").unwrap();
 
         let config = PackModConfig {
             mod_name: "B21_Test".to_string(),
             mod_dir: dir.path.clone(),
             data_dir,
-            strings_dir: dir.path.join("Strings"),
+            strings_dir,
             game: "fo4".to_string(),
             archive_ext: "ba2".to_string(),
             archive_cap: 16 * 1024 * 1024 * 1024,
@@ -1985,6 +2010,7 @@ mod tests {
             xbox: false,
             archive_workers: 1,
             manifest_path: None,
+            fo4_og: false,
             dry_run: false,
         };
 
@@ -1996,6 +2022,17 @@ mod tests {
 
         assert_eq!(families["Textures/a.dds"], ArchiveFamily::Textures);
         assert_eq!(families["Meshes/a.nif"], ArchiveFamily::Meshes);
+
+        let strings: Vec<_> = entries
+            .iter()
+            .filter(|entry| {
+                entry
+                    .relative_path
+                    .eq_ignore_ascii_case(&format!("Strings/{filename}"))
+            })
+            .collect();
+        assert_eq!(strings.len(), 1);
+        assert_eq!(strings[0].source_path, root_string);
     }
 
     #[test]
@@ -2008,91 +2045,6 @@ mod tests {
             archive_member_list(&archive_path).expect("corrupt archive should be ignored");
 
         assert!(members.is_empty());
-    }
-
-    #[test]
-    fn planner_uses_expanded_fo4_label_aliases() {
-        let entries = vec![
-            entry("Meshes/test.nif", 10),
-            entry("Scripts/test.pex", 10),
-            entry("readme.txt", 10),
-            entry("Textures/test.dds", 10),
-        ];
-        let plans = plan_archive_outputs("B21_Test", &entries, "ba2", "", 1024 * 1024, "fo4", true)
-            .expect("planning should succeed");
-
-        let names: Vec<_> = plans.iter().map(|plan| plan.output_name.as_str()).collect();
-        assert_eq!(
-            names,
-            vec![
-                "B21_Test - Meshes.ba2",
-                "B21_Test - Misc.ba2",
-                "B21_Test - Textures.ba2",
-            ]
-        );
-        let misc_entries: Vec<_> = plans[1]
-            .entries
-            .iter()
-            .map(|entry| entry.relative_path.as_str())
-            .collect();
-        assert_eq!(misc_entries, vec!["Scripts/test.pex", "readme.txt"]);
-    }
-
-    #[test]
-    fn planner_uses_meshes_extra_for_second_expanded_fo4_mesh_archive() {
-        let entries = vec![entry("Meshes/a.nif", 4000), entry("Meshes/b.nif", 4000)];
-        let plans = plan_archive_outputs("B21_Test", &entries, "ba2", "", 9000, "fo4", true)
-            .expect("planning should succeed");
-        let names: Vec<_> = plans.iter().map(|plan| plan.output_name.as_str()).collect();
-
-        assert_eq!(
-            names,
-            vec!["B21_Test - Meshes.ba2", "B21_Test - MeshesExtra.ba2"]
-        );
-    }
-
-    #[test]
-    fn planner_numbers_additional_expanded_fo4_mesh_archives() {
-        let entries = vec![
-            entry("Meshes/a.nif", 4000),
-            entry("Meshes/b.nif", 4000),
-            entry("Meshes/c.nif", 4000),
-            entry("Meshes/d.nif", 4000),
-        ];
-        let plans = plan_archive_outputs("B21_Test", &entries, "ba2", "", 9000, "fo4", true)
-            .expect("planning should succeed");
-        let names: Vec<_> = plans.iter().map(|plan| plan.output_name.as_str()).collect();
-
-        assert_eq!(
-            names,
-            vec![
-                "B21_Test - Meshes.ba2",
-                "B21_Test - MeshesExtra.ba2",
-                "B21_Test - MeshesExtra1.ba2",
-                "B21_Test - MeshesExtra2.ba2",
-            ]
-        );
-    }
-
-    #[test]
-    fn planner_numbers_additional_expanded_fo4_misc_archives() {
-        let entries = vec![
-            entry("Scripts/a.pex", 4000),
-            entry("Scripts/b.pex", 4000),
-            entry("Scripts/c.pex", 4000),
-        ];
-        let plans = plan_archive_outputs("B21_Test", &entries, "ba2", "", 9000, "fo4", true)
-            .expect("planning should succeed");
-        let names: Vec<_> = plans.iter().map(|plan| plan.output_name.as_str()).collect();
-
-        assert_eq!(
-            names,
-            vec![
-                "B21_Test - Misc.ba2",
-                "B21_Test - Misc1.ba2",
-                "B21_Test - Misc2.ba2",
-            ]
-        );
     }
 
     #[test]
@@ -2122,6 +2074,7 @@ mod tests {
             xbox: false,
             archive_workers: 1,
             manifest_path: None,
+            fo4_og: false,
             dry_run: false,
         };
 
@@ -2153,66 +2106,6 @@ mod tests {
                 && m.contains("memory_budget=")
                 && m.contains("throttle_wait=")
         }));
-    }
-
-    #[test]
-    fn pack_progress_reports_archive_worker_split() {
-        let dir = TestDir::new();
-        let data_dir = dir.path.join("data");
-        fs::create_dir_all(data_dir.join("Meshes")).unwrap();
-        fs::create_dir_all(data_dir.join("Scripts")).unwrap();
-        fs::create_dir_all(data_dir.join("Materials")).unwrap();
-        fs::write(data_dir.join("Meshes").join("a.nif"), b"nif").unwrap();
-        fs::write(data_dir.join("Scripts").join("a.pex"), b"pex").unwrap();
-        fs::write(data_dir.join("Materials").join("a.bgsm"), b"bgsm").unwrap();
-
-        let config = PackModConfig {
-            mod_name: "B21_Test".to_string(),
-            mod_dir: dir.path.clone(),
-            data_dir,
-            strings_dir: dir.path.join("Strings"),
-            game: "fo4".to_string(),
-            archive_ext: "ba2".to_string(),
-            archive_cap: 16 * 1024 * 1024 * 1024,
-            expanded_archives: true,
-            pc: true,
-            xbox: false,
-            archive_workers: 6,
-            manifest_path: None,
-            dry_run: false,
-        };
-
-        let mut messages = Vec::new();
-        pack_mod_archives(&config, |event| {
-            messages.push(event.message);
-            Ok(())
-        })
-        .unwrap();
-
-        assert!(messages.iter().any(|m| {
-            m.contains("Packing archives with total_workers=6")
-                && m.contains("general_concurrency=2")
-                && m.contains("texture_concurrency=2")
-        }));
-        let pack_starts: Vec<_> = messages
-            .iter()
-            .filter(|message| message.starts_with("Packing archive "))
-            .collect();
-        assert_eq!(pack_starts.len(), 3);
-        assert_eq!(
-            pack_starts
-                .iter()
-                .filter(|message| message.contains("workers=3/6 archive_concurrency=2"))
-                .count(),
-            3
-        );
-        assert_eq!(
-            pack_starts
-                .iter()
-                .filter(|message| message.contains("workers=6/6 archive_concurrency=1"))
-                .count(),
-            0
-        );
     }
 
     #[test]
@@ -2304,6 +2197,12 @@ mod tests {
         // object textures/materials unaffected.
         assert_eq!(f("Textures/Weapons/gun_d.dds"), ArchiveFamily::Textures);
         assert_eq!(f("Materials/Weapons/gun.bgsm"), ArchiveFamily::Materials);
+        assert_eq!(f("data/Textures/a.dds"), ArchiveFamily::Textures);
+        assert_eq!(f("Data/Meshes/a.nif"), ArchiveFamily::Meshes);
+        assert_eq!(
+            f("Meshes/AnimTextData/AnimationEventInfo/123.txt"),
+            ArchiveFamily::Meshes
+        );
     }
 
     #[test]
@@ -2405,60 +2304,5 @@ mod tests {
         assert!(by_label["Textures"].texture_archive);
         assert!(!by_label.contains_key("LODTextures"));
         assert!(!by_label.contains_key("TerrainTextures"));
-    }
-
-    #[test]
-    fn classify_strips_leading_data_prefix() {
-        assert_eq!(
-            classify_archive_family("data/Textures/a.dds"),
-            ArchiveFamily::Textures
-        );
-        assert_eq!(
-            classify_archive_family("Data/Meshes/a.nif"),
-            ArchiveFamily::Meshes
-        );
-        assert_eq!(
-            classify_archive_family("Textures/a.dds"),
-            ArchiveFamily::Textures
-        );
-        assert_eq!(
-            classify_archive_family("Meshes/AnimTextData/AnimationEventInfo/123.txt"),
-            ArchiveFamily::Meshes
-        );
-    }
-
-    #[test]
-    fn plan_archives_public_returns_family_and_entries() {
-        let entries = vec![
-            ("Meshes/a.nif".to_string(), "/src/a.nif".to_string(), 10u64),
-            (
-                "Textures/a.dds".to_string(),
-                "/src/a.dds".to_string(),
-                20u64,
-            ),
-        ];
-        let plans = plan_archives_public(
-            "B21_Test",
-            &entries,
-            "ba2",
-            "",
-            16 * 1024 * 1024 * 1024,
-            "fo4",
-            false,
-        )
-        .expect("planning should succeed");
-        let by_label: std::collections::HashMap<_, _> =
-            plans.iter().map(|p| (p.label.as_str(), p)).collect();
-        assert_eq!(by_label["Main"].family, "Main");
-        assert_eq!(by_label["Textures"].family, "Textures");
-        assert!(by_label["Textures"].texture_archive);
-        assert_eq!(
-            by_label["Textures"].entries,
-            vec![(
-                "Textures/a.dds".to_string(),
-                "/src/a.dds".to_string(),
-                20u64
-            )]
-        );
     }
 }

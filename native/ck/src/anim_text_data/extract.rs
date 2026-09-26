@@ -802,80 +802,27 @@ mod tests {
     }
 
     #[test]
-    fn race_name_and_dir_from_core_behavior() {
+    fn path_helpers_keep_directories_and_swap_extensions() {
         let core = r"Actors\Snallygaster\Behaviors\SnallygasterCoreBehavior.hkx";
         assert_eq!(race_dir_of(core).as_deref(), Some(r"Actors\Snallygaster"));
         assert_eq!(race_name_of(core).as_deref(), Some("Snallygaster"));
-    }
-
-    #[test]
-    fn manifest_name_follows_the_shipped_project_file_stem() {
-        // RadHog ships `RadHog.hkx`, not `RadHogProject.hkx`. FO4 looks the
-        // manifest up by that stem, so emitting `radhogproject.txt` left the
-        // creature with no animation data at all.
-        assert_eq!(
-            manifest_project_name(None, Some("radhog.hkx"), "radhog"),
-            "radhog"
-        );
-    }
-
-    #[test]
-    fn conforming_creatures_keep_the_race_project_spelling() {
-        // Byte-identical output for every creature that already agreed.
-        assert_eq!(
-            manifest_project_name(None, Some("snallygasterproject.hkx"), "Snallygaster"),
-            "SnallygasterProject"
-        );
-    }
-
-    #[test]
-    fn manifest_name_falls_back_when_no_project_ships() {
-        assert_eq!(
-            manifest_project_name(None, None, "Snallygaster"),
-            "SnallygasterProject"
-        );
-    }
-
-    #[test]
-    fn declared_project_name_wins() {
-        assert_eq!(
-            manifest_project_name(Some("Authored".into()), Some("radhog.hkx"), "radhog"),
-            "Authored"
-        );
-    }
-
-    #[test]
-    fn anim_basename_strips_dir_and_ext() {
         assert_eq!(anim_basename_no_ext(r"Animations\Idle.hkt"), "Idle");
         assert_eq!(anim_basename_no_ext("Attack1"), "Attack1");
-    }
-
-    #[test]
-    fn force_hkx_ext_keeps_subdirectories_and_parent_escapes() {
-        // The manifest must reproduce the clip path, not just its basename:
-        // flattening these to `Animations\<stem>.hkx` is what killed the
-        // mole miner / scorched project manifests.
-        assert_eq!(
-            force_hkx_ext(r"Animations\Shared\DeathChest01.hkt"),
-            r"Animations\Shared\DeathChest01.hkx"
-        );
-        assert_eq!(
-            force_hkx_ext(r"Animations\AutoGrenadeLauncher\PoseA_Idle1.hkt"),
-            r"Animations\AutoGrenadeLauncher\PoseA_Idle1.hkx"
-        );
-        assert_eq!(
-            force_hkx_ext(r"..\Character\Animations\Death1.hkt"),
-            r"..\Character\Animations\Death1.hkx"
-        );
-        // already-correct paths and flat paths are untouched
-        assert_eq!(
-            force_hkx_ext(r"Animations\Idle.hkx"),
-            r"Animations\Idle.hkx"
-        );
-    }
-
-    #[test]
-    fn normalize_fx_rig_relativizes_and_swaps_ext() {
+        // Flattening clip paths to `Animations\<stem>.hkx` killed the mole miner /
+        // scorched project manifests.
+        for (input, expected) in [
+            (
+                r"Animations\Shared\DeathChest01.hkt",
+                r"Animations\Shared\DeathChest01.hkx",
+            ),
+            (
+                r"..\Character\Animations\Death1.hkt",
+                r"..\Character\Animations\Death1.hkx",
+            ),
+            (r"Animations\Idle.hkx", r"Animations\Idle.hkx"),
+        ] {
+            assert_eq!(force_hkx_ext(input), expected);
+        }
         assert_eq!(
             normalize_fx_rig(r"Meshes\GenericBehaviors\zSingleBoneSkeleton\SingleBoneSkeleton.hkt"),
             r"..\..\GenericBehaviors\zSingleBoneSkeleton\SingleBoneSkeleton.hkx"
@@ -883,23 +830,37 @@ mod tests {
     }
 
     #[test]
-    fn finds_actor_named_creature_project() {
-        let temp = tempfile::tempdir().unwrap();
-        std::fs::write(temp.path().join("RadHog.hkx"), b"project").unwrap();
-
-        assert_eq!(
-            find_creature_project_file(temp.path(), "RadHog").as_deref(),
-            Some("RadHog.hkx")
-        );
+    fn manifest_project_name_prefers_declared_then_shipped_stem() {
+        // RadHog ships `RadHog.hkx`; FO4 looks the manifest up by that stem.
+        for (declared, shipped, race, expected) in [
+            (None, Some("radhog.hkx"), "radhog", "radhog"),
+            (
+                None,
+                Some("snallygasterproject.hkx"),
+                "Snallygaster",
+                "SnallygasterProject",
+            ),
+            (None, None, "Snallygaster", "SnallygasterProject"),
+            (Some("Authored"), Some("radhog.hkx"), "radhog", "Authored"),
+        ] {
+            assert_eq!(
+                manifest_project_name(declared.map(Into::into), shipped, race),
+                expected
+            );
+        }
     }
 
     #[test]
-    fn resolves_actor_named_project_relpath() {
+    fn project_file_lookup_prefers_conventional_then_actor_named() {
         let temp = tempfile::tempdir().unwrap();
         let race_dir = temp.path().join("Actors").join("RadHog");
         std::fs::create_dir_all(&race_dir).unwrap();
         std::fs::write(race_dir.join("RadHog.hkx"), b"project").unwrap();
 
+        assert_eq!(
+            find_creature_project_file(&race_dir, "RadHog").as_deref(),
+            Some("RadHog.hkx")
+        );
         assert_eq!(
             project_hkx_relpath(
                 r"Actors\RadHog\Behaviors\RadHogCoreBehavior.hkx",
@@ -908,16 +869,10 @@ mod tests {
             .as_deref(),
             Some(r"Actors\RadHog\RadHog.hkx")
         );
-    }
 
-    #[test]
-    fn conventional_project_name_wins_over_actor_named_fallback() {
-        let temp = tempfile::tempdir().unwrap();
-        std::fs::write(temp.path().join("RadHog.hkx"), b"fallback").unwrap();
-        std::fs::write(temp.path().join("RadHogProject.hkx"), b"project").unwrap();
-
+        std::fs::write(race_dir.join("RadHogProject.hkx"), b"project").unwrap();
         assert_eq!(
-            find_creature_project_file(temp.path(), "RadHog").as_deref(),
+            find_creature_project_file(&race_dir, "RadHog").as_deref(),
             Some("RadHogProject.hkx")
         );
     }

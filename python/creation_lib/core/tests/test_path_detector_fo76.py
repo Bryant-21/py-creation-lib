@@ -2,12 +2,14 @@ from creation_lib.core.game_profiles import GAME_PROFILES
 from creation_lib.core import path_detector as pd
 
 
-def test_fo76_folder_candidates_include_no_space_variant():
+def test_fo76_folder_candidates_and_detect_via_vdf_finds_no_space_folder(tmp_path, monkeypatch):
     cands = pd._steam_folder_candidates("fo76", GAME_PROFILES["fo76"])
     assert "Fallout76" in cands  # the real Steam folder name (no space)
 
+    _detect_fo76_via_vdf_finds_no_space_folder(tmp_path, monkeypatch)
 
-def test_detect_fo76_via_vdf_finds_no_space_folder(tmp_path, monkeypatch):
+
+def _detect_fo76_via_vdf_finds_no_space_folder(tmp_path, monkeypatch):
     # Hermetic: only the VDF strategy runs (registry + common-scan stubbed so a
     # real local install cannot satisfy the test for the wrong reason).
     monkeypatch.setattr(pd, "_detect_from_registry", lambda *a, **k: None)

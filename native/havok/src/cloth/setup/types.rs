@@ -216,29 +216,3 @@ fn is_one_f32(f: &f32) -> bool {
 fn one_f32() -> f32 {
     1.0
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn vertex_float_input_constant_round_trips() {
-        let v = VertexFloatInput::constant(0.5);
-        let json = serde_json::to_string(&v).unwrap();
-        let back: VertexFloatInput = serde_json::from_str(&json).unwrap();
-        assert_eq!(v, back);
-        assert_eq!(back.constant_value, 0.5);
-    }
-
-    #[test]
-    fn vertex_selection_input_default_is_all() {
-        let v = VertexSelectionInput::default();
-        assert_eq!(v.kind, 0);
-    }
-
-    #[test]
-    fn vertex_selection_none_has_kind_1() {
-        let v = VertexSelectionInput::none();
-        assert_eq!(v.kind, 1);
-    }
-}

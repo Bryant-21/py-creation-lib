@@ -205,6 +205,37 @@ def git_checkout(mod_dir: Path) -> None:
     _run_git(mod_dir, "clean", "-fd")
 
 
+def git_lfs_prune(
+    mod_dir: Path, *, gitea_user: str = "", gitea_token: str = "",
+) -> str:
+    """Delete local LFS objects that origin verifiably stores. Returns prune's summary."""
+    _ensure_git_repo(mod_dir)
+    _run_git(mod_dir, "config", "http.sslVerify", "false", check=False)
+
+    r = _run_git(mod_dir, "remote", "get-url", "origin", check=False)
+    if r.returncode != 0:
+        raise RuntimeError(f"No 'origin' remote configured for {mod_dir.name}")
+
+    # Credentialed pushes target a URL, which never updates refs/remotes/origin/*.
+    # Prune counts commits missing from those refs as unpushed and keeps all their objects.
+    prune = ["lfs", "prune", "--force", "--verify-remote"]
+    if gitea_user and gitea_token:
+        target = _authed_remote(mod_dir, gitea_user, gitea_token)
+        r = _run_git(mod_dir, "-c", "http.sslVerify=false",
+                     "fetch", target, "+refs/heads/*:refs/remotes/origin/*", check=False)
+        endpoint = target + ("/info/lfs" if target.endswith(".git") else ".git/info/lfs")
+        prune = ["-c", f"lfs.url={endpoint}", *prune]
+    else:
+        r = _run_git(mod_dir, "fetch", "origin", check=False)
+    if r.returncode != 0:
+        raise RuntimeError(f"Fetch failed: {r.stderr.strip()}")
+
+    r = _run_git(mod_dir, *prune, check=False)
+    if r.returncode != 0:
+        raise RuntimeError(f"LFS prune failed: {r.stdout.strip() or r.stderr.strip()}")
+    return r.stdout.strip()
+
+
 # ---------------------------------------------------------------------------
 # Gitea repo initialization
 # ---------------------------------------------------------------------------

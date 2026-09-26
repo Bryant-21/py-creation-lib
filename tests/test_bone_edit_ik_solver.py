@@ -64,8 +64,8 @@ def test_ik_solver_unreachable_target_extends_chain():
     np.testing.assert_allclose(new_tip_world, [l1 + l2, 0, 0], atol=1e-3)
 
 
-def test_ik_solver_reachable_target_hits_target():
-    """Target within reach: solved tip lands on target."""
+def test_ik_solver_reachable_target_hits_target_and_preserves_bone_length():
+    """Target within reach: solved tip lands on target; bone length never changes."""
     from creation_lib.bone_edit.ik_solver import solve_two_bone_ik
     from creation_lib.bone_edit.quat_util import quat_to_matrix
 
@@ -91,28 +91,6 @@ def test_ik_solver_reachable_target_hits_target():
 
     np.testing.assert_allclose(new_tip_world, target, atol=1e-4)
 
-
-def test_ik_solver_preserves_root_to_mid_length():
-    """Bone length must never change."""
-    from creation_lib.bone_edit.ik_solver import solve_two_bone_ik
-    from creation_lib.bone_edit.quat_util import quat_to_matrix
-
-    root_pos = np.array([0.0, 0.0, 0.0])
-    mid_pos = np.array([1.0, 0.0, 0.0])
-    tip_pos = np.array([2.0, 0.0, 0.0])
-    target = np.array([0.5, 0.5, 0.5])
-    pole = np.array([1.0, 0.0, 1.0])
-    l1, l2 = 1.0, 1.0
-
-    new_root_q, _ = solve_two_bone_ik(
-        root_world_pos=root_pos, mid_world_pos=mid_pos, tip_world_pos=tip_pos,
-        target_world_pos=target, pole_world_pos=pole,
-        root_to_mid_length=l1, mid_to_tip_length=l2,
-        root_world_rot=_identity_quat(), mid_world_rot=_identity_quat(),
-    )
-
-    new_root_mat = quat_to_matrix(new_root_q)
-    new_mid_world = root_pos + new_root_mat @ np.array([l1, 0, 0])
     actual_len = float(np.linalg.norm(new_mid_world - root_pos))
     assert abs(actual_len - l1) < 1e-6
 

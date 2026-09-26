@@ -185,7 +185,8 @@ pub enum DecodeSpec {
 pub struct VarUnionVariant {
     name: String,
     spec: DecodeSpec,
-    condition: SelectorCondition,
+    // (field, test) pairs that must all hold; fields name earlier siblings or decode context.
+    conditions: Vec<(String, SelectorCondition)>,
 }
 
 #[derive(Clone)]
@@ -215,19 +216,12 @@ pub enum VarSegment {
     Union {
         name: String,
         variants: Vec<VarUnionVariant>,
-        selector: SelectorRef,
         presence_conditions: Vec<Condition>,
     },
     UnsupportedConditional {
         name: String,
         presence_conditions: Vec<Condition>,
     },
-}
-
-#[derive(Clone)]
-enum SelectorRef {
-    // Reference to a previously-decoded sibling segment in the same struct.
-    Sibling(String),
 }
 
 #[derive(Clone)]
@@ -238,7 +232,10 @@ enum SelectorCondition {
     LessThanOrEqual(ConditionValue),
     GreaterThan(ConditionValue),
     GreaterThanOrEqual(ConditionValue),
-    Always,
+    BitSet(i128),
+    BitUnset(i128),
+    In(Vec<ConditionValue>),
+    NotIn(Vec<ConditionValue>),
 }
 
 impl VarSegment {

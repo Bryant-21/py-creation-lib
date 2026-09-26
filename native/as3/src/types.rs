@@ -16,6 +16,7 @@
 const BUILTIN_HIERARCHY: &[(&str, &str)] = &[
     ("Object", ""),
     ("flash.events.EventDispatcher", "Object"),
+    ("flash.events.Event", "Object"),
     (
         "flash.display.DisplayObject",
         "flash.events.EventDispatcher",

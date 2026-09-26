@@ -23,8 +23,9 @@ def _make_yaml(tmpdir, plugin, sig, editor_id, form_id, body: str) -> str:
     return path
 
 
-def test_addn_node_index_extracted():
-    """ADDN records should have node_index populated; non-ADDN should be NULL."""
+def test_addn_node_index_extracted_and_queryable():
+    """ADDN records should have node_index populated (and be queryable by it);
+    non-ADDN records should be NULL."""
     with tempfile.TemporaryDirectory() as tmpdir:
         _make_yaml(tmpdir, "Fallout4.esm", "ADDN", "MPSFireMed01", "01F23F",
                    "- ObjectBounds: {}\n- Index: 5\n")
@@ -45,50 +46,30 @@ def test_addn_node_index_extracted():
                 "SELECT node_index FROM records WHERE form_key = ?",
                 ("01F23F:Fallout4.esm",),
             ).fetchone()
-            assert row is not None
-            assert row["node_index"] == 5
+            assert row is not None and row["node_index"] == 5
 
             row2 = conn.execute(
                 "SELECT node_index FROM records WHERE form_key = ?",
                 ("03ADFA:Fallout4.esm",),
             ).fetchone()
-            assert row2 is not None
-            assert row2["node_index"] == 27
+            assert row2 is not None and row2["node_index"] == 27
 
             row3 = conn.execute(
                 "SELECT node_index FROM records WHERE form_key = ?",
                 ("004822:Fallout4.esm",),
             ).fetchone()
-            assert row3 is not None
-            assert row3["node_index"] is None
+            assert row3 is not None and row3["node_index"] is None
 
             indexes = conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_records_node_index'"
             ).fetchone()
             assert indexes is not None
-        finally:
-            conn.close()
 
-
-def test_addn_lookup_by_node_index():
-    """Records can be queried by node_index after the build."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        _make_yaml(tmpdir, "Fallout4.esm", "ADDN", "MPSFireMed01", "01F23F",
-                   "- Index: 5\n")
-
-        from creation_lib.preprocessor.records import build_db
-
-        db_path = os.path.join(tmpdir, "fo4_records.db")
-        build_db(tmpdir, db_path)
-
-        conn = sqlite3.connect(db_path)
-        conn.row_factory = sqlite3.Row
-        try:
-            row = conn.execute(
+            queried = conn.execute(
                 "SELECT * FROM records WHERE record_type = 'ADDN' AND node_index = ?",
                 (5,),
             ).fetchone()
-            assert row is not None
-            assert row["editor_id"] == "MPSFireMed01"
+            assert queried is not None
+            assert queried["editor_id"] == "MPSFireMed01"
         finally:
             conn.close()

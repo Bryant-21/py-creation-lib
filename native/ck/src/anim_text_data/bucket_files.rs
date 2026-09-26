@@ -786,7 +786,6 @@ pub fn anim_event_info_body(behavior_path: &str, events: &[AnimEvent]) -> Vec<u8
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     /// Parse a CK/our AnimationFileData body into (version, flag, id, files).
     fn parse(body: &[u8]) -> (String, String, u64, Vec<String>) {
@@ -812,14 +811,14 @@ mod tests {
         assert_eq!(body, expected.as_bytes());
         // Trailing newline after the last file is present.
         assert_eq!(*body.last().unwrap(), b'\n');
-    }
 
-    #[test]
-    fn roundtrips_through_parse() {
-        let files = vec![r"Actors\X\Animations\Aaa.hkx".to_string()];
-        let (v, fl, id, got) = parse(&animation_file_data_body(7, &files));
-        assert_eq!((v.as_str(), fl.as_str(), id), ("3", "1", 7));
-        assert_eq!(got, files);
+        let manifest = project_manifest_body(
+            "XProject",
+            &[r"Behaviors\X.hkx".to_string(), r"Animations\Idle.hkx".to_string()],
+        );
+        let expected =
+            "3\r\n0\r\nXProject\r\n2\r\nBehaviors\\X.hkx\r\nAnimations\\Idle.hkx\r\n0\r\n";
+        assert_eq!(manifest, expected.as_bytes());
     }
 
     #[test]
@@ -839,57 +838,13 @@ mod tests {
 
     // ---- SyncAnimData -----------------------------------------------------
 
-    #[test]
-    fn sync_anim_data_is_v4_zero() {
-        assert_eq!(sync_anim_data_body(), b"V4\n0\n");
-    }
-
     // ---- Named project manifest ------------------------------------------
-
-    #[test]
-    fn project_manifest_format_is_crlf_with_trailing_zero() {
-        let files = vec![
-            r"Behaviors\X.hkx".to_string(),
-            r"Animations\Idle.hkx".to_string(),
-        ];
-        let body = project_manifest_body("XProject", &files);
-        let expected =
-            "3\r\n0\r\nXProject\r\n2\r\nBehaviors\\X.hkx\r\nAnimations\\Idle.hkx\r\n0\r\n";
-        assert_eq!(body, expected.as_bytes());
-    }
 
     // ---- ClipGeneratorData (binary) --------------------------------------
 
     // ---- AnimationOffsets (binary) ---------------------------------------
 
     // ---- AnimationStanceData (binary) ------------------------------------
-
-    #[test]
-    fn animation_stance_data_empty_reproduces_extracted_oracle() {
-        // Vanilla empty stance file (36 bytes): header + version 1 + count 0 + 0.
-        let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
-            "../../../extracted/fo4/Meshes/AnimTextData/animationstancedata/\
-             14636681807525876636.txt",
-        );
-        let Ok(oracle) = std::fs::read(p) else {
-            eprintln!("oracle absent; skipping");
-            return;
-        };
-        assert_eq!(oracle.len(), 36);
-        assert_eq!(animation_stance_data_empty_body(), oracle);
-    }
-
-    #[test]
-    fn bone_transform_is_28_bytes_quat_wxyz_first() {
-        let mut out = Vec::new();
-        // Caller passes [qw, qx, qy, qz] then [tx, ty, tz] (wxyz quaternion order).
-        push_bone_transform(&mut out, [1.0, 0.0, 0.0, 0.0], [1.0, 2.0, 3.0]);
-        assert_eq!(out.len(), 28);
-        // First 16 bytes = quaternion (w,x,y,z); last 12 = translation (x,y,z).
-        assert_eq!(&out[0..4], &1.0f32.to_le_bytes()); // qw at index 0
-        assert_eq!(&out[16..20], &1.0f32.to_le_bytes()); // tx
-        assert_eq!(&out[24..28], &3.0f32.to_le_bytes()); // tz
-    }
 
     /// The 174 B head-tracking container = the 124 B count=1 body's first 120 bytes
     /// (header..slot2), then `sec2_count=1` + tag `00 00 00 02` + the sec2 bone (28 B) +

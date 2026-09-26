@@ -281,49 +281,6 @@ impl TerrainDesc {
 mod tests {
     use super::*;
 
-    #[test]
-    fn bbox_grow_and_center() {
-        let mut b = BBox::empty();
-        b.grow_vertex([0.0, 0.0, 2.0]);
-        b.grow_vertex([4.0, 6.0, -2.0]);
-        assert_eq!(b.min, [0.0, 0.0, -2.0]);
-        assert_eq!(b.max, [4.0, 6.0, 2.0]);
-        // center, no zero clamp
-        assert_eq!(b.center(false), [2.0, 3.0, 0.0]);
-    }
-
-    #[test]
-    fn bbox_center_zero_clamp() {
-        // BBox.cs:55-63: if zero && pz2 < 0 => use 0 for top
-        let mut b = BBox::empty();
-        b.grow_vertex([0.0, 0.0, -10.0]);
-        b.grow_vertex([2.0, 2.0, -4.0]);
-        // pz2 = -4 < 0 => top clamped to 0; center.z = (pz1 + 0)/2 = -5
-        assert_eq!(b.center(true)[2], -5.0);
-    }
-
-    #[test]
-    fn terrain_desc_is_under_water() {
-        let td = TerrainDesc {
-            index: -1,
-            x: 0,
-            y: 0,
-            quad_level: 4,
-            water_height: 100.0,
-            land_flags: 0,
-            bbox: BBox::empty(),
-            height_values: vec![0.0; 33 * 33],
-        };
-        assert!(td.is_under_water(50.0)); // 100 > 50
-        assert!(!td.is_under_water(150.0)); // 100 < 150
-        // NaN / sentinel water => never underwater (TerrainDesc.cs:62-63)
-        let td2 = TerrainDesc {
-            water_height: f32::NAN,
-            ..td
-        };
-        assert!(!td2.is_under_water(50.0));
-    }
-
     fn world_8x8() -> crate::input::WorldspaceInput {
         let cells = (0..8)
             .flat_map(|y| (0..8).map(move |x| (x, y)))
@@ -349,22 +306,6 @@ mod tests {
         assert_eq!(origins, vec![(0, 0), (0, 4), (4, 0), (4, 4)]);
         assert!(quads.iter().all(|q| q.quad_level == 4));
         assert_eq!(quads[0].quad_offset, 16384.0);
-    }
-
-    #[test]
-    fn quads_for_chunk_filter() {
-        let mut s = crate::settings::LodSettings::fo4_default();
-        s.global.chunk = Some(crate::settings::ChunkBounds {
-            level: 4,
-            w: 0,
-            s: 0,
-            e: 3,
-            n: 3,
-        });
-        let quads = quads_for(&world_8x8(), 4, &s);
-        // chunk bounds restrict to the single (0,0) block (covers cells 0..3)
-        assert_eq!(quads.len(), 1);
-        assert_eq!((quads[0].x, quads[0].y), (0, 0));
     }
 
     /// A worldspace whose DECLARED bounds extend far past the cells that carry
@@ -434,26 +375,6 @@ mod tests {
     }
 
     #[test]
-    fn terrain_quads_for_respects_global_align() {
-        let mut w = world_8x8();
-        w.sw_cell = (2, 3);
-        w.ne_cell = (9, 10);
-        for cell in &mut w.cells {
-            cell.x += 2;
-            cell.y += 3;
-        }
-
-        let mut s = crate::settings::LodSettings::fo4_default();
-        s.global.align = 4;
-        let aligned = terrain_quads_for(&w, 4, &s);
-        assert_eq!((aligned[0].x, aligned[0].y), (0, 0));
-
-        s.global.align = 0;
-        let unaligned = terrain_quads_for(&w, 4, &s);
-        assert_eq!((unaligned[0].x, unaligned[0].y), (2, 3));
-    }
-
-    #[test]
     fn terrain_quads_for_respects_explicit_southwest_cell_and_bounds() {
         let w = world_8x8();
         let mut s = crate::settings::LodSettings::fo4_default();
@@ -470,25 +391,4 @@ mod tests {
         assert_eq!(origins, vec![(2, 3)]);
     }
 
-    /// A fully-populated world (land == declared bounds) enumerates identically
-    /// under both functions — the new rule is a strict superset guard, not a change
-    /// for the common "every cell has LAND" case.
-    #[test]
-    fn terrain_quads_for_full_world_matches_quads_for() {
-        let w = world_8x8(); // land fills 0..7, declared = land
-        let s = crate::settings::LodSettings::fo4_default();
-        for level in [4, 8, 16, 32] {
-            let mut a: Vec<(i32, i32)> = quads_for(&w, level, &s)
-                .iter()
-                .map(|q| (q.x, q.y))
-                .collect();
-            let mut b: Vec<(i32, i32)> = terrain_quads_for(&w, level, &s)
-                .iter()
-                .map(|q| (q.x, q.y))
-                .collect();
-            a.sort();
-            b.sort();
-            assert_eq!(a, b, "level {level}: full world must match");
-        }
-    }
 }

@@ -764,59 +764,6 @@ pub struct BtoWriteReport {
     pub bytes: u64,
 }
 
-#[cfg(test)]
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct BtoWriteTestReport {
-    pub write: BtoWriteReport,
-    pub drop_secs: f64,
-    pub total_secs: f64,
-}
-
-#[cfg(test)]
-pub(crate) fn write_bto_with_layout_and_named_vertices_for_test(
-    path: &std::path::Path,
-    shapes: &[BtoShape],
-    layout: Fo76BtoNodeLayout,
-    named_vertices: bool,
-) -> anyhow::Result<BtoWriteTestReport> {
-    let total_started = std::time::Instant::now();
-    let started = std::time::Instant::now();
-    let vertex_encoding = if named_vertices {
-        VertexEncoding::Named
-    } else {
-        VertexEncoding::Positional
-    };
-    let mut nif = build_bto_nif_with_layout_and_vertex_encoding(shapes, layout, vertex_encoding)?;
-    let nif_build_secs = started.elapsed().as_secs_f64();
-    let started = std::time::Instant::now();
-    let bytes = nif
-        .to_bytes()
-        .map_err(|e| anyhow::anyhow!("nif save failed: {e}"))?;
-    let serialize_secs = started.elapsed().as_secs_f64();
-    let started = std::time::Instant::now();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(path, &bytes)
-        .map_err(|e| anyhow::anyhow!("nif save failed: failed to write {}: {e}", path.display()))?;
-    let file_write_secs = started.elapsed().as_secs_f64();
-    let byte_count = bytes.len() as u64;
-    let started = std::time::Instant::now();
-    drop(bytes);
-    drop(nif);
-    let drop_secs = started.elapsed().as_secs_f64();
-    Ok(BtoWriteTestReport {
-        write: BtoWriteReport {
-            nif_build_secs,
-            serialize_secs,
-            file_write_secs,
-            bytes: byte_count,
-        },
-        drop_secs,
-        total_secs: total_started.elapsed().as_secs_f64(),
-    })
-}
-
 pub fn write_bto_with_layout_timed(
     path: &std::path::Path,
     shapes: &[BtoShape],

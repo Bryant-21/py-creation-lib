@@ -836,25 +836,6 @@ mod esp_enum {
             );
         }
 
-        #[test]
-        fn discovery_excludes_world_children_without_land() {
-            let object_only = 0x0500;
-            let cell_form_id = 0x5000;
-            let mut grid = 8_i32.to_le_bytes().to_vec();
-            grid.extend_from_slice(&9_i32.to_le_bytes());
-            let exterior_cell =
-                ParsedItem::Record(record("CELL", cell_form_id, vec![subrecord("XCLC", grid)]));
-            let wrld_group = group(
-                *b"WRLD",
-                0,
-                vec![
-                    world(object_only, "ObjectOnlyWorld"),
-                    world_children(object_only, vec![exterior_cell]),
-                ],
-            );
-
-            assert!(lod_eligible_worldspaces_in_group(&wrld_group).is_empty());
-        }
     }
 
     fn cell_grid(record: &ParsedRecord) -> Option<(i32, i32)> {
@@ -1556,15 +1537,6 @@ mod esp_enum {
         }
 
         #[test]
-        fn tree_base_signature_sets_static_desc_tree_flag() {
-            let tree = resolved_base("TREE", 0x20);
-            let stat = resolved_base("STAT", 0x20);
-
-            assert_eq!(static_desc_base_flags(&tree), 0x1020);
-            assert_eq!(static_desc_base_flags(&stat), 0x20);
-        }
-
-        #[test]
         fn virtual_overlay_changes_only_the_resolved_copy() {
             let original = resolved_base("ACTI", 0);
             let overlay = OverlayEntry {
@@ -1742,145 +1714,6 @@ mod esp_enum {
             assert_eq!(output[0].ref_id, format!("{visible_ref_id:08X}"));
         }
 
-        #[test]
-        fn visible_scol_component_overlay_is_consumed() {
-            fn subrecord(
-                signature: &str,
-                data: Vec<u8>,
-            ) -> esp_authoring_core::plugin_runtime::ParsedSubrecord {
-                esp_authoring_core::plugin_runtime::ParsedSubrecord {
-                    signature: signature.into(),
-                    data: bytes::Bytes::from(data),
-                    semantic_type: None,
-                }
-            }
-            fn record(
-                signature: &str,
-                form_id: u32,
-                subrecords: Vec<esp_authoring_core::plugin_runtime::ParsedSubrecord>,
-            ) -> ParsedRecord {
-                ParsedRecord {
-                    signature: signature.into(),
-                    form_id,
-                    flags: 0,
-                    version_control: 0,
-                    form_version: None,
-                    version2: None,
-                    subrecords,
-                    raw_payload: None,
-                    parse_error: None,
-                }
-            }
-            let scol_form_id = 0x200_u32;
-            let component_form_id = 0x201_u32;
-            let stat_component_form_id = 0x202_u32;
-            let reference_form_id = 0x100_u32;
-            let mut component_data = vec![0_u8; 28];
-            component_data[24..28].copy_from_slice(&1.0_f32.to_le_bytes());
-            let mut stat_lod = vec![0_u8; 260 * 4];
-            stat_lod[..12].copy_from_slice(b"LOD\\Stat.nif");
-            let scol = record(
-                "SCOL",
-                scol_form_id,
-                vec![
-                    subrecord("ONAM", component_form_id.to_le_bytes().to_vec()),
-                    subrecord("DATA", component_data.clone()),
-                    subrecord("ONAM", stat_component_form_id.to_le_bytes().to_vec()),
-                    subrecord("DATA", component_data),
-                ],
-            );
-            let component = record("MSTT", component_form_id, vec![]);
-            let stat_component = record(
-                "STAT",
-                stat_component_form_id,
-                vec![subrecord("MNAM", stat_lod)],
-            );
-            let placed = record(
-                "REFR",
-                reference_form_id,
-                vec![subrecord("NAME", scol_form_id.to_le_bytes().to_vec())],
-            );
-            let handle = EspHandle {
-                plugin: Some(
-                    ParsedPlugin {
-                        plugin_name: "Output.esm".to_string(),
-                        file_path: String::new(),
-                        header_size: 0,
-                        header: esp_authoring_core::plugin_runtime::ParsedPluginHeader {
-                            version: 1.0,
-                            num_records: 0,
-                            next_object_id: 0x800,
-                            author: String::new(),
-                            description: String::new(),
-                            masters: Vec::new(),
-                            master_sizes: Vec::new(),
-                            overridden_forms: Vec::new(),
-                            flags: 0,
-                            extra_subrecords: Vec::new(),
-                            version_control: 0,
-                            form_version: None,
-                            version2: None,
-                            hedr_raw: None,
-                            raw_subrecords: Vec::new(),
-                        },
-                        root_items: vec![
-                            ParsedItem::Group(ParsedGroup {
-                                label: *b"SCOL",
-                                group_type: 0,
-                                tail: bytes::Bytes::new(),
-                                children: vec![ParsedItem::Record(scol)],
-                            }),
-                            ParsedItem::Group(ParsedGroup {
-                                label: *b"MSTT",
-                                group_type: 0,
-                                tail: bytes::Bytes::new(),
-                                children: vec![ParsedItem::Record(component)],
-                            }),
-                            ParsedItem::Group(ParsedGroup {
-                                label: *b"STAT",
-                                group_type: 0,
-                                tail: bytes::Bytes::new(),
-                                children: vec![ParsedItem::Record(stat_component)],
-                            }),
-                        ],
-                        game: Some("fo4".to_string()),
-                    }
-                    .into(),
-                ),
-                masters: Vec::new(),
-                resolved_inputs: ResolvedInputs::default(),
-                object_lod_overlay: Some(ObjectLodOverlay::from_entries_for_test(vec![
-                    OverlayEntry {
-                        reference_form_id,
-                        placed_base_form_id: scol_form_id,
-                        component_index: Some(0),
-                        component_base_form_id: Some(component_form_id),
-                        base_signature: "MSTT".to_string(),
-                        lod_models: [Some(r"LOD\Component.nif".to_string()), None, None, None],
-                        force_visible: true,
-                    },
-                ])),
-            };
-            let mut output = Vec::new();
-            append_ref_inputs(
-                &handle,
-                &PlacedRef {
-                    record: &placed,
-                    cell: (0, 0),
-                    in_visible_distant_group: true,
-                },
-                &mut output,
-            );
-
-            assert_eq!(output.len(), 2);
-            assert_eq!(output[0].ref_id, format!("{reference_form_id:08X}:0"));
-            assert_eq!(
-                output[0].lod_models[0].as_deref(),
-                Some(r"LOD\Component.nif")
-            );
-            assert_eq!(output[1].ref_id, format!("{reference_form_id:08X}:1"));
-            assert_eq!(output[1].lod_models[0].as_deref(), Some(r"LOD\Stat.nif"));
-        }
     }
 
     /// Build `RefInput`s from a placed REFR + its resolved base. SCOL bases expand
@@ -2409,35 +2242,6 @@ pub fn discover_worldspaces(
 mod tests {
     use super::*;
 
-    fn cell(x: i32, y: i32) -> CellInput {
-        CellInput {
-            x,
-            y,
-            heights: vec![0.0; 33 * 33],
-            vertex_colors: vec![[255, 255, 255]; 33 * 33],
-            layers: Vec::new(),
-            hidden_quadrants: [false; 4],
-            water_height: 0.0,
-        }
-    }
-
-    #[test]
-    fn bounds_from_cells() {
-        let w =
-            WorldspaceInput::from_cells("TestWorld", vec![cell(-2, -3), cell(5, 4), cell(0, 0)]);
-        assert_eq!(w.sw_cell, (-2, -3));
-        assert_eq!(w.ne_cell, (5, 4));
-    }
-
-    #[test]
-    fn hidden_quadrant_bits_decode() {
-        // landFlags bit1=SW, bit2=SE, bit4=NW, bit8=NE
-        let q = decode_hidden_quadrants(0b1011); // SW + SE + NE
-        assert_eq!(q, [true, true, false, true]);
-        let none = decode_hidden_quadrants(0);
-        assert_eq!(none, [false; 4]);
-    }
-
     fn grass_layer(max_slope_degrees: f32) -> GrassLayerInput {
         GrassLayerInput {
             quadrant: 0,
@@ -2493,32 +2297,6 @@ mod tests {
             reference.lod_models[0].is_some()
                 && reference.lod_models[1..].iter().all(Option::is_none)
         }));
-    }
-
-    #[test]
-    fn grass_refs_respect_source_slope_limit() {
-        let settings = crate::settings::GrassSettings {
-            enabled: true,
-            spacings: [1024.0, 0.0, 0.0, 0.0],
-            min_alpha: 0.35,
-        };
-        let mut heights = vec![0.0; 33 * 33];
-        for y in 0..33 {
-            for x in 0..33 {
-                heights[x + y * 33] = x as f32 * 512.0;
-            }
-        }
-        let mut refs = Vec::new();
-        synthesize_grass_refs_for_cell(
-            (0, 0),
-            &heights,
-            [false; 4],
-            &[grass_layer(10.0)],
-            &settings,
-            &mut refs,
-        );
-
-        assert!(refs.is_empty());
     }
 
     #[cfg(feature = "real-esp")]

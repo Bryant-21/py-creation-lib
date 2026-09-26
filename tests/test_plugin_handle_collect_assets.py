@@ -32,48 +32,36 @@ def _add_path_record(
 
 
 @pytest.mark.skipif(not _NATIVE_AVAILABLE, reason="esp_authoring_core not installed")
-def test_collect_assets_returns_deduped_plugin_qualified_paths() -> None:
+def test_collect_assets_dedupes_and_filters_by_kind_signature_and_form_key() -> None:
     plugin = Plugin.new("AssetCollect.esp", game="fo4")
     first = _add_path_record(plugin, "MISC", "FirstModel", [("MODL", r"Meshes\Shared.nif")])
     _add_path_record(plugin, "WEAP", "SecondModel", [("MODL", r"Meshes\Shared.nif")])
+    weapon = _add_path_record(
+        plugin, "WEAP", "WeaponModel",
+        [("MODL", r"Meshes\Weapon.nif"), ("ICON", r"Textures\Weapon.dds")],
+    )
     texture = _add_path_record(plugin, "TXST", "TextureSet", [("TX00", r"Textures\Thing_d.dds")])
 
     assets = plugin.collect_assets()
-
+    # Shared.nif referenced by two records collapses to one deduped asset.
     assert {
         (asset["asset_type"], asset["source_path"])
         for asset in assets
     } == {
         ("nif", "Meshes/Shared.nif"),
+        ("nif", "Meshes/Weapon.nif"),
+        ("texture", "Textures/Weapon.dds"),
         ("texture", "Textures/Thing_d.dds"),
     }
-    nif = next(asset for asset in assets if asset["asset_type"] == "nif")
-    assert nif["source_form_key"] in {
-        f"AssetCollect.esp:{first.form_id & 0x00FFFFFF:06X}",
-        "AssetCollect.esp:000801",
-    }
-    tx = next(asset for asset in assets if asset["asset_type"] == "texture")
+    tx = next(asset for asset in assets if asset["source_path"] == "Textures/Thing_d.dds")
     assert tx["source_form_key"] == f"AssetCollect.esp:{texture.form_id & 0x00FFFFFF:06X}"
     assert tx["source_subrecord_sig"] == "TX00"
 
-
-@pytest.mark.skipif(not _NATIVE_AVAILABLE, reason="esp_authoring_core not installed")
-def test_collect_assets_filters_by_kind_signature_and_form_key() -> None:
-    plugin = Plugin.new("AssetFilters.esp", game="fo4")
-    _add_path_record(plugin, "MISC", "LooseModel", [("MODL", r"Meshes\Loose.nif")])
-    weapon = _add_path_record(
-        plugin,
-        "WEAP",
-        "WeaponModel",
-        [("MODL", r"Meshes\Weapon.nif"), ("ICON", r"Textures\Weapon.dds")],
-    )
-
-    weapon_fk = f"assetfilters.esp:{weapon.form_id & 0x00FFFFFF:06X}"
-
-    assert [
+    weapon_fk = f"assetcollect.esp:{weapon.form_id & 0x00FFFFFF:06X}"
+    assert {
         asset["source_path"]
         for asset in plugin.collect_assets(asset_kinds=["nif"], signatures=["WEAP"])
-    ] == ["Meshes/Weapon.nif"]
+    } == {"Meshes/Shared.nif", "Meshes/Weapon.nif"}
     assert {
         asset["source_path"]
         for asset in plugin.collect_assets(form_keys=[weapon_fk])
@@ -81,24 +69,18 @@ def test_collect_assets_filters_by_kind_signature_and_form_key() -> None:
 
 
 @pytest.mark.skipif(not _NATIVE_AVAILABLE, reason="esp_authoring_core not installed")
-def test_collect_assets_includes_master_handles() -> None:
+def test_collect_assets_includes_master_handles_and_strips_data_prefix() -> None:
     source = Plugin.new("Source.esp", game="fo4")
     master = Plugin.new("Master.esm", game="fo4")
     _add_path_record(source, "MISC", "SourceModel", [("MODL", r"Meshes\Source.nif")])
     _add_path_record(master, "MISC", "MasterModel", [("MODL", r"Meshes\Master.nif")])
+    _add_path_record(source, "SNDR", "SoundDescriptor", [("ANAM", r"data\Sound\FX\Thing.wav")])
 
     assert {
         asset["source_path"]
         for asset in source.collect_assets(master_plugins=[master], asset_kinds=["nif"])
     } == {"Meshes/Source.nif", "Meshes/Master.nif"}
-
-
-@pytest.mark.skipif(not _NATIVE_AVAILABLE, reason="esp_authoring_core not installed")
-def test_collect_assets_strips_data_prefix_from_sound_paths() -> None:
-    plugin = Plugin.new("SoundPaths.esp", game="fo4")
-    _add_path_record(plugin, "SNDR", "SoundDescriptor", [("ANAM", r"data\Sound\FX\Thing.wav")])
-
     assert [
         asset["source_path"]
-        for asset in plugin.collect_assets(asset_kinds=["sound"])
+        for asset in source.collect_assets(asset_kinds=["sound"])
     ] == ["Sound/FX/Thing.wav"]

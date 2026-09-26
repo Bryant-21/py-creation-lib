@@ -1,5 +1,5 @@
-from creation_lib.havok.parsers.project import ProjectData, parse_project
-from creation_lib.havok.parsers.character import CharacterData, parse_character
+from creation_lib.havok.parsers.project import parse_project
+from creation_lib.havok.parsers.character import parse_character
 
 
 SAMPLE_PROJECT_XML = """\
@@ -36,36 +36,26 @@ SAMPLE_CHARACTER_XML = """\
 """
 
 
-class TestParseProject:
-    def test_extracts_character_filenames(self, tmp_path):
-        xml_path = tmp_path / "Project.xml"
-        xml_path.write_text(SAMPLE_PROJECT_XML)
-        result = parse_project(xml_path)
-        assert result.character_filenames == ["Characters\\Character.hkx"]
+def test_parse_project_extracts_character_filenames_and_handles_empty(tmp_path):
+    xml_path = tmp_path / "Project.xml"
+    xml_path.write_text(SAMPLE_PROJECT_XML)
+    result = parse_project(xml_path)
+    assert result.character_filenames == ["Characters\\Character.hkx"]
 
-    def test_handles_empty_project(self, tmp_path):
-        xml_path = tmp_path / "Empty.xml"
-        xml_path.write_text('<?xml version="1.0"?><hkpackfile><hksection name="__data__"></hksection></hkpackfile>')
-        result = parse_project(xml_path)
-        assert result.character_filenames == []
+    empty_path = tmp_path / "Empty.xml"
+    empty_path.write_text('<?xml version="1.0"?><hkpackfile><hksection name="__data__"></hksection></hkpackfile>')
+    assert parse_project(empty_path).character_filenames == []
 
 
-class TestParseCharacter:
-    def test_extracts_rig_name(self, tmp_path):
-        xml_path = tmp_path / "Character.xml"
-        xml_path.write_text(SAMPLE_CHARACTER_XML)
-        result = parse_character(xml_path)
-        assert "SingleBoneSkeleton.hkt" in result.rig_name
+def test_parse_character_extracts_rig_and_behavior_and_handles_missing_data(tmp_path):
+    xml_path = tmp_path / "Character.xml"
+    xml_path.write_text(SAMPLE_CHARACTER_XML)
+    result = parse_character(xml_path)
+    assert "SingleBoneSkeleton.hkt" in result.rig_name
+    assert result.behavior_filename == "Behaviors\\Behavior.hkx"
 
-    def test_extracts_behavior_filename(self, tmp_path):
-        xml_path = tmp_path / "Character.xml"
-        xml_path.write_text(SAMPLE_CHARACTER_XML)
-        result = parse_character(xml_path)
-        assert result.behavior_filename == "Behaviors\\Behavior.hkx"
-
-    def test_handles_missing_string_data(self, tmp_path):
-        xml_path = tmp_path / "Minimal.xml"
-        xml_path.write_text('<?xml version="1.0"?><hkpackfile><hksection name="__data__"></hksection></hkpackfile>')
-        result = parse_character(xml_path)
-        assert result.rig_name == ""
-        assert result.behavior_filename == ""
+    minimal_path = tmp_path / "Minimal.xml"
+    minimal_path.write_text('<?xml version="1.0"?><hkpackfile><hksection name="__data__"></hksection></hkpackfile>')
+    result = parse_character(minimal_path)
+    assert result.rig_name == ""
+    assert result.behavior_filename == ""

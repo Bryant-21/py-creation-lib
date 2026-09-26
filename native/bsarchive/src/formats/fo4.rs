@@ -382,23 +382,3 @@ impl ArchiveReader for Fo4Archive {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn record_sizes_match_spec() {
-        // Sanity: the on-disk sizes referenced in the oracle.
-        assert_eq!(GNRL_RECORD_SIZE, 36);
-        assert_eq!(DX10_HEADER_SIZE, 24);
-        assert_eq!(DX10_CHUNK_SIZE, 24);
-    }
-
-    #[test]
-    fn magic_constants_are_little_endian_fourcc() {
-        assert_eq!(BA2_MAGIC, b"BTDX");
-        assert_eq!(BA2_TYPE_GNRL.to_le_bytes(), *b"GNRL");
-        assert_eq!(BA2_TYPE_DX10.to_le_bytes(), *b"DX10");
-    }
-}

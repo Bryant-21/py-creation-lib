@@ -95,38 +95,36 @@ mod tests {
     use super::*;
 
     #[test]
-    fn match_nearest_finds_exact_hits() {
-        let source = vec![[0.0f32, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]];
-        let target = vec![[0.01f32, 0.0, 0.0], [1.99, 0.0, 0.0]];
-        let result = match_nearest(&source, &target);
-        assert_eq!(result.nearest[0], 0);
-        assert_eq!(result.nearest[1], 2);
-        assert!(result.distances[0] < 0.1);
-        assert!(result.distances[1] < 0.1);
-    }
-
-    #[test]
-    fn centroid_of_cube_corners_is_center() {
-        let verts = vec![
-            [0.0f32, 0.0, 0.0],
-            [1.0, 0.0, 0.0],
-            [1.0, 1.0, 0.0],
-            [0.0, 1.0, 0.0],
-            [0.0, 0.0, 1.0],
-            [1.0, 0.0, 1.0],
-            [1.0, 1.0, 1.0],
-            [0.0, 1.0, 1.0],
-        ];
-        let c = centroid(&verts);
-        assert!((c[0] - 0.5).abs() < 1e-5);
-        assert!((c[1] - 0.5).abs() < 1e-5);
-        assert!((c[2] - 0.5).abs() < 1e-5);
-    }
-
-    #[test]
-    fn mean_nearest_distance_identical_meshes_is_zero() {
-        let verts = vec![[0.0f32, 0.0, 0.0], [1.0, 0.0, 0.0]];
-        let d = mean_nearest_distance(&verts, &verts);
-        assert!(d < 1e-6, "identical meshes should have zero MND");
+    fn nearest_matching_and_centroid() {
+        {
+            let source = vec![[0.0f32, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]];
+            let target = vec![[0.01f32, 0.0, 0.0], [1.99, 0.0, 0.0]];
+            let result = match_nearest(&source, &target);
+            assert_eq!(result.nearest[0], 0);
+            assert_eq!(result.nearest[1], 2);
+            assert!(result.distances[0] < 0.1);
+            assert!(result.distances[1] < 0.1);
+        }
+        {
+            let verts = vec![
+                [0.0f32, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+                [1.0, 0.0, 1.0],
+                [1.0, 1.0, 1.0],
+                [0.0, 1.0, 1.0],
+            ];
+            let c = centroid(&verts);
+            assert!((c[0] - 0.5).abs() < 1e-5);
+            assert!((c[1] - 0.5).abs() < 1e-5);
+            assert!((c[2] - 0.5).abs() < 1e-5);
+        }
+        {
+            let verts = vec![[0.0f32, 0.0, 0.0], [1.0, 0.0, 0.0]];
+            let d = mean_nearest_distance(&verts, &verts);
+            assert!(d < 1e-6, "identical meshes should have zero MND");
+        }
     }
 }

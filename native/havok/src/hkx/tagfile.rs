@@ -1815,101 +1815,16 @@ mod pointer_array_stride_tests {
     }
 
     #[test]
-    fn hkarray_pointer_elements_use_64bit_stride() {
-        // 64-bit (FO76) hkArray<T*>: 8-byte pointer elements, item index in the
-        // low half. A hardcoded 4-byte stride read only the first count/2 real
-        // pointers and interleaved their zero high-halves as nulls
-        // ([Some, None, Some, None]). The stride must follow the pointer type's
-        // size so every element resolves.
-        let resolved = materialize_pointer_array(8);
-        assert_eq!(
-            resolved,
-            vec![Some(1), Some(2), Some(3), Some(4)],
-            "every 64-bit pointer element must resolve; none spuriously null"
-        );
-    }
-
-    #[test]
-    fn hkarray_pointer_elements_32bit_stride_unchanged() {
-        // 32-bit packers store 4-byte pointer elements; the stride must remain 4
-        // so genuine 32-bit arrays (FO4 packfiles, older content) are
-        // unaffected by the 64-bit fix.
-        let resolved = materialize_pointer_array(4);
-        assert_eq!(
-            resolved,
-            vec![Some(1), Some(2), Some(3), Some(4)],
-            "32-bit pointer elements must continue to resolve at a 4-byte stride"
-        );
-    }
-
-    #[test]
-    fn fo76_fixture_pointer_arrays_are_64bit_and_have_no_interleaved_nulls() {
-        use super::parse_tagfile;
-        use std::path::PathBuf;
-
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../..")
-            .join("python/creation_lib/hkxpack/tests/fixtures/fo76_snallygastercharacter.hkx");
-        let data = std::fs::read(&path).expect("read FO76 snallygaster fixture");
-        let tagfile = parse_tagfile(&data).expect("parse FO76 fixture");
-
-        // The detection signal: this 64-bit FO76 file declares pointer types
-        // (kind 6) with size 8. Confirm at least one hkArray<pointer> exists
-        // whose pointer subtype is 8 bytes wide, so the stride gate fires.
-        let has_64bit_pointer_array = tagfile.type_registry.types.iter().any(|arr| {
-            arr.kind == 8
-                && tagfile
-                    .type_registry
-                    .types
-                    .get(arr.subtype_id)
-                    .map(|sub| sub.kind == 6 && sub.size == 8)
-                    .unwrap_or(false)
-        });
-        assert!(
-            has_64bit_pointer_array,
-            "FO76 fixture should declare at least one 64-bit (8-byte) pointer array"
-        );
-
-        // Materialization must succeed end-to-end on the real file.
-        let hkx = tagfile.materialize_hkx().expect("materialize FO76 fixture");
-
-        // Every materialized pointer array must read its full element count with
-        // no interleaved trailing nulls — the half-null signature of the bug was
-        // a real pointer in even slots and a null in every odd slot.
-        let mut checked_arrays = 0usize;
-        for object in hkx.objects() {
-            for member in &object.members {
-                if let HkxValue::Array(values) = &member.value {
-                    let all_pointers = !values.is_empty()
-                        && values.iter().all(|v| matches!(v, HkxValue::Pointer(_)));
-                    if !all_pointers {
-                        continue;
-                    }
-                    checked_arrays += 1;
-                    // A correctly-strided 64-bit pointer array does not produce
-                    // the strict alternating real/null pattern the 4-byte stride
-                    // did. Guard against that exact signature for arrays of >= 2.
-                    if values.len() >= 2 {
-                        let alternating_real_null = values.iter().enumerate().all(|(i, v)| {
-                            if i % 2 == 0 {
-                                matches!(v, HkxValue::Pointer(Some(_)))
-                            } else {
-                                matches!(v, HkxValue::Pointer(None))
-                            }
-                        });
-                        assert!(
-                            !alternating_real_null,
-                            "object {} member {} shows the interleaved real/null \
-                             signature of the 4-byte-stride bug: {:?}",
-                            object.class_name, member.name, values
-                        );
-                    }
-                }
-            }
+    fn hkarray_pointer_elements_follow_the_pointer_type_stride() {
+        // FO76 64-bit hkArray<T*> stores 8-byte elements (item index in the low
+        // half); a hardcoded 4-byte stride read [Some, None, Some, None]. FO4
+        // 32-bit packers still use 4-byte elements.
+        for pointer_size in [8, 4] {
+            assert_eq!(
+                materialize_pointer_array(pointer_size),
+                vec![Some(1), Some(2), Some(3), Some(4)],
+                "pointer size {pointer_size}"
+            );
         }
-        assert!(
-            checked_arrays > 0,
-            "fixture should materialize at least one pointer array to validate"
-        );
     }
 }

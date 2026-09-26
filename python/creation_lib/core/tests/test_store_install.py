@@ -38,28 +38,20 @@ def _gog_fo4_root(tmp_path: Path) -> Path:
     return root
 
 
-def test_validate_store_install_accepts_steam_install(tmp_path):
-    root = _steam_fo4_root(tmp_path)
+def test_validate_store_install_accepts_steam_and_gog_installs(tmp_path):
+    steam_result = validate_store_install_for_game("fo4", str(_steam_fo4_root(tmp_path)))
+    assert steam_result.ok is True
+    assert steam_result.store == "steam"
+    assert steam_result.message == "Fallout 4 Steam install verified."
 
-    result = validate_store_install_for_game("fo4", str(root))
-
-    assert result.ok is True
-    assert result.store == "steam"
-    assert result.message == "Fallout 4 Steam install verified."
-
-
-def test_validate_store_install_accepts_gog_install(tmp_path):
-    root = _gog_fo4_root(tmp_path)
-
-    result = validate_store_install_for_game("fo4", str(root))
-
-    assert result.ok is True
-    assert result.store == "gog"
-    assert result.message == "Fallout 4 GOG install verified."
-    assert result.gog.product_id == "1998527297"
+    gog_result = validate_store_install_for_game("fo4", str(_gog_fo4_root(tmp_path / "gog")))
+    assert gog_result.ok is True
+    assert gog_result.store == "gog"
+    assert gog_result.message == "Fallout 4 GOG install verified."
+    assert gog_result.gog.product_id == "1998527297"
 
 
-def test_validate_store_install_rejects_install_from_neither_store(tmp_path):
+def test_validate_store_install_rejects_neither_store_and_invalid_folder(tmp_path):
     root = tmp_path / "Fallout 4"
     data = root / "Data"
     data.mkdir(parents=True)
@@ -75,17 +67,15 @@ def test_validate_store_install_rejects_install_from_neither_store(tmp_path):
     assert "Steam: " in result.message
     assert "GOG: " in result.message
 
+    invalid_result = validate_store_install_for_game("fo4", str(tmp_path / "invalid-case" / "Fallout 4"))
 
-def test_validate_store_install_reports_invalid_folder_without_store_noise(tmp_path):
-    result = validate_store_install_for_game("fo4", str(tmp_path / "Fallout 4"))
-
-    assert result.ok is False
-    assert result.store == ""
-    assert result.local_install_valid is False
-    assert result.message == (
+    assert invalid_result.ok is False
+    assert invalid_result.store == ""
+    assert invalid_result.local_install_valid is False
+    assert invalid_result.message == (
         "Fallout 4 install is invalid: executable or Data archives not found."
     )
-    assert "GOG: " not in result.message
+    assert "GOG: " not in invalid_result.message
 
 
 def test_validate_store_install_fo76_has_no_gog_release_and_needs_steam(tmp_path):

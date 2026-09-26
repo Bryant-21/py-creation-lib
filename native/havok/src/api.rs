@@ -209,76 +209,104 @@ fn havok_convert_bytes_report_with_fo76_options(
     target_version: &str,
     fo76_options: convert::fo76::Fo76MigrationOptions,
 ) -> HavokResult<HavokConversionReport> {
+    let (file, warnings) = convert_havok_model(data, target_version, fo76_options)?;
+    let bytes = match file {
+        Some(file) => {
+            let target = convert::parse_target_version(target_version)?;
+            let mut registry =
+                hkx::descriptors::DescriptorRegistry::for_contents_version(target.name);
+            hkx::write_hkx(&file, &mut registry)
+        }
+        None => data.to_vec(),
+    };
+    Ok(HavokConversionReport { bytes, warnings })
+}
+
+pub fn havok_convert_for_editing(data: &[u8], target_version: &str) -> HavokResult<hkx::HkxFile> {
+    let (file, _) = convert_havok_model(
+        data,
+        target_version,
+        convert::fo76::Fo76MigrationOptions::default(),
+    )?;
+    match file {
+        Some(file) => {
+            let animation = file.objects().iter().any(|object| {
+                matches!(
+                    object.class_name.as_str(),
+                    "hkaSplineCompressedAnimation"
+                        | "hkaInterleavedUncompressedAnimation"
+                        | "hkaLosslessCompressedAnimation"
+                )
+            }) && file.objects().iter().all(|object| {
+                matches!(
+                    object.class_name.as_str(),
+                    "hkRootLevelContainer"
+                        | "hkMemoryResourceContainer"
+                        | "hkaAnimationContainer"
+                        | "hkaAnimationBinding"
+                        | "hkaDefaultAnimatedReferenceFrame"
+                        | "hkaSplineCompressedAnimation"
+                        | "hkaInterleavedUncompressedAnimation"
+                        | "hkaLosslessCompressedAnimation"
+                )
+            });
+            if animation {
+                Ok(file)
+            } else {
+                // Character data depends on the writer/reader's normalization
+                // before downstream behavior edits.
+                hkx::HkxFile::read(&file.save())
+            }
+        }
+        None => hkx::HkxFile::read(data),
+    }
+}
+
+fn convert_havok_model(
+    data: &[u8],
+    target_version: &str,
+    fo76_options: convert::fo76::Fo76MigrationOptions,
+) -> HavokResult<(Option<hkx::HkxFile>, Vec<String>)> {
     let target = convert::parse_target_version(target_version)?;
     let format = hkx_detect_format(data)?;
-    let source_version = match format {
+    let (file, mut warnings) = match format {
         "packfile" => {
-            let hkx = hkx::read_packfile(data)?;
+            let mut hkx = hkx::read_packfile(data)?;
             let source_version = convert::detect_version_id(hkx.contents_version())?;
+            if source_version == target.id {
+                return Ok((None, Vec::new()));
+            }
             if source_version == 56 && target.id == 53 {
                 let conversion =
                     convert::fo76::migrate_2015_packfile_to_2014_with_warnings(hkx, fo76_options)?;
-                let mut warnings = conversion.warnings;
-                warnings.extend(collect_target_classxml_warnings(
-                    &conversion.hkx,
-                    target.name,
-                ));
-                let mut registry =
-                    hkx::descriptors::DescriptorRegistry::for_contents_version(target.name);
-                let bytes = hkx::write_hkx(&conversion.hkx, &mut registry);
-                return Ok(HavokConversionReport { bytes, warnings });
+                (conversion.hkx, conversion.warnings)
+            } else {
+                let manager = convert::PatchManager::with_native_corpus();
+                manager.convert_hkx(&mut hkx, source_version, target.id)?;
+                (hkx, Vec::new())
             }
-            source_version
         }
         "tagfile" => {
             let tagfile = hkx::parse_tagfile(data)?;
             let source_version = convert::detect_version_id(&tagfile.contents_version)?;
-            if source_version == 56 && target.id == 53 {
-                let conversion =
-                    convert::fo76::migrate_2015_tag0_to_2014_with_warnings(&tagfile, fo76_options)?;
-                let mut warnings = conversion.warnings;
-                warnings.extend(collect_target_classxml_warnings(
-                    &conversion.hkx,
-                    target.name,
-                ));
-                let mut registry =
-                    hkx::descriptors::DescriptorRegistry::for_contents_version(target.name);
-                let bytes = hkx::write_hkx(&conversion.hkx, &mut registry);
-                return Ok(HavokConversionReport { bytes, warnings });
+            if source_version == target.id {
+                return Ok((None, Vec::new()));
             }
-            source_version
+            if source_version != 56 || target.id != 53 {
+                return Err(convert::conversion_not_implemented(
+                    source_version,
+                    target.id,
+                    format,
+                ));
+            }
+            let conversion =
+                convert::fo76::migrate_2015_tag0_to_2014_with_warnings(&tagfile, fo76_options)?;
+            (conversion.hkx, conversion.warnings)
         }
         other => return Err(HavokError::UnsupportedFormat(other.to_string())),
     };
-
-    if source_version == target.id {
-        return Ok(HavokConversionReport {
-            bytes: hkx_roundtrip_bytes(data)?,
-            warnings: Vec::new(),
-        });
-    }
-
-    // Patch-chain route: parse the input, walk the patch corpus from source to
-    // target, and re-serialize. The native corpus is the source of truth — if
-    // the manager refuses (corpus_complete=false), the chain is incomplete and
-    // forcing a run would silently drop members or run zero-defaulted re-adds.
-    if format == "packfile" {
-        let mut hkx = hkx::read_packfile(data)?;
-        let manager = convert::PatchManager::with_native_corpus();
-        manager.convert_hkx(&mut hkx, source_version, target.id)?;
-        let warnings = collect_target_classxml_warnings(&hkx, target.name);
-        let mut registry = hkx::descriptors::DescriptorRegistry::for_contents_version(target.name);
-        return Ok(HavokConversionReport {
-            bytes: hkx::write_hkx(&hkx, &mut registry),
-            warnings,
-        });
-    }
-
-    Err(convert::conversion_not_implemented(
-        source_version,
-        target.id,
-        format,
-    ))
+    warnings.extend(collect_target_classxml_warnings(&file, target.name));
+    Ok((Some(file), warnings))
 }
 
 fn collect_target_classxml_warnings(hkx_file: &hkx::HkxFile, target_version: &str) -> Vec<String> {
@@ -1044,9 +1072,16 @@ fn bs_materials_for_shape(
 ///
 /// Mirrors the Python `_parse_packfile_summary` walk in `ui/editor/panels/collision_info.py`.
 pub fn havok_collision_summary(blob: &[u8]) -> HavokResult<String> {
+    let hkx = read_collision_hkx(blob)?;
+    havok_collision_summary_from_hkx(&hkx, blob)
+}
+
+pub(crate) fn havok_collision_summary_from_hkx(
+    hkx: &hkx::HkxFile,
+    blob: &[u8],
+) -> HavokResult<String> {
     use crate::hkx::types::HkxValue;
 
-    let hkx = read_collision_hkx(blob)?;
     let objects = hkx.objects();
 
     let mut obj_summaries: Vec<serde_json::Value> = objects
@@ -3356,58 +3391,100 @@ mod tests {
     use super::*;
 
     #[test]
-    fn detects_packfile_magic() {
-        let mut data = Vec::from(*HKX_MAGIC);
-        data.extend_from_slice(b"rest");
-        assert_eq!(hkx_detect_format(&data).unwrap(), "packfile");
+    fn detect_format_by_magic_and_version() {
+        {
+            let mut data = Vec::from(*HKX_MAGIC);
+            data.extend_from_slice(b"rest");
+            assert_eq!(hkx_detect_format(&data).unwrap(), "packfile");
+        }
+        {
+            let mut data = Vec::from(*b"\x57\xE0\xE0\x57");
+            data.extend_from_slice(b"rest");
+
+            let error = hkx_detect_format(&data).unwrap_err();
+
+            assert!(
+                error.to_string().contains("unsupported Havok format"),
+                "unexpected error: {error}"
+            );
+        }
+        {
+            let mut data = Vec::from(*b"\0\0\0\0");
+            data.extend_from_slice(TAG0_MAGIC);
+            data.extend_from_slice(b"rest");
+            assert_eq!(hkx_detect_format(&data).unwrap(), "tagfile");
+        }
+        {
+            // Real fo4 fixture lives outside the api crate; build a synthetic
+            // packfile header carrying the version_name string at 0x28.
+            let mut data = vec![0u8; 0x40];
+            data[0..8].copy_from_slice(HKX_MAGIC);
+            let name = b"hk_2014.1.0-r1";
+            data[0x28..0x28 + name.len()].copy_from_slice(name);
+            let result = hkx_detect_format_full(&data).unwrap();
+            assert_eq!(result.kind, "packfile");
+            assert_eq!(result.version, "hk_2014.1.0-r1");
+        }
+        {
+            // Canonical HCT 2014 stream: the first VLE record begins directly
+            // after the two magic words and carries the SDK contents version.
+            let mut data = Vec::new();
+            data.extend_from_slice(&0xCAB0_0D1Eu32.to_le_bytes());
+            data.extend_from_slice(&0xD011_FACEu32.to_le_bytes());
+            data.push(1u8 << 1); // TAG_FILE_INFO
+            data.push(5u8 << 1); // file-info version
+            data.push(14u8 << 1); // SDK version string length
+            data.extend_from_slice(b"hk_2014.1.0-r1");
+            data.extend_from_slice(&0u16.to_le_bytes()); // max predicate
+            data.extend_from_slice(&0u16.to_le_bytes()); // verified predicate count
+            let result = hkx_detect_format_full(&data).unwrap();
+            assert_eq!(result.kind, "binary_tagfile");
+            assert_eq!(result.version, "hk_2014.1.0-r1");
+        }
+        {
+            let mut data = Vec::from(*b"\0\0\0\0");
+            data.extend_from_slice(TAG0_MAGIC);
+            data.extend_from_slice(b"\0\0\0\0SDKV20150100\0");
+            let result = hkx_detect_format_full(&data).unwrap();
+            assert_eq!(result.kind, "tagfile");
+            assert_eq!(result.version, "20150100");
+        }
     }
 
     #[test]
-    fn rejects_packfile_prefix_without_full_magic() {
-        let mut data = Vec::from(*b"\x57\xE0\xE0\x57");
-        data.extend_from_slice(b"rest");
+    fn api_rejects_malformed_input() {
+        {
+            let error = hkx_roundtrip_bytes(b"\x57\xE0\xE0\x57\x10\xC0\xC0\x10").unwrap_err();
+            assert!(
+                error.to_string().contains("packfile header"),
+                "unexpected error: {error}"
+            );
+        }
+        {
+            let error = hkx_roundtrip_bytes(b"\0\0\0\0TAG0rest").unwrap_err();
+            assert!(
+                error.to_string().contains("invalid HFF section"),
+                "unexpected error: {error}"
+            );
+        }
+        {
+            let error = havok_convert_bytes(b"\0\0\0\0TAG0rest", "hk_nope").unwrap_err();
+            assert!(
+                error.to_string().contains("unknown Havok version"),
+                "unexpected error: {error}"
+            );
+        }
+        {
+            let verts = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+            let triangles = vec![[0, 1, 3]];
 
-        let error = hkx_detect_format(&data).unwrap_err();
+            let error = decimate_mesh(&verts, &triangles, 1).unwrap_err();
 
-        assert!(
-            error.to_string().contains("unsupported Havok format"),
-            "unexpected error: {error}"
-        );
-    }
-
-    #[test]
-    fn detects_tag0_magic() {
-        let mut data = Vec::from(*b"\0\0\0\0");
-        data.extend_from_slice(TAG0_MAGIC);
-        data.extend_from_slice(b"rest");
-        assert_eq!(hkx_detect_format(&data).unwrap(), "tagfile");
-    }
-
-    #[test]
-    fn roundtrip_rejects_truncated_packfile() {
-        let error = hkx_roundtrip_bytes(b"\x57\xE0\xE0\x57\x10\xC0\xC0\x10").unwrap_err();
-        assert!(
-            error.to_string().contains("packfile header"),
-            "unexpected error: {error}"
-        );
-    }
-
-    #[test]
-    fn roundtrip_rejects_malformed_tag0() {
-        let error = hkx_roundtrip_bytes(b"\0\0\0\0TAG0rest").unwrap_err();
-        assert!(
-            error.to_string().contains("invalid HFF section"),
-            "unexpected error: {error}"
-        );
-    }
-
-    #[test]
-    fn convert_rejects_unknown_target_version() {
-        let error = havok_convert_bytes(b"\0\0\0\0TAG0rest", "hk_nope").unwrap_err();
-        assert!(
-            error.to_string().contains("unknown Havok version"),
-            "unexpected error: {error}"
-        );
+            assert!(
+                error.to_string().contains("triangle 0 references vertex 3"),
+                "unexpected error: {error}"
+            );
+        }
     }
 
     #[test]
@@ -3454,62 +3531,6 @@ mod tests {
                 "triangle has out-of-range index: {tri:?}"
             );
         }
-    }
-
-    #[test]
-    fn decimate_mesh_rejects_invalid_triangle_indices() {
-        let verts = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
-        let triangles = vec![[0, 1, 3]];
-
-        let error = decimate_mesh(&verts, &triangles, 1).unwrap_err();
-
-        assert!(
-            error.to_string().contains("triangle 0 references vertex 3"),
-            "unexpected error: {error}"
-        );
-    }
-
-    // ── detect_format returns kind+version ───────────────
-
-    #[test]
-    fn detect_format_full_returns_packfile_version_name() {
-        // Real fo4 fixture lives outside the api crate; build a synthetic
-        // packfile header carrying the version_name string at 0x28.
-        let mut data = vec![0u8; 0x40];
-        data[0..8].copy_from_slice(HKX_MAGIC);
-        let name = b"hk_2014.1.0-r1";
-        data[0x28..0x28 + name.len()].copy_from_slice(name);
-        let result = hkx_detect_format_full(&data).unwrap();
-        assert_eq!(result.kind, "packfile");
-        assert_eq!(result.version, "hk_2014.1.0-r1");
-    }
-
-    #[test]
-    fn detect_format_full_recognizes_skyrim_se_binary_tagfile() {
-        // Canonical HCT 2014 stream: the first VLE record begins directly
-        // after the two magic words and carries the SDK contents version.
-        let mut data = Vec::new();
-        data.extend_from_slice(&0xCAB0_0D1Eu32.to_le_bytes());
-        data.extend_from_slice(&0xD011_FACEu32.to_le_bytes());
-        data.push(1u8 << 1); // TAG_FILE_INFO
-        data.push(5u8 << 1); // file-info version
-        data.push(14u8 << 1); // SDK version string length
-        data.extend_from_slice(b"hk_2014.1.0-r1");
-        data.extend_from_slice(&0u16.to_le_bytes()); // max predicate
-        data.extend_from_slice(&0u16.to_le_bytes()); // verified predicate count
-        let result = hkx_detect_format_full(&data).unwrap();
-        assert_eq!(result.kind, "binary_tagfile");
-        assert_eq!(result.version, "hk_2014.1.0-r1");
-    }
-
-    #[test]
-    fn detect_format_full_returns_tagfile_for_tag0_marker() {
-        let mut data = Vec::from(*b"\0\0\0\0");
-        data.extend_from_slice(TAG0_MAGIC);
-        data.extend_from_slice(b"\0\0\0\0SDKV20150100\0");
-        let result = hkx_detect_format_full(&data).unwrap();
-        assert_eq!(result.kind, "tagfile");
-        assert_eq!(result.version, "20150100");
     }
 
     #[test]

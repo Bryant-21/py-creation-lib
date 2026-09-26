@@ -7,6 +7,7 @@ def verify_stock_sources(sources, *, compiler, game_root, imports, flags=None, o
     compiler = Path(compiler)
     if not compiler.is_file():
         raise FileNotFoundError(f"Stock Papyrus compiler not found: {compiler}")
+    compiled = {}
     with tempfile.TemporaryDirectory(prefix="modkit_stock_") as temporary:
         for index, source in enumerate(sources):
             source = Path(source).resolve()
@@ -20,7 +21,9 @@ def verify_stock_sources(sources, *, compiler, game_root, imports, flags=None, o
                 flag_path = Path(flags)
                 command.append(f"-f={flag_path.resolve() if flag_path.is_file() else flags}")
             result = subprocess.run(command, cwd=str(game_root), capture_output=True, text=True, encoding="utf-8", errors="replace")
-            produced = any(path.stem.casefold() == source.stem.casefold() for path in output.rglob("*.pex"))
+            produced = next((path for path in output.rglob("*.pex") if path.stem.casefold() == source.stem.casefold()), None)
             if result.returncode != 0 or not produced:
                 diagnostics = (result.stdout + "\n" + result.stderr).strip()[-6000:]
                 raise RuntimeError(f"Stock Papyrus verification failed for {source.name} (exit {result.returncode}, output produced: {produced}):\n{diagnostics}")
+            compiled[source] = produced.read_bytes()
+    return compiled

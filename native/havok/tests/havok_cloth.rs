@@ -1,6 +1,10 @@
 use std::path::PathBuf;
 
-use havok_native::cloth::{cloth_metadata_from_blob, load_cloth_hkx, validate_cloth_blob};
+use havok_native::cloth::reverse::reverse_cloth_data_lossy;
+use havok_native::cloth::schema::{expand_from_fixture, is_known};
+use havok_native::cloth::{
+    ClothData, cloth_metadata_from_blob, load_cloth_hkx, validate_cloth_blob, validate_cloth_data,
+};
 use havok_native::hkx::read_packfile;
 
 fn repo_path(relative: &str) -> PathBuf {
@@ -15,22 +19,11 @@ fn fixture_bytes(relative: &str) -> Vec<u8> {
     })
 }
 
-fn optional_fixture(relative: &str) -> Option<Vec<u8>> {
-    let path = repo_path(relative);
-    if !path.exists() {
-        return None;
-    }
-    Some(std::fs::read(&path).unwrap_or_else(|error| {
-        panic!("failed to read fixture {relative}: {error}");
-    }))
-}
-
 #[test]
-fn parses_runtime_metadata_inventory_from_tracked_hkx_blob() {
+fn animation_blob_reports_no_cloth_data() {
     let blob = fixture_bytes("native/havok/tests/fixtures/skeleton.hkx");
 
     let metadata = cloth_metadata_from_blob(&blob).expect("parse cloth metadata scaffold");
-
     assert!(metadata.object_count > 0);
     assert!(
         metadata
@@ -41,15 +34,8 @@ fn parses_runtime_metadata_inventory_from_tracked_hkx_blob() {
     assert!(!metadata.has_cloth_data);
     assert!(!metadata.has_setup_data);
     assert!(!metadata.has_runtime_data);
-}
-
-#[test]
-fn semantic_validation_reports_no_cloth_data_for_animation_blob() {
-    let blob = fixture_bytes("native/havok/tests/fixtures/skeleton.hkx");
 
     let summary = validate_cloth_blob(&blob).expect("validation should succeed for parseable blob");
-
-    // The skeleton is an animation HKX with no hclClothData — expect a NO_CLOTH_DATA error.
     let issues = summary
         .get("issues")
         .and_then(|v| v.as_array())
@@ -62,60 +48,63 @@ fn semantic_validation_reports_no_cloth_data_for_animation_blob() {
     );
 }
 
+/// End-to-end over the checked-in bathrobe cloth blob: metadata, runtime
+/// view, lint, lossy reverse and the inspector JSON.
 #[test]
-fn extracts_bathrobe_cloth_blob_when_fixture_present() {
-    let blob = match optional_fixture("../tests/fixtures/cloth/bathrobe_outfitm_cloth.hkx") {
-        Some(bytes) => bytes,
-        None => return, // skip when fixture not prepared
-    };
-
-    assert!(!blob.is_empty(), "bathrobe blob fixture must be non-empty");
-    assert!(
-        blob.len() > 1024,
-        "bathrobe blob is unexpectedly small: {} bytes",
-        blob.len()
-    );
-}
-
-#[test]
-fn bathrobe_metadata_reports_cloth_data_present() {
-    let blob = match optional_fixture("../tests/fixtures/cloth/bathrobe_outfitm_cloth.hkx") {
-        Some(bytes) => bytes,
-        None => return,
-    };
+fn bathrobe_fixture_loads_validates_reverses_and_inspects() {
+    let blob = fixture_bytes("tests/fixtures/cloth/bathrobe_outfitm_cloth.hkx");
 
     let metadata = cloth_metadata_from_blob(&blob).expect("parse bathrobe cloth metadata");
-
-    assert!(
-        metadata.has_cloth_data,
-        "bathrobe must report has_cloth_data=true"
-    );
-    assert!(
-        metadata.has_runtime_data,
-        "bathrobe must report has_runtime_data=true"
-    );
-    assert!(
-        metadata
-            .class_inventory
-            .iter()
-            .any(|entry| entry.class_name == "hclClothData"),
-        "bathrobe inventory must include hclClothData",
-    );
-}
-
-#[test]
-fn load_cloth_hkx_from_bathrobe_returns_non_empty_object_graph() {
-    let blob = match optional_fixture("../tests/fixtures/cloth/bathrobe_outfitm_cloth.hkx") {
-        Some(bytes) => bytes,
-        None => return, // skip when fixture not prepared
-    };
+    assert!(metadata.has_cloth_data);
+    assert!(metadata.has_runtime_data);
+    for entry in &metadata.class_inventory {
+        assert!(is_known(&entry.class_name), "unknown class {}", entry.class_name);
+    }
+    let fixture_names =
+        expand_from_fixture(&repo_path("tests/fixtures/cloth/bathrobe_outfitm_classnames.json"))
+            .expect("read bathrobe classnames json");
+    assert!(fixture_names.contains("hclClothData"));
+    for name in &fixture_names {
+        assert!(is_known(name), "fixture references unknown HCL class {name}");
+    }
 
     let hkx = load_cloth_hkx(&blob).expect("load cloth HKX from bathrobe blob");
+    let cloth = ClothData::from_hkx_file(&hkx).expect("bathrobe HKX must contain hclClothData");
+    assert!(!cloth.name().is_empty());
+    assert!(!cloth.operators().is_empty());
+    let sims = cloth.sim_cloth_datas();
+    assert!(!sims.is_empty());
+    assert!(!sims[0].fixed_particle_indices().is_empty());
 
+    let result = validate_cloth_data(Some(&cloth));
     assert!(
-        hkx.objects().len() > 0,
-        "bathrobe HKX must have at least one object"
+        result.is_valid(),
+        "bathrobe cloth data must be lint-clean; errors: {:?}",
+        result
+            .errors()
+            .iter()
+            .map(|i| format!("{}: {}", i.code, i.message))
+            .collect::<Vec<_>>(),
     );
+
+    let sim_names: Vec<String> = sims.iter().map(|s| s.name().to_string()).collect();
+    let setup = reverse_cloth_data_lossy(&cloth);
+    assert!(!setup.sim_cloth_setups.is_empty());
+    for (sc_setup, runtime_name) in setup.sim_cloth_setups.iter().zip(&sim_names) {
+        assert_eq!(&sc_setup.name, runtime_name);
+    }
+
+    let json_str = havok_native::api::cloth_inspect_full_json(&blob)
+        .expect("cloth_inspect_full_json must succeed on bathrobe");
+    let root: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+    let particles = root["sim_cloths"][0]["particles"]
+        .as_array()
+        .expect("bathrobe sim cloth particles");
+    assert!(!particles.is_empty());
+    for p in particles {
+        let pos = p["position"].as_array().expect("particle must have position");
+        assert!(pos.len() >= 3);
+    }
 }
 
 /// A vanilla FO4 cape cloth blob must round-trip byte-exact through

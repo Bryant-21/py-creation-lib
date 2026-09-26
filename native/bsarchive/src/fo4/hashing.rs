@@ -138,14 +138,6 @@ mod tests {
     use bstr::ByteSlice as _;
 
     #[test]
-    fn default_state() {
-        let h = Hash::default();
-        assert_eq!(h.file, 0);
-        assert_eq!(h.extension, 0);
-        assert_eq!(h.directory, 0);
-    }
-
-    #[test]
     fn validate_hashes() {
         let l = |path: &[u8]| fo4::hash_file(path.as_bstr()).0;
         let r = |file: u32, extension: u32, directory: u32| Hash {

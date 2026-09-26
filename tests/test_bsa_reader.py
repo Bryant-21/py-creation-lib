@@ -128,20 +128,20 @@ def _build_test_bsa(tmp_path, version=105, compressed=False):
 
 
 class TestBSAReader:
-    def test_parse_header_rejects_non_bsa(self, tmp_path):
+    def test_parse_header_rejects_non_bsa_and_truncated_file(self, tmp_path):
         bad = tmp_path / "bad.bsa"
         bad.write_bytes(b"\x00" * 100)
         with pytest.raises(ValueError, match="Not a BSA"):
             BSAReader(bad)
 
-    def test_parse_header_rejects_truncated_file(self, tmp_path):
-        bad = tmp_path / "short.bsa"
-        bad.write_bytes(BSA_MAGIC + b"\x00" * 4)
+        short = tmp_path / "short.bsa"
+        short.write_bytes(BSA_MAGIC + b"\x00" * 4)
         with pytest.raises(ValueError):
-            BSAReader(bad)
+            BSAReader(short)
 
-    def test_read_v105_uncompressed(self, tmp_path):
-        bsa_path = _build_test_bsa(tmp_path, version=105, compressed=False)
+    @pytest.mark.parametrize("version,compressed", [(105, False), (105, True), (104, False)])
+    def test_read_uncompressed_and_compressed(self, tmp_path, version, compressed):
+        bsa_path = _build_test_bsa(tmp_path, version=version, compressed=compressed)
         reader = BSAReader(bsa_path)
         files = reader.list_files()
         assert len(files) == 1
@@ -151,42 +151,11 @@ class TestBSAReader:
         assert data == b"NIF file content for testing"
         reader.close()
 
-    def test_read_v105_compressed(self, tmp_path):
-        bsa_path = _build_test_bsa(tmp_path, version=105, compressed=True)
-        reader = BSAReader(bsa_path)
-        files = reader.list_files()
-        assert len(files) == 1
-
-        data = reader.extract("meshes/test.nif")
-        assert data == b"NIF file content for testing"
-        reader.close()
-
-    def test_read_v104_uncompressed(self, tmp_path):
-        bsa_path = _build_test_bsa(tmp_path, version=104, compressed=False)
-        reader = BSAReader(bsa_path)
-        files = reader.list_files()
-        assert len(files) == 1
-        data = reader.extract("meshes/test.nif")
-        assert data == b"NIF file content for testing"
-        reader.close()
-
-    def test_extract_returns_none_for_missing(self, tmp_path):
+    def test_extract_missing_case_insensitive_and_contains(self, tmp_path):
         bsa_path = _build_test_bsa(tmp_path, version=105)
         reader = BSAReader(bsa_path)
-        result = reader.extract("nonexistent/path.dds")
-        assert result is None
-        reader.close()
-
-    def test_extract_case_insensitive(self, tmp_path):
-        bsa_path = _build_test_bsa(tmp_path, version=105)
-        reader = BSAReader(bsa_path)
-        data = reader.extract("Meshes/Test.nif")
-        assert data == b"NIF file content for testing"
-        reader.close()
-
-    def test_contains(self, tmp_path):
-        bsa_path = _build_test_bsa(tmp_path, version=105)
-        reader = BSAReader(bsa_path)
+        assert reader.extract("nonexistent/path.dds") is None
+        assert reader.extract("Meshes/Test.nif") == b"NIF file content for testing"
         assert reader.contains("meshes/test.nif")
         assert not reader.contains("missing.dds")
         reader.close()

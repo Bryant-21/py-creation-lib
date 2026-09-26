@@ -84,16 +84,13 @@ mod tests {
     }
 
     #[test]
-    fn writer_packs_least_significant_bit_first() {
+    fn reader_returns_what_writer_wrote() {
         let mut writer = BitWriter::new();
         writer.write(0b101, 3);
         writer.write(0b11111, 5);
         writer.write(1, 1);
         assert_eq!(writer.into_bytes(), vec![0xFD, 0x01]);
-    }
 
-    #[test]
-    fn reader_returns_what_writer_wrote() {
         let fields = [
             (1, 1),
             (0x3F, 6),
@@ -112,10 +109,7 @@ mod tests {
             assert_eq!(reader.read(bits).unwrap(), value, "{bits}-bit field");
         }
         assert_eq!(reader.bits_read(), 86);
-    }
 
-    #[test]
-    fn reader_refuses_to_run_past_the_end() {
         let mut reader = BitReader::new(&[0xFF]);
         assert_eq!(reader.read(7).unwrap(), 0x7F);
         assert!(reader.read(2).is_err());

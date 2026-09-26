@@ -67,16 +67,16 @@ def _parse_xml(path: Path) -> ET.ElementTree:
 
 
 # ---------------------------------------------------------------------------
-# Tests: quaternion slerp
+# Tests: quaternion slerp + vector lerp helpers
 # ---------------------------------------------------------------------------
 
-class TestSlerp:
-    def test_identity(self):
+class TestSlerpAndLerp:
+    def test_slerp_identity_endpoints_midpoint_and_lerp_basic(self):
+        # Phase 1: slerp identity/endpoint/midpoint behavior.
         q = (0.0, 0.0, 0.0, 1.0)
         result = _slerp(q, q, 0.5)
         assert all(abs(a - b) < 1e-6 for a, b in zip(result, q))
 
-    def test_endpoints(self):
         q0 = (0.0, 0.0, 0.0, 1.0)
         q1 = (0.0, 0.707107, 0.0, 0.707107)
         r0 = _slerp(q0, q1, 0.0)
@@ -84,20 +84,12 @@ class TestSlerp:
         assert all(abs(a - b) < 1e-5 for a, b in zip(r0, q0))
         assert all(abs(a - b) < 1e-5 for a, b in zip(r1, q1))
 
-    def test_midpoint_normalized(self):
-        q0 = (0.0, 0.0, 0.0, 1.0)
-        q1 = (0.0, 1.0, 0.0, 0.0)
-        mid = _slerp(q0, q1, 0.5)
+        q2 = (0.0, 1.0, 0.0, 0.0)
+        mid = _slerp(q0, q2, 0.5)
         length = math.sqrt(sum(x * x for x in mid))
         assert abs(length - 1.0) < 1e-6
 
-
-# ---------------------------------------------------------------------------
-# Tests: lerp
-# ---------------------------------------------------------------------------
-
-class TestLerp:
-    def test_basic(self):
+        # Phase 2: lerp is a plain componentwise interpolation.
         a = (0.0, 0.0, 0.0)
         b = (10.0, 20.0, 30.0)
         r = _lerp_tuple(a, b, 0.5)
@@ -109,7 +101,8 @@ class TestLerp:
 # ---------------------------------------------------------------------------
 
 class TestWriteAnimationXml:
-    def test_basic_structure(self, tmp_path: Path):
+    def test_basic_structure_and_animation_container(self, tmp_path: Path):
+        # Phase 1: top-level packfile/container structure.
         clip = _make_clip()
         skeleton_bones = ["Pelvis", "Spine"]
         out = tmp_path / "test_anim.xml"
@@ -127,13 +120,7 @@ class TestWriteAnimationXml:
         assert section is not None
         assert section.get("name") == "__data__"
 
-    def test_animation_container(self, tmp_path: Path):
-        clip = _make_clip()
-        out = tmp_path / "anim.xml"
-        write_animation_xml(clip, ["Pelvis", "Spine"], out)
-
-        tree = _parse_xml(out)
-        objects = tree.getroot().findall(".//hkobject")
+        objects = root.findall(".//hkobject")
         container = [o for o in objects if o.get("class") == "hkaAnimationContainer"]
         assert len(container) == 1
 
@@ -142,13 +129,7 @@ class TestWriteAnimationXml:
         assert anims_param.get("numelements") == "1"
         assert "#animation" in anims_param.text
 
-    def test_transform_count(self, tmp_path: Path):
-        clip = _make_clip()
-        bones = ["Pelvis", "Spine"]
-        out = tmp_path / "anim.xml"
-        write_animation_xml(clip, bones, out)
-
-        tree = _parse_xml(out)
+        # Phase 2: transform count/shape on the same output.
         anim_obj = [
             o for o in tree.getroot().findall(".//hkobject")
             if o.get("class") == "hkaInterleavedUncompressedAnimation"
@@ -156,7 +137,7 @@ class TestWriteAnimationXml:
 
         # duration=1.0 at 30fps => 31 frames, 2 bones => 62 transforms
         expected_frames = int(1.0 * SAMPLE_RATE) + 1
-        expected_transforms = expected_frames * len(bones)
+        expected_transforms = expected_frames * len(skeleton_bones)
 
         transforms_param = anim_obj.find("hkparam[@name='transforms']")
         assert transforms_param.get("numelements") == str(expected_transforms)
@@ -168,15 +149,15 @@ class TestWriteAnimationXml:
         assert len(groups) == expected_transforms
         assert len(groups[0].strip("()").split()) == 12
 
-    def test_frame_count_at_30fps(self, tmp_path: Path):
-        """Verify frame count formula: int(duration * 30) + 1."""
-        clip = AnimationClip(
-            name="short",
-            duration=0.5,
-            channels=(),
-            events=(),
-        )
-        bones = ["Root"]
+    @pytest.mark.parametrize(
+        ("duration", "bones", "expected_frames"),
+        [
+            (0.5, ["Root"], 16),  # int(duration * 30) + 1
+            (0.0, ["Root"], 1),  # zero-duration clip still produces 1 frame
+        ],
+    )
+    def test_frame_count_at_30fps(self, tmp_path: Path, duration, bones, expected_frames):
+        clip = AnimationClip(name="short", duration=duration, channels=(), events=())
         out = tmp_path / "short.xml"
         write_animation_xml(clip, bones, out)
 
@@ -186,11 +167,11 @@ class TestWriteAnimationXml:
             if o.get("class") == "hkaInterleavedUncompressedAnimation"
         ][0]
 
-        expected_frames = int(0.5 * 30) + 1  # 16
         transforms_param = anim_obj.find("hkparam[@name='transforms']")
         assert transforms_param.get("numelements") == str(expected_frames)
 
-    def test_annotation_events(self, tmp_path: Path):
+    def test_annotation_events_binding_and_missing_bone_identity(self, tmp_path: Path):
+        # Phase 1: annotation tracks carry events on their originating bone only.
         clip = _make_clip()
         bones = ["Pelvis", "Spine"]
         out = tmp_path / "anim.xml"
@@ -217,15 +198,10 @@ class TestWriteAnimationXml:
         track1_anns = track_objects[1].find("hkparam[@name='annotations']")
         assert track1_anns.get("numelements") == "0"
 
-    def test_binding(self, tmp_path: Path):
-        clip = _make_clip()
-        bones = ["Pelvis", "Spine"]
-        out = tmp_path / "anim.xml"
-        write_animation_xml(clip, bones, out)
-
-        tree = _parse_xml(out)
+        # Phase 2: the binding maps transform tracks to bone indices in order.
+        binding_tree = _parse_xml(out)
         binding_obj = [
-            o for o in tree.getroot().findall(".//hkobject")
+            o for o in binding_tree.getroot().findall(".//hkobject")
             if o.get("class") == "hkaAnimationBinding"
         ][0]
 
@@ -235,20 +211,19 @@ class TestWriteAnimationXml:
         assert indices_param.get("numelements") == "2"
         assert indices_param.text.strip() == "0 1"
 
-    def test_missing_bone_gets_identity(self, tmp_path: Path):
-        """Bones in skeleton but not in clip get identity transforms."""
-        clip = _make_clip()  # has Pelvis and Spine
-        bones = ["Pelvis", "Spine", "Head"]  # Head not in clip
-        out = tmp_path / "anim.xml"
-        write_animation_xml(clip, bones, out)
+        # Phase 3: bones in skeleton but not in clip get identity transforms.
+        identity_clip = _make_clip()  # has Pelvis and Spine
+        identity_bones = ["Pelvis", "Spine", "Head"]  # Head not in clip
+        identity_out = tmp_path / "anim_identity.xml"
+        write_animation_xml(identity_clip, identity_bones, identity_out)
 
-        tree = _parse_xml(out)
-        anim_obj = [
-            o for o in tree.getroot().findall(".//hkobject")
+        identity_tree = _parse_xml(identity_out)
+        identity_anim_obj = [
+            o for o in identity_tree.getroot().findall(".//hkobject")
             if o.get("class") == "hkaInterleavedUncompressedAnimation"
         ][0]
 
-        transforms_param = anim_obj.find("hkparam[@name='transforms']")
+        transforms_param = identity_anim_obj.find("hkparam[@name='transforms']")
         import re
         groups = re.findall(r"\([^)]+\)", transforms_param.text)
 
@@ -262,27 +237,18 @@ class TestWriteAnimationXml:
         assert head_values[4:8] == pytest.approx([0.0, 0.0, 0.0, 1.0])
         assert head_values[8:11] == pytest.approx([1.0, 1.0, 1.0])
 
-    def test_zero_duration(self, tmp_path: Path):
-        """Zero-duration clip produces exactly 1 frame."""
-        clip = AnimationClip(name="still", duration=0.0, channels=())
-        out = tmp_path / "still.xml"
-        write_animation_xml(clip, ["Root"], out)
-
-        tree = _parse_xml(out)
-        anim_obj = [
-            o for o in tree.getroot().findall(".//hkobject")
-            if o.get("class") == "hkaInterleavedUncompressedAnimation"
-        ][0]
-
-        transforms_param = anim_obj.find("hkparam[@name='transforms']")
-        assert transforms_param.get("numelements") == "1"
-
 
 class TestPreservesAdditionalFields:
     """Writer must round-trip extractedMotion / blendHint / track-bone binding."""
 
-    def test_writer_preserves_extracted_motion(self, tmp_path: Path):
-        clip = dataclasses.replace(_make_clip(), extracted_motion_ref="#0006")
+    def test_writer_preserves_motion_blend_hint_and_track_to_bone(self, tmp_path: Path):
+        # Phase 1: explicit motion/blend/track-bone fields are preserved.
+        clip = dataclasses.replace(
+            _make_clip(),
+            extracted_motion_ref="#0006",
+            is_additive=True,
+            track_to_bone_indices=(3, 7),
+        )
         out = tmp_path / "anim.xml"
         write_animation_xml(clip, ["Pelvis", "Spine"], out)
 
@@ -296,12 +262,6 @@ class TestPreservesAdditionalFields:
             f"expected extractedMotion=#0006, got {em.text!r}"
         )
 
-    def test_writer_preserves_additive_blend_hint(self, tmp_path: Path):
-        clip = dataclasses.replace(_make_clip(), is_additive=True)
-        out = tmp_path / "anim.xml"
-        write_animation_xml(clip, ["Pelvis", "Spine"], out)
-
-        tree = _parse_xml(out)
         binding_obj = [
             o for o in tree.getroot().findall(".//hkobject")
             if o.get("class") == "hkaAnimationBinding"
@@ -310,27 +270,14 @@ class TestPreservesAdditionalFields:
         assert hint is not None and hint.text.strip() == "ADDITIVE", (
             f"expected blendHint=ADDITIVE, got {hint.text!r}"
         )
-
-    def test_writer_preserves_non_identity_track_to_bone(self, tmp_path: Path):
-        # 2 tracks (Pelvis, Spine) rebound to non-identity skeleton slots.
-        clip = dataclasses.replace(_make_clip(), track_to_bone_indices=(3, 7))
-        out = tmp_path / "anim.xml"
-        write_animation_xml(clip, ["Pelvis", "Spine"], out)
-
-        tree = _parse_xml(out)
-        binding_obj = [
-            o for o in tree.getroot().findall(".//hkobject")
-            if o.get("class") == "hkaAnimationBinding"
-        ][0]
         idx = binding_obj.find("hkparam[@name='transformTrackToBoneIndices']")
         assert idx is not None and idx.text.strip() == "3 7", (
             f"expected '3 7', got {idx.text!r}"
         )
 
-    def test_defaults_unchanged_for_unset_clip(self, tmp_path: Path):
-        # Sanity: a vanilla clip still produces #null / NORMAL / identity.
+        # Phase 2: contrast — a vanilla (unset) clip still produces #null / NORMAL / identity.
         clip = _make_clip()
-        out = tmp_path / "anim.xml"
+        out = tmp_path / "anim_defaults.xml"
         write_animation_xml(clip, ["Pelvis", "Spine"], out)
 
         tree = _parse_xml(out)

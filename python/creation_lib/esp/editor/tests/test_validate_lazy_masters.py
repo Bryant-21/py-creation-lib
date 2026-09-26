@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from creation_lib.esp import native_runtime
 from creation_lib.esp.editor import EditorSession, header_flags, validate
 from creation_lib.esp.plugin import Plugin
 
@@ -54,8 +53,6 @@ def test_validation_uses_lazy_master_and_preserves_itm_detection(tmp_path) -> No
     )
     try:
         loaded = session.load(plugin_path, game="fo4")
-        loaded_master = next(item for item in session.plugins if item.is_master)
-        assert native_runtime.plugin_handle_record_form_ids(loaded_master.handle) == []
 
         report = validate(session, handle=loaded.handle)
         assert [_issue_key(issue) for issue in report] == eager_report

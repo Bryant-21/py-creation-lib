@@ -73,17 +73,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_explicit_mapping_targets_a_supported_non_stair_material() {
+    fn fo76_material_remap_targets_supported_non_stair_materials() {
         for (source, target) in FO76_ONLY_MATERIAL_MAP {
             assert!(!is_supported_fo4_collision_material(source));
             assert!(is_supported_fo4_collision_material(target));
             assert_ne!(target, 0xC0EB623D);
             assert_eq!(remap_fo76_collision_material_for_fo4(source), target);
         }
-    }
-
-    #[test]
-    fn fallback_is_supported_and_not_stairs() {
         assert!(is_supported_fo4_collision_material(FO4_MATERIAL_DEFAULT));
         assert_ne!(FO4_MATERIAL_DEFAULT, 0xC0EB623D);
         assert_eq!(

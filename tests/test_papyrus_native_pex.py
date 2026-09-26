@@ -38,26 +38,21 @@ def native_module():
     return module
 
 
-def test_native_parse_pex_bytes_returns_json_payload(native_module):
-    payload = json.loads(native_module.parse_pex_bytes(_minimal_pex()))
-
-    assert payload["magic"] == 0xFA57C0DE
-    assert payload["major_version"] == 3
-    assert payload["minor_version"] == 9
-    assert payload["game_id"] == 2
-    assert payload["source_filename"] == "test.psc"
-    assert payload["string_table"] == ["MyScript", "None", "ObjectReference"]
-    assert payload["objects"] == []
-
-
-def test_native_parse_pex_file_returns_json_payload(native_module, tmp_path):
+def test_native_parse_pex_bytes_and_file_return_equivalent_json_payload(native_module, tmp_path):
     pex_path = tmp_path / "minimal.pex"
     pex_path.write_bytes(_minimal_pex())
 
-    payload = json.loads(native_module.parse_pex_file(str(pex_path)))
+    bytes_payload = json.loads(native_module.parse_pex_bytes(_minimal_pex()))
+    file_payload = json.loads(native_module.parse_pex_file(str(pex_path)))
 
-    assert payload["source_filename"] == "test.psc"
-    assert payload["objects"] == []
+    for payload in (bytes_payload, file_payload):
+        assert payload["magic"] == 0xFA57C0DE
+        assert payload["major_version"] == 3
+        assert payload["minor_version"] == 9
+        assert payload["game_id"] == 2
+        assert payload["source_filename"] == "test.psc"
+        assert payload["string_table"] == ["MyScript", "None", "ObjectReference"]
+        assert payload["objects"] == []
 
 
 def test_native_parse_pex_bytes_rejects_bad_magic(native_module):

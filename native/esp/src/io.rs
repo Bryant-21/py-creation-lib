@@ -471,6 +471,7 @@ pub(crate) fn count_children(
     count
 }
 
+#[cfg(test)]
 /// Header-only walk recording `form_id -> byte offset` for every record at
 /// every nesting level, without building the `ParsedItem` tree. Thin wrapper
 /// over [`crate::record_cursor::RecordCursor`], which owns the walk.
@@ -815,8 +816,8 @@ mod tests {
         }
     }
 
-    /// A multi-group plugin: a top-level WEAP group, plus a CELL group with a
-    /// nested cell-children (type 6) group — exercises recursive group framing.
+    /// A top-level WRLD group with world children, a CELL, and cell children,
+    /// plus a sibling WEAP group. This exercises real FO4 nesting and ordering.
     fn parity_multi_group_plugin() -> ParsedPlugin {
         let header = ParsedPluginHeader::default_for_test();
         let weap_group = ParsedGroup {
@@ -834,17 +835,32 @@ mod tests {
             tail: Bytes::from(vec![0u8; MODERN_HEADER_SIZE - 16]),
             children: vec![ParsedItem::Record(parity_record(
                 "REFR",
-                0x0700_0901,
+                0xFF00_0901,
                 "RefrA",
             ))],
         };
-        let cell_group = ParsedGroup {
-            label: *b"CELL",
-            group_type: 0,
+        let cell_children = ParsedGroup {
+            label: 0x0700_0900u32.to_le_bytes(),
+            group_type: 6,
+            tail: Bytes::from(vec![0u8; MODERN_HEADER_SIZE - 16]),
+            children: vec![ParsedItem::Group(inner)],
+        };
+        let world_children = ParsedGroup {
+            label: 0x0700_0800u32.to_le_bytes(),
+            group_type: 1,
             tail: Bytes::from(vec![0u8; MODERN_HEADER_SIZE - 16]),
             children: vec![
                 ParsedItem::Record(parity_record("CELL", 0x0700_0900, "CellA")),
-                ParsedItem::Group(inner),
+                ParsedItem::Group(cell_children),
+            ],
+        };
+        let world_group = ParsedGroup {
+            label: *b"WRLD",
+            group_type: 0,
+            tail: Bytes::from(vec![0u8; MODERN_HEADER_SIZE - 16]),
+            children: vec![
+                ParsedItem::Record(parity_record("WRLD", 0x0700_0800, "WorldA")),
+                ParsedItem::Group(world_children),
             ],
         };
         ParsedPlugin {
@@ -852,27 +868,224 @@ mod tests {
             file_path: String::new(),
             header_size: MODERN_HEADER_SIZE,
             header,
-            root_items: vec![ParsedItem::Group(weap_group), ParsedItem::Group(cell_group)],
+            root_items: vec![
+                ParsedItem::Group(weap_group),
+                ParsedItem::Group(world_group),
+            ],
             game: Some("fo4".to_string()),
         }
     }
 
+    fn assert_group_lengths(bytes: &[u8], header_size: usize, start: usize, end: usize) -> usize {
+        let mut offset = start;
+        let mut groups = 0;
+        while offset < end {
+            assert!(offset + header_size <= end, "truncated item at {offset}");
+            let payload_size =
+                u32::from_le_bytes(bytes[offset + 4..offset + 8].try_into().unwrap()) as usize;
+            if &bytes[offset..offset + 4] == b"GRUP" {
+                let group_end = offset
+                    .checked_add(payload_size)
+                    .expect("group end overflow");
+                assert!(payload_size >= header_size, "undersized GRUP at {offset}");
+                assert!(group_end <= end, "GRUP at {offset} exceeds its parent");
+                groups +=
+                    1 + assert_group_lengths(bytes, header_size, offset + header_size, group_end);
+                offset = group_end;
+            } else {
+                offset = offset
+                    .checked_add(header_size)
+                    .and_then(|value| value.checked_add(payload_size))
+                    .expect("record end overflow");
+                assert!(offset <= end, "record exceeds its parent");
+            }
+        }
+        assert_eq!(offset, end, "items did not end on their parent boundary");
+        groups
+    }
+
+    fn assert_plugin_group_lengths(bytes: &[u8], header_size: usize) -> usize {
+        let tes4_payload = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
+        assert_group_lengths(bytes, header_size, header_size + tes4_payload, bytes.len())
+    }
+
+    fn has_temporary_self_form_id(items: &[ParsedItem]) -> bool {
+        items.iter().any(|item| match item {
+            ParsedItem::Record(record) => record.form_id >> 24 == 0xFF,
+            ParsedItem::Group(group) => has_temporary_self_form_id(&group.children),
+        })
+    }
+
     #[test]
-    fn streaming_writer_byte_matches_buffered_build_plugin_bytes() {
-        // The streaming serializer must produce byte-identical output to the
-        // buffered build_plugin_bytes — same framing, same order, only the sink
-        // differs. This is the parity guarantee for the Build-ESP memory win.
-        let mut buffered_plugin = parity_multi_group_plugin();
-        let buffered = build_plugin_bytes(&mut buffered_plugin).expect("buffered serialize");
+    fn streaming_writer_matches_buffered_writer() {
+        // streaming_writer_byte_matches_buffered_build_plugin_bytes
+        {
+            // The streaming serializer must produce byte-identical output to the
+            // buffered build_plugin_bytes — same framing, same order, only the sink
+            // differs. This is the parity guarantee for the Build-ESP memory win.
+            let mut buffered_plugin = parity_multi_group_plugin();
+            let buffered = build_plugin_bytes(&mut buffered_plugin).expect("buffered serialize");
 
-        let mut streamed_plugin = parity_multi_group_plugin();
-        let mut streamed: Vec<u8> = Vec::new();
-        write_plugin_to(&mut streamed_plugin, &mut streamed).expect("streamed serialize");
+            let mut streamed_plugin = parity_multi_group_plugin();
+            let mut streamed = std::io::Cursor::new(Vec::new());
+            write_plugin_seekable_to(&mut streamed_plugin, &mut streamed).expect("streamed serialize");
+            let streamed = streamed.into_inner();
 
-        assert_eq!(
-            streamed, buffered,
-            "streaming serializer diverged from buffered build_plugin_bytes"
-        );
+            assert_eq!(
+                streamed, buffered,
+                "streaming serializer diverged from buffered build_plugin_bytes"
+            );
+            assert!(!has_temporary_self_form_id(&streamed_plugin.root_items));
+            assert!(!has_temporary_self_form_id(&buffered_plugin.root_items));
+            assert_eq!(
+                assert_plugin_group_lengths(&streamed, MODERN_HEADER_SIZE),
+                5
+            );
+
+        }
+        // streaming_writer_matches_legacy_headers
+        {
+            let mut buffered_plugin = parity_multi_group_plugin();
+            buffered_plugin.header_size = LEGACY_HEADER_SIZE;
+            let buffered = build_plugin_bytes(&mut buffered_plugin).expect("buffered legacy serialize");
+
+            let mut streamed_plugin = parity_multi_group_plugin();
+            streamed_plugin.header_size = LEGACY_HEADER_SIZE;
+            let mut streamed = std::io::Cursor::new(Vec::new());
+            write_plugin_seekable_to(&mut streamed_plugin, &mut streamed)
+                .expect("streamed legacy serialize");
+            let streamed = streamed.into_inner();
+
+            assert_eq!(streamed, buffered);
+            assert_eq!(
+                assert_plugin_group_lengths(&streamed, LEGACY_HEADER_SIZE),
+                5
+            );
+
+        }
+        // streaming_writer_matches_compressed_raw_salvage_and_xxxx_records
+        {
+            initialize_python_for_tests();
+            let plain = encode_subrecords_uncompressed(&[
+                test_subrecord("EDID", b"CompressedRecord\0".to_vec()),
+                test_subrecord("DATA", vec![7; 4096]),
+            ]);
+            let valid_raw = compressed_payload(plain.len() as u32, &plain);
+            let bad_checksum = corrupt_adler_checksum(valid_raw.clone());
+
+            let make_compressed = |form_id, raw_payload, subrecords| ParsedRecord {
+                signature: SmolStr::new("MISC"),
+                form_id,
+                flags: COMPRESSED_RECORD_FLAG,
+                version_control: 0,
+                form_version: Some(131),
+                version2: Some(0),
+                subrecords,
+                raw_payload,
+                parse_error: None,
+            };
+            let mut plugin = parity_multi_group_plugin();
+            let ParsedItem::Group(first_group) = &mut plugin.root_items[0] else {
+                unreachable!()
+            };
+            first_group.children.extend([
+                ParsedItem::Record(make_compressed(0x0700_0810, Some(valid_raw), Vec::new())),
+                ParsedItem::Record(make_compressed(0x0700_0811, Some(bad_checksum), Vec::new())),
+                ParsedItem::Record(make_compressed(
+                    0x0700_0812,
+                    None,
+                    vec![test_subrecord("DATA", vec![9; 8192])],
+                )),
+                ParsedItem::Record(ParsedRecord {
+                    signature: SmolStr::new("MISC"),
+                    form_id: 0x0700_0813,
+                    flags: 0,
+                    version_control: 0,
+                    form_version: Some(131),
+                    version2: Some(0),
+                    subrecords: vec![test_subrecord("DATA", vec![3; 70_000])],
+                    raw_payload: None,
+                    parse_error: None,
+                }),
+            ]);
+
+            let mut buffered_plugin = plugin.clone();
+            let buffered =
+                build_plugin_bytes(&mut buffered_plugin).expect("buffered special serialize");
+            let mut streamed_plugin = plugin;
+            let mut streamed = std::io::Cursor::new(Vec::new());
+            write_plugin_seekable_to(&mut streamed_plugin, &mut streamed)
+                .expect("streamed special serialize");
+            let streamed = streamed.into_inner();
+
+            assert_eq!(streamed, buffered);
+            assert_eq!(
+                assert_plugin_group_lengths(&streamed, MODERN_HEADER_SIZE),
+                5
+            );
+            assert!(streamed.windows(4).any(|window| window == b"XXXX"));
+
+        }
+        // streaming_writer_defers_only_groups_larger_than_its_buffer
+        {
+            let mut buffered_plugin = parity_multi_group_plugin();
+            let buffered = build_plugin_bytes(&mut buffered_plugin).expect("buffered serialize");
+            let mut streamed_plugin = parity_multi_group_plugin();
+            let mut streamed = std::io::Cursor::new(Vec::new());
+
+            let deferred = write_plugin_to_with_buffer(&mut streamed_plugin, &mut streamed, 64)
+                .expect("small-buffer serialize");
+
+            assert!(
+                deferred > 0,
+                "fixture did not exercise deferred group patches"
+            );
+            assert_eq!(streamed.into_inner(), buffered);
+
+        }
+        // streaming_writer_matches_across_record_batches_with_groups_open
+        {
+            let record_count = crate::default_job_count() * STREAM_RECORD_BATCH_RECORDS_PER_JOB + 1;
+            let leaf_groups = (0..record_count)
+                .map(|index| {
+                    ParsedItem::Group(ParsedGroup {
+                        label: (0x0701_0000u32 + index as u32).to_le_bytes(),
+                        group_type: 6,
+                        tail: Bytes::from(vec![0u8; MODERN_HEADER_SIZE - 16]),
+                        children: vec![ParsedItem::Record(parity_record(
+                            "REFR",
+                            0x0702_0000u32 + index as u32,
+                            "BatchRecord",
+                        ))],
+                    })
+                })
+                .collect();
+            let mut plugin = parity_multi_group_plugin();
+            plugin.root_items = vec![ParsedItem::Group(ParsedGroup {
+                label: *b"WRLD",
+                group_type: 0,
+                tail: Bytes::from(vec![0u8; MODERN_HEADER_SIZE - 16]),
+                children: vec![ParsedItem::Group(ParsedGroup {
+                    label: 0x0700_0800u32.to_le_bytes(),
+                    group_type: 1,
+                    tail: Bytes::from(vec![0u8; MODERN_HEADER_SIZE - 16]),
+                    children: leaf_groups,
+                })],
+            })];
+
+            let mut buffered_plugin = plugin.clone();
+            let buffered = build_plugin_bytes(&mut buffered_plugin).expect("buffered batch serialize");
+            let mut streamed = std::io::Cursor::new(Vec::new());
+            write_plugin_seekable_to(&mut plugin, &mut streamed).expect("streamed batch serialize");
+            let streamed = streamed.into_inner();
+
+            assert_eq!(streamed, buffered);
+            assert_eq!(
+                assert_plugin_group_lengths(&streamed, MODERN_HEADER_SIZE),
+                record_count + 2
+            );
+
+        }
     }
 
     fn unique_temp_dir(test_name: &str) -> PathBuf {
@@ -923,12 +1136,12 @@ mod tests {
         fs::write(&target, &good_bytes).unwrap();
 
         let result = write_plugin_atomic(target.to_str().unwrap(), |writer| {
-            // Write a few bytes, then fail — mimics a mid-stream I/O error / a
-            // lock arriving in the truncate→write window.
-            std::io::Write::write_all(writer, b"partial")?;
+            std::io::Write::write_all(writer, &[0xCC; 4096])?;
+            std::io::Seek::seek(writer, std::io::SeekFrom::Start(4))?;
+            std::io::Write::write_all(writer, &128u32.to_le_bytes())?;
             Err(std::io::Error::new(
                 std::io::ErrorKind::Other,
-                "injected write failure",
+                "injected late group-size patch failure",
             ))
         });
 
@@ -949,282 +1162,290 @@ mod tests {
     }
 
     #[test]
-    fn compressed_subrecords_reject_expansion_past_declared_size() {
-        initialize_python_for_tests();
-        let expanded = b"EDID\x04\0Test";
-        let payload = compressed_payload((expanded.len() - 1) as u32, expanded);
+    fn compressed_bad_adler_salvage_and_resave() {
+        // compressed_bad_adler_land_payload_is_salvaged
+        {
+            initialize_python_for_tests();
+            let expanded = encode_subrecords_uncompressed(&land_shape_subrecords());
+            assert_eq!(expanded.len(), 4385);
+            let payload = corrupt_adler_checksum(compressed_payload(expanded.len() as u32, &expanded));
 
-        let err = match parse_compressed_subrecords_from_payload(&payload) {
-            Ok(_) => panic!("compressed payload unexpectedly parsed"),
-            Err(err) => err,
-        };
+            let parsed = decode_compressed_subrecords_from_payload(&payload).expect("salvage LAND");
 
-        assert!(err.to_string().contains("declared size"));
+            assert!(parsed.salvaged_bad_checksum);
+            assert_eq!(
+                parsed
+                    .subrecords
+                    .iter()
+                    .map(|subrecord| (subrecord.signature.as_str(), subrecord.data.len()))
+                    .collect::<Vec<_>>(),
+                vec![("DATA", 4), ("VNML", 3267), ("VHGT", 1096)]
+            );
+
+        }
+        // compressed_bad_adler_xxxx_payload_is_salvaged
+        {
+            initialize_python_for_tests();
+            let mut expanded = Vec::new();
+            expanded.extend_from_slice(b"XXXX");
+            expanded.extend_from_slice(&4u16.to_le_bytes());
+            expanded.extend_from_slice(&5u32.to_le_bytes());
+            expanded.extend_from_slice(b"DATA");
+            expanded.extend_from_slice(&0u16.to_le_bytes());
+            expanded.extend_from_slice(&[1, 2, 3, 4, 5]);
+            let payload = corrupt_adler_checksum(compressed_payload(expanded.len() as u32, &expanded));
+
+            let parsed = decode_compressed_subrecords_from_payload(&payload).expect("salvage XXXX");
+
+            assert!(parsed.salvaged_bad_checksum);
+            assert_eq!(parsed.subrecords.len(), 1);
+            assert_eq!(parsed.subrecords[0].signature.as_str(), "DATA");
+            assert_eq!(parsed.subrecords[0].data.as_ref(), &[1, 2, 3, 4, 5]);
+
+        }
+        // compressed_bad_adler_record_recompresses_canonically_on_save
+        {
+            initialize_python_for_tests();
+            let expanded = encode_subrecords_uncompressed(&land_shape_subrecords());
+            let bad_payload =
+                corrupt_adler_checksum(compressed_payload(expanded.len() as u32, &expanded));
+            let source_bytes = legacy_compressed_record_bytes("LAND", 0x0015_0FC0, &bad_payload);
+
+            let (salvaged, next) = parse_record(
+                &Bytes::from(source_bytes.clone()),
+                0,
+                LEGACY_HEADER_SIZE,
+                true,
+            )
+            .expect("parse salvageable record");
+            assert_eq!(next, source_bytes.len());
+            assert!(salvaged.raw_payload.is_none());
+            assert!(salvaged.parse_error.is_none());
+            assert_eq!(salvaged.subrecords.len(), 3);
+
+            let canonical = record_bytes_from_parsed(&salvaged, LEGACY_HEADER_SIZE).unwrap();
+            let canonical_payload = Bytes::copy_from_slice(&canonical[LEGACY_HEADER_SIZE..]);
+            assert_ne!(canonical_payload, bad_payload);
+            let strict = decode_compressed_subrecords_from_payload(&canonical_payload)
+                .expect("canonical strict zlib decode");
+            assert!(!strict.salvaged_bad_checksum);
+
+            let (reloaded, next) =
+                parse_record(&Bytes::from(canonical.clone()), 0, LEGACY_HEADER_SIZE, true)
+                    .expect("reload canonical record");
+            assert_eq!(next, canonical.len());
+            assert_eq!(reloaded.raw_payload.as_ref(), Some(&canonical_payload));
+            assert!(reloaded.parse_error.is_none());
+            assert_eq!(reloaded.subrecords.len(), 3);
+
+        }
+        // compressed_bad_adler_lazy_record_recompresses_canonically_on_save
+        {
+            initialize_python_for_tests();
+            let expanded = encode_subrecords_uncompressed(&land_shape_subrecords());
+            let bad_payload =
+                corrupt_adler_checksum(compressed_payload(expanded.len() as u32, &expanded));
+            let source_bytes = legacy_compressed_record_bytes("LAND", 0x0015_0FC0, &bad_payload);
+
+            let (lazy, next) = parse_record(
+                &Bytes::from(source_bytes.clone()),
+                0,
+                LEGACY_HEADER_SIZE,
+                false,
+            )
+            .expect("parse lazy salvageable record");
+            assert_eq!(next, source_bytes.len());
+            assert!(lazy.subrecords.is_empty());
+            assert_eq!(lazy.raw_payload.as_ref(), Some(&bad_payload));
+
+            let canonical = record_bytes_from_parsed(&lazy, LEGACY_HEADER_SIZE).unwrap();
+            let canonical_payload = Bytes::copy_from_slice(&canonical[LEGACY_HEADER_SIZE..]);
+            assert_ne!(canonical_payload, bad_payload);
+            let strict = decode_compressed_subrecords_from_payload(&canonical_payload)
+                .expect("lazy save canonical strict zlib decode");
+            assert!(!strict.salvaged_bad_checksum);
+            assert_eq!(strict.subrecords.len(), 3);
+
+        }
+        // compressed_strict_record_preserves_original_raw_payload
+        {
+            initialize_python_for_tests();
+            let expanded = encode_subrecords_uncompressed(&[test_subrecord("DATA", vec![1])]);
+            let payload = compressed_payload(expanded.len() as u32, &expanded);
+            let source_record = ParsedRecord {
+                signature: SmolStr::new("LAND"),
+                form_id: 0x0015_0FC0,
+                flags: COMPRESSED_RECORD_FLAG,
+                version_control: 0,
+                form_version: None,
+                version2: None,
+                subrecords: Vec::new(),
+                raw_payload: Some(payload.clone()),
+                parse_error: None,
+            };
+            let source_bytes = record_bytes_from_parsed(&source_record, LEGACY_HEADER_SIZE).unwrap();
+
+            let (parsed, _) = parse_record(
+                &Bytes::from(source_bytes.clone()),
+                0,
+                LEGACY_HEADER_SIZE,
+                true,
+            )
+            .expect("parse strict record");
+
+            assert_eq!(parsed.raw_payload.as_ref(), Some(&payload));
+            assert_eq!(
+                record_bytes_from_parsed(&parsed, LEGACY_HEADER_SIZE).unwrap(),
+                source_bytes
+            );
+
+        }
     }
 
     #[test]
-    fn compressed_bad_adler_land_payload_is_salvaged() {
-        initialize_python_for_tests();
-        let expanded = encode_subrecords_uncompressed(&land_shape_subrecords());
-        assert_eq!(expanded.len(), 4385);
-        let payload = corrupt_adler_checksum(compressed_payload(expanded.len() as u32, &expanded));
+    fn compressed_salvage_rejects_malformed_payloads() {
+        // compressed_salvage_rejects_xxxx_size_other_than_four
+        {
+            initialize_python_for_tests();
+            let mut expanded = Vec::new();
+            expanded.extend_from_slice(b"XXXX");
+            expanded.extend_from_slice(&3u16.to_le_bytes());
+            expanded.extend_from_slice(&5u32.to_le_bytes());
+            expanded.extend_from_slice(b"DATA");
+            expanded.extend_from_slice(&0u16.to_le_bytes());
+            expanded.extend_from_slice(&[1, 2, 3, 4, 5]);
+            let payload = corrupt_adler_checksum(compressed_payload(expanded.len() as u32, &expanded));
 
-        let parsed = decode_compressed_subrecords_from_payload(&payload).expect("salvage LAND");
+            let err = match decode_compressed_subrecords_from_payload(&payload) {
+                Ok(_) => panic!("invalid XXXX size unexpectedly salvaged"),
+                Err(err) => err,
+            };
 
-        assert!(parsed.salvaged_bad_checksum);
-        assert_eq!(
-            parsed
-                .subrecords
-                .iter()
-                .map(|subrecord| (subrecord.signature.as_str(), subrecord.data.len()))
-                .collect::<Vec<_>>(),
-            vec![("DATA", 4), ("VNML", 3267), ("VHGT", 1096)]
-        );
-    }
+            assert!(err.contains("XXXX size field is 3, expected 4"));
 
-    #[test]
-    fn compressed_bad_adler_xxxx_payload_is_salvaged() {
-        initialize_python_for_tests();
-        let mut expanded = Vec::new();
-        expanded.extend_from_slice(b"XXXX");
-        expanded.extend_from_slice(&4u16.to_le_bytes());
-        expanded.extend_from_slice(&5u32.to_le_bytes());
-        expanded.extend_from_slice(b"DATA");
-        expanded.extend_from_slice(&0u16.to_le_bytes());
-        expanded.extend_from_slice(&[1, 2, 3, 4, 5]);
-        let payload = corrupt_adler_checksum(compressed_payload(expanded.len() as u32, &expanded));
+        }
+        // compressed_salvage_rejects_nonzero_xxxx_placeholder
+        {
+            initialize_python_for_tests();
+            let mut expanded = Vec::new();
+            expanded.extend_from_slice(b"XXXX");
+            expanded.extend_from_slice(&4u16.to_le_bytes());
+            expanded.extend_from_slice(&5u32.to_le_bytes());
+            expanded.extend_from_slice(b"DATA");
+            expanded.extend_from_slice(&1u16.to_le_bytes());
+            expanded.extend_from_slice(&[1, 2, 3, 4, 5]);
+            let payload = corrupt_adler_checksum(compressed_payload(expanded.len() as u32, &expanded));
 
-        let parsed = decode_compressed_subrecords_from_payload(&payload).expect("salvage XXXX");
+            let err = match decode_compressed_subrecords_from_payload(&payload) {
+                Ok(_) => panic!("nonzero XXXX placeholder unexpectedly salvaged"),
+                Err(err) => err,
+            };
 
-        assert!(parsed.salvaged_bad_checksum);
-        assert_eq!(parsed.subrecords.len(), 1);
-        assert_eq!(parsed.subrecords[0].signature.as_str(), "DATA");
-        assert_eq!(parsed.subrecords[0].data.as_ref(), &[1, 2, 3, 4, 5]);
-    }
+            assert!(err.contains("XXXX target size placeholder is 1, expected 0"));
 
-    #[test]
-    fn compressed_salvage_rejects_xxxx_size_other_than_four() {
-        initialize_python_for_tests();
-        let mut expanded = Vec::new();
-        expanded.extend_from_slice(b"XXXX");
-        expanded.extend_from_slice(&3u16.to_le_bytes());
-        expanded.extend_from_slice(&5u32.to_le_bytes());
-        expanded.extend_from_slice(b"DATA");
-        expanded.extend_from_slice(&0u16.to_le_bytes());
-        expanded.extend_from_slice(&[1, 2, 3, 4, 5]);
-        let payload = corrupt_adler_checksum(compressed_payload(expanded.len() as u32, &expanded));
+        }
+        // compressed_strict_zlib_rejects_trailing_compressed_bytes
+        {
+            initialize_python_for_tests();
+            let expanded = encode_subrecords_uncompressed(&[test_subrecord("DATA", vec![1])]);
+            let mut payload = compressed_payload(expanded.len() as u32, &expanded).to_vec();
+            payload.extend_from_slice(&[0xAA, 0xBB, 0xCC]);
 
-        let err = match decode_compressed_subrecords_from_payload(&payload) {
-            Ok(_) => panic!("invalid XXXX size unexpectedly salvaged"),
-            Err(err) => err,
-        };
+            let err = match decode_compressed_subrecords_from_payload(&Bytes::from(payload)) {
+                Ok(_) => panic!("zlib stream with trailing bytes unexpectedly parsed"),
+                Err(err) => err,
+            };
 
-        assert!(err.contains("XXXX size field is 3, expected 4"));
-    }
+            assert!(err.contains("trailing byte"));
 
-    #[test]
-    fn compressed_salvage_rejects_nonzero_xxxx_placeholder() {
-        initialize_python_for_tests();
-        let mut expanded = Vec::new();
-        expanded.extend_from_slice(b"XXXX");
-        expanded.extend_from_slice(&4u16.to_le_bytes());
-        expanded.extend_from_slice(&5u32.to_le_bytes());
-        expanded.extend_from_slice(b"DATA");
-        expanded.extend_from_slice(&1u16.to_le_bytes());
-        expanded.extend_from_slice(&[1, 2, 3, 4, 5]);
-        let payload = corrupt_adler_checksum(compressed_payload(expanded.len() as u32, &expanded));
+        }
+        // compressed_salvage_rejects_invalid_zlib_header
+        {
+            initialize_python_for_tests();
+            let expanded = encode_subrecords_uncompressed(&[test_subrecord("DATA", vec![1])]);
+            let mut payload =
+                corrupt_adler_checksum(compressed_payload(expanded.len() as u32, &expanded)).to_vec();
+            payload[4] = 0x79;
 
-        let err = match decode_compressed_subrecords_from_payload(&payload) {
-            Ok(_) => panic!("nonzero XXXX placeholder unexpectedly salvaged"),
-            Err(err) => err,
-        };
+            let err = match parse_compressed_subrecords_from_payload(&Bytes::from(payload)) {
+                Ok(_) => panic!("invalid zlib header unexpectedly salvaged"),
+                Err(err) => err,
+            };
 
-        assert!(err.contains("XXXX target size placeholder is 1, expected 0"));
-    }
+            assert!(
+                err.to_string()
+                    .contains("invalid or unsupported zlib framing")
+            );
 
-    #[test]
-    fn compressed_strict_zlib_rejects_trailing_compressed_bytes() {
-        initialize_python_for_tests();
-        let expanded = encode_subrecords_uncompressed(&[test_subrecord("DATA", vec![1])]);
-        let mut payload = compressed_payload(expanded.len() as u32, &expanded).to_vec();
-        payload.extend_from_slice(&[0xAA, 0xBB, 0xCC]);
+        }
+        // compressed_salvage_rejects_invalid_deflate_body
+        {
+            initialize_python_for_tests();
+            let expanded = encode_subrecords_uncompressed(&[test_subrecord("DATA", vec![1])]);
+            let mut payload = compressed_payload(expanded.len() as u32, &expanded).to_vec();
+            payload[6] = (payload[6] & 0xF8) | 0x07;
 
-        let err = match decode_compressed_subrecords_from_payload(&Bytes::from(payload)) {
-            Ok(_) => panic!("zlib stream with trailing bytes unexpectedly parsed"),
-            Err(err) => err,
-        };
+            assert!(parse_compressed_subrecords_from_payload(&Bytes::from(payload)).is_err());
 
-        assert!(err.contains("trailing byte"));
-    }
+        }
+        // compressed_salvage_rejects_wrong_declared_size
+        {
+            initialize_python_for_tests();
+            let expanded = encode_subrecords_uncompressed(&[test_subrecord("DATA", vec![1])]);
+            let mut payload = compressed_payload(expanded.len() as u32, &expanded).to_vec();
+            payload[..4].copy_from_slice(&((expanded.len() + 1) as u32).to_le_bytes());
 
-    #[test]
-    fn compressed_salvage_rejects_invalid_zlib_header() {
-        initialize_python_for_tests();
-        let expanded = encode_subrecords_uncompressed(&[test_subrecord("DATA", vec![1])]);
-        let mut payload =
-            corrupt_adler_checksum(compressed_payload(expanded.len() as u32, &expanded)).to_vec();
-        payload[4] = 0x79;
+            let err = match parse_compressed_subrecords_from_payload(&Bytes::from(payload)) {
+                Ok(_) => panic!("wrong declared size unexpectedly salvaged"),
+                Err(err) => err,
+            };
 
-        let err = match parse_compressed_subrecords_from_payload(&Bytes::from(payload)) {
-            Ok(_) => panic!("invalid zlib header unexpectedly salvaged"),
-            Err(err) => err,
-        };
+            assert!(err.to_string().contains("declared size"));
 
-        assert!(
-            err.to_string()
-                .contains("invalid or unsupported zlib framing")
-        );
-    }
+        }
+        // compressed_salvage_rejects_malformed_subrecord_framing
+        {
+            initialize_python_for_tests();
+            let expanded = b"DATA\x04\0abc";
+            let payload = corrupt_adler_checksum(compressed_payload(expanded.len() as u32, expanded));
 
-    #[test]
-    fn compressed_salvage_rejects_invalid_deflate_body() {
-        initialize_python_for_tests();
-        let expanded = encode_subrecords_uncompressed(&[test_subrecord("DATA", vec![1])]);
-        let mut payload = compressed_payload(expanded.len() as u32, &expanded).to_vec();
-        payload[6] = (payload[6] & 0xF8) | 0x07;
+            let err = match parse_compressed_subrecords_from_payload(&payload) {
+                Ok(_) => panic!("malformed subrecord unexpectedly salvaged"),
+                Err(err) => err,
+            };
 
-        assert!(parse_compressed_subrecords_from_payload(&Bytes::from(payload)).is_err());
-    }
+            assert!(err.to_string().contains("past payload end"));
 
-    #[test]
-    fn compressed_salvage_rejects_wrong_declared_size() {
-        initialize_python_for_tests();
-        let expanded = encode_subrecords_uncompressed(&[test_subrecord("DATA", vec![1])]);
-        let mut payload = compressed_payload(expanded.len() as u32, &expanded).to_vec();
-        payload[..4].copy_from_slice(&((expanded.len() + 1) as u32).to_le_bytes());
+        }
+        // compressed_salvage_rejects_trailing_subrecord_bytes
+        {
+            initialize_python_for_tests();
+            let mut expanded = encode_subrecords_uncompressed(&[test_subrecord("DATA", vec![1])]);
+            expanded.push(0xAA);
+            let payload = corrupt_adler_checksum(compressed_payload(expanded.len() as u32, &expanded));
 
-        let err = match parse_compressed_subrecords_from_payload(&Bytes::from(payload)) {
-            Ok(_) => panic!("wrong declared size unexpectedly salvaged"),
-            Err(err) => err,
-        };
+            let err = match parse_compressed_subrecords_from_payload(&payload) {
+                Ok(_) => panic!("trailing subrecord bytes unexpectedly salvaged"),
+                Err(err) => err,
+            };
 
-        assert!(err.to_string().contains("declared size"));
-    }
+            assert!(err.to_string().contains("trailing byte"));
 
-    #[test]
-    fn compressed_salvage_rejects_malformed_subrecord_framing() {
-        initialize_python_for_tests();
-        let expanded = b"DATA\x04\0abc";
-        let payload = corrupt_adler_checksum(compressed_payload(expanded.len() as u32, expanded));
+        }
+        // compressed_subrecords_reject_expansion_past_declared_size
+        {
+            initialize_python_for_tests();
+            let expanded = b"EDID\x04\0Test";
+            let payload = compressed_payload((expanded.len() - 1) as u32, expanded);
 
-        let err = match parse_compressed_subrecords_from_payload(&payload) {
-            Ok(_) => panic!("malformed subrecord unexpectedly salvaged"),
-            Err(err) => err,
-        };
+            let err = match parse_compressed_subrecords_from_payload(&payload) {
+                Ok(_) => panic!("compressed payload unexpectedly parsed"),
+                Err(err) => err,
+            };
 
-        assert!(err.to_string().contains("past payload end"));
-    }
+            assert!(err.to_string().contains("declared size"));
 
-    #[test]
-    fn compressed_salvage_rejects_trailing_subrecord_bytes() {
-        initialize_python_for_tests();
-        let mut expanded = encode_subrecords_uncompressed(&[test_subrecord("DATA", vec![1])]);
-        expanded.push(0xAA);
-        let payload = corrupt_adler_checksum(compressed_payload(expanded.len() as u32, &expanded));
-
-        let err = match parse_compressed_subrecords_from_payload(&payload) {
-            Ok(_) => panic!("trailing subrecord bytes unexpectedly salvaged"),
-            Err(err) => err,
-        };
-
-        assert!(err.to_string().contains("trailing byte"));
-    }
-
-    #[test]
-    fn compressed_bad_adler_record_recompresses_canonically_on_save() {
-        initialize_python_for_tests();
-        let expanded = encode_subrecords_uncompressed(&land_shape_subrecords());
-        let bad_payload =
-            corrupt_adler_checksum(compressed_payload(expanded.len() as u32, &expanded));
-        let source_bytes = legacy_compressed_record_bytes("LAND", 0x0015_0FC0, &bad_payload);
-
-        let (salvaged, next) = parse_record(
-            &Bytes::from(source_bytes.clone()),
-            0,
-            LEGACY_HEADER_SIZE,
-            true,
-        )
-        .expect("parse salvageable record");
-        assert_eq!(next, source_bytes.len());
-        assert!(salvaged.raw_payload.is_none());
-        assert!(salvaged.parse_error.is_none());
-        assert_eq!(salvaged.subrecords.len(), 3);
-
-        let canonical = record_bytes_from_parsed(&salvaged, LEGACY_HEADER_SIZE).unwrap();
-        let canonical_payload = Bytes::copy_from_slice(&canonical[LEGACY_HEADER_SIZE..]);
-        assert_ne!(canonical_payload, bad_payload);
-        let strict = decode_compressed_subrecords_from_payload(&canonical_payload)
-            .expect("canonical strict zlib decode");
-        assert!(!strict.salvaged_bad_checksum);
-
-        let (reloaded, next) =
-            parse_record(&Bytes::from(canonical.clone()), 0, LEGACY_HEADER_SIZE, true)
-                .expect("reload canonical record");
-        assert_eq!(next, canonical.len());
-        assert_eq!(reloaded.raw_payload.as_ref(), Some(&canonical_payload));
-        assert!(reloaded.parse_error.is_none());
-        assert_eq!(reloaded.subrecords.len(), 3);
-    }
-
-    #[test]
-    fn compressed_bad_adler_lazy_record_recompresses_canonically_on_save() {
-        initialize_python_for_tests();
-        let expanded = encode_subrecords_uncompressed(&land_shape_subrecords());
-        let bad_payload =
-            corrupt_adler_checksum(compressed_payload(expanded.len() as u32, &expanded));
-        let source_bytes = legacy_compressed_record_bytes("LAND", 0x0015_0FC0, &bad_payload);
-
-        let (lazy, next) = parse_record(
-            &Bytes::from(source_bytes.clone()),
-            0,
-            LEGACY_HEADER_SIZE,
-            false,
-        )
-        .expect("parse lazy salvageable record");
-        assert_eq!(next, source_bytes.len());
-        assert!(lazy.subrecords.is_empty());
-        assert_eq!(lazy.raw_payload.as_ref(), Some(&bad_payload));
-
-        let canonical = record_bytes_from_parsed(&lazy, LEGACY_HEADER_SIZE).unwrap();
-        let canonical_payload = Bytes::copy_from_slice(&canonical[LEGACY_HEADER_SIZE..]);
-        assert_ne!(canonical_payload, bad_payload);
-        let strict = decode_compressed_subrecords_from_payload(&canonical_payload)
-            .expect("lazy save canonical strict zlib decode");
-        assert!(!strict.salvaged_bad_checksum);
-        assert_eq!(strict.subrecords.len(), 3);
-    }
-
-    #[test]
-    fn compressed_strict_record_preserves_original_raw_payload() {
-        initialize_python_for_tests();
-        let expanded = encode_subrecords_uncompressed(&[test_subrecord("DATA", vec![1])]);
-        let payload = compressed_payload(expanded.len() as u32, &expanded);
-        let source_record = ParsedRecord {
-            signature: SmolStr::new("LAND"),
-            form_id: 0x0015_0FC0,
-            flags: COMPRESSED_RECORD_FLAG,
-            version_control: 0,
-            form_version: None,
-            version2: None,
-            subrecords: Vec::new(),
-            raw_payload: Some(payload.clone()),
-            parse_error: None,
-        };
-        let source_bytes = record_bytes_from_parsed(&source_record, LEGACY_HEADER_SIZE).unwrap();
-
-        let (parsed, _) = parse_record(
-            &Bytes::from(source_bytes.clone()),
-            0,
-            LEGACY_HEADER_SIZE,
-            true,
-        )
-        .expect("parse strict record");
-
-        assert_eq!(parsed.raw_payload.as_ref(), Some(&payload));
-        assert_eq!(
-            record_bytes_from_parsed(&parsed, LEGACY_HEADER_SIZE).unwrap(),
-            source_bytes
-        );
+        }
     }
 
     #[test]
@@ -1249,374 +1470,427 @@ mod tests {
     }
 
     #[test]
-    fn localized_string_save_writes_referenced_id_to_each_required_table() {
-        let string_id = 0x110;
-        let plugin = localized_test_plugin(vec![
-            localized_subrecord("FULL", string_id),
-            localized_subrecord("DESC", string_id),
-        ]);
-        let mut strings = LocalizedStringsState {
-            default_language: "en".to_string(),
-            ..LocalizedStringsState::default()
-        };
-        strings
-            .by_language
-            .entry("en".to_string())
-            .or_default()
-            .insert(string_id, "Shared text".to_string());
-        strings.table_types.insert(string_id, "strings".to_string());
-        let output_path = temp_plugin_path("localized-collision");
-        let root = output_path.parent().unwrap().to_path_buf();
+    fn localized_string_save_tables() {
+        // localized_string_save_writes_referenced_id_to_each_required_table
+        {
+            let string_id = 0x110;
+            let plugin = localized_test_plugin(vec![
+                localized_subrecord("FULL", string_id),
+                localized_subrecord("DESC", string_id),
+            ]);
+            let mut strings = LocalizedStringsState {
+                default_language: "en".to_string(),
+                ..LocalizedStringsState::default()
+            };
+            strings
+                .by_language
+                .entry("en".to_string())
+                .or_default()
+                .insert(string_id, "Shared text".to_string());
+            strings.table_types.insert(string_id, "strings".to_string());
+            let output_path = temp_plugin_path("localized-collision");
+            let root = output_path.parent().unwrap().to_path_buf();
 
-        write_localized_strings_for_parsed(&plugin, &strings, output_path.to_str().unwrap())
-            .unwrap();
-
-        let strings_values =
-            strings::parse_string_table(&root.join("Strings").join("SeventySix_en.STRINGS"))
+            write_localized_strings_for_parsed(&plugin, &strings, output_path.to_str().unwrap())
                 .unwrap();
-        let dlstrings_values =
-            strings::parse_string_table(&root.join("Strings").join("SeventySix_en.DLSTRINGS"))
-                .unwrap();
-        assert_eq!(
-            strings_values.get(&string_id).map(String::as_str),
-            Some("Shared text")
-        );
-        assert_eq!(
-            dlstrings_values.get(&string_id).map(String::as_str),
-            Some("Shared text")
-        );
-        fs::remove_dir_all(root).unwrap();
-    }
 
-    #[test]
-    fn localized_string_save_ignores_plugin_extension_in_temp_suffix() {
-        let string_id = 0x110;
-        let plugin = localized_test_plugin(vec![localized_subrecord("FULL", string_id)]);
-        let mut strings = LocalizedStringsState {
-            default_language: "en".to_string(),
-            ..LocalizedStringsState::default()
-        };
-        strings
-            .by_language
-            .entry("en".to_string())
-            .or_default()
-            .insert(string_id, "Shared text".to_string());
-        let output_path = temp_plugin_path("localized-temp-suffix").with_extension("esm.tmp");
-        let root = output_path.parent().unwrap().to_path_buf();
-
-        write_localized_strings_for_parsed(&plugin, &strings, output_path.to_str().unwrap())
-            .unwrap();
-
-        assert!(root.join("Strings").join("SeventySix_en.STRINGS").is_file());
-        assert!(
-            !root
-                .join("Strings")
-                .join("SeventySix.esm_en.STRINGS")
-                .exists()
-        );
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn localized_string_save_writes_placeholder_when_string_state_is_empty() {
-        let string_id = 0xBA;
-        let plugin = localized_test_plugin(vec![localized_subrecord("DESC", string_id)]);
-        let strings = LocalizedStringsState::default();
-        let output_path = temp_plugin_path("localized-placeholder");
-        let root = output_path.parent().unwrap().to_path_buf();
-
-        write_localized_strings_for_parsed(&plugin, &strings, output_path.to_str().unwrap())
-            .unwrap();
-
-        let dlstrings_values =
-            strings::parse_string_table(&root.join("Strings").join("SeventySix_en.DLSTRINGS"))
-                .unwrap();
-        assert_eq!(
-            dlstrings_values.get(&string_id).map(String::as_str),
-            Some("LOC_000000BA")
-        );
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn localized_string_save_uses_schema_for_non_legacy_lstring_signature() {
-        let string_id = 0x423DB;
-        let plugin =
-            localized_test_plugin_for_record("MGEF", vec![localized_subrecord("DNAM", string_id)]);
-        let strings = LocalizedStringsState::default();
-        let output_path = temp_plugin_path("localized-schema");
-        let root = output_path.parent().unwrap().to_path_buf();
-
-        write_localized_strings_for_parsed(&plugin, &strings, output_path.to_str().unwrap())
-            .unwrap();
-
-        let strings_values =
-            strings::parse_string_table(&root.join("Strings").join("SeventySix_en.STRINGS"))
-                .unwrap();
-        assert_eq!(
-            strings_values.get(&string_id).map(String::as_str),
-            Some("LOC_000423DB")
-        );
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn localized_string_save_uses_persistent_tables_for_terminal_and_messages() {
-        let term_title_id = 0x6100_EDB2;
-        let term_item_id = 0x0003_A99F;
-        let term_plugin = localized_test_plugin_for_record(
-            "TERM",
-            vec![
-                localized_subrecord("RNAM", term_title_id),
-                localized_subrecord("ITXT", term_item_id),
-            ],
-        );
-        let output_path = temp_plugin_path("localized-term-persistent");
-        let root = output_path.parent().unwrap().to_path_buf();
-
-        write_localized_strings_for_parsed(
-            &term_plugin,
-            &LocalizedStringsState::default(),
-            output_path.to_str().unwrap(),
-        )
-        .unwrap();
-
-        let strings_values =
-            strings::parse_string_table(&root.join("Strings").join("SeventySix_en.STRINGS"))
-                .unwrap();
-        assert_eq!(
-            strings_values.get(&term_title_id).map(String::as_str),
-            Some("LOC_6100EDB2")
-        );
-        assert_eq!(
-            strings_values.get(&term_item_id).map(String::as_str),
-            Some("LOC_0003A99F")
-        );
-        fs::remove_dir_all(root).unwrap();
-
-        let message_body_id = 0x0003_A99D;
-        let message_item_id = 0x0003_A99B;
-        let message_plugin = localized_test_plugin_for_record(
-            "MESG",
-            vec![
-                localized_subrecord("DESC", message_body_id),
-                localized_subrecord("ITXT", message_item_id),
-            ],
-        );
-        let output_path = temp_plugin_path("localized-message-persistent");
-        let root = output_path.parent().unwrap().to_path_buf();
-
-        write_localized_strings_for_parsed(
-            &message_plugin,
-            &LocalizedStringsState::default(),
-            output_path.to_str().unwrap(),
-        )
-        .unwrap();
-
-        let strings_values =
-            strings::parse_string_table(&root.join("Strings").join("SeventySix_en.STRINGS"))
-                .unwrap();
-        assert_eq!(
-            strings_values.get(&message_body_id).map(String::as_str),
-            Some("LOC_0003A99D")
-        );
-        assert_eq!(
-            strings_values.get(&message_item_id).map(String::as_str),
-            Some("LOC_0003A99B")
-        );
-        let dlstrings_values =
-            strings::parse_string_table(&root.join("Strings").join("SeventySix_en.DLSTRINGS"))
-                .unwrap();
-        assert_eq!(
-            dlstrings_values.get(&message_body_id).map(String::as_str),
-            Some("LOC_0003A99D")
-        );
-        assert_eq!(
-            dlstrings_values.get(&message_item_id).map(String::as_str),
-            Some("LOC_0003A99B")
-        );
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    /// FO76 files INFO.RNAM prompts under .ILSTRINGS; FO4/xEdit reads INFO.RNAM
-    /// from .STRINGS. A source-carried `table_types[id] = "ilstrings"` must be
-    /// overridden to the FO4 field table type so the carried text lands in
-    /// .STRINGS (where xEdit resolves it), not orphaned in .ILSTRINGS.
-    #[test]
-    fn localized_string_save_rebuckets_info_rnam_from_ilstrings_to_strings() {
-        let string_id = 0xD900_3F09;
-        let plugin =
-            localized_test_plugin_for_record("INFO", vec![localized_subrecord("RNAM", string_id)]);
-        let mut strings = LocalizedStringsState {
-            default_language: "en".to_string(),
-            ..LocalizedStringsState::default()
-        };
-        strings
-            .by_language
-            .entry("en".to_string())
-            .or_default()
-            .insert(string_id, "Who are you?".to_string());
-        // Pre-seed the FO76 source table type that must be overridden.
-        strings
-            .table_types
-            .insert(string_id, "ilstrings".to_string());
-        let output_path = temp_plugin_path("localized-info-rnam-rebucket");
-        let root = output_path.parent().unwrap().to_path_buf();
-
-        write_localized_strings_for_parsed(&plugin, &strings, output_path.to_str().unwrap())
-            .unwrap();
-
-        let strings_values =
-            strings::parse_string_table(&root.join("Strings").join("SeventySix_en.STRINGS"))
-                .unwrap();
-        assert_eq!(
-            strings_values.get(&string_id).map(String::as_str),
-            Some("Who are you?"),
-            "INFO.RNAM prompt text must land in .STRINGS with its real text"
-        );
-        // The carried text must NOT remain orphaned in .ILSTRINGS.
-        let ilstrings_path = root.join("Strings").join("SeventySix_en.ILSTRINGS");
-        if ilstrings_path.exists() {
-            let ilstrings_values = strings::parse_string_table(&ilstrings_path).unwrap();
-            assert!(
-                !ilstrings_values.contains_key(&string_id),
-                "INFO.RNAM id must not stay in .ILSTRINGS after rebucket"
+            let strings_values =
+                strings::parse_string_table(&root.join("Strings").join("SeventySix_en.STRINGS"))
+                    .unwrap();
+            let dlstrings_values =
+                strings::parse_string_table(&root.join("Strings").join("SeventySix_en.DLSTRINGS"))
+                    .unwrap();
+            assert_eq!(
+                strings_values.get(&string_id).map(String::as_str),
+                Some("Shared text")
             );
+            assert_eq!(
+                dlstrings_values.get(&string_id).map(String::as_str),
+                Some("Shared text")
+            );
+            fs::remove_dir_all(root).unwrap();
+
         }
-        fs::remove_dir_all(root).unwrap();
-    }
+        // localized_string_save_ignores_plugin_extension_in_temp_suffix
+        {
+            let string_id = 0x110;
+            let plugin = localized_test_plugin(vec![localized_subrecord("FULL", string_id)]);
+            let mut strings = LocalizedStringsState {
+                default_language: "en".to_string(),
+                ..LocalizedStringsState::default()
+            };
+            strings
+                .by_language
+                .entry("en".to_string())
+                .or_default()
+                .insert(string_id, "Shared text".to_string());
+            let output_path = temp_plugin_path("localized-temp-suffix").with_extension("esm.tmp");
+            let root = output_path.parent().unwrap().to_path_buf();
 
-    /// FO76 files LSCR.DESC under .DLSTRINGS; FO4/xEdit reads it from .STRINGS
-    /// (unlike BOOK/SPEL/PERK DESC). The record-scoped exception must rebucket it.
-    #[test]
-    fn localized_string_save_rebuckets_lscr_desc_from_dlstrings_to_strings() {
-        let string_id = 0x0002_B4C4;
-        let plugin =
-            localized_test_plugin_for_record("LSCR", vec![localized_subrecord("DESC", string_id)]);
-        let mut strings = LocalizedStringsState {
-            default_language: "en".to_string(),
-            ..LocalizedStringsState::default()
-        };
-        strings
-            .by_language
-            .entry("en".to_string())
-            .or_default()
-            .insert(string_id, "A loading screen tip.".to_string());
-        strings
-            .table_types
-            .insert(string_id, "dlstrings".to_string());
-        let output_path = temp_plugin_path("localized-lscr-desc-rebucket");
-        let root = output_path.parent().unwrap().to_path_buf();
+            write_localized_strings_for_parsed(&plugin, &strings, output_path.to_str().unwrap())
+                .unwrap();
 
-        write_localized_strings_for_parsed(&plugin, &strings, output_path.to_str().unwrap())
+            assert!(root.join("Strings").join("SeventySix_en.STRINGS").is_file());
+            assert!(
+                !root
+                    .join("Strings")
+                    .join("SeventySix.esm_en.STRINGS")
+                    .exists()
+            );
+            fs::remove_dir_all(root).unwrap();
+
+        }
+        // localized_string_save_writes_placeholder_when_string_state_is_empty
+        {
+            let string_id = 0xBA;
+            let plugin = localized_test_plugin(vec![localized_subrecord("DESC", string_id)]);
+            let strings = LocalizedStringsState::default();
+            let output_path = temp_plugin_path("localized-placeholder");
+            let root = output_path.parent().unwrap().to_path_buf();
+
+            write_localized_strings_for_parsed(&plugin, &strings, output_path.to_str().unwrap())
+                .unwrap();
+
+            let dlstrings_values =
+                strings::parse_string_table(&root.join("Strings").join("SeventySix_en.DLSTRINGS"))
+                    .unwrap();
+            assert_eq!(
+                dlstrings_values.get(&string_id).map(String::as_str),
+                Some("LOC_000000BA")
+            );
+            fs::remove_dir_all(root).unwrap();
+
+        }
+        // localized_string_save_uses_schema_for_non_legacy_lstring_signature
+        {
+            let string_id = 0x423DB;
+            let plugin =
+                localized_test_plugin_for_record("MGEF", vec![localized_subrecord("DNAM", string_id)]);
+            let strings = LocalizedStringsState::default();
+            let output_path = temp_plugin_path("localized-schema");
+            let root = output_path.parent().unwrap().to_path_buf();
+
+            write_localized_strings_for_parsed(&plugin, &strings, output_path.to_str().unwrap())
+                .unwrap();
+
+            let strings_values =
+                strings::parse_string_table(&root.join("Strings").join("SeventySix_en.STRINGS"))
+                    .unwrap();
+            assert_eq!(
+                strings_values.get(&string_id).map(String::as_str),
+                Some("LOC_000423DB")
+            );
+            fs::remove_dir_all(root).unwrap();
+
+        }
+        // localized_message_uses_default_language_when_translation_is_missing
+        {
+            let body_id = 0x6100;
+            let title_id = 0x6101;
+            let plugin = localized_test_plugin_for_record(
+                "MESG",
+                vec![
+                    localized_subrecord("DESC", body_id),
+                    localized_subrecord("FULL", title_id),
+                ],
+            );
+            let mut state = LocalizedStringsState {
+                default_language: "en".to_string(),
+                ..LocalizedStringsState::default()
+            };
+            state.by_language.insert(
+                "en".to_string(),
+                HashMap::from([
+                    (body_id, "Choose a bounty".to_string()),
+                    (title_id, "Bounty".to_string()),
+                ]),
+            );
+            state.by_language.insert(
+                "de".to_string(),
+                HashMap::from([(title_id, "Kopfgeld".to_string())]),
+            );
+            let output_path = temp_plugin_path("localized-message-language-fallback");
+            let root = output_path.parent().unwrap().to_path_buf();
+            write_localized_strings_for_parsed(&plugin, &state, output_path.to_str().unwrap()).unwrap();
+            for language in ["en", "de"] {
+                let body = strings::parse_string_table(
+                    &root.join(format!("Strings/SeventySix_{language}.DLSTRINGS")),
+                )
+                .unwrap();
+                assert_eq!(
+                    body.get(&body_id).map(String::as_str),
+                    Some("Choose a bounty")
+                );
+            }
+            let titles =
+                strings::parse_string_table(&root.join("Strings/SeventySix_de.STRINGS")).unwrap();
+            assert_eq!(titles.get(&title_id).map(String::as_str), Some("Kopfgeld"));
+            fs::remove_dir_all(root).unwrap();
+
+        }
+        // localized_string_save_uses_persistent_tables_for_terminal_and_messages
+        {
+            let term_title_id = 0x6100_EDB2;
+            let term_item_id = 0x0003_A99F;
+            let term_plugin = localized_test_plugin_for_record(
+                "TERM",
+                vec![
+                    localized_subrecord("RNAM", term_title_id),
+                    localized_subrecord("ITXT", term_item_id),
+                ],
+            );
+            let output_path = temp_plugin_path("localized-term-persistent");
+            let root = output_path.parent().unwrap().to_path_buf();
+
+            write_localized_strings_for_parsed(
+                &term_plugin,
+                &LocalizedStringsState::default(),
+                output_path.to_str().unwrap(),
+            )
             .unwrap();
 
-        let strings_values =
-            strings::parse_string_table(&root.join("Strings").join("SeventySix_en.STRINGS"))
-                .unwrap();
-        assert_eq!(
-            strings_values.get(&string_id).map(String::as_str),
-            Some("A loading screen tip."),
-            "LSCR.DESC must land in .STRINGS"
-        );
-        let dlstrings_path = root.join("Strings").join("SeventySix_en.DLSTRINGS");
-        if dlstrings_path.exists() {
-            let dlstrings_values = strings::parse_string_table(&dlstrings_path).unwrap();
-            assert!(
-                !dlstrings_values.contains_key(&string_id),
-                "LSCR.DESC id must not stay in .DLSTRINGS after rebucket"
+            let strings_values =
+                strings::parse_string_table(&root.join("Strings").join("SeventySix_en.STRINGS"))
+                    .unwrap();
+            assert_eq!(
+                strings_values.get(&term_title_id).map(String::as_str),
+                Some("LOC_6100EDB2")
             );
-        }
-        fs::remove_dir_all(root).unwrap();
-    }
+            assert_eq!(
+                strings_values.get(&term_item_id).map(String::as_str),
+                Some("LOC_0003A99F")
+            );
+            fs::remove_dir_all(root).unwrap();
 
-    /// BOOK.CNAM is xEdit's Description field and resolves from .DLSTRINGS in
-    /// FO4. Whole-plugin conversion can carry a CNAM id tagged as .STRINGS, so
-    /// the save pass must re-bucket it.
-    #[test]
-    fn localized_string_save_rebuckets_book_cnam_to_dlstrings() {
-        let string_id = 0x0003_F8BF;
-        let plugin =
-            localized_test_plugin_for_record("BOOK", vec![localized_subrecord("CNAM", string_id)]);
-        let mut strings = LocalizedStringsState {
-            default_language: "en".to_string(),
-            ..LocalizedStringsState::default()
-        };
-        strings
-            .by_language
-            .entry("en".to_string())
-            .or_default()
-            .insert(string_id, "Care To Test Your Metal?".to_string());
-        strings.table_types.insert(string_id, "strings".to_string());
-        let output_path = temp_plugin_path("localized-book-cnam-rebucket");
-        let root = output_path.parent().unwrap().to_path_buf();
+            let message_body_id = 0x0003_A99D;
+            let message_item_id = 0x0003_A99B;
+            let message_plugin = localized_test_plugin_for_record(
+                "MESG",
+                vec![
+                    localized_subrecord("DESC", message_body_id),
+                    localized_subrecord("ITXT", message_item_id),
+                ],
+            );
+            let output_path = temp_plugin_path("localized-message-persistent");
+            let root = output_path.parent().unwrap().to_path_buf();
 
-        write_localized_strings_for_parsed(&plugin, &strings, output_path.to_str().unwrap())
+            write_localized_strings_for_parsed(
+                &message_plugin,
+                &LocalizedStringsState::default(),
+                output_path.to_str().unwrap(),
+            )
             .unwrap();
 
-        let dlstrings_values =
-            strings::parse_string_table(&root.join("Strings").join("SeventySix_en.DLSTRINGS"))
-                .unwrap();
-        assert_eq!(
-            dlstrings_values.get(&string_id).map(String::as_str),
-            Some("Care To Test Your Metal?"),
-            "BOOK.CNAM description text must land in .DLSTRINGS"
-        );
-        let strings_path = root.join("Strings").join("SeventySix_en.STRINGS");
-        if strings_path.exists() {
-            let strings_values = strings::parse_string_table(&strings_path).unwrap();
-            assert!(
-                !strings_values.contains_key(&string_id),
-                "BOOK.CNAM id must not stay in .STRINGS after rebucket"
+            let strings_values =
+                strings::parse_string_table(&root.join("Strings").join("SeventySix_en.STRINGS"))
+                    .unwrap();
+            assert_eq!(
+                strings_values.get(&message_body_id).map(String::as_str),
+                Some("LOC_0003A99D")
             );
+            assert_eq!(
+                strings_values.get(&message_item_id).map(String::as_str),
+                Some("LOC_0003A99B")
+            );
+            let dlstrings_values =
+                strings::parse_string_table(&root.join("Strings").join("SeventySix_en.DLSTRINGS"))
+                    .unwrap();
+            assert_eq!(
+                dlstrings_values.get(&message_body_id).map(String::as_str),
+                Some("LOC_0003A99D")
+            );
+            assert_eq!(
+                dlstrings_values.get(&message_item_id).map(String::as_str),
+                Some("LOC_0003A99B")
+            );
+            fs::remove_dir_all(root).unwrap();
+
         }
-        fs::remove_dir_all(root).unwrap();
     }
 
-    /// FO76 and FO4 both store QUST quest-log entries (QUST.CNAM) under
-    /// .DLSTRINGS. The emission classifier has no CNAM case, so it defaults the
-    /// id to .STRINGS; the QUST.CNAM exception must re-bucket it to .DLSTRINGS or
-    /// the CK fails the DLSTRINGS lookup for every quest-stage log entry.
     #[test]
-    fn localized_string_save_rebuckets_qust_cnam_to_dlstrings() {
-        let string_id = 0x0003_69F4;
-        let plugin =
-            localized_test_plugin_for_record("QUST", vec![localized_subrecord("CNAM", string_id)]);
-        let mut strings = LocalizedStringsState {
-            default_language: "en".to_string(),
-            ..LocalizedStringsState::default()
-        };
-        strings
-            .by_language
-            .entry("en".to_string())
-            .or_default()
-            .insert(string_id, "You found the holotape.".to_string());
-        // Whole-plugin conversion loses the source .DLSTRINGS classification, so
-        // the id arrives tagged .STRINGS. The exception must force .DLSTRINGS.
-        strings.table_types.insert(string_id, "strings".to_string());
-        let output_path = temp_plugin_path("localized-qust-cnam-rebucket");
-        let root = output_path.parent().unwrap().to_path_buf();
+    fn localized_string_save_rebuckets_by_field() {
+        // localized_string_save_rebuckets_info_rnam_from_ilstrings_to_strings
+        // FO76 files INFO.RNAM prompts under .ILSTRINGS; FO4/xEdit reads INFO.RNAM
+        // from .STRINGS. A source-carried `table_types[id] = "ilstrings"` must be
+        // overridden to the FO4 field table type so the carried text lands in
+        // .STRINGS (where xEdit resolves it), not orphaned in .ILSTRINGS.
+        {
+            let string_id = 0xD900_3F09;
+            let plugin =
+                localized_test_plugin_for_record("INFO", vec![localized_subrecord("RNAM", string_id)]);
+            let mut strings = LocalizedStringsState {
+                default_language: "en".to_string(),
+                ..LocalizedStringsState::default()
+            };
+            strings
+                .by_language
+                .entry("en".to_string())
+                .or_default()
+                .insert(string_id, "Who are you?".to_string());
+            // Pre-seed the FO76 source table type that must be overridden.
+            strings
+                .table_types
+                .insert(string_id, "ilstrings".to_string());
+            let output_path = temp_plugin_path("localized-info-rnam-rebucket");
+            let root = output_path.parent().unwrap().to_path_buf();
 
-        write_localized_strings_for_parsed(&plugin, &strings, output_path.to_str().unwrap())
-            .unwrap();
-
-        let dlstrings_values =
-            strings::parse_string_table(&root.join("Strings").join("SeventySix_en.DLSTRINGS"))
+            write_localized_strings_for_parsed(&plugin, &strings, output_path.to_str().unwrap())
                 .unwrap();
-        assert_eq!(
-            dlstrings_values.get(&string_id).map(String::as_str),
-            Some("You found the holotape."),
-            "QUST.CNAM quest-log text must land in .DLSTRINGS"
-        );
-        let strings_path = root.join("Strings").join("SeventySix_en.STRINGS");
-        if strings_path.exists() {
-            let strings_values = strings::parse_string_table(&strings_path).unwrap();
-            assert!(
-                !strings_values.contains_key(&string_id),
-                "QUST.CNAM id must not stay in .STRINGS after rebucket"
+
+            let strings_values =
+                strings::parse_string_table(&root.join("Strings").join("SeventySix_en.STRINGS"))
+                    .unwrap();
+            assert_eq!(
+                strings_values.get(&string_id).map(String::as_str),
+                Some("Who are you?"),
+                "INFO.RNAM prompt text must land in .STRINGS with its real text"
             );
+            // The carried text must NOT remain orphaned in .ILSTRINGS.
+            let ilstrings_path = root.join("Strings").join("SeventySix_en.ILSTRINGS");
+            if ilstrings_path.exists() {
+                let ilstrings_values = strings::parse_string_table(&ilstrings_path).unwrap();
+                assert!(
+                    !ilstrings_values.contains_key(&string_id),
+                    "INFO.RNAM id must not stay in .ILSTRINGS after rebucket"
+                );
+            }
+            fs::remove_dir_all(root).unwrap();
+
         }
-        fs::remove_dir_all(root).unwrap();
+        // localized_string_save_rebuckets_lscr_desc_from_dlstrings_to_strings
+        // FO76 files LSCR.DESC under .DLSTRINGS; FO4/xEdit reads it from .STRINGS
+        // (unlike BOOK/SPEL/PERK DESC). The record-scoped exception must rebucket it.
+        {
+            let string_id = 0x0002_B4C4;
+            let plugin =
+                localized_test_plugin_for_record("LSCR", vec![localized_subrecord("DESC", string_id)]);
+            let mut strings = LocalizedStringsState {
+                default_language: "en".to_string(),
+                ..LocalizedStringsState::default()
+            };
+            strings
+                .by_language
+                .entry("en".to_string())
+                .or_default()
+                .insert(string_id, "A loading screen tip.".to_string());
+            strings
+                .table_types
+                .insert(string_id, "dlstrings".to_string());
+            let output_path = temp_plugin_path("localized-lscr-desc-rebucket");
+            let root = output_path.parent().unwrap().to_path_buf();
+
+            write_localized_strings_for_parsed(&plugin, &strings, output_path.to_str().unwrap())
+                .unwrap();
+
+            let strings_values =
+                strings::parse_string_table(&root.join("Strings").join("SeventySix_en.STRINGS"))
+                    .unwrap();
+            assert_eq!(
+                strings_values.get(&string_id).map(String::as_str),
+                Some("A loading screen tip."),
+                "LSCR.DESC must land in .STRINGS"
+            );
+            let dlstrings_path = root.join("Strings").join("SeventySix_en.DLSTRINGS");
+            if dlstrings_path.exists() {
+                let dlstrings_values = strings::parse_string_table(&dlstrings_path).unwrap();
+                assert!(
+                    !dlstrings_values.contains_key(&string_id),
+                    "LSCR.DESC id must not stay in .DLSTRINGS after rebucket"
+                );
+            }
+            fs::remove_dir_all(root).unwrap();
+
+        }
+        // localized_string_save_rebuckets_book_cnam_to_dlstrings
+        // BOOK.CNAM is xEdit's Description field and resolves from .DLSTRINGS in
+        // FO4. Whole-plugin conversion can carry a CNAM id tagged as .STRINGS, so
+        // the save pass must re-bucket it.
+        {
+            let string_id = 0x0003_F8BF;
+            let plugin =
+                localized_test_plugin_for_record("BOOK", vec![localized_subrecord("CNAM", string_id)]);
+            let mut strings = LocalizedStringsState {
+                default_language: "en".to_string(),
+                ..LocalizedStringsState::default()
+            };
+            strings
+                .by_language
+                .entry("en".to_string())
+                .or_default()
+                .insert(string_id, "Care To Test Your Metal?".to_string());
+            strings.table_types.insert(string_id, "strings".to_string());
+            let output_path = temp_plugin_path("localized-book-cnam-rebucket");
+            let root = output_path.parent().unwrap().to_path_buf();
+
+            write_localized_strings_for_parsed(&plugin, &strings, output_path.to_str().unwrap())
+                .unwrap();
+
+            let dlstrings_values =
+                strings::parse_string_table(&root.join("Strings").join("SeventySix_en.DLSTRINGS"))
+                    .unwrap();
+            assert_eq!(
+                dlstrings_values.get(&string_id).map(String::as_str),
+                Some("Care To Test Your Metal?"),
+                "BOOK.CNAM description text must land in .DLSTRINGS"
+            );
+            let strings_path = root.join("Strings").join("SeventySix_en.STRINGS");
+            if strings_path.exists() {
+                let strings_values = strings::parse_string_table(&strings_path).unwrap();
+                assert!(
+                    !strings_values.contains_key(&string_id),
+                    "BOOK.CNAM id must not stay in .STRINGS after rebucket"
+                );
+            }
+            fs::remove_dir_all(root).unwrap();
+
+        }
+        // localized_string_save_rebuckets_qust_cnam_to_dlstrings
+        // FO76 and FO4 both store QUST quest-log entries (QUST.CNAM) under
+        // .DLSTRINGS. The emission classifier has no CNAM case, so it defaults the
+        // id to .STRINGS; the QUST.CNAM exception must re-bucket it to .DLSTRINGS or
+        // the CK fails the DLSTRINGS lookup for every quest-stage log entry.
+        {
+            let string_id = 0x0003_69F4;
+            let plugin =
+                localized_test_plugin_for_record("QUST", vec![localized_subrecord("CNAM", string_id)]);
+            let mut strings = LocalizedStringsState {
+                default_language: "en".to_string(),
+                ..LocalizedStringsState::default()
+            };
+            strings
+                .by_language
+                .entry("en".to_string())
+                .or_default()
+                .insert(string_id, "You found the holotape.".to_string());
+            // Whole-plugin conversion loses the source .DLSTRINGS classification, so
+            // the id arrives tagged .STRINGS. The exception must force .DLSTRINGS.
+            strings.table_types.insert(string_id, "strings".to_string());
+            let output_path = temp_plugin_path("localized-qust-cnam-rebucket");
+            let root = output_path.parent().unwrap().to_path_buf();
+
+            write_localized_strings_for_parsed(&plugin, &strings, output_path.to_str().unwrap())
+                .unwrap();
+
+            let dlstrings_values =
+                strings::parse_string_table(&root.join("Strings").join("SeventySix_en.DLSTRINGS"))
+                    .unwrap();
+            assert_eq!(
+                dlstrings_values.get(&string_id).map(String::as_str),
+                Some("You found the holotape."),
+                "QUST.CNAM quest-log text must land in .DLSTRINGS"
+            );
+            let strings_path = root.join("Strings").join("SeventySix_en.STRINGS");
+            if strings_path.exists() {
+                let strings_values = strings::parse_string_table(&strings_path).unwrap();
+                assert!(
+                    !strings_values.contains_key(&string_id),
+                    "QUST.CNAM id must not stay in .STRINGS after rebucket"
+                );
+            }
+            fs::remove_dir_all(root).unwrap();
+
+        }
     }
 
     fn scan_test_record_bytes(signature: &[u8; 4], form_id: u32) -> Vec<u8> {
@@ -1944,6 +2218,39 @@ fn schema_localized_table_type(
         .then(|| table_type_for_localized_signature(Some(record.signature.as_str()), signature))
 }
 
+pub(crate) fn collect_record_localized_table_refs(
+    record: &ParsedRecord,
+    schema: Option<&CompiledSchema>,
+    refs: &mut HashMap<&'static str, HashSet<u32>>,
+) {
+    let mut occurrences: HashMap<&str, usize> = HashMap::new();
+    for subrecord in &record.subrecords {
+        let signature = subrecord.signature.as_str();
+        let occurrence = *occurrences.get(signature).unwrap_or(&0);
+        occurrences.insert(signature, occurrence.saturating_add(1));
+        if subrecord.data.len() != 4 {
+            continue;
+        }
+        let Some(table_type) =
+            schema_localized_table_type(schema, record, signature, occurrence).or_else(|| {
+                localized_table_type_for_signature(Some(record.signature.as_str()), signature)
+            })
+        else {
+            continue;
+        };
+        let id = u32::from_le_bytes([
+            subrecord.data[0],
+            subrecord.data[1],
+            subrecord.data[2],
+            subrecord.data[3],
+        ]);
+        refs.entry(table_type).or_default().insert(id);
+        if record.signature.as_str() == "MESG" && matches!(signature, "DESC" | "ITXT") {
+            refs.entry("dlstrings").or_default().insert(id);
+        }
+    }
+}
+
 fn collect_localized_table_refs(
     plugin: &ParsedPlugin,
     schema: Option<&CompiledSchema>,
@@ -1957,38 +2264,7 @@ fn collect_localized_table_refs(
             match item {
                 ParsedItem::Group(group) => walk_items(&group.children, schema, refs),
                 ParsedItem::Record(record) => {
-                    let mut occurrences: HashMap<&str, usize> = HashMap::new();
-                    for subrecord in &record.subrecords {
-                        let signature = subrecord.signature.as_str();
-                        let occurrence = *occurrences.get(signature).unwrap_or(&0);
-                        occurrences.insert(signature, occurrence.saturating_add(1));
-                        if subrecord.data.len() != 4 {
-                            continue;
-                        }
-                        let Some(table_type) =
-                            schema_localized_table_type(schema, record, signature, occurrence)
-                                .or_else(|| {
-                                    localized_table_type_for_signature(
-                                        Some(record.signature.as_str()),
-                                        signature,
-                                    )
-                                })
-                        else {
-                            continue;
-                        };
-                        let id = u32::from_le_bytes([
-                            subrecord.data[0],
-                            subrecord.data[1],
-                            subrecord.data[2],
-                            subrecord.data[3],
-                        ]);
-                        refs.entry(table_type).or_default().insert(id);
-                        if record.signature.as_str() == "MESG"
-                            && matches!(signature, "DESC" | "ITXT")
-                        {
-                            refs.entry("dlstrings").or_default().insert(id);
-                        }
-                    }
+                    collect_record_localized_table_refs(record, schema, refs);
                 }
             }
         }
@@ -2262,7 +2538,18 @@ pub(crate) fn write_localized_strings_for_parsed(
         .as_deref()
         .and_then(|game| compiled_schema_for_game(game).ok());
     let localized_table_refs = collect_localized_table_refs(plugin, schema.as_deref());
-    if strings.by_language.is_empty() && localized_refs_are_empty(&localized_table_refs) {
+    write_localized_strings_with_refs(plugin, strings, output_path, &localized_table_refs)
+}
+
+pub(crate) fn write_localized_strings_with_refs(
+    plugin: &ParsedPlugin,
+    strings: &LocalizedStringsState,
+    output_path: &str,
+    localized_table_refs: &HashMap<&'static str, HashSet<u32>>,
+) -> PyResult<Vec<PathBuf>> {
+    if (plugin.header.flags & TES4_FLAG_LOCALIZED) == 0
+        || (strings.by_language.is_empty() && localized_refs_are_empty(localized_table_refs))
+    {
         return Ok(Vec::new());
     }
     let output = Path::new(output_path);
@@ -2302,6 +2589,10 @@ pub(crate) fn write_localized_strings_for_parsed(
     }
     languages.sort();
     let mut written: Vec<PathBuf> = Vec::new();
+    let default_values = strings
+        .by_language
+        .get(strings.default_language.trim())
+        .or_else(|| strings.by_language.get("en"));
     for language in languages {
         let values = strings.by_language.get(language.as_str());
         let mut buckets: HashMap<&str, HashMap<u32, String>> = HashMap::from([
@@ -2321,10 +2612,11 @@ pub(crate) fn write_localized_strings_for_parsed(
                     .insert(*string_id, text.clone());
             }
         }
-        for (table_type, string_ids) in &localized_table_refs {
+        for (table_type, string_ids) in localized_table_refs {
             for string_id in string_ids {
                 let text = values
                     .and_then(|table| table.get(string_id))
+                    .or_else(|| default_values.and_then(|table| table.get(string_id)))
                     .cloned()
                     .unwrap_or_else(|| missing_localized_string_placeholder(*string_id));
                 buckets
@@ -2413,13 +2705,377 @@ fn tes4_record_from_parsed(plugin: &ParsedPlugin, header_payload: Vec<u8>) -> Pa
     }
 }
 
-/// Streaming serializer: writes the TES4 header then each top-level item
-/// straight to `out`, never holding the whole serialized plugin in a `Vec`
-/// (~+8 GB on the whole-FO76 output). Byte-identical to [`build_plugin_bytes`]:
-/// same framing functions and item order, different sink.
-///
-/// Each item is framed into its own `Vec` (bounded by the largest top-level
-/// record/group), written, then dropped.
+const STREAM_OUTPUT_BUFFER_BYTES: usize = 4 * 1024 * 1024;
+const STREAM_RECORD_BATCH_MEMORY_BYTES: usize = 32 * 1024 * 1024;
+const STREAM_RECORD_BATCH_RECORDS_PER_JOB: usize = 1024;
+
+trait WriteSeek: std::io::Write + std::io::Seek {}
+impl<T: std::io::Write + std::io::Seek + ?Sized> WriteSeek for T {}
+
+struct StreamingPatchWriter<'a, W: WriteSeek + ?Sized> {
+    inner: &'a mut W,
+    buffer: Vec<u8>,
+    buffer_start: u64,
+    capacity: usize,
+    deferred_group_sizes: Vec<(u64, u32)>,
+}
+
+impl<'a, W: WriteSeek + ?Sized> StreamingPatchWriter<'a, W> {
+    fn new(inner: &'a mut W, capacity: usize) -> Self {
+        let capacity = capacity.max(MODERN_HEADER_SIZE);
+        Self {
+            inner,
+            buffer: Vec::with_capacity(capacity),
+            buffer_start: 0,
+            capacity,
+            deferred_group_sizes: Vec::new(),
+        }
+    }
+
+    fn position(&self) -> std::io::Result<u64> {
+        self.buffer_start
+            .checked_add(self.buffer.len() as u64)
+            .ok_or_else(|| std::io::Error::other("plugin output position overflow"))
+    }
+
+    fn flush_buffer(&mut self) -> std::io::Result<()> {
+        self.inner.write_all(&self.buffer)?;
+        self.buffer_start = self
+            .buffer_start
+            .checked_add(self.buffer.len() as u64)
+            .ok_or_else(|| std::io::Error::other("plugin output position overflow"))?;
+        self.buffer.clear();
+        Ok(())
+    }
+
+    fn write_bytes(&mut self, mut bytes: &[u8]) -> std::io::Result<()> {
+        while !bytes.is_empty() {
+            if self.buffer.len() == self.capacity {
+                self.flush_buffer()?;
+            }
+            let take = bytes.len().min(self.capacity - self.buffer.len());
+            self.buffer.extend_from_slice(&bytes[..take]);
+            bytes = &bytes[take..];
+        }
+        Ok(())
+    }
+
+    fn write_contiguous(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+        debug_assert!(bytes.len() <= self.capacity);
+        if self.capacity - self.buffer.len() < bytes.len() {
+            self.flush_buffer()?;
+        }
+        self.buffer.extend_from_slice(bytes);
+        Ok(())
+    }
+
+    fn patch_group_size(&mut self, offset: u64, size: u32) {
+        let relative = offset.checked_sub(self.buffer_start);
+        if let Some(relative) =
+            relative.filter(|relative| relative.saturating_add(4) <= self.buffer.len() as u64)
+        {
+            let relative = relative as usize;
+            self.buffer[relative..relative + 4].copy_from_slice(&size.to_le_bytes());
+        } else {
+            self.deferred_group_sizes.push((offset, size));
+        }
+    }
+
+    fn finish(mut self) -> std::io::Result<usize> {
+        self.flush_buffer()?;
+        let end = self.buffer_start;
+        self.deferred_group_sizes
+            .sort_unstable_by_key(|(offset, _)| *offset);
+        for (offset, size) in &self.deferred_group_sizes {
+            self.inner.seek(std::io::SeekFrom::Start(*offset))?;
+            self.inner.write_all(&size.to_le_bytes())?;
+        }
+        self.inner.seek(std::io::SeekFrom::Start(end))?;
+        self.inner.flush()?;
+        Ok(self.deferred_group_sizes.len())
+    }
+}
+
+fn estimated_subrecord_size(subrecord: &ParsedSubrecord) -> usize {
+    subrecord
+        .data
+        .len()
+        .saturating_add(if subrecord.data.len() > 0xFFFF { 16 } else { 6 })
+}
+
+fn zlib_output_bound(input_size: usize) -> usize {
+    input_size
+        .saturating_add(input_size / 16)
+        .saturating_add(64)
+}
+
+fn estimated_record_encoding_memory(record: &ParsedRecord, header_size: usize) -> usize {
+    let compressed = (record.flags & COMPRESSED_RECORD_FLAG) != 0;
+    let subrecord_size = || {
+        record
+            .subrecords
+            .iter()
+            .map(estimated_subrecord_size)
+            .fold(0usize, usize::saturating_add)
+    };
+    let working_bytes = match &record.raw_payload {
+        Some(raw_payload) if compressed && record.subrecords.is_empty() => {
+            let declared_size = raw_payload
+                .get(..4)
+                .map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap()) as usize)
+                .unwrap_or(0);
+            declared_size.saturating_mul(2).saturating_add(
+                raw_payload
+                    .len()
+                    .max(zlib_output_bound(declared_size))
+                    .saturating_mul(2),
+            )
+        }
+        Some(raw_payload) if record.subrecords.is_empty() || compressed => {
+            raw_payload.len().saturating_mul(2)
+        }
+        _ if compressed => {
+            let uncompressed = subrecord_size();
+            uncompressed
+                .saturating_mul(2)
+                .saturating_add(zlib_output_bound(uncompressed).saturating_mul(2))
+        }
+        _ => subrecord_size().saturating_mul(2),
+    };
+    header_size.saturating_add(working_bytes).saturating_add(
+        record
+            .subrecords
+            .len()
+            .saturating_mul(std::mem::size_of::<ParsedSubrecord>()),
+    )
+}
+
+fn write_group_start<W: WriteSeek + ?Sized>(
+    group: &ParsedGroup,
+    header_size: usize,
+    out: &mut StreamingPatchWriter<'_, W>,
+) -> PyResult<u64> {
+    let start = out
+        .position()
+        .map_err(|err| io_error(format!("read plugin stream position: {err}")))?;
+    let mut header = Vec::with_capacity(header_size);
+    header.extend_from_slice(b"GRUP");
+    header.extend_from_slice(&0u32.to_le_bytes());
+    header.extend_from_slice(&group.label);
+    header.extend_from_slice(&group.group_type.to_le_bytes());
+    let tail_len = header_size.saturating_sub(16);
+    let copy_len = group.tail.len().min(tail_len);
+    header.extend_from_slice(&group.tail[..copy_len]);
+    header.resize(header_size, 0);
+    out.write_contiguous(&header)
+        .map_err(|err| io_error(format!("write plugin group header: {err}")))?;
+    Ok(start)
+}
+
+fn write_group_end<W: WriteSeek + ?Sized>(
+    start: u64,
+    out: &mut StreamingPatchWriter<'_, W>,
+) -> PyResult<()> {
+    let end = out
+        .position()
+        .map_err(|err| io_error(format!("read plugin stream position: {err}")))?;
+    let total_size = end
+        .checked_sub(start)
+        .and_then(|size| u32::try_from(size).ok())
+        .ok_or_else(|| value_error("serialized GRUP size exceeds the u32 file-format limit"))?;
+    let size_offset = start
+        .checked_add(4)
+        .ok_or_else(|| value_error("serialized GRUP offset overflow"))?;
+    out.patch_group_size(size_offset, total_size);
+    Ok(())
+}
+
+enum StreamEvent<'a> {
+    GroupStart(&'a ParsedGroup),
+    Record(&'a ParsedRecord),
+    GroupEnd,
+}
+
+struct TraversalFrame<'a> {
+    items: &'a [ParsedItem],
+    index: usize,
+    closes_group: bool,
+}
+
+struct StreamTraversal<'a> {
+    stack: Vec<TraversalFrame<'a>>,
+}
+
+impl<'a> StreamTraversal<'a> {
+    fn new(items: &'a [ParsedItem]) -> Self {
+        Self {
+            stack: vec![TraversalFrame {
+                items,
+                index: 0,
+                closes_group: false,
+            }],
+        }
+    }
+}
+
+impl<'a> Iterator for StreamTraversal<'a> {
+    type Item = StreamEvent<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            let exhausted = self
+                .stack
+                .last()
+                .is_none_or(|frame| frame.index == frame.items.len());
+            if exhausted {
+                let frame = self.stack.pop()?;
+                if frame.closes_group {
+                    return Some(StreamEvent::GroupEnd);
+                }
+                continue;
+            }
+
+            let item = {
+                let frame = self.stack.last_mut().unwrap();
+                let item = &frame.items[frame.index];
+                frame.index += 1;
+                item
+            };
+            match item {
+                ParsedItem::Record(record) => return Some(StreamEvent::Record(record)),
+                ParsedItem::Group(group) => {
+                    self.stack.push(TraversalFrame {
+                        items: &group.children,
+                        index: 0,
+                        closes_group: true,
+                    });
+                    return Some(StreamEvent::GroupStart(group));
+                }
+            }
+        }
+    }
+}
+
+fn write_items_streaming<W: WriteSeek + ?Sized>(
+    items: &[ParsedItem],
+    header_size: usize,
+    out: &mut StreamingPatchWriter<'_, W>,
+) -> PyResult<()> {
+    use rayon::prelude::*;
+
+    let max_batch_records = crate::default_job_count() * STREAM_RECORD_BATCH_RECORDS_PER_JOB;
+    let max_batch_events = max_batch_records * 16;
+    let mut traversal = StreamTraversal::new(items).peekable();
+    let mut open_groups = Vec::new();
+    while traversal.peek().is_some() {
+        let mut events = Vec::with_capacity(max_batch_events);
+        let mut estimated_memory = 0usize;
+        let mut record_count = 0usize;
+        while events.len() < max_batch_events {
+            if let Some(StreamEvent::Record(record)) = traversal.peek() {
+                let next_memory = estimated_record_encoding_memory(record, header_size);
+                if record_count > 0
+                    && estimated_memory.saturating_add(next_memory)
+                        > STREAM_RECORD_BATCH_MEMORY_BYTES
+                {
+                    break;
+                }
+            }
+            let Some(event) = traversal.next() else {
+                break;
+            };
+            if let StreamEvent::Record(record) = &event {
+                estimated_memory = estimated_memory
+                    .saturating_add(estimated_record_encoding_memory(record, header_size));
+                record_count += 1;
+            }
+            events.push(event);
+            if record_count > 0
+                && (record_count == max_batch_records
+                    || estimated_memory == STREAM_RECORD_BATCH_MEMORY_BYTES)
+            {
+                break;
+            }
+        }
+
+        let records: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                StreamEvent::Record(record) => Some(*record),
+                _ => None,
+            })
+            .collect();
+        let encoded = if records.len() == 1 {
+            vec![record_bytes_from_parsed(records[0], header_size)?]
+        } else {
+            records
+                .par_iter()
+                .map(|record| record_bytes_from_parsed(record, header_size))
+                .collect::<PyResult<Vec<_>>>()?
+        };
+        let mut encoded = encoded.into_iter();
+        for event in events {
+            match event {
+                StreamEvent::GroupStart(group) => {
+                    open_groups.push(write_group_start(group, header_size, out)?);
+                }
+                StreamEvent::Record(_) => {
+                    let bytes = encoded.next().unwrap();
+                    out.write_bytes(&bytes)
+                        .map_err(|err| io_error(format!("write plugin record: {err}")))?;
+                }
+                StreamEvent::GroupEnd => {
+                    let start = open_groups
+                        .pop()
+                        .ok_or_else(|| value_error("unbalanced serialized GRUP traversal"))?;
+                    write_group_end(start, out)?;
+                }
+            }
+        }
+    }
+    if !open_groups.is_empty() {
+        return Err(value_error("unclosed serialized GRUP traversal"));
+    }
+    Ok(())
+}
+
+fn write_plugin_to_with_buffer<W: WriteSeek + ?Sized>(
+    plugin: &mut ParsedPlugin,
+    out: &mut W,
+    buffer_capacity: usize,
+) -> PyResult<usize> {
+    if plugin.header.hedr_raw.is_none() || plugin.header.num_records == 0 {
+        plugin.header.num_records = count_hedr_entries(&plugin.root_items) as u32;
+    }
+    rewrite_semantic_formids_in_place(plugin);
+    let header_subrecords = header_subrecords_from_parsed(plugin);
+    let mut header_payload = Vec::new();
+    for subrecord in &header_subrecords {
+        header_payload.extend_from_slice(subrecord);
+    }
+    let tes4 = tes4_record_from_parsed(plugin, header_payload);
+    let mut writer = StreamingPatchWriter::new(out, buffer_capacity);
+    writer
+        .write_bytes(&record_bytes_from_parsed(&tes4, plugin.header_size)?)
+        .map_err(|err| io_error(format!("write plugin record: {err}")))?;
+    write_items_streaming(&plugin.root_items, plugin.header_size, &mut writer)?;
+    writer
+        .finish()
+        .map_err(|err| io_error(format!("finish plugin stream: {err}")))
+}
+
+/// Serialize a plugin without materializing any GRUP body. Record siblings are
+/// encoded in byte-bounded parallel batches, while group sizes are backpatched
+/// in the seekable output after their children have been written.
+fn write_plugin_seekable_to<W: WriteSeek + ?Sized>(
+    plugin: &mut ParsedPlugin,
+    out: &mut W,
+) -> PyResult<()> {
+    write_plugin_to_with_buffer(plugin, out, STREAM_OUTPUT_BUFFER_BYTES)?;
+    Ok(())
+}
+
+#[cfg(test)]
 pub(crate) fn write_plugin_to<W: std::io::Write + ?Sized>(
     plugin: &mut ParsedPlugin,
     out: &mut W,
@@ -2434,21 +3090,17 @@ pub(crate) fn write_plugin_to<W: std::io::Write + ?Sized>(
         header_payload.extend_from_slice(subrecord);
     }
     let tes4 = tes4_record_from_parsed(plugin, header_payload);
-    let write = |out: &mut W, bytes: &[u8]| -> PyResult<()> {
-        out.write_all(bytes)
-            .map_err(|e| io_error(format!("write plugin record: {e}")))
-    };
-    write(out, &record_bytes_from_parsed(&tes4, plugin.header_size)?)?;
+    out.write_all(&record_bytes_from_parsed(&tes4, plugin.header_size)?)
+        .map_err(|err| io_error(format!("write plugin record: {err}")))?;
     use rayon::prelude::*;
-
-    let batch_size = crate::default_job_count();
-    for batch in plugin.root_items.chunks(batch_size) {
+    for batch in plugin.root_items.chunks(crate::default_job_count()) {
         let encoded = batch
             .par_iter()
             .map(|item| item_bytes_from_parsed(item, plugin.header_size))
             .collect::<PyResult<Vec<_>>>()?;
         for bytes in encoded {
-            write(out, &bytes)?;
+            out.write_all(&bytes)
+                .map_err(|err| io_error(format!("write plugin record: {err}")))?;
         }
     }
     Ok(())
@@ -2460,7 +3112,7 @@ pub(crate) fn save_parsed_plugin(
     output_path: &str,
 ) -> PyResult<()> {
     write_plugin_atomic(output_path, |writer| {
-        write_plugin_to(plugin, writer)
+        write_plugin_seekable_to(plugin, writer)
             .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err.to_string()))
     })
     .map_err(|err| io_error(format!("failed to save plugin '{}': {err}", output_path)))?;
@@ -2479,7 +3131,7 @@ pub(crate) fn save_parsed_plugin_no_py(
     output_path: &str,
 ) -> std::io::Result<()> {
     write_plugin_atomic(output_path, |writer| {
-        write_plugin_to(plugin, writer)
+        write_plugin_seekable_to(plugin, writer)
             .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err.to_string()))
     })?;
     write_localized_strings_no_py(plugin, strings, output_path)?;
@@ -2497,7 +3149,7 @@ pub(crate) fn save_parsed_plugin_no_py(
 /// scanning the just-written temp file, MO2/CK/game holding a read handle).
 fn write_plugin_atomic<F>(output_path: &str, serialize: F) -> std::io::Result<()>
 where
-    F: FnOnce(&mut dyn std::io::Write) -> std::io::Result<()>,
+    F: FnOnce(&mut dyn WriteSeek) -> std::io::Result<()>,
 {
     let target = Path::new(output_path);
     let parent = target.parent().filter(|p| !p.as_os_str().is_empty());
@@ -2510,11 +3162,8 @@ where
         Some(dir) => tempfile::NamedTempFile::new_in(dir)?,
         None => tempfile::NamedTempFile::new_in(".")?,
     };
-    {
-        let mut writer = std::io::BufWriter::new(&mut temp);
-        serialize(&mut writer)?;
-        std::io::Write::flush(&mut writer)?;
-    }
+    serialize(&mut temp)?;
+    std::io::Write::flush(&mut temp)?;
     // fsync the data before the rename so a crash can't leave a renamed-but-empty
     // file (durability for the commit).
     temp.as_file().sync_all()?;

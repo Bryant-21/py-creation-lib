@@ -666,7 +666,7 @@ mod tests {
     /// merging) must emit exactly 6 unique planes after the coplanar merge.
     /// Duplicate planes trigger the workshop-sweep CTD (see Step 8).
     #[test]
-    fn unit_cube_merges_to_six_polygonal_faces() {
+    fn coplanar_facets_merge_to_unique_planes() {
         let verts: Vec<[f32; 3]> = vec![
             [-1.0, -1.0, -1.0],
             [1.0, -1.0, -1.0],
@@ -709,14 +709,10 @@ mod tests {
                 );
             }
         }
-    }
-
-    /// Bank-base verts (rectangular prism with two -y hinge bumps) — the
-    /// shape that crashed the game until we added the coplanar merge pass.
-    /// Asserts the merged plane count (8) matches the unique-plane count
-    /// vanilla emits for this geometry.
-    #[test]
-    fn bank_base_hull_emits_eight_unique_planes() {
+        // Bank-base verts (rectangular prism with two -y hinge bumps) — the
+        // shape that crashed the game until we added the coplanar merge pass.
+        // Asserts the merged plane count (8) matches the unique-plane count
+        // vanilla emits for this geometry.
         let verts: Vec<[f32; 3]> = vec![
             [-0.734537, -0.444401, 0.000000],
             [-0.734537, 0.553338, 0.000000],

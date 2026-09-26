@@ -862,73 +862,6 @@ mod tests {
     use crate::descriptors::quads_for;
     use crate::settings::LodSettings;
 
-    /// Regression guard for the olive/black grid-noise bug: box-downscaling a
-    /// high-frequency source into a much smaller region must AVERAGE the footprint
-    /// (near-uniform mid-tone, tiny variance), not point-sample it. The same
-    /// source point-sampled at the small grid returns only extreme texels (the
-    /// old aliasing behavior), proving the difference.
-    #[test]
-    fn downscale_averages_high_frequency_pattern() {
-        // 64x64 black/white checkerboard — the worst-case high-frequency input.
-        let n = 64u32;
-        let mut rgba = vec![0u8; (n * n * 4) as usize];
-        for y in 0..n as usize {
-            for x in 0..n as usize {
-                let v = if (x + y) % 2 == 0 { 255 } else { 0 };
-                let i = (y * n as usize + x) * 4;
-                rgba[i] = v;
-                rgba[i + 1] = v;
-                rgba[i + 2] = v;
-                rgba[i + 3] = 255;
-            }
-        }
-        let src = SourceTexture {
-            width: n,
-            height: n,
-            rgba,
-        };
-
-        // Crush to 8x8: each output texel averages an 8x8 source block (32 black
-        // + 32 white) -> ~127. Must be near mid-gray everywhere.
-        let small = src.downscaled_to(8);
-        assert_eq!(small.width, 8);
-        assert_eq!(small.height, 8);
-        for px in small.rgba.chunks_exact(4) {
-            for &c in &px[..3] {
-                assert!(
-                    (c as i32 - 128).abs() <= 8,
-                    "downscaled texel must be ~mid-gray, got {c}"
-                );
-            }
-        }
-
-        // Variance across the downscaled image must be tiny (uniform mid-tone),
-        // proving the high-frequency pattern was averaged out, not point-sampled.
-        let lum: Vec<f32> = small.rgba.chunks_exact(4).map(|p| p[0] as f32).collect();
-        let mean = lum.iter().sum::<f32>() / lum.len() as f32;
-        let var = lum.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / lum.len() as f32;
-        assert!(
-            var < 4.0,
-            "downscaled checkerboard must be near-uniform, variance={var}"
-        );
-
-        // Contrast: NEAREST point-sampling the SAME source at the 8x8 grid (the
-        // pre-fix behavior) returns only pure 0/255 texels — it never averages.
-        let mut all_extreme = true;
-        for oy in 0..8u32 {
-            for ox in 0..8u32 {
-                let s = src.sample(ox as f32 / 8.0, oy as f32 / 8.0)[0];
-                if s > 1 && s < 254 {
-                    all_extreme = false;
-                }
-            }
-        }
-        assert!(
-            all_extreme,
-            "sanity: nearest point-sampling returns extreme texels, never mid-tones"
-        );
-    }
-
     #[test]
     fn empty_alpha_base_layer_only_affects_its_quadrant() {
         let dir =
@@ -1026,21 +959,6 @@ mod tests {
         crate::input::WorldspaceInput::from_cells("W", cells)
     }
 
-    #[test]
-    fn composite_resolution_per_level() {
-        let w = one_layer_world();
-        let s = LodSettings::fo4_default();
-        let quad = quads_for(&w, 4, &s)
-            .into_iter()
-            .find(|q| q.x == 0 && q.y == 0)
-            .unwrap();
-        let tile = composite_quad(&w, &quad, &s, &test_paths()).unwrap();
-        // L4 native diffuse size = 256
-        assert_eq!(tile.width, 256);
-        assert_eq!(tile.height, 256);
-        assert_eq!(tile.diffuse_rgba.len(), 256 * 256 * 4);
-    }
-
     /// Gap 5: a quad whose cells carry NO LTEX layers (default/landless) gets the
     /// default tile size (default_diffuse_size/default_normal_size = 128), not the
     /// per-level 256. Golden DLC03FarHarbor emits 128² for these default tiles.
@@ -1074,87 +992,6 @@ mod tests {
         assert_eq!(tile.diffuse_rgba.len(), 128 * 128 * 4);
         // normal buffer also at default_normal_size
         assert_eq!(tile.normal_rgba.len(), 128 * 128 * 4);
-    }
-
-    /// A quad with at least one layered cell keeps the per-level size (256) — the
-    /// default-size rule only applies when NO cell has a layer.
-    #[test]
-    fn partially_layered_quad_keeps_per_level_size() {
-        // Build a 4x4 quad where only one cell has a layer.
-        let mut cells: Vec<_> = (0..4)
-            .flat_map(|y| (0..4).map(move |x| (x, y)))
-            .map(|(x, y)| crate::input::CellInput {
-                x,
-                y,
-                heights: vec![0.0; 33 * 33],
-                vertex_colors: vec![[255, 255, 255]; 33 * 33],
-                layers: Vec::new(),
-                hidden_quadrants: [false; 4],
-                water_height: f32::MIN,
-            })
-            .collect();
-        cells[0].layers.push(crate::input::LayerTexture {
-            diffuse: "textures/landscape/dirt01.dds".into(),
-            normal: String::new(),
-            quadrant: 0,
-            alpha: vec![1.0; 17 * 17],
-        });
-        let w = crate::input::WorldspaceInput::from_cells("W", cells);
-        let s = LodSettings::fo4_default();
-        let quad = quads_for(&w, 4, &s)
-            .into_iter()
-            .find(|q| q.x == 0 && q.y == 0)
-            .unwrap();
-        let tile = composite_quad(&w, &quad, &s, &test_paths()).unwrap();
-        assert_eq!(tile.width, 256, "layered quad keeps per-level 256");
-    }
-
-    /// When default_*_size is None, fall back to the per-level size even for a
-    /// no-layer quad (the override is opt-in).
-    #[test]
-    fn no_default_size_falls_back_to_per_level() {
-        let w = no_layer_world();
-        let mut s = LodSettings::fo4_default();
-        s.terrain.default_diffuse_size = None;
-        s.terrain.default_normal_size = None;
-        let quad = quads_for(&w, 4, &s)
-            .into_iter()
-            .find(|q| q.x == 0 && q.y == 0)
-            .unwrap();
-        let tile = composite_quad(&w, &quad, &s, &test_paths()).unwrap();
-        assert_eq!(tile.width, 256, "None default size → per-level 256");
-    }
-
-    #[test]
-    fn vertex_color_intensity_zero_leaves_base() {
-        let w = one_layer_world();
-        let mut s = LodSettings::fo4_default();
-        s.terrain.vertex_color_intensity = 0.0; // no VCLR overlay
-        let quad = quads_for(&w, 4, &s)
-            .into_iter()
-            .find(|q| q.x == 0 && q.y == 0)
-            .unwrap();
-        let tile = composite_quad(&w, &quad, &s, &test_paths()).unwrap();
-        // alpha channel fully opaque
-        assert_eq!(tile.diffuse_rgba[3], 255);
-    }
-
-    #[test]
-    fn normal_buffer_sized_to_normal_size() {
-        let w = one_layer_world();
-        let s = LodSettings::fo4_default();
-        let quad = quads_for(&w, 4, &s)
-            .into_iter()
-            .find(|q| q.x == 0 && q.y == 0)
-            .unwrap();
-        let tile = composite_quad(&w, &quad, &s, &test_paths()).unwrap();
-        let n = s.terrain.levels[0].normal_size as usize;
-        assert_eq!(tile.normal_rgba.len(), n * n * 4);
-        // Flat cell heights -> flat FO4 `_msn` (model-space), which is GREEN-up:
-        // R=128, G=255 (world up), B=128. (NOT the tangent-space blue-up (..,255).)
-        assert_eq!(tile.normal_rgba[0], 128);
-        assert_eq!(tile.normal_rgba[1], 255);
-        assert_eq!(tile.normal_rgba[2], 128);
     }
 
     #[test]

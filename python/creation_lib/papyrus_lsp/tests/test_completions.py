@@ -37,28 +37,22 @@ def test_dot_completion_returns_members():
     assert "Race" in labels
 
 
-def test_no_dot_returns_script_names_as_fallback():
+def test_no_dot_and_parse_failure_both_fall_back_to_script_names():
     db = MockScriptDB()
+
+    # Phase 1: no dot in the expression falls back to prefix-matched script names
     text = "ScriptName TestScript\nAc"
     items = get_completions(text, line=1, col=2, db=db)
     labels = [i.label for i in items]
     # Prefix "Ac" should match "Actor", "ActorBase"
     assert any("Actor" in l for l in labels)
 
+    text2 = "ScriptName TestScript\nGame"
+    items2 = get_completions(text2, line=1, col=4, db=db)
+    labels2 = [i.label for i in items2]
+    assert "Game" in labels2
 
-def test_partial_script_name_completion():
-    db = MockScriptDB()
-    text = "ScriptName TestScript\nGame"
-    items = get_completions(text, line=1, col=4, db=db)
-    labels = [i.label for i in items]
-    assert "Game" in labels
-
-
-def test_parse_failure_fallback_returns_script_names():
-    """On parse failure mid-expression, fall back to all known script names (never [])."""
-    db = MockScriptDB()
-    # Incomplete expression that will fail to parse
-    text = "ScriptName TestScript\nActor akActor = ("
-    items = get_completions(text, line=1, col=17, db=db)
-    # Should not return empty list even on parse failure
-    assert len(items) > 0
+    # Phase 2: a parse failure mid-expression falls back to all known script names (never [])
+    text3 = "ScriptName TestScript\nActor akActor = ("
+    items3 = get_completions(text3, line=1, col=17, db=db)
+    assert len(items3) > 0

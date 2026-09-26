@@ -1,8 +1,7 @@
-use std::cmp::Reverse;
 /// Quadric Error Metric (QEM) mesh decimation (Garland & Heckbert 1997): collapse
 /// the lowest-error half-edge until the target triangle count is reached or every
 /// collapse would flip a face. Symmetric 4×4 quadric per vertex, min-heap of candidates.
-use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::collections::{BinaryHeap, HashSet};
 
 // ---------------------------------------------------------------------------
 // Symmetric 4×4 quadric (upper-triangle storage)
@@ -432,33 +431,33 @@ mod tests {
     }
 
     #[test]
-    fn decimate_sphere_reduces_triangle_count() {
-        let (verts, tris) = sphere(32, 32); // ~2048 triangles
-        let original_count = tris.len();
-        let target = 250;
-        let result = decimate(&verts, &tris, target);
-        assert!(
-            result.triangles.len() <= original_count,
-            "decimated must not exceed original"
-        );
-        assert!(
-            result.triangles.len() <= target + 50, // allow small overshoot
-            "expected ~{target} triangles, got {}",
-            result.triangles.len()
-        );
-        assert!(!result.vertices.is_empty(), "output must have vertices");
-    }
-
-    #[test]
-    fn decimate_below_target_returns_unchanged() {
-        let verts = vec![
-            [0.0f32, 0.0, 0.0],
-            [1.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0],
-            [0.0, 0.0, 1.0],
-        ];
-        let tris = vec![[0u32, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]];
-        let result = decimate(&verts, &tris, 10); // already below target
-        assert_eq!(result.triangles.len(), 4);
+    fn decimate_reduces_or_leaves_below_target() {
+        {
+            let (verts, tris) = sphere(32, 32); // ~2048 triangles
+            let original_count = tris.len();
+            let target = 250;
+            let result = decimate(&verts, &tris, target);
+            assert!(
+                result.triangles.len() <= original_count,
+                "decimated must not exceed original"
+            );
+            assert!(
+                result.triangles.len() <= target + 50, // allow small overshoot
+                "expected ~{target} triangles, got {}",
+                result.triangles.len()
+            );
+            assert!(!result.vertices.is_empty(), "output must have vertices");
+        }
+        {
+            let verts = vec![
+                [0.0f32, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+            ];
+            let tris = vec![[0u32, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]];
+            let result = decimate(&verts, &tris, 10); // already below target
+            assert_eq!(result.triangles.len(), 4);
+        }
     }
 }

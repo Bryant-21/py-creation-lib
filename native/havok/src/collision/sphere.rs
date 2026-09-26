@@ -206,21 +206,7 @@ mod tests {
     use crate::hkx::types::HkxValue;
 
     #[test]
-    fn sphere_blob_parses_as_packfile() {
-        let blob = build_fo4_sphere_collision(0.5, [1.0, 2.0, 3.0], &BuildOptions::default())
-            .expect("build sphere");
-        let file = HkxFile::read(&blob).expect("parse sphere packfile");
-        let class_names: Vec<&str> = file
-            .objects()
-            .iter()
-            .map(|o| o.class_name.as_str())
-            .collect();
-        assert!(class_names.contains(&"hknpPhysicsSystemData"));
-        assert!(class_names.contains(&"hknpSphereShape"));
-    }
-
-    #[test]
-    fn sphere_radius_lands_in_convex_radius_field() {
+    fn sphere_build_layout_and_material() {
         let blob = build_fo4_sphere_collision(0.75, [0.0, 0.0, 0.0], &BuildOptions::default())
             .expect("build sphere");
         // Locate the hknpSphereShape virtual fixup → its convexRadius lives
@@ -275,10 +261,16 @@ mod tests {
             );
             assert!((support_w - 0.5).abs() < 1e-6);
         }
-    }
-
-    #[test]
-    fn sphere_shape_preserves_material_crc_and_support_vectors() {
+        let blob = build_fo4_sphere_collision(0.5, [1.0, 2.0, 3.0], &BuildOptions::default())
+            .expect("build sphere");
+        let file = HkxFile::read(&blob).expect("parse sphere packfile");
+        let class_names: Vec<&str> = file
+            .objects()
+            .iter()
+            .map(|o| o.class_name.as_str())
+            .collect();
+        assert!(class_names.contains(&"hknpPhysicsSystemData"));
+        assert!(class_names.contains(&"hknpSphereShape"));
         let material_crc = 0x7DFC_D805;
         let opts = BuildOptions {
             user_data: Some(material_crc),

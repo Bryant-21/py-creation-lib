@@ -185,7 +185,7 @@ impl WalkFilters {
     }
 }
 
-pub(crate) fn walk_main(
+fn walk_main(
     source_indices: &[WalkIndex],
     master_indices: &[WalkIndex],
     roots: &[Arc<str>],

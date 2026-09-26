@@ -2,13 +2,15 @@ from creation_lib.core.game_profiles import GAME_PROFILES
 from creation_lib.core import path_detector as pd
 
 
-def test_fnv_folder_candidates_use_steam_folder_name():
+def test_fnv_folder_candidates_and_detect_via_vdf_finds_steam_folder(tmp_path, monkeypatch):
     cands = pd._steam_folder_candidates("fnv", GAME_PROFILES["fnv"])
     # display_name "Fallout: New Vegas" contains a colon, so it can't be a folder name
     assert "Fallout New Vegas" in cands
 
+    _detect_fnv_via_vdf_finds_steam_folder(tmp_path, monkeypatch)
 
-def test_detect_fnv_via_vdf_finds_steam_folder(tmp_path, monkeypatch):
+
+def _detect_fnv_via_vdf_finds_steam_folder(tmp_path, monkeypatch):
     monkeypatch.setattr(pd, "_detect_from_registry", lambda *a, **k: None)
     monkeypatch.setattr(pd, "_detect_from_gog_registry", lambda *a, **k: None)
     monkeypatch.setattr(pd, "_detect_from_common_paths", lambda *a, **k: None)

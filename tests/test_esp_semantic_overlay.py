@@ -145,7 +145,7 @@ def test_collect_overlay_changes_reports_label_promotions() -> None:
     ]
 
 
-def test_install_and_load_installed_overlay(tmp_path: Path) -> None:
+def test_install_and_load_installed_overlay_is_applied_by_get_schema(tmp_path: Path) -> None:
     overlay = build_semantic_overlays([_evidence_payload()])["fo4"]
 
     installed_path = install_semantic_overlay(overlay, overlay_dir=tmp_path)
@@ -154,11 +154,6 @@ def test_install_and_load_installed_overlay(tmp_path: Path) -> None:
     assert installed_path == tmp_path / "fo4.semantic_overlay.json"
     assert loaded is not None
     assert loaded.to_dict() == overlay.to_dict()
-
-
-def test_get_schema_applies_installed_overlay_when_present(tmp_path: Path) -> None:
-    overlay = build_semantic_overlays([_evidence_payload()])["fo4"]
-    install_semantic_overlay(overlay, overlay_dir=tmp_path)
 
     updated_schema = get_schema("fo4", overlay_dir=tmp_path)
     neutral_schema = get_schema("fo4", apply_overlays=False, overlay_dir=tmp_path)

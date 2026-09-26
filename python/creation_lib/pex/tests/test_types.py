@@ -6,18 +6,14 @@ from creation_lib.pex.types import (
 from creation_lib.pex.opcodes import PexOpcode
 
 
-def test_pex_value_none():
+def test_pex_type_construction_round_trips_fields():
     v = PexValue(ValueType.NONE, None)
     assert v.type == ValueType.NONE
     assert v.data is None
 
-
-def test_pex_value_string():
     v = PexValue(ValueType.STRING, "hello")
     assert v.data == "hello"
 
-
-def test_pex_instruction():
     instr = PexInstruction(
         opcode=PexOpcode.IADD,
         args=[
@@ -29,8 +25,6 @@ def test_pex_instruction():
     assert instr.opcode == PexOpcode.IADD
     assert len(instr.args) == 3
 
-
-def test_pex_function_minimal():
     fn = PexFunction(
         name="OnInit",
         return_type="None",
@@ -44,8 +38,6 @@ def test_pex_function_minimal():
     assert fn.name == "OnInit"
     assert fn.return_type == "None"
 
-
-def test_pex_object():
     obj = PexObject(
         name="MyScript",
         parent="ObjectReference",
@@ -61,8 +53,6 @@ def test_pex_object():
     assert obj.parent == "ObjectReference"
     assert len(obj.states) == 1
 
-
-def test_pex_file():
     pf = PexFile(
         magic=0xFA57C0DE,
         major_version=3,

@@ -2793,7 +2793,9 @@ mod tests {
         )
     }
 
-    fn encoded_section_with_primitives(primitive_bytes: Vec<u8>) -> EncodedCompressedMeshSection {
+    /// Minimal section passing every `validate_encoded_compressed_mesh` check:
+    /// 1 packed vertex, 1 primitive, one 4-byte tree node, 1 data run.
+    fn minimal_encoded_section() -> EncodedCompressedMeshSection {
         EncodedCompressedMeshSection {
             aabb: CmAabb {
                 min: [0.0, 0.0, 0.0],
@@ -2801,15 +2803,15 @@ mod tests {
             },
             base: [0.0, 0.0, 0.0],
             scale: [1.0, 1.0, 1.0],
-            packed_vertices: vec![0; 4],
+            packed_vertices: vec![0u32],
             shared_vertices_index: Vec::new(),
+            primitive_bytes: vec![0u8; 4],
+            section_tree_nodes: vec![0u8; 4],
             primitive_data_runs: vec![RawCompressedMeshDataRun {
                 value: 0,
                 index: 0,
-                count: (primitive_bytes.len() / 4) as u8,
+                count: 1,
             }],
-            primitive_bytes,
-            section_tree_nodes: vec![0; 4],
             leaf_index: 0,
             page: 0,
             flags: 0,
@@ -2818,75 +2820,85 @@ mod tests {
         }
     }
 
-    fn first_bitfield_word(storage: &[u8]) -> u32 {
-        u32::from_le_bytes(storage[..4].try_into().unwrap())
+    fn section_with_primitives(primitive_bytes: Vec<u8>) -> EncodedCompressedMeshSection {
+        EncodedCompressedMeshSection {
+            packed_vertices: vec![0; 4],
+            primitive_data_runs: vec![RawCompressedMeshDataRun {
+                value: 0,
+                index: 0,
+                count: (primitive_bytes.len() / 4) as u8,
+            }],
+            primitive_bytes,
+            ..minimal_encoded_section()
+        }
+    }
+
+    fn bitfield_word(storage: &[u8], offset: usize) -> u32 {
+        u32::from_le_bytes(storage[offset..offset + 4].try_into().unwrap())
+    }
+
+    /// 255 independent triangles force the 255-vertex section limit to split the
+    /// mesh into >= 3 sections.
+    fn multi_section_mesh() -> (Vec<[f32; 3]>, Vec<[u32; 3]>) {
+        let mut verts = Vec::new();
+        let mut tris = Vec::new();
+        for i in 0..255u32 {
+            let base = verts.len() as u32;
+            let x = i as f32;
+            verts.push([x, 0.0, 0.0]);
+            verts.push([x + 0.25, 0.0, 0.0]);
+            verts.push([x, 0.25, 0.0]);
+            tris.push([base, base + 1, base + 2]);
+        }
+        (verts, tris)
     }
 
     #[test]
-    fn rebuilt_quad_bitfield_does_not_mark_triangles() {
-        let section = encoded_section_with_primitives(vec![
-            0, 3, 2, 1, // quad
-            0, 1, 2, 2, // triangle
-        ]);
-
-        let storage = quad_is_flat_bitfield_storage(&[section], 2, 0);
-
-        assert_eq!(first_bitfield_word(&storage) & 0b11, 0b01);
-    }
-
-    #[test]
-    fn raw_quad_bitfield_translates_flat_convex_marker() {
-        let section = encoded_section_with_primitives(vec![
-            0, 1, 2, 3, // non-flat quad
-            0, 3, 2, 1, // flat quad (b > d)
-            0, 1, 2, 2, // triangle
-        ]);
-
-        let storage = quad_is_flat_bitfield_storage(&[section], 3, u8::MAX);
-
-        assert_eq!(first_bitfield_word(&storage) & 0b111, 0b010);
-    }
-
-    #[test]
-    fn quad_bitfield_uses_shape_key_section_stride() {
-        let triangle = encoded_section_with_primitives(vec![0, 1, 2, 2]);
-        let quad = encoded_section_with_primitives(vec![0, 3, 2, 1]);
-
-        let storage = quad_is_flat_bitfield_storage(&[triangle, quad], 129, 0);
-        let section_one_word = u32::from_le_bytes(storage[16..20].try_into().unwrap());
-
-        assert_eq!(first_bitfield_word(&storage), 0);
-        assert_eq!(section_one_word & 1, 1);
-    }
-
-    #[test]
-    fn flat_triangle_pair_uses_sdk_flat_quad_order() {
+    fn quad_pairing_and_flat_bitfield() {
         let (verts, tris) = test_mesh();
-        let primitive_bytes = encode_triangle_primitive_bytes(&verts, &tris);
-
-        assert_eq!(primitive_bytes.len(), 4);
-        assert_ne!(primitive_bytes[2], primitive_bytes[3]);
+        let paired = encode_triangle_primitive_bytes(&verts, &tris);
+        assert_eq!(paired.len(), 4);
+        assert_ne!(paired[2], paired[3]);
         assert!(
-            primitive_bytes[1] > primitive_bytes[3],
+            paired[1] > paired[3],
             "hkcdStaticMeshTree marks a primitive as flat-convex by b>d"
         );
-    }
-
-    #[test]
-    fn non_coplanar_triangle_pair_stays_split() {
-        let verts = vec![
+        let bent = vec![
             [0.0, 0.0, 0.0],
             [1.0, 0.0, 0.0],
             [1.0, 1.0, 0.0],
             [0.0, 1.0, 1.0],
         ];
-        let tris = vec![[0, 1, 2], [0, 2, 3]];
-        let primitive_bytes = encode_triangle_primitive_bytes(&verts, &tris);
+        let split = encode_triangle_primitive_bytes(&bent, &tris);
+        assert_eq!(split.len(), 8, "non-coplanar pair stays split");
+        assert!(split.chunks_exact(4).all(|p| p[2] == p[3]));
 
-        assert_eq!(primitive_bytes.len(), 8);
-        for primitive in primitive_bytes.chunks_exact(4) {
-            assert_eq!(primitive[2], primitive[3]);
-        }
+        let rebuilt = section_with_primitives(vec![0, 3, 2, 1, 0, 1, 2, 2]);
+        assert_eq!(
+            bitfield_word(&quad_is_flat_bitfield_storage(&[rebuilt], 2, 0), 0) & 0b11,
+            0b01,
+            "rebuilt quads flagged, triangles not"
+        );
+        let raw = section_with_primitives(vec![0, 1, 2, 3, 0, 3, 2, 1, 0, 1, 2, 2]);
+        assert_eq!(
+            bitfield_word(&quad_is_flat_bitfield_storage(&[raw], 3, u8::MAX), 0) & 0b111,
+            0b010,
+            "raw path translates the b>d flat-convex marker"
+        );
+        let strided = quad_is_flat_bitfield_storage(
+            &[
+                section_with_primitives(vec![0, 1, 2, 2]),
+                section_with_primitives(vec![0, 3, 2, 1]),
+            ],
+            129,
+            0,
+        );
+        assert_eq!(bitfield_word(&strided, 0), 0);
+        assert_eq!(
+            bitfield_word(&strided, 16) & 1,
+            1,
+            "section stride = shape-key stride"
+        );
     }
 
     #[test]
@@ -3035,33 +3047,28 @@ mod tests {
         assert_eq!(round_trip.sections[0].primitive_data_runs, expected);
     }
 
+    /// Multi-section CTD guards. hkcdStaticMeshTree composes a primitive key as
+    /// `(sectionIndex << 8) | (localPrimitiveIndex << 1) | triangleBit`, so
+    /// m_numShapeKeyBits must be 8 + numBits(numSections - 1); the flat value
+    /// recovers a garbage section index (r10=0x2050204 narrowphase CTD). The
+    /// master tree uses the Aabb5BytesCodec convention (isInternal = hi & 0x80,
+    /// leaf section = hi<<8 | lo, right child = node + ((hi&0x7F)<<8 | lo) << 1);
+    /// the Aabb4 convention makes FO4 read the root as a leaf pointing at a
+    /// nonexistent section.
     #[test]
-    fn compressed_mesh_writer_splits_oversized_mesh_into_sections() {
-        // 260 independent right-triangles, each with its own 3 vertices (780 total),
-        // guaranteed non-degenerate (area^2 = 0.25 >> 1e-7). Forces section splits
-        // because 780 verts exceed MAX_SECTION_VERTICES (255) per section.
-        let num_tris: u32 = 260;
-        let mut verts = Vec::with_capacity((num_tris * 3) as usize);
-        let mut tris = Vec::with_capacity(num_tris as usize);
-        for i in 0..num_tris {
-            let base = verts.len() as u32;
-            let x = i as f32;
-            verts.push([x, 0.0, 0.0]);
-            verts.push([x + 1.0, 0.0, 0.0]);
-            verts.push([x, 1.0, 0.0]);
-            tris.push([base, base + 1, base + 2]);
-        }
-
+    fn multi_section_mesh_splits_and_encodes_section_keys_and_master_tree() {
+        let (verts, tris) = multi_section_mesh();
         let blob = build_compressed_mesh_collision(&verts, &tris, BuildOptions::default())
-            .expect("oversized compressed mesh should build");
-        let parsed = parse_fo4_compressed_mesh(&blob).expect("parse generated mesh");
+            .expect("multi-section compressed mesh should build");
 
-        assert!(parsed.sections.len() > 1);
+        let parsed = parse_fo4_compressed_mesh(&blob).expect("parse generated mesh");
+        let num_sections = parsed.sections.len();
+        assert!(num_sections >= 3, "got {num_sections} sections");
         assert_eq!(
             parsed
                 .sections
                 .iter()
-                .map(|section| section.triangles.len())
+                .map(|s| s.triangles.len())
                 .sum::<usize>(),
             tris.len()
         );
@@ -3069,90 +3076,6 @@ mod tests {
             assert!(section.vertices.len() <= MAX_SECTION_VERTICES);
             assert!(section.triangles.len() <= MAX_SECTION_TRIANGLES);
         }
-    }
-
-    #[test]
-    fn compressed_mesh_multi_section_shape_key_bits_encode_section_index() {
-        // 255 fully-independent triangles (no shared vertices) force the
-        // 255-vertex section limit to split the mesh into 3 sections of 85
-        // primitives each. hkcdStaticMeshTree composes a primitive shape key as
-        //   (sectionIndex << 8) | (localPrimitiveIndex << 1) | triangleBit
-        // so m_numShapeKeyBits must be 8 + numBits(numSections - 1) = 10 — NOT
-        // the flat numBits(totalPrimitives * 2) = 9. With the flat value FO4
-        // right-shifts each hit key by the wrong amount, recovers a garbage
-        // section index, and dereferences m_sections off the end (the
-        // r10=0x2050204 narrowphase CTD).
-        let mut verts = Vec::new();
-        let mut tris = Vec::new();
-        for i in 0..255u32 {
-            let base = verts.len() as u32;
-            let x = i as f32;
-            verts.push([x, 0.0, 0.0]);
-            verts.push([x + 0.25, 0.0, 0.0]);
-            verts.push([x, 0.25, 0.0]);
-            tris.push([base, base + 1, base + 2]);
-        }
-
-        let blob = build_compressed_mesh_collision(&verts, &tris, BuildOptions::default())
-            .expect("multi-section compressed mesh should build");
-
-        let parsed = parse_fo4_compressed_mesh(&blob).expect("parse generated mesh");
-        let num_sections = parsed.sections.len();
-        assert!(
-            num_sections >= 3,
-            "expected >= 3 sections from 255 independent triangles, got {num_sections}"
-        );
-
-        let hdrs = parse_packfile_section_headers(&blob).expect("section headers");
-        let data_hdr = hdrs.get("__data__").expect("__data__ section");
-        let data_start = data_hdr.abs_start;
-        let classnames_start = hdrs.get("__classnames__").unwrap().abs_start;
-        let objects =
-            parse_virtual_fixups(&blob, data_hdr, classnames_start).expect("virtual fixups");
-        let shape_rel = objects
-            .iter()
-            .find(|(_, class_name)| class_name == "hknpCompressedMeshShape")
-            .map(|(rel, _)| *rel)
-            .expect("compressed mesh shape");
-        let num_shape_key_bits = u8_at(&blob, data_start + shape_rel + 0x12).unwrap() as u32;
-
-        let section_index_bits = u32::BITS - (num_sections as u32 - 1).leading_zeros();
-        let expected = 8 + section_index_bits;
-        assert_eq!(
-            num_shape_key_bits, expected,
-            "numShapeKeyBits must encode the section index in the high bits \
-             (8 + numBits(numSections-1)); got {num_shape_key_bits}, expected {expected} \
-             for {num_sections} sections"
-        );
-    }
-
-    #[test]
-    fn compressed_mesh_master_tree_uses_aabb5_codec_convention() {
-        // The master tree over Sections is encoded with
-        // hkcdCompressedAabbCodecs::Aabb5BytesCodec. Its 5-byte node is laid out
-        // [x, y, z, m_hiData, m_loData] and the engine reads it as:
-        //   isInternal = m_hiData & 0x80
-        //   leaf      -> sectionIndex = (m_hiData << 8) | m_loData     (high bit clear)
-        //   internal  -> rightChild  = node + ((((m_hiData & 0x7F) << 8) | m_loData) << 1)
-        // The Aabb4 convention (data&1 == internal, data>>1 == payload) does NOT
-        // apply to the master codec. Encoding it that way makes FO4 read the
-        // internal root as a leaf pointing at a nonexistent section, deref
-        // m_sections out of bounds, and CTD on the first physics query against a
-        // multi-section mesh (single-section meshes survive only because their
-        // lone leaf is section 0, where both conventions coincide).
-        let mut verts = Vec::new();
-        let mut tris = Vec::new();
-        for i in 0..255u32 {
-            let base = verts.len() as u32;
-            let x = i as f32;
-            verts.push([x, 0.0, 0.0]);
-            verts.push([x + 0.25, 0.0, 0.0]);
-            verts.push([x, 0.25, 0.0]);
-            tris.push([base, base + 1, base + 2]);
-        }
-
-        let blob = build_compressed_mesh_collision(&verts, &tris, BuildOptions::default())
-            .expect("multi-section compressed mesh should build");
 
         let hdrs = parse_packfile_section_headers(&blob).expect("section headers");
         let data_hdr = hdrs.get("__data__").expect("__data__ section");
@@ -3161,28 +3084,27 @@ mod tests {
         let fixups = parse_local_fixups(&blob, data_hdr).expect("local fixups");
         let objects =
             parse_virtual_fixups(&blob, data_hdr, classnames_start).expect("virtual fixups");
+        let rel_of = |class: &str| {
+            objects
+                .iter()
+                .find(|(_, class_name)| class_name == class)
+                .map(|(rel, _)| *rel)
+                .unwrap_or_else(|| panic!("{class} missing"))
+        };
 
-        let obj_rel = objects
-            .iter()
-            .find(|(_, class_name)| class_name == "hknpCompressedMeshShapeData")
-            .map(|(rel, _)| *rel)
-            .expect("compressed mesh shape data");
+        let shape_rel = rel_of("hknpCompressedMeshShape");
+        let num_shape_key_bits = u8_at(&blob, data_start + shape_rel + 0x12).unwrap() as u32;
+        let expected_bits = 8 + (u32::BITS - (num_sections as u32 - 1).leading_zeros());
+        assert_eq!(num_shape_key_bits, expected_bits);
+
+        let obj_rel = rel_of("hknpCompressedMeshShapeData");
         let obj_abs = data_start + obj_rel;
-
-        let num_sections = hkarray_size(&blob, obj_abs, 0x50).unwrap();
-        assert!(num_sections >= 3, "test needs a multi-section mesh");
-
+        assert_eq!(hkarray_size(&blob, obj_abs, 0x50).unwrap(), num_sections);
         let master_abs =
             hkarray_abs(&fixups, data_start, obj_rel, 0x10).expect("master tree m_nodes pointer");
         let master_count = hkarray_size(&blob, obj_abs, 0x10).unwrap();
-        assert_eq!(
-            master_count,
-            2 * num_sections - 1,
-            "a binary tree over N sections has exactly 2N-1 nodes"
-        );
+        assert_eq!(master_count, 2 * num_sections - 1);
 
-        // Walk the tree from the root; every leaf must map to a unique, in-range
-        // section, and every section must be reachable.
         let mut leaf_node_of = vec![usize::MAX; num_sections];
         let mut stack = vec![0usize];
         let mut visited = 0usize;
@@ -3196,174 +3118,96 @@ mod tests {
                 let delta = ((((hi & 0x7F) as usize) << 8) | lo as usize) << 1;
                 assert!(
                     delta >= 2 && n + delta < master_count,
-                    "internal node {n} right-delta {delta} out of range (count {master_count})"
+                    "node {n} delta {delta}"
                 );
                 stack.push(n + 1);
                 stack.push(n + delta);
             } else {
                 let section = ((hi as usize) << 8) | lo as usize;
-                assert!(
-                    section < num_sections,
-                    "leaf node {n} references section {section} >= {num_sections}: \
-                     FO4 dereferences m_sections out of bounds here and CTDs"
-                );
-                assert!(
-                    leaf_node_of[section] == usize::MAX,
-                    "section {section} referenced by two leaves"
-                );
+                assert!(section < num_sections, "leaf {n} -> section {section}");
+                assert_eq!(leaf_node_of[section], usize::MAX, "section {section} twice");
                 leaf_node_of[section] = n;
             }
         }
-        assert!(
-            leaf_node_of.iter().all(|&n| n != usize::MAX),
-            "every section must be reachable as a master-tree leaf"
-        );
+        assert!(leaf_node_of.iter().all(|&n| n != usize::MAX));
 
-        // Section::m_leafIndex (struct 0x5A) must equal the master-tree node index
-        // of that section's leaf, as vanilla FO4 stores it.
+        // Section::m_leafIndex (0x5A) is the master-tree node of that section's leaf.
         let sections_abs =
             hkarray_abs(&fixups, data_start, obj_rel, 0x50).expect("sections pointer");
         for (section, &node) in leaf_node_of.iter().enumerate() {
             let leaf_index = u16_le(&blob, sections_abs + section * SECTION_STRIDE + 0x5A).unwrap();
-            assert_eq!(
-                leaf_index as usize, node,
-                "section {section} m_leafIndex={leaf_index} but its leaf is master node {node}"
-            );
+            assert_eq!(leaf_index as usize, node, "section {section}");
         }
     }
 
     #[test]
-    fn compressed_mesh_rejects_indices_outside_vertex_array() {
-        let verts = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
-        let tris = vec![[0, 1, 3]];
-        let err = build_compressed_mesh_collision(&verts, &tris, BuildOptions::default())
-            .expect_err("invalid triangle index should fail");
-        assert!(format!("{err}").contains("references vertex 3"));
-    }
-
-    #[test]
-    fn rejects_sliver_triangle_below_sdk_tolerance() {
-        // A near-collinear sliver whose area^2 (cross.lengthSquared) sits in the
-        // band (1e-12, 1e-7) that the old 1e-12 floor accepted but the SDK rejects.
-        let verts = vec![[0.0f32, 0.0, 0.0], [1.0, 0.0, 0.0], [0.5, 1.0e-4, 0.0]];
-        let tri = [0u32, 1, 2];
-        let area_sq = triangle_area_squared(&verts, &tri).unwrap();
-        assert!(
-            area_sq > 1.0e-12 && area_sq < 1.0e-7,
-            "fixture must land in band, got {area_sq}"
-        );
-        assert!(
-            validate_compressed_triangle(&verts, &tri, 0).is_err(),
-            "sliver below SDK tolerance must be rejected"
-        );
-    }
-
-    #[test]
-    fn keeps_valid_small_triangle_above_sdk_tolerance() {
-        let verts = vec![[0.0f32, 0.0, 0.0], [0.1, 0.0, 0.0], [0.0, 0.1, 0.0]];
-        assert!(validate_compressed_triangle(&verts, &[0, 1, 2], 0).is_ok());
-    }
-
-    /// Returns the minimal valid `EncodedCompressedMeshSection` that passes all
-    /// `validate_encoded_compressed_mesh` checks *except* the one under test.
-    /// Fields: 1 packed vertex (≤255), 0 shared indices (≤255), 1 primitive
-    /// (4 bytes, ≤128), 4-byte tree node (non-empty, multiple of 4), 1 data run.
-    fn test_minimal_encoded_section() -> EncodedCompressedMeshSection {
-        EncodedCompressedMeshSection {
-            aabb: CmAabb {
-                min: [0.0, 0.0, 0.0],
-                max: [1.0, 1.0, 1.0],
-            },
-            base: [0.0, 0.0, 0.0],
-            scale: [1.0, 1.0, 1.0],
-            packed_vertices: vec![0u32],
-            shared_vertices_index: Vec::new(),
-            primitive_bytes: vec![0u8; 4],    // 1 primitive
-            section_tree_nodes: vec![0u8; 4], // 1 Aabb4 node (4 bytes)
-            primitive_data_runs: vec![RawCompressedMeshDataRun {
-                value: 0,
-                index: 0,
-                count: 1,
-            }],
-            leaf_index: 0,
-            page: 0,
-            flags: 0,
-            layer_data: 0,
-            unused_data: 0,
+    fn rejects_invalid_triangles_and_sections() {
+        let tri_cases: [(&str, Vec<[f32; 3]>, [u32; 3], &str); 3] = [
+            (
+                "index out of range",
+                vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+                [0, 1, 3],
+                "references vertex 3",
+            ),
+            (
+                "repeated vertex",
+                vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+                [0, 0, 2],
+                "repeated",
+            ),
+            (
+                "zero area",
+                vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]],
+                [0, 1, 2],
+                "near-zero area",
+            ),
+        ];
+        for (label, verts, tri, message) in tri_cases {
+            let err = build_compressed_mesh_collision(&verts, &[tri], BuildOptions::default())
+                .expect_err(label);
+            assert!(err.to_string().contains(message), "{label}: {err}");
         }
-    }
 
-    #[test]
-    fn rejects_section_with_more_than_128_primitives() {
-        // 129 primitives -> primitiveIndex overflows the 7-bit shape-key field.
-        let section = EncodedCompressedMeshSection {
-            primitive_bytes: vec![0u8; 129 * 4], // 129 primitives
+        // Sliver in the (1e-12, 1e-7) area^2 band the SDK rejects.
+        let sliver = vec![[0.0f32, 0.0, 0.0], [1.0, 0.0, 0.0], [0.5, 1.0e-4, 0.0]];
+        let area_sq = triangle_area_squared(&sliver, &[0, 1, 2]).unwrap();
+        assert!(area_sq > 1.0e-12 && area_sq < 1.0e-7, "{area_sq}");
+        assert!(validate_compressed_triangle(&sliver, &[0, 1, 2], 0).is_err());
+        let small = vec![[0.0f32, 0.0, 0.0], [0.1, 0.0, 0.0], [0.0, 0.1, 0.0]];
+        assert!(validate_compressed_triangle(&small, &[0, 1, 2], 0).is_ok());
+
+        let with_primitives = |count: usize| EncodedCompressedMeshSection {
+            primitive_bytes: vec![0u8; count * 4],
             primitive_data_runs: vec![RawCompressedMeshDataRun {
                 value: 0,
                 index: 0,
-                count: 129,
+                count: count as u8,
             }],
-            ..test_minimal_encoded_section()
+            ..minimal_encoded_section()
         };
+        assert!(validate_encoded_compressed_mesh(&[with_primitives(128)], &[0u8; 5]).is_ok());
         assert!(
-            validate_encoded_compressed_mesh(&[section], &[0u8; 5]).is_err(),
-            "129 primitives must be rejected (7-bit key max 128)"
+            validate_encoded_compressed_mesh(&[with_primitives(129)], &[0u8; 5]).is_err(),
+            "7-bit primitive key caps a section at 128"
         );
-        // 128 primitives must be accepted.
-        let section_ok = EncodedCompressedMeshSection {
-            primitive_bytes: vec![0u8; 128 * 4], // 128 primitives
-            primitive_data_runs: vec![RawCompressedMeshDataRun {
-                value: 0,
-                index: 0,
-                count: 128,
-            }],
-            ..test_minimal_encoded_section()
-        };
-        assert!(
-            validate_encoded_compressed_mesh(&[section_ok], &[0u8; 5]).is_ok(),
-            "128 primitives must be accepted (7-bit key max 128)"
-        );
-    }
+        for (index, count, message) in [
+            (1, 1, "starts at 1 but expected 0"),
+            (0, 0, "has zero count"),
+        ] {
+            let section = EncodedCompressedMeshSection {
+                primitive_data_runs: vec![RawCompressedMeshDataRun {
+                    value: 0,
+                    index,
+                    count,
+                }],
+                ..minimal_encoded_section()
+            };
+            let err = validate_encoded_compressed_mesh(&[section], &[0u8; 5]).unwrap_err();
+            assert!(format!("{err}").contains(message), "{err}");
+        }
 
-    #[test]
-    fn rejects_primitive_data_run_gaps_and_zero_counts() {
-        let gap = EncodedCompressedMeshSection {
-            primitive_data_runs: vec![RawCompressedMeshDataRun {
-                value: 0,
-                index: 1,
-                count: 1,
-            }],
-            ..test_minimal_encoded_section()
-        };
-        let gap_error = validate_encoded_compressed_mesh(&[gap], &[0u8; 5])
-            .expect_err("a data-run gap must be rejected");
-        assert!(format!("{gap_error}").contains("starts at 1 but expected 0"));
-
-        let zero_count = EncodedCompressedMeshSection {
-            primitive_data_runs: vec![RawCompressedMeshDataRun {
-                value: 0,
-                index: 0,
-                count: 0,
-            }],
-            ..test_minimal_encoded_section()
-        };
-        let zero_error = validate_encoded_compressed_mesh(&[zero_count], &[0u8; 5])
-            .expect_err("a zero-count data run must be rejected");
-        assert!(format!("{zero_error}").contains("has zero count"));
-    }
-
-    fn decoded_triangle_count(decoded: &CompressedMeshData) -> usize {
-        decoded
-            .sections
-            .iter()
-            .map(|section| section.triangles.len())
-            .sum()
-    }
-
-    #[test]
-    fn drops_triangle_that_collapses_after_quantization() {
-        // Wide section AABB makes the 11-bit grid step coarse (~2 units/step on X).
-        // v0 and v3 are 1.0 apart -> they quantize to the same cell -> zero area.
+        // A wide AABB makes the quantization grid coarse enough that the second
+        // triangle collapses to zero area; it must be dropped, not emitted.
         let span = 4096.0f32;
         let verts = vec![
             [0.0f32, 0.0, 0.0],
@@ -3371,15 +3215,14 @@ mod tests {
             [span, span, 0.0],
             [1.0, 0.0, 0.0],
         ];
-        let tris = vec![[0u32, 1, 2], [0, 3, 2]]; // 2nd triangle collapses post-quant
-        let blob =
-            build_compressed_mesh_collision(&verts, &tris, BuildOptions::default()).expect("build");
+        let blob = build_compressed_mesh_collision(
+            &verts,
+            &[[0, 1, 2], [0, 3, 2]],
+            BuildOptions::default(),
+        )
+        .expect("build");
         let decoded = parse_fo4_compressed_mesh(&blob).expect("decode");
-        // Fewer than the 2 input triangles survive (the collapsed one is dropped).
-        let surviving = decoded_triangle_count(&decoded);
-        assert!(
-            surviving < 2,
-            "post-quant-degenerate triangle must be dropped, got {surviving}"
-        );
+        let surviving: usize = decoded.sections.iter().map(|s| s.triangles.len()).sum();
+        assert!(surviving < 2, "got {surviving}");
     }
 }

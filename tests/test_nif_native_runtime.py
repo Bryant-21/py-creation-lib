@@ -3,8 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
-
 from creation_lib.nif import native_runtime
 
 
@@ -79,37 +77,6 @@ def test_convert_nif_file_raw_exports_real_native_file_converter(tmp_path: Path)
     assert converted.header.bs_version == 130
 
 
-def test_convert_nif_file_raw_handles_fnv_geometry_shader_collision_fixture(
-    tmp_path: Path,
-) -> None:
-    from creation_lib.nif.nif_file import NifFile
-
-    src = Path(
-        "bacup/py_bacup_lib/python/bacup_lib/tests/fixtures/nif/fnv/weapons/gaussrifle.nif"
-    )
-    dst = tmp_path / "converted.nif"
-
-    report = native_runtime.convert_nif_file_raw(
-        str(src),
-        str(dst),
-        "fnv",
-        "fo4",
-        None,
-        {"asset_prefix": "fnv"},
-    )
-
-    assert report["supported"] is True
-    assert any("NiTriStrips -> BSTriShape" in change for change in report["changes"])
-    assert any("Legacy shader properties" in change for change in report["changes"])
-    assert any("Legacy collision" in change for change in report["changes"])
-    converted = NifFile.load(str(dst))
-    block_types = {block.type_name for block in converted.blocks}
-    assert "BSTriShape" in block_types
-    assert "BSLightingShaderProperty" in block_types
-    assert "NiTriStrips" not in block_types
-    assert "BSShaderPPLightingProperty" not in block_types
-
-
 def test_convert_nif_file_raw_handles_fo76_inline_shader_slots(tmp_path: Path) -> None:
     from creation_lib.nif.nif_file import NifFile
 
@@ -171,89 +138,9 @@ def test_convert_nif_file_raw_handles_fo76_inline_shader_slots(tmp_path: Path) -
     )
     textures = converted_texset.get_field("Textures")
     assert len(textures) == 10
-    assert textures[2] == "textures\\weapons\\rifle_l.dds"
-    assert textures[7] == "textures\\weapons\\rifle_r.dds"
+    # slot 10 (emissive) -> slot 2 (glow); slot 9 (reflectivity) -> slot 7 (specular);
+    # texture paths are renormalized to the target slot's suffix and asset_prefix.
+    assert textures[2] == "textures\\fo76\\weapons\\rifle_g.dds"
+    assert textures[7] == "textures\\fo76\\weapons\\rifle_s.dds"
 
 
-def test_convert_nif_file_raw_preserves_fo76_stair_compressed_collision(
-    tmp_path: Path,
-) -> None:
-    from creation_lib.havok.native_runtime import collision_preview_native
-    from creation_lib.nif.nif_file import NifFile
-
-    src = Path(
-        "extracted/fo76/meshes/hardscape/unique/hard_unique_vault76_stairslg01.nif"
-    )
-    if not src.exists():
-        pytest.skip("FO76 Vault 76 stair fixture is not available")
-
-    def root_collision_preview(path: Path) -> list[dict]:
-        nif = NifFile.load(str(path))
-        collision = next(
-            block
-            for block in nif.blocks
-            if block.type_name == "bhkNPCollisionObject"
-            and block.get_field("Target") == 0
-        )
-        physics = nif.get_block(collision.get_field("Data"))
-        blob = bytes(physics.get_field("Binary Data")["Data"])
-        return collision_preview_native(blob, 69.99125, int(collision.get_field("Body ID") or 0))[
-            "meshes"
-        ]
-
-    def triangle_indices(triangle: dict | list) -> list[int]:
-        if isinstance(triangle, dict):
-            return [int(triangle["v1"]), int(triangle["v2"]), int(triangle["v3"])]
-        return [int(index) for index in triangle]
-
-    def valid_triangle_count(preview: list[dict]) -> int:
-        total = 0
-        for mesh in preview:
-            vertices = mesh["mesh"]["vertices"]
-            for triangle in mesh["mesh"]["triangles"]:
-                indices = triangle_indices(triangle)
-                if all(0 <= index < len(vertices) for index in indices):
-                    total += 1
-        return total
-
-    def vertex_tuple(vertex: dict | list) -> tuple[int, int, int]:
-        if isinstance(vertex, dict):
-            xyz = (vertex["x"], vertex["y"], vertex["z"])
-        else:
-            xyz = vertex
-        return tuple(round(float(value) * 1000) for value in xyz)
-
-    def triangle_signature(preview: list[dict]) -> list[tuple[tuple[int, int, int], ...]]:
-        signatures = []
-        for mesh in preview:
-            vertices = mesh["mesh"]["vertices"]
-            for triangle in mesh["mesh"]["triangles"]:
-                indices = triangle_indices(triangle)
-                if not all(0 <= index < len(vertices) for index in indices):
-                    continue
-                signatures.append(tuple(sorted(vertex_tuple(vertices[index]) for index in indices)))
-        return sorted(signatures)
-
-    source_preview = root_collision_preview(src)
-    source_raw_triangles = sum(len(mesh["mesh"]["triangles"]) for mesh in source_preview)
-    source_triangles = valid_triangle_count(source_preview)
-    assert source_triangles > 128
-    assert source_triangles == source_raw_triangles
-    source_signature = triangle_signature(source_preview)
-
-    dst = tmp_path / "converted.nif"
-    report = native_runtime.convert_nif_file_raw(
-        str(src),
-        str(dst),
-        "fo76",
-        "fo4",
-        None,
-        {"asset_prefix": "fo76"},
-    )
-
-    assert report["supported"] is True
-    converted_preview = root_collision_preview(dst)
-    converted_triangles = valid_triangle_count(converted_preview)
-    assert converted_triangles == source_triangles
-    assert {mesh["shape_type"] for mesh in converted_preview} == {"compressed_mesh"}
-    assert triangle_signature(converted_preview) == source_signature

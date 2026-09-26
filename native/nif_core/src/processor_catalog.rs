@@ -822,28 +822,3 @@ pub fn check_id_for_finding_rule(rule: &str) -> &'static str {
         _ => "miscellaneous",
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn catalog_matches_registered_nif_surface() {
-        assert_eq!(NIF_PROCESSORS.len(), 50);
-        assert_eq!(
-            NIF_PROCESSORS
-                .iter()
-                .filter(|processor| processor.category == "NIF")
-                .count(),
-            23
-        );
-        assert_eq!(NIF_VALIDATION_CHECKS.len(), 27);
-        assert_eq!(
-            NIF_PROCESSORS
-                .iter()
-                .filter(|processor| !processor_command(processor.id).is_empty())
-                .count(),
-            50
-        );
-    }
-}

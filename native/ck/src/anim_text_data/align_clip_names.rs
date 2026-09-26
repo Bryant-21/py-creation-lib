@@ -266,98 +266,50 @@ mod tests {
         assert_eq!(rename_leaf("Animations/Foo", "Bar"), r"Animations\Bar");
     }
 
-    /// A target that already holds this same animation — an earlier run, or a generator that
-    /// already owned its copy — is aligned and must be reused without being rewritten.
+    /// An existing target holding the same bytes is reused; one holding a different
+    /// animation (even of the same size) blocks the rewrite and is never clobbered: a
+    /// generator named `Idle` playing `posea_idle1` beside an unrelated `Idle.hkx` would
+    /// otherwise swap motion.
     #[test]
-    fn copy_is_skipped_when_the_generator_already_owns_the_same_animation() {
-        let dir = tempfile::tempdir().unwrap();
-        let anims = dir.path().join("Actors/X/Animations");
-        std::fs::create_dir_all(&anims).unwrap();
-        std::fs::write(anims.join("TuskSwipe_Front.hkx"), b"source").unwrap();
-        std::fs::write(anims.join("AttackMelee_TuskSwipe_Front.hkx"), b"source").unwrap();
+    fn copy_animation_beside_only_aligns_matching_or_absent_targets() {
+        let cases: [(&str, &[u8], &str, Option<&[u8]>, bool); 4] = [
+            ("TuskSwipe_Front", b"source", "AttackMelee_TuskSwipe_Front", None, true),
+            (
+                "TuskSwipe_Front",
+                b"source",
+                "AttackMelee_TuskSwipe_Front",
+                Some(b"source"),
+                true,
+            ),
+            (
+                "posea_idle1",
+                b"the generator's real animation",
+                "Idle",
+                Some(b"a completely different animation"),
+                false,
+            ),
+            ("walkfwd", b"AAAA", "WalkForward", Some(b"BBBB"), false),
+        ];
+        for (source, source_bytes, target, existing, aligned) in cases {
+            let dir = tempfile::tempdir().unwrap();
+            let anims = dir.path().join("Actors/X/Animations");
+            std::fs::create_dir_all(&anims).unwrap();
+            std::fs::write(anims.join(format!("{source}.hkx")), source_bytes).unwrap();
+            let target_path = anims.join(format!("{target}.hkx"));
+            if let Some(bytes) = existing {
+                std::fs::write(&target_path, bytes).unwrap();
+            }
 
-        let made = copy_animation_beside(
-            dir.path(),
-            r"Actors\X\Animations\TuskSwipe_Front.hkx",
-            "AttackMelee_TuskSwipe_Front",
-        )
-        .unwrap();
+            let made = copy_animation_beside(
+                dir.path(),
+                &format!(r"Actors\X\Animations\{source}.hkx"),
+                target,
+            )
+            .unwrap();
 
-        assert!(made);
-        assert_eq!(
-            std::fs::read(anims.join("AttackMelee_TuskSwipe_Front.hkx")).unwrap(),
-            b"source"
-        );
-    }
-
-    /// The real case that made widening dangerous: a generator named `Idle` plays
-    /// `posea_idle1` while an UNRELATED `Idle.hkx` already sits beside it. Repointing would
-    /// swap the generator's motion, so the clip must stay aliased (and be dropped) instead.
-    /// Five generators on the live tree are in exactly this shape.
-    #[test]
-    fn a_different_animation_already_holding_the_name_blocks_the_rewrite() {
-        let dir = tempfile::tempdir().unwrap();
-        let anims = dir.path().join("Actors/X/Animations");
-        std::fs::create_dir_all(&anims).unwrap();
-        std::fs::write(
-            anims.join("posea_idle1.hkx"),
-            b"the generator's real animation",
-        )
-        .unwrap();
-        std::fs::write(anims.join("Idle.hkx"), b"a completely different animation").unwrap();
-
-        let made =
-            copy_animation_beside(dir.path(), r"Actors\X\Animations\posea_idle1.hkx", "Idle")
-                .unwrap();
-
-        assert!(
-            !made,
-            "must not claim alignment against an unrelated animation"
-        );
-        // And the pre-existing file must not be clobbered.
-        assert_eq!(
-            std::fs::read(anims.join("Idle.hkx")).unwrap(),
-            b"a completely different animation"
-        );
-    }
-
-    /// Same length but different bytes must not pass as "already aligned" either.
-    #[test]
-    fn same_size_but_different_bytes_is_not_treated_as_aligned() {
-        let dir = tempfile::tempdir().unwrap();
-        let anims = dir.path().join("Actors/X/Animations");
-        std::fs::create_dir_all(&anims).unwrap();
-        std::fs::write(anims.join("walkfwd.hkx"), b"AAAA").unwrap();
-        std::fs::write(anims.join("WalkForward.hkx"), b"BBBB").unwrap();
-
-        let made = copy_animation_beside(
-            dir.path(),
-            r"Actors\X\Animations\walkfwd.hkx",
-            "WalkForward",
-        )
-        .unwrap();
-
-        assert!(!made);
-    }
-
-    #[test]
-    fn copy_materializes_the_generator_named_sibling() {
-        let dir = tempfile::tempdir().unwrap();
-        let anims = dir.path().join("Actors/X/Animations");
-        std::fs::create_dir_all(&anims).unwrap();
-        std::fs::write(anims.join("TuskSwipe_Front.hkx"), b"source").unwrap();
-
-        let made = copy_animation_beside(
-            dir.path(),
-            r"Actors\X\Animations\TuskSwipe_Front.hkx",
-            "AttackMelee_TuskSwipe_Front",
-        )
-        .unwrap();
-
-        assert!(made);
-        assert_eq!(
-            std::fs::read(anims.join("AttackMelee_TuskSwipe_Front.hkx")).unwrap(),
-            b"source"
-        );
+            assert_eq!(made, aligned, "{source} -> {target}");
+            let expected = if aligned { source_bytes } else { existing.unwrap() };
+            assert_eq!(std::fs::read(&target_path).unwrap(), expected);
+        }
     }
 }

@@ -199,10 +199,10 @@ def _record_context_from_payload(payload: Any) -> dict[str, Any] | None:
     }
 
 
-def _metadata(handle: int) -> dict[str, Any]:
+def _metadata(handle: int, *, include_record_count: bool = True) -> dict[str, Any]:
     native_fn = _optional_native_function("plugin_handle_get_meta")
     if callable(native_fn):
-        return _metadata_from_payload(native_fn(handle))
+        return _metadata_from_payload(native_fn(handle, include_record_count))
     return _metadata_from_payload(_require_native_function("plugin_handle_metadata")(handle))
 
 
@@ -375,7 +375,7 @@ def plugin_handle_get(handle: Any, name: str, default: Any = None) -> Any:
         if name in {"localized_strings_by_language", "localized_string_table_types"}:
             strings = plugin_handle_get_strings(handle)
             return strings.get(name, default)
-        meta = _metadata(handle)
+        meta = _metadata(handle, include_record_count=name == "record_count")
         header = dict(meta.get("header", {}))
         values = {
             "plugin_name": meta.get("plugin_name"),

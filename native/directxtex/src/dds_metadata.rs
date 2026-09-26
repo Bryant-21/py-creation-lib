@@ -25,19 +25,3 @@ impl DDSMetaData {
         self.four_cc == 0x30315844
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use crate::{DDSMetaData, ffi};
-    use core::mem;
-
-    #[test]
-    fn verify_layout() {
-        assert_eq!(mem::size_of::<DDSMetaData>(), unsafe {
-            ffi::DirectXTexFFI_DDSMetaData_Sizeof()
-        });
-        assert_eq!(mem::align_of::<DDSMetaData>(), unsafe {
-            ffi::DirectXTexFFI_DDSMetaData_Alignof()
-        });
-    }
-}

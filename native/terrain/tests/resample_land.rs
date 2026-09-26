@@ -91,225 +91,218 @@ fn kernel_footprint_range(source: &SourceGrid, tx: usize, ty: usize) -> (f32, f3
 }
 
 #[test]
-fn lanczos_reconstructs_better_than_sample4_on_synthetic_terrain() {
-    for (name, source) in [
-        ("diagonal_ridge", diagonal_ridge_source()),
-        ("sine_hills", sine_hills_source()),
-        ("step_cliff", step_cliff_source()),
-    ] {
-        let sample4 = resample_sample4(&source, 1, 1).unwrap();
-        let weighted = resample_weighted(&source, 1, 1).unwrap();
-        let lanczos = resample_lanczos(&source, 1, 1).unwrap();
-        let sample4_rms = reconstruction_rms(&source, &sample4);
-        let weighted_rms = reconstruction_rms(&source, &weighted);
-        let lanczos_rms = reconstruction_rms(&source, &lanczos);
-        eprintln!(
-            "{name}: sample4={sample4_rms:.3} weighted={weighted_rms:.3} lanczos={lanczos_rms:.3}"
-        );
-        assert!(
-            lanczos_rms < sample4_rms,
-            "{name}: lanczos rms {lanczos_rms} not below sample4 rms {sample4_rms}"
-        );
+fn lanczos_beats_sample4_and_stays_within_kernel_footprint() {
+    {
+        for (name, source) in [
+            ("diagonal_ridge", diagonal_ridge_source()),
+            ("sine_hills", sine_hills_source()),
+            ("step_cliff", step_cliff_source()),
+        ] {
+            let sample4 = resample_sample4(&source, 1, 1).unwrap();
+            let weighted = resample_weighted(&source, 1, 1).unwrap();
+            let lanczos = resample_lanczos(&source, 1, 1).unwrap();
+            let sample4_rms = reconstruction_rms(&source, &sample4);
+            let weighted_rms = reconstruction_rms(&source, &weighted);
+            let lanczos_rms = reconstruction_rms(&source, &lanczos);
+            eprintln!(
+                "{name}: sample4={sample4_rms:.3} weighted={weighted_rms:.3} lanczos={lanczos_rms:.3}"
+            );
+            assert!(
+                lanczos_rms < sample4_rms,
+                "{name}: lanczos rms {lanczos_rms} not below sample4 rms {sample4_rms}"
+            );
+        }
     }
-}
-
-#[test]
-fn lanczos_output_stays_within_kernel_footprint_bounds() {
-    for source in [
-        diagonal_ridge_source(),
-        sine_hills_source(),
-        step_cliff_source(),
-    ] {
-        let out = resample_lanczos(&source, 1, 1).unwrap();
-        for ty in 0..out.height {
-            for tx in 0..out.width {
-                let (min_value, max_value) = kernel_footprint_range(&source, tx, ty);
-                let value = out.get(tx, ty);
-                assert!(
-                    value >= min_value && value <= max_value,
-                    "({tx}, {ty}): {value} outside footprint [{min_value}, {max_value}]"
-                );
+    {
+        for source in [
+            diagonal_ridge_source(),
+            sine_hills_source(),
+            step_cliff_source(),
+        ] {
+            let out = resample_lanczos(&source, 1, 1).unwrap();
+            for ty in 0..out.height {
+                for tx in 0..out.width {
+                    let (min_value, max_value) = kernel_footprint_range(&source, tx, ty);
+                    let value = out.get(tx, ty);
+                    assert!(
+                        value >= min_value && value <= max_value,
+                        "({tx}, {ty}): {value} outside footprint [{min_value}, {max_value}]"
+                    );
+                }
             }
         }
     }
 }
 
 #[test]
-fn sample4_maps_128_samples_to_33_vertices() {
-    let mut values = Vec::new();
-    for y in 0..128 {
-        for x in 0..128 {
-            values.push((x as f32 * 2.0) + (y as f32 * 3.0));
+fn sample4_weighted_and_feature_resamplers() {
+    {
+        let mut values = Vec::new();
+        for y in 0..128 {
+            for x in 0..128 {
+                values.push((x as f32 * 2.0) + (y as f32 * 3.0));
+            }
+        }
+        let source = SourceGrid {
+            width: 128,
+            height: 128,
+            values,
+        };
+        let out = resample_sample4(&source, 1, 1).unwrap();
+
+        assert_eq!(out.width, 33);
+        assert_eq!(out.height, 33);
+        assert_eq!(out.get(0, 0), 0.0);
+        assert_eq!(out.get(32, 32), (127.0 * 2.0) + (127.0 * 3.0));
+    }
+    {
+        let mut values = vec![100.0; 128 * 128];
+        values[64 * 128 + 64] = 900.0;
+        let source = SourceGrid {
+            width: 128,
+            height: 128,
+            values,
+        };
+
+        let out = resample_weighted(&source, 1, 1).unwrap();
+
+        for value in out.values {
+            assert!((100.0..=900.0).contains(&value));
         }
     }
-    let source = SourceGrid {
-        width: 128,
-        height: 128,
-        values,
-    };
-    let out = resample_sample4(&source, 1, 1).unwrap();
+    {
+        let mut values = vec![100.0; 128 * 128];
+        values[64 * 128 + 64] = 900.0;
+        let source = SourceGrid {
+            width: 128,
+            height: 128,
+            values,
+        };
 
-    assert_eq!(out.width, 33);
-    assert_eq!(out.height, 33);
-    assert_eq!(out.get(0, 0), 0.0);
-    assert_eq!(out.get(32, 32), (127.0 * 2.0) + (127.0 * 3.0));
-}
+        let weighted = resample_weighted(&source, 1, 1).unwrap();
+        let feature = resample_feature(&source, 1, 1).unwrap();
 
-#[test]
-fn weighted_resampler_clamps_to_source_footprint() {
-    let mut values = vec![100.0; 128 * 128];
-    values[64 * 128 + 64] = 900.0;
-    let source = SourceGrid {
-        width: 128,
-        height: 128,
-        values,
-    };
-
-    let out = resample_weighted(&source, 1, 1).unwrap();
-
-    for value in out.values {
-        assert!((100.0..=900.0).contains(&value));
+        assert!(feature.get(16, 16) > weighted.get(16, 16) + 200.0);
+        assert!(feature.get(16, 16) >= 800.0);
     }
 }
 
 #[test]
-fn feature_resampler_preserves_isolated_peak_better_than_weighted() {
-    let mut values = vec![100.0; 128 * 128];
-    values[64 * 128 + 64] = 900.0;
-    let source = SourceGrid {
-        width: 128,
-        height: 128,
-        values,
-    };
+fn resampler_rejects_bad_dimensions_without_panicking() {
+    {
+        let source = SourceGrid {
+            width: usize::MAX,
+            height: 2,
+            values: Vec::new(),
+        };
 
-    let weighted = resample_weighted(&source, 1, 1).unwrap();
-    let feature = resample_feature(&source, 1, 1).unwrap();
+        assert!(resample_sample4(&source, 1, 1).is_err());
+    }
+    {
+        let source = SourceGrid {
+            width: 1,
+            height: 1,
+            values: vec![0.0],
+        };
 
-    assert!(feature.get(16, 16) > weighted.get(16, 16) + 200.0);
-    assert!(feature.get(16, 16) >= 800.0);
+        assert!(resample_sample4(&source, usize::MAX / 32, 2).is_err());
+    }
+    {
+        let source = SourceGrid {
+            width: 1,
+            height: 1,
+            values: vec![0.0],
+        };
+        let max_vec_elements = isize::MAX as usize / std::mem::size_of::<f32>();
+        let target_width = (max_vec_elements / 33) + 1;
+        let cells_x = target_width.div_ceil(32);
+
+        let result = std::panic::catch_unwind(|| resample_sample4(&source, cells_x, 1));
+
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_err());
+    }
 }
 
 #[test]
-fn resampler_rejects_invalid_source_dimensions_without_panicking() {
-    let source = SourceGrid {
-        width: usize::MAX,
-        height: 2,
-        values: Vec::new(),
-    };
+fn vhgt_encode_decode_round_trip_and_ck_limits() {
+    {
+        let mut heights = Vec::new();
+        for y in 0..33 {
+            for x in 0..33 {
+                heights.push(1024.0 + (x as f32 * 8.0) + (y as f32 * 8.0));
+            }
+        }
 
-    assert!(resample_sample4(&source, 1, 1).is_err());
-}
+        let encoded = encode_vhgt(&heights).unwrap();
+        let decoded = decode_vhgt_heights(&encoded).unwrap();
 
-#[test]
-fn resampler_rejects_oversized_output_dimensions_without_allocation() {
-    let source = SourceGrid {
-        width: 1,
-        height: 1,
-        values: vec![0.0],
-    };
+        assert_eq!(encoded.raw.len(), 4 + 1089 + 3);
+        assert_eq!(decoded.len(), 1089);
+        assert_eq!(decoded[0], 1024.0);
+        assert_eq!(decoded[32], 1280.0);
+    }
+    {
+        // CK rounds the VHGT offset to an integer multiple of HEIGHT_STEP on
+        // save. encode_vhgt now matches that — 1025.0/8 = 128.125 → 128.0.
+        let heights = vec![1025.0; 33 * 33];
 
-    assert!(resample_sample4(&source, usize::MAX / 32, 2).is_err());
-}
+        let encoded = encode_vhgt(&heights).unwrap();
+        let decoded = decode_vhgt_heights(&encoded).unwrap();
 
-#[test]
-fn resampler_rejects_output_capacity_above_vec_limit_without_panicking() {
-    let source = SourceGrid {
-        width: 1,
-        height: 1,
-        values: vec![0.0],
-    };
-    let max_vec_elements = isize::MAX as usize / std::mem::size_of::<f32>();
-    let target_width = (max_vec_elements / 33) + 1;
-    let cells_x = target_width.div_ceil(32);
+        assert_eq!(encoded.offset, 128.0);
+        assert_eq!(encoded.raw.len(), 4 + 1089 + 3);
+        assert_eq!(decoded[0], 1024.0);
+    }
+    {
+        let mut heights = vec![0.0; 33 * 33];
+        heights[1] = -128.0 * 8.0;
 
-    let result = std::panic::catch_unwind(|| resample_sample4(&source, cells_x, 1));
-
-    assert!(result.is_ok());
-    assert!(result.unwrap().is_err());
-}
-
-#[test]
-fn vhgt_roundtrip_preserves_shared_edge_values() {
-    let mut heights = Vec::new();
-    for y in 0..33 {
+        assert!(encode_vhgt(&heights).is_err());
+    }
+    {
+        let mut heights = vec![1024.0; 33 * 33];
         for x in 0..33 {
-            heights.push(1024.0 + (x as f32 * 8.0) + (y as f32 * 8.0));
+            heights[x] = 1024.0 + x as f32 * 127.0 * 8.0;
         }
+        heights[33] = 1024.0 + 8.0;
+
+        let encoded = encode_vhgt(&heights).unwrap();
+        let decoded = decode_vhgt_heights(&encoded).unwrap();
+
+        assert_eq!(decoded[0], 1024.0);
+        assert_eq!(decoded[32], 1024.0 + 32.0 * 127.0 * 8.0);
+        assert_eq!(decoded[33], 1024.0 + 8.0);
     }
-
-    let encoded = encode_vhgt(&heights).unwrap();
-    let decoded = decode_vhgt_heights(&encoded).unwrap();
-
-    assert_eq!(encoded.raw.len(), 4 + 1089 + 3);
-    assert_eq!(decoded.len(), 1089);
-    assert_eq!(decoded[0], 1024.0);
-    assert_eq!(decoded[32], 1280.0);
 }
 
 #[test]
-fn vhgt_quantizes_first_height_to_lattice_offset() {
-    // CK rounds the VHGT offset to an integer multiple of HEIGHT_STEP on
-    // save. encode_vhgt now matches that — 1025.0/8 = 128.125 → 128.0.
-    let heights = vec![1025.0; 33 * 33];
+fn generated_normals_are_nonzero_and_use_land_vertex_spacing() {
+    {
+        let heights = vec![256.0; 33 * 33];
+        let normals = generate_vnml(&heights);
 
-    let encoded = encode_vhgt(&heights).unwrap();
-    let decoded = decode_vhgt_heights(&encoded).unwrap();
-
-    assert_eq!(encoded.offset, 128.0);
-    assert_eq!(encoded.raw.len(), 4 + 1089 + 3);
-    assert_eq!(decoded[0], 1024.0);
-}
-
-#[test]
-fn vhgt_encoder_rejects_negative_128_delta_for_ck_compatibility() {
-    let mut heights = vec![0.0; 33 * 33];
-    heights[1] = -128.0 * 8.0;
-
-    assert!(encode_vhgt(&heights).is_err());
-}
-
-#[test]
-fn vhgt_row_deltas_reset_to_previous_row_start() {
-    let mut heights = vec![1024.0; 33 * 33];
-    for x in 0..33 {
-        heights[x] = 1024.0 + x as f32 * 127.0 * 8.0;
+        assert_eq!(normals.len(), 33 * 33 * 3);
+        assert!(normals.chunks_exact(3).all(|n| n != [0, 0, 0]));
     }
-    heights[33] = 1024.0 + 8.0;
-
-    let encoded = encode_vhgt(&heights).unwrap();
-    let decoded = decode_vhgt_heights(&encoded).unwrap();
-
-    assert_eq!(decoded[0], 1024.0);
-    assert_eq!(decoded[32], 1024.0 + 32.0 * 127.0 * 8.0);
-    assert_eq!(decoded[33], 1024.0 + 8.0);
-}
-
-#[test]
-fn generated_normals_are_nonzero() {
-    let heights = vec![256.0; 33 * 33];
-    let normals = generate_vnml(&heights);
-
-    assert_eq!(normals.len(), 33 * 33 * 3);
-    assert!(normals.chunks_exact(3).all(|n| n != [0, 0, 0]));
-}
-
-#[test]
-fn generated_normals_use_land_vertex_spacing_for_moderate_slope() {
-    let mut heights = Vec::new();
-    for _y in 0..33 {
-        for x in 0..33 {
-            heights.push(256.0 + x as f32 * 8.0);
+    {
+        let mut heights = Vec::new();
+        for _y in 0..33 {
+            for x in 0..33 {
+                heights.push(256.0 + x as f32 * 8.0);
+            }
         }
+
+        let normals = generate_vnml(&heights);
+        let center = (16 * 33 + 16) * 3;
+
+        // Signed-i8 encoding: nx ≈ -0.062 → ≈ -8 → 0xF8; ny ≈ 0 → 0x00; nz ≈ 1 → 0x7F.
+        let nx = normals[center] as i8;
+        let ny = normals[center + 1] as i8;
+        let nz = normals[center + 2] as i8;
+        assert!((-12..=-4).contains(&nx), "nx out of range: {}", nx);
+        assert!((-3..=3).contains(&ny), "ny out of range: {}", ny);
+        assert!(nz >= 125, "nz too small: {}", nz);
     }
-
-    let normals = generate_vnml(&heights);
-    let center = (16 * 33 + 16) * 3;
-
-    // Signed-i8 encoding: nx ≈ -0.062 → ≈ -8 → 0xF8; ny ≈ 0 → 0x00; nz ≈ 1 → 0x7F.
-    let nx = normals[center] as i8;
-    let ny = normals[center + 1] as i8;
-    let nz = normals[center + 2] as i8;
-    assert!((-12..=-4).contains(&nx), "nx out of range: {}", nx);
-    assert!((-3..=3).contains(&ny), "ny out of range: {}", ny);
-    assert!(nz >= 125, "nz too small: {}", nz);
 }
+

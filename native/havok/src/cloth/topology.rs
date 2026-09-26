@@ -223,16 +223,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn thin_cloth_has_standard_stretch_and_bend() {
-        let c = THIN_CLOTH.build_constraints("Test", 50, &[]);
-        assert_eq!(c.len(), 3);
-        assert!(c.iter().any(|x| x.setup_type() == "StandardLink"));
-        assert!(c.iter().any(|x| x.setup_type() == "BendStiffness"));
-    }
+    fn topology_presets_select_constraint_types() {
+        let thin = THIN_CLOTH.build_constraints("Test", 50, &[0, 1, 2]);
+        assert_eq!(thin.len(), 3);
+        assert!(thin.iter().any(|x| x.setup_type() == "StandardLink"));
+        assert!(thin.iter().any(|x| x.setup_type() == "BendStiffness"));
 
-    #[test]
-    fn chain_has_no_bend() {
-        let c = CHAIN.build_constraints("Ch", 50, &[]);
-        assert!(!c.iter().any(|x| x.setup_type() == "BendStiffness"));
+        let chain = CHAIN.build_constraints("Ch", 50, &[]);
+        assert!(!chain.iter().any(|x| x.setup_type() == "BendStiffness"));
     }
 }

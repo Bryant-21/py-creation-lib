@@ -223,7 +223,8 @@ const PROJECT_XML: &str = r##"<?xml version="1.0" encoding="ASCII" standalone="n
 // ===========================================================================
 
 #[test]
-fn parses_skeleton_with_packed_qs_transform_layout() {
+fn parses_skeleton_pose_layouts_and_optional_fields() {
+{
     let s = parse_skeleton_xml(SKELETON_PACKED_XML).unwrap();
     assert_eq!(s.name, "Test");
     assert_eq!(s.bone_names, vec!["Root".to_string(), "Spine".to_string()]);
@@ -238,9 +239,7 @@ fn parses_skeleton_with_packed_qs_transform_layout() {
     assert_eq!(s.reference_pose[1].t, [0.0, 1.0, 0.0]);
     assert_eq!(s.reference_pose[1].q, [0.0, 0.0, 0.0, 1.0]);
 }
-
-#[test]
-fn parses_skeleton_with_legacy_triplet_layout() {
+{
     let s = parse_skeleton_xml(SKELETON_TRIPLET_XML).unwrap();
     assert_eq!(s.name, "LegacySkel");
     assert_eq!(s.bone_names, vec!["Hip".to_string()]);
@@ -250,9 +249,7 @@ fn parses_skeleton_with_legacy_triplet_layout() {
     assert_eq!(s.reference_pose[0].s, [1.0, 1.0, 1.0]);
     assert_eq!(s.lock_translation[0], false);
 }
-
-#[test]
-fn parses_skeleton_with_compact_10float_layout() {
+{
     let s = parse_skeleton_xml(SKELETON_COMPACT_XML).unwrap();
     assert_eq!(s.name, "CompactSkel");
     assert_eq!(s.reference_pose.len(), 1);
@@ -262,9 +259,7 @@ fn parses_skeleton_with_compact_10float_layout() {
     assert_eq!(s.reference_pose[0].q, [0.0, 0.0, 0.0, 1.0]);
     assert_eq!(s.reference_pose[0].s, [1.0, 1.0, 1.0]);
 }
-
-#[test]
-fn parses_skeleton_float_slots_and_reference_floats() {
+{
     let s = parse_skeleton_xml(SKELETON_FLOAT_SLOTS_XML).unwrap();
     assert_eq!(
         s.float_slots,
@@ -274,18 +269,14 @@ fn parses_skeleton_float_slots_and_reference_floats() {
     assert!((s.reference_floats[0] - 0.5).abs() < 1e-6);
     assert!((s.reference_floats[1] - 1.0).abs() < 1e-6);
 }
-
-#[test]
-fn parses_skeleton_partitions() {
+{
     let s = parse_skeleton_xml(SKELETON_PARTITIONS_XML).unwrap();
     assert_eq!(
         s.partition_names,
         vec!["Upper".to_string(), "Lower".to_string()]
     );
 }
-
-#[test]
-fn skeleton_lock_translation_pads_to_bone_count() {
+{
     // Bones array has 2 elements but only first has lockTranslation specified.
     // Parser must pad remaining with false.
     let xml = r##"<?xml version="1.0"?>
@@ -310,11 +301,27 @@ fn skeleton_lock_translation_pads_to_bone_count() {
     assert_eq!(s.lock_translation[0], true);
     assert_eq!(s.lock_translation[1], false);
 }
+}
+
+
+
+
+
+
+
+
+
+
+
 
 #[test]
-fn skeleton_parser_returns_error_on_malformed_xml() {
-    let result = parse_skeleton_xml("<broken<<xml");
-    assert!(result.is_err());
+fn parsers_return_error_on_malformed_xml() {
+    const MALFORMED: &str = "<broken<<xml";
+    assert!(parse_skeleton_xml(MALFORMED).is_err());
+    assert!(parse_animation_xml_str(MALFORMED).is_err());
+    assert!(parse_behavior_xml(MALFORMED).is_err());
+    assert!(parse_character_xml(MALFORMED).is_err());
+    assert!(parse_project_xml(MALFORMED).is_err());
 }
 
 // ===========================================================================
@@ -322,16 +329,15 @@ fn skeleton_parser_returns_error_on_malformed_xml() {
 // ===========================================================================
 
 #[test]
-fn parses_lossless_animation_metadata() {
+fn parses_lossless_and_interleaved_animation() {
+{
     let a = parse_animation_xml_str(LOSSLESS_ANIMATION_XML).unwrap();
     assert_eq!(a.compression_type, "lossless");
     assert!((a.duration - 0.5).abs() < 1e-6);
     assert_eq!(a.bone_count, 2);
     assert_eq!(a.float_track_count, 0);
 }
-
-#[test]
-fn lossless_animation_frame0_decodes_static_transforms() {
+{
     let a = parse_animation_xml_str(LOSSLESS_ANIMATION_XML).unwrap();
     // rotationTypeAndOffsets: 4 4 → type=0 (identity), offset=1 (static)
     // The static type+offset encoding: value & 3 = type, value >> 2 = index
@@ -354,9 +360,7 @@ fn lossless_animation_frame0_decodes_static_transforms() {
         q[3]
     );
 }
-
-#[test]
-fn parses_interleaved_animation_metadata() {
+{
     let a = parse_animation_xml_str(INTERLEAVED_ANIMATION_XML).unwrap();
     assert_eq!(a.compression_type, "interleaved");
     assert!((a.duration - 1.0).abs() < 1e-6);
@@ -365,44 +369,41 @@ fn parses_interleaved_animation_metadata() {
     // frame0_transforms is None for interleaved (not a lossless animation)
     assert!(a.frame0_transforms.is_none());
 }
-
-#[test]
-fn animation_parser_returns_error_on_malformed_xml() {
-    let result = parse_animation_xml_str("<broken<<xml");
-    assert!(result.is_err());
 }
+
+
+
+
+
+
+
 
 // ===========================================================================
 // Behavior tests
 // ===========================================================================
 
 #[test]
-fn parses_behavior_events_and_variables() {
+fn parses_behavior_strings_types_sequences_and_nodes() {
+{
     let b = parse_behavior_xml(BEHAVIOR_XML).unwrap();
     assert_eq!(b.events, vec!["footstep".to_string(), "attack".to_string()]);
     assert_eq!(b.variables[0].0, "speed");
     assert_eq!(b.variables[1].0, "isAttacking");
 }
-
-#[test]
-fn behavior_variable_types_patched_from_graph_data() {
+{
     let b = parse_behavior_xml(BEHAVIOR_XML).unwrap();
     // hkbBehaviorGraphData variableInfos patch the types
     assert_eq!(b.variables[0].1, "VARIABLE_TYPE_REAL");
     assert_eq!(b.variables[1].1, "VARIABLE_TYPE_BOOL");
 }
-
-#[test]
-fn parses_behavior_sequences_and_transitions() {
+{
     let b = parse_behavior_xml(BEHAVIOR_XML).unwrap();
     assert_eq!(b.sequences, vec!["idle.hkx".to_string()]);
     assert_eq!(b.transitions.len(), 1);
     assert_eq!(b.transitions[0].0, "BlendToIdle");
     assert_eq!(b.transitions[0].1, "0.2");
 }
-
-#[test]
-fn behavior_node_count_and_classes_collected() {
+{
     let b = parse_behavior_xml(BEHAVIOR_XML).unwrap();
     assert!(b.node_count >= 4);
     assert!(
@@ -415,19 +416,24 @@ fn behavior_node_count_and_classes_collected() {
             .contains(&"BGSGamebryoSequenceGenerator".to_string())
     );
 }
-
-#[test]
-fn behavior_parser_returns_error_on_malformed_xml() {
-    let result = parse_behavior_xml("<broken<<xml");
-    assert!(result.is_err());
 }
+
+
+
+
+
+
+
+
+
 
 // ===========================================================================
 // Character tests
 // ===========================================================================
 
 #[test]
-fn parses_character_rig_and_behavior_filenames() {
+fn parses_character_filenames_and_axes() {
+{
     let c = parse_character_xml(CHARACTER_XML).unwrap();
     assert_eq!(
         c.rig_name,
@@ -438,20 +444,18 @@ fn parses_character_rig_and_behavior_filenames() {
         "Actors\\Character\\Behaviors\\0_master.hkx"
     );
 }
-
-#[test]
-fn parses_character_model_axes() {
+{
     let c = parse_character_xml(CHARACTER_XML).unwrap();
     assert_eq!(c.model_up, "(0 0 1 0)");
     assert_eq!(c.model_forward, "(1 0 0 0)");
     assert_eq!(c.model_right, "(0 1 0 0)");
 }
-
-#[test]
-fn character_parser_returns_error_on_malformed_xml() {
-    let result = parse_character_xml("<broken<<xml");
-    assert!(result.is_err());
 }
+
+
+
+
+
 
 // ===========================================================================
 // Project tests
@@ -469,8 +473,4 @@ fn parses_project_character_filenames() {
     );
 }
 
-#[test]
-fn project_parser_returns_error_on_malformed_xml() {
-    let result = parse_project_xml("<broken<<xml");
-    assert!(result.is_err());
-}
+

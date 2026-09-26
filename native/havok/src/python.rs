@@ -14,7 +14,7 @@
 
 use pyo3::exceptions::{PyIndexError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyList, PyModule, PyTuple};
+use pyo3::types::{PyBytes, PyList, PyModule};
 use serde_json::json;
 use std::path::{Path, PathBuf};
 
@@ -592,6 +592,7 @@ fn fo4_multi_body_collision_blob<'py>(
                 },
                 body_mass: None,
                 mass_distribution: None,
+                dynamic: None,
             })
             .collect()
     });
@@ -1472,81 +1473,24 @@ fn hkx_inspect_packfile(py: Python<'_>, data: &Bound<'_, PyBytes>) -> PyResult<S
 
 // --- Address / storage primitives ----------------------------------------
 
-/// Path through a single object's member tree. Empty path == top-level
-/// member of the object. Each segment indexes into the next nested
-/// `HkxValue::Array` or `HkxValue::Object`/`TypedObject` member list.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct MemberPath {
     /// Top-level member index inside `HkxObject.members`.
     member_index: usize,
-    /// Subsequent nesting steps. Each step is either:
-    ///   * `Member(usize)` — index into a nested object's `members` Vec.
-    ///   * `Array(usize)`  — index into a nested array's contents.
-    nested: Vec<PathStep>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum PathStep {
-    /// Index into a nested object's `members` Vec
-    /// (i.e. into `HkxValue::Object` / `HkxValue::TypedObject`).
-    Member(usize),
-    /// Index into a nested array's contents
-    /// (i.e. into `HkxValue::Array`).
-    Array(usize),
 }
 
 impl MemberPath {
     fn top(member_index: usize) -> Self {
-        Self {
-            member_index,
-            nested: Vec::new(),
-        }
-    }
-
-    fn push(&self, step: PathStep) -> Self {
-        let mut nested = self.nested.clone();
-        nested.push(step);
-        Self {
-            member_index: self.member_index,
-            nested,
-        }
+        Self { member_index }
     }
 }
 
-/// Resolve a `MemberPath` to the `HkxMember` it identifies. Returns `None`
-/// if any segment is out of bounds.
 fn resolve_member<'a>(obj: &'a HkxObject, path: &MemberPath) -> Option<&'a HkxMember> {
-    let mut current = obj.members.get(path.member_index)?;
-    for step in &path.nested {
-        match step {
-            PathStep::Member(i) => {
-                let members = current.value.as_object_members()?;
-                current = members.get(*i)?;
-            }
-            PathStep::Array(_) => {
-                // Array indices step into HkxValue::Array contents which are
-                // themselves HkxValue (not HkxMember). The caller of
-                // resolve_member shouldn't terminate inside an array — only
-                // value-walks do.
-                return None;
-            }
-        }
-    }
-    Some(current)
+    obj.members.get(path.member_index)
 }
 
 fn resolve_member_mut<'a>(obj: &'a mut HkxObject, path: &MemberPath) -> Option<&'a mut HkxMember> {
-    let mut current = obj.members.get_mut(path.member_index)?;
-    for step in &path.nested {
-        match step {
-            PathStep::Member(i) => {
-                let members = current.value.as_object_members_mut()?;
-                current = members.get_mut(*i)?;
-            }
-            PathStep::Array(_) => return None,
-        }
-    }
-    Some(current)
+    obj.members.get_mut(path.member_index)
 }
 
 /// Resolve to a `HkxValue` reference. Used by HKXValueList accessors that
@@ -1570,27 +1514,12 @@ fn resolve_value_array_mut<'a>(
     }
 }
 
-// --- HKXEnumMember tracker -----------------------------------------------
-//
-// Enum-typed members are stored as `HkxValue::I32` in Rust. To round-trip
-// the (enum_name, value-as-string) view that Python expects, we cache
-// the enum metadata on the file as a side-table keyed by member path.
-// The cache is purely advisory — losing an entry just means the member
-// appears as HKXDirectMember(I32) instead of HKXEnumMember.
-
-#[derive(Debug, Clone, Default)]
-struct EnumMetadata {
-    /// (object_index, member_path) -> (enum_name, ...)
-    /// Stored on PyHkxFile, populated by descriptor lookup or by the user
-    /// constructing HKXEnumMember instances and binding them.
-    map: std::collections::HashMap<(usize, MemberPath), String>,
-}
-
 // --- Enums ----------------------------------------------------------------
 
 /// Mirrors the `HkxTypeFamily` Rust enum, exposed with the same names as
 /// the Python `creation_lib.hkxpack.model.HKXTypeFamily` enum.
 #[pyclass(
+    from_py_object,
     eq,
     eq_int,
     name = "HKXTypeFamily",
@@ -1623,6 +1552,7 @@ impl From<HkxTypeFamily> for PyHkxTypeFamily {
 
 /// Mirrors the `HkxType` Rust enum.
 #[pyclass(
+    from_py_object,
     eq,
     eq_int,
     name = "HKXType",
@@ -1840,24 +1770,11 @@ pub struct PyHkxStringMember {
     inner: StringInner,
 }
 
-#[derive(Debug)]
-enum EnumInner {
-    Bound {
-        file: Py<PyHkxFile>,
-        obj_idx: usize,
-        path: MemberPath,
-        enum_name: String,
-    },
-    Unbound {
-        name: String,
-        enum_name: String,
-        value: String,
-    },
-}
-
 #[pyclass(name = "HKXEnumMember", module = "creation_lib._native.havok_native")]
 pub struct PyHkxEnumMember {
-    inner: EnumInner,
+    name: String,
+    enum_name: String,
+    value: String,
 }
 
 // --- HKXObject -----------------------------------------------------------
@@ -1878,8 +1795,6 @@ pub struct PyHkxObject {
 #[pyclass(name = "HKXFile", module = "creation_lib._native.havok_native")]
 pub struct PyHkxFile {
     pub(crate) inner: HkxFile,
-    /// Side-table for HKXEnumMember metadata.
-    enum_meta: EnumMetadata,
 }
 
 // --- Helper conversion: HkxValue <-> Python ------------------------------
@@ -2556,8 +2471,7 @@ impl PyHkxArrayMember {
         if member_path.is_empty() || target.member_index >= member_path.len() {
             return false;
         }
-        // Only top-level arrays handled; nested array sources are skipped.
-        target.nested.is_empty()
+        true
     }
 
     fn invalidate_array_source(file: &mut HkxFile, obj_idx: usize, path: &MemberPath) {
@@ -2920,80 +2834,32 @@ impl PyHkxEnumMember {
             return Err(PyTypeError::new_err("value must be str or int"));
         };
         Ok(Self {
-            inner: EnumInner::Unbound {
-                name,
-                enum_name,
-                value: value_str,
-            },
+            name,
+            enum_name,
+            value: value_str,
         })
     }
 
     #[getter]
-    fn name(&self, py: Python<'_>) -> PyResult<String> {
-        match &self.inner {
-            EnumInner::Unbound { name, .. } => Ok(name.clone()),
-            EnumInner::Bound {
-                file,
-                obj_idx,
-                path,
-                ..
-            } => {
-                let f = file.borrow(py);
-                let obj = f
-                    .inner
-                    .objects()
-                    .get(*obj_idx)
-                    .ok_or_else(|| PyIndexError::new_err("object index out of range"))?;
-                let m = resolve_member(obj, path)
-                    .ok_or_else(|| PyIndexError::new_err("member path no longer valid"))?;
-                Ok(m.name.clone())
-            }
-        }
+    fn name(&self) -> String {
+        self.name.clone()
     }
 
     #[getter]
     fn enum_name(&self) -> String {
-        match &self.inner {
-            EnumInner::Unbound { enum_name, .. } => enum_name.clone(),
-            EnumInner::Bound { enum_name, .. } => enum_name.clone(),
-        }
+        self.enum_name.clone()
     }
 
     #[getter]
-    fn value(&self, py: Python<'_>) -> PyResult<String> {
-        match &self.inner {
-            EnumInner::Unbound { value, .. } => Ok(value.clone()),
-            EnumInner::Bound {
-                file,
-                obj_idx,
-                path,
-                ..
-            } => {
-                let f = file.borrow(py);
-                let obj = f
-                    .inner
-                    .objects()
-                    .get(*obj_idx)
-                    .ok_or_else(|| PyIndexError::new_err("object index out of range"))?;
-                let m = resolve_member(obj, path)
-                    .ok_or_else(|| PyIndexError::new_err("member path no longer valid"))?;
-                if let HkxValue::I32(v) = m.value {
-                    Ok(v.to_string())
-                } else {
-                    Ok(String::new())
-                }
-            }
-        }
+    fn value(&self) -> String {
+        self.value.clone()
     }
 
-    fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
-        let n = self.name(py)?;
-        let e = self.enum_name();
-        let v = self.value(py)?;
-        Ok(format!(
+    fn __repr__(&self) -> String {
+        format!(
             "HKXEnumMember(name={:?}, enum_name={:?}, value={:?})",
-            n, e, v
-        ))
+            self.name, self.enum_name, self.value
+        )
     }
 }
 
@@ -3095,14 +2961,10 @@ fn extract_member_unbound(py: Python<'_>, item: &Bound<'_, PyAny>) -> PyResult<H
         }
     }
     if let Ok(m) = item.extract::<PyRef<'_, PyHkxEnumMember>>() {
-        if let EnumInner::Unbound { name, value, .. } = &m.inner {
-            // Enums stored as I32; parse the value string.
-            let v = value.parse::<i32>().unwrap_or(0);
-            return Ok(HkxMember {
-                name: name.clone(),
-                value: HkxValue::I32(v),
-            });
-        }
+        return Ok(HkxMember {
+            name: m.name.clone(),
+            value: HkxValue::I32(m.value.parse::<i32>().unwrap_or(0)),
+        });
     }
     Err(PyTypeError::new_err(
         "expected an unbound HKX*Member instance",
@@ -3317,7 +3179,6 @@ impl PyHkxFile {
         }
         Ok(Self {
             inner: HkxFile::from_tagxml(class_version, contents_version, obj_vec),
-            enum_meta: EnumMetadata::default(),
         })
     }
 
@@ -3331,7 +3192,6 @@ impl PyHkxFile {
         let inner = HkxFile::read(&bytes).map_err(map_error)?;
         Ok(Self {
             inner,
-            enum_meta: EnumMetadata::default(),
         })
     }
 
@@ -3343,7 +3203,6 @@ impl PyHkxFile {
         let inner = HkxFile::read(&bytes).map_err(map_error)?;
         Ok(Self {
             inner,
-            enum_meta: EnumMetadata::default(),
         })
     }
 
@@ -3730,7 +3589,7 @@ impl PyHkxMemberList {
                 // the GIL was held; we hold the GIL again here.
                 let obj_ptr: *mut pyo3::ffi::PyObject = *object;
                 let bound = unsafe { Bound::from_borrowed_ptr(py, obj_ptr) };
-                let py_obj: PyRef<'_, PyHkxObject> = bound.downcast::<PyHkxObject>()?.borrow();
+                let py_obj: PyRef<'_, PyHkxObject> = bound.cast::<PyHkxObject>()?.borrow();
                 match &py_obj.inner {
                     ObjectInner::Unbound { obj } => Ok(f(&obj.members)),
                     ObjectInner::Bound { .. } => Err(PyValueError::new_err(
@@ -3761,7 +3620,7 @@ impl PyHkxMemberList {
                 let obj_ptr: *mut pyo3::ffi::PyObject = *object;
                 let bound = unsafe { Bound::from_borrowed_ptr(py, obj_ptr) };
                 let mut py_obj: PyRefMut<'_, PyHkxObject> =
-                    bound.downcast::<PyHkxObject>()?.borrow_mut();
+                    bound.cast::<PyHkxObject>()?.borrow_mut();
                 match &mut py_obj.inner {
                     ObjectInner::Unbound { obj } => Ok(f(&mut obj.members)),
                     ObjectInner::Bound { .. } => Err(PyValueError::new_err(
@@ -3976,15 +3835,6 @@ fn wrap_member_unbound<'py>(py: Python<'py>, member: HkxMember) -> PyResult<Boun
     }
 }
 
-/// Stub helper used only to satisfy the type checker in __getitem__ before
-/// the real lookup; never actually used.
-fn dummy_member() -> HkxMember {
-    HkxMember {
-        name: String::new(),
-        value: HkxValue::Void,
-    }
-}
-
 /// Backing for HKXValueList — array contents (Vec<HkxValue>).
 #[derive(Debug)]
 enum ValueListBacking {
@@ -4028,7 +3878,7 @@ impl PyHkxValueList {
                 let p: *mut pyo3::ffi::PyObject = *array;
                 let bound = unsafe { Bound::from_borrowed_ptr(py, p) };
                 let arr_ref: PyRef<'_, PyHkxArrayMember> =
-                    bound.downcast::<PyHkxArrayMember>()?.borrow();
+                    bound.cast::<PyHkxArrayMember>()?.borrow();
                 match &arr_ref.inner {
                     ArrayInner::Unbound { contents, .. } => Ok(f(contents)),
                     ArrayInner::Bound { .. } => Err(PyValueError::new_err(
@@ -4066,7 +3916,7 @@ impl PyHkxValueList {
                 let p: *mut pyo3::ffi::PyObject = *array;
                 let bound = unsafe { Bound::from_borrowed_ptr(py, p) };
                 let mut arr_ref: PyRefMut<'_, PyHkxArrayMember> =
-                    bound.downcast::<PyHkxArrayMember>()?.borrow_mut();
+                    bound.cast::<PyHkxArrayMember>()?.borrow_mut();
                 match &mut arr_ref.inner {
                     ArrayInner::Unbound { contents, .. } => Ok(f(contents)),
                     ArrayInner::Bound { .. } => Err(PyValueError::new_err(
@@ -4087,7 +3937,7 @@ impl PyHkxValueList {
                 let p: *mut pyo3::ffi::PyObject = *array;
                 let bound = unsafe { Bound::from_borrowed_ptr(py, p) };
                 let arr_ref: PyRef<'_, PyHkxArrayMember> =
-                    bound.downcast::<PyHkxArrayMember>()?.borrow();
+                    bound.cast::<PyHkxArrayMember>()?.borrow();
                 match &arr_ref.inner {
                     ArrayInner::Unbound { subtype, .. } => Ok(subtype.to_native()),
                     ArrayInner::Bound { .. } => Ok(HkxType::Void),
@@ -4227,6 +4077,7 @@ fn normalize_index(index: isize, len: usize) -> PyResult<usize> {
 // --- Descriptor pyclasses ------------------------------------------------
 
 #[pyclass(
+    from_py_object,
     eq,
     eq_int,
     name = "ClassKind",
@@ -4249,7 +4100,7 @@ impl From<ClassKind> for PyClassKind {
     }
 }
 
-#[pyclass(name = "EnumDef", module = "creation_lib._native.havok_native")]
+#[pyclass(from_py_object, name = "EnumDef", module = "creation_lib._native.havok_native")]
 #[derive(Debug, Clone)]
 pub struct PyEnumDef {
     inner: EnumDef,
@@ -4271,7 +4122,7 @@ impl PyEnumDef {
     }
 }
 
-#[pyclass(name = "MemberTemplate", module = "creation_lib._native.havok_native")]
+#[pyclass(from_py_object, name = "MemberTemplate", module = "creation_lib._native.havok_native")]
 #[derive(Debug, Clone)]
 pub struct PyMemberTemplate {
     inner: MemberTemplate,
@@ -4328,7 +4179,7 @@ impl PyMemberTemplate {
     }
 }
 
-#[pyclass(name = "ClassDescriptor", module = "creation_lib._native.havok_native")]
+#[pyclass(from_py_object, name = "ClassDescriptor", module = "creation_lib._native.havok_native")]
 #[derive(Debug, Clone)]
 pub struct PyClassDescriptor {
     inner: ClassDescriptor,
@@ -4458,7 +4309,6 @@ fn load_hkx(py: Python<'_>, path: String) -> PyResult<(Py<PyHkxFile>, Py<PyDescr
     let cv = inner.contents_version().to_string();
     let file = PyHkxFile {
         inner,
-        enum_meta: EnumMetadata::default(),
     };
     let reg = PyDescriptorRegistry {
         inner: std::sync::Mutex::new(DescriptorRegistry::for_contents_version(&cv)),
@@ -4477,7 +4327,6 @@ fn load_hkx_bytes(
     let cv = inner.contents_version().to_string();
     let file = PyHkxFile {
         inner,
-        enum_meta: EnumMetadata::default(),
     };
     let reg = PyDescriptorRegistry {
         inner: std::sync::Mutex::new(DescriptorRegistry::for_contents_version(&cv)),

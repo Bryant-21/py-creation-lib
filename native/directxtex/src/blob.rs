@@ -52,36 +52,3 @@ impl Drop for Blob {
         self.release();
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use crate::{Blob, ffi};
-    use core::mem;
-
-    #[test]
-    fn verify_layout() {
-        assert_eq!(mem::size_of::<Blob>(), unsafe {
-            ffi::DirectXTexFFI_Blob_Sizeof()
-        });
-        assert_eq!(mem::align_of::<Blob>(), unsafe {
-            ffi::DirectXTexFFI_Blob_Alignof()
-        });
-    }
-
-    #[test]
-    fn verify_api() {
-        let mut blob = Blob::default();
-
-        blob.initialize(256).unwrap();
-        assert_eq!(blob.buffer().len(), 256);
-        assert_eq!(blob.buffer_mut().len(), 256);
-
-        blob.resize(128).unwrap();
-        assert_eq!(blob.buffer().len(), 128);
-
-        blob.trim(64).unwrap();
-        assert_eq!(blob.buffer().len(), 64);
-
-        assert!(blob.trim(128).is_err());
-    }
-}

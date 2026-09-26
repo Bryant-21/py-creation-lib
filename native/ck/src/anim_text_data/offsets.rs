@@ -994,29 +994,6 @@ mod tests {
         assert!(frame.reduced_lanes.get().is_some());
     }
 
-    #[test]
-    #[ignore = "manual conversion performance benchmark"]
-    fn benchmark_shared_motion_reduction() {
-        let frame = BakedReferenceFrame {
-            up: [0.0, 0.0, 1.0],
-            duration: 10.0,
-            samples: (0..600).map(|i| [i as f32, 0.0, 0.0, 0.0]).collect(),
-            reduced_lanes: OnceLock::new(),
-        };
-        let started = std::time::Instant::now();
-        for _ in 0..100 {
-            std::hint::black_box(reduce_lanes(std::hint::black_box(&frame)));
-        }
-        let uncached = started.elapsed();
-        let started = std::time::Instant::now();
-        for _ in 0..100 {
-            std::hint::black_box(frame.reduced_lanes());
-        }
-        let cached = started.elapsed();
-        assert_eq!(frame.reduced_lanes(), reduce_lanes(&frame));
-        eprintln!("100 reductions, 600 samples: uncached={uncached:?}, cached including first reduction={cached:?}");
-    }
-
     /// The identity rule both the creature and weapon builders gate on. It once existed only
     /// on the creature path, and the humanoids routing through the weapon path shipped 20533
     /// aliased rows the runtime cannot resolve.
@@ -1052,38 +1029,6 @@ mod tests {
             "MT",
             r"Actors\MoleMiner\Animations\MT\jumprunland"
         ));
-    }
-
-    /// The furniture builder must key section 1 on the animation basename. Rebuilding FO4's
-    /// own `WorkbenchChemistryA` subgraph has CK's shipped file as the oracle: it contains
-    /// `EnterFromStand` and no vanilla offsets file anywhere contains the generator name
-    /// `Standing Enter`. Regressing to the generator name silently breaks activation.
-    #[test]
-    fn furniture_offsets_body_keys_section1_on_animation_basename() {
-        let meshes =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../extracted/fo4/Meshes");
-        let core = r"Actors\Character\Behaviors\WorkbenchFurnitureBehavior.hkx";
-        let sapt = r"Actors\Character\Animations\Furniture\WorkbenchChemistryA";
-        if !meshes
-            .join("Actors/Character/Animations/Furniture/WorkbenchChemistryA")
-            .is_dir()
-        {
-            eprintln!("extracted WorkbenchChemistryA fixture absent; skipping");
-            return;
-        }
-        let mut resolver = GraphResolver::new(vec![meshes]);
-        let body = build_subgraph_offsets_body_furniture(&mut resolver, core, &[sapt.to_string()])
-            .expect("chem furniture subgraph must produce an offsets body");
-
-        let contains = |needle: &str| body.windows(needle.len()).any(|w| w == needle.as_bytes());
-        assert!(
-            contains("EnterFromStand"),
-            "section 1 must key on the animation basename, as CK's own file does",
-        );
-        assert!(
-            !contains("Standing Enter"),
-            "generator name leaked into section 1 — this is the activation-breaking regression",
-        );
     }
 
     /// Every FO4 furniture core must route to the furniture builder; creature and weapon

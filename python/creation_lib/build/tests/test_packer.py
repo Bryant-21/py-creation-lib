@@ -21,7 +21,7 @@ def _write_mod_file(
     path.write_bytes(content)
 
 
-def test_run_native_pack_entries_defaults_level_to_none(tmp_path, monkeypatch):
+def test_run_native_pack_entries_defaults_level_and_survives_stale_native(tmp_path, monkeypatch, caplog):
     captured = {}
     out = tmp_path / "out.ba2"
 
@@ -45,8 +45,61 @@ def test_run_native_pack_entries_defaults_level_to_none(tmp_path, monkeypatch):
     )
     assert captured["compression_level"] is None
 
+    # native_function_available() reporting stale/false must not stop the
+    # wrapper from refreshing and calling through anyway.
+    entries = (ArchiveEntry("Meshes/a.nif", tmp_path / "a.nif", 3),)
+    entries[0].source_path.write_bytes(b"nif")
+    calls = []
 
-def test_run_native_pack_plans_forwards_structured_progress(tmp_path, monkeypatch):
+    def fake_pack_archive_entries_2(native_entries, output_path, archive_type, **kwargs):
+        calls.append((native_entries, output_path, archive_type, kwargs))
+        Path(output_path).write_bytes(b"BA2")
+        return len(native_entries)
+
+    monkeypatch.setattr(packer.native_runtime, "native_function_available", lambda name: False)
+    monkeypatch.setattr(packer.native_runtime, "pack_archive_entries", fake_pack_archive_entries_2)
+
+    output_path2 = tmp_path / "out2.ba2"
+    packer._run_native_pack_entries(entries, str(output_path2), "fo4")
+
+    assert output_path2.read_bytes() == b"BA2"
+    assert calls[0][0] == [(str(tmp_path / "a.nif"), "Meshes/a.nif")]
+
+    # native_function_available() reporting the function available logs progress
+    # and forwards the jobs kwarg through to the native binding.
+    log_entries = (ArchiveEntry("Meshes/b.nif", tmp_path / "b.nif", 3),)
+    log_entries[0].source_path.write_bytes(b"nif")
+    log_calls = []
+
+    monkeypatch.setattr(
+        packer.native_runtime,
+        "native_function_available",
+        lambda name: name == "pack_archive_entries",
+    )
+
+    def fake_pack_archive_entries_3(native_entries, output_path, archive_type, **kwargs):
+        log_calls.append((native_entries, output_path, archive_type, kwargs))
+        Path(output_path).write_bytes(b"BA2")
+        return len(native_entries)
+
+    monkeypatch.setattr(
+        packer.native_runtime,
+        "pack_archive_entries",
+        fake_pack_archive_entries_3,
+    )
+
+    output_path3 = tmp_path / "out3.ba2"
+    with caplog.at_level("INFO"):
+        packer._run_native_pack_entries(log_entries, str(output_path3), "fo4", jobs=8)
+
+    assert output_path3.read_bytes() == b"BA2"
+    assert log_calls[0][0] == [(str(tmp_path / "b.nif"), "Meshes/b.nif")]
+    assert log_calls[0][3]["jobs"] == 8
+    assert "entries=1" in caplog.text
+    assert "jobs=8" in caplog.text
+
+
+def test_run_native_pack_plans_progress_and_filters(tmp_path, monkeypatch):
     entry = ArchiveEntry("Meshes/a.nif", tmp_path / "a.nif", 3)
     planned = SimpleNamespace(texture_archive=False, entries=(entry,))
     output = tmp_path / "out.ba2"
@@ -96,12 +149,12 @@ def test_run_native_pack_plans_forwards_structured_progress(tmp_path, monkeypatc
     ]
     assert native_returns == [True]
 
-
-def test_run_native_pack_passes_filters_to_native_binding(tmp_path, monkeypatch):
-    calls = []
+    # _run_native_pack forwards include/exclude filters straight to the native binding.
+    monkeypatch.setattr(packer, "_native_archive_type", lambda *_a, **_k: "fo4")
+    filter_calls = []
 
     def fake_pack_archive(source_dir, output_path, archive_type, **kwargs):
-        calls.append((source_dir, output_path, archive_type, kwargs))
+        filter_calls.append((source_dir, output_path, archive_type, kwargs))
         Path(output_path).write_bytes(b"BA2")
         return 1
 
@@ -118,19 +171,19 @@ def test_run_native_pack_passes_filters_to_native_binding(tmp_path, monkeypatch)
 
     source_dir = tmp_path / "data"
     source_dir.mkdir()
-    output_path = tmp_path / "out.ba2"
+    filter_output_path = tmp_path / "out_filters.ba2"
     packer._run_native_pack(
         str(source_dir),
-        str(output_path),
+        str(filter_output_path),
         "fo4",
         include_prefixes=["Textures/"],
         exclude_prefixes=["Textures/Generated/"],
     )
 
-    assert calls == [
+    assert filter_calls == [
         (
             str(source_dir),
-            str(output_path),
+            str(filter_output_path),
             "fo4",
             {
                 "compress": True,
@@ -145,121 +198,7 @@ def test_run_native_pack_passes_filters_to_native_binding(tmp_path, monkeypatch)
     ]
 
 
-def test_run_native_pack_entries_logs_and_writes_archive(tmp_path, monkeypatch, caplog):
-    entries = (
-        ArchiveEntry(
-            "Meshes/a.nif",
-            tmp_path / "a.nif",
-            3,
-        ),
-    )
-    entries[0].source_path.write_bytes(b"nif")
-    calls = []
-
-    monkeypatch.setattr(
-        packer.native_runtime,
-        "native_function_available",
-        lambda name: name == "pack_archive_entries",
-    )
-
-    def fake_pack_archive_entries(native_entries, output_path, archive_type, **kwargs):
-        calls.append((native_entries, output_path, archive_type, kwargs))
-        Path(output_path).write_bytes(b"BA2")
-        return len(native_entries)
-
-    monkeypatch.setattr(
-        packer.native_runtime,
-        "pack_archive_entries",
-        fake_pack_archive_entries,
-    )
-
-    output_path = tmp_path / "out.ba2"
-    with caplog.at_level("INFO"):
-        packer._run_native_pack_entries(entries, str(output_path), "fo4")
-
-    assert output_path.read_bytes() == b"BA2"
-    assert calls[0][0] == [(str(tmp_path / "a.nif"), "Meshes/a.nif")]
-    assert "entries=1" in caplog.text
-
-
-def test_run_native_pack_entries_passes_jobs(tmp_path, monkeypatch, caplog):
-    entries = (
-        ArchiveEntry(
-            "Textures/a.dds",
-            tmp_path / "a.dds",
-            3,
-        ),
-    )
-    entries[0].source_path.write_bytes(b"dds")
-    calls = []
-
-    monkeypatch.setattr(
-        packer.native_runtime,
-        "native_function_available",
-        lambda name: name == "pack_archive_entries",
-    )
-
-    def fake_pack_archive_entries(native_entries, output_path, archive_type, **kwargs):
-        calls.append(kwargs)
-        Path(output_path).write_bytes(b"BA2")
-        return len(native_entries)
-
-    monkeypatch.setattr(
-        packer.native_runtime,
-        "pack_archive_entries",
-        fake_pack_archive_entries,
-    )
-
-    output_path = tmp_path / "out.ba2"
-    with caplog.at_level("INFO"):
-        packer._run_native_pack_entries(
-            entries,
-            str(output_path),
-            "fo4",
-            texture_archive=True,
-            jobs=8,
-        )
-
-    assert calls[0]["jobs"] == 8
-    assert "jobs=8" in caplog.text
-
-
-def test_run_native_pack_entries_lets_wrapper_refresh_stale_native(tmp_path, monkeypatch):
-    entries = (
-        ArchiveEntry(
-            "Meshes/a.nif",
-            tmp_path / "a.nif",
-            3,
-        ),
-    )
-    entries[0].source_path.write_bytes(b"nif")
-    calls = []
-
-    monkeypatch.setattr(
-        packer.native_runtime,
-        "native_function_available",
-        lambda name: False,
-    )
-
-    def fake_pack_archive_entries(native_entries, output_path, archive_type, **kwargs):
-        calls.append((native_entries, output_path, archive_type, kwargs))
-        Path(output_path).write_bytes(b"BA2")
-        return len(native_entries)
-
-    monkeypatch.setattr(
-        packer.native_runtime,
-        "pack_archive_entries",
-        fake_pack_archive_entries,
-    )
-
-    output_path = tmp_path / "out.ba2"
-    packer._run_native_pack_entries(entries, str(output_path), "fo4")
-
-    assert output_path.read_bytes() == b"BA2"
-    assert calls[0][0] == [(str(tmp_path / "a.nif"), "Meshes/a.nif")]
-
-
-def test_inventory_data_entries_excludes_texture_tree_without_traversing_it(tmp_path, monkeypatch):
+def test_inventory_data_tree_and_root_strings_entries(tmp_path, monkeypatch):
     data_dir = tmp_path / "data"
     textures_dir = data_dir / "Textures"
     meshes_dir = data_dir / "Meshes"
@@ -281,15 +220,50 @@ def test_inventory_data_entries_excludes_texture_tree_without_traversing_it(tmp_
 
     assert [entry.relative_path for entry in entries] == ["Meshes/keep.nif"]
 
+    # _inventory_tree_entries can prefix texture paths under a relative root.
+    tree_root = tmp_path / "tree"
+    tree_textures_dir = tree_root / "Textures"
+    tree_textures_dir.mkdir(parents=True)
+    (tree_textures_dir / "test.dds").write_bytes(b"dds")
 
-def test_inventory_tree_entries_can_prefix_texture_paths(tmp_path):
-    textures_dir = tmp_path / "Textures"
-    textures_dir.mkdir()
-    (textures_dir / "test.dds").write_bytes(b"dds")
+    tree_entries = packer._inventory_tree_entries(tree_textures_dir, relative_prefix="Textures")
 
-    entries = packer._inventory_tree_entries(textures_dir, relative_prefix="Textures")
+    assert [entry.relative_path for entry in tree_entries] == ["Textures/test.dds"]
 
-    assert [entry.relative_path for entry in entries] == ["Textures/test.dds"]
+    # _inventory_root_strings_entries skips CK-generated dotfile temp orphans.
+    strings_root = tmp_path / "strings"
+    strings_dir = strings_root / "Strings"
+    strings_dir.mkdir(parents=True)
+    (strings_dir / "B21_Test_en.STRINGS").write_bytes(b"real")
+    (strings_dir / ".B21_Test.esm.02m9o1vv_en.STRINGS").write_bytes(b"orphan")
+    (strings_dir / ".B21_Test.esm.ckfix.tmp_en.DLSTRINGS").write_bytes(b"orphan")
+
+    string_entries = packer._inventory_root_strings_entries(strings_dir)
+
+    assert [entry.relative_path for entry in string_entries] == [
+        "Strings/B21_Test_en.STRINGS"
+    ]
+
+
+def test_inventory_data_entries_excludes_precombine_sidecars(tmp_path):
+    """A precombine .csg/.cdx that ends up in data/ (it belongs loose beside
+    the plugin, not in the archived tree) must never be swept into a BA2 —
+    the engine only ever reads these two loose next to the plugin."""
+    data_dir = tmp_path / "data"
+    nested_dir = data_dir / "Meshes" / "PreCombined"
+    nested_dir.mkdir(parents=True)
+    (data_dir / "B21_Test - Geometry.csg").write_bytes(b"csg")
+    (data_dir / "B21_Test.cdx").write_bytes(b"cdx")
+    (data_dir / "keep.txt").write_bytes(b"keep")
+    (nested_dir / "nested.cdx").write_bytes(b"nested-cdx")
+    (nested_dir / "00000800.nif").write_bytes(b"nif")
+
+    entries = packer._inventory_data_entries(data_dir)
+
+    assert sorted(entry.relative_path for entry in entries) == [
+        "Meshes/PreCombined/00000800.nif",
+        "keep.txt",
+    ]
 
 
 def test_pack_mod_prefers_native_mod_archive_packer(tmp_path, monkeypatch):
@@ -351,6 +325,7 @@ def test_pack_mod_prefers_native_mod_archive_packer(tmp_path, monkeypatch):
     assert calls[0]["pc"] is True
     assert calls[0]["xbox"] is False
     assert calls[0]["archive_workers"] == 8
+    assert calls[0]["fo4_og"] is False
     assert calls[0]["mod_dir"] == str(archive_output_dir)
     assert (archive_output_dir / "B21_Test - Main.ba2").is_file()
     assert not (tmp_path / "mods" / mod_name / "B21_Test - Main.ba2").exists()
@@ -358,11 +333,8 @@ def test_pack_mod_prefers_native_mod_archive_packer(tmp_path, monkeypatch):
     assert "native inventory progress" in progress_messages
 
 
-def test_pack_mod_fo4_ba2_defaults_to_main_and_texture_labels(tmp_path, monkeypatch):
+def test_pack_mod_ba2_defaults_to_main_and_texture_labels_pc_and_ps(tmp_path, monkeypatch):
     mod_name = "B21_Test"
-    _write_mod_file(tmp_path, mod_name, "Meshes/test.nif")
-    _write_mod_file(tmp_path, mod_name, "Textures/test.dds")
-    calls = []
 
     monkeypatch.setattr(packer, "get_profile", lambda game: SimpleNamespace(archive_format="ba2"))
     monkeypatch.setattr(
@@ -377,8 +349,17 @@ def test_pack_mod_fo4_ba2_defaults_to_main_and_texture_labels(tmp_path, monkeypa
     def fail_run_native_pack_entries(entries, output_path, game, **kwargs):
         raise AssertionError("compact PC BA2 packing should use direct archive filters")
 
-    def fake_run_native_pack(source_dir, output_path, game, **kwargs):
-        calls.append(
+    monkeypatch.setattr(packer, "_stage_archive_entries", fail_stage_archive_entries)
+    monkeypatch.setattr(packer, "_run_native_pack_entries", fail_run_native_pack_entries)
+
+    # Phase 1: PC defaults to Main/Textures labels, packed straight from the data dir.
+    pc_root = tmp_path / "pc"
+    _write_mod_file(pc_root, mod_name, "Meshes/test.nif")
+    _write_mod_file(pc_root, mod_name, "Textures/test.dds")
+    pc_calls = []
+
+    def fake_run_native_pack_pc(source_dir, output_path, game, **kwargs):
+        pc_calls.append(
             (
                 Path(output_path).name,
                 Path(source_dir).name,
@@ -387,9 +368,7 @@ def test_pack_mod_fo4_ba2_defaults_to_main_and_texture_labels(tmp_path, monkeypa
         )
         Path(output_path).write_bytes(b"BA2")
 
-    monkeypatch.setattr(packer, "_stage_archive_entries", fail_stage_archive_entries)
-    monkeypatch.setattr(packer, "_run_native_pack_entries", fail_run_native_pack_entries)
-    monkeypatch.setattr(packer, "_run_native_pack", fake_run_native_pack)
+    monkeypatch.setattr(packer, "_run_native_pack", fake_run_native_pack_pc)
 
     packer.pack_mod(
         mod_name,
@@ -398,10 +377,10 @@ def test_pack_mod_fo4_ba2_defaults_to_main_and_texture_labels(tmp_path, monkeypa
         pc_max_res=0,
         pc_effects_max_res=0,
         game="fo4",
-        project_root=tmp_path,
+        project_root=pc_root,
     )
 
-    assert calls == [
+    assert pc_calls == [
         (
             "B21_Test - Main.ba2",
             "data",
@@ -414,12 +393,50 @@ def test_pack_mod_fo4_ba2_defaults_to_main_and_texture_labels(tmp_path, monkeypa
         ),
     ]
 
+    # Phase 2: PlayStation uses the _ps suffix and gnrl-compatible profile handling.
+    def fail_stage_archive_entries_ps(entries, dest_root):
+        raise AssertionError("uncapped PlayStation archive packing should not stage files")
 
-def test_pack_mod_ba2_can_opt_into_expanded_family_labels(tmp_path, monkeypatch):
+    monkeypatch.setattr(packer, "_stage_archive_entries", fail_stage_archive_entries_ps)
+
+    ps_root = tmp_path / "ps"
+    _write_mod_file(ps_root, mod_name, "Meshes/test.nif")
+    _write_mod_file(ps_root, mod_name, "Textures/test.dds")
+    ps_calls = []
+
+    def fake_run_native_pack_ps(source_dir, output_path, game, **kwargs):
+        ps_calls.append((Path(output_path).name, kwargs))
+        Path(output_path).write_bytes(b"BA2")
+
+    monkeypatch.setattr(packer, "_run_native_pack", fake_run_native_pack_ps)
+
+    packer.pack_mod(
+        mod_name,
+        pc=False,
+        ps=True,
+        game="fo4",
+        project_root=ps_root,
+    )
+
+    assert ps_calls == [
+        (
+            "B21_Test - Main_ps.ba2",
+            {"ps": True, "manifest_path": None, "include_prefixes": ["Meshes/"]},
+        ),
+        (
+            "B21_Test - Textures_ps.ba2",
+            {
+                "texture_archive": True,
+                "ps": True,
+                "manifest_path": None,
+                "include_prefixes": ["Textures/"],
+            },
+        ),
+    ]
+
+
+def test_pack_mod_ba2_expanded_archives_merges_misc_and_splits_families(tmp_path, monkeypatch):
     mod_name = "B21_Test"
-    _write_mod_file(tmp_path, mod_name, "Meshes/test.nif")
-    _write_mod_file(tmp_path, mod_name, "Textures/test.dds")
-    calls = []
 
     monkeypatch.setattr(packer, "get_profile", lambda game: SimpleNamespace(archive_format="ba2"))
     monkeypatch.setattr(
@@ -431,6 +448,10 @@ def test_pack_mod_ba2_can_opt_into_expanded_family_labels(tmp_path, monkeypatch)
     def fail_stage_archive_entries(entries, dest_root):
         raise AssertionError("eligible archive packing should not stage files")
 
+    monkeypatch.setattr(packer, "_stage_archive_entries", fail_stage_archive_entries)
+
+    calls = []
+
     def fake_run_native_pack_entries(entries, output_path, game, **kwargs):
         calls.append(
             (
@@ -441,8 +462,12 @@ def test_pack_mod_ba2_can_opt_into_expanded_family_labels(tmp_path, monkeypatch)
         )
         Path(output_path).write_bytes(b"BA2")
 
-    monkeypatch.setattr(packer, "_stage_archive_entries", fail_stage_archive_entries)
     monkeypatch.setattr(packer, "_run_native_pack_entries", fake_run_native_pack_entries)
+
+    # Phase 1: root-level scripts + readme merge into a single Misc archive.
+    misc_root = tmp_path / "misc"
+    _write_mod_file(misc_root, mod_name, "Scripts/test.pex", b"pex")
+    _write_mod_file(misc_root, mod_name, "readme.txt", b"readme")
 
     packer.pack_mod(
         mod_name,
@@ -451,7 +476,32 @@ def test_pack_mod_ba2_can_opt_into_expanded_family_labels(tmp_path, monkeypatch)
         pc_max_res=0,
         pc_effects_max_res=0,
         game="fo4",
-        project_root=tmp_path,
+        project_root=misc_root,
+        expanded_archives=True,
+    )
+
+    assert calls == [
+        (
+            "B21_Test - Misc.ba2",
+            [("Scripts/test.pex", "test.pex"), ("readme.txt", "readme.txt")],
+            {"texture_archive": False, "manifest_path": None},
+        )
+    ]
+
+    # Phase 2: expanded family labels split Meshes and Textures into separate archives.
+    calls.clear()
+    families_root = tmp_path / "families"
+    _write_mod_file(families_root, mod_name, "Meshes/test.nif")
+    _write_mod_file(families_root, mod_name, "Textures/test.dds")
+
+    packer.pack_mod(
+        mod_name,
+        pc=True,
+        xbox=False,
+        pc_max_res=0,
+        pc_effects_max_res=0,
+        game="fo4",
+        project_root=families_root,
         expanded_archives=True,
     )
 
@@ -469,7 +519,7 @@ def test_pack_mod_ba2_can_opt_into_expanded_family_labels(tmp_path, monkeypatch)
     ]
 
 
-def test_pack_mod_direct_entries_fan_out_packs_every_archive(tmp_path, monkeypatch):
+def test_pack_mod_direct_entries_fan_out_packs_every_archive_and_propagates_errors(tmp_path, monkeypatch):
     import threading
 
     mod_name = "B21_Test"
@@ -517,19 +567,7 @@ def test_pack_mod_direct_entries_fan_out_packs_every_archive(tmp_path, monkeypat
         "B21_Test - Textures.ba2",
     ]
 
-
-def test_pack_mod_direct_entries_fan_out_propagates_errors(tmp_path, monkeypatch):
-    mod_name = "B21_Test"
-    _write_mod_file(tmp_path, mod_name, "Meshes/test.nif")
-    _write_mod_file(tmp_path, mod_name, "Textures/test.dds")
-
-    monkeypatch.setattr(packer, "get_profile", lambda game: SimpleNamespace(archive_format="ba2"))
-    monkeypatch.setattr(
-        packer.native_runtime,
-        "native_function_available",
-        lambda name: name == "pack_archive",
-    )
-
+    # An error from any worker must propagate out of pack_mod, not be swallowed.
     def boom(entries, output_path, game, **kwargs):
         raise RuntimeError("pack failed")
 
@@ -549,113 +587,17 @@ def test_pack_mod_direct_entries_fan_out_propagates_errors(tmp_path, monkeypatch
         )
 
 
-def test_pack_mod_pc_ba2_packs_root_data_files_into_main_archive(tmp_path, monkeypatch):
+def test_pack_mod_pc_ba2_root_strings_and_size_validation(tmp_path, monkeypatch):
     mod_name = "B21_Test"
-    _write_mod_file(tmp_path, mod_name, "Meshes/test.nif", b"nif")
-    _write_mod_file(tmp_path, mod_name, "readme.txt", b"readme")
-    calls = []
-
-    monkeypatch.setattr(packer, "get_profile", lambda game: SimpleNamespace(archive_format="ba2"))
-    monkeypatch.setattr(
-        packer.native_runtime,
-        "native_function_available",
-        lambda name: name == "pack_archive",
-    )
-
-    def fail_stage_archive_entries(entries, dest_root):
-        raise AssertionError("eligible archive packing should not stage files")
-
-    def fake_run_native_pack_entries(entries, output_path, game, **kwargs):
-        calls.append(
-            (
-                Path(output_path).name,
-                [(entry.relative_path, entry.source_path.name) for entry in entries],
-                kwargs,
-            )
-        )
-        Path(output_path).write_bytes(b"BA2")
-
-    monkeypatch.setattr(packer, "_stage_archive_entries", fail_stage_archive_entries)
-    monkeypatch.setattr(packer, "_run_native_pack_entries", fake_run_native_pack_entries)
-
-    packer.pack_mod(
-        mod_name,
-        pc=True,
-        xbox=False,
-        pc_max_res=0,
-        pc_effects_max_res=0,
-        game="fo4",
-        project_root=tmp_path,
-    )
-
-    assert calls == [
-        (
-            "B21_Test - Main.ba2",
-            [("Meshes/test.nif", "test.nif"), ("readme.txt", "readme.txt")],
-            {"texture_archive": False, "manifest_path": None},
-        ),
-    ]
-
-
-def test_pack_mod_fo4_ba2_merges_root_data_into_misc_when_scripts_exist(
-    tmp_path,
-    monkeypatch,
-):
-    mod_name = "B21_Test"
-    _write_mod_file(tmp_path, mod_name, "Scripts/test.pex", b"pex")
-    _write_mod_file(tmp_path, mod_name, "readme.txt", b"readme")
-    calls = []
-
-    monkeypatch.setattr(packer, "get_profile", lambda game: SimpleNamespace(archive_format="ba2"))
-    monkeypatch.setattr(
-        packer.native_runtime,
-        "native_function_available",
-        lambda name: name == "pack_archive",
-    )
-
-    def fail_stage_archive_entries(entries, dest_root):
-        raise AssertionError("eligible archive packing should not stage files")
-
-    def fake_run_native_pack_entries(entries, output_path, game, **kwargs):
-        calls.append(
-            (
-                Path(output_path).name,
-                [(entry.relative_path, entry.source_path.name) for entry in entries],
-                kwargs,
-            )
-        )
-        Path(output_path).write_bytes(b"BA2")
-
-    monkeypatch.setattr(packer, "_stage_archive_entries", fail_stage_archive_entries)
-    monkeypatch.setattr(packer, "_run_native_pack_entries", fake_run_native_pack_entries)
-
-    packer.pack_mod(
-        mod_name,
-        pc=True,
-        xbox=False,
-        pc_max_res=0,
-        pc_effects_max_res=0,
-        game="fo4",
-        project_root=tmp_path,
-        expanded_archives=True,
-    )
-
-    assert calls == [
-        (
-            "B21_Test - Misc.ba2",
-            [("Scripts/test.pex", "test.pex"), ("readme.txt", "readme.txt")],
-            {"texture_archive": False, "manifest_path": None},
-        )
-    ]
-
-
-def test_pack_mod_pc_ba2_packs_root_strings_into_main_archive(tmp_path, monkeypatch):
-    mod_name = "B21_Test"
-    mod_dir = tmp_path / "mods" / mod_name
+    root_strings_root = tmp_path / "root_strings"
+    mod_dir = root_strings_root / "mods" / mod_name
     (mod_dir / "data").mkdir(parents=True)
     strings_file = mod_dir / "Strings" / f"{mod_name}_en.STRINGS"
     strings_file.parent.mkdir(parents=True)
     strings_file.write_bytes(b"strings")
+    data_strings_file = mod_dir / "data" / "Strings" / strings_file.name
+    data_strings_file.parent.mkdir(parents=True)
+    data_strings_file.write_bytes(b"stale")
     calls = []
 
     monkeypatch.setattr(packer, "get_profile", lambda game: SimpleNamespace(archive_format="ba2"))
@@ -688,13 +630,36 @@ def test_pack_mod_pc_ba2_packs_root_strings_into_main_archive(tmp_path, monkeypa
         pc_max_res=0,
         pc_effects_max_res=0,
         game="fo4",
-        project_root=tmp_path,
+        project_root=root_strings_root,
     )
 
     assert len(calls) == 1
     assert calls[0][0] == f"{mod_name} - Main.ba2"
     assert calls[0][1] == [(f"Strings/{mod_name}_en.STRINGS", b"strings")]
     assert "include_prefixes" not in calls[0][2]
+
+    # pack_mod validates that the final packed archive stays under the size cap.
+    size_cap_root = tmp_path / "size_cap"
+    _write_mod_file(size_cap_root, mod_name, "Meshes/a.nif", b"m")
+
+    def fake_run_native_pack_entries_oversized(entries, output_path, game, **kwargs):
+        Path(output_path).write_bytes(b"x" * 9001)
+
+    monkeypatch.setattr(packer, "_run_native_pack", fake_run_native_pack_entries_oversized)
+    monkeypatch.setattr(packer, "_run_native_pack_entries", fake_run_native_pack_entries_oversized)
+
+    with pytest.raises(RuntimeError, match="exceeding archive max size"):
+        packer.pack_mod(
+            mod_name,
+            pc=True,
+            xbox=False,
+            pc_max_res=0,
+            pc_effects_max_res=0,
+            game="fo4",
+            project_root=size_cap_root,
+            archive_max_bytes=9000,
+            expanded_archives=True,
+        )
 
 
 def test_pack_mod_pc_ba2_with_resize_uses_texture_stage(tmp_path, monkeypatch):
@@ -739,294 +704,27 @@ def test_pack_mod_pc_ba2_with_resize_uses_texture_stage(tmp_path, monkeypatch):
     assert "exclude_prefixes" not in calls[0][3]
 
 
-def test_pack_mod_splits_oversized_main_into_category_archives(tmp_path, monkeypatch):
-    mod_name = "B21_Test"
-    _write_mod_file(tmp_path, mod_name, "Meshes/a.nif", b"m" * 4000)
-    _write_mod_file(tmp_path, mod_name, "Scripts/a.pex", b"p" * 4000)
-    _write_mod_file(tmp_path, mod_name, "Sound/a.xwm", b"s" * 4000)
-    calls = []
+def test_prepare_playstation_audio_scenarios(tmp_path, monkeypatch):
+    # Phase 0: an xwm with no companion wav is rejected.
+    missing_wav_root = tmp_path / "missing_wav"
+    xwm_path0 = missing_wav_root / "Sound" / "missing.xwm"
+    xwm_path0.parent.mkdir(parents=True)
+    xwm_path0.write_bytes(b"xwm")
 
-    monkeypatch.setattr(packer, "get_profile", lambda game: SimpleNamespace(archive_format="ba2"))
-    monkeypatch.setattr(
-        packer.native_runtime,
-        "native_function_available",
-        lambda name: name in {"pack_archive", "pack_archive_entries"},
-    )
-    def fail_stage_archive_entries(entries, dest_root):
-        raise AssertionError("split archive packing should not stage files")
-
-    def fake_run_native_pack_entries(entries, output_path, game, **kwargs):
-        calls.append(
-            (
-                Path(output_path).name,
-                [(entry.relative_path, entry.source_path.name) for entry in entries],
-                kwargs,
-            )
-        )
-        Path(output_path).write_bytes(b"BA2")
-
-    monkeypatch.setattr(packer, "_stage_archive_entries", fail_stage_archive_entries)
-    monkeypatch.setattr(packer, "_run_native_pack_entries", fake_run_native_pack_entries)
-
-    packer.pack_mod(
-        mod_name,
-        pc=True,
-        xbox=False,
-        pc_max_res=0,
-        pc_effects_max_res=0,
-        game="fo4",
-        project_root=tmp_path,
-        archive_max_bytes=9000,
-        expanded_archives=True,
-    )
-
-    assert [call[0] for call in calls] == [
-        "B21_Test - Meshes.ba2",
-        "B21_Test - Sounds.ba2",
-        "B21_Test - Misc.ba2",
-    ]
-    assert calls[0][1] == [("Meshes/a.nif", "a.nif")]
-    assert calls[1][1] == [("Sound/a.xwm", "a.xwm")]
-    assert calls[2][1] == [("Scripts/a.pex", "a.pex")]
-    assert calls[0][2]["texture_archive"] is False
-    assert calls[1][2]["texture_archive"] is False
-    assert calls[2][2]["texture_archive"] is False
-
-
-def test_pack_mod_shards_oversized_textures(tmp_path, monkeypatch):
-    mod_name = "B21_Test"
-    _write_mod_file(tmp_path, mod_name, "Textures/a.dds", b"a" * 4000)
-    _write_mod_file(tmp_path, mod_name, "Textures/b.dds", b"b" * 4000)
-    calls = []
-
-    monkeypatch.setattr(packer, "get_profile", lambda game: SimpleNamespace(archive_format="ba2"))
-    monkeypatch.setattr(
-        packer.native_runtime,
-        "native_function_available",
-        lambda name: name in {"pack_archive", "pack_archive_entries"},
-    )
-    def fail_stage_archive_entries(entries, dest_root):
-        raise AssertionError("split archive packing should not stage files")
-
-    def fake_run_native_pack_entries(entries, output_path, game, **kwargs):
-        calls.append(
-            (
-                Path(output_path).name,
-                [(entry.relative_path, entry.source_path.name) for entry in entries],
-                kwargs,
-            )
-        )
-        Path(output_path).write_bytes(b"BA2")
-
-    monkeypatch.setattr(packer, "_stage_archive_entries", fail_stage_archive_entries)
-    monkeypatch.setattr(packer, "_run_native_pack_entries", fake_run_native_pack_entries)
-
-    packer.pack_mod(
-        mod_name,
-        pc=True,
-        xbox=False,
-        pc_max_res=0,
-        pc_effects_max_res=0,
-        game="fo4",
-        project_root=tmp_path,
-        archive_max_bytes=9000,
-        expanded_archives=True,
-    )
-
-    assert [call[0] for call in calls] == [
-        "B21_Test - Textures1.ba2",
-        "B21_Test - Textures2.ba2",
-    ]
-    assert calls[0][1] == [("Textures/a.dds", "a.dds")]
-    assert calls[1][1] == [("Textures/b.dds", "b.dds")]
-    assert all(call[2]["texture_archive"] is True for call in calls)
-
-
-def test_pack_mod_splits_root_strings_into_main_archive(tmp_path, monkeypatch):
-    mod_name = "B21_Test"
-    mod_dir = tmp_path / "mods" / mod_name
-    _write_mod_file(tmp_path, mod_name, "Meshes/a.nif", b"m" * 4000)
-    strings_file = mod_dir / "Strings" / f"{mod_name}_en.STRINGS"
-    strings_file.parent.mkdir(parents=True)
-    strings_file.write_bytes(b"s" * 4000)
-    calls = []
-
-    monkeypatch.setattr(packer, "get_profile", lambda game: SimpleNamespace(archive_format="ba2"))
-    monkeypatch.setattr(
-        packer.native_runtime,
-        "native_function_available",
-        lambda name: name in {"pack_archive", "pack_archive_entries"},
-    )
-    def fail_stage_archive_entries(entries, dest_root):
-        raise AssertionError("split archive packing should not stage files")
-
-    def fake_run_native_pack_entries(entries, output_path, game, **kwargs):
-        calls.append(
-            (
-                Path(output_path).name,
-                [(entry.relative_path, entry.source_path.name) for entry in entries],
-                kwargs,
-            )
-        )
-        Path(output_path).write_bytes(b"BA2")
-
-    monkeypatch.setattr(packer, "_stage_archive_entries", fail_stage_archive_entries)
-    monkeypatch.setattr(packer, "_run_native_pack_entries", fake_run_native_pack_entries)
-
-    packer.pack_mod(
-        mod_name,
-        pc=True,
-        xbox=False,
-        pc_max_res=0,
-        pc_effects_max_res=0,
-        game="fo4",
-        project_root=tmp_path,
-        archive_max_bytes=9000,
-        expanded_archives=True,
-    )
-
-    assert [call[0] for call in calls] == [
-        "B21_Test - Meshes.ba2",
-        "B21_Test - Main.ba2",
-    ]
-    assert calls[1][1] == [(f"Strings/{mod_name}_en.STRINGS", f"{mod_name}_en.STRINGS")]
-
-
-def test_pack_mod_validates_final_packed_size(tmp_path, monkeypatch):
-    mod_name = "B21_Test"
-    _write_mod_file(tmp_path, mod_name, "Meshes/a.nif", b"m")
-
-    monkeypatch.setattr(packer, "get_profile", lambda game: SimpleNamespace(archive_format="ba2"))
-    monkeypatch.setattr(
-        packer.native_runtime,
-        "native_function_available",
-        lambda name: name == "pack_archive",
-    )
-
-    def fake_run_native_pack_entries(entries, output_path, game, **kwargs):
-        Path(output_path).write_bytes(b"x" * 9001)
-
-    monkeypatch.setattr(packer, "_run_native_pack", fake_run_native_pack_entries)
-    monkeypatch.setattr(packer, "_run_native_pack_entries", fake_run_native_pack_entries)
-
-    with pytest.raises(RuntimeError, match="exceeding archive max size"):
-        packer.pack_mod(
-            mod_name,
-            pc=True,
-            xbox=False,
-            pc_max_res=0,
-            pc_effects_max_res=0,
-            game="fo4",
-            project_root=tmp_path,
-            archive_max_bytes=9000,
-            expanded_archives=True,
+    with pytest.raises(ValueError, match="companion WAV"):
+        packer._prepare_playstation_audio_entries(
+            [ArchiveEntry("Sound/missing.xwm", xwm_path0, 3)],
+            missing_wav_root / "stage",
         )
 
-
-def test_pack_mod_ignores_archive_max_for_compact_archives(tmp_path, monkeypatch):
-    mod_name = "B21_Test"
-    _write_mod_file(tmp_path, mod_name, "Meshes/a.nif", b"m")
-
-    monkeypatch.setattr(
-        packer, "get_profile", lambda game: SimpleNamespace(archive_format="ba2")
-    )
-    monkeypatch.setattr(
-        packer.native_runtime,
-        "native_function_available",
-        lambda name: name == "pack_archive",
-    )
-
-    def fake_run_native_pack(entries, output_path, game, **kwargs):
-        Path(output_path).write_bytes(b"x" * 9001)
-
-    monkeypatch.setattr(packer, "_run_native_pack", fake_run_native_pack)
-    monkeypatch.setattr(packer, "_run_native_pack_entries", fake_run_native_pack)
-
-    packer.pack_mod(
-        mod_name,
-        pc=True,
-        xbox=False,
-        pc_max_res=0,
-        pc_effects_max_res=0,
-        game="fo4",
-        project_root=tmp_path,
-        archive_max_bytes=1,
-        expanded_archives=False,
-    )
-
-    output_path = tmp_path / "mods" / mod_name / "B21_Test - Main.ba2"
-    assert output_path.stat().st_size == 9001
-
-
-def test_inventory_root_strings_skips_dotfile_temp_orphans(tmp_path):
-    strings_dir = tmp_path / "Strings"
-    strings_dir.mkdir()
-    (strings_dir / "B21_Test_en.STRINGS").write_bytes(b"real")
-    (strings_dir / ".B21_Test.esm.02m9o1vv_en.STRINGS").write_bytes(b"orphan")
-    (strings_dir / ".B21_Test.esm.ckfix.tmp_en.DLSTRINGS").write_bytes(b"orphan")
-
-    entries = packer._inventory_root_strings_entries(strings_dir)
-
-    assert [entry.relative_path for entry in entries] == [
-        "Strings/B21_Test_en.STRINGS"
-    ]
-
-
-def test_pack_mod_playstation_uses_ps_suffix_and_gnrl_profile(tmp_path, monkeypatch):
-    mod_name = "B21_Test"
-    _write_mod_file(tmp_path, mod_name, "Meshes/test.nif")
-    _write_mod_file(tmp_path, mod_name, "Textures/test.dds")
-    calls = []
-
-    monkeypatch.setattr(packer, "get_profile", lambda game: SimpleNamespace(archive_format="ba2"))
-    monkeypatch.setattr(
-        packer.native_runtime,
-        "native_function_available",
-        lambda name: name == "pack_archive",
-    )
-
-    def fail_stage_archive_entries(entries, dest_root):
-        raise AssertionError("uncapped PlayStation archive packing should not stage files")
-
-    def fake_run_native_pack(source_dir, output_path, game, **kwargs):
-        calls.append((Path(output_path).name, kwargs))
-        Path(output_path).write_bytes(b"BA2")
-
-    monkeypatch.setattr(packer, "_stage_archive_entries", fail_stage_archive_entries)
-    monkeypatch.setattr(packer, "_run_native_pack", fake_run_native_pack)
-
-    packer.pack_mod(
-        mod_name,
-        pc=False,
-        ps=True,
-        game="fo4",
-        project_root=tmp_path,
-    )
-
-    assert calls == [
-        (
-            "B21_Test - Main_ps.ba2",
-            {"ps": True, "manifest_path": None, "include_prefixes": ["Meshes/"]},
-        ),
-        (
-            "B21_Test - Textures_ps.ba2",
-            {
-                "texture_archive": True,
-                "ps": True,
-                "manifest_path": None,
-                "include_prefixes": ["Textures/"],
-            },
-        ),
-    ]
-
-
-def test_prepare_playstation_audio_omits_xwm_and_repacks_fuz_with_wav(tmp_path):
-    sound_dir = tmp_path / "Sound" / "Voice"
+    # Phase 1: basic repack - omits the xwm and repacks the fuz with the companion wav.
+    phase1_root = tmp_path / "phase1"
+    sound_dir = phase1_root / "Sound" / "Voice"
     sound_dir.mkdir(parents=True)
     fuz_path = sound_dir / "line.fuz"
     xwm_path = sound_dir / "line.xwm"
     wav_path = sound_dir / "line.wav"
-    mesh_path = tmp_path / "Meshes" / "test.nif"
+    mesh_path = phase1_root / "Meshes" / "test.nif"
     mesh_path.parent.mkdir()
 
     lip_bytes = b"LIP"
@@ -1052,7 +750,7 @@ def test_prepare_playstation_audio_omits_xwm_and_repacks_fuz_with_wav(tmp_path):
     ]
 
     prepared, adjusted = packer._prepare_playstation_audio_entries(
-        entries, tmp_path / "stage"
+        entries, phase1_root / "stage"
     )
 
     assert adjusted is True
@@ -1065,36 +763,21 @@ def test_prepare_playstation_audio_omits_xwm_and_repacks_fuz_with_wav(tmp_path):
     assert ps_fuz[: 12 + len(lip_bytes)] == fuz_path.read_bytes()[: 12 + len(lip_bytes)]
     assert ps_fuz[12 + len(lip_bytes) :] == wav_bytes
 
-
-def test_prepare_playstation_audio_requires_companion_wav(tmp_path):
-    xwm_path = tmp_path / "Sound" / "missing.xwm"
-    xwm_path.parent.mkdir()
-    xwm_path.write_bytes(b"xwm")
-
-    with pytest.raises(ValueError, match="companion WAV"):
-        packer._prepare_playstation_audio_entries(
-            [ArchiveEntry("Sound/missing.xwm", xwm_path, 3)],
-            tmp_path / "stage",
-        )
-
-
-def test_prepare_playstation_audio_encodes_at9_and_embeds_it_in_fuz(
-    tmp_path, monkeypatch
-):
-    sound_dir = tmp_path / "Sound" / "Voice"
-    sound_dir.mkdir(parents=True)
-    fuz_path = sound_dir / "line.fuz"
-    xwm_path = sound_dir / "line.xwm"
-    wav_path = sound_dir / "line.wav"
-    lip_bytes = b"LIP"
-    xwm_bytes = b"RIFF\x04\x00\x00\x00XWMA"
-    wav_path.write_bytes(b"RIFF\x04\x00\x00\x00WAVE")
-    xwm_path.write_bytes(xwm_bytes)
-    fuz_path.write_bytes(
+    # Phase 2: convert_to_at9 encodes the wav to at9 and embeds it into the fuz.
+    phase2_root = tmp_path / "phase2"
+    sound_dir2 = phase2_root / "Sound" / "Voice"
+    sound_dir2.mkdir(parents=True)
+    fuz_path2 = sound_dir2 / "line.fuz"
+    xwm_path2 = sound_dir2 / "line.xwm"
+    wav_path2 = sound_dir2 / "line.wav"
+    xwm_bytes2 = b"RIFF\x04\x00\x00\x00XWMA"
+    wav_path2.write_bytes(b"RIFF\x04\x00\x00\x00WAVE")
+    xwm_path2.write_bytes(xwm_bytes2)
+    fuz_path2.write_bytes(
         b"FUZE\x01\x00\x00\x00"
         + len(lip_bytes).to_bytes(4, "little")
         + lip_bytes
-        + xwm_bytes
+        + xwm_bytes2
     )
     at9_fmt = (
         b"\xfe\xff"
@@ -1108,61 +791,50 @@ def test_prepare_playstation_audio_encodes_at9_and_embeds_it_in_fuz(
         + len(at9_fmt).to_bytes(4, "little")
         + at9_fmt
     )
-    calls = []
+    encode_calls = []
 
     def encode_at9(source, output):
-        calls.append(Path(source).name)
+        encode_calls.append(Path(source).name)
         output_path = Path(output)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_bytes(at9_bytes)
 
     monkeypatch.setattr(packer.audio_native_runtime, "encode_at9", encode_at9)
-    entries = [
-        ArchiveEntry("Sound/Voice/line.fuz", fuz_path, fuz_path.stat().st_size),
-        ArchiveEntry("Sound/Voice/line.xwm", xwm_path, xwm_path.stat().st_size),
-        ArchiveEntry("Sound/Voice/line.wav", wav_path, wav_path.stat().st_size),
+    entries2 = [
+        ArchiveEntry("Sound/Voice/line.fuz", fuz_path2, fuz_path2.stat().st_size),
+        ArchiveEntry("Sound/Voice/line.xwm", xwm_path2, xwm_path2.stat().st_size),
+        ArchiveEntry("Sound/Voice/line.wav", wav_path2, wav_path2.stat().st_size),
     ]
 
-    prepared, adjusted = packer._prepare_playstation_audio_entries(
-        entries,
-        tmp_path / "stage",
+    prepared2, adjusted2 = packer._prepare_playstation_audio_entries(
+        entries2,
+        phase2_root / "stage",
         convert_to_at9=True,
     )
 
-    assert adjusted is True
-    assert [entry.relative_path for entry in prepared] == [
+    assert adjusted2 is True
+    assert [entry.relative_path for entry in prepared2] == [
         "Sound/Voice/line.fuz",
         "Sound/Voice/line.at9",
     ]
-    assert calls == ["line.wav"]
-    assert prepared[0].source_path.read_bytes()[12 + len(lip_bytes) :] == at9_bytes
-    assert prepared[1].source_path.read_bytes() == at9_bytes
+    assert encode_calls == ["line.wav"]
+    assert prepared2[0].source_path.read_bytes()[12 + len(lip_bytes) :] == at9_bytes
+    assert prepared2[1].source_path.read_bytes() == at9_bytes
 
+    # Phase 3: an existing at9-backed fuz without a wav is preserved unchanged.
+    phase3_root = tmp_path / "phase3"
+    phase3_root.mkdir()
+    fuz_path3 = phase3_root / "line.fuz"
+    fuz_path3.write_bytes(b"FUZE\x01\0\0\0\0\0\0\0" + at9_bytes)
 
-def test_prepare_playstation_audio_preserves_at9_backed_fuz_without_wav(tmp_path):
-    at9_fmt = (
-        b"\xfe\xff"
-        + bytes(22)
-        + bytes.fromhex("d242e147ba368d4d88fc61654f8c836c")
-    )
-    at9_bytes = (
-        b"RIFF"
-        + (len(at9_fmt) + 12).to_bytes(4, "little")
-        + b"WAVEfmt "
-        + len(at9_fmt).to_bytes(4, "little")
-        + at9_fmt
-    )
-    fuz_path = tmp_path / "line.fuz"
-    fuz_path.write_bytes(b"FUZE\x01\0\0\0\0\0\0\0" + at9_bytes)
-
-    prepared, adjusted = packer._prepare_playstation_audio_entries(
-        [ArchiveEntry("Sound/line.fuz", fuz_path, fuz_path.stat().st_size)],
-        tmp_path / "stage",
+    prepared3, adjusted3 = packer._prepare_playstation_audio_entries(
+        [ArchiveEntry("Sound/line.fuz", fuz_path3, fuz_path3.stat().st_size)],
+        phase3_root / "stage",
         convert_to_at9=True,
     )
 
-    assert adjusted is False
-    assert prepared == [ArchiveEntry("Sound/line.fuz", fuz_path, fuz_path.stat().st_size)]
+    assert adjusted3 is False
+    assert prepared3 == [ArchiveEntry("Sound/line.fuz", fuz_path3, fuz_path3.stat().st_size)]
 
 
 def test_pack_mod_playstation_rewrites_audio_entries_before_native_pack(tmp_path, monkeypatch):

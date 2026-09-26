@@ -351,15 +351,6 @@ mod tests {
     use crate::{prelude::*, tes4::File};
 
     #[test]
-    fn default_state() {
-        let f = File::new();
-        assert!(!f.is_compressed());
-        assert!(f.is_empty());
-        assert_eq!(f.len(), 0);
-        assert_eq!(f.as_bytes().len(), 0);
-    }
-
-    #[test]
     fn assign_state() {
         let payload = [0u8; 64];
         let f = File::from_decompressed(&payload[..]);

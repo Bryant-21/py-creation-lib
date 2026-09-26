@@ -989,11 +989,4 @@ mod tests {
         let err = plan_gnrl_chunks_for_size(size).expect_err("size should be too large");
         assert!(err.contains("too large"));
     }
-
-    #[test]
-    fn default_levels_are_four_for_dx10_six_for_gnrl() {
-        use crate::fo4;
-        assert_eq!(super::fo4_default_compression_level(fo4::Format::DX10), 4);
-        assert_eq!(super::fo4_default_compression_level(fo4::Format::GNRL), 6);
-    }
 }

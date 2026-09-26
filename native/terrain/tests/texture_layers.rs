@@ -12,39 +12,47 @@ fn quad(base: Option<u8>, additional: [Option<u8>; 5]) -> QuadrantTextureSet {
 }
 
 #[test]
-fn btd_texture_set_maps_base_and_additional_layers() {
-    let set = CellTextureSet {
-        quadrants: vec![
-            quad(Some(3), [Some(4), Some(5), None, None, None]),
-            quad(Some(3), [None, None, None, None, None]),
-            quad(Some(6), [Some(7), None, None, None, None]),
-            quad(None, [None, None, None, None, None]),
-        ],
-    };
+fn btd_texture_set_maps_layers_and_ground_cover() {
+    {
+        let set = CellTextureSet {
+            quadrants: vec![
+                quad(Some(3), [Some(4), Some(5), None, None, None]),
+                quad(Some(3), [None, None, None, None, None]),
+                quad(Some(6), [Some(7), None, None, None, None]),
+                quad(None, [None, None, None, None, None]),
+            ],
+        };
 
-    let layers = map_cell_layers(&set);
+        let layers = map_cell_layers(&set);
 
-    assert_eq!(layers.base_layers.len(), 3);
-    assert_eq!(layers.alpha_layers.len(), 3);
-    assert_eq!(layers.base_layers[0].quadrant, 0);
-    assert_eq!(layers.alpha_layers[0].texture_index, 4);
-}
+        assert_eq!(layers.base_layers.len(), 3);
+        assert_eq!(layers.alpha_layers.len(), 3);
+        assert_eq!(layers.base_layers[0].quadrant, 0);
+        assert_eq!(layers.alpha_layers[0].texture_index, 4);
 
-#[test]
-fn btd_texture_set_carries_ground_cover_layer_metadata() {
-    let mut quadrant = quad(Some(3), [Some(4), None, None, None, None]);
-    quadrant.base_source_slot = Some(6);
-    quadrant.additional_source_slots[0] = Some(4);
-    quadrant.ground_cover[6] = Some(1);
-    quadrant.ground_cover[4] = Some(0);
-    let set = CellTextureSet {
-        quadrants: vec![quadrant],
-    };
+        let duplicate_base = CellTextureSet {
+            quadrants: vec![quad(Some(3), [Some(3), Some(4), None, None, None])],
+        };
+        let layers = map_cell_layers(&duplicate_base);
+        assert_eq!(layers.base_layers.len(), 1);
+        assert_eq!(layers.alpha_layers.len(), 1, "alpha layer equal to base is dropped");
+        assert_eq!(layers.alpha_layers[0].texture_index, 4);
+    }
+    {
+        let mut quadrant = quad(Some(3), [Some(4), None, None, None, None]);
+        quadrant.base_source_slot = Some(6);
+        quadrant.additional_source_slots[0] = Some(4);
+        quadrant.ground_cover[6] = Some(1);
+        quadrant.ground_cover[4] = Some(0);
+        let set = CellTextureSet {
+            quadrants: vec![quadrant],
+        };
 
-    let layers = map_cell_layers(&set);
+        let layers = map_cell_layers(&set);
 
-    assert_eq!(layers.base_layers[0].ground_cover_index, Some(1));
-    assert_eq!(layers.alpha_layers[0].ground_cover_index, Some(0));
+        assert_eq!(layers.base_layers[0].ground_cover_index, Some(1));
+        assert_eq!(layers.alpha_layers[0].ground_cover_index, Some(0));
+    }
 }
 
 #[test]

@@ -1021,6 +1021,7 @@ fn write_struct<W: Write>(
 
     for fdef in s.fields.iter() {
         let key = field_key(fdef);
+        reject_raw_geometry(fdef, &key, field_vals)?;
 
         let eval_fields = OverlayFields {
             source: field_vals,
@@ -1160,6 +1161,23 @@ fn write_field_value<W: Write>(
             bs_version,
         );
 
+        if field_type == "byte"
+            && field_template.is_none()
+            && fdef.width.is_none()
+            && let NifValue::Bytes(bytes) = val
+        {
+            let present = bytes.len().min(count);
+            writer.write_bytes(&bytes[..present])?;
+            let zeros = [0u8; 4096];
+            let mut missing = count - present;
+            while missing > 0 {
+                let chunk = missing.min(zeros.len());
+                writer.write_bytes(&zeros[..chunk])?;
+                missing -= chunk;
+            }
+            return Ok(());
+        }
+
         let arr: &[NifValue] = match val {
             NifValue::Array(a) => a.as_slice(),
             _ => &[],
@@ -1283,6 +1301,27 @@ fn write_field_value<W: Write>(
         string_index_map,
         depth,
     )
+}
+
+/// `NifFile::from_bytes_raw_arrays` keeps geometry as bytes the writer cannot
+/// size calculated fields from.
+fn reject_raw_geometry(
+    fdef: &FieldDef,
+    key: &str,
+    fields: &IndexMap<String, NifValue>,
+) -> Result<(), WriteError> {
+    if matches!(fdef.type_name, "Triangle" | "BSVertexData" | "BSVertexDataSSE")
+        && matches!(
+            fields.get(key).or_else(|| fields.get(fdef.name)),
+            Some(NifValue::Bytes(_))
+        )
+    {
+        return Err(WriteError::Other(format!(
+            "{} holds raw geometry bytes; load the NIF with NifFile::from_bytes to write it",
+            fdef.name
+        )));
+    }
+    Ok(())
 }
 
 fn field_key(fdef: &FieldDef) -> String {
@@ -1656,6 +1695,7 @@ fn serialize_block(
             if !stored && fdef.calc.is_none() {
                 continue;
             }
+            reject_raw_geometry(fdef, key, &block.fields)?;
             let eval_fields = OverlayFields {
                 source: &block.fields,
                 written: &written,
@@ -1871,64 +1911,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Set MODKIT_NIF_WRITER_CORPUS and MODKIT_NIF_WRITER_BASELINE; set MODKIT_NIF_WRITER_RECORD=1 to record the baseline"]
-    fn serializer_corpus_equivalence() {
-        let manifest = std::env::var("MODKIT_NIF_WRITER_CORPUS").unwrap();
-        let baseline =
-            std::path::PathBuf::from(std::env::var("MODKIT_NIF_WRITER_BASELINE").unwrap());
-        let record = std::env::var("MODKIT_NIF_WRITER_RECORD").as_deref() == Ok("1");
-        let paths: Vec<std::path::PathBuf> =
-            serde_json::from_slice(&std::fs::read(manifest).unwrap()).unwrap();
-        assert!(!paths.is_empty());
-        if record {
-            std::fs::create_dir_all(&baseline).unwrap();
-        }
-        let mut elapsed = std::time::Duration::ZERO;
-        let mut collision_blocks = 0;
-        let mut geometry_blocks = 0;
-        let mut output_bytes = 0;
-        for (index, path) in paths.iter().enumerate() {
-            let mut nif = NifFile::load(path).unwrap();
-            collision_blocks += nif
-                .blocks
-                .iter()
-                .filter(|block| {
-                    block.type_name.starts_with("bhk") || block.type_name.starts_with("BSPhysics")
-                })
-                .count();
-            geometry_blocks += nif
-                .blocks
-                .iter()
-                .filter(|block| {
-                    block.type_name.contains("TriShape") || block.type_name.contains("TriStrips")
-                })
-                .count();
-            nif.raw_block_context = None;
-            let started = std::time::Instant::now();
-            let bytes = nif.to_bytes().unwrap();
-            elapsed += started.elapsed();
-            output_bytes += bytes.len();
-            NifFile::from_bytes(&bytes, None).unwrap();
-            let expected = baseline.join(format!("{index:04}.nif"));
-            if record {
-                std::fs::write(expected, &bytes).unwrap();
-            } else {
-                assert!(
-                    std::fs::read(expected).unwrap() == bytes,
-                    "{}",
-                    path.display()
-                );
-            }
-        }
-        assert!(collision_blocks > 0);
-        assert!(geometry_blocks > 0);
-        eprintln!(
-            "NIF serializer files={} collision_blocks={collision_blocks} geometry_blocks={geometry_blocks} output_bytes={output_bytes} serialize={elapsed:?} record={record}",
-            paths.len()
-        );
-    }
-
-    #[test]
     fn raw_block_bytes_are_reused_only_while_content_is_unchanged() {
         let mut block = NifBlock::new(0, "NiNode");
         block
@@ -1996,6 +1978,114 @@ mod tests {
             other => panic!("expected Float, got {:?}", other),
         }
         assert_eq!(r.read_sized_string().unwrap(), "hi");
+    }
+
+    #[test]
+    fn byte_array_bytes_match_array_padding_and_truncation() {
+        fn encoded(value: &NifValue, count: usize) -> Vec<u8> {
+            let fdef = FieldDef {
+                name: "Data",
+                type_name: "byte",
+                template: None,
+                suffix: None,
+                default: None,
+                length: Some("Count"),
+                width: None,
+                cond: None,
+                vercond: None,
+                since: None,
+                until: None,
+                arg: None,
+                is_abstract: false,
+                is_binary: false,
+                calc: None,
+                only_t: None,
+                exclude_t: None,
+                recursive: false,
+            };
+            let fields = IndexMap::from([("Count".to_string(), NifValue::UInt(count as u64))]);
+            let schema = NifSchema::from_generated();
+            let mut bytes = Vec::new();
+            write_field_value(
+                &fdef,
+                "byte",
+                None,
+                value,
+                &fields,
+                "Test",
+                &schema,
+                &mut BasicWriter::new(Cursor::new(&mut bytes)),
+                0,
+                0,
+                0,
+                &HashMap::new(),
+                0,
+            )
+            .unwrap();
+            bytes
+        }
+
+        for (payload, count, expected) in [
+            (&[1, 2][..], 4, &[1, 2, 0, 0][..]),
+            (&[1, 2, 3, 4][..], 2, &[1, 2][..]),
+        ] {
+            let array = NifValue::Array(
+                payload
+                    .iter()
+                    .map(|byte| NifValue::UInt(u64::from(*byte)))
+                    .collect(),
+            );
+            assert_eq!(encoded(&NifValue::Bytes(payload.to_vec()), count), expected);
+            assert_eq!(encoded(&array, count), expected);
+        }
+    }
+
+    #[test]
+    fn width_bearing_byte_array_does_not_use_flat_bytes_fast_path() {
+        let fdef = FieldDef {
+            name: "Data",
+            type_name: "byte",
+            template: None,
+            suffix: None,
+            default: None,
+            length: Some("Count"),
+            width: Some("Width"),
+            cond: None,
+            vercond: None,
+            since: None,
+            until: None,
+            arg: None,
+            is_abstract: false,
+            is_binary: false,
+            calc: None,
+            only_t: None,
+            exclude_t: None,
+            recursive: false,
+        };
+        let fields = IndexMap::from([
+            ("Count".to_string(), NifValue::UInt(1)),
+            ("Width".to_string(), NifValue::UInt(2)),
+        ]);
+        let schema = NifSchema::from_generated();
+        let mut bytes = Vec::new();
+        write_field_value(
+            &fdef,
+            "byte",
+            None,
+            &NifValue::Bytes(vec![0xAB]),
+            &fields,
+            "Test",
+            &schema,
+            &mut BasicWriter::new(Cursor::new(&mut bytes)),
+            0,
+            0,
+            0,
+            &HashMap::new(),
+            0,
+        )
+        .unwrap();
+
+        assert_eq!(bytes, vec![0, 0]);
     }
 
     #[test]

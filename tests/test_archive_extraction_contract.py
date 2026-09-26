@@ -41,25 +41,27 @@ def test_bulk_extraction_matches_single_reads_and_overwrites(tmp_path, kind, com
     assert max(event["completed"] for event in events) == len(payloads)
 
 
-@pytest.mark.parametrize("version", [1, 2, 3, 7, 8])
-def test_ba2_count_reads_only_validated_header(tmp_path, version):
+def _ba2_header(version: int) -> bytes:
     header = struct.pack("<4sI4sIQ", b"BTDX", version, b"GNRL", 12345, 36)
     if version in (2, 3):
         header += bytes(8)
     if version == 3:
         header += struct.pack("<I", 3)
-    path = tmp_path / "header.ba2"
-    path.write_bytes(header)
-    assert archive.archive_entry_count(str(path)) == 12345
-    path.write_bytes(header[:-1])
-    with pytest.raises(RuntimeError):
-        archive.archive_entry_count(str(path))
+    return header
 
 
-@pytest.mark.parametrize("version", [103, 104, 105])
-def test_bsa_count_reads_only_validated_header(tmp_path, version):
-    header = struct.pack("<4s8I", b"BSA\0", version, 36, 3, 50, 12345, 0, 0, 0)
-    path = tmp_path / "header.bsa"
+def _bsa_header(version: int) -> bytes:
+    return struct.pack("<4s8I", b"BSA\0", version, 36, 3, 50, 12345, 0, 0, 0)
+
+
+@pytest.mark.parametrize("suffix,build_header,version", [
+    (".ba2", _ba2_header, 1), (".ba2", _ba2_header, 2), (".ba2", _ba2_header, 3),
+    (".ba2", _ba2_header, 7), (".ba2", _ba2_header, 8),
+    (".bsa", _bsa_header, 103), (".bsa", _bsa_header, 104), (".bsa", _bsa_header, 105),
+])
+def test_archive_count_reads_only_validated_header(tmp_path, suffix, build_header, version):
+    header = build_header(version)
+    path = tmp_path / f"header{suffix}"
     path.write_bytes(header)
     assert archive.archive_entry_count(str(path)) == 12345
     path.write_bytes(header[:-1])
@@ -119,7 +121,7 @@ def test_texture_bulk_extraction_preserves_headers_mips_and_cubemaps(tmp_path, k
     fixtures = Path(__file__).resolve().parents[1] / "native/bsarchive/data"
     entries = [
         (str(fixtures / "fo4_chunk_test/test.dds"), "textures/chunks.dds"),
-        (str(fixtures / "fo4_cubemap_test/blacksky_e.dds"), "textures/cubemap.dds"),
+        (str(fixtures / "fo4_dx9_test/blacksky_e.dds"), "textures/cubemap.dds"),
         (str(fixtures / "fo4_dx9_test/dx9.dds"), "textures/legacy.dds"),
     ]
     packed = tmp_path / "textures.ba2"

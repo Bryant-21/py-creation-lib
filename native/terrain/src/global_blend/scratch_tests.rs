@@ -7,7 +7,7 @@ fn compare_quadrant(
     y: i32,
     quadrant: u8,
     reverse: bool,
-) -> (f64, f64, usize) {
+) -> (f64, f64, usize, Vec<u32>) {
     let legacy = || {
         let start = Instant::now();
         let result = blend.serialize_quadrant_legacy(x, y, quadrant);
@@ -25,7 +25,7 @@ fn compare_quadrant(
         let before = legacy();
         (before, current())
     };
-    let bytes = match (before, after) {
+    let (bytes, source_ltex_object_ids) = match (before, after) {
         (Ok(Some(before)), Ok(Some(after))) => {
             assert_eq!(
                 before.base_source_ltex_object_id,
@@ -43,16 +43,19 @@ fn compare_quadrant(
                 before.alpha_vtxt, after.alpha_vtxt,
                 "cell {x},{y} quadrant {quadrant}"
             );
-            before.alpha_vtxt.iter().map(Vec::len).sum()
+            let mut ids = Vec::with_capacity(before.alpha_source_ltex_object_ids.len() + 1);
+            ids.push(before.base_source_ltex_object_id);
+            ids.extend_from_slice(&before.alpha_source_ltex_object_ids);
+            (before.alpha_vtxt.iter().map(Vec::len).sum(), ids)
         }
-        (Ok(None), Ok(None)) => 0,
+        (Ok(None), Ok(None)) => (0, Vec::new()),
         (Err(before), Err(after)) => {
             assert_eq!(before, after);
-            0
+            (0, Vec::new())
         }
         other => panic!("quadrant result differs: {other:?}"),
     };
-    (old_secs, new_secs, bytes)
+    (old_secs, new_secs, bytes, source_ltex_object_ids)
 }
 
 #[test]
@@ -77,96 +80,13 @@ fn scratch_buffers_preserve_sparse_dense_tied_and_empty_quadrants() {
     for y in -1..=0 {
         for x in -1..=0 {
             for q in 0..4 {
-                compare_quadrant(&blend, x, y, q, q % 2 == 0);
+                let _ = compare_quadrant(&blend, x, y, q, q % 2 == 0);
             }
         }
     }
     compare_quadrant(&blend, -2, 0, 0, false);
     compare_quadrant(&blend, 1, 0, 0, false);
     compare_quadrant(&blend, 0, 0, 4, false);
-}
-
-struct AlphaImages(HashMap<u32, (usize, usize, Vec<u8>)>);
-impl SourceAlphaLookup for AlphaImages {
-    fn sample_alpha(&self, id: u32, u: i32, v: i32) -> u8 {
-        self.0
-            .get(&id)
-            .map(|(width, height, alpha)| {
-                alpha[v.rem_euclid(*height as i32) as usize * width
-                    + u.rem_euclid(*width as i32) as usize]
-            })
-            .unwrap_or(255)
-    }
-}
-
-#[test]
-#[ignore = "requires TERRAIN_SCRATCH_BTD, TERRAIN_SCRATCH_MANIFEST and TERRAIN_SCRATCH_REPORT"]
-fn scratch_buffers_match_complete_btd_corpus() {
-    let path = std::env::var("TERRAIN_SCRATCH_BTD").unwrap();
-    let manifest: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(std::env::var("TERRAIN_SCRATCH_MANIFEST").unwrap()).unwrap(),
-    )
-    .unwrap();
-    let mut images = AlphaImages(HashMap::new());
-    for texture in manifest["textures"].as_array().unwrap() {
-        let key = texture["source_ltex_form_key"].as_str().unwrap();
-        let id = u32::from_str_radix(key.rsplit(':').next().unwrap(), 16).unwrap();
-        if images.0.contains_key(&id) {
-            continue;
-        }
-        let image = directxtex_native::read_dds_rgba_image(std::path::Path::new(
-            texture["diffuse_path"].as_str().unwrap(),
-        ))
-        .unwrap();
-        images.0.insert(
-            id,
-            (
-                image.width as usize,
-                image.height as usize,
-                image.rgba.chunks_exact(4).map(|pixel| pixel[3]).collect(),
-            ),
-        );
-    }
-    let mut btd = BtdFile::open(&path).unwrap();
-    let header = btd.header().clone();
-    let started = Instant::now();
-    let blend = GlobalLandscapeBlend::build(
-        &mut btd,
-        header.cell_min_x,
-        header.cell_min_y,
-        header.cells_x,
-        header.cells_y,
-        &images,
-    )
-    .unwrap();
-    let build_secs = started.elapsed().as_secs_f64();
-    eprintln!(
-        "built {} cells in {build_secs:.3}s",
-        header.cells_x * header.cells_y
-    );
-    let (mut legacy_secs, mut optimized_secs, mut output_bytes, mut quadrants) =
-        (0.0, 0.0, 0usize, 0usize);
-    for y in header.cell_min_y..=header.cell_max_y {
-        for x in header.cell_min_x..=header.cell_max_x {
-            for q in 0..4 {
-                let (old, new, bytes) = compare_quadrant(&blend, x, y, q, quadrants % 2 == 0);
-                legacy_secs += old;
-                optimized_secs += new;
-                output_bytes += bytes;
-                quadrants += 1;
-            }
-        }
-        if (y - header.cell_min_y) % 25 == 0 {
-            eprintln!("checked {quadrants} quadrants");
-        }
-    }
-    let report = serde_json::json!({"btd":path,"cells":header.cells_x*header.cells_y,"quadrants":quadrants,"alpha_bytes":output_bytes,"all_fields_equal":true,"alpha_textures":images.0.len(),"build_seconds":build_secs,"legacy_serialize_seconds":legacy_secs,"optimized_serialize_seconds":optimized_secs});
-    std::fs::write(
-        std::env::var("TERRAIN_SCRATCH_REPORT").unwrap(),
-        serde_json::to_vec_pretty(&report).unwrap(),
-    )
-    .unwrap();
-    eprintln!("{report}");
 }
 
 // Retain the pre-optimization encoder as a byte-equivalence oracle.
@@ -193,7 +113,7 @@ impl GlobalLandscapeBlend {
             + usize::from((quadrant >> 1) & 1) * LAND_QUADRANT_INTERVALS;
         for row in 0..LAND_QUADRANT_VERTICES {
             for column in 0..LAND_QUADRANT_VERTICES {
-                let quantized = quantize_vertex_weights_to_bytes(
+                let quantized = legacy_quantize_vertex_weights_to_bytes(
                     self.quadrant_vertex_weights(cell_x, cell_y, quadrant, row, column)?,
                 );
                 let is_edge = row == 0

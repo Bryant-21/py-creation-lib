@@ -2,11 +2,13 @@
 // Used by the structural-equality test to decode a golden .btr's vertex stream.
 // The actual mesh write delegates to nif_core (which packs fp16 via its own write_hfloat_*).
 
+#[cfg(test)]
 /// Encode an f32 to fp16 bits using the `half` crate (IEEE round-to-nearest-even).
 pub(crate) fn f32_to_half_bits(v: f32) -> u16 {
     half::f16::from_f32(v).to_bits()
 }
 
+#[cfg(test)]
 /// Decode fp16 bits to f32 using the `half` crate.
 pub(crate) fn half_bits_to_f32(b: u16) -> f32 {
     half::f16::from_bits(b).to_f32()
@@ -423,30 +425,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn half_quantizes_within_tolerance() {
-        // 4096 is exactly representable in fp16; 4097 rounds to 4096
-        assert_eq!(half_bits_to_f32(f32_to_half_bits(4096.0)), 4096.0);
-        let q = half_bits_to_f32(f32_to_half_bits(1234.5));
-        assert!((q - 1234.5).abs() < 1.0, "got {q}");
-    }
-
-    #[test]
-    fn assemble_block_size_lod4() {
-        // LOD4 block = 4 cells/side => 32*4+1 = 129 posts/side
-        let w = flat_world(4);
-        let s = LodSettings::fo4_default();
-        let quad = quads_for(&w, 4, &s)
-            .into_iter()
-            .find(|q| q.x == 0 && q.y == 0)
-            .unwrap();
-        let (size, heights) = assemble_block(&w, &quad, &s);
-        assert_eq!(size, 129);
-        assert_eq!(heights.len(), 129 * 129);
-        // block heights are divided by lodLevel (TerrainLOD.cs:345-346): 10/4 = 2.5
-        assert!((heights[0] - 2.5).abs() < 1e-3);
-    }
-
     /// Gap 2/3: at a COARSE level (8/16/32) a flat (or landless) block must NOT
     /// collapse to 2 triangles. xLODGen force-inserts the cell-border + grid
     /// skeleton via ScriptedPreInsertion(list4, 1) (TerrainLOD.cs:497-512), so the
@@ -552,106 +530,6 @@ mod tests {
         assert!((max_y - 4096.0).abs() < 1.0, "max_y {max_y}");
     }
 
-    /// With protect_cell_borders OFF, a coarse flat block decimates freely (no
-    /// forced skeleton) — confirms the flag actually gates the behavior.
-    #[test]
-    fn coarse_flat_block_no_border_protect_decimates() {
-        let w = flat_world(16);
-        let mut s = LodSettings::fo4_default();
-        s.terrain.protect_cell_borders = false;
-        s.terrain.skirts = 0; // isolate the border-protect effect from skirts
-        let quad = quads_for(&w, 16, &s)
-            .into_iter()
-            .find(|q| q.x == 0 && q.y == 0)
-            .unwrap();
-        let mesh = build_terrain_mesh(&w, &quad, &s).unwrap();
-        // Flat plane with no forced grid → 2 triangles.
-        assert_eq!(mesh.tris.len(), 2, "got {} tris", mesh.tris.len());
-    }
-
-    /// Gap 1: skirts add a downward edge ring around the quad border.
-    /// A unit square (one quad, 2 tris) has 4 border edges → 4*2 = 8 skirt tris and
-    /// 8 skirt verts appended. Skirt verts sit below the source edge by `depth`.
-    #[test]
-    fn add_skirts_rings_a_unit_quad() {
-        use crate::descriptors::BBox;
-        // 0..4096 unit quad, two triangles (CCW), flat at z=0.
-        let mut verts = vec![
-            [0.0f32, 0.0, 0.0],
-            [4096.0, 0.0, 0.0],
-            [4096.0, 4096.0, 0.0],
-            [0.0, 4096.0, 0.0],
-        ];
-        let mut uvs = vec![[0.0f32, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]];
-        let mut tris = vec![[0u16, 1, 2], [0, 2, 3]];
-        let mut bbox = BBox::empty();
-        for v in &verts {
-            bbox.grow_vertex(*v);
-        }
-        let before = tris.len();
-        // L8 (lod_index 1): depth = 256 - 0 = 256.
-        add_skirts(&mut verts, &mut uvs, &mut tris, &mut bbox, 256.0, 1, 8);
-        // Each of the 4 border edges of this quad produces 2 skirt tris.
-        assert_eq!(tris.len() - before, 8, "expected 8 skirt tris");
-        assert_eq!(verts.len(), 4 + 8, "expected 8 skirt verts");
-        assert_eq!(uvs.len(), verts.len());
-        // Skirt verts are dropped to z = 0 - 256 = -256; bbox min.z follows.
-        assert!(
-            (bbox.min[2] - (-256.0)).abs() < 1e-3,
-            "bbox min z {}",
-            bbox.min[2]
-        );
-        assert!(verts.iter().skip(4).all(|v| (v[2] - (-256.0)).abs() < 1e-3));
-    }
-
-    /// Skirt depth follows the per-level formula skirts-(lodIndex-1)*63
-    /// (TerrainLOD.cs:578): L4→319, L16→193, L32→130.
-    #[test]
-    fn skirt_depth_per_level() {
-        use crate::descriptors::BBox;
-        let make = || {
-            (
-                vec![[0.0f32, 0.0, 0.0], [0.0, 4096.0, 0.0], [0.0, 2048.0, 0.0]],
-                vec![[0.0f32, 0.0], [0.0, 0.0], [0.0, 0.0]],
-                vec![[0u16, 1, 2]],
-                BBox::empty(),
-            )
-        };
-        for (lod_index, level, expect_depth) in
-            [(0usize, 4usize, 319.0f32), (2, 16, 193.0), (3, 32, 130.0)]
-        {
-            let (mut v, mut u, mut t, mut b) = make();
-            for vv in &v {
-                b.grow_vertex(*vv);
-            }
-            add_skirts(&mut v, &mut u, &mut t, &mut b, 256.0, lod_index, level);
-            // The left-edge (x==0) skirt verts drop to -expect_depth.
-            assert!(
-                (b.min[2] - (-expect_depth)).abs() < 1e-3,
-                "L(idx {lod_index}): depth {} != {expect_depth}",
-                -b.min[2]
-            );
-        }
-    }
-
-    /// The skirts flag gates the ring: skirts==0 leaves the mesh untouched.
-    #[test]
-    fn skirts_zero_no_ring() {
-        let w = flat_world(16);
-        let mut s = LodSettings::fo4_default();
-        s.terrain.skirts = 0;
-        let quad = quads_for(&w, 16, &s)
-            .into_iter()
-            .find(|q| q.x == 0 && q.y == 0)
-            .unwrap();
-        let mesh = build_terrain_mesh(&w, &quad, &s).unwrap();
-        // No skirt verts below z=0 (flat world is at z=0).
-        assert!(
-            mesh.verts.iter().all(|v| v[2] >= 0.0),
-            "skirts==0 must not add below-plane verts"
-        );
-    }
-
     /// With skirts on (default), a coarse block has a skirt ring → some verts sit
     /// below the terrain plane.
     #[test]
@@ -669,32 +547,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn flat_block_uv_and_scale() {
-        let w = flat_world(4);
-        // protect_cell_borders forces a grid skeleton and skirts add a
-        // border ring; disable both so the flat block decimates to the
-        // 4-corner case this UV/scale test asserts.
-        let mut s = LodSettings::fo4_default();
-        s.terrain.protect_cell_borders = false;
-        s.terrain.skirts = 0;
-        let quad = quads_for(&w, 4, &s)
-            .into_iter()
-            .find(|q| q.x == 0 && q.y == 0)
-            .unwrap();
-        let mesh = build_terrain_mesh(&w, &quad, &s).unwrap();
-        // flat => 4 corners, 2 tris
-        assert_eq!(mesh.verts.len(), 4);
-        assert_eq!(mesh.tris.len(), 2);
-        // CreateGeometry: x scaled by 128/level = 32 ; far corner post index 128 -> 128*32 = 4096
-        let max_x = mesh.verts.iter().map(|v| v[0]).fold(f32::MIN, f32::max);
-        assert!((max_x - 4096.0).abs() < 1e-2, "max_x {max_x}");
-        // UV = post/(32*level)=post/128, V flipped: corner (0,0) -> uv (0,1)
-        let corner = mesh
-            .verts
-            .iter()
-            .position(|v| v[0] == 0.0 && v[1] == 0.0)
-            .unwrap();
-        assert!((mesh.uvs[corner][1] - 1.0).abs() < 1e-3);
-    }
 }

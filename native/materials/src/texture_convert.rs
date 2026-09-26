@@ -1381,7 +1381,7 @@ mod tests {
     }
 
     #[test]
-    fn bundle_uses_source_dielectric_fill_for_non_metal() {
+    fn fo76_bundle_diffuse_and_specgloss_math() {
         let out = fo76_bundle_to_fo4_buffers(
             &rgba_bytes([1.0, 0.0, 0.0, 1.0]),
             &rgba_bytes([0.0, 0.0, 0.0, 1.0]),
@@ -1400,6 +1400,58 @@ mod tests {
         assert_eq!(decode_rgba(out.diffuse), [1.0, 0.0, 0.0, 1.0]);
         assert_rgba_close(decode_rgba(out.specgloss), [0.22, 0.5, 0.0, 1.0]);
         assert!(out.glow.is_none());
+
+        let out = fo76_bundle_to_fo4_buffers(
+            &rgba_bytes([0.5, 0.25, 0.75, 1.0]),
+            &rgba_bytes([1.0, 1.0, 1.0, 1.0]),
+            &rgba_bytes([0.25, 0.5, 0.0, 1.0]),
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            TextureConversionParams::default(),
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(decode_rgba(out.diffuse), [1.0, 0.9375, 1.0, 1.0]);
+        assert_eq!(decode_rgba(out.specgloss), [1.0, 0.25, 0.0, 1.0]);
+
+        let out = fo76_bundle_to_fo4_buffers(
+            &rgba_bytes([0.0, 0.0, 0.0, 1.0]),
+            &rgba_bytes([0.4, 0.25, 0.1, 1.0]),
+            &rgba_bytes([0.5, 1.0, 0.0, 1.0]),
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            TextureConversionParams::default(),
+            false,
+        )
+        .unwrap();
+
+        assert_rgba_close(decode_rgba(out.diffuse), [0.25, 0.15625, 0.0625, 1.0]);
+
+        let out = fo76_bundle_to_fo4_buffers(
+            &rgba_bytes([0.0, 0.0, 0.0, 1.0]),
+            &rgba_bytes([0.25, 0.25, 0.25, 1.0]),
+            &rgba_bytes([0.5, 1.0, 0.0, 1.0]),
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            TextureConversionParams::default(),
+            false,
+        )
+        .unwrap();
+
+        assert_rgba_close(decode_rgba(out.diffuse), [0.0625, 0.0625, 0.0625, 1.0]);
     }
 
     #[test]
@@ -1426,68 +1478,7 @@ mod tests {
     }
 
     #[test]
-    fn bundle_uses_lighting_r_for_gloss_and_lighting_g_for_ao() {
-        let out = fo76_bundle_to_fo4_buffers(
-            &rgba_bytes([0.5, 0.25, 0.75, 1.0]),
-            &rgba_bytes([1.0, 1.0, 1.0, 1.0]),
-            &rgba_bytes([0.25, 0.5, 0.0, 1.0]),
-            1,
-            1,
-            1,
-            1,
-            1,
-            1,
-            TextureConversionParams::default(),
-            false,
-        )
-        .unwrap();
-
-        assert_eq!(decode_rgba(out.diffuse), [1.0, 0.9375, 1.0, 1.0]);
-        assert_eq!(decode_rgba(out.specgloss), [1.0, 0.25, 0.0, 1.0]);
-    }
-
-    #[test]
-    fn bundle_preserves_colored_metal_reflectivity_hue() {
-        let out = fo76_bundle_to_fo4_buffers(
-            &rgba_bytes([0.0, 0.0, 0.0, 1.0]),
-            &rgba_bytes([0.4, 0.25, 0.1, 1.0]),
-            &rgba_bytes([0.5, 1.0, 0.0, 1.0]),
-            1,
-            1,
-            1,
-            1,
-            1,
-            1,
-            TextureConversionParams::default(),
-            false,
-        )
-        .unwrap();
-
-        assert_rgba_close(decode_rgba(out.diffuse), [0.25, 0.15625, 0.0625, 1.0]);
-    }
-
-    #[test]
-    fn bundle_keeps_achromatic_reflectivity_remap() {
-        let out = fo76_bundle_to_fo4_buffers(
-            &rgba_bytes([0.0, 0.0, 0.0, 1.0]),
-            &rgba_bytes([0.25, 0.25, 0.25, 1.0]),
-            &rgba_bytes([0.5, 1.0, 0.0, 1.0]),
-            1,
-            1,
-            1,
-            1,
-            1,
-            1,
-            TextureConversionParams::default(),
-            false,
-        )
-        .unwrap();
-
-        assert_rgba_close(decode_rgba(out.diffuse), [0.0625, 0.0625, 0.0625, 1.0]);
-    }
-
-    #[test]
-    fn bundle_emits_white_glow_scaled_by_lighting_emissive_mask() {
+    fn fo76_lighting_glow_mask_bundle_orphan_and_named_glow() {
         let out = fo76_bundle_to_fo4_buffers(
             &rgba_bytes([0.1, 0.2, 0.3, 0.4]),
             &rgba_bytes([0.0, 0.0, 0.0, 1.0]),
@@ -1508,10 +1499,7 @@ mod tests {
         // White (grayscale) glow scaled by the emissive mask (alpha = 0.75),
         // not tinted green by the AO channel.
         assert_eq!(decode_rgba(out.glow.unwrap()), [0.75, 0.75, 0.75, 1.0]);
-    }
 
-    #[test]
-    fn orphan_lighting_glow_matches_the_bundle_mask() {
         // RobCoDispenser02_l.dds has no _d/_r sibling, so it misses the bundle.
         // It must still yield the alpha-derived mask, not the packed RGB.
         let lighting = rgba_bytes([0.5, 1.0, 0.0, 0.75]);
@@ -1537,29 +1525,20 @@ mod tests {
             decode_rgba(bundled.glow.unwrap()),
             "orphan _l must produce the same glow map the bundle path would"
         );
-    }
 
-    #[test]
-    fn orphan_lighting_glow_keeps_named_glow_colour() {
         // `*_glow_l.dds` is authored with real colour in RGB; the named-glow
         // exception must survive the orphan path too.
         let out = fo76_lighting_to_fo4_glow_buffer(&rgba_bytes([0.5, 1.0, 0.0, 0.75]), 1, 1, true)
             .unwrap();
         assert_rgba_close(decode_rgba(out), [0.375, 0.75, 0.0, 1.0]);
-    }
 
-    #[test]
-    fn named_glow_rule_is_limited_to_glow_lighting_filenames() {
         assert!(is_named_glow_lighting_path(Path::new(
             "Actors/Wendigo/wendigo_glow_l.dds"
         )));
         assert!(!is_named_glow_lighting_path(Path::new(
             "Actors/Wendigo/wendigo_l.dds"
         )));
-    }
 
-    #[test]
-    fn bundle_preserves_named_glow_color_from_lighting_rgb() {
         let out = fo76_bundle_to_fo4_buffers(
             &rgba_bytes([0.1, 0.2, 0.3, 0.4]),
             &rgba_bytes([0.0, 0.0, 0.0, 1.0]),
@@ -1582,24 +1561,18 @@ mod tests {
     }
 
     #[test]
-    fn normal_conversion_matches_reference_signed_to_unsigned_transform() {
+    fn single_map_buffer_conversions_and_length_guard() {
         let out =
             fo76_normal_to_fo4_buffer(&f32_vec_to_bytes(&[-1.0, 0.0, 1.0, 0.5]), 1, 1).unwrap();
 
         assert_eq!(decode_rgba(out), [0.0, 0.5, 1.0, 0.75]);
-    }
 
-    #[test]
-    fn normalized_normal_conversion_zeroes_blue_and_preserves_other_channels() {
         let out =
             fo76_normalized_normal_to_fo4_buffer(&f32_vec_to_bytes(&[0.25, 0.5, 1.0, 0.75]), 1, 1)
                 .unwrap();
 
         assert_eq!(decode_rgba(out), [0.25, 0.5, 0.0, 0.75]);
-    }
 
-    #[test]
-    fn reflectivity_lighting_fallback_writes_specgloss_channels() {
         let out = fo76_reflectivity_lighting_to_fo4_specgloss_buffers(
             &f32_vec_to_bytes(&[1.0, 0.25, 0.25, 1.0]),
             &f32_vec_to_bytes(&[0.5, 0.125, 0.0, 1.0]),
@@ -1611,10 +1584,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(decode_rgba(out), [1.0, 0.5, 0.0, 1.0]);
-    }
 
-    #[test]
-    fn invalid_buffer_length_returns_error() {
         let err = passthrough_rgba_buffer(&[0, 1, 2, 3], 1, 1).unwrap_err();
         assert!(
             err.to_string()
@@ -1623,7 +1593,7 @@ mod tests {
     }
 
     #[test]
-    fn path_converter_writes_fo76_bundle_outputs() {
+    fn path_converter_writes_fo76_bundle_outputs_and_keeps_specgloss_bc5() {
         let dir =
             std::env::temp_dir().join(format!("modbox21_materials_path_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -1715,10 +1685,7 @@ mod tests {
         assert!(glow_out.exists());
 
         std::fs::remove_dir_all(dir).ok();
-    }
 
-    #[test]
-    fn path_converter_keeps_specgloss_bc5_when_reflectivity_is_bc4() {
         let dir = std::env::temp_dir().join(format!(
             "modbox21_materials_spec_bc5_{}",
             std::process::id()
@@ -1796,18 +1763,7 @@ mod tests {
     }
 
     #[test]
-    fn request_defaults_use_gpu_true() {
-        let json = serde_json::json!({
-            "source_game": "fo76", "target_game": "fo4",
-            "inputs": [], "outputs": []
-        });
-        let req: TextureSetPathRequest = serde_json::from_value(json).unwrap();
-        assert!(req.use_gpu, "use_gpu must default to true when absent");
-        assert_eq!(req.gpu_min_pixels, 0);
-    }
-
-    #[test]
-    fn fo76_diffuse_outputs_preserve_source_storage_and_srgb_format() {
+    fn fo76_diffuse_output_format_policy() {
         let dir = std::env::temp_dir().join(format!(
             "modbox21_materials_source_formats_{}",
             std::process::id()
@@ -1857,10 +1813,7 @@ mod tests {
         }
 
         let _ = std::fs::remove_dir_all(dir);
-    }
 
-    #[test]
-    fn fo76_bc3_effect_diffuse_stays_bc3_for_fo4() {
         let dir = std::env::temp_dir().join(format!(
             "modbox21_materials_effect_bc3_{}",
             std::process::id()
@@ -1900,10 +1853,7 @@ mod tests {
         assert_eq!(image.dxgi_format, 78);
 
         let _ = std::fs::remove_dir_all(dir);
-    }
 
-    #[test]
-    fn fo76_gobo_diffuse_converts_to_linear_not_srgb() {
         // Light gobos are sampled as a linear mask by FO4 (vanilla gobos are
         // BC1_UNORM). FO76 ships them sRGB; carrying the sRGB format through
         // leaves the projected light unmasked in FO4. A texture landing under a
@@ -1963,7 +1913,7 @@ mod tests {
     }
 
     #[test]
-    fn gamebryo_flat_normal_alpha_falls_back_to_dielectric_baseline() {
+    fn gamebryo_specular_red_sources() {
         // 2x1 normal whose alpha carries no variation: 73% of Skyrim looks like this.
         let normal = f32_vec_to_bytes(&[0.5, 0.5, 1.0, 1.0, 0.5, 0.5, 1.0, 1.0]);
         let out = gamebryo_normal_envmask_to_fo4_specgloss_buffers(
@@ -1978,10 +1928,62 @@ mod tests {
         .unwrap();
         assert!((out.specgloss[0] - 0.22).abs() < 1e-6);
         assert!((out.specgloss[4] - 0.22).abs() < 1e-6);
+
+        let normal = f32_vec_to_bytes(&[0.5, 0.5, 1.0, 0.0, 0.5, 0.5, 1.0, 1.0]);
+        let out = gamebryo_normal_envmask_to_fo4_specgloss_buffers(
+            &normal,
+            None,
+            2,
+            1,
+            0,
+            0,
+            GamebryoSpecParams::default(),
+        )
+        .unwrap();
+        assert!((out.specgloss[0] - 0.0).abs() < 1e-6);
+        assert!((out.specgloss[4] - 1.0).abs() < 1e-6);
+
+        let normal = f32_vec_to_bytes(&[0.5, 0.5, 1.0, 0.0, 0.5, 0.5, 1.0, 1.0]);
+        let mask = f32_vec_to_bytes(&[0.6, 0.6, 0.6, 1.0, 0.1, 0.1, 0.1, 1.0]);
+        let out = gamebryo_normal_envmask_to_fo4_specgloss_buffers(
+            &normal,
+            Some(&mask),
+            2,
+            1,
+            2,
+            1,
+            GamebryoSpecParams::default(),
+        )
+        .unwrap();
+        assert!(
+            (out.specgloss[0] - 0.6).abs() < 1e-6,
+            "mask should win texel 0"
+        );
+        assert!(
+            (out.specgloss[4] - 1.0).abs() < 1e-6,
+            "alpha should win texel 1"
+        );
+
+        // Flat 0.0 alpha is uninformative, so the baseline applies and the 1x1
+        // mask must be upsampled to cover both texels.
+        let normal = f32_vec_to_bytes(&[0.5, 0.5, 1.0, 0.0, 0.5, 0.5, 1.0, 0.0]);
+        let mask = f32_vec_to_bytes(&[0.75, 0.75, 0.75, 1.0]);
+        let out = gamebryo_normal_envmask_to_fo4_specgloss_buffers(
+            &normal,
+            Some(&mask),
+            2,
+            1,
+            1,
+            1,
+            GamebryoSpecParams::default(),
+        )
+        .unwrap();
+        assert!((out.specgloss[0] - 0.75).abs() < 1e-6);
+        assert!((out.specgloss[4] - 0.75).abs() < 1e-6);
     }
 
     #[test]
-    fn gamebryo_normal_drops_blue_to_fo4s_two_channel_convention() {
+    fn gamebryo_channel_layout_and_gloss_baseline() {
         // Tangent-space source (blue ~1.0) and an object-space terrain source
         // (green ~1.0, blue mid) both keep R and G and lose blue: FO4
         // reconstructs Z, and its own normals decode with blue at ~0 in both
@@ -2009,71 +2011,7 @@ mod tests {
             "terrain green survives"
         );
         assert_eq!(out.normal[6], 0.0, "object-space blue must be dropped too");
-    }
 
-    #[test]
-    fn gamebryo_varying_normal_alpha_becomes_specular_red() {
-        let normal = f32_vec_to_bytes(&[0.5, 0.5, 1.0, 0.0, 0.5, 0.5, 1.0, 1.0]);
-        let out = gamebryo_normal_envmask_to_fo4_specgloss_buffers(
-            &normal,
-            None,
-            2,
-            1,
-            0,
-            0,
-            GamebryoSpecParams::default(),
-        )
-        .unwrap();
-        assert!((out.specgloss[0] - 0.0).abs() < 1e-6);
-        assert!((out.specgloss[4] - 1.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn gamebryo_envmask_wins_where_brighter_than_normal_alpha() {
-        let normal = f32_vec_to_bytes(&[0.5, 0.5, 1.0, 0.0, 0.5, 0.5, 1.0, 1.0]);
-        let mask = f32_vec_to_bytes(&[0.6, 0.6, 0.6, 1.0, 0.1, 0.1, 0.1, 1.0]);
-        let out = gamebryo_normal_envmask_to_fo4_specgloss_buffers(
-            &normal,
-            Some(&mask),
-            2,
-            1,
-            2,
-            1,
-            GamebryoSpecParams::default(),
-        )
-        .unwrap();
-        assert!(
-            (out.specgloss[0] - 0.6).abs() < 1e-6,
-            "mask should win texel 0"
-        );
-        assert!(
-            (out.specgloss[4] - 1.0).abs() < 1e-6,
-            "alpha should win texel 1"
-        );
-    }
-
-    #[test]
-    fn gamebryo_envmask_resizes_to_normal_dimensions() {
-        // Flat 0.0 alpha is uninformative, so the baseline applies and the 1x1
-        // mask must be upsampled to cover both texels.
-        let normal = f32_vec_to_bytes(&[0.5, 0.5, 1.0, 0.0, 0.5, 0.5, 1.0, 0.0]);
-        let mask = f32_vec_to_bytes(&[0.75, 0.75, 0.75, 1.0]);
-        let out = gamebryo_normal_envmask_to_fo4_specgloss_buffers(
-            &normal,
-            Some(&mask),
-            2,
-            1,
-            1,
-            1,
-            GamebryoSpecParams::default(),
-        )
-        .unwrap();
-        assert!((out.specgloss[0] - 0.75).abs() < 1e-6);
-        assert!((out.specgloss[4] - 0.75).abs() < 1e-6);
-    }
-
-    #[test]
-    fn gamebryo_specgloss_zeroes_blue_and_strips_normal_alpha() {
         let normal = f32_vec_to_bytes(&[0.25, 0.75, 1.0, 0.4, 0.25, 0.75, 1.0, 0.9]);
         let out = gamebryo_normal_envmask_to_fo4_specgloss_buffers(
             &normal,
@@ -2094,10 +2032,7 @@ mod tests {
         }
         assert!((out.normal[0] - 0.25).abs() < 1e-6);
         assert!((out.normal[1] - 0.75).abs() < 1e-6);
-    }
 
-    #[test]
-    fn gamebryo_gloss_baseline_is_configurable_per_game() {
         let normal = f32_vec_to_bytes(&[0.5, 0.5, 1.0, 0.5, 0.5, 0.5, 1.0, 0.5]);
         let params = GamebryoSpecParams {
             gloss_baseline: 0.1,
@@ -2109,6 +2044,7 @@ mod tests {
         assert!((out.specgloss[1] - 0.1).abs() < 1e-6);
         assert!((out.specgloss[5] - 0.1).abs() < 1e-6);
     }
+
 }
 
 #[cfg(test)]

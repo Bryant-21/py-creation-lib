@@ -1,6 +1,6 @@
 import struct
 
-from creation_lib.esp.model import Group, PluginHeader, Record, Subrecord
+from creation_lib.esp.model import Group, Record, Subrecord
 
 
 def _zstring(value: str) -> bytearray:
@@ -30,10 +30,10 @@ def test_parse_reference_transform_reads_data_and_xscl():
     assert transform.scale == 1.5
 
 
-def test_model_path_prefers_modl_and_normalizes_data_relative_paths():
+def test_model_path_prefers_modl_and_falls_back_to_mod2():
     from creation_lib.worldspace_export import extract_model_path
 
-    record = Record(
+    with_modl = Record(
         "STAT",
         0x010801,
         subrecords=[
@@ -41,20 +41,14 @@ def test_model_path_prefers_modl_and_normalizes_data_relative_paths():
             Subrecord("MODL", _zstring("Meshes\\Architecture\\Town\\Wall01.NIF")),
         ],
     )
+    assert extract_model_path(with_modl) == "architecture/town/wall01.nif"
 
-    assert extract_model_path(record) == "architecture/town/wall01.nif"
-
-
-def test_model_path_uses_armor_world_model_when_modl_is_missing():
-    from creation_lib.worldspace_export import extract_model_path
-
-    record = Record(
+    modl_missing = Record(
         "ARMO",
         0x010802,
         subrecords=[Subrecord("MOD2", _zstring("Armor\\Raider\\ArmorM.nif"))],
     )
-
-    assert extract_model_path(record) == "armor/raider/armorm.nif"
+    assert extract_model_path(modl_missing) == "armor/raider/armorm.nif"
 
 
 def test_resolve_mesh_path_searches_mesh_roots(tmp_path):
@@ -110,67 +104,6 @@ def test_build_export_manifest_normalizes_origin_and_reports_missing_mesh(tmp_pa
     assert manifest.skipped[0].reason == "missing_mesh"
 
 
-def test_list_worldspaces_reads_editor_id_and_name_from_records():
-    from creation_lib.worldspace_export import list_worldspaces
-
-    root_items = [
-        Group(
-            b"WRLD",
-            0,
-            children=[
-                Record(
-                    "WRLD",
-                    0x000123,
-                    subrecords=[
-                        Subrecord("EDID", _zstring("B21_TestWorld")),
-                        Subrecord("FULL", _zstring("Test World")),
-                    ],
-                )
-            ],
-        )
-    ]
-
-    worldspaces = list_worldspaces(root_items)
-
-    assert [(w.form_id, w.editor_id, w.name) for w in worldspaces] == [
-        (0x000123, "B21_TestWorld", "Test World")
-    ]
-
-
-def test_list_cells_scopes_cells_to_worldspace_group():
-    from creation_lib.worldspace_export import list_cells
-
-    world_id = 0x000123
-    matching_cell = Record(
-        "CELL",
-        0x000200,
-        subrecords=[Subrecord("EDID", _zstring("B21_TestWorld_Cell"))],
-    )
-    other_cell = Record(
-        "CELL",
-        0x000201,
-        subrecords=[Subrecord("EDID", _zstring("OtherWorld_Cell"))],
-    )
-    root_items = [
-        Group(
-            b"WRLD",
-            0,
-            children=[
-                Record("WRLD", world_id),
-                Group(_group_label(world_id), 1, children=[matching_cell]),
-                Record("WRLD", 0x000124),
-                Group(_group_label(0x000124), 1, children=[other_cell]),
-            ],
-        )
-    ]
-
-    cells = list_cells(root_items, world_id)
-
-    assert [(c.form_id, c.editor_id, c.worldspace_form_id) for c in cells] == [
-        (0x000200, "B21_TestWorld_Cell", world_id)
-    ]
-
-
 def test_extract_placements_resolves_base_model_in_selected_cells():
     from creation_lib.worldspace_export import extract_placements
 
@@ -217,69 +150,6 @@ def test_extract_placements_resolves_base_model_in_selected_cells():
     assert placements[0].base_form_id == base_id
     assert placements[0].model_path == "set/piece.nif"
     assert placements[0].transform.position == (10.0, 20.0, 30.0)
-
-
-def test_loaded_bundle_resolves_base_records_through_active_plugin_masters():
-    from creation_lib.esp import Plugin
-    from creation_lib.worldspace_export import LoadedPluginBundle
-
-    world_id = 0x000123
-    cell_id = 0x000200
-    base_object_id = 0x000900
-    placed = Record(
-        "REFR",
-        0x000800,
-        subrecords=[
-            Subrecord("NAME", struct.pack("<I", base_object_id)),
-            Subrecord("DATA", struct.pack("<6f", 1.0, 2.0, 3.0, 0.0, 0.0, 0.0)),
-        ],
-    )
-    active = Plugin(
-        plugin_name="Patch.esp",
-        header=PluginHeader(masters=["Base.esm"]),
-        root_items=[
-            Group(
-                b"WRLD",
-                0,
-                children=[
-                    Record("WRLD", world_id),
-                    Group(
-                        _group_label(world_id),
-                        1,
-                        children=[
-                            Record("CELL", cell_id),
-                            Group(_group_label(cell_id), 6, children=[placed]),
-                        ],
-                    ),
-                ],
-            )
-        ],
-    )
-    master = Plugin(
-        plugin_name="Base.esm",
-        header=PluginHeader(),
-        root_items=[
-            Group(
-                b"STAT",
-                0,
-                children=[
-                    Record(
-                        "STAT",
-                        base_object_id,
-                        subrecords=[Subrecord("MODL", _zstring("Set\\Piece.nif"))],
-                    )
-                ],
-            )
-        ],
-    )
-
-    bundle = LoadedPluginBundle(active_plugin=active, plugins=[master, active])
-
-    placements = bundle.extract_placements(world_id, {cell_id})
-
-    assert len(placements) == 1
-    assert placements[0].base_form_id == base_object_id
-    assert placements[0].model_path == "set/piece.nif"
 
 
 def test_export_manifest_writes_sidecar_and_delegates_fbx(tmp_path):

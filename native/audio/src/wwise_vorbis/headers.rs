@@ -329,7 +329,7 @@ mod tests {
     }
 
     #[test]
-    fn identification_header_is_thirty_bytes_of_stream_parameters() {
+    fn identification_and_comment_headers() {
         let header = identification_header(2, 44_100, 61_000, (8, 11));
         let mut expected = vec![1];
         expected.extend_from_slice(b"vorbis");
@@ -341,10 +341,7 @@ mod tests {
         expected.extend_from_slice(&0_u32.to_le_bytes());
         expected.extend_from_slice(&[0xB8, 0x01]);
         assert_eq!(header, expected);
-    }
 
-    #[test]
-    fn comment_header_carries_vendor_and_no_comments() {
         let mut expected = vec![3];
         expected.extend_from_slice(b"vorbis");
         expected.extend_from_slice(&3_u32.to_le_bytes());
@@ -382,6 +379,10 @@ mod tests {
         let setup = rebuild_setup(&pack(&stripped), 1, &table()).unwrap();
         assert_eq!(setup.header, full.into_bytes());
         assert_eq!(setup.long_block_modes, vec![false, true]);
+
+        let mut trailing = pack(&stripped);
+        trailing.push(0);
+        assert!(rebuild_setup(&trailing, 1, &table()).is_err(), "unread trailing bytes");
     }
 
     #[test]
@@ -419,16 +420,5 @@ mod tests {
 
         let setup = rebuild_setup(&pack(&stripped), 2, &table()).unwrap();
         assert_eq!(setup.header, full.into_bytes());
-    }
-
-    #[test]
-    fn setup_with_unread_trailing_bytes_is_rejected() {
-        let (stripped_modes, _) = short_and_long_modes();
-        let mut stripped = stripped_front();
-        stripped.extend([(0, 6), (0, 1), (0, 1), (0, 2), (0, 8), (0, 8), (0, 8)]);
-        stripped.extend(stripped_modes);
-        let mut bytes = pack(&stripped);
-        bytes.push(0);
-        assert!(rebuild_setup(&bytes, 1, &table()).is_err());
     }
 }

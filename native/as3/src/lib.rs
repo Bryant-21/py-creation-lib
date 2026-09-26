@@ -48,11 +48,18 @@ pub fn compile_source(src: &str) -> Result<Vec<u8>> {
 /// files. Order does not matter: types are sorted so that a base class or
 /// interface is defined before whatever depends on it.
 pub fn compile_sources(sources: &[&str]) -> Result<Vec<u8>> {
+    compile_sources_with_types(sources, &std::collections::HashMap::new())
+}
+
+pub fn compile_sources_with_types(
+    sources: &[&str],
+    types: &std::collections::HashMap<String, String>,
+) -> Result<Vec<u8>> {
     let units = sources
         .iter()
         .map(|s| parser::parse(s))
         .collect::<Result<Vec<_>>>()?;
-    codegen::compile_units(&units)
+    codegen::compile_units_with_types(&units, types)
 }
 
 /// Compile AS3 source text to a `DoABCDefine` (tag 82) tag *body*, ready for a

@@ -937,7 +937,9 @@ pub fn compress_spline_with_params(
     };
 
     let max_frames: u32 = params.max_frames_per_block;
-    let num_blocks = ((num_frames + max_frames - 1) / max_frames).max(1);
+    // Havok shares the last key of each block with the first key of the next.
+    let block_stride = max_frames.saturating_sub(1).max(1);
+    let num_blocks = num_frames.saturating_sub(1).div_ceil(block_stride).max(1);
 
     // block_duration matches Python: duration / (num_frames-1) * (max_frames-1)
     let block_duration = if num_frames > 1 {
@@ -985,8 +987,8 @@ pub fn compress_spline_with_params(
     for block_idx in 0..num_blocks as usize {
         block_offsets.push(data_buf.len() as u32);
 
-        let first_frame = block_idx * max_frames as usize;
-        let last_frame_excl = ((block_idx + 1) * max_frames as usize).min(nf);
+        let first_frame = block_idx * block_stride as usize;
+        let last_frame_excl = (first_frame + max_frames as usize).min(nf);
         let _block_frames = last_frame_excl - first_frame;
 
         // Reserve mask section (fill later)
@@ -1755,65 +1757,99 @@ mod tests {
             .collect()
     }
 
-    /// FO4's `samplePartialTracks` (hkaSplineCompressedAnimation.cpp:411) and
-    /// `getDataChunks` (cpp:273) index `m_floatBlockOffsets[block]` regardless of
-    /// float-track count. An empty array deserializes to a null base and crashes,
-    /// so there must be one offset per block even with zero float tracks.
     #[test]
-    fn compress_spline_emits_one_float_block_offset_per_block_with_zero_floats() {
-        let frames = ramp_frames(95, 4);
-        let blob = compress_spline(&frames, 0.1, 30.0).expect("compress");
+    fn compress_spline_block_offsets_and_pose_preservation() {
+        {
+            let frames = ramp_frames(95, 4);
+            let blob = compress_spline(&frames, 0.1, 30.0).expect("compress");
 
-        assert_eq!(blob.num_floats, 0, "this fixture has no float tracks");
-        assert_eq!(
-            blob.float_block_offsets.len(),
-            blob.num_blocks as usize,
-            "floatBlockOffsets must have exactly num_blocks entries (got {}, num_blocks={})",
-            blob.float_block_offsets.len(),
-            blob.num_blocks,
-        );
+            assert_eq!(blob.num_floats, 0, "this fixture has no float tracks");
+            assert_eq!(
+                blob.float_block_offsets.len(),
+                blob.num_blocks as usize,
+                "floatBlockOffsets must have exactly num_blocks entries (got {}, num_blocks={})",
+                blob.float_block_offsets.len(),
+                blob.num_blocks,
+            );
 
-        // Each entry is block-relative: it must point past the mask region and
-        // land within the data buffer when combined with the block's stream
-        // offset (so FO4's `data + blockOffsets[b] + floatBlockOffsets[b]` is in
-        // bounds).
-        for b in 0..blob.num_blocks as usize {
-            let rel = blob.float_block_offsets[b] as usize;
-            assert!(
-                rel >= blob.mask_and_quant_size as usize,
-                "block {b}: float offset {rel} must be after the {}-byte mask region",
-                blob.mask_and_quant_size,
-            );
-            let abs = blob.block_offsets[b] as usize + rel;
-            assert!(
-                abs <= blob.data.len(),
-                "block {b}: float data start {abs} out of bounds (data len {})",
-                blob.data.len(),
-            );
+            // Each entry is block-relative: it must point past the mask region and
+            // land within the data buffer when combined with the block's stream
+            // offset (so FO4's `data + blockOffsets[b] + floatBlockOffsets[b]` is in
+            // bounds).
+            for b in 0..blob.num_blocks as usize {
+                let rel = blob.float_block_offsets[b] as usize;
+                assert!(
+                    rel >= blob.mask_and_quant_size as usize,
+                    "block {b}: float offset {rel} must be after the {}-byte mask region",
+                    blob.mask_and_quant_size,
+                );
+                let abs = blob.block_offsets[b] as usize + rel;
+                assert!(
+                    abs <= blob.data.len(),
+                    "block {b}: float data start {abs} out of bounds (data len {})",
+                    blob.data.len(),
+                );
+            }
         }
-    }
+        {
+            let frames = ramp_frames(30, 10);
+            let params = SplineCompressionParams {
+                max_frames_per_block: 4,
+                ..SplineCompressionParams::default()
+            };
+            let blob =
+                compress_spline_with_params(&frames, &[], 0.3, 30.0, &params).expect("compress");
 
-    /// The per-block offset must be recorded for every block of a multi-block
-    /// animation (frames spanning more than `maxFramesPerBlock`), each one
-    /// block-relative and in bounds.
-    #[test]
-    fn compress_spline_float_block_offsets_are_per_block_and_in_bounds_multi_block() {
-        let frames = ramp_frames(30, 10);
-        let params = SplineCompressionParams {
-            max_frames_per_block: 4,
-            ..SplineCompressionParams::default()
-        };
-        let blob = compress_spline_with_params(&frames, &[], 0.3, 30.0, &params).expect("compress");
-
-        assert!(blob.num_blocks >= 3, "fixture should span multiple blocks");
-        assert_eq!(blob.float_block_offsets.len(), blob.num_blocks as usize);
-        for b in 0..blob.num_blocks as usize {
-            let rel = blob.float_block_offsets[b] as usize;
-            assert!(rel >= blob.mask_and_quant_size as usize, "block {b}");
-            assert!(
-                blob.block_offsets[b] as usize + rel <= blob.data.len(),
-                "block {b}"
-            );
+            assert!(blob.num_blocks >= 3, "fixture should span multiple blocks");
+            assert_eq!(blob.float_block_offsets.len(), blob.num_blocks as usize);
+            for b in 0..blob.num_blocks as usize {
+                let rel = blob.float_block_offsets[b] as usize;
+                assert!(rel >= blob.mask_and_quant_size as usize, "block {b}");
+                assert!(
+                    blob.block_offsets[b] as usize + rel <= blob.data.len(),
+                    "block {b}"
+                );
+            }
+        }
+        {
+            let frames = ramp_frames(2, 10);
+            let floats = vec![(0..10).map(|frame| frame as f32).collect::<Vec<_>>()];
+            let params = SplineCompressionParams {
+                max_frames_per_block: 4,
+                ..SplineCompressionParams::default()
+            };
+            let blob = compress_spline_with_params(&frames, &floats, 0.3, 30.0, &params).unwrap();
+            let decoded = decompress_spline_full(
+                &blob.data,
+                blob.num_tracks,
+                blob.num_floats,
+                blob.num_frames,
+                blob.max_frames_per_block,
+                blob.num_blocks,
+                &blob.block_offsets,
+                &blob.float_block_offsets,
+                blob.mask_and_quant_size,
+                blob.block_duration,
+                blob.block_inverse_duration,
+                blob.frame_duration,
+            )
+            .unwrap();
+            for (frame, expected) in frames.iter().enumerate() {
+                for (track, expected) in expected.transforms.iter().enumerate() {
+                    for axis in 0..3 {
+                        let actual = decoded.frames[frame].transforms[track].translation[axis];
+                        assert!(
+                            (actual - expected.translation[axis]).abs() < 0.001,
+                            "frame={frame} track={track} axis={axis}: {actual} != {}",
+                            expected.translation[axis]
+                        );
+                    }
+                }
+                assert!(
+                    (decoded.float_tracks[0][frame] - floats[0][frame]).abs() < 0.001,
+                    "float frame {frame}"
+                );
+            }
         }
     }
 }

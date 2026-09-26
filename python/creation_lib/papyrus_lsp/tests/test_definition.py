@@ -43,19 +43,9 @@ def test_definition_on_script_name_returns_path(tmp_path):
     assert result.line == 0
 
 
-def test_definition_on_unknown_word_returns_none():
+def test_definition_on_unknown_word_or_whitespace_returns_none():
     from creation_lib.papyrus_lsp.definition import get_definition
 
     db = MockScriptDB({})
-    text = "ScriptName TestScript\nUnknownThing"
-    result = get_definition(text, line=1, col=3, db=db)
-    assert result is None
-
-
-def test_definition_on_whitespace_returns_none():
-    from creation_lib.papyrus_lsp.definition import get_definition
-
-    db = MockScriptDB({})
-    text = "ScriptName TestScript\n   "
-    result = get_definition(text, line=1, col=1, db=db)
-    assert result is None
+    assert get_definition("ScriptName TestScript\nUnknownThing", line=1, col=3, db=db) is None
+    assert get_definition("ScriptName TestScript\n   ", line=1, col=1, db=db) is None

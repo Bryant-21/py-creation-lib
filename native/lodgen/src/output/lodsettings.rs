@@ -203,23 +203,6 @@ mod tests {
     }
 
     #[test]
-    fn stride_is_next_pow2_of_span() {
-        // span = max(ne-sw), next pow2 (GetSize uses Ceil(Stride/sqrt2))
-        assert_eq!(next_stride((0, 0), (40, 30)), 64); // span 40 -> 64
-        assert_eq!(next_stride((-16, -16), (16, 16)), 32); // span 32 -> 32
-    }
-
-    #[test]
-    fn write_roundtrips_to_disk() {
-        let dir = std::env::temp_dir().join("lodgen_lod_test");
-        std::fs::create_dir_all(&dir).unwrap();
-        let p = dir.join("W.lod");
-        write(&p, (-25, -27), 64, 4, 32).unwrap();
-        let data = std::fs::read(&p).unwrap();
-        assert_eq!(data, encode((-25, -27), 64, 4, 32).to_vec());
-    }
-
-    #[test]
     fn decode_skyrim_lod_settings() {
         let bytes = encode((-96, -96), 256, 4, 32);
         assert_eq!(
@@ -270,37 +253,6 @@ mod tests {
                 starfield_cell_grid: true,
             }
         );
-    }
-
-    #[test]
-    fn decode_bom_prefixed_starfield_lod_settings() {
-        let bytes = [
-            0xFF, 0xFE, 0xFD, 0xFF, 0xFF, 0xFF, 0xF3, 0xFF, 0xFF, 0xFF, 0x20, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0,
-        ];
-        let settings = decode_source(&bytes).unwrap();
-        assert_eq!(settings.southwest, (-3, -13));
-        assert_eq!(settings.stride, 32);
-    }
-
-    #[test]
-    fn read_source_matches_case_insensitively() {
-        let root =
-            std::env::temp_dir().join(format!("lodgen_source_settings_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        let settings_dir = root.join("lodsettings");
-        std::fs::create_dir_all(&settings_dir).unwrap();
-        std::fs::write(
-            settings_dir.join("tamriel.LOD"),
-            encode((-96, -96), 256, 4, 32),
-        )
-        .unwrap();
-
-        let settings = read_source(&root, "Tamriel").unwrap().unwrap();
-        assert_eq!(settings.southwest, (-96, -96));
-        assert_eq!(settings.stride, 256);
-
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

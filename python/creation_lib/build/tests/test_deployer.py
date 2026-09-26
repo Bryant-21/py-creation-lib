@@ -11,7 +11,9 @@ from creation_lib.build import deployer
 from creation_lib.build.deployer import deploy_mod, undeploy_mod
 
 
-def test_copy2_fast_uses_windows_native_copy_for_large_files(tmp_path: Path, monkeypatch):
+def test_copy2_fast_uses_native_copy_falls_back_and_is_used_by_deploy(
+    tmp_path: Path, monkeypatch
+):
     src = tmp_path / "source.ba2"
     dest = tmp_path / "dest.ba2"
     src.write_bytes(b"archive")
@@ -29,11 +31,8 @@ def test_copy2_fast_uses_windows_native_copy_for_large_files(tmp_path: Path, mon
     assert calls == [(src, dest, deployer._COPY_FILE_NO_BUFFERING)]
     assert dest.read_bytes() == b"archive"
 
-
-def test_copy2_fast_falls_back_to_copy2_when_native_copy_fails(tmp_path: Path, monkeypatch):
-    src = tmp_path / "source.ba2"
-    dest = tmp_path / "dest.ba2"
-    src.write_bytes(b"archive")
+    # Native copy raising must not be fatal -- fall back to shutil.copy2.
+    dest.unlink()
     attempts = 0
 
     def _fail_copyfileex(source: Path, target: Path, flags: int) -> None:
@@ -41,7 +40,6 @@ def test_copy2_fast_falls_back_to_copy2_when_native_copy_fails(tmp_path: Path, m
         attempts += 1
         raise OSError("native copy unavailable")
 
-    monkeypatch.setattr(deployer, "_use_windows_fast_copy", lambda source, file_size: True)
     monkeypatch.setattr(deployer, "_windows_copyfileex", _fail_copyfileex)
 
     deployer._copy2_fast(src, dest)
@@ -49,8 +47,7 @@ def test_copy2_fast_falls_back_to_copy2_when_native_copy_fails(tmp_path: Path, m
     assert attempts == 1
     assert dest.read_bytes() == b"archive"
 
-
-def test_deploy_archives_use_fast_copy_helper(tmp_path: Path, monkeypatch):
+    # deploy_mod routes its archive/plugin copies through _copy2_fast too.
     mod_name = "B21_Test"
     mod_dir = tmp_path / "mods" / mod_name
     game_data_dir = tmp_path / "Game" / "Data"
@@ -80,7 +77,7 @@ def test_deploy_archives_use_fast_copy_helper(tmp_path: Path, monkeypatch):
     assert f"{mod_name} - Main.ba2" in copied
 
 
-def test_deploy_forwards_archive_workers_to_pack_mod(tmp_path: Path):
+def test_deploy_forwards_archive_workers_and_can_use_virtual_data_dir(tmp_path: Path):
     mod_name = "B21_Test"
     mod_dir = tmp_path / "mods" / mod_name
     game_data_dir = tmp_path / "Game" / "Data"
@@ -110,6 +107,35 @@ def test_deploy_forwards_archive_workers_to_pack_mod(tmp_path: Path):
     assert pack_calls[0]["ps"] is True
     assert pack_calls[0]["ps_max_res"] == 4096
     assert pack_calls[0]["ps_effects_max_res"] == 2048
+
+    # deploy_mod can also copy the plugin/archives to a separate virtual data dir
+    # (e.g. a Mod Organizer mod folder) instead of the real game Data dir.
+    virtual_root = tmp_path / "virtual"
+    virtual_mod_dir = virtual_root / "mods" / mod_name
+    virtual_game_data_dir = virtual_root / "Game" / "Data"
+    deploy_data_dir = virtual_root / "ModOrganizer" / "mods" / mod_name
+    virtual_mod_dir.mkdir(parents=True)
+    virtual_game_data_dir.mkdir(parents=True)
+    deploy_data_dir.mkdir(parents=True)
+    (virtual_mod_dir / f"{mod_name}.esp").write_bytes(b"esp")
+    (virtual_mod_dir / f"{mod_name} - Main.ba2").write_bytes(b"main")
+
+    result = deploy_mod(
+        mod_name,
+        game="fo4",
+        game_data_dir=virtual_game_data_dir,
+        deploy_data_dir=deploy_data_dir,
+        skip_build=True,
+        skip_pack=True,
+        project_root=virtual_root,
+        resource_dir=virtual_root / "resource",
+    )
+
+    assert result.plugin_deployed == f"{mod_name}.esp"
+    assert (deploy_data_dir / f"{mod_name}.esp").read_bytes() == b"esp"
+    assert (deploy_data_dir / f"{mod_name} - Main.ba2").read_bytes() == b"main"
+    assert not (virtual_game_data_dir / f"{mod_name}.esp").exists()
+    assert not (virtual_game_data_dir / f"{mod_name} - Main.ba2").exists()
 
 
 def test_deploy_can_pack_archives_directly_to_target(tmp_path: Path, monkeypatch):
@@ -165,7 +191,7 @@ def test_deploy_can_pack_archives_directly_to_target(tmp_path: Path, monkeypatch
     assert manual_archive.read_bytes() == b"manual"
 
 
-def test_deploy_removes_stale_generated_archives_but_keeps_manual_archives(tmp_path: Path):
+def test_deploy_and_undeploy_remove_stale_generated_archives_but_keep_manual_ones(tmp_path: Path):
     mod_name = "B21_Test"
     mod_dir = tmp_path / "mods" / mod_name
     game_data_dir = tmp_path / "Game" / "Data"
@@ -191,37 +217,43 @@ def test_deploy_removes_stale_generated_archives_but_keeps_manual_archives(tmp_p
     assert not (game_data_dir / f"{mod_name} - Meshes.ba2").exists()
     assert (game_data_dir / f"{mod_name} - HiRes.ba2").read_bytes() == b"manual"
 
+    # undeploy_mod mirrors that: it removes generated archives and strings but
+    # keeps manually-added archives and unrelated strings files.
+    undeploy_root = tmp_path / "undeploy"
+    undeploy_mod_dir = undeploy_root / "mods" / mod_name
+    undeploy_game_data_dir = undeploy_root / "Game" / "Data"
+    undeploy_mod_dir.mkdir(parents=True)
+    undeploy_game_data_dir.mkdir(parents=True)
+    undeploy_strings_dir = undeploy_game_data_dir / "Strings"
+    undeploy_strings_dir.mkdir()
+    (undeploy_game_data_dir / f"{mod_name}.esp").write_bytes(b"esp")
+    (undeploy_game_data_dir / f"{mod_name} - Main.ba2").write_bytes(b"main")
+    (undeploy_game_data_dir / f"{mod_name} - HiRes.ba2").write_bytes(b"manual")
+    (undeploy_strings_dir / f"{mod_name}_en.STRINGS").write_bytes(b"strings")
+    (undeploy_strings_dir / f"{mod_name}.esm_en.ILSTRINGS").write_bytes(b"strings")
+    (undeploy_strings_dir / f"{mod_name}Other_en.STRINGS").write_bytes(b"other")
 
-def test_deploy_can_copy_to_separate_virtual_data_dir(tmp_path: Path):
-    mod_name = "B21_Test"
-    mod_dir = tmp_path / "mods" / mod_name
-    game_data_dir = tmp_path / "Game" / "Data"
-    deploy_data_dir = tmp_path / "ModOrganizer" / "mods" / mod_name
-    mod_dir.mkdir(parents=True)
-    game_data_dir.mkdir(parents=True)
-    deploy_data_dir.mkdir(parents=True)
-    (mod_dir / f"{mod_name}.esp").write_bytes(b"esp")
-    (mod_dir / f"{mod_name} - Main.ba2").write_bytes(b"main")
-
-    result = deploy_mod(
+    removed = undeploy_mod(
         mod_name,
         game="fo4",
-        game_data_dir=game_data_dir,
-        deploy_data_dir=deploy_data_dir,
-        skip_build=True,
-        skip_pack=True,
-        project_root=tmp_path,
-        resource_dir=tmp_path / "resource",
+        game_data_dir=undeploy_game_data_dir,
+        project_root=undeploy_root,
     )
 
-    assert result.plugin_deployed == f"{mod_name}.esp"
-    assert (deploy_data_dir / f"{mod_name}.esp").read_bytes() == b"esp"
-    assert (deploy_data_dir / f"{mod_name} - Main.ba2").read_bytes() == b"main"
-    assert not (game_data_dir / f"{mod_name}.esp").exists()
-    assert not (game_data_dir / f"{mod_name} - Main.ba2").exists()
+    assert f"{mod_name}.esp" in removed
+    assert f"{mod_name} - Main.ba2" in removed
+    assert f"Strings/{mod_name}_en.STRINGS" in removed
+    assert f"Strings/{mod_name}.esm_en.ILSTRINGS" in removed
+    assert not (undeploy_game_data_dir / f"{mod_name}.esp").exists()
+    assert not (undeploy_game_data_dir / f"{mod_name} - Main.ba2").exists()
+    assert (undeploy_game_data_dir / f"{mod_name} - HiRes.ba2").read_bytes() == b"manual"
+    assert (undeploy_strings_dir / f"{mod_name}Other_en.STRINGS").read_bytes() == b"other"
 
 
-def test_deploy_can_move_archives_to_target(tmp_path: Path):
+def test_deploy_can_move_archives_to_target_and_cross_volume_move_restores_on_failure(
+    tmp_path: Path,
+    monkeypatch,
+):
     mod_name = "B21_Test"
     mod_dir = tmp_path / "mods" / mod_name
     game_data_dir = tmp_path / "Game" / "Data"
@@ -247,8 +279,8 @@ def test_deploy_can_move_archives_to_target(tmp_path: Path):
     assert (game_data_dir / f"{mod_name} - Main.ba2").read_bytes() == b"main"
     assert (mod_dir / f"{mod_name}.esp").read_bytes() == b"esp"
 
-
-def test_cross_volume_archive_move_uses_fast_copy(tmp_path: Path, monkeypatch):
+    # _move_archive itself: cross-volume rename falls back to fast-copy, and a
+    # copy failure mid-move must restore the previous destination content.
     src = tmp_path / "source.ba2"
     dest = tmp_path / "dest.ba2"
     src.write_bytes(b"new archive")
@@ -275,63 +307,27 @@ def test_cross_volume_archive_move_uses_fast_copy(tmp_path: Path, monkeypatch):
     assert dest.read_bytes() == b"new archive"
     assert not dest.with_name("dest.ba2.old").exists()
 
-
-def test_cross_volume_archive_move_restores_previous_destination_on_copy_failure(
-    tmp_path: Path,
-    monkeypatch,
-):
-    src = tmp_path / "source.ba2"
-    dest = tmp_path / "dest.ba2"
-    src.write_bytes(b"new archive")
-    dest.write_bytes(b"old archive")
-    original_replace = Path.replace
-
-    def _cross_volume_replace(path: Path, target: Path) -> Path:
-        if path == src:
-            raise OSError(errno.EXDEV, "cross-device link")
-        return original_replace(path, target)
+    # A copy failure mid-move must restore the previous destination content.
+    src.write_bytes(b"second archive")
+    dest.write_bytes(b"old archive again")
 
     def _fail_copy(source: Path, target: Path) -> None:
         target.write_bytes(b"partial")
         raise OSError("copy failed")
 
-    monkeypatch.setattr(Path, "replace", _cross_volume_replace)
     monkeypatch.setattr(deployer, "_copy2_fast", _fail_copy)
 
     with pytest.raises(OSError, match="copy failed"):
         deployer._move_archive(src, dest)
 
-    assert src.read_bytes() == b"new archive"
-    assert dest.read_bytes() == b"old archive"
+    assert src.read_bytes() == b"second archive"
+    assert dest.read_bytes() == b"old archive again"
     assert not dest.with_name("dest.ba2.old").exists()
 
 
-def test_deploy_can_skip_archive_loop_for_direct_deployed_archives(tmp_path: Path):
-    mod_name = "B21_Test"
-    mod_dir = tmp_path / "mods" / mod_name
-    game_data_dir = tmp_path / "Game" / "Data"
-    mod_dir.mkdir(parents=True)
-    game_data_dir.mkdir(parents=True)
-    (mod_dir / f"{mod_name}.esp").write_bytes(b"esp")
-    direct_archive = game_data_dir / f"{mod_name} - Main.ba2"
-    direct_archive.write_bytes(b"direct")
-
-    result = deploy_mod(
-        mod_name,
-        game="fo4",
-        game_data_dir=game_data_dir,
-        skip_build=True,
-        skip_pack=True,
-        project_root=tmp_path,
-        resource_dir=tmp_path / "resource",
-        deploy_archives=False,
-    )
-
-    assert result.archives_deployed == []
-    assert direct_archive.read_bytes() == b"direct"
-
-
-def test_deploy_can_skip_papyrus_compile(tmp_path: Path):
+def test_deploy_can_skip_papyrus_compile_and_native_compiler_otherwise_runs(
+    tmp_path: Path, monkeypatch
+):
     mod_name = "B21_Test"
     mod_dir = tmp_path / "mods" / mod_name
     game_data_dir = tmp_path / "Game" / "Data"
@@ -362,8 +358,10 @@ def test_deploy_can_skip_papyrus_compile(tmp_path: Path):
     assert result.plugin_deployed == f"{mod_name}.esp"
     assert (game_data_dir / f"{mod_name}.esp").read_bytes() == b"esp"
 
+    _test_compile_papyrus_uses_native_compiler(tmp_path / "native-compiler-case", monkeypatch)
 
-def test_compile_papyrus_uses_native_compiler(tmp_path: Path, monkeypatch):
+
+def _test_compile_papyrus_uses_native_compiler(tmp_path: Path, monkeypatch):
     from creation_lib.build.deployer import compile_papyrus
 
     mod_dir = tmp_path / "mods" / "B21_Test"
@@ -410,7 +408,7 @@ def test_compile_papyrus_uses_native_compiler(tmp_path: Path, monkeypatch):
     assert (mod_dir / "data" / "Scripts" / "Baz.pex").read_bytes() == b"pex"
 
 
-def test_no_esp_deploy_copies_xse_tree_and_fo4cs_data_root(tmp_path: Path):
+def test_no_esp_deploy_and_undeploy_round_trip_xse_tree_and_fo4cs_data_root(tmp_path: Path):
     mod_name = "B21_Test"
     mod_dir = tmp_path / "mods" / mod_name
     game_data_dir = tmp_path / "Game" / "Data"
@@ -427,6 +425,8 @@ def test_no_esp_deploy_copies_xse_tree_and_fo4cs_data_root(tmp_path: Path):
     (lut_dir / "neutral_32.dds").write_bytes(b"lut")
     (mcm_dir / "config.json").write_text("{}", encoding="utf-8")
     (materials_dir / "M2Barrel.bgsm").write_bytes(b"bgsm")
+    (game_data_dir / "FO4CS" / "other_mod_file.txt").parent.mkdir(parents=True)
+    (game_data_dir / "FO4CS" / "other_mod_file.txt").write_bytes(b"keep")
 
     result = deploy_mod(
         mod_name,
@@ -447,31 +447,6 @@ def test_no_esp_deploy_copies_xse_tree_and_fo4cs_data_root(tmp_path: Path):
         game_data_dir / "Materials" / "Weapons" / "M2" / "M2Barrel.bgsm"
     ).read_bytes() == b"bgsm"
 
-
-def test_no_esp_undeploy_removes_xse_tree_and_fo4cs_data_root(tmp_path: Path):
-    mod_name = "B21_Test"
-    mod_dir = tmp_path / "mods" / mod_name
-    game_data_dir = tmp_path / "Game" / "Data"
-    plugin_dir = mod_dir / "F4SE" / "Plugins"
-    lut_dir = mod_dir / "FO4CS" / "LUTs"
-    deployed_plugin_dir = game_data_dir / "F4SE" / "Plugins"
-    deployed_lut_dir = game_data_dir / "FO4CS" / "LUTs"
-    mcm_dir = mod_dir / "MCM" / "Config" / mod_name
-    deployed_mcm_dir = game_data_dir / "MCM" / "Config" / mod_name
-    plugin_dir.mkdir(parents=True)
-    lut_dir.mkdir(parents=True)
-    deployed_plugin_dir.mkdir(parents=True)
-    deployed_lut_dir.mkdir(parents=True)
-    mcm_dir.mkdir(parents=True)
-    deployed_mcm_dir.mkdir(parents=True)
-    (plugin_dir / f"{mod_name}.dll").write_bytes(b"dll")
-    (lut_dir / "neutral_32.dds").write_bytes(b"lut")
-    (deployed_plugin_dir / f"{mod_name}.dll").write_bytes(b"dll")
-    (deployed_lut_dir / "neutral_32.dds").write_bytes(b"lut")
-    (mcm_dir / "config.json").write_text("{}", encoding="utf-8")
-    (deployed_mcm_dir / "config.json").write_text("{}", encoding="utf-8")
-    (game_data_dir / "FO4CS" / "other_mod_file.txt").write_bytes(b"keep")
-
     removed = undeploy_mod(
         mod_name,
         game="fo4",
@@ -484,13 +459,13 @@ def test_no_esp_undeploy_removes_xse_tree_and_fo4cs_data_root(tmp_path: Path):
     assert "F4SE/Plugins/B21_Test.dll" in removed
     assert "FO4CS/LUTs/neutral_32.dds" in removed
     assert f"MCM/Config/{mod_name}/config.json" in removed
-    assert not (deployed_plugin_dir / f"{mod_name}.dll").exists()
-    assert not (deployed_lut_dir / "neutral_32.dds").exists()
-    assert not (deployed_mcm_dir / "config.json").exists()
+    assert not (game_data_dir / "F4SE" / "Plugins" / f"{mod_name}.dll").exists()
+    assert not (game_data_dir / "FO4CS" / "LUTs" / "neutral_32.dds").exists()
+    assert not (game_data_dir / "MCM" / "Config" / mod_name / "config.json").exists()
     assert (game_data_dir / "FO4CS" / "other_mod_file.txt").read_bytes() == b"keep"
 
 
-def test_deploy_does_not_copy_root_strings_for_archive_deploy(tmp_path: Path):
+def test_deploy_refreshes_root_strings_and_round_trips_terrain_sidecar(tmp_path: Path):
     mod_name = "B21_Test"
     mod_dir = tmp_path / "mods" / mod_name
     game_data_dir = tmp_path / "Game" / "Data"
@@ -515,22 +490,156 @@ def test_deploy_does_not_copy_root_strings_for_archive_deploy(tmp_path: Path):
         resource_dir=tmp_path / "resource",
     )
 
-    assert result.strings_deployed == 0
-    assert not (game_data_dir / "Strings" / f"{mod_name}_en.STRINGS").exists()
+    assert result.strings_deployed == 1
+    assert (game_data_dir / "Strings" / f"{mod_name}_en.STRINGS").read_bytes() == b"strings"
     assert not (game_data_dir / "Strings" / f"{mod_name}.esm_en.dlstrings").exists()
     assert not (game_data_dir / "Strings" / f".{mod_name}.ckfix.tmp_en.STRINGS").exists()
     assert (game_data_dir / "Strings" / f"{mod_name}Other_en.STRINGS").read_bytes() == b"other"
 
+    # deploy/undeploy also round-trip a Terrain/*.btd4 sidecar, pruning only what
+    # this mod generated from a shared Data/Terrain/ tree.
+    terrain_root = tmp_path / "terrain"
+    terrain_mod_dir = terrain_root / "mods" / mod_name
+    terrain_game_data_dir = terrain_root / "Game" / "Data"
+    terrain_dir = terrain_mod_dir / "Terrain"
+    terrain_dir.mkdir(parents=True)
+    deployed_terrain_dir = terrain_game_data_dir / "Terrain"
+    deployed_terrain_dir.mkdir(parents=True)
+    (terrain_mod_dir / f"{mod_name}.esp").write_bytes(b"esp")
+    (terrain_dir / "Appalachia.btd4").write_bytes(b"btd4")
+    (deployed_terrain_dir / "Vanilla.btd").write_bytes(b"keep")
 
-def test_deploy_copies_terrain_btd4_sidecar(tmp_path: Path):
+    deploy_mod(
+        mod_name,
+        game="fo4",
+        game_data_dir=terrain_game_data_dir,
+        skip_build=True,
+        skip_pack=True,
+        project_root=terrain_root,
+        resource_dir=terrain_root / "resource",
+    )
+
+    assert (deployed_terrain_dir / "Appalachia.btd4").read_bytes() == b"btd4"
+
+    terrain_removed = undeploy_mod(
+        mod_name,
+        game="fo4",
+        game_data_dir=terrain_game_data_dir,
+        project_root=terrain_root,
+    )
+
+    assert "Terrain/Appalachia.btd4" in terrain_removed
+    assert not (deployed_terrain_dir / "Appalachia.btd4").exists()
+    # A shared Data/Terrain/ holding other files survives the prune.
+    assert (deployed_terrain_dir / "Vanilla.btd").read_bytes() == b"keep"
+
+
+def test_deploy_and_undeploy_round_trip_precombine_sidecars_in_ba2_mode(tmp_path: Path):
+    """The .csg/.cdx precombine sidecars deploy loose beside the plugin even
+    when the mod also ships a BA2 — the engine never reads them from an
+    archive. A redeploy that drops one must remove the stale deployed copy,
+    and undeploy must remove both.
+    """
     mod_name = "B21_Test"
     mod_dir = tmp_path / "mods" / mod_name
     game_data_dir = tmp_path / "Game" / "Data"
-    terrain_dir = mod_dir / "Terrain"
-    terrain_dir.mkdir(parents=True)
+    mod_dir.mkdir(parents=True)
     game_data_dir.mkdir(parents=True)
     (mod_dir / f"{mod_name}.esp").write_bytes(b"esp")
-    (terrain_dir / "Appalachia.btd4").write_bytes(b"btd4")
+    (mod_dir / f"{mod_name} - Main.ba2").write_bytes(b"main")
+    (mod_dir / f"{mod_name} - Geometry.csg").write_bytes(b"csg")
+    (mod_dir / f"{mod_name}.cdx").write_bytes(b"cdx")
+
+    result = deploy_mod(
+        mod_name,
+        game="fo4",
+        game_data_dir=game_data_dir,
+        skip_build=True,
+        skip_pack=True,
+        project_root=tmp_path,
+        resource_dir=tmp_path / "resource",
+    )
+
+    assert result.archives_deployed == [f"{mod_name} - Main.ba2"]
+    assert (game_data_dir / f"{mod_name} - Geometry.csg").read_bytes() == b"csg"
+    assert (game_data_dir / f"{mod_name}.cdx").read_bytes() == b"cdx"
+
+    # Redeploy without the .cdx: the stale deployed copy is removed, the other
+    # sidecar is untouched.
+    (mod_dir / f"{mod_name}.cdx").unlink()
+    deploy_mod(
+        mod_name,
+        game="fo4",
+        game_data_dir=game_data_dir,
+        skip_build=True,
+        skip_pack=True,
+        project_root=tmp_path,
+        resource_dir=tmp_path / "resource",
+    )
+    assert (game_data_dir / f"{mod_name} - Geometry.csg").read_bytes() == b"csg"
+    assert not (game_data_dir / f"{mod_name}.cdx").exists()
+
+    removed = undeploy_mod(
+        mod_name,
+        game="fo4",
+        game_data_dir=game_data_dir,
+        project_root=tmp_path,
+    )
+    assert f"{mod_name} - Geometry.csg" in removed
+    assert not (game_data_dir / f"{mod_name} - Geometry.csg").exists()
+
+
+def test_deploy_esp_only_and_no_archive_mod_still_deploy_precombine_sidecars(tmp_path: Path):
+    """Sidecars deploy like the plugin itself: with no data/ dir to pack (no
+    archive at all) and with --esp-only (archives/loose skipped outright).
+    """
+    mod_name = "B21_Test"
+    mod_dir = tmp_path / "mods" / mod_name
+    game_data_dir = tmp_path / "Game" / "Data"
+    mod_dir.mkdir(parents=True)
+    game_data_dir.mkdir(parents=True)
+    (mod_dir / f"{mod_name}.esp").write_bytes(b"esp")
+    (mod_dir / f"{mod_name} - Geometry.csg").write_bytes(b"csg")
+    (mod_dir / f"{mod_name}.cdx").write_bytes(b"cdx")
+
+    # No data/ directory at all -- nothing to pack into a BA2.
+    deploy_mod(
+        mod_name,
+        game="fo4",
+        game_data_dir=game_data_dir,
+        skip_build=True,
+        project_root=tmp_path,
+        resource_dir=tmp_path / "resource",
+    )
+    assert (game_data_dir / f"{mod_name} - Geometry.csg").read_bytes() == b"csg"
+    assert (game_data_dir / f"{mod_name}.cdx").read_bytes() == b"cdx"
+
+    game_data_dir_2 = tmp_path / "Game2" / "Data"
+    game_data_dir_2.mkdir(parents=True)
+    deploy_mod(
+        mod_name,
+        game="fo4",
+        game_data_dir=game_data_dir_2,
+        skip_build=True,
+        esp_only=True,
+        project_root=tmp_path,
+        resource_dir=tmp_path / "resource",
+    )
+    assert (game_data_dir_2 / f"{mod_name} - Geometry.csg").read_bytes() == b"csg"
+    assert (game_data_dir_2 / f"{mod_name}.cdx").read_bytes() == b"cdx"
+
+
+def test_deploy_finds_precombine_sidecars_under_mod_data_dir(tmp_path: Path):
+    """A sidecar shipped under mods/<Mod>/data/ (rather than beside the
+    plugin) is also picked up."""
+    mod_name = "B21_Test"
+    mod_dir = tmp_path / "mods" / mod_name
+    data_dir = mod_dir / "data"
+    game_data_dir = tmp_path / "Game" / "Data"
+    data_dir.mkdir(parents=True)
+    game_data_dir.mkdir(parents=True)
+    (mod_dir / f"{mod_name}.esp").write_bytes(b"esp")
+    (data_dir / f"{mod_name} - Geometry.csg").write_bytes(b"csg-in-data")
 
     deploy_mod(
         mod_name,
@@ -542,65 +651,7 @@ def test_deploy_copies_terrain_btd4_sidecar(tmp_path: Path):
         resource_dir=tmp_path / "resource",
     )
 
-    assert (game_data_dir / "Terrain" / "Appalachia.btd4").read_bytes() == b"btd4"
-
-
-def test_undeploy_removes_terrain_btd4_sidecar(tmp_path: Path):
-    mod_name = "B21_Test"
-    mod_dir = tmp_path / "mods" / mod_name
-    game_data_dir = tmp_path / "Game" / "Data"
-    terrain_dir = mod_dir / "Terrain"
-    terrain_dir.mkdir(parents=True)
-    deployed_terrain_dir = game_data_dir / "Terrain"
-    deployed_terrain_dir.mkdir(parents=True)
-    (mod_dir / f"{mod_name}.esp").write_bytes(b"esp")
-    (terrain_dir / "Appalachia.btd4").write_bytes(b"btd4")
-    (deployed_terrain_dir / "Appalachia.btd4").write_bytes(b"btd4")
-    (deployed_terrain_dir / "Vanilla.btd").write_bytes(b"keep")
-
-    removed = undeploy_mod(
-        mod_name,
-        game="fo4",
-        game_data_dir=game_data_dir,
-        project_root=tmp_path,
-    )
-
-    assert "Terrain/Appalachia.btd4" in removed
-    assert not (deployed_terrain_dir / "Appalachia.btd4").exists()
-    # A shared Data/Terrain/ holding other files survives the prune.
-    assert (deployed_terrain_dir / "Vanilla.btd").read_bytes() == b"keep"
-
-
-def test_undeploy_removes_generated_archives_but_keeps_manual_archives(tmp_path: Path):
-    mod_name = "B21_Test"
-    mod_dir = tmp_path / "mods" / mod_name
-    game_data_dir = tmp_path / "Game" / "Data"
-    mod_dir.mkdir(parents=True)
-    game_data_dir.mkdir(parents=True)
-    strings_dir = game_data_dir / "Strings"
-    strings_dir.mkdir()
-    (game_data_dir / f"{mod_name}.esp").write_bytes(b"esp")
-    (game_data_dir / f"{mod_name} - Main.ba2").write_bytes(b"main")
-    (game_data_dir / f"{mod_name} - HiRes.ba2").write_bytes(b"manual")
-    (strings_dir / f"{mod_name}_en.STRINGS").write_bytes(b"strings")
-    (strings_dir / f"{mod_name}.esm_en.ILSTRINGS").write_bytes(b"strings")
-    (strings_dir / f"{mod_name}Other_en.STRINGS").write_bytes(b"other")
-
-    removed = undeploy_mod(
-        mod_name,
-        game="fo4",
-        game_data_dir=game_data_dir,
-        project_root=tmp_path,
-    )
-
-    assert f"{mod_name}.esp" in removed
-    assert f"{mod_name} - Main.ba2" in removed
-    assert f"Strings/{mod_name}_en.STRINGS" in removed
-    assert f"Strings/{mod_name}.esm_en.ILSTRINGS" in removed
-    assert not (game_data_dir / f"{mod_name}.esp").exists()
-    assert not (game_data_dir / f"{mod_name} - Main.ba2").exists()
-    assert (game_data_dir / f"{mod_name} - HiRes.ba2").read_bytes() == b"manual"
-    assert (strings_dir / f"{mod_name}Other_en.STRINGS").read_bytes() == b"other"
+    assert (game_data_dir / f"{mod_name} - Geometry.csg").read_bytes() == b"csg-in-data"
 
 
 def _mod_calling_into_the_base_game(tmp_path: Path) -> tuple[Path, Path]:
@@ -616,7 +667,9 @@ def _mod_calling_into_the_base_game(tmp_path: Path) -> tuple[Path, Path]:
     return mod_dir, game_data
 
 
-def test_compile_papyrus_falls_back_to_the_bundled_corpus(tmp_path: Path):
+def test_compile_papyrus_falls_back_to_bundled_corpus_and_finds_skyrims_reversed_layout(
+    tmp_path: Path, monkeypatch
+):
     """No game install is not an error — the shipped type universe covers it.
 
     An empty Source/Base satisfies `is_dir()` and resolves nothing, so without a
@@ -625,45 +678,18 @@ def test_compile_papyrus_falls_back_to_the_bundled_corpus(tmp_path: Path):
     """
     from creation_lib.build.deployer import compile_papyrus
 
-    mod_dir, game_data = _mod_calling_into_the_base_game(tmp_path)
+    mod_dir, game_data = _mod_calling_into_the_base_game(tmp_path / "fo4")
     messages: list[str] = []
     assert compile_papyrus(mod_dir, "fo4", game_data, on_progress=messages.append) == 1
     assert any("bundled fo4 type universe" in m for m in messages)
     assert (mod_dir / "data" / "Scripts" / "S.pex").is_file()
 
-
-def test_compile_papyrus_names_the_missing_vanilla_sources(tmp_path: Path, monkeypatch):
-    """With no install and no corpus, name what is missing.
-
-    Asserts the diagnostic rather than the compile failure on purpose: the
-    resolver memoizes parsed ASTs process-globally, keyed by script name with no
-    import root in the key, so once another test in this process has compiled
-    against a type universe the callees stay resolvable here no matter what this
-    test imports. The message is what this test is about, and it is unaffected.
-    """
+    # Skyrim keeps vanilla sources at Data/Source/Scripts, not Scripts/Source/Base.
+    # Looking only where Fallout 4 puts them meant a Skyrim install with its
+    # sources present was treated as having none.
     from creation_lib.build import deployer
 
-    monkeypatch.setattr("creation_lib.pex.corpus.bundled_corpus_root", lambda game: None)
-    mod_dir, game_data = _mod_calling_into_the_base_game(tmp_path)
-
-    messages: list[str] = []
-    try:
-        deployer.compile_papyrus(mod_dir, "fo4", game_data, on_progress=messages.append)
-    except RuntimeError as error:
-        assert "no Creation Kit sources" in str(error)
-
-    assert any("no bundled fo4 corpus" in m for m in messages)
-
-
-def test_compile_papyrus_finds_skyrims_reversed_source_layout(tmp_path: Path, monkeypatch):
-    """Skyrim keeps vanilla sources at Data/Source/Scripts, not Scripts/Source/Base.
-
-    Looking only where Fallout 4 puts them meant a Skyrim install with its
-    sources present was treated as having none.
-    """
-    from creation_lib.build import deployer
-
-    mod_dir, game_data = _mod_calling_into_the_base_game(tmp_path)
+    mod_dir, game_data = _mod_calling_into_the_base_game(tmp_path / "skyrim")
     skyrim_base = game_data / "Source" / "Scripts"
     skyrim_base.mkdir(parents=True)
     (skyrim_base / "Quest.psc").write_text(
@@ -683,3 +709,38 @@ def test_compile_papyrus_finds_skyrims_reversed_source_layout(tmp_path: Path, mo
     real(mod_dir, "skyrimse", game_data)
 
     assert any(str(skyrim_base) in parts for parts in captured)
+
+
+def test_always_loose_files_deploy_in_every_mode_and_undeploy(tmp_path: Path):
+    mod_name = "B21_Test"
+    mod_dir = tmp_path / "mods" / mod_name
+    mod_dir.mkdir(parents=True)
+    (mod_dir / f"{mod_name}.esp").write_bytes(b"esp")
+    (mod_dir / "data/Interface").mkdir(parents=True)
+    (mod_dir / "data/Interface/Host.swf").write_bytes(b"swf")
+    (mod_dir / "F4SE/media").mkdir(parents=True)
+    (mod_dir / "F4SE/media/theme.xwm").write_bytes(b"xwm")
+    (mod_dir / deployer.ALWAYS_LOOSE_NAME).write_text(
+        '{"files": {"Interface/Host.swf": "data/Interface/Host.swf",'
+        ' "Music/Menu/theme.xwm": "F4SE/media/theme.xwm"}}', encoding="utf-8")
+
+    for esp_only in (False, True):
+        game_data_dir = tmp_path / f"Game{esp_only}" / "Data"
+        game_data_dir.mkdir(parents=True)
+        deploy_mod(mod_name, game="fo4", game_data_dir=game_data_dir, skip_build=True,
+                   skip_pack=True, esp_only=esp_only, project_root=tmp_path,
+                   resource_dir=tmp_path / "resource")
+        assert (game_data_dir / "Interface/Host.swf").read_bytes() == b"swf"
+        assert (game_data_dir / "Music/Menu/theme.xwm").read_bytes() == b"xwm"
+
+    removed = undeploy_mod(mod_name, game="fo4", game_data_dir=game_data_dir, project_root=tmp_path)
+    assert {"Interface/Host.swf", "Music/Menu/theme.xwm"} <= set(removed)
+    assert not (game_data_dir / "Interface/Host.swf").exists()
+
+
+@pytest.mark.parametrize("target, source", [("../Evil.dll", "data/x"), ("Interface/x.swf", "../../x")])
+def test_always_loose_files_reject_paths_outside_data_or_mod(tmp_path: Path, target, source):
+    (tmp_path / deployer.ALWAYS_LOOSE_NAME).write_text(
+        f'{{"files": {{"{target}": "{source}"}}}}', encoding="utf-8")
+    with pytest.raises(ValueError, match="unsafe always-loose entry"):
+        deployer.always_loose_files(tmp_path)

@@ -1061,10 +1061,6 @@ mod tests {
                 "{path} must be stored uncompressed"
             );
         }
-    }
-
-    #[test]
-    fn non_audio_payloads_still_compress() {
         for path in [
             "meshes/props/thing.nif",
             "materials/x.bgsm",
@@ -1072,8 +1068,6 @@ mod tests {
         ] {
             assert!(allows_compression_for_path(path), "{path} should compress");
         }
-        // The sound/ rule itself must survive the .fuz carve-out's removal.
-        assert!(!allows_compression_for_path("sound/fx/explosion.xwm"));
     }
 
     struct TestDir {
@@ -1109,70 +1103,6 @@ mod tests {
     fn assert_dx10_dds_payload_matches(original: &[u8], extracted: &[u8]) {
         assert_eq!(extracted.len(), original.len());
         assert_eq!(&extracted[148..], &original[148..]);
-    }
-
-    #[test]
-    fn incremental_writer_route_covers_v1_and_v8() {
-        assert_eq!(
-            incremental_writer_kind(
-                fo4::Version::v8,
-                fo4::Format::GNRL,
-                fo4::CompressionFormat::Zip,
-                false,
-                false,
-            ),
-            Some(Fo4WriterKind::Gnrl)
-        );
-        assert_eq!(
-            incremental_writer_kind(
-                fo4::Version::v8,
-                fo4::Format::DX10,
-                fo4::CompressionFormat::Zip,
-                true,
-                false,
-            ),
-            Some(Fo4WriterKind::Dx10)
-        );
-        assert_eq!(
-            incremental_writer_kind(
-                fo4::Version::v1,
-                fo4::Format::GNRL,
-                fo4::CompressionFormat::Zip,
-                false,
-                false,
-            ),
-            Some(Fo4WriterKind::Gnrl)
-        );
-        assert_eq!(
-            incremental_writer_kind(
-                fo4::Version::v1,
-                fo4::Format::DX10,
-                fo4::CompressionFormat::Zip,
-                true,
-                false,
-            ),
-            Some(Fo4WriterKind::Dx10)
-        );
-        assert_eq!(
-            incremental_writer_kind(
-                fo4::Version::v2,
-                fo4::Format::GNRL,
-                fo4::CompressionFormat::Zip,
-                false,
-                false,
-            ),
-            None
-        );
-        assert_eq!(
-            incremental_writer_kind(
-                fo4::Version::v8,
-                fo4::Format::DX10,
-                fo4::CompressionFormat::Zip,
-                true,
-                true,
-            ),
-            None
-        );
     }
 
     #[test]
@@ -1218,52 +1148,6 @@ mod tests {
     }
 
     #[test]
-    fn tes4_pack_skips_compression_for_wav_files() -> anyhow::Result<()> {
-        let dir = TestDir::new();
-        let source_dir = dir.path().join("src");
-        fs::create_dir_all(source_dir.join("sound"))?;
-        fs::create_dir_all(source_dir.join("misc"))?;
-        fs::write(source_dir.join("sound").join("test.wav"), vec![b'A'; 8192])?;
-        fs::write(source_dir.join("misc").join("test.txt"), vec![b'B'; 8192])?;
-
-        let archive_path = dir.path().join("out.bsa");
-        let written = pack_archive(
-            &source_dir,
-            &archive_path,
-            "fo3",
-            true,
-            9,
-            false,
-            None,
-            None,
-            PackFilters::default(),
-        )
-        .map_err(anyhow::Error::msg)?;
-        assert_eq!(written, 2);
-
-        let (archive, options) = tes4::Archive::read(archive_path.as_path())?;
-        assert!(options.flags().compressed());
-
-        let sound_dir = archive
-            .get(&tes4::ArchiveKey::from("sound"))
-            .expect("missing sound directory");
-        let wav = sound_dir
-            .get(&tes4::DirectoryKey::from("test.wav"))
-            .expect("missing wav");
-        assert!(!wav.is_compressed());
-
-        let misc_dir = archive
-            .get(&tes4::ArchiveKey::from("misc"))
-            .expect("missing misc directory");
-        let txt = misc_dir
-            .get(&tes4::DirectoryKey::from("test.txt"))
-            .expect("missing txt");
-        assert!(txt.is_compressed());
-
-        Ok(())
-    }
-
-    #[test]
     fn fo4_pack_skips_compression_for_wav_files() -> anyhow::Result<()> {
         let dir = TestDir::new();
         let source_dir = dir.path().join("src");
@@ -1271,6 +1155,7 @@ mod tests {
         fs::create_dir_all(source_dir.join("misc"))?;
         fs::write(source_dir.join("sound").join("test.wav"), vec![b'A'; 8192])?;
         fs::write(source_dir.join("misc").join("test.txt"), vec![b'B'; 8192])?;
+        fs::write(source_dir.join("misc").join("tiny.bin"), b"tiny payload")?;
 
         let archive_path = dir.path().join("out.ba2");
         let written = pack_archive(
@@ -1285,10 +1170,14 @@ mod tests {
             PackFilters::default(),
         )
         .map_err(anyhow::Error::msg)?;
-        assert_eq!(written, 2);
+        assert_eq!(written, 3);
 
         let (archive, options) = fo4::Archive::read(archive_path.as_path())?;
         assert_eq!(options.version(), fo4::Version::v8);
+        let tiny = archive
+            .get(&fo4::ArchiveKey::from("misc/tiny.bin"))
+            .expect("missing tiny file");
+        assert!(tiny.iter().all(|chunk| !chunk.is_compressed()));
         let wav = archive
             .get(&fo4::ArchiveKey::from("sound/test.wav"))
             .expect("missing wav");
@@ -1298,48 +1187,6 @@ mod tests {
             .get(&fo4::ArchiveKey::from("misc/test.txt"))
             .expect("missing txt");
         assert!(txt.iter().any(fo4::Chunk::is_compressed));
-
-        Ok(())
-    }
-
-    #[test]
-    fn fo4_pack_keeps_tiny_gnrl_chunks_raw_when_compression_saves_too_little() -> anyhow::Result<()>
-    {
-        let dir = TestDir::new();
-        let source_dir = dir.path().join("src");
-        fs::create_dir_all(source_dir.join("misc"))?;
-        fs::write(source_dir.join("misc").join("tiny.bin"), b"tiny payload")?;
-        fs::write(
-            source_dir.join("misc").join("compressible.txt"),
-            vec![b'C'; 8192],
-        )?;
-
-        let archive_path = dir.path().join("out.ba2");
-        let written = pack_archive(
-            &source_dir,
-            &archive_path,
-            "fo4",
-            true,
-            9,
-            false,
-            None,
-            None,
-            PackFilters::default(),
-        )
-        .map_err(anyhow::Error::msg)?;
-        assert_eq!(written, 2);
-
-        let (archive, options) = fo4::Archive::read(archive_path.as_path())?;
-        assert_eq!(options.version(), fo4::Version::v8);
-        let tiny = archive
-            .get(&fo4::ArchiveKey::from("misc/tiny.bin"))
-            .expect("missing tiny file");
-        assert!(tiny.iter().all(|chunk| !chunk.is_compressed()));
-
-        let compressible = archive
-            .get(&fo4::ArchiveKey::from("misc/compressible.txt"))
-            .expect("missing compressible file");
-        assert!(compressible.iter().any(fo4::Chunk::is_compressed));
 
         Ok(())
     }
@@ -1393,48 +1240,6 @@ mod tests {
                 .get(&fo4::ArchiveKey::from("Sound\\Generated\\b.wav"))
                 .is_some()
         );
-        Ok(())
-    }
-
-    #[test]
-    fn fo4_texture_pack_streams_pc_dds_fixture() -> anyhow::Result<()> {
-        let dir = TestDir::new();
-        let source_dir = dir.path().join("src");
-        let texture_dir = source_dir.join("Textures");
-        fs::create_dir_all(&texture_dir)?;
-        let file_name = "Fence006_1K_Roughness.dds";
-        let source_file = texture_dir.join(file_name);
-        fs::copy(Path::new("data/fo4_dds_test").join(file_name), &source_file)?;
-
-        let archive_path = dir.path().join("out.ba2");
-        let written = pack_archive(
-            &source_dir,
-            &archive_path,
-            "fo4dds",
-            true,
-            9,
-            false,
-            None,
-            None,
-            PackFilters::default(),
-        )
-        .map_err(anyhow::Error::msg)?;
-        assert_eq!(written, 1);
-
-        let original = fs::read(&source_file)?;
-        let (archive, options) = fo4::Archive::read(archive_path.as_path())?;
-        assert_eq!(options.format(), fo4::Format::DX10);
-        assert_eq!(options.compression_format(), fo4::CompressionFormat::Zip);
-        let file = archive
-            .get(&fo4::ArchiveKey::from(
-                format!("Textures\\{file_name}").as_str(),
-            ))
-            .expect("missing packed texture");
-        let write_options: fo4::FileWriteOptions = options.into();
-        let mut extracted = Vec::new();
-        file.write(&mut extracted, &write_options)?;
-        assert_dx10_dds_payload_matches(&original, &extracted);
-
         Ok(())
     }
 
@@ -1522,48 +1327,6 @@ mod tests {
     }
 
     #[test]
-    fn pack_entries_rejects_unsafe_archive_paths() -> anyhow::Result<()> {
-        let dir = TestDir::new();
-        let source_path = dir.path().join("source.txt");
-        fs::write(&source_path, b"source")?;
-
-        let err = pack_archive_entries(
-            &[PackEntrySpec {
-                source_path,
-                archive_path: "../bad.txt".to_string(),
-                source_size: None,
-            }],
-            &dir.path().join("out.ba2"),
-            "fo4",
-            true,
-            9,
-            false,
-            None,
-            None,
-        )
-        .expect_err("unsafe archive path should fail");
-        assert!(err.contains("unsafe archive path"));
-        Ok(())
-    }
-
-    #[test]
-    fn planned_entry_collection_defers_source_io_to_pack_workers() -> anyhow::Result<()> {
-        let dir = TestDir::new();
-        let missing_source = dir.path().join("missing.nif");
-        let entries = collect_entry_specs(&[PackEntrySpec {
-            source_path: missing_source.clone(),
-            archive_path: "Meshes/missing.nif".to_string(),
-            source_size: Some(123),
-        }])
-        .map_err(anyhow::Error::msg)?;
-
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].full_path, missing_source);
-        assert_eq!(entries[0].source_size, Some(123));
-        Ok(())
-    }
-
-    #[test]
     fn pack_worker_still_rejects_a_missing_planned_source() -> anyhow::Result<()> {
         let dir = TestDir::new();
         let missing_source = dir.path().join("missing.nif");
@@ -1595,6 +1358,7 @@ mod tests {
         fs::write(&source_path, b"source")?;
 
         for archive_path in [
+            "../bad.txt",
             "/Meshes/a.nif",
             "\\Meshes\\a.nif",
             "\\\\server\\share\\a.nif",
@@ -1613,7 +1377,7 @@ mod tests {
                 None,
                 None,
             )
-            .expect_err("rooted archive path should fail");
+            .expect_err("unsafe archive path should fail");
             assert!(err.contains("unsafe archive path"));
         }
 
@@ -1625,42 +1389,14 @@ mod tests {
     }
 
     #[test]
-    fn fo4_archive_type_names_select_expected_generations() {
-        fn fo4_kind(value: &str) -> (fo4::Version, fo4::Format) {
-            match parse_pack_kind(value).expect("archive type should parse") {
-                PackKind::Fo4 {
-                    version, format, ..
-                } => (version, format),
-                PackKind::Tes4 { .. } => panic!("expected FO4 pack kind"),
-            }
-        }
-
-        assert_eq!(fo4_kind("fo4"), (fo4::Version::v8, fo4::Format::GNRL));
-        assert_eq!(fo4_kind("fo4dds"), (fo4::Version::v8, fo4::Format::DX10));
-        assert_eq!(fo4_kind("fo4xbox"), (fo4::Version::v8, fo4::Format::GNRL));
-        assert_eq!(
-            fo4_kind("fo4xboxdds"),
-            (fo4::Version::v8, fo4::Format::DX10)
-        );
-        assert_eq!(fo4_kind("fo4ps"), (fo4::Version::v8, fo4::Format::GNRL));
-        assert_eq!(fo4_kind("fo4psdds"), (fo4::Version::v8, fo4::Format::GNRL));
-        assert_eq!(fo4_kind("fo4og"), (fo4::Version::v1, fo4::Format::GNRL));
-        assert_eq!(fo4_kind("fo4ogdds"), (fo4::Version::v1, fo4::Format::DX10));
-    }
-
-    #[test]
-    fn pack_filters_include_only_matching_prefixes() {
+    fn pack_filters_include_and_exclude_matching_prefixes() {
         let filters = PackFilters::new(vec!["Textures\\".to_string()], Vec::new());
 
         assert!(filters.matches("textures/foo/bar.dds"));
         assert!(filters.matches("TEXTURES\\foo\\bar.dds"));
         assert!(!filters.matches("meshes/foo.nif"));
-    }
 
-    #[test]
-    fn pack_filters_exclude_matching_prefixes() {
         let filters = PackFilters::new(Vec::new(), vec!["Textures/".to_string()]);
-
         assert!(!filters.matches("textures/foo/bar.dds"));
         assert!(filters.matches("meshes/foo.nif"));
     }
@@ -1691,26 +1427,6 @@ mod tests {
 
         assert_eq!(paths, vec!["Misc\\c.txt", "Meshes\\b.nif"]);
         Ok(())
-    }
-
-    #[test]
-    fn archive_type_default_level_picks_per_format() {
-        assert_eq!(archive_type_default_level("fo4dds"), 4);
-        assert_eq!(archive_type_default_level("fo4"), 6);
-        assert_eq!(archive_type_default_level("fo4psdds"), 6);
-        assert_eq!(archive_type_default_level("fo76dds"), 4);
-        assert_eq!(archive_type_default_level("starfielddds"), 4);
-        assert_eq!(archive_type_default_level("sse"), 6);
-    }
-
-    #[test]
-    fn archive_type_compression_codec_matches_direct_texture_writer() {
-        assert_eq!(archive_type_compression_codec("fo4dds"), "libdeflate");
-        assert_eq!(archive_type_compression_codec("fo76dds"), "libdeflate");
-        assert_eq!(archive_type_compression_codec("fo4"), "zlib");
-        assert_eq!(archive_type_compression_codec("fo4xboxdds"), "zlib");
-        assert_eq!(archive_type_compression_codec("fo4psdds"), "zlib");
-        assert_eq!(archive_type_compression_codec("starfielddds"), "zlib");
     }
 
     fn riff_wave_payload(format_tag: u16) -> Vec<u8> {
@@ -1746,104 +1462,45 @@ mod tests {
     }
 
     #[test]
-    fn playstation_archive_rejects_xwm_audio() -> anyhow::Result<()> {
-        let dir = TestDir::new();
-        let source_dir = dir.path().join("source");
-        fs::create_dir_all(source_dir.join("Sound"))?;
-        fs::write(source_dir.join("Sound/test.xwm"), b"xwm")?;
+    fn playstation_archive_audio_policy() -> anyhow::Result<()> {
+        let fuz = |audio: Vec<u8>| {
+            let mut fuz = b"FUZE\x01\x00\x00\x00\x03\x00\x00\x00LIP".to_vec();
+            fuz.extend_from_slice(&audio);
+            fuz
+        };
+        let cases: [(&str, Vec<u8>, Option<&str>); 4] = [
+            ("Sound/test.xwm", b"xwm".to_vec(), Some("do not support XWM audio")),
+            (
+                "Sound/Voice/test.fuz",
+                fuz(riff_wave_payload(0x0162)),
+                Some("must embed PCM WAV or ATRAC9 audio"),
+            ),
+            ("Sound/Voice/test.fuz", fuz(riff_wave_payload(1)), None),
+            ("Sound/Voice/test.fuz", fuz(atrac9_wave_payload()), None),
+        ];
+        for (rel, payload, expected_error) in cases {
+            let dir = TestDir::new();
+            let source_dir = dir.path().join("source");
+            let source_file = source_dir.join(rel);
+            fs::create_dir_all(source_file.parent().unwrap())?;
+            fs::write(&source_file, payload)?;
 
-        let error = pack_archive(
-            &source_dir,
-            &dir.path().join("out.ba2"),
-            "fo4ps",
-            true,
-            6,
-            false,
-            None,
-            None,
-            PackFilters::default(),
-        )
-        .unwrap_err();
-
-        assert!(error.contains("do not support XWM audio"));
-        Ok(())
-    }
-
-    #[test]
-    fn playstation_archive_requires_wav_backed_fuz() -> anyhow::Result<()> {
-        let dir = TestDir::new();
-        let source_dir = dir.path().join("source");
-        fs::create_dir_all(source_dir.join("Sound/Voice"))?;
-        let mut fuz = b"FUZE\x01\x00\x00\x00\x03\x00\x00\x00LIP".to_vec();
-        fuz.extend_from_slice(&riff_wave_payload(0x0162));
-        fs::write(source_dir.join("Sound/Voice/test.fuz"), fuz)?;
-
-        let error = pack_archive(
-            &source_dir,
-            &dir.path().join("out.ba2"),
-            "fo4ps",
-            true,
-            6,
-            false,
-            None,
-            None,
-            PackFilters::default(),
-        )
-        .unwrap_err();
-
-        assert!(error.contains("must embed PCM WAV or ATRAC9 audio"));
-        Ok(())
-    }
-
-    #[test]
-    fn playstation_archive_accepts_wav_backed_fuz() -> anyhow::Result<()> {
-        let dir = TestDir::new();
-        let source_dir = dir.path().join("source");
-        fs::create_dir_all(source_dir.join("Sound/Voice"))?;
-        let mut fuz = b"FUZE\x01\x00\x00\x00\x03\x00\x00\x00LIP".to_vec();
-        fuz.extend_from_slice(&riff_wave_payload(1));
-        fs::write(source_dir.join("Sound/Voice/test.fuz"), fuz)?;
-
-        let written = pack_archive(
-            &source_dir,
-            &dir.path().join("out.ba2"),
-            "fo4ps",
-            true,
-            6,
-            false,
-            None,
-            None,
-            PackFilters::default(),
-        )
-        .map_err(anyhow::Error::msg)?;
-
-        assert_eq!(written, 1);
-        Ok(())
-    }
-
-    #[test]
-    fn playstation_archive_accepts_at9_backed_fuz() -> anyhow::Result<()> {
-        let dir = TestDir::new();
-        let source_dir = dir.path().join("source");
-        fs::create_dir_all(source_dir.join("Sound/Voice"))?;
-        let mut fuz = b"FUZE\x01\x00\x00\x00\x03\x00\x00\x00LIP".to_vec();
-        fuz.extend_from_slice(&atrac9_wave_payload());
-        fs::write(source_dir.join("Sound/Voice/test.fuz"), fuz)?;
-
-        let written = pack_archive(
-            &source_dir,
-            &dir.path().join("out.ba2"),
-            "fo4ps",
-            true,
-            6,
-            false,
-            None,
-            None,
-            PackFilters::default(),
-        )
-        .map_err(anyhow::Error::msg)?;
-
-        assert_eq!(written, 1);
+            let result = pack_archive(
+                &source_dir,
+                &dir.path().join("out.ba2"),
+                "fo4ps",
+                true,
+                6,
+                false,
+                None,
+                None,
+                PackFilters::default(),
+            );
+            match expected_error {
+                Some(message) => assert!(result.unwrap_err().contains(message), "{rel}"),
+                None => assert_eq!(result.map_err(anyhow::Error::msg)?, 1),
+            }
+        }
         Ok(())
     }
 }

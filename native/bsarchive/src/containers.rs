@@ -62,27 +62,9 @@ impl<'bytes> Bytes<'bytes> {
     }
 
     #[must_use]
-    pub(crate) fn as_ptr(&self) -> *const u8 {
-        match &self.inner {
-            Owned(x) => x.as_ptr(),
-            Borrowed(x) => x.as_ptr(),
-            Mapped(x) => x.as_ptr(),
-        }
-    }
-
-    #[must_use]
     pub(crate) fn from_borrowed(bytes: &'bytes [u8]) -> Self {
         Self {
             inner: Borrowed(bytes),
-        }
-    }
-
-    #[must_use]
-    pub(crate) fn is_empty(&self) -> bool {
-        match &self.inner {
-            Owned(x) => x.is_empty(),
-            Borrowed(x) => x.is_empty(),
-            Mapped(x) => x.is_empty(),
         }
     }
 
@@ -92,17 +74,6 @@ impl<'bytes> Bytes<'bytes> {
             Owned(x) => x.len(),
             Borrowed(x) => x.len(),
             Mapped(x) => x.len(),
-        }
-    }
-
-    #[must_use]
-    pub(crate) fn into_owned(self) -> Bytes<'static> {
-        Bytes {
-            inner: match self.inner {
-                Owned(x) => Owned(x),
-                Borrowed(x) => Owned(x.into()),
-                Mapped(x) => Mapped(x),
-            },
         }
     }
 

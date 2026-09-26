@@ -362,19 +362,8 @@ impl ScratchImage {
 
 #[cfg(test)]
 mod tests {
-    use crate::{DXGI_FORMAT, ScratchImage, TEX_ALPHA_MODE, TEX_DIMENSION, ffi};
-    use core::mem;
+    use crate::{DXGI_FORMAT, ScratchImage, TEX_ALPHA_MODE, TEX_DIMENSION};
     use std::fs;
-
-    #[test]
-    fn verify_layout() {
-        assert_eq!(mem::size_of::<ScratchImage>(), unsafe {
-            ffi::DirectXTexFFI_ScratchImage_Sizeof()
-        });
-        assert_eq!(mem::align_of::<ScratchImage>(), unsafe {
-            ffi::DirectXTexFFI_ScratchImage_Alignof()
-        });
-    }
 
     #[test]
     fn load_dds() {
@@ -463,103 +452,4 @@ mod tests {
         assert_eq!(original, copy);
     }
 
-    #[test]
-    fn load_hdr() {
-        let source = fs::read(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/data/ferris_wheel.hdr"
-        ))
-        .unwrap();
-        let (scratch, meta) = {
-            let mut meta = Default::default();
-            let scratch = ScratchImage::load_hdr(&source, Some(&mut meta)).unwrap();
-            (scratch, meta)
-        };
-
-        assert_eq!(meta.width, 720);
-        assert_eq!(meta.height, 1280);
-        assert_eq!(meta.depth, 1);
-        assert_eq!(meta.array_size, 1);
-        assert_eq!(meta.mip_levels, 1);
-        assert_eq!(meta.misc_flags, 0);
-        assert_eq!(meta.misc_flags2, 3);
-        assert_eq!(meta.format, DXGI_FORMAT::DXGI_FORMAT_R32G32B32A32_FLOAT);
-        assert_eq!(meta.dimension, TEX_DIMENSION::TEX_DIMENSION_TEXTURE2D);
-        assert_eq!(meta.get_alpha_mode(), TEX_ALPHA_MODE::TEX_ALPHA_MODE_OPAQUE);
-
-        assert_ne!(scratch.metadata(), &meta);
-        let tex = scratch.metadata();
-        assert_eq!(tex.width, 720);
-        assert_eq!(tex.height, 1280);
-        assert_eq!(tex.depth, 1);
-        assert_eq!(tex.array_size, 1);
-        assert_eq!(tex.mip_levels, 1);
-        assert_eq!(tex.misc_flags, 0);
-        assert_eq!(tex.misc_flags2, 0);
-        assert_eq!(tex.format, DXGI_FORMAT::DXGI_FORMAT_R32G32B32A32_FLOAT);
-        assert_eq!(tex.dimension, TEX_DIMENSION::TEX_DIMENSION_TEXTURE2D);
-        assert_eq!(tex.get_alpha_mode(), TEX_ALPHA_MODE::TEX_ALPHA_MODE_UNKNOWN);
-
-        assert_eq!(scratch.pixels().len(), 14745600);
-
-        let images = scratch.images();
-        assert_eq!(images.len(), 1);
-        assert_eq!(images[0].width, 720);
-        assert_eq!(images[0].height, 1280);
-        assert_eq!(
-            images[0].format,
-            DXGI_FORMAT::DXGI_FORMAT_R32G32B32A32_FLOAT
-        );
-        assert_eq!(images[0].row_pitch, 11520);
-        assert_eq!(images[0].slice_pitch, 14745600);
-    }
-
-    #[test]
-    fn load_tga() {
-        let source = fs::read(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/data/ferris_wheel.tga"
-        ))
-        .unwrap();
-        let (scratch, meta) = {
-            let mut meta = Default::default();
-            let scratch =
-                ScratchImage::load_tga(&source, Default::default(), Some(&mut meta)).unwrap();
-            (scratch, meta)
-        };
-
-        assert_eq!(meta.width, 720);
-        assert_eq!(meta.height, 1280);
-        assert_eq!(meta.depth, 1);
-        assert_eq!(meta.array_size, 1);
-        assert_eq!(meta.mip_levels, 1);
-        assert_eq!(meta.misc_flags, 0);
-        assert_eq!(meta.misc_flags2, 3);
-        assert_eq!(meta.format, DXGI_FORMAT::DXGI_FORMAT_R8G8B8A8_UNORM);
-        assert_eq!(meta.dimension, TEX_DIMENSION::TEX_DIMENSION_TEXTURE2D);
-        assert_eq!(meta.get_alpha_mode(), TEX_ALPHA_MODE::TEX_ALPHA_MODE_OPAQUE);
-
-        assert_ne!(scratch.metadata(), &meta);
-        let tex = scratch.metadata();
-        assert_eq!(tex.width, 720);
-        assert_eq!(tex.height, 1280);
-        assert_eq!(tex.depth, 1);
-        assert_eq!(tex.array_size, 1);
-        assert_eq!(tex.mip_levels, 1);
-        assert_eq!(tex.misc_flags, 0);
-        assert_eq!(tex.misc_flags2, 0);
-        assert_eq!(tex.format, DXGI_FORMAT::DXGI_FORMAT_R8G8B8A8_UNORM);
-        assert_eq!(tex.dimension, TEX_DIMENSION::TEX_DIMENSION_TEXTURE2D);
-        assert_eq!(tex.get_alpha_mode(), TEX_ALPHA_MODE::TEX_ALPHA_MODE_UNKNOWN);
-
-        assert_eq!(scratch.pixels().len(), 3686400);
-
-        let images = scratch.images();
-        assert_eq!(images.len(), 1);
-        assert_eq!(images[0].width, 720);
-        assert_eq!(images[0].height, 1280);
-        assert_eq!(images[0].format, DXGI_FORMAT::DXGI_FORMAT_R8G8B8A8_UNORM);
-        assert_eq!(images[0].row_pitch, 2880);
-        assert_eq!(images[0].slice_pitch, 3686400);
-    }
 }

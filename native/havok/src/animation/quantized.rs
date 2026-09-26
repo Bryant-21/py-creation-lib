@@ -661,69 +661,65 @@ mod tests {
     use super::*;
 
     #[test]
-    fn header_roundtrip_synthetic_blob() {
-        let blob = build_synthetic_static_blob(2, 3, 1.0);
-        let anim = read_quantized_animation(&blob).expect("parse");
-        assert_eq!(anim.num_tracks(), 2);
-        assert_eq!(anim.num_frames(), 3);
-        assert!((anim.duration() - 1.0).abs() < 1e-6);
-        assert_eq!(anim.header.num_static_translations, 2);
-        assert_eq!(anim.header.num_static_rotations, 2);
-        assert_eq!(anim.header.num_static_scales, 2);
-    }
-
-    #[test]
-    fn quantized_animation_reads_full_pose_from_synthetic_static_blob() {
-        let blob = build_synthetic_static_blob(2, 3, 1.0);
-        let anim = read_quantized_animation(&blob).expect("parse");
-        assert!(anim.num_tracks() > 0);
-        assert!(anim.num_frames() > 1);
-        let pose0 = anim.sample_pose_at(0.0).expect("sample");
-        assert_eq!(pose0.translations.len(), anim.num_tracks() as usize);
-        // Bone 0: tx = 1.0; bone 1: tx = 2.0 (per build_synthetic_static_blob).
-        assert!((pose0.translations[0][0] - 1.0).abs() < 1e-4);
-        assert!((pose0.translations[1][0] - 2.0).abs() < 1e-4);
-        // All scales sx = 2.0.
-        assert!((pose0.scales[0][0] - 2.0).abs() < 1e-4);
-        // Identity rotation: w ≈ 1, others ≈ 0.
-        let q = pose0.rotations[0];
-        assert!(q[3].abs() > 0.99, "expected w≈±1, got {q:?}");
-        assert!(
-            q[0].abs() < 0.01 && q[1].abs() < 0.01 && q[2].abs() < 0.01,
-            "expected identity rotation, got {q:?}"
-        );
-    }
-
-    #[test]
-    fn unpack_quaternion_48_identity_round_trips() {
-        let packed = pack_identity_quat_48();
-        let qq = [
-            u16::from_le_bytes([packed[0], packed[1]]),
-            u16::from_le_bytes([packed[2], packed[3]]),
-            u16::from_le_bytes([packed[4], packed[5]]),
-        ];
-        let q = unpack_quaternion_48_single(qq);
-        // Identity (0,0,0,1) — w must be ≈1 and the others ≈0 (within
-        // smallest-three quantization tolerance ~1e-4).
-        assert!(q[3].abs() > 0.99, "w slot wrong: {q:?}");
-        for i in 0..3 {
+    fn quantized_synthetic_blob_decode() {
+        {
+            let blob = build_synthetic_static_blob(2, 3, 1.0);
+            let anim = read_quantized_animation(&blob).expect("parse");
+            assert_eq!(anim.num_tracks(), 2);
+            assert_eq!(anim.num_frames(), 3);
+            assert!((anim.duration() - 1.0).abs() < 1e-6);
+            assert_eq!(anim.header.num_static_translations, 2);
+            assert_eq!(anim.header.num_static_rotations, 2);
+            assert_eq!(anim.header.num_static_scales, 2);
+        }
+        {
+            let blob = build_synthetic_static_blob(2, 3, 1.0);
+            let anim = read_quantized_animation(&blob).expect("parse");
+            assert!(anim.num_tracks() > 0);
+            assert!(anim.num_frames() > 1);
+            let pose0 = anim.sample_pose_at(0.0).expect("sample");
+            assert_eq!(pose0.translations.len(), anim.num_tracks() as usize);
+            // Bone 0: tx = 1.0; bone 1: tx = 2.0 (per build_synthetic_static_blob).
+            assert!((pose0.translations[0][0] - 1.0).abs() < 1e-4);
+            assert!((pose0.translations[1][0] - 2.0).abs() < 1e-4);
+            // All scales sx = 2.0.
+            assert!((pose0.scales[0][0] - 2.0).abs() < 1e-4);
+            // Identity rotation: w ≈ 1, others ≈ 0.
+            let q = pose0.rotations[0];
+            assert!(q[3].abs() > 0.99, "expected w≈±1, got {q:?}");
             assert!(
-                q[i].abs() < 0.01,
-                "component {i} should be ~0: got {}",
-                q[i]
+                q[0].abs() < 0.01 && q[1].abs() < 0.01 && q[2].abs() < 0.01,
+                "expected identity rotation, got {q:?}"
             );
         }
-    }
-
-    #[test]
-    fn frame_and_delta_at_endpoints() {
-        let blob = build_synthetic_static_blob(1, 4, 1.0);
-        let anim = read_quantized_animation(&blob).unwrap();
-        let (f0, d0) = anim.frame_and_delta(0.0);
-        assert_eq!(f0, 0);
-        assert!(d0 < 1e-4);
-        let (fend, dend) = anim.frame_and_delta(1.0);
-        assert!(fend == 2 || fend == 3);
-        assert!(dend >= 0.0 && dend <= 1.0);
+        {
+            let packed = pack_identity_quat_48();
+            let qq = [
+                u16::from_le_bytes([packed[0], packed[1]]),
+                u16::from_le_bytes([packed[2], packed[3]]),
+                u16::from_le_bytes([packed[4], packed[5]]),
+            ];
+            let q = unpack_quaternion_48_single(qq);
+            // Identity (0,0,0,1) — w must be ≈1 and the others ≈0 (within
+            // smallest-three quantization tolerance ~1e-4).
+            assert!(q[3].abs() > 0.99, "w slot wrong: {q:?}");
+            for i in 0..3 {
+                assert!(
+                    q[i].abs() < 0.01,
+                    "component {i} should be ~0: got {}",
+                    q[i]
+                );
+            }
+        }
+        {
+            let blob = build_synthetic_static_blob(1, 4, 1.0);
+            let anim = read_quantized_animation(&blob).unwrap();
+            let (f0, d0) = anim.frame_and_delta(0.0);
+            assert_eq!(f0, 0);
+            assert!(d0 < 1e-4);
+            let (fend, dend) = anim.frame_and_delta(1.0);
+            assert!(fend == 2 || fend == 3);
+            assert!(dend >= 0.0 && dend <= 1.0);
+        }
     }
 }

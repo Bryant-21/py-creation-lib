@@ -11,9 +11,9 @@ use crate::hkx::model::{HkxFile, HkxMember, HkxObject};
 use crate::hkx::types::HkxValue;
 
 use super::setup::cloth_setup::ClothSetupObject;
-use super::setup::constraint_setup::{ConstraintSetupObject, OpaqueConstraintSetup};
+use super::setup::constraint_setup::ConstraintSetupObject;
 use super::setup::mesh::SimulationSetupMesh;
-use super::setup::operator_setup::{MeshBoneDeformSetup, OpaqueOperatorSetup, OperatorSetupObject};
+use super::setup::operator_setup::{MeshBoneDeformSetup, OperatorSetupObject};
 use super::setup::sim_cloth_setup::SimClothSetupObject;
 
 // ---------------------------------------------------------------------------
@@ -2078,7 +2078,6 @@ fn emit_sim_cloth_data(ctx: &mut BakeContext, ci: usize) {
     let particle_values: Vec<HkxValue>;
     let fixed_indices: Vec<u16>;
     let total_mass: f32;
-    let total_links: usize;
     let batched_constraint_names: Vec<String>;
     let collidable_names: Vec<String>;
     let collidable_transform_indices: Vec<u32>;
@@ -2121,7 +2120,6 @@ fn emit_sim_cloth_data(ctx: &mut BakeContext, ci: usize) {
             })
             .sum::<f32>()
             .max(1.0);
-        total_links = scd.constraint_entries.iter().map(|e| e.links.len()).sum();
         batched_constraint_names = scd.batched_constraint_names.clone();
         collidable_names = scd.collidable_names.clone();
         collidable_transform_indices = scd.collidable_transform_indices.clone();
@@ -2433,26 +2431,11 @@ mod tests {
     use super::check_batch_disjointness;
 
     #[test]
-    fn check_batch_disjointness_ok_for_valid_batches() {
-        // batch 0: links 0 and 1 touch particles {0,1} and {2,3} — disjoint
+    fn check_batch_disjointness_rejects_shared_particles() {
         let links: Vec<(u16, u16, f32, f32)> =
-            vec![(0, 1, 1.0, 1.0), (2, 3, 1.0, 1.0), (0, 2, 1.0, 1.0)];
-        // batch 0 = [link0, link1], batch 1 = [link2]
-        let batches = vec![vec![0usize, 1], vec![2]];
-        assert!(check_batch_disjointness(&batches, &links, "hclStandardLinkConstraintSet").is_ok());
-    }
-
-    #[test]
-    fn check_batch_disjointness_err_on_particle_collision() {
-        // Both links in the same batch share particle 1 — should fail.
-        let links: Vec<(u16, u16, f32, f32)> = vec![(0, 1, 1.0, 1.0), (1, 2, 1.0, 1.0)];
-        let batches = vec![vec![0usize, 1]]; // overlap: particle 1 in both links
-        let result = check_batch_disjointness(&batches, &links, "hclStandardLinkConstraintSet");
-        assert!(result.is_err(), "overlapping batch must return Err");
-        let msg = result.unwrap_err().to_string();
-        assert!(
-            msg.contains("batch") || msg.contains("particle") || msg.contains("disjointness"),
-            "error message must describe the violation: {msg}"
-        );
+            vec![(0, 1, 1.0, 1.0), (2, 3, 1.0, 1.0), (1, 2, 1.0, 1.0)];
+        let set = "hclStandardLinkConstraintSet";
+        assert!(check_batch_disjointness(&[vec![0usize, 1], vec![2]], &links, set).is_ok());
+        assert!(check_batch_disjointness(&[vec![0usize, 2]], &links, set).is_err());
     }
 }

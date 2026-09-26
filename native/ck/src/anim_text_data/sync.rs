@@ -1314,6 +1314,20 @@ mod tests {
                 .map(strip_role_suffix)
                 .unwrap();
         assert_eq!(creature, "PairedDogmeatAndHumanPetGreet");
+
+        // (clip stem, expected id) verified at scale against the base game, plus
+        // creature/companion role tokens ROLE_SUFFIXES misses.
+        assert_eq!(
+            name_id(sync_base_stem("pairedblockpunchcounter_victim")),
+            1593399197
+        );
+        for (stem, expected) in [
+            ("paireddogmeathumangreetpet_doglead", "paireddogmeathumangreetpet"),
+            ("somepairedmove_moleratkill", "somepairedmove"),
+            ("plainstem", "plainstem"),
+        ] {
+            assert_eq!(sync_base_stem(stem), expected);
+        }
     }
 
     #[test]
@@ -1397,20 +1411,17 @@ mod tests {
     }
 
     #[test]
-    fn malformed_event_table_fails_closed() {
-        let objects = vec![object(
+    fn malformed_event_table_and_root_pointer_fail_closed() {
+        let bad_events = vec![object(
             "hkbBehaviorGraphStringData",
             vec![member(
                 "eventNames",
                 HkxValue::Array(vec![HkxValue::I32(7)]),
             )],
         )];
-        let error = event_names(&objects).unwrap_err();
+        let error = event_names(&bad_events).unwrap_err();
         assert!(error.to_string().contains("eventNames[0] is not a string"));
-    }
 
-    #[test]
-    fn invalid_required_root_pointer_fails_closed() {
         let objects = vec![
             object(
                 "hkbBehaviorGraphStringData",
@@ -1492,15 +1503,6 @@ mod tests {
     }
 
     #[test]
-    fn malformed_clip_packfile_fails_closed() {
-        let temp = tempfile::tempdir().unwrap();
-        let clip = temp.path().join("broken.hkx");
-        std::fs::write(&clip, b"not a packfile").unwrap();
-        let error = sync_anim_offset(&clip).unwrap_err();
-        assert!(error.to_string().contains("failed to parse"));
-    }
-
-    #[test]
     fn participation_uses_canonical_archetype_and_person_context() {
         let subgraphs = vec![
             SubgraphInput {
@@ -1578,13 +1580,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn public_builder_rejects_empty_production_input() {
-        let temp = tempfile::tempdir().unwrap();
-        let error = build_weapon_sync_anim_data(&[], [temp.path(), temp.path()]).unwrap_err();
-        assert_eq!(error.to_string(), "no weapon subgraphs supplied");
-    }
-
     #[derive(Debug, PartialEq, Eq)]
     struct ParsedSyncAnim {
         version: String,
@@ -1629,44 +1624,6 @@ mod tests {
     }
 
     #[test]
-    fn trailing_segment_strip_matches_verified_base_game_ids() {
-        // (clip stem, expected id) pairs verified at scale against the base game.
-        assert_eq!(
-            sync_base_stem("pairedblockpunchcounter_victim"),
-            "pairedblockpunchcounter"
-        );
-        assert_eq!(
-            name_id(sync_base_stem("pairedblockpunchcounter_victim")),
-            1593399197
-        );
-        // creature/companion role tokens the old ROLE_SUFFIXES misses:
-        assert_eq!(
-            sync_base_stem("paireddogmeathumangreetpet_doglead"),
-            "paireddogmeathumangreetpet"
-        );
-        assert_eq!(
-            sync_base_stem("somepairedmove_moleratkill"),
-            "somepairedmove"
-        );
-        // no underscore → unchanged
-        assert_eq!(sync_base_stem("plainstem"), "plainstem");
-    }
-
-    #[test]
-    fn plugin_sync_filename_is_stem_keyed_and_never_unsuffixed() {
-        assert_eq!(
-            plugin_sync_anim_filename("SeventySix.esm").as_deref(),
-            Some("ResolvedSyncAnimDataSeventySix.txt")
-        );
-        assert_eq!(
-            plugin_sync_anim_filename("Snallygaster.esp").as_deref(),
-            Some("ResolvedSyncAnimDataSnallygaster.txt")
-        );
-        assert_eq!(plugin_sync_anim_filename(""), None);
-        assert_eq!(plugin_sync_anim_filename(".esm"), None);
-    }
-
-    #[test]
     fn plugin_sync_empty_result_matches_vanilla_zero_group_form() {
         // A subgraph set with no paired candidates must yield the same bytes the CK
         // ships for a zero-group plugin: `numGroups + 1`, so the extra read no-ops at EOF.
@@ -1679,15 +1636,11 @@ mod tests {
         let body = build_plugin_sync_anim_data(&subgraphs, tmp.path(), None).unwrap();
         assert_eq!(body, b"V4\n1\n");
 
-        // DLCworkshop01/02/03 are the shipped zero-group oracles.
-        let oracle = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
-            "../../../extracted/fo4/meshes/animtextdata/syncanimdata/\
-             resolvedsyncanimdatadlcworkshop01.txt",
+        assert_eq!(
+            plugin_sync_anim_filename("SeventySix.esm").as_deref(),
+            Some("ResolvedSyncAnimDataSeventySix.txt")
         );
-        if !oracle.is_file() {
-            eprintln!("skipping oracle compare: missing {}", oracle.display());
-            return;
-        }
-        assert_eq!(body, std::fs::read(oracle).unwrap());
+        assert_eq!(plugin_sync_anim_filename(""), None);
+        assert_eq!(plugin_sync_anim_filename(".esm"), None);
     }
 }

@@ -39,55 +39,27 @@ def test_compile_mopp_cube():
     assert mopp_bytes[6] == 0x28  # FILTER Z
 
 
-def test_compile_mopp_empty():
-    """Empty triangle list returns empty bytes."""
+def test_compile_mopp_empty_single_triangle_and_oblivion_radius():
     from creation_lib.nif.operations.mopp_compiler import compile_mopp
 
+    # Empty triangle list returns empty bytes.
     mopp_bytes, origin, scale = compile_mopp([], [], radius=0.005)
     assert mopp_bytes == b""
     assert scale == 0.0
 
-
-def test_compile_mopp_single_triangle():
-    """Single triangle should produce FILTER + LEAF bytecode."""
-    from creation_lib.nif.operations.mopp_compiler import compile_mopp
-
+    # Single triangle: 3 root FILTERs + 3 leaf FILTERs + 1 LEAF opcode.
     verts = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
     triangles = [(0, 1, 2)]
     mopp_bytes, origin, scale = compile_mopp(verts, triangles, radius=0.005)
+    assert len(mopp_bytes) == 19  # 3*3 root + 3*3 leaf + 1 LEAF byte
+    assert mopp_bytes[-1] == 0x30  # LEAF opcode, output_id=0
 
-    assert len(mopp_bytes) > 0
-    # Should have 3 root FILTERs + 3 leaf FILTERs + 1 LEAF opcode
-    # Root: 3 * 3 bytes = 9
-    # Leaf: 3 * 3 bytes + 1 byte (LEAF 0x30) = 10
-    # Total: 19 bytes
-    assert len(mopp_bytes) == 19
-    # Last byte should be LEAF opcode 0x30 (output_id=0)
-    assert mopp_bytes[-1] == 0x30
-
-
-def test_compile_mopp_custom_output_ids():
-    """Custom output IDs should appear in leaf nodes."""
-    from creation_lib.nif.operations.mopp_compiler import compile_mopp
-
-    verts = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
-    triangles = [(0, 1, 2)]
-    mopp_bytes, _, _ = compile_mopp(verts, triangles, radius=0.005, output_ids=[5])
-
-    # output_id=5 → opcode 0x30 + 5 = 0x35
-    assert mopp_bytes[-1] == 0x35
-
-
-def test_compile_mopp_oblivion_radius():
-    """Oblivion/FO3 uses radius=0.1 instead of Skyrim's 0.005."""
-    from creation_lib.nif.operations.mopp_compiler import compile_mopp
-
+    # Oblivion/FO3 uses radius=0.1 instead of Skyrim's 0.005: origin offset
+    # should be larger.
     verts = [(0, 0, 0), (1, 0, 0), (0, 1, 0), (1, 1, 0)]
     triangles = [(0, 1, 2), (1, 3, 2)]
     mopp_bytes, origin, scale = compile_mopp(verts, triangles, radius=0.1)
-
     assert len(mopp_bytes) > 0
-    # Origin offset should be larger due to bigger radius
     assert origin[0] == pytest.approx(-0.1, abs=0.01)
 
 
@@ -119,12 +91,16 @@ def test_mopp_disassemble_round_trip():
     assert leaf_count == 20
 
 
-def test_compile_mopp_large_output_ids():
-    """Output IDs > 31 should use multi-byte leaf opcodes."""
+def test_compile_mopp_output_ids_small_and_large():
+    """Output IDs appear in leaf nodes; IDs > 31 use multi-byte leaf opcodes."""
     from creation_lib.nif.operations.mopp_compiler import compile_mopp
 
     verts = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
     triangles = [(0, 1, 2)]
+
+    # output_id=5 → opcode 0x30 + 5 = 0x35 (single-byte)
+    mopp_bytes, _, _ = compile_mopp(verts, triangles, radius=0.005, output_ids=[5])
+    assert mopp_bytes[-1] == 0x35
 
     # output_id=0x100 → opcode 0x51 (2-byte)
     mopp_bytes, _, _ = compile_mopp(verts, triangles, radius=0.005, output_ids=[0x100])

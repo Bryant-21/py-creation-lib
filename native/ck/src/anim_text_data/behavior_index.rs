@@ -178,117 +178,10 @@ pub(super) fn add_direct_sapt_hkx_files(
 mod tests {
     use super::*;
 
-    #[test]
-    fn clip_leaf_strips_prefix_and_ext() {
-        assert_eq!(clip_leaf(r"Animations\Attack3.hkt"), "Attack3");
-        assert_eq!(clip_leaf(r"animations\Idle_Flavor1.hkx"), "Idle_Flavor1");
-        assert_eq!(clip_leaf("Bare"), "Bare");
-    }
-
     fn touch(root: &Path, rel: &str) {
         let full = root.join(rel.replace('\\', "/"));
         std::fs::create_dir_all(full.parent().unwrap()).unwrap();
         std::fs::write(full, b"x").unwrap();
-    }
-
-    #[test]
-    fn sapt_chain_still_wins_when_the_creature_overrides_a_clip() {
-        let root = tempfile::tempdir().unwrap();
-        touch(
-            root.path(),
-            r"Actors\MoleMiner\Animations\Shared\DeathChest01.hkx",
-        );
-        let chain = vec![
-            r"Actors\MoleMiner\Animations\Shared".to_string(),
-            r"Actors\MoleMiner\Animations".to_string(),
-        ];
-
-        let got = resolve_leaf(
-            root.path(),
-            &chain,
-            "DeathChest01",
-            Some(r"Actors\Character"),
-        );
-
-        assert_eq!(got, r"Actors\MoleMiner\Animations\Shared\DeathChest01.hkx");
-    }
-
-    #[test]
-    fn leaf_the_creature_lacks_falls_back_to_the_core_behaviors_project() {
-        let root = tempfile::tempdir().unwrap();
-        // Only the shared Character tree has it — the mounting creature does not.
-        touch(
-            root.path(),
-            r"Actors\Character\Animations\1HM\TurnInPlaceLeft180Loop.hkx",
-        );
-        let chain = vec![
-            r"Actors\MoleMiner\Animations\Shared".to_string(),
-            r"Actors\MoleMiner\Animations".to_string(),
-        ];
-
-        let got = resolve_leaf(
-            root.path(),
-            &chain,
-            r"1HM\TurnInPlaceLeft180Loop",
-            Some(r"Actors\Character"),
-        );
-
-        assert_eq!(
-            got,
-            r"Actors\Character\Animations\1HM\TurnInPlaceLeft180Loop.hkx"
-        );
-    }
-
-    #[test]
-    fn escaping_leaf_resolves_against_the_project_root_not_the_sapt_dir() {
-        let root = tempfile::tempdir().unwrap();
-        touch(
-            root.path(),
-            r"Actors\PowerArmor\Animations\1HM\SprintPainTrain.hkx",
-        );
-        let chain = vec![
-            r"Actors\MoleMiner\Animations\Shared".to_string(),
-            r"Actors\MoleMiner\Animations".to_string(),
-        ];
-
-        let got = resolve_leaf(
-            root.path(),
-            &chain,
-            r"..\PowerArmor\Animations\1HM\SprintPainTrain",
-            Some(r"Actors\Character"),
-        );
-
-        // NOT Actors\MoleMiner\Animations\Shared\..\PowerArmor\...
-        assert_eq!(got, r"Actors\PowerArmor\Animations\1HM\SprintPainTrain.hkx");
-    }
-
-    #[test]
-    fn unresolvable_leaf_keeps_the_historical_base_fallback() {
-        let root = tempfile::tempdir().unwrap();
-        let chain = vec![r"Actors\MoleMiner\Animations".to_string()];
-
-        let got = resolve_leaf(root.path(), &chain, "NoSuchAnim", Some(r"Actors\Character"));
-
-        assert_eq!(got, r"Actors\MoleMiner\Animations\NoSuchAnim.hkx");
-    }
-
-    #[test]
-    fn core_project_dir_comes_from_the_behavior_path() {
-        let root = Path::new(r"C:\meshes");
-        assert_eq!(
-            core_project_dir(
-                root,
-                &root.join(r"Actors\Character\Behaviors\MTBehavior.hkx")
-            ),
-            Some(r"Actors\Character".to_string())
-        );
-        assert_eq!(
-            core_project_dir(
-                root,
-                &root.join(r"Actors\Fixture\MoleMiner\Behaviors\MTBehavior.hkx")
-            ),
-            Some(r"Actors\Fixture\MoleMiner".to_string())
-        );
     }
 
     #[test]
@@ -345,6 +238,56 @@ mod tests {
                 format!(r"{sapt}\PoseA_IdleFlavor2.hkx"),
                 format!(r"{sapt}\PoseA_IdleFlavor3.hkx"),
             ]
+        );
+    }
+
+    #[test]
+    fn resolve_leaf_prefers_sapt_chain_then_core_project_then_base_fallback() {
+        let root = tempfile::tempdir().unwrap();
+        for rel in [
+            r"Actors\MoleMiner\Animations\Shared\DeathChest01.hkx",
+            r"Actors\Character\Animations\1HM\TurnInPlaceLeft180Loop.hkx",
+            r"Actors\PowerArmor\Animations\1HM\SprintPainTrain.hkx",
+        ] {
+            touch(root.path(), rel);
+        }
+        let chain = vec![
+            r"Actors\MoleMiner\Animations\Shared".to_string(),
+            r"Actors\MoleMiner\Animations".to_string(),
+        ];
+        for (leaf, expected) in [
+            (
+                "DeathChest01",
+                r"Actors\MoleMiner\Animations\Shared\DeathChest01.hkx",
+            ),
+            (
+                r"1HM\TurnInPlaceLeft180Loop",
+                r"Actors\Character\Animations\1HM\TurnInPlaceLeft180Loop.hkx",
+            ),
+            // Escapes resolve against the project root, not the SAPT dir.
+            (
+                r"..\PowerArmor\Animations\1HM\SprintPainTrain",
+                r"Actors\PowerArmor\Animations\1HM\SprintPainTrain.hkx",
+            ),
+        ] {
+            assert_eq!(
+                resolve_leaf(root.path(), &chain, leaf, Some(r"Actors\Character")),
+                expected
+            );
+        }
+        let base_only = vec![r"Actors\MoleMiner\Animations".to_string()];
+        assert_eq!(
+            resolve_leaf(root.path(), &base_only, "NoSuchAnim", Some(r"Actors\Character")),
+            r"Actors\MoleMiner\Animations\NoSuchAnim.hkx"
+        );
+
+        let meshes = Path::new(r"C:\meshes");
+        assert_eq!(
+            core_project_dir(
+                meshes,
+                &meshes.join(r"Actors\Fixture\MoleMiner\Behaviors\MTBehavior.hkx")
+            ),
+            Some(r"Actors\Fixture\MoleMiner".to_string())
         );
     }
 }

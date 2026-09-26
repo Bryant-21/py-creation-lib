@@ -9,8 +9,6 @@ use crate::global_blend::{
 use crate::height_resample::{
     AxisTap, LANCZOS2_REACH, LANCZOS2_TAPS, build_axis_taps, clamp_offset_index, lanczos2_kernel,
 };
-#[cfg(test)]
-use crate::land_encode::{EncodedVhgt, decode_vhgt_heights};
 use crate::land_encode::{encode_vhgt, generate_vnml};
 use crate::texture_bridge::{ConvertedTerrainGrass, ConvertedTerrainTexture, TextureManifest};
 #[cfg(test)]
@@ -149,6 +147,9 @@ pub struct ConvertReport {
     pub converted_texture_count: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub btd4_output_path: Option<String>,
+    /// `btd4_verify_<EDID>.json` beside the terrain diagnostics.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub btd4_verify_path: Option<String>,
     /// Layers referenced in the `.btd4` LAYR table beyond the ones the LAND's
     /// per-quadrant texture stack kept (i.e. the dense sidecar's extra coverage).
     #[serde(default)]
@@ -1102,6 +1103,14 @@ impl SourceCellCache {
         }
         Ok(self.raw_cells.get(&(cell_x, cell_y)).unwrap())
     }
+
+    /// BTD4 HGTS for target row `t` reads source rows `t` and `t + 1` (the
+    /// half-cell shift), so earlier raw rows are never read again. Dropping them
+    /// keeps the raw cache at two source rows instead of the whole worldspace.
+    fn release_raw_rows_before(&mut self, target_row_offset: i32) {
+        let first_needed = self.source_min_y.saturating_add(target_row_offset);
+        self.raw_cells.retain(|&(_, cell_y), _| cell_y >= first_needed);
+    }
 }
 
 pub fn convert_btd_to_authoring(options: ConvertOptions) -> Result<String, AuthoringEmitError> {
@@ -1411,6 +1420,8 @@ fn convert_btd_inner(
     let texture_index_started = Instant::now();
     let textures_by_source_usage = index_textures_by_source_usage(&emitted_textures);
     let gcvr_grass_object_ids = index_grass_by_source_gcvr(&emitted_textures);
+    let (btd4_plugin_names, btd4_grass_refs) =
+        btd4_grass_targets(&emitted_textures, &options.plugin_name);
     push_timing(
         &mut timings,
         "metadata_and_texture_setup.index_textures_by_source_usage",
@@ -1426,13 +1437,16 @@ fn convert_btd_inner(
     );
 
     let global_blend_started = Instant::now();
-    let (global_blend, global_blend_profile) = GlobalLandscapeBlend::build_profiled(
+    let release_land_alpha_after_materialization =
+        should_release_land_alpha_after_materialization(frame, &options.btd4_output_path);
+    let (global_blend, global_blend_profile) = GlobalLandscapeBlend::build_profiled_for_authoring(
         &mut btd,
         options.source_min_x,
         options.source_min_y,
         cells_x,
         cells_y,
         &source_alpha_masks,
+        release_land_alpha_after_materialization,
     )?;
     push_measured_timing(
         &mut timings,
@@ -1465,6 +1479,46 @@ fn convert_btd_inner(
     operation_counts.insert(
         "global_blend.expected_quadrants".to_owned(),
         global_blend_profile.quadrant_count,
+    );
+    operation_counts.insert(
+        "global_blend.vertex_entry_count".to_owned(),
+        global_blend_profile.vertex_entry_count,
+    );
+    operation_counts.insert(
+        "global_blend.nonempty_vertex_count".to_owned(),
+        global_blend_profile.nonempty_vertex_count,
+    );
+    operation_counts.insert(
+        "global_blend.max_vertex_entry_count".to_owned(),
+        global_blend_profile.max_vertex_entry_count,
+    );
+    operation_counts.insert(
+        "global_blend.vertex_offset_capacity_bytes".to_owned(),
+        global_blend_profile.vertex_offset_capacity_bytes,
+    );
+    operation_counts.insert(
+        "global_blend.vertex_entry_capacity_bytes".to_owned(),
+        global_blend_profile.vertex_entry_capacity_bytes,
+    );
+    operation_counts.insert(
+        "global_blend.legacy_vertex_map_header_bytes".to_owned(),
+        global_blend_profile.legacy_vertex_map_header_bytes,
+    );
+    operation_counts.insert(
+        "global_blend.legacy_vertex_map_capacity_slots".to_owned(),
+        global_blend_profile.legacy_vertex_map_capacity_slots,
+    );
+    operation_counts.insert(
+        "global_blend.land_alpha_payload_bytes_before_release".to_owned(),
+        global_blend_profile.land_alpha_payload_bytes_before_release,
+    );
+    operation_counts.insert(
+        "global_blend.land_alpha_payload_bytes_released".to_owned(),
+        global_blend_profile.land_alpha_payload_bytes_released,
+    );
+    operation_counts.insert(
+        "global_blend.land_alpha_payload_bytes_after_release".to_owned(),
+        global_blend_profile.land_alpha_payload_bytes_after_release,
     );
 
     let required_ltex_started = Instant::now();
@@ -1569,25 +1623,31 @@ fn convert_btd_inner(
     } else if options.btd4_output_path.is_empty() {
         None
     } else {
-        Some(crate::btd4::Btd4Writer::new(crate::btd4::Btd4Header {
+        let spill_path = crate::btd4::spill_path_for(Path::new(&options.btd4_output_path));
+        Some(crate::btd4::Btd4Writer::with_spill_file(crate::btd4::Btd4Header {
             version: crate::btd4::BTD4_VERSION,
             density: CELL_SOURCE_SAMPLES as u32,
             height_min: source_cache.height_min,
             height_scale: source_cache.height_scale,
             worldspace_editor_id: world_editor_id.clone(),
-            plugin_names: vec![options.plugin_name.clone()],
+            plugin_names: btd4_plugin_names.clone(),
             cell_min_x: options.source_min_x,
             cell_min_y: options.source_min_y,
             cell_max_x: options.source_max_x,
             cell_max_y: options.source_max_y,
-        }))
+        }, &spill_path)
+        .map_err(AuthoringEmitError::Message)?)
     };
     let mut btd4_layers_recovered = 0u32;
+    let mut btd4_dense_samples_unmatched = 0u64;
 
     let write_cells_started = Instant::now();
     let mut land_texture_fields_elapsed = Duration::ZERO;
     let mut cell_payload_emit_elapsed = Duration::ZERO;
     for cell_y in options.source_min_y..=options.source_max_y {
+        if btd4_writer.is_some() {
+            source_cache.release_raw_rows_before(cell_y - options.source_min_y);
+        }
         for cell_x in options.source_min_x..=options.source_max_x {
             let target_cell_offset_x =
                 usize::try_from(cell_x - options.source_min_x).map_err(|_| {
@@ -1658,6 +1718,16 @@ fn convert_btd_inner(
                     floor_div(cell_y, 8)
                 ))
                 .join(format!("{cell_x}, {cell_y}"));
+            let dense_texture_ids = if btd4_writer.is_some() {
+                Some(dense_cell_texture_object_ids(
+                    &mut btd,
+                    cell_x,
+                    cell_y,
+                    &source_alpha_masks,
+                )?)
+            } else {
+                None
+            };
             let land_texture_fields_started = Instant::now();
             let texture_fields = build_land_texture_fields(
                 cell_x,
@@ -1666,7 +1736,6 @@ fn convert_btd_inner(
                 &textures_by_source_usage,
                 &options.plugin_name,
                 &mut dropped_texture_layers,
-                btd4_writer.is_some(),
                 options.land_skip_ground_cover_variants,
             )?;
             land_texture_fields_elapsed += land_texture_fields_started.elapsed();
@@ -1708,7 +1777,9 @@ fn convert_btd_inner(
                 vhgt_delta_clamp_overflows: cell_vhgt_delta_clamp_stats.overflows,
                 layers: cell_layers,
             });
-            if let Some(writer) = btd4_writer.as_mut() {
+            if let (Some(writer), Some(dense_texture_ids)) =
+                (btd4_writer.as_mut(), dense_texture_ids.as_deref())
+            {
                 let gathered = gather_btd4_cell_channels(
                     &mut btd,
                     cell_x,
@@ -1718,11 +1789,18 @@ fn convert_btd_inner(
                     &texture_fields.btd4_layer_object_ids,
                     &texture_fields.btd4_source_layer_object_ids,
                     &gcvr_grass_object_ids,
-                    &source_alpha_masks,
+                    &btd4_grass_refs,
+                    dense_texture_ids,
                     &mut source_cache,
                 )?;
                 btd4_layers_recovered =
                     btd4_layers_recovered.saturating_add(gathered.layers_recovered);
+                btd4_dense_samples_unmatched = btd4_dense_samples_unmatched.saturating_add(
+                    dense_samples_unmatched(
+                        dense_texture_ids,
+                        &texture_fields.btd4_source_layer_object_ids,
+                    ),
+                );
                 writer
                     .add_cell(cell_x, cell_y, gathered.channels)
                     .map_err(AuthoringEmitError::Message)?;
@@ -1731,6 +1809,14 @@ fn convert_btd_inner(
         }
     }
     let write_cells_elapsed = write_cells_started.elapsed();
+    if btd4_writer.is_some() {
+        // Dense samples whose texture is not in their quadrant's LAND layer table render
+        // as the base texture; the LAND stacks stay exactly as the non-BTD4 conversion writes them.
+        operation_counts.insert(
+            "btd4.dense_samples_unmatched".to_owned(),
+            btd4_dense_samples_unmatched,
+        );
+    }
     let sink_profile_after_cells = authoring_output.record_sink_profile();
     let cell_sink_elapsed = sink_profile_after_cells
         .0
@@ -1818,6 +1904,18 @@ fn convert_btd_inner(
         None
     };
     push_timing(&mut timings, "write_btd4_sidecar", btd4_started);
+    let btd4_verify_started = Instant::now();
+    let btd4_verify_path = match &btd4_output_path {
+        Some(path) => Some(verify_emitted_btd4(
+            Path::new(path),
+            &diagnostics_dir,
+            &world_editor_id,
+            &emitted_textures,
+            &water_cells,
+        )?),
+        None => None,
+    };
+    push_timing(&mut timings, "verify_btd4_sidecar", btd4_verify_started);
 
     let heightmap_started = Instant::now();
     let (
@@ -1973,6 +2071,7 @@ fn convert_btd_inner(
             .count() as u32,
         converted_texture_count,
         btd4_output_path,
+        btd4_verify_path,
         layers_recovered: btd4_layers_recovered,
         heightmap_output_path,
         heightmap_preview_path,
@@ -1999,6 +2098,13 @@ fn load_converted_textures(
     let manifest_text = fs::read_to_string(&options.texture_manifest_path)?;
     let manifest: TextureManifest = serde_json::from_str(&manifest_text)?;
     crate::texture_bridge::plan_required_textures(&manifest).map_err(AuthoringEmitError::Message)
+}
+
+fn should_release_land_alpha_after_materialization(
+    frame: SourceFrame,
+    btd4_output_path: &str,
+) -> bool {
+    frame == SourceFrame::Starfield || btd4_output_path.is_empty()
 }
 
 fn load_source_texture_alpha_masks(
@@ -2105,6 +2211,38 @@ fn append_btd_cache_counts(
     counts.insert(
         format!("{prefix}.cached_payload_bytes_end"),
         after.cached_payload_bytes,
+    );
+    counts.insert(
+        format!("{prefix}.cached_height_payload_bytes_start"),
+        before.cached_height_payload_bytes,
+    );
+    counts.insert(
+        format!("{prefix}.cached_height_payload_bytes_end"),
+        after.cached_height_payload_bytes,
+    );
+    counts.insert(
+        format!("{prefix}.cached_land_alpha_payload_bytes_start"),
+        before.cached_land_alpha_payload_bytes,
+    );
+    counts.insert(
+        format!("{prefix}.cached_land_alpha_payload_bytes_end"),
+        after.cached_land_alpha_payload_bytes,
+    );
+    counts.insert(
+        format!("{prefix}.cached_ground_cover_payload_bytes_start"),
+        before.cached_ground_cover_payload_bytes,
+    );
+    counts.insert(
+        format!("{prefix}.cached_ground_cover_payload_bytes_end"),
+        after.cached_ground_cover_payload_bytes,
+    );
+    counts.insert(
+        format!("{prefix}.cached_vertex_color_payload_bytes_start"),
+        before.cached_vertex_color_payload_bytes,
+    );
+    counts.insert(
+        format!("{prefix}.cached_vertex_color_payload_bytes_end"),
+        after.cached_vertex_color_payload_bytes,
     );
 }
 
@@ -2291,24 +2429,86 @@ fn index_textures_by_source_usage(
     result
 }
 
+/// The `.btd4` plugin table and, for each emitted GRAS the terrain import replaces with a
+/// target-game record, that record as (plugin index, object id). Index 0 is the output plugin.
+fn btd4_grass_targets(
+    textures: &[EmittedTexture],
+    output_plugin_name: &str,
+) -> (Vec<String>, HashMap<u32, (u8, u32)>) {
+    let mut plugin_names = vec![output_plugin_name.to_owned()];
+    let mut targets = Vec::new();
+    for texture in textures {
+        for (grass, object_id) in texture.converted.grass.iter().zip(&texture.grass_object_ids) {
+            if let Some((plugin, target_id)) =
+                grass.target_form_key.as_deref().and_then(parse_target_form_key)
+            {
+                targets.push((*object_id, plugin, target_id));
+            }
+        }
+    }
+    let mut extra = targets
+        .iter()
+        .map(|(_, plugin, _)| plugin.clone())
+        .filter(|plugin| !plugin.eq_ignore_ascii_case(output_plugin_name))
+        .collect::<Vec<_>>();
+    extra.sort_by_key(|plugin| plugin.to_ascii_lowercase());
+    extra.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+    plugin_names.extend(extra);
+    let refs = targets
+        .into_iter()
+        .map(|(object_id, plugin, target_id)| {
+            let index = plugin_names
+                .iter()
+                .position(|name| name.eq_ignore_ascii_case(&plugin))
+                .expect("target plugin is in the table");
+            (object_id, (index as u8, target_id))
+        })
+        .collect();
+    (plugin_names, refs)
+}
+
+/// `0BA520:Fallout4.esm` (either order) -> (`Fallout4.esm`, 0x0BA520).
+fn parse_target_form_key(key: &str) -> Option<(String, u32)> {
+    let (left, right) = key.split_once(':')?;
+    let hex = |text: &str| u32::from_str_radix(text.trim(), 16).ok().map(|id| id & 0x00FF_FFFF);
+    match (hex(left), hex(right)) {
+        (Some(id), _) if right.contains('.') => Some((right.trim().to_owned(), id)),
+        (_, Some(id)) if left.contains('.') => Some((left.trim().to_owned(), id)),
+        _ => None,
+    }
+}
+
 fn index_grass_by_source_gcvr(textures: &[EmittedTexture]) -> HashMap<u32, Vec<u32>> {
     let mut result = HashMap::<u32, Vec<u32>>::new();
+    let mut add = |source_gcvr: u32, object_id: u32| {
+        let grass = result.entry(source_gcvr).or_default();
+        if !grass.contains(&object_id) {
+            grass.push(object_id);
+            grass.sort_unstable();
+        }
+    };
     for texture in textures {
-        let Some(source_gcvr) = texture
+        // Legacy per-GCVR variant bundles key the whole texture by its GCVR.
+        if let Some(source_gcvr) = texture
             .converted
             .source_gcvr_form_key
             .as_deref()
             .and_then(object_id_from_source_form_key)
-        else {
-            continue;
-        };
-        let grass = result.entry(source_gcvr).or_default();
-        for object_id in &texture.grass_object_ids {
-            if !grass.contains(object_id) {
-                grass.push(*object_id);
+        {
+            for object_id in &texture.grass_object_ids {
+                add(source_gcvr, *object_id);
             }
         }
-        grass.sort_unstable();
+        // Plain LTEX bundles carry GCVR grass with the placing GCVRs on each entry.
+        for (grass, object_id) in texture.converted.grass.iter().zip(&texture.grass_object_ids) {
+            for source_gcvr in grass
+                .source_gcvr_form_keys
+                .iter()
+                .filter_map(|key| object_id_from_source_form_key(key))
+            {
+                add(source_gcvr, *object_id);
+            }
+        }
     }
     result
 }
@@ -3411,21 +3611,19 @@ fn write_texture_records(
                 )
             })
             .unwrap_or_default();
-        let grass_payload = if options.btd4_output_path.is_empty() {
-            texture
-                .grass_object_ids
-                .iter()
-                .map(|object_id| {
-                    format!(
-                        "- Grass:\n    reference:\n      plugin: {}\n      object_id: \"{}\"\n",
-                        options.plugin_name,
-                        form_id_hex(*object_id)
-                    )
-                })
-                .collect::<String>()
-        } else {
-            String::new()
-        };
+        // BTD4 mode keeps LTEX grass too: Tales replaces it with GCVR grass per sidecar cell,
+        // and it is what places grass when dense terrain is off.
+        let grass_payload = texture
+            .grass_object_ids
+            .iter()
+            .map(|object_id| {
+                format!(
+                    "- Grass:\n    reference:\n      plugin: {}\n      object_id: \"{}\"\n",
+                    options.plugin_name,
+                    form_id_hex(*object_id)
+                )
+            })
+            .collect::<String>();
         let ltex_payload = format!(
             "form_id: \"{}\"\nform_version: 131\nversion2: 1\neid: {}\nfields:\n- TextureSet:\n    reference:\n      plugin: {}\n      object_id: \"{}\"\n{}- HavokData:\n    Friction: {}\n    Restitution: {}\n- TextureSpecularExponent: 30\n{}",
             form_id_hex(texture.ltex_object_id),
@@ -3973,7 +4171,6 @@ fn build_land_texture_fields(
     textures_by_source_usage: &HashMap<SourceTextureUsageKey, &EmittedTexture>,
     plugin_name: &str,
     dropped_texture_layers: &mut u32,
-    _want_dense_alpha: bool,
     _land_skip_ground_cover_variants: bool,
 ) -> Result<LandTextureFields, AuthoringEmitError> {
     if textures_by_source_usage.is_empty() {
@@ -4110,6 +4307,80 @@ struct Btd4CellGather {
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Re-reads the finished sidecar with the bounded-memory verifier and writes its
+/// report. A sidecar the runtime would reject, or whose cell edges disagree,
+/// fails the conversion; references to LTEX/GRAS records this run did not write
+/// only degrade those cells to vanilla at runtime, so they are reported, not fatal.
+fn verify_emitted_btd4(
+    path: &Path,
+    diagnostics_dir: &Path,
+    world_editor_id: &str,
+    textures: &[EmittedTexture],
+    water_cells: &HashMap<(i32, i32), WaterCell>,
+) -> Result<String, AuthoringEmitError> {
+    let options = crate::btd4_verify::VerifyOptions {
+        water_heights: {
+            let mut heights: Vec<(i32, i32, f32)> = water_cells
+                .iter()
+                .map(|(&(x, y), water)| (x, y, water.height))
+                .collect();
+            heights.sort_by_key(|&(x, y, _)| (y, x));
+            heights
+        },
+        road_layer_ids: textures
+            .iter()
+            .filter(|texture| {
+                texture
+                    .converted
+                    .source_ltex_editor_id
+                    .to_ascii_lowercase()
+                    .contains("road")
+            })
+            .map(|texture| texture.ltex_object_id)
+            .collect(),
+        written_ltex_ids: Some(textures.iter().map(|texture| texture.ltex_object_id).collect()),
+        // A GRAS with a target record is dropped by the import, so the sidecar must not
+        // reference it in the output plugin.
+        written_grass_ids: Some(
+            textures
+                .iter()
+                .flat_map(|texture| texture.converted.grass.iter().zip(&texture.grass_object_ids))
+                .filter(|(grass, _)| grass.target_form_key.is_none())
+                .map(|(_, object_id)| *object_id)
+                .collect(),
+        ),
+        locations_per_category: 5,
+    };
+    let report =
+        crate::btd4_verify::verify_btd4(path, &options).map_err(AuthoringEmitError::Message)?;
+    let report_path = diagnostics_dir.join(format!("btd4_verify_{world_editor_id}.json"));
+    fs::write(&report_path, serde_json::to_string_pretty(&report)?)?;
+    if report.error_count > 0
+        || report.height_edge_mismatches > 0
+        || report.color_edge_mismatches > 0
+    {
+        return Err(AuthoringEmitError::Message(format!(
+            "BTD4 sidecar {} failed verification ({} corrupt cells, {} height / {} color edge mismatches); see {}",
+            path.display(),
+            report.error_count,
+            report.height_edge_mismatches,
+            report.color_edge_mismatches,
+            report_path.display()
+        )));
+    }
+    if !report.is_valid() {
+        eprintln!(
+            "terrain_native: BTD4 {} references {} unwritten LTEX and {} unwritten GRAS ids and has {} cells with >16 grass types in one interval; those cells fall back to vanilla at runtime (see {})",
+            path.display(),
+            report.unresolved_ltex_ids.len(),
+            report.unresolved_grass_ids.len(),
+            report.grass_intervals_over_16_types,
+            report_path.display()
+        );
+    }
+    Ok(report_path.display().to_string())
+}
+
 fn gather_btd4_cell_channels(
     btd: &mut BtdFile,
     cell_x: i32,
@@ -4119,7 +4390,8 @@ fn gather_btd4_cell_channels(
     layer_object_ids: &[Option<u32>],
     source_layer_object_ids: &[Option<u32>],
     grass_object_ids_by_gcvr: &HashMap<u32, Vec<u32>>,
-    source_alpha_masks: &TextureAlphaMasks,
+    grass_refs: &HashMap<u32, (u8, u32)>,
+    dense_texture_ids: &[Option<u32>],
     source_cache: &mut SourceCellCache,
 ) -> Result<Btd4CellGather, AuthoringEmitError> {
     let mut heights = Vec::with_capacity(129 * 129);
@@ -4145,9 +4417,8 @@ fn gather_btd4_cell_channels(
         })
         .collect();
 
-    let dense_texture_ids = dense_cell_texture_object_ids(btd, cell_x, cell_y, source_alpha_masks)?;
-    let dense_alpha = dense_alpha_planes(&dense_texture_ids, source_layer_object_ids);
-    let gcvr = dense_gcvr_entries(btd, cell_x, cell_y, grass_object_ids_by_gcvr)?;
+    let dense_alpha = dense_alpha_planes(dense_texture_ids, source_layer_object_ids);
+    let gcvr = dense_gcvr_entries(btd, cell_x, cell_y, grass_object_ids_by_gcvr, grass_refs)?;
     let colors = dense_cell_colors(btd, cell_x, cell_y)?;
 
     Ok(Btd4CellGather {
@@ -4241,6 +4512,25 @@ fn dense_cell_texture_object_ids(
     Ok(result)
 }
 
+fn dense_samples_unmatched(
+    texture_ids: &[Option<u32>],
+    ordered_source_layers: &[Option<u32>],
+) -> u64 {
+    let mut unmatched = 0u64;
+    for y in 0..CELL_SOURCE_SAMPLES {
+        for x in 0..CELL_SOURCE_SAMPLES {
+            let Some(id) = texture_ids[y * CELL_SOURCE_SAMPLES + x] else {
+                continue;
+            };
+            let quadrant = (x / 64) | ((y / 64) << 1);
+            if !ordered_source_layers[quadrant * 6..quadrant * 6 + 6].contains(&Some(id)) {
+                unmatched += 1;
+            }
+        }
+    }
+    unmatched
+}
+
 fn dense_alpha_planes(
     texture_ids: &[Option<u32>],
     ordered_source_layers: &[Option<u32>],
@@ -4281,6 +4571,7 @@ fn dense_gcvr_entries(
     cell_x: i32,
     cell_y: i32,
     grass_object_ids_by_gcvr: &HashMap<u32, Vec<u32>>,
+    grass_refs: &HashMap<u32, (u8, u32)>,
 ) -> Result<Option<crate::btd4::GcvrChunk>, AuthoringEmitError> {
     let header = btd.header();
     let (min_x, min_y, max_x, max_y) = (
@@ -4334,32 +4625,55 @@ fn dense_gcvr_entries(
             }
         }
     }
+    // FO4 allows at most 16 grass types per 4x4 interval; where FO76 layers
+    // more, keep the 16 covering the most samples there.
     for interval_y in 0..32usize {
         for interval_x in 0..32usize {
-            let covering = masks
-                .values()
-                .filter(|mask| {
-                    (interval_y * 4..interval_y * 4 + 4).any(|y| {
-                        (interval_x * 4..interval_x * 4 + 4)
-                            .any(|x| mask[y * CELL_SOURCE_SAMPLES + x] != 0)
-                    })
+            let samples = || {
+                (interval_y * 4..interval_y * 4 + 4).flat_map(move |y| {
+                    (interval_x * 4..interval_x * 4 + 4).map(move |x| y * CELL_SOURCE_SAMPLES + x)
                 })
-                .count();
-            if covering > 16 {
-                return Err(AuthoringEmitError::Message(format!(
-                    "BTD4 GCVR cell ({cell_x},{cell_y}) interval ({interval_x},{interval_y}) uses {covering} grass types; FO4 supports at most 16"
-                )));
+            };
+            let mut covering: Vec<(usize, u32)> = masks
+                .iter()
+                .map(|(object_id, mask)| (samples().filter(|&i| mask[i] != 0).count(), *object_id))
+                .filter(|(count, _)| *count > 0)
+                .collect();
+            if covering.len() <= 16 {
+                continue;
+            }
+            covering.sort_by(|a, b| b.cmp(a));
+            for (_, object_id) in &covering[16..] {
+                let mask = masks.get_mut(object_id).unwrap();
+                for i in samples() {
+                    mask[i] = 0;
+                }
             }
         }
     }
+    masks.retain(|_, mask| mask.iter().any(|&v| v != 0));
     if masks.is_empty() {
         return Ok(None);
     }
+    let mut entries = std::collections::BTreeMap::<(u8, u32), Vec<u8>>::new();
+    for (object_id, mask) in masks {
+        let key = grass_refs.get(&object_id).copied().unwrap_or((0, object_id));
+        match entries.entry(key) {
+            std::collections::btree_map::Entry::Vacant(slot) => {
+                slot.insert(mask);
+            }
+            std::collections::btree_map::Entry::Occupied(mut slot) => {
+                for (merged, value) in slot.get_mut().iter_mut().zip(mask) {
+                    *merged |= value;
+                }
+            }
+        }
+    }
     Ok(Some(crate::btd4::GcvrChunk {
-        entries: masks
+        entries: entries
             .into_iter()
-            .map(|(object_id, mask)| crate::btd4::GcvrEntry {
-                plugin_index: 0,
+            .map(|((plugin_index, object_id), mask)| crate::btd4::GcvrEntry {
+                plugin_index,
                 object_id,
                 mask,
             })
@@ -5367,192 +5681,42 @@ mod tests {
         }
     }
 
-    #[test]
-    fn collect_only_authoring_output_keeps_records_off_disk() {
-        let output_dir = std::env::temp_dir().join(format!(
-            "terrain_native_collect_only_{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("time should be after epoch")
-                .as_nanos()
-        ));
-        let _ = fs::remove_dir_all(&output_dir);
-        let mut output = AuthoringOutput::collect_only(output_dir.clone());
-
-        output
-            .write_plugin_yaml("plugin: B21_Test.esp\n".to_string())
-            .expect("plugin payload");
-        output
-            .write_record_yaml(
-                "CELL",
-                PathBuf::from("records")
-                    .join("WRLD")
-                    .join("B21_Test - 000800_B21_Test.esp")
-                    .join("0, 0")
-                    .join("0, 0")
-                    .join("0, 0")
-                    .join("RecordData.yaml"),
-                "form_id: \"000801:B21_Test.esp\"\neid: B21_TestCell\n".to_string(),
-            )
-            .expect("cell payload");
-        let collected = output.finish();
-
-        assert_eq!(collected.plugin_yaml, "plugin: B21_Test.esp\n");
-        assert_eq!(collected.records.len(), 1);
-        assert_eq!(collected.records[0].signature, "CELL");
-        assert!(collected.records[0].yaml.contains("B21_TestCell"));
-        assert!(!output_dir.join("records").exists());
+    fn base_options() -> ConvertOptions {
+        let mut options = texture_usage_options(Path::new(""), 0, 0);
+        options.worldspace_editor_id = "B21_Test".to_string();
+        options
     }
 
-    #[test]
-    fn report_only_authoring_output_keeps_records_off_disk_and_out_of_memory() {
-        let output_dir = std::env::temp_dir().join(format!(
-            "terrain_native_report_only_{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("time should be after epoch")
-                .as_nanos()
-        ));
-        let _ = fs::remove_dir_all(&output_dir);
-        let mut output = AuthoringOutput::report_only(output_dir.clone());
-
-        output
-            .write_plugin_yaml("plugin: B21_Test.esp\n".to_string())
-            .expect("plugin payload");
-        output
-            .write_record_yaml(
-                "CELL",
-                PathBuf::from("records")
-                    .join("WRLD")
-                    .join("B21_Test - 000800_B21_Test.esp")
-                    .join("0, 0")
-                    .join("0, 0")
-                    .join("0, 0")
-                    .join("RecordData.yaml"),
-                "form_id: \"000801:B21_Test.esp\"\neid: B21_TestCell\n".to_string(),
-            )
-            .expect("cell payload");
-        let collected = output.finish();
-
-        assert!(collected.plugin_yaml.is_empty());
-        assert!(collected.records.is_empty());
-        assert!(!output_dir.join("records").exists());
-    }
-
-    #[test]
-    fn streamed_authoring_output_sends_records_without_retaining_them() {
-        let output_dir = std::env::temp_dir().join(format!(
-            "terrain_native_stream_only_{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("time should be after epoch")
-                .as_nanos()
-        ));
-        let _ = fs::remove_dir_all(&output_dir);
-        let mut streamed = Vec::new();
-        {
-            let mut sink = |record: AuthoringRecordPayload| {
-                streamed.push(record);
-                Ok(())
-            };
-            let mut output = AuthoringOutput::stream_records(output_dir.clone(), &mut sink);
-
-            output
-                .write_record_yaml(
-                    "CELL",
-                    PathBuf::from("records")
-                        .join("WRLD")
-                        .join("B21_Test - 000800_B21_Test.esp")
-                        .join("0, 0")
-                        .join("0, 0")
-                        .join("0, 0")
-                        .join("RecordData.yaml"),
-                    "form_id: \"000801:B21_Test.esp\"\neid: B21_TestCell\n".to_string(),
-                )
-                .expect("cell payload");
-            let collected = output.finish();
-
-            assert!(collected.records.is_empty());
+    fn test_grass(form_key: &str, editor_id: &str) -> crate::texture_bridge::ConvertedTerrainGrass {
+        crate::texture_bridge::ConvertedTerrainGrass {
+            source_form_key: form_key.to_string(),
+            source_editor_id: editor_id.to_string(),
+            object_bounds: crate::texture_bridge::ConvertedGrassObjectBounds::default(),
+            model_file_name: format!("landscape/grass/{editor_id}.nif"),
+            model_information: String::new(),
+            density: 0,
+            max_slope: 0,
+            position_range: 0.0,
+            height_range: 0.0,
+            color_range: 0.0,
+            wave_period: 0.0,
+            flags: Vec::new(),
+            source_gcvr_form_keys: Vec::new(),
+            target_form_key: None,
         }
-
-        assert_eq!(streamed.len(), 1);
-        assert_eq!(streamed[0].signature, "CELL");
-        assert!(streamed[0].yaml.contains("B21_TestCell"));
-        assert!(!output_dir.join("records").exists());
     }
 
-    #[test]
-    fn texture_form_ids_start_after_terrain_record_range() {
-        let options = ConvertOptions {
-            btd_path: String::new(),
-            output_authoring_dir: String::new(),
-            plugin_name: "B21_Test.esp".to_string(),
-            worldspace_editor_id: "B21_Test".to_string(),
-            source_min_x: 0,
-            source_min_y: 0,
-            source_max_x: 0,
-            source_max_y: 0,
-            first_form_id: 0x800,
-            world_form_id: 0,
-            first_cell_form_id: 0,
-            resample_mode: "sample4".to_string(),
-            debug_output_dir: String::new(),
-            texture_manifest_path: String::new(),
-            water_manifest_path: String::new(),
-            emit_textures: true,
-            export_heightmap: false,
-            debug_flat_land: false,
-            preserve_source_ids: false,
-            reserved_object_ids: Vec::new(),
-            source_worldspace_authoring_dir: String::new(),
-            source_worldspace_terrain_ids_json: String::new(),
-            heightmap_output_path: String::new(),
-            btd4_output_path: String::new(),
-            conversion_workers: None,
-            land_skip_ground_cover_variants: false,
-            reuse_existing_textures: false,
-        };
-        let cell_count = 6144;
-        let terrain_next_object_id = next_terrain_object_id(options.first_form_id, cell_count)
-            .expect("terrain range should fit");
-        let converted = vec![ConvertedTerrainTexture {
-            source_ltex_form_key: "001234".to_string(),
+    fn test_converted(
+        ltex_form_key: &str,
+        txst_form_key: &str,
+        grass: Vec<crate::texture_bridge::ConvertedTerrainGrass>,
+    ) -> ConvertedTerrainTexture {
+        ConvertedTerrainTexture {
+            source_ltex_form_key: ltex_form_key.to_string(),
             source_ltex_editor_id: "LTest".to_string(),
             source_gcvr_form_key: None,
             source_gcvr_editor_id: None,
-            source_txst_form_key: "001235".to_string(),
-            source_txst_editor_id: "LandscapeTest".to_string(),
-            suffix: "Test".to_string(),
-            diffuse_rel_path: "textures/terrain/test_d.dds".to_string(),
-            normal_rel_path: "textures/terrain/test_n.dds".to_string(),
-            specgloss_rel_path: "textures/terrain/test_s.dds".to_string(),
-            glow_rel_path: "textures/terrain/test_g.dds".to_string(),
-            material_type_object_id: Some("012F38".to_string()),
-            havok_friction: 30,
-            havok_restitution: 30,
-            grass: Vec::new(),
-        }];
-
-        let emitted =
-            assign_texture_form_ids(terrain_next_object_id, converted, false, HashSet::new())
-                .expect("texture IDs");
-
-        assert_eq!(emitted[0].txst_object_id, terrain_next_object_id);
-        assert_eq!(emitted[0].ltex_object_id, terrain_next_object_id + 1);
-        assert_eq!(
-            next_texture_object_id(terrain_next_object_id, &emitted).unwrap(),
-            terrain_next_object_id + 2
-        );
-    }
-
-    #[test]
-    fn texture_form_ids_preserve_source_object_ids_when_enabled() {
-        let converted = vec![ConvertedTerrainTexture {
-            source_ltex_form_key: "001234:SeventySix.esm".to_string(),
-            source_ltex_editor_id: "LTest".to_string(),
-            source_gcvr_form_key: None,
-            source_gcvr_editor_id: None,
-            source_txst_form_key: "001235:SeventySix.esm".to_string(),
+            source_txst_form_key: txst_form_key.to_string(),
             source_txst_editor_id: "LandscapeTest".to_string(),
             suffix: "Test".to_string(),
             diffuse_rel_path: "textures/terrain/test_d.dds".to_string(),
@@ -5562,29 +5726,129 @@ mod tests {
             material_type_object_id: None,
             havok_friction: 30,
             havok_restitution: 30,
-            grass: vec![crate::texture_bridge::ConvertedTerrainGrass {
-                source_form_key: "3900A5:SeventySix.esm".to_string(),
-                source_editor_id: "Forest76GrassObj03A".to_string(),
-                object_bounds: crate::texture_bridge::ConvertedGrassObjectBounds::default(),
-                model_file_name: "landscape/grass/Forest76GrassObj03A.nif".to_string(),
-                model_information: String::new(),
-                density: 0,
-                max_slope: 0,
-                position_range: 0.0,
-                height_range: 0.0,
-                color_range: 0.0,
-                wave_period: 0.0,
-                flags: Vec::new(),
-            }],
-        }];
+            grass,
+        }
+    }
 
-        let emitted =
-            assign_texture_form_ids(0x800, converted, true, HashSet::new()).expect("texture IDs");
+    #[test]
+    fn authoring_output_modes_keep_records_off_disk() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let output_dir = temp.path().to_path_buf();
+        let cell_path = PathBuf::from("records")
+            .join("WRLD")
+            .join("B21_Test - 000800_B21_Test.esp")
+            .join("0, 0")
+            .join("0, 0")
+            .join("0, 0")
+            .join("RecordData.yaml");
+        let cell_yaml = "form_id: \"000801:B21_Test.esp\"\neid: B21_TestCell\n";
 
-        assert_eq!(emitted[0].txst_object_id, 0x001235);
-        assert_eq!(emitted[0].ltex_object_id, 0x001234);
-        assert_eq!(emitted[0].grass_object_ids, vec![0x3900A5]);
+        let mut collect = AuthoringOutput::collect_only(output_dir.clone());
+        let mut report = AuthoringOutput::report_only(output_dir.clone());
+        for output in [&mut collect, &mut report] {
+            output
+                .write_plugin_yaml("plugin: B21_Test.esp\n".to_string())
+                .expect("plugin payload");
+            output
+                .write_record_yaml("CELL", cell_path.clone(), cell_yaml.to_string())
+                .expect("cell payload");
+        }
+        let collected = collect.finish();
+        assert_eq!(collected.plugin_yaml, "plugin: B21_Test.esp\n");
+        assert_eq!(collected.records.len(), 1);
+        assert_eq!(collected.records[0].signature, "CELL");
+        assert!(collected.records[0].yaml.contains("B21_TestCell"));
+        let reported = report.finish();
+        assert!(reported.plugin_yaml.is_empty());
+        assert!(reported.records.is_empty());
+
+        let mut streamed = Vec::new();
+        {
+            let mut sink = |record: AuthoringRecordPayload| {
+                streamed.push(record);
+                Ok(())
+            };
+            let mut output = AuthoringOutput::stream_records(output_dir.clone(), &mut sink);
+            output
+                .write_record_yaml("CELL", cell_path.clone(), cell_yaml.to_string())
+                .expect("cell payload");
+            assert!(output.finish().records.is_empty());
+        }
+        assert_eq!(streamed.len(), 1);
+        assert_eq!(streamed[0].signature, "CELL");
+        assert!(streamed[0].yaml.contains("B21_TestCell"));
+        assert!(!output_dir.join("records").exists());
+    }
+
+    #[test]
+    fn texture_form_ids_follow_terrain_range_or_preserved_source_ids() {
+        let terrain_next = next_terrain_object_id(0x800, 6144).expect("terrain range should fit");
+        let emitted = assign_texture_form_ids(
+            terrain_next,
+            vec![test_converted("001234", "001235", Vec::new())],
+            false,
+            HashSet::new(),
+        )
+        .expect("texture IDs");
+        assert_eq!(emitted[0].txst_object_id, terrain_next);
+        assert_eq!(emitted[0].ltex_object_id, terrain_next + 1);
+        assert_eq!(
+            next_texture_object_id(terrain_next, &emitted).unwrap(),
+            terrain_next + 2
+        );
+
+        // (ltex, txst, grass, reserved) -> (txst id, ltex id, grass ids)
+        let cases = [
+            (
+                "001234:SeventySix.esm",
+                "001235:SeventySix.esm",
+                Some("3900A5:SeventySix.esm"),
+                vec![],
+                (0x001235, 0x001234, vec![0x3900A5]),
+            ),
+            (
+                "SeventySix.esm:003B1B",
+                "SeventySix.esm:001235",
+                Some("SeventySix.esm:3B396F"),
+                vec![],
+                (0x001235, 0x003B1B, vec![0x3B396F]),
+            ),
+            (
+                "001234:SeventySix.esm",
+                "001235:SeventySix.esm",
+                None,
+                vec![0x001235],
+                (0x800, 0x001234, vec![]),
+            ),
+        ];
+        for (ltex, txst, grass, reserved, (want_txst, want_ltex, want_grass)) in cases {
+            let grass = grass
+                .map(|key| vec![test_grass(key, "Forest76GrassObj03A")])
+                .unwrap_or_default();
+            let emitted = assign_texture_form_ids(
+                0x800,
+                vec![test_converted(ltex, txst, grass)],
+                true,
+                reserved.into_iter().collect(),
+            )
+            .expect("texture IDs");
+            assert_eq!(emitted[0].txst_object_id, want_txst, "{ltex}");
+            assert_eq!(emitted[0].ltex_object_id, want_ltex, "{ltex}");
+            assert_eq!(emitted[0].grass_object_ids, want_grass, "{ltex}");
+        }
+        let emitted = assign_texture_form_ids(
+            0x800,
+            vec![test_converted(
+                "001234:SeventySix.esm",
+                "001235:SeventySix.esm",
+                vec![test_grass("3900A5:SeventySix.esm", "Forest76GrassObj03A")],
+            )],
+            true,
+            HashSet::new(),
+        )
+        .unwrap();
         assert_eq!(next_texture_object_id(0x800, &emitted).unwrap(), 0x3900A6);
+        assert_eq!(normalize_source_form_key("SeventySix.esm:3B396F"), "3B396F");
     }
 
     #[test]
@@ -5602,6 +5866,8 @@ mod tests {
             color_range: 0.0,
             wave_period: 0.0,
             flags: Vec::new(),
+            source_gcvr_form_keys: Vec::new(),
+            target_form_key: None,
         };
         let base = ConvertedTerrainTexture {
             source_ltex_form_key: "001234:SeventySix.esm".to_string(),
@@ -5646,76 +5912,6 @@ mod tests {
         assert_ne!(emitted[1].ltex_object_id, emitted[2].ltex_object_id);
         assert_eq!(emitted[1].grass_object_ids, vec![0x3900A5]);
         assert_eq!(emitted[2].grass_object_ids, vec![0x3900A5]);
-    }
-
-    #[test]
-    fn texture_form_ids_skip_reserved_source_object_ids() {
-        let converted = vec![ConvertedTerrainTexture {
-            source_ltex_form_key: "001234:SeventySix.esm".to_string(),
-            source_ltex_editor_id: "LTest".to_string(),
-            source_gcvr_form_key: None,
-            source_gcvr_editor_id: None,
-            source_txst_form_key: "001235:SeventySix.esm".to_string(),
-            source_txst_editor_id: "LandscapeTest".to_string(),
-            suffix: "Test".to_string(),
-            diffuse_rel_path: "textures/terrain/test_d.dds".to_string(),
-            normal_rel_path: "textures/terrain/test_n.dds".to_string(),
-            specgloss_rel_path: "textures/terrain/test_s.dds".to_string(),
-            glow_rel_path: "textures/terrain/test_g.dds".to_string(),
-            material_type_object_id: None,
-            havok_friction: 30,
-            havok_restitution: 30,
-            grass: Vec::new(),
-        }];
-        let reserved = HashSet::from([0x001235]);
-
-        let emitted =
-            assign_texture_form_ids(0x800, converted, true, reserved).expect("texture IDs");
-
-        assert_eq!(emitted[0].txst_object_id, 0x800);
-        assert_eq!(emitted[0].ltex_object_id, 0x001234);
-    }
-
-    #[test]
-    fn texture_form_ids_preserve_plugin_first_source_object_ids() {
-        let converted = vec![ConvertedTerrainTexture {
-            source_ltex_form_key: "SeventySix.esm:003B1B".to_string(),
-            source_ltex_editor_id: "LTest".to_string(),
-            source_gcvr_form_key: None,
-            source_gcvr_editor_id: None,
-            source_txst_form_key: "SeventySix.esm:001235".to_string(),
-            source_txst_editor_id: "LandscapeTest".to_string(),
-            suffix: "Test".to_string(),
-            diffuse_rel_path: "textures/terrain/test_d.dds".to_string(),
-            normal_rel_path: "textures/terrain/test_n.dds".to_string(),
-            specgloss_rel_path: "textures/terrain/test_s.dds".to_string(),
-            glow_rel_path: "textures/terrain/test_g.dds".to_string(),
-            material_type_object_id: None,
-            havok_friction: 30,
-            havok_restitution: 30,
-            grass: vec![crate::texture_bridge::ConvertedTerrainGrass {
-                source_form_key: "SeventySix.esm:3B396F".to_string(),
-                source_editor_id: "Forest76WeedObj01".to_string(),
-                object_bounds: crate::texture_bridge::ConvertedGrassObjectBounds::default(),
-                model_file_name: "landscape/grass/Forest76WeedObj01.nif".to_string(),
-                model_information: String::new(),
-                density: 0,
-                max_slope: 0,
-                position_range: 0.0,
-                height_range: 0.0,
-                color_range: 0.0,
-                wave_period: 0.0,
-                flags: Vec::new(),
-            }],
-        }];
-
-        let emitted =
-            assign_texture_form_ids(0x800, converted, true, HashSet::new()).expect("texture IDs");
-
-        assert_eq!(emitted[0].txst_object_id, 0x001235);
-        assert_eq!(emitted[0].ltex_object_id, 0x003B1B);
-        assert_eq!(emitted[0].grass_object_ids, vec![0x3B396F]);
-        assert_eq!(normalize_source_form_key("SeventySix.esm:3B396F"), "3B396F");
     }
 
     #[test]
@@ -5811,17 +6007,18 @@ mod tests {
         assert!(ltex_payload.contains("- MaterialType:\n"));
         assert!(ltex_payload.contains("      plugin: Fallout4.esm\n"));
         assert!(ltex_payload.contains("      object_id: \"012F38\"\n"));
-    }
 
-    #[test]
-    fn texture_slot_paths_are_relative_to_textures_root() {
-        assert_eq!(
-            texture_slot_path("textures/terrain/test_d.dds"),
-            "terrain\\test_d.dds"
-        );
         assert_eq!(
             texture_slot_path("Textures/Landscape/Ground/DriedGrass01_D.dds"),
             "Landscape\\Ground\\DriedGrass01_D.dds"
+        );
+        assert_eq!(
+            source_ltex_form_key(0xFF00_ABCD, false),
+            "00ABCD:SeventySix.esm"
+        );
+        assert_eq!(
+            source_ltex_form_key(0xFF00_ABCD, true),
+            "00ABCD:Starfield.esm"
         );
     }
 
@@ -5899,6 +6096,8 @@ mod tests {
                     color_range: 0.2,
                     wave_period: 145.0,
                     flags: vec!["VertexLighting".to_string(), "FitToSlope".to_string()],
+                    source_gcvr_form_keys: Vec::new(),
+                    target_form_key: None,
                 }],
             },
             txst_object_id: 0x900,
@@ -5954,7 +6153,9 @@ mod tests {
             .iter()
             .find(|record| record.signature == "LTEX")
             .expect("BTD4 LTEX");
-        assert!(!btd4_ltex.yaml.contains("- Grass:\n"));
+        // Tales swaps LTEX grass for GCVR grass per sidecar cell; with dense terrain off
+        // the LTEX grass is what places any grass at all.
+        assert!(btd4_ltex.yaml.contains("- Grass:\n"));
         assert_eq!(
             records
                 .records
@@ -6029,6 +6230,8 @@ mod tests {
             color_range: 0.2,
             wave_period: 145.0,
             flags: Vec::new(),
+            source_gcvr_form_keys: Vec::new(),
+            target_form_key: None,
         }];
         let textures = vec![
             EmittedTexture {
@@ -6084,26 +6287,9 @@ mod tests {
     }
 
     #[test]
-    fn source_ltex_form_key_uses_btd_layout_owner() {
-        assert_eq!(
-            source_ltex_form_key(0xFF00_ABCD, false),
-            "00ABCD:SeventySix.esm"
-        );
-        assert_eq!(
-            source_ltex_form_key(0xFF00_ABCD, true),
-            "00ABCD:Starfield.esm"
-        );
-    }
-
-    #[test]
-    fn preserved_terrain_ids_read_world_cell_and_land_ids() {
-        let world_dir = std::env::temp_dir().join(format!(
-            "terrain_native_preserved_ids_{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("time should be after epoch")
-                .as_nanos()
-        ));
+    fn preserved_terrain_ids_load_from_authoring_dir_or_plugin_payload() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let world_dir = temp.path().join("world");
         let cell_dir = world_dir.join("0, -1").join("0, -1").join("3, -2");
         fs::create_dir_all(&cell_dir).expect("temp source cell dir");
         fs::write(
@@ -6116,183 +6302,57 @@ mod tests {
             "signature: CELL\nform_id: \"52ACBF:SeventySix.esm\"\neid: AppalachiaCell3Minus2\nsubrecords:\n  - signature: XCLC\n    data_hex: \"03000000FEFFFFFF00000000\"\nLandscape:\n  signature: LAND\n  form_id: \"52ACC0:SeventySix.esm\"\n",
         )
         .expect("source cell yaml");
-        let options = ConvertOptions {
-            btd_path: String::new(),
-            output_authoring_dir: String::new(),
-            plugin_name: "B21_Test.esm".to_string(),
-            worldspace_editor_id: "B21_Test".to_string(),
-            source_min_x: 3,
-            source_min_y: -2,
-            source_max_x: 3,
-            source_max_y: -2,
-            first_form_id: 0x800,
-            world_form_id: 0,
-            first_cell_form_id: 0,
-            resample_mode: "sample4".to_string(),
-            debug_output_dir: String::new(),
-            texture_manifest_path: String::new(),
-            water_manifest_path: String::new(),
-            emit_textures: false,
-            export_heightmap: false,
-            debug_flat_land: false,
-            preserve_source_ids: true,
-            reserved_object_ids: Vec::new(),
-            source_worldspace_authoring_dir: world_dir.to_string_lossy().into_owned(),
-            source_worldspace_terrain_ids_json: String::new(),
-            heightmap_output_path: String::new(),
-            btd4_output_path: String::new(),
-            conversion_workers: None,
-            land_skip_ground_cover_variants: false,
-            reuse_existing_textures: false,
-        };
+        let mut from_dir = base_options();
+        from_dir.plugin_name = "B21_Test.esm".to_string();
+        from_dir.source_min_x = 3;
+        from_dir.source_max_x = 3;
+        from_dir.source_min_y = -2;
+        from_dir.source_max_y = -2;
+        from_dir.preserve_source_ids = true;
+        let mut from_json = from_dir.clone();
+        from_dir.source_worldspace_authoring_dir = world_dir.to_string_lossy().into_owned();
+        from_json.source_worldspace_terrain_ids_json = serde_json::json!({
+            "world_form_id": 0x25DA15u32,
+            "world_editor_id": "APPALACHIA",
+            "cells": [{
+                "x": 3,
+                "y": -2,
+                "cell_form_id": 0x52ACBFu32,
+                "cell_editor_id": "AppalachiaCell3Minus2",
+                "land_form_id": 0x52ACC0u32
+            }]
+        })
+        .to_string();
 
-        let preserved = load_preserved_terrain_ids(&options).expect("preserved ids");
-        let cell = preserved.cells.get(&(3, -2)).expect("cell ids");
-        let plan = build_terrain_id_plan(&options, &preserved, 1, 1).expect("id plan");
-        let _ = fs::remove_dir_all(&world_dir);
-
-        assert_eq!(preserved.world_form_id, Some(0x25DA15));
-        assert_eq!(preserved.world_editor_id.as_deref(), Some("APPALACHIA"));
-        assert_eq!(cell.cell_form_id, Some(0x52ACBF));
-        assert_eq!(
-            cell.cell_editor_id.as_deref(),
-            Some("AppalachiaCell3Minus2")
-        );
-        assert_eq!(cell.land_form_id, Some(0x52ACC0));
-        assert_eq!(plan.world_form_id, 0x25DA15);
-        assert_eq!(plan.world_editor_id(&options), "APPALACHIA");
-        assert_eq!(plan.cell_form_id(&options, 3, -2, 0), 0x52ACBF);
-        assert_eq!(
-            plan.cell_editor_id(&options, 3, -2).as_deref(),
-            Some("AppalachiaCell3Minus2")
-        );
-        assert_eq!(plan.cell_editor_id(&options, 4, -2), None);
-        assert_eq!(plan.land_form_id(&options, 3, -2, 0), 0x52ACC0);
-        assert_eq!(plan.next_object_id_after_terrain, 0x52ACC1);
+        for options in [from_dir, from_json] {
+            let preserved = load_preserved_terrain_ids(&options).expect("preserved ids");
+            let cell = preserved.cells.get(&(3, -2)).expect("cell ids");
+            let plan = build_terrain_id_plan(&options, &preserved, 1, 1).expect("id plan");
+            assert_eq!(preserved.world_form_id, Some(0x25DA15));
+            assert_eq!(preserved.world_editor_id.as_deref(), Some("APPALACHIA"));
+            assert_eq!(cell.cell_form_id, Some(0x52ACBF));
+            assert_eq!(cell.land_form_id, Some(0x52ACC0));
+            assert_eq!(plan.world_form_id, 0x25DA15);
+            assert_eq!(plan.world_editor_id(&options), "APPALACHIA");
+            assert_eq!(plan.cell_form_id(&options, 3, -2, 0), 0x52ACBF);
+            assert_eq!(
+                plan.cell_editor_id(&options, 3, -2).as_deref(),
+                Some("AppalachiaCell3Minus2")
+            );
+            assert_eq!(plan.cell_editor_id(&options, 4, -2), None);
+            assert_eq!(plan.land_form_id(&options, 3, -2, 0), 0x52ACC0);
+            assert_eq!(plan.next_object_id_after_terrain, 0x52ACC1);
+        }
     }
 
     #[test]
-    fn preserved_terrain_ids_load_from_source_plugin_payload_without_authoring_dir() {
-        let options = ConvertOptions {
-            btd_path: String::new(),
-            output_authoring_dir: String::new(),
-            plugin_name: "B21_Test.esm".to_string(),
-            worldspace_editor_id: "B21_Test".to_string(),
-            source_min_x: 3,
-            source_min_y: -2,
-            source_max_x: 3,
-            source_max_y: -2,
-            first_form_id: 0x800,
-            world_form_id: 0,
-            first_cell_form_id: 0,
-            resample_mode: "sample4".to_string(),
-            debug_output_dir: String::new(),
-            texture_manifest_path: String::new(),
-            water_manifest_path: String::new(),
-            emit_textures: false,
-            export_heightmap: false,
-            debug_flat_land: false,
-            preserve_source_ids: true,
-            reserved_object_ids: Vec::new(),
-            source_worldspace_authoring_dir: String::new(),
-            source_worldspace_terrain_ids_json: serde_json::json!({
-                "world_form_id": 0x25DA15u32,
-                "world_editor_id": "APPALACHIA",
-                "cells": [{
-                    "x": 3,
-                    "y": -2,
-                    "cell_form_id": 0x52ACBFu32,
-                    "cell_editor_id": "AppalachiaCell3Minus2",
-                    "land_form_id": 0x52ACC0u32
-                }]
-            })
-            .to_string(),
-            heightmap_output_path: String::new(),
-            btd4_output_path: String::new(),
-            conversion_workers: None,
-            land_skip_ground_cover_variants: false,
-            reuse_existing_textures: false,
-        };
-
-        let preserved = load_preserved_terrain_ids(&options).expect("preserved ids");
-        let cell = preserved.cells.get(&(3, -2)).expect("cell ids");
-        let plan = build_terrain_id_plan(&options, &preserved, 1, 1).expect("id plan");
-
-        assert_eq!(preserved.world_form_id, Some(0x25DA15));
-        assert_eq!(preserved.world_editor_id.as_deref(), Some("APPALACHIA"));
-        assert_eq!(cell.cell_form_id, Some(0x52ACBF));
-        assert_eq!(
-            cell.cell_editor_id.as_deref(),
-            Some("AppalachiaCell3Minus2")
-        );
-        assert_eq!(cell.land_form_id, Some(0x52ACC0));
-        assert_eq!(plan.world_form_id, 0x25DA15);
-        assert_eq!(plan.cell_form_id(&options, 3, -2, 0), 0x52ACBF);
-        assert_eq!(plan.land_form_id(&options, 3, -2, 0), 0x52ACC0);
-        assert_eq!(plan.next_object_id_after_terrain, 0x52ACC1);
-    }
-
-    #[test]
-    fn terrain_id_plan_allocates_missing_land_from_reserved_floor() {
-        let options = ConvertOptions {
-            btd_path: String::new(),
-            output_authoring_dir: String::new(),
-            plugin_name: "B21_Test.esm".to_string(),
-            worldspace_editor_id: "B21_Test".to_string(),
-            source_min_x: 3,
-            source_min_y: -2,
-            source_max_x: 3,
-            source_max_y: -2,
-            first_form_id: 0x800,
-            world_form_id: 0,
-            first_cell_form_id: 0,
-            resample_mode: "sample4".to_string(),
-            debug_output_dir: String::new(),
-            texture_manifest_path: String::new(),
-            water_manifest_path: String::new(),
-            emit_textures: false,
-            export_heightmap: false,
-            debug_flat_land: false,
-            preserve_source_ids: true,
-            reserved_object_ids: vec![0x9FFFFF],
-            source_worldspace_authoring_dir: String::new(),
-            source_worldspace_terrain_ids_json: String::new(),
-            heightmap_output_path: String::new(),
-            btd4_output_path: String::new(),
-            conversion_workers: None,
-            land_skip_ground_cover_variants: false,
-            reuse_existing_textures: false,
-        };
-        let mut preserved = PreservedTerrainIds::default();
-        preserved.world_form_id = Some(0x25DA15);
-        preserved.used_object_ids.extend([0x25DA15, 0x52ACBF]);
-        preserved.cells.insert(
-            (3, -2),
-            PreservedCellIds {
-                cell_form_id: Some(0x52ACBF),
-                cell_editor_id: Some("AppalachiaCell3Minus2".to_string()),
-                land_form_id: None,
-            },
-        );
-
-        let plan = build_terrain_id_plan(&options, &preserved, 1, 1).expect("id plan");
-
-        assert_eq!(plan.world_form_id, 0x25DA15);
-        assert_eq!(plan.cell_form_id(&options, 3, -2, 0), 0x52ACBF);
-        assert_eq!(plan.land_form_id(&options, 3, -2, 0), 0xA00000);
-        assert_eq!(plan.next_object_id_after_terrain, 0xA00001);
-    }
-
-    #[test]
-    fn preserved_terrain_ids_do_not_treat_world_cell_references_as_cells() {
-        let world_dir = std::env::temp_dir().join(format!(
-            "terrain_native_world_cell_refs_preserved_ids_{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("time should be after epoch")
-                .as_nanos()
-        ));
-        fs::create_dir_all(&world_dir).expect("temp source world dir");
+    fn preserved_terrain_ids_read_projected_cells_but_not_world_cell_references() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let world_dir = temp.path().join("world");
+        let cell_dir = world_dir.join("0, -1").join("0, -1").join("1, -1");
+        let zero_cell_dir = world_dir.join("0, 0").join("0, 0").join("0, 0");
+        fs::create_dir_all(&cell_dir).expect("temp source cell dir");
+        fs::create_dir_all(&zero_cell_dir).expect("temp zero source cell dir");
         fs::write(
             world_dir.join("RecordData.yaml"),
             r#"form_id: "25DA15"
@@ -6313,117 +6373,6 @@ fields:
 "#,
         )
         .expect("source world yaml");
-        let options = ConvertOptions {
-            btd_path: String::new(),
-            output_authoring_dir: String::new(),
-            plugin_name: "B21_Test.esm".to_string(),
-            worldspace_editor_id: "B21_Test".to_string(),
-            source_min_x: 3,
-            source_min_y: 7,
-            source_max_x: 3,
-            source_max_y: 7,
-            first_form_id: 0x800,
-            world_form_id: 0,
-            first_cell_form_id: 0,
-            resample_mode: "sample4".to_string(),
-            debug_output_dir: String::new(),
-            texture_manifest_path: String::new(),
-            water_manifest_path: String::new(),
-            emit_textures: false,
-            export_heightmap: false,
-            debug_flat_land: false,
-            preserve_source_ids: true,
-            reserved_object_ids: Vec::new(),
-            source_worldspace_authoring_dir: world_dir.to_string_lossy().into_owned(),
-            source_worldspace_terrain_ids_json: String::new(),
-            heightmap_output_path: String::new(),
-            btd4_output_path: String::new(),
-            conversion_workers: None,
-            land_skip_ground_cover_variants: false,
-            reuse_existing_textures: false,
-        };
-
-        let preserved = load_preserved_terrain_ids(&options).expect("preserved ids");
-        let plan = build_terrain_id_plan(&options, &preserved, 1, 1).expect("id plan");
-        let _ = fs::remove_dir_all(&world_dir);
-
-        assert_eq!(preserved.world_form_id, Some(0x25DA15));
-        assert_eq!(preserved.world_editor_id.as_deref(), Some("APPALACHIA"));
-        assert!(!preserved.cells.contains_key(&(3, 7)));
-        assert_eq!(plan.world_form_id, 0x25DA15);
-        assert_eq!(plan.cell_form_id(&options, 3, 7, 0), 0x25DA16);
-        assert_eq!(plan.cell_editor_id(&options, 3, 7), None);
-    }
-
-    #[test]
-    fn terrain_id_plan_reallocates_preserved_ids_reserved_by_target_handle() {
-        let options = ConvertOptions {
-            btd_path: String::new(),
-            output_authoring_dir: String::new(),
-            plugin_name: "B21_Test.esm".to_string(),
-            worldspace_editor_id: "APPALACHIA".to_string(),
-            source_min_x: 3,
-            source_min_y: -2,
-            source_max_x: 3,
-            source_max_y: -2,
-            first_form_id: 0x800,
-            world_form_id: 0x25DA15,
-            first_cell_form_id: 0x300000,
-            resample_mode: "sample4".to_string(),
-            debug_output_dir: String::new(),
-            texture_manifest_path: String::new(),
-            water_manifest_path: String::new(),
-            emit_textures: false,
-            export_heightmap: false,
-            debug_flat_land: false,
-            preserve_source_ids: true,
-            reserved_object_ids: vec![0x52ACBF, 0x52ACC0],
-            source_worldspace_authoring_dir: String::new(),
-            source_worldspace_terrain_ids_json: String::new(),
-            heightmap_output_path: String::new(),
-            btd4_output_path: String::new(),
-            conversion_workers: None,
-            land_skip_ground_cover_variants: false,
-            reuse_existing_textures: false,
-        };
-        let mut preserved = PreservedTerrainIds::default();
-        preserved.world_form_id = Some(0x25DA15);
-        preserved.used_object_ids.extend([0x52ACBF, 0x52ACC0]);
-        preserved.cells.insert(
-            (3, -2),
-            PreservedCellIds {
-                cell_form_id: Some(0x52ACBF),
-                cell_editor_id: Some("AppalachiaCell3Minus2".to_string()),
-                land_form_id: Some(0x52ACC0),
-            },
-        );
-
-        let plan = build_terrain_id_plan(&options, &preserved, 1, 1).expect("id plan");
-
-        assert_eq!(plan.world_form_id, 0x25DA15);
-        assert_eq!(plan.cell_form_id(&options, 3, -2, 0), 0x52ACC1);
-        assert_eq!(plan.land_form_id(&options, 3, -2, 0), 0x52ACC2);
-        assert_eq!(plan.next_object_id_after_terrain, 0x52ACC3);
-    }
-
-    #[test]
-    fn preserved_terrain_ids_read_signatureless_projected_cells() {
-        let world_dir = std::env::temp_dir().join(format!(
-            "terrain_native_signatureless_preserved_ids_{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("time should be after epoch")
-                .as_nanos()
-        ));
-        let cell_dir = world_dir.join("0, -1").join("0, -1").join("1, -1");
-        let zero_cell_dir = world_dir.join("0, 0").join("0, 0").join("0, 0");
-        fs::create_dir_all(&cell_dir).expect("temp source cell dir");
-        fs::create_dir_all(&zero_cell_dir).expect("temp zero source cell dir");
-        fs::write(
-            world_dir.join("RecordData.yaml"),
-            "form_id: \"25DA15\"\neid: APPALACHIA\n",
-        )
-        .expect("source world yaml");
         fs::write(
             cell_dir.join("RecordData.yaml"),
             r#"form_id: "000900"
@@ -6440,46 +6389,23 @@ Temporary:
         .expect("source cell yaml");
         fs::write(
             zero_cell_dir.join("RecordData.yaml"),
-            r#"form_id: "000901"
-fields:
-- Grid:
-"#,
+            "form_id: \"000901\"\nfields:\n- Grid:\n",
         )
         .expect("source zero cell yaml");
-        let options = ConvertOptions {
-            btd_path: String::new(),
-            output_authoring_dir: String::new(),
-            plugin_name: "B21_Test.esm".to_string(),
-            worldspace_editor_id: "B21_Test".to_string(),
-            source_min_x: 1,
-            source_min_y: -1,
-            source_max_x: 1,
-            source_max_y: -1,
-            first_form_id: 0x800,
-            world_form_id: 0,
-            first_cell_form_id: 0,
-            resample_mode: "sample4".to_string(),
-            debug_output_dir: String::new(),
-            texture_manifest_path: String::new(),
-            water_manifest_path: String::new(),
-            emit_textures: false,
-            export_heightmap: false,
-            debug_flat_land: false,
-            preserve_source_ids: true,
-            reserved_object_ids: Vec::new(),
-            source_worldspace_authoring_dir: world_dir.to_string_lossy().into_owned(),
-            source_worldspace_terrain_ids_json: String::new(),
-            heightmap_output_path: String::new(),
-            btd4_output_path: String::new(),
-            conversion_workers: None,
-            land_skip_ground_cover_variants: false,
-            reuse_existing_textures: false,
-        };
+        let mut options = base_options();
+        options.plugin_name = "B21_Test.esm".to_string();
+        options.source_min_x = 1;
+        options.source_max_x = 1;
+        options.source_min_y = -1;
+        options.source_max_y = -1;
+        options.preserve_source_ids = true;
+        options.source_worldspace_authoring_dir = world_dir.to_string_lossy().into_owned();
 
         let preserved = load_preserved_terrain_ids(&options).expect("preserved ids");
         let plan = build_terrain_id_plan(&options, &preserved, 1, 1).expect("id plan");
-        let _ = fs::remove_dir_all(&world_dir);
 
+        assert_eq!(preserved.world_form_id, Some(0x25DA15));
+        assert!(!preserved.cells.contains_key(&(3, 7)), "world Cell refs are not cells");
         assert_eq!(
             preserved.cells.get(&(1, -1)).unwrap().cell_form_id,
             Some(0x900)
@@ -6499,93 +6425,94 @@ fields:
     }
 
     #[test]
-    fn preserved_terrain_ids_disabled_uses_generated_range() {
-        let options = ConvertOptions {
-            btd_path: String::new(),
-            output_authoring_dir: String::new(),
-            plugin_name: "B21_Test.esm".to_string(),
-            worldspace_editor_id: "B21_Test".to_string(),
-            source_min_x: 3,
-            source_min_y: -2,
-            source_max_x: 3,
-            source_max_y: -2,
-            first_form_id: 0x800,
-            world_form_id: 0,
-            first_cell_form_id: 0,
-            resample_mode: "sample4".to_string(),
-            debug_output_dir: String::new(),
-            texture_manifest_path: String::new(),
-            water_manifest_path: String::new(),
-            emit_textures: false,
-            export_heightmap: false,
-            debug_flat_land: false,
-            preserve_source_ids: false,
-            reserved_object_ids: Vec::new(),
-            source_worldspace_authoring_dir: String::new(),
-            source_worldspace_terrain_ids_json: String::new(),
-            heightmap_output_path: String::new(),
-            btd4_output_path: String::new(),
-            conversion_workers: None,
-            land_skip_ground_cover_variants: false,
-            reuse_existing_textures: false,
+    fn terrain_id_plan_allocation_cases() {
+        let appalachia_cell = |land_form_id| {
+            let mut preserved = PreservedTerrainIds::default();
+            preserved.world_form_id = Some(0x25DA15);
+            preserved.used_object_ids.extend([0x25DA15, 0x52ACBF, 0x52ACC0]);
+            preserved.cells.insert(
+                (3, -2),
+                PreservedCellIds {
+                    cell_form_id: Some(0x52ACBF),
+                    cell_editor_id: Some("AppalachiaCell3Minus2".to_string()),
+                    land_form_id,
+                },
+            );
+            preserved
         };
-
-        let preserved = load_preserved_terrain_ids(&options).expect("preserved ids");
-        let plan = build_terrain_id_plan(&options, &preserved, 1, 1).expect("id plan");
-
-        assert_eq!(plan.world_form_id, 0x800);
-        assert_eq!(plan.cell_form_id(&options, 3, -2, 0), 0x801);
-        assert_eq!(
-            plan.cell_editor_id(&options, 3, -2).as_deref(),
-            Some("B21_TestCellXP003YN002")
-        );
-        assert_eq!(plan.land_form_id(&options, 3, -2, 0), 0x802);
-        assert_eq!(plan.next_object_id_after_terrain, 0x803);
+        // (preserve, world_form_id, first_cell_form_id, reserved, preserved)
+        //   -> (world, cell, land, next)
+        let cases = [
+            (
+                "missing land allocates above the reserved floor",
+                true,
+                0,
+                0,
+                vec![0x9FFFFF],
+                appalachia_cell(None),
+                (0x25DA15, 0x52ACBF, 0xA00000, 0xA00001),
+            ),
+            (
+                "preserved ids reserved by the target are reallocated",
+                true,
+                0x25DA15,
+                0x300000,
+                vec![0x52ACBF, 0x52ACC0],
+                appalachia_cell(Some(0x52ACC0)),
+                (0x25DA15, 0x52ACC1, 0x52ACC2, 0x52ACC3),
+            ),
+            (
+                "disabled preservation uses the generated range",
+                false,
+                0,
+                0,
+                vec![],
+                PreservedTerrainIds::default(),
+                (0x800, 0x801, 0x802, 0x803),
+            ),
+            (
+                "generated ids can reuse the world and a new cell range",
+                false,
+                0x25DA15,
+                0x300000,
+                vec![],
+                PreservedTerrainIds::default(),
+                (0x25DA15, 0x300000, 0x300001, 0x300002),
+            ),
+        ];
+        for (label, preserve, world, first_cell, reserved, preserved, want) in cases {
+            let mut options = base_options();
+            options.plugin_name = "B21_Test.esm".to_string();
+            options.source_min_x = 3;
+            options.source_max_x = 3;
+            options.source_min_y = -2;
+            options.source_max_y = -2;
+            options.preserve_source_ids = preserve;
+            options.world_form_id = world;
+            options.first_cell_form_id = first_cell;
+            options.reserved_object_ids = reserved;
+            let plan = build_terrain_id_plan(&options, &preserved, 1, 1).expect("id plan");
+            assert_eq!(
+                (
+                    plan.world_form_id,
+                    plan.cell_form_id(&options, 3, -2, 0),
+                    plan.land_form_id(&options, 3, -2, 0),
+                    plan.next_object_id_after_terrain,
+                ),
+                want,
+                "{label}"
+            );
+            if !preserve && world == 0 {
+                assert_eq!(
+                    plan.cell_editor_id(&options, 3, -2).as_deref(),
+                    Some("B21_TestCellXP003YN002")
+                );
+            }
+        }
     }
 
     #[test]
-    fn generated_terrain_ids_can_reuse_world_and_reserve_new_cell_range() {
-        let options = ConvertOptions {
-            btd_path: String::new(),
-            output_authoring_dir: String::new(),
-            plugin_name: "B21_Test.esm".to_string(),
-            worldspace_editor_id: "B21_Test".to_string(),
-            source_min_x: 3,
-            source_min_y: -2,
-            source_max_x: 3,
-            source_max_y: -2,
-            first_form_id: 0x800,
-            world_form_id: 0x25DA15,
-            first_cell_form_id: 0x300000,
-            resample_mode: "sample4".to_string(),
-            debug_output_dir: String::new(),
-            texture_manifest_path: String::new(),
-            water_manifest_path: String::new(),
-            emit_textures: false,
-            export_heightmap: false,
-            debug_flat_land: false,
-            preserve_source_ids: false,
-            reserved_object_ids: Vec::new(),
-            source_worldspace_authoring_dir: String::new(),
-            source_worldspace_terrain_ids_json: String::new(),
-            heightmap_output_path: String::new(),
-            btd4_output_path: String::new(),
-            conversion_workers: None,
-            land_skip_ground_cover_variants: false,
-            reuse_existing_textures: false,
-        };
-
-        let preserved = load_preserved_terrain_ids(&options).expect("preserved ids");
-        let plan = build_terrain_id_plan(&options, &preserved, 1, 1).expect("id plan");
-
-        assert_eq!(plan.world_form_id, 0x25DA15);
-        assert_eq!(plan.cell_form_id(&options, 3, -2, 0), 0x300000);
-        assert_eq!(plan.land_form_id(&options, 3, -2, 0), 0x300001);
-        assert_eq!(plan.next_object_id_after_terrain, 0x300002);
-    }
-
-    #[test]
-    fn generated_cell_editor_ids_keep_negative_coordinates_unique_after_ck_sanitizing() {
+    fn land_field_helpers_encode_ids_colors_and_layers() {
         let ids = [
             cell_editor_id("B21_TestWorld", -2, -2),
             cell_editor_id("B21_TestWorld", 2, -2),
@@ -6600,59 +6527,23 @@ fields:
                     .collect::<String>()
             })
             .collect::<std::collections::HashSet<_>>();
-
         assert_eq!(ids[0], "B21_TestWorldCellXN002YN002");
         assert_eq!(ids[3], "B21_TestWorldCellXP002YP002");
-        assert_eq!(sanitized.len(), ids.len());
-    }
+        assert_eq!(sanitized.len(), ids.len(), "unique after CK sanitizing");
 
-    #[test]
-    fn land_data_flags_advertise_emitted_payloads() {
-        assert_eq!(
-            land_data_flags(false, false),
-            LAND_FLAG_HAS_VERTEX_NORMALS_HEIGHT_MAP
-                | LAND_FLAG_UNKNOWN_4
-                | LAND_FLAG_AUTO_CALC_NORMALS
-        );
-        assert_eq!(
-            land_data_flags(true, false),
-            LAND_FLAG_HAS_VERTEX_NORMALS_HEIGHT_MAP
-                | LAND_FLAG_HAS_LAYERS
-                | LAND_FLAG_UNKNOWN_4
-                | LAND_FLAG_AUTO_CALC_NORMALS
-        );
-        assert_eq!(
-            land_data_flags(true, true),
-            LAND_FLAG_HAS_VERTEX_NORMALS_HEIGHT_MAP
-                | LAND_FLAG_HAS_VERTEX_COLORS
-                | LAND_FLAG_HAS_LAYERS
-                | LAND_FLAG_UNKNOWN_4
-                | LAND_FLAG_AUTO_CALC_NORMALS
-        );
-        assert_eq!(u32_hex(land_data_flags(true, true)), "1F000000");
-    }
-
-    #[test]
-    fn fo76_vertex_color_neutral_grey_maps_near_fo4_white() {
         assert_eq!(fo76_vclr_to_fo4_vclr(0), [0, 0, 0]);
         assert_eq!(fo76_vclr_to_fo4_vclr(0x7FFF), [255, 255, 255]);
-
         let neutral = fo76_vclr_to_fo4_vclr(0xBDEF);
         assert!(neutral[0] > 240, "{neutral:?}");
         assert_eq!(neutral[0], neutral[1]);
         assert_eq!(neutral[1], neutral[2]);
-    }
 
-    #[test]
-    fn land_texture_layer_fields_use_plugin_local_form_references() {
         let field = land_texture_layer_field("BTXT", 0x008A26, "B21_Test.esp", 0, -1);
-
         assert!(field.contains("Texture:\n          reference:\n"));
         assert!(field.contains("plugin: B21_Test.esp\n"));
         assert!(field.contains("object_id: \"008A26\"\n"));
         assert!(field.contains("UnknownByte3: 2\n"));
         assert!(!field.contains("01008A26"));
-
         let field = land_texture_layer_field("ATXT", 0x008A27, "B21_Test.esp", 3, 1);
         assert!(field.contains("Quadrant: 3\n"));
         assert!(field.contains("UnknownByte3: 0\n"));
@@ -6686,6 +6577,49 @@ fields:
             ltex_object_id,
             grass_object_ids,
         }
+    }
+
+    #[test]
+    fn btd4_grass_follows_the_target_record_the_import_keeps() {
+        let mut texture = test_emitted_texture(None, 0x800, vec![0x0BA520, 0x11071F, 0x00A000]);
+        let grass = |form_key: &str, target: Option<&str>| crate::texture_bridge::ConvertedTerrainGrass {
+            target_form_key: target.map(str::to_owned),
+            ..test_grass(form_key, "Grass")
+        };
+        texture.converted.grass = vec![
+            grass("0BA520:SeventySix.esm", Some("0BA520:Fallout4.esm")),
+            grass("11071F:SeventySix.esm", Some("DLCCoast.esm:0087FD")),
+            grass("00A000:SeventySix.esm", None),
+        ];
+
+        let (plugins, refs) = btd4_grass_targets(&[texture], "SeventySix.esm");
+
+        assert_eq!(plugins, ["SeventySix.esm", "DLCCoast.esm", "Fallout4.esm"]);
+        assert_eq!(refs[&0x0BA520], (2, 0x0BA520));
+        assert_eq!(refs[&0x11071F], (1, 0x0087FD));
+        assert!(!refs.contains_key(&0x00A000));
+    }
+
+    #[test]
+    fn gcvr_grass_index_reads_the_per_grass_gcvr_of_plain_ltex_bundles() {
+        // BACUP merges GCVR grass into the plain LTEX bundle (no texture-level GCVR key)
+        // and records the placing GCVRs on each grass entry.
+        let mut texture = test_emitted_texture(None, 0x800, vec![0x810, 0x811, 0x812]);
+        let grass = |form_key: &str, gcvrs: &[&str]| crate::texture_bridge::ConvertedTerrainGrass {
+            source_gcvr_form_keys: gcvrs.iter().map(|key| key.to_string()).collect(),
+            ..test_grass(form_key, "Grass")
+        };
+        texture.converted.grass = vec![
+            grass("00A000:SeventySix.esm", &["011C67:SeventySix.esm"]),
+            grass("00B000:SeventySix.esm", &["011C67:SeventySix.esm", "SeventySix.esm:081263"]),
+            grass("00C000:SeventySix.esm", &[]),
+        ];
+
+        let index = index_grass_by_source_gcvr(&[texture]);
+
+        assert_eq!(index.get(&0x011C67), Some(&vec![0x810, 0x811]));
+        assert_eq!(index.get(&0x081263), Some(&vec![0x811]));
+        assert_eq!(index.len(), 2, "LTEX-direct grass is not GCVR grass");
     }
 
     fn ground_cover_test_set(source_slot: usize, ground_cover_index: u8) -> CellTextureSet {
@@ -6727,75 +6661,45 @@ fields:
     }
 
     #[test]
-    fn low_alpha_ground_cover_layer_falls_back_to_no_grass_ltex() {
+    fn ground_cover_alpha_selects_grass_or_no_grass_ltex() {
         let source_slot = 3usize;
         let mask_bit = ground_cover_mask_bit_for_source_slot(source_slot as u8).unwrap();
+        assert_eq!(mask_bit, 1 << 4);
         let set = ground_cover_test_set(source_slot, 0);
-        let mut ground_cover_mask = vec![0u8; CELL_SOURCE_SAMPLES * CELL_SOURCE_SAMPLES];
-        let mut alphas = vec![0u16; CELL_SOURCE_SAMPLES * CELL_SOURCE_SAMPLES];
-        paint_alpha_and_mask_rows(&mut alphas, &mut ground_cover_mask, 1, mask_bit);
         let textures = vec![
             test_emitted_texture(None, 0x901, Vec::new()),
             test_emitted_texture(Some("011C67:SeventySix.esm"), 0x902, vec![0x903]),
         ];
         let textures_by_source_usage = index_textures_by_source_usage(&textures);
-
-        let candidates = effective_ground_cover_indices_for_layer(
-            &set,
-            &ground_cover_mask,
-            0,
-            Some(source_slot as u8),
-            Some(0),
-            Some((&alphas, 0)),
-        );
-        let selected = texture_for_source_usage(
-            "001234",
-            &gcvr_keys_for_candidates(&candidates),
-            &textures_by_source_usage,
-        )
-        .expect("no-grass texture fallback");
-
-        assert!(candidates.is_empty());
-        assert_eq!(selected.ltex_object_id, 0x901);
-        assert!(selected.grass_object_ids.is_empty());
+        // painted rows -> (candidates, ltex, grass)
+        for (rows, want_candidates, want_ltex, want_grass) in
+            [(1, vec![], 0x901, vec![]), (16, vec![0], 0x902, vec![0x903])]
+        {
+            let mut ground_cover_mask = vec![0u8; CELL_SOURCE_SAMPLES * CELL_SOURCE_SAMPLES];
+            let mut alphas = vec![0u16; CELL_SOURCE_SAMPLES * CELL_SOURCE_SAMPLES];
+            paint_alpha_and_mask_rows(&mut alphas, &mut ground_cover_mask, rows, mask_bit);
+            let candidates = effective_ground_cover_indices_for_layer(
+                &set,
+                &ground_cover_mask,
+                0,
+                Some(source_slot as u8),
+                Some(0),
+                Some((&alphas, 0)),
+            );
+            let selected = texture_for_source_usage(
+                "001234",
+                &gcvr_keys_for_candidates(&candidates),
+                &textures_by_source_usage,
+            )
+            .expect("texture variant");
+            assert_eq!(candidates, want_candidates, "{rows} rows");
+            assert_eq!(selected.ltex_object_id, want_ltex, "{rows} rows");
+            assert_eq!(selected.grass_object_ids, want_grass, "{rows} rows");
+        }
     }
 
     #[test]
-    fn meaningful_alpha_ground_cover_layer_emits_grass_ltex() {
-        let source_slot = 3usize;
-        let mask_bit = ground_cover_mask_bit_for_source_slot(source_slot as u8).unwrap();
-        let set = ground_cover_test_set(source_slot, 0);
-        let mut ground_cover_mask = vec![0u8; CELL_SOURCE_SAMPLES * CELL_SOURCE_SAMPLES];
-        let mut alphas = vec![0u16; CELL_SOURCE_SAMPLES * CELL_SOURCE_SAMPLES];
-        paint_alpha_and_mask_rows(&mut alphas, &mut ground_cover_mask, 16, mask_bit);
-        let textures = vec![
-            test_emitted_texture(None, 0x901, Vec::new()),
-            test_emitted_texture(Some("011C67:SeventySix.esm"), 0x902, vec![0x903]),
-        ];
-        let textures_by_source_usage = index_textures_by_source_usage(&textures);
-
-        let candidates = effective_ground_cover_indices_for_layer(
-            &set,
-            &ground_cover_mask,
-            0,
-            Some(source_slot as u8),
-            Some(0),
-            Some((&alphas, 0)),
-        );
-        let selected = texture_for_source_usage(
-            "001234",
-            &gcvr_keys_for_candidates(&candidates),
-            &textures_by_source_usage,
-        )
-        .expect("grass texture variant");
-
-        assert_eq!(candidates, vec![0]);
-        assert_eq!(selected.ltex_object_id, 0x902);
-        assert_eq!(selected.grass_object_ids, vec![0x903]);
-    }
-
-    #[test]
-    fn ground_cover_candidates_follow_layer_source_slot() {
+    fn ground_cover_candidates_follow_source_slot_and_coverage() {
         let mut quad = QuadrantTextureSet {
             base: None,
             base_source_slot: None,
@@ -6808,129 +6712,33 @@ fields:
         let set = CellTextureSet {
             quadrants: vec![quad],
         };
-        let mut ground_cover_mask = vec![0u8; CELL_SOURCE_SAMPLES * CELL_SOURCE_SAMPLES];
-        for y in 0..CELL_SOURCE_QUADRANT_SAMPLES {
-            for x in 0..CELL_SOURCE_QUADRANT_SAMPLES {
-                ground_cover_mask[y * CELL_SOURCE_SAMPLES + x] = 1 << 4;
-            }
-        }
         let alphas = vec![7u16; CELL_SOURCE_SAMPLES * CELL_SOURCE_SAMPLES];
-
-        assert_eq!(ground_cover_mask_bit_for_source_slot(3), Some(1 << 4));
-        assert_eq!(
-            effective_ground_cover_indices_for_layer(
-                &set,
-                &ground_cover_mask,
-                0,
-                Some(3),
-                Some(11),
-                Some((&alphas, 0)),
-            ),
-            vec![11]
-        );
-    }
-
-    #[test]
-    fn ground_cover_candidates_reject_other_source_slot_mask_bits() {
-        let mut quad = QuadrantTextureSet {
-            base: None,
-            base_source_slot: None,
-            additional: [None; 5],
-            additional_source_slots: [None; 5],
-            ground_cover: [None; 8],
-        };
-        quad.ground_cover[3] = Some(11);
-        quad.ground_cover[4] = Some(22);
-        let set = CellTextureSet {
-            quadrants: vec![quad],
-        };
-        let mut ground_cover_mask = vec![0u8; CELL_SOURCE_SAMPLES * CELL_SOURCE_SAMPLES];
-        for y in 0..CELL_SOURCE_QUADRANT_SAMPLES {
-            for x in 0..CELL_SOURCE_QUADRANT_SAMPLES {
-                ground_cover_mask[y * CELL_SOURCE_SAMPLES + x] = 1 << 4;
+        // (mask rows painted with slot 3's bit, layer slot, gcvr index) -> candidates
+        for (rows, slot, index, want) in [
+            (CELL_SOURCE_QUADRANT_SAMPLES, 3, 11, vec![11]),
+            (CELL_SOURCE_QUADRANT_SAMPLES, 4, 22, vec![]),
+            (16, 3, 11, vec![11]),
+            (6, 3, 11, vec![]),
+        ] {
+            let mut ground_cover_mask = vec![0u8; CELL_SOURCE_SAMPLES * CELL_SOURCE_SAMPLES];
+            for y in 0..rows {
+                for x in 0..CELL_SOURCE_QUADRANT_SAMPLES {
+                    ground_cover_mask[y * CELL_SOURCE_SAMPLES + x] = 1 << 4;
+                }
             }
+            assert_eq!(
+                effective_ground_cover_indices_for_layer(
+                    &set,
+                    &ground_cover_mask,
+                    0,
+                    Some(slot),
+                    Some(index),
+                    Some((&alphas, 0)),
+                ),
+                want,
+                "{rows} rows, slot {slot}"
+            );
         }
-        let alphas = vec![7u16; CELL_SOURCE_SAMPLES * CELL_SOURCE_SAMPLES];
-
-        assert_eq!(
-            effective_ground_cover_indices_for_layer(
-                &set,
-                &ground_cover_mask,
-                0,
-                Some(4),
-                Some(22),
-                Some((&alphas, 0)),
-            ),
-            Vec::<u8>::new()
-        );
-    }
-
-    #[test]
-    fn ground_cover_candidates_keep_sparse_source_slot_coverage() {
-        let mut quad = QuadrantTextureSet {
-            base: None,
-            base_source_slot: None,
-            additional: [None; 5],
-            additional_source_slots: [None; 5],
-            ground_cover: [None; 8],
-        };
-        quad.ground_cover[3] = Some(11);
-        let set = CellTextureSet {
-            quadrants: vec![quad],
-        };
-        let mut ground_cover_mask = vec![0u8; CELL_SOURCE_SAMPLES * CELL_SOURCE_SAMPLES];
-        for y in 0..16 {
-            for x in 0..CELL_SOURCE_QUADRANT_SAMPLES {
-                ground_cover_mask[y * CELL_SOURCE_SAMPLES + x] = 1 << 4;
-            }
-        }
-        let alphas = vec![7u16; CELL_SOURCE_SAMPLES * CELL_SOURCE_SAMPLES];
-
-        assert_eq!(
-            effective_ground_cover_indices_for_layer(
-                &set,
-                &ground_cover_mask,
-                0,
-                Some(3),
-                Some(11),
-                Some((&alphas, 0)),
-            ),
-            vec![11]
-        );
-    }
-
-    #[test]
-    fn ground_cover_candidates_reject_trace_source_slot_coverage() {
-        let mut quad = QuadrantTextureSet {
-            base: None,
-            base_source_slot: None,
-            additional: [None; 5],
-            additional_source_slots: [None; 5],
-            ground_cover: [None; 8],
-        };
-        quad.ground_cover[3] = Some(11);
-        let set = CellTextureSet {
-            quadrants: vec![quad],
-        };
-        let mut ground_cover_mask = vec![0u8; CELL_SOURCE_SAMPLES * CELL_SOURCE_SAMPLES];
-        for y in 0..6 {
-            for x in 0..CELL_SOURCE_QUADRANT_SAMPLES {
-                ground_cover_mask[y * CELL_SOURCE_SAMPLES + x] = 1 << 4;
-            }
-        }
-        let alphas = vec![7u16; CELL_SOURCE_SAMPLES * CELL_SOURCE_SAMPLES];
-
-        assert_eq!(
-            effective_ground_cover_indices_for_layer(
-                &set,
-                &ground_cover_mask,
-                0,
-                Some(3),
-                Some(11),
-                Some((&alphas, 0)),
-            ),
-            Vec::<u8>::new()
-        );
     }
 
     #[test]
@@ -7004,282 +6812,82 @@ fields:
     }
 
     #[test]
-    fn vhgt_delta_clamp_tracks_quantized_encoder_state() {
+    fn vhgt_delta_clamp_keeps_stream_encodable() {
         let mut heights = vec![0.0; LAND_CELL_VERTICES * LAND_CELL_VERTICES];
         heights[1] = 4.0;
         heights[2] = -2000.0;
+        encode_vhgt(&clamp_vhgt_delta_stream(&heights)).expect("clamped heights must be encodable");
 
-        let encodable = clamp_vhgt_delta_stream(&heights);
-
-        encode_vhgt(&encodable).expect("clamped heights must be encodable");
-    }
-
-    #[test]
-    fn vhgt_delta_clamp_reports_overflow_direction() {
         let heights = vec![
             0.0,
             (VHGT_MAX_DELTA_STEP + 1.0) * VHGT_HEIGHT_STEP,
             (VHGT_MIN_DELTA_STEP - 1.0) * VHGT_HEIGHT_STEP,
         ];
-
         let (_encodable, stats) = clamp_vhgt_delta_stream_with_stats(&heights);
+        assert_eq!((stats.overflows, stats.underflows), (1, 1));
 
-        assert_eq!(stats.overflows, 1);
-        assert_eq!(stats.underflows, 1);
-    }
-
-    #[test]
-    fn vhgt_delta_clamp_resets_at_land_row_start() {
         let mut heights = vec![0.0; LAND_CELL_VERTICES * LAND_CELL_VERTICES];
         for x in 0..LAND_CELL_VERTICES {
             heights[x] = x as f32 * VHGT_MAX_DELTA_STEP * VHGT_HEIGHT_STEP;
         }
         heights[LAND_CELL_VERTICES] = VHGT_HEIGHT_STEP;
-
         let (encodable, stats) = clamp_vhgt_delta_stream_with_stats(&heights);
-
-        assert_eq!(stats.underflows, 0);
-        assert_eq!(stats.overflows, 0);
+        assert_eq!((stats.overflows, stats.underflows), (0, 0), "resets at row start");
         assert_eq!(encodable[LAND_CELL_VERTICES], VHGT_HEIGHT_STEP);
     }
 
     #[test]
-    fn generated_cell_yaml_without_water_manifest_is_dry() {
-        let cell_dir = std::env::temp_dir().join(format!(
-            "terrain_native_cell_yaml_{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("time should be after epoch")
-                .as_nanos()
-        ));
-        fs::create_dir_all(&cell_dir).expect("temp cell dir");
-        let options = ConvertOptions {
-            btd_path: String::new(),
-            output_authoring_dir: String::new(),
-            plugin_name: "B21_Test.esp".to_string(),
-            worldspace_editor_id: "B21_Test".to_string(),
-            source_min_x: 0,
-            source_min_y: 0,
-            source_max_x: 0,
-            source_max_y: 0,
-            first_form_id: 0x800,
-            world_form_id: 0,
-            first_cell_form_id: 0,
-            resample_mode: "sample4".to_string(),
-            debug_output_dir: String::new(),
-            texture_manifest_path: String::new(),
-            water_manifest_path: String::new(),
-            emit_textures: false,
-            export_heightmap: false,
-            debug_flat_land: false,
-            preserve_source_ids: true,
-            reserved_object_ids: Vec::new(),
-            source_worldspace_authoring_dir: String::new(),
-            source_worldspace_terrain_ids_json: String::new(),
-            heightmap_output_path: String::new(),
-            btd4_output_path: String::new(),
-            conversion_workers: None,
-            land_skip_ground_cover_variants: false,
-            reuse_existing_textures: false,
-        };
-
+    fn generated_cell_yaml_water_and_editor_id_cases() {
+        let options = base_options();
         let cell_eid = cell_editor_id(&options.worldspace_editor_id, 0, 0);
-        let output_dir = cell_dir
-            .parent()
-            .expect("temp cell dir should have a parent")
-            .to_path_buf();
-        let relative_cell_dir = cell_dir
-            .file_name()
-            .map(PathBuf::from)
-            .expect("temp cell dir should have a file name");
-        let mut output = AuthoringOutput::write_files(output_dir);
-        write_cell_yaml(
-            &mut output,
-            &relative_cell_dir,
-            &options,
-            0,
-            0,
-            Some(&cell_eid),
-            0x801,
-            0x802,
-            &[],
-            &[],
-            &[],
-            false,
-            &[],
-            None,
-        )
-        .expect("cell yaml");
-        let payload = fs::read_to_string(cell_dir.join("RecordData.yaml")).expect("cell yaml text");
-        let _ = fs::remove_dir_all(&cell_dir);
-
-        assert!(payload.contains("eid: B21_TestCellXP000YP000\n"));
-        assert!(payload.contains("  - signature: EDID\n"));
-        assert!(payload.contains("  - signature: DATA\n    data_hex: \"0200\"\n"));
-        assert!(
-            payload.contains("  - signature: XCLC\n    data_hex: \"000000000000000000000000\"\n")
-        );
-        assert!(!payload.contains("  - signature: LTMP\n"));
-        assert!(payload.contains("  - signature: XCLW\n    data_hex: \"FFFF7F7F\"\n"));
-        assert!(!payload.contains("  - signature: XCWT\n"));
-    }
-
-    #[test]
-    fn source_backed_anonymous_cell_yaml_omits_editor_id() {
-        let cell_dir = std::env::temp_dir().join(format!(
-            "terrain_native_anonymous_cell_yaml_{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("time should be after epoch")
-                .as_nanos()
-        ));
-        fs::create_dir_all(&cell_dir).expect("temp cell dir");
-        let options = ConvertOptions {
-            btd_path: String::new(),
-            output_authoring_dir: String::new(),
-            plugin_name: "B21_Test.esp".to_string(),
-            worldspace_editor_id: "B21_Test".to_string(),
-            source_min_x: 0,
-            source_min_y: 0,
-            source_max_x: 0,
-            source_max_y: 0,
-            first_form_id: 0x800,
-            world_form_id: 0,
-            first_cell_form_id: 0,
-            resample_mode: "sample4".to_string(),
-            debug_output_dir: String::new(),
-            texture_manifest_path: String::new(),
-            water_manifest_path: String::new(),
-            emit_textures: false,
-            export_heightmap: false,
-            debug_flat_land: false,
-            preserve_source_ids: true,
-            reserved_object_ids: Vec::new(),
-            source_worldspace_authoring_dir: String::new(),
-            source_worldspace_terrain_ids_json: String::new(),
-            heightmap_output_path: String::new(),
-            btd4_output_path: String::new(),
-            conversion_workers: None,
-            land_skip_ground_cover_variants: false,
-            reuse_existing_textures: false,
-        };
-        let output_dir = cell_dir
-            .parent()
-            .expect("temp cell dir should have a parent")
-            .to_path_buf();
-        let relative_cell_dir = cell_dir
-            .file_name()
-            .map(PathBuf::from)
-            .expect("temp cell dir should have a file name");
-        let mut output = AuthoringOutput::write_files(output_dir);
-
-        write_cell_yaml(
-            &mut output,
-            &relative_cell_dir,
-            &options,
-            0,
-            0,
-            None,
-            0x801,
-            0x802,
-            &[],
-            &[],
-            &[],
-            false,
-            &[],
-            None,
-        )
-        .expect("cell yaml");
-        let payload = fs::read_to_string(cell_dir.join("RecordData.yaml")).expect("cell yaml text");
-        let _ = fs::remove_dir_all(&cell_dir);
-
-        assert!(!payload.contains("\neid: "));
-        assert!(!payload.contains("  - signature: EDID\n"));
-        assert!(payload.contains("subrecords:\n  - signature: DATA\n"));
-        assert!(
-            payload.contains("  - signature: XCLC\n    data_hex: \"000000000000000000000000\"\n")
-        );
-    }
-
-    #[test]
-    fn generated_cell_yaml_with_water_manifest_uses_real_height_and_water_type() {
-        let cell_dir = std::env::temp_dir().join(format!(
-            "terrain_native_water_cell_yaml_{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("time should be after epoch")
-                .as_nanos()
-        ));
-        fs::create_dir_all(&cell_dir).expect("temp cell dir");
-        let options = ConvertOptions {
-            btd_path: String::new(),
-            output_authoring_dir: String::new(),
-            plugin_name: "B21_Test.esp".to_string(),
-            worldspace_editor_id: "B21_Test".to_string(),
-            source_min_x: 0,
-            source_min_y: 0,
-            source_max_x: 0,
-            source_max_y: 0,
-            first_form_id: 0x800,
-            world_form_id: 0,
-            first_cell_form_id: 0,
-            resample_mode: "sample4".to_string(),
-            debug_output_dir: String::new(),
-            texture_manifest_path: String::new(),
-            water_manifest_path: String::new(),
-            emit_textures: false,
-            export_heightmap: false,
-            debug_flat_land: false,
-            preserve_source_ids: true,
-            reserved_object_ids: Vec::new(),
-            source_worldspace_authoring_dir: String::new(),
-            source_worldspace_terrain_ids_json: String::new(),
-            heightmap_output_path: String::new(),
-            btd4_output_path: String::new(),
-            conversion_workers: None,
-            land_skip_ground_cover_variants: false,
-            reuse_existing_textures: false,
-        };
         let water = WaterCell {
             height: 1600.0,
             water_object_id: 0x0C8633,
         };
-        let cell_eid = cell_editor_id(&options.worldspace_editor_id, 0, 0);
-        let output_dir = cell_dir
-            .parent()
-            .expect("temp cell dir should have a parent")
-            .to_path_buf();
-        let relative_cell_dir = cell_dir
-            .file_name()
-            .map(PathBuf::from)
-            .expect("temp cell dir should have a file name");
-        let mut output = AuthoringOutput::write_files(output_dir);
+        let write = |eid: Option<&str>, water: Option<&WaterCell>| {
+            let mut output = AuthoringOutput::collect_only(PathBuf::new());
+            write_cell_yaml(
+                &mut output,
+                Path::new("cell"),
+                &options,
+                0,
+                0,
+                eid,
+                0x801,
+                0x802,
+                &[],
+                &[],
+                &[],
+                false,
+                &[],
+                water,
+            )
+            .expect("cell yaml");
+            output.finish().records.pop().expect("CELL payload").yaml
+        };
+        const EMPTY_XCLC: &str = "  - signature: XCLC\n    data_hex: \"000000000000000000000000\"\n";
 
-        write_cell_yaml(
-            &mut output,
-            &relative_cell_dir,
-            &options,
-            0,
-            0,
-            Some(&cell_eid),
-            0x801,
-            0x802,
-            &[],
-            &[],
-            &[],
-            false,
-            &[],
-            Some(&water),
-        )
-        .expect("cell yaml");
-        let payload = fs::read_to_string(cell_dir.join("RecordData.yaml")).expect("cell yaml text");
-        let _ = fs::remove_dir_all(&cell_dir);
+        let dry = write(Some(&cell_eid), None);
+        assert!(dry.contains("eid: B21_TestCellXP000YP000\n"));
+        assert!(dry.contains("  - signature: EDID\n"));
+        assert!(dry.contains("  - signature: DATA\n    data_hex: \"0200\"\n"));
+        assert!(dry.contains(EMPTY_XCLC));
+        assert!(!dry.contains("  - signature: LTMP\n"));
+        assert!(dry.contains("  - signature: XCLW\n    data_hex: \"FFFF7F7F\"\n"));
+        assert!(!dry.contains("  - signature: XCWT\n"));
 
-        assert!(payload.contains("  - signature: DATA\n    data_hex: \"0200\"\n"));
-        assert!(!payload.contains("  - signature: LTMP\n"));
-        assert!(payload.contains("  - signature: XCLW\n    data_hex: \"0000C844\"\n"));
-        assert!(payload.contains("  - signature: XCWT\n    data_hex: \"33860C00\"\n"));
-        assert!(!payload.contains("FFFF7F7F"));
+        let anonymous = write(None, None);
+        assert!(!anonymous.contains("\neid: "));
+        assert!(!anonymous.contains("  - signature: EDID\n"));
+        assert!(anonymous.contains("subrecords:\n  - signature: DATA\n"));
+        assert!(anonymous.contains(EMPTY_XCLC));
+
+        let wet = write(Some(&cell_eid), Some(&water));
+        assert!(wet.contains("  - signature: DATA\n    data_hex: \"0200\"\n"));
+        assert!(!wet.contains("  - signature: LTMP\n"));
+        assert!(wet.contains("  - signature: XCLW\n    data_hex: \"0000C844\"\n"));
+        assert!(wet.contains("  - signature: XCWT\n    data_hex: \"33860C00\"\n"));
+        assert!(!wet.contains("FFFF7F7F"));
     }
 
     #[test]
@@ -7505,6 +7113,199 @@ fields:
         bytes
     }
 
+    fn two_by_two_starfield_btd(height_sample: u16, land_alpha_sample: u16) -> Vec<u8> {
+        use flate2::Compression;
+        use flate2::write::ZlibEncoder;
+        use std::io::Write;
+
+        const CELLS_X: usize = 2;
+        const CELLS_Y: usize = 2;
+        const CELL_COUNT: usize = CELLS_X * CELLS_Y;
+        const STARFIELD_BLOCK_LEN_TEST: usize = 65536;
+
+        let ltex_offset = 0x2cusize;
+        let cell_height_minmax_offset = ltex_offset;
+        let ltex_map_offset = cell_height_minmax_offset + CELL_COUNT * 8;
+        let height_lod4_offset = ltex_map_offset + CELL_COUNT * 32;
+        let land_texture_lod4_offset = height_lod4_offset + CELL_COUNT * 128;
+        let zlib_table_offset = land_texture_lod4_offset + CELL_COUNT * 128;
+        let entry_count = 1 + 1 + 1 + CELL_COUNT;
+        let zlib_data_offset = zlib_table_offset + entry_count * 8;
+
+        let mut raw_block = vec![0u8; STARFIELD_BLOCK_LEN_TEST];
+        for chunk in raw_block[..STARFIELD_BLOCK_LEN_TEST / 2].chunks_exact_mut(2) {
+            chunk.copy_from_slice(&height_sample.to_le_bytes());
+        }
+        for chunk in raw_block[STARFIELD_BLOCK_LEN_TEST / 2..].chunks_exact_mut(2) {
+            chunk.copy_from_slice(&land_alpha_sample.to_le_bytes());
+        }
+        let compressed_block = {
+            let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+            encoder.write_all(&raw_block).unwrap();
+            encoder.finish().unwrap()
+        };
+
+        let mut bytes = vec![0u8; zlib_data_offset];
+        bytes[0..4].copy_from_slice(b"BTDB");
+        put_u32_le(&mut bytes, 0x04, 6);
+        put_f32_le(&mut bytes, 0x08, 0.0);
+        put_f32_le(&mut bytes, 0x0c, 1024.0);
+        put_u32_le(&mut bytes, 0x10, (CELLS_X * 128) as u32);
+        put_u32_le(&mut bytes, 0x14, (CELLS_Y * 128) as u32);
+        put_i32_le(&mut bytes, 0x18, 0);
+        put_i32_le(&mut bytes, 0x1c, 0);
+        put_i32_le(&mut bytes, 0x20, 0);
+        put_i32_le(&mut bytes, 0x24, 0);
+        put_u32_le(&mut bytes, 0x28, 0);
+        for entry_index in 0..entry_count {
+            let entry = zlib_table_offset + entry_index * 8;
+            put_u32_le(&mut bytes, entry, 0);
+            put_u32_le(&mut bytes, entry + 4, compressed_block.len() as u32);
+        }
+        bytes.extend_from_slice(&compressed_block);
+        bytes
+    }
+
+    fn assert_land_alpha_release_refills(
+        btd_bytes: &[u8],
+        expected_starfield: bool,
+        border_cells: &[(i32, i32)],
+    ) {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("channel_cache.btd");
+        fs::write(&path, btd_bytes).expect("write BTD fixture");
+        let mut btd = BtdFile::open(path.to_str().unwrap()).expect("open BTD fixture");
+        assert_eq!(btd.header().is_starfield_layout, expected_starfield);
+
+        let original_heights = border_cells
+            .iter()
+            .map(|&(x, y)| btd.cell_height_map_u16(x, y, 0).expect("height"))
+            .collect::<Vec<_>>();
+        let original_alphas = border_cells
+            .iter()
+            .map(|&(x, y)| btd.cell_land_alpha_u16(x, y, 0).expect("land alpha"))
+            .collect::<Vec<_>>();
+        let loaded = btd.tile_cache_stats();
+        assert_eq!(loaded.misses, 1);
+        assert_eq!(loaded.cached_height_payload_bytes, 2 * 1024 * 1024);
+        assert_eq!(loaded.cached_land_alpha_payload_bytes, 2 * 1024 * 1024);
+
+        assert_eq!(btd.release_land_alpha_payloads(), 2 * 1024 * 1024);
+        let released = btd.tile_cache_stats();
+        assert_eq!(released.cached_height_payload_bytes, 2 * 1024 * 1024);
+        assert_eq!(released.cached_land_alpha_payload_bytes, 0);
+
+        for (index, &(x, y)) in border_cells.iter().enumerate() {
+            assert_eq!(
+                btd.cell_height_map_u16(x, y, 0).expect("cached height"),
+                original_heights[index]
+            );
+        }
+        let after_height_hits = btd.tile_cache_stats();
+        assert_eq!(after_height_hits.misses, released.misses);
+        assert_eq!(
+            after_height_hits.hits,
+            released.hits + border_cells.len() as u64
+        );
+
+        for (index, &(x, y)) in border_cells.iter().enumerate() {
+            assert_eq!(
+                btd.cell_land_alpha_u16(x, y, 0)
+                    .expect("refilled land alpha"),
+                original_alphas[index]
+            );
+        }
+        let refilled = btd.tile_cache_stats();
+        assert_eq!(refilled.misses, after_height_hits.misses + 1);
+        assert_eq!(refilled.cached_height_payload_bytes, 2 * 1024 * 1024);
+        assert_eq!(refilled.cached_land_alpha_payload_bytes, 2 * 1024 * 1024);
+    }
+
+    #[test]
+    fn land_alpha_release_preserves_height_hits_and_refills_at_borders() {
+        let maps = [[[0; 8]; 4], [[0; 8]; 4]];
+        let fo76 = btd_row_fixture(0x4321, &[], &maps, &[], &maps);
+        assert_land_alpha_release_refills(&fo76, false, &[(0, 0), (1, 0)]);
+        let starfield = two_by_two_starfield_btd(0x4321, 0x1357);
+        assert_land_alpha_release_refills(&starfield, true, &[(-1, -1), (0, 0)]);
+    }
+
+    #[test]
+    fn public_global_blend_builder_retains_land_alpha_cache() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("public_builder_cache.btd");
+        fs::write(&path, one_cell_btd_constant_height(0x4321)).expect("write BTD fixture");
+        let mut btd = BtdFile::open(path.to_str().unwrap()).expect("open BTD fixture");
+        let (_, profile) = GlobalLandscapeBlend::build_profiled(
+            &mut btd,
+            0,
+            0,
+            1,
+            1,
+            &TextureAlphaMasks::default(),
+        )
+        .expect("build global blend");
+
+        assert_eq!(profile.land_alpha_payload_bytes_released, 0);
+        assert_eq!(
+            profile.land_alpha_payload_bytes_before_release,
+            2 * 1024 * 1024
+        );
+        assert_eq!(
+            profile.land_alpha_payload_bytes_after_release,
+            2 * 1024 * 1024
+        );
+        assert_eq!(
+            btd.tile_cache_stats().cached_land_alpha_payload_bytes,
+            2 * 1024 * 1024
+        );
+    }
+
+    #[test]
+    fn authoring_conversion_releases_land_alpha_before_edge_retention() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let btd_path = temp.path().join("authoring_release.btd");
+        fs::write(&btd_path, one_cell_btd_constant_height(0x4321)).expect("write BTD fixture");
+        let mut options = texture_usage_options(&btd_path, 0, 0);
+        options.output_authoring_dir = temp.path().join("authoring").display().to_string();
+        options.debug_output_dir = temp.path().join("debug").display().to_string();
+
+        let output = convert_btd(options, TerrainRecordOutput::ReportOnly).expect("convert");
+        assert_eq!(
+            output.report.operation_counts["global_blend.land_alpha_payload_bytes_before_release"],
+            2 * 1024 * 1024
+        );
+        assert_eq!(
+            output.report.operation_counts["global_blend.land_alpha_payload_bytes_released"],
+            2 * 1024 * 1024
+        );
+        assert_eq!(
+            output.report.operation_counts["global_blend.land_alpha_payload_bytes_after_release"],
+            0
+        );
+        assert_eq!(
+            output.report.operation_counts["btd_cache.cached_height_payload_bytes_end"],
+            2 * 1024 * 1024
+        );
+        assert_eq!(
+            output.report.operation_counts["btd_cache.cached_land_alpha_payload_bytes_end"],
+            0
+        );
+
+        assert!(!should_release_land_alpha_after_materialization(
+            SourceFrame::Fo76Identity,
+            "Terrain/Test.btd4"
+        ));
+        assert!(should_release_land_alpha_after_materialization(
+            SourceFrame::Fo76Identity,
+            ""
+        ));
+        assert!(should_release_land_alpha_after_materialization(
+            SourceFrame::Starfield,
+            "Terrain/Ignored.btd4"
+        ));
+    }
+
     fn texture_usage_options(
         btd_path: &Path,
         source_min_x: i32,
@@ -7703,6 +7504,39 @@ fields:
     }
 
     #[test]
+    fn btd4_sidecar_leaves_every_emitted_record_unchanged() {
+        // The .btd4 is additive: LAND (BTXT/ATXT/VTXT), LTEX, TXST and GRAS must be
+        // byte-identical with and without it, so the CK and BTD-off play see the same land.
+        let (temp, options) = alpha_fallthrough_options();
+        directxtex_native::write_dds_rgba_image(
+            &temp.path().join("overlay_d.dds"),
+            2,
+            2,
+            &[10, 20, 30, 255, 40, 50, 60, 255, 70, 80, 90, 255, 1, 2, 3, 255],
+            "R8G8B8A8_UNORM",
+            false,
+        )
+        .expect("write opaque overlay DDS fixture");
+        let convert = |options: ConvertOptions| {
+            let mut records = Vec::new();
+            convert_btd_with_record_sink(options, &mut |record| {
+                records.push(record);
+                Ok(())
+            })
+            .expect("convert");
+            records
+        };
+        let plain = convert(options.clone());
+        let mut with_btd4 = options;
+        with_btd4.btd4_output_path = temp.path().join("world.btd4").display().to_string();
+        let sidecar = convert(with_btd4);
+
+        assert!(temp.path().join("world.btd4").is_file());
+        assert!(plain.iter().any(|record| record.yaml.contains("AlphaLayerData")));
+        assert_yaml_records_equal(&plain, &sidecar);
+    }
+
+    #[test]
     fn prepared_structured_cells_match_reopened_legacy_yaml_records() {
         let (_temp, options) = alpha_fallthrough_options();
         let mut legacy_records = Vec::new();
@@ -7810,27 +7644,101 @@ fields:
     #[test]
     fn lightweight_texture_scan_matches_blended_required_usages() {
         let form_ids = [0x000100, 0x000200, 0x000300, 0x000400];
-        let mut quadrant_ltex_maps = [[0u8; 8]; 4];
-        for (quadrant, texture_map) in quadrant_ltex_maps.iter_mut().enumerate() {
+        let mut descending = [[0u8; 8]; 4];
+        for (quadrant, texture_map) in descending.iter_mut().enumerate() {
             texture_map[7] = (form_ids.len() - quadrant) as u8;
         }
-        let btd_bytes = one_cell_btd(0, &form_ids, quadrant_ltex_maps);
-        let btd_path = temp_path("mapped_textures", "btd");
-        fs::write(&btd_path, btd_bytes).unwrap();
-        let mapped = compare_texture_usage_collectors(texture_usage_options(&btd_path, 0, 0));
-        let _ = fs::remove_file(&btd_path);
-        assert_eq!(
-            mapped
+        let mut gcvr_maps = [[0xFFu8; 8]; 4];
+        for map in &mut gcvr_maps {
+            map[4] = 0;
+        }
+        let mut first_cell = [[0u8; 8]; 4];
+        let mut second_cell = [[0u8; 8]; 4];
+        for map in &mut first_cell {
+            map[7] = 2;
+        }
+        for map in &mut second_cell {
+            map[7] = 1;
+        }
+        let two = [0x000100, 0x000200];
+        let usage_keys = |usages: &[RequiredTextureUsage]| {
+            usages
                 .iter()
-                .map(|usage| usage.ltex_form_key.as_str())
-                .collect::<Vec<_>>(),
-            [
-                "000100:SeventySix.esm",
-                "000200:SeventySix.esm",
-                "000300:SeventySix.esm",
-                "000400:SeventySix.esm",
-            ]
-        );
+                .map(|usage| {
+                    (
+                        usage.ltex_form_key.clone(),
+                        usage.ground_cover_form_key.clone(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let key = |ltex: &str| (format!("{ltex}:SeventySix.esm"), None::<String>);
+        let cases: Vec<(&str, Vec<u8>, Box<dyn Fn(&[RequiredTextureUsage])>)> = vec![
+            (
+                "every quadrant maps a texture",
+                one_cell_btd(0, &form_ids, descending),
+                Box::new(move |usages: &[RequiredTextureUsage]| {
+                    assert_eq!(
+                        usage_keys(usages),
+                        [key("000100"), key("000200"), key("000300"), key("000400")]
+                    )
+                }),
+            ),
+            (
+                "unused additional layer",
+                one_cell_btd(0, &two, base_and_additional_texture_maps()),
+                Box::new(move |usages: &[RequiredTextureUsage]| assert_eq!(usage_keys(usages), [key("000100")])),
+            ),
+            (
+                "nonzero additional layer",
+                one_cell_btd(0x7000, &two, base_and_additional_texture_maps()),
+                Box::new(|usages: &[RequiredTextureUsage]| {
+                    assert!(
+                        usages
+                            .iter()
+                            .any(|usage| usage.ltex_form_key == "000200:SeventySix.esm")
+                    )
+                }),
+            ),
+            (
+                "ground cover association",
+                btd_row_fixture(
+                    0x7000,
+                    &two,
+                    &[base_and_additional_texture_maps()],
+                    &[0x000900],
+                    &[gcvr_maps],
+                ),
+                Box::new(|usages: &[RequiredTextureUsage]| {
+                    assert!(usages.iter().any(|usage| {
+                        usage.ltex_form_key == "000200:SeventySix.esm"
+                            && usage.ground_cover_form_key.as_deref()
+                                == Some("000900:SeventySix.esm")
+                    }))
+                }),
+            ),
+            (
+                "partial range samples its neighbor",
+                btd_row_fixture(
+                    0,
+                    &two,
+                    &[first_cell, second_cell],
+                    &[],
+                    &[[[0; 8]; 4], [[0; 8]; 4]],
+                ),
+                Box::new(move |usages: &[RequiredTextureUsage]| {
+                    assert_eq!(usage_keys(usages), [key("000100"), key("000200")])
+                }),
+            ),
+        ];
+        let temp = tempfile::tempdir().expect("tempdir");
+        for (index, (label, bytes, check)) in cases.into_iter().enumerate() {
+            let btd_path = temp.path().join(format!("case{index}.btd"));
+            fs::write(&btd_path, bytes).unwrap();
+            let usages = compare_texture_usage_collectors(texture_usage_options(&btd_path, 0, 0));
+            eprintln!("case: {label}");
+            check(&usages);
+        }
     }
 
     fn base_and_additional_texture_maps() -> [[u8; 8]; 4] {
@@ -7840,108 +7748,6 @@ fields:
             map[7] = 2;
         }
         maps
-    }
-
-    #[test]
-    fn lightweight_texture_scan_ignores_unused_additional_layer() {
-        let btd_path = temp_path("unused_additional", "btd");
-        fs::write(
-            &btd_path,
-            one_cell_btd(0, &[0x000100, 0x000200], base_and_additional_texture_maps()),
-        )
-        .unwrap();
-
-        let usages = compare_texture_usage_collectors(texture_usage_options(&btd_path, 0, 0));
-        let _ = fs::remove_file(&btd_path);
-
-        assert_eq!(usages.len(), 1);
-        assert_eq!(usages[0].ltex_form_key, "000100:SeventySix.esm");
-    }
-
-    #[test]
-    fn lightweight_texture_scan_keeps_nonzero_additional_layer() {
-        let btd_path = temp_path("used_additional", "btd");
-        fs::write(
-            &btd_path,
-            one_cell_btd(
-                0x7000,
-                &[0x000100, 0x000200],
-                base_and_additional_texture_maps(),
-            ),
-        )
-        .unwrap();
-
-        let usages = compare_texture_usage_collectors(texture_usage_options(&btd_path, 0, 0));
-        let _ = fs::remove_file(&btd_path);
-
-        assert!(
-            usages
-                .iter()
-                .any(|usage| usage.ltex_form_key == "000200:SeventySix.esm")
-        );
-    }
-
-    #[test]
-    fn lightweight_texture_scan_preserves_ground_cover_association() {
-        let mut gcvr_maps = [[0xFFu8; 8]; 4];
-        for map in &mut gcvr_maps {
-            map[4] = 0;
-        }
-        let btd_path = temp_path("ground_cover", "btd");
-        fs::write(
-            &btd_path,
-            btd_row_fixture(
-                0x7000,
-                &[0x000100, 0x000200],
-                &[base_and_additional_texture_maps()],
-                &[0x000900],
-                &[gcvr_maps],
-            ),
-        )
-        .unwrap();
-
-        let usages = compare_texture_usage_collectors(texture_usage_options(&btd_path, 0, 0));
-        let _ = fs::remove_file(&btd_path);
-
-        assert!(usages.iter().any(|usage| {
-            usage.ltex_form_key == "000200:SeventySix.esm"
-                && usage.ground_cover_form_key.as_deref() == Some("000900:SeventySix.esm")
-        }));
-    }
-
-    #[test]
-    fn lightweight_texture_scan_samples_neighbor_for_partial_range() {
-        let mut first_cell = [[0u8; 8]; 4];
-        let mut second_cell = [[0u8; 8]; 4];
-        for map in &mut first_cell {
-            map[7] = 2;
-        }
-        for map in &mut second_cell {
-            map[7] = 1;
-        }
-        let btd_path = temp_path("partial_neighbor", "btd");
-        fs::write(
-            &btd_path,
-            btd_row_fixture(
-                0,
-                &[0x000100, 0x000200],
-                &[first_cell, second_cell],
-                &[],
-                &[[[0; 8]; 4], [[0; 8]; 4]],
-            ),
-        )
-        .unwrap();
-
-        let usages = compare_texture_usage_collectors(texture_usage_options(&btd_path, 0, 0));
-        let _ = fs::remove_file(&btd_path);
-
-        assert_eq!(
-            usages
-                .iter()
-                .map(|usage| usage.ltex_form_key.as_str())
-                .collect::<Vec<_>>(),
-            ["000100:SeventySix.esm", "000200:SeventySix.esm"]
-        );
     }
 
     #[test]
@@ -8104,6 +7910,14 @@ fields:
             output.report.btd4_output_path.as_deref(),
             Some(btd4_path.display().to_string().as_str())
         );
+        assert_eq!(
+            output.report.operation_counts["global_blend.land_alpha_payload_bytes_released"],
+            0
+        );
+        assert_eq!(
+            output.report.operation_counts["btd_cache.cached_land_alpha_payload_bytes_end"],
+            2 * 1024 * 1024
+        );
         assert!(btd4_path.is_file(), "sidecar file must exist");
 
         let reader = crate::btd4::Btd4Reader::open(&btd4_path).expect("open sidecar");
@@ -8176,6 +7990,31 @@ fields:
         let _ = fs::remove_file(&btd_path);
         let _ = fs::remove_file(&btd4_path);
         let _ = fs::remove_dir_all(&authoring_dir);
+    }
+
+    #[test]
+    fn btd4_raw_height_cache_keeps_only_rows_the_next_target_row_reads() {
+        let btd_path = temp_path("raw_evict", "btd");
+        fs::write(&btd_path, one_cell_btd_constant_height(7)).unwrap();
+        let btd = BtdFile::open(btd_path.to_str().unwrap()).unwrap();
+        let mut cache = SourceCellCache::new(
+            btd.header(),
+            &clone_options_for_probe(&btd_path),
+            1,
+            1,
+            SourceFrame::Fo76Identity,
+        )
+        .unwrap();
+        for cell_y in 0..4 {
+            cache.raw_cells.insert((0, cell_y), vec![0; 4]);
+            cache.raw_cells.insert((1, cell_y), vec![0; 4]);
+        }
+        // Target row 2 reads source rows 2 and 3 (half-cell shift).
+        cache.release_raw_rows_before(2);
+        let mut kept: Vec<_> = cache.raw_cells.keys().copied().collect();
+        kept.sort();
+        assert_eq!(kept, vec![(0, 2), (0, 3), (1, 2), (1, 3)]);
+        let _ = fs::remove_file(&btd_path);
     }
 
     fn clone_options_for_probe(btd_path: &Path) -> ConvertOptions {
@@ -8296,18 +8135,44 @@ fields:
         }
     }
 
-    #[test]
-    #[ignore = "manual full-overwrite resampling benchmark"]
-    fn benchmark_buffered_lanczos() {
-        let (reference, buffered) = lanczos_grid_probe(64, 4);
-        eprintln!("lanczos reference={reference:?} buffered={buffered:?} equal_bits=true");
-    }
-
     fn extract_raw_hex_field(yaml: &str, field_name: &str) -> Option<String> {
         let marker = format!("{field_name}:\n        raw_hex: \"");
         let start = yaml.find(&marker)? + marker.len();
         let end = yaml[start..].find('"')? + start;
         Some(yaml[start..end].to_string())
+    }
+
+    #[test]
+    fn starfield_layout_converts_to_fo4_cell_window() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let btd_path = temp.path().join("starfield.btd");
+        fs::write(&btd_path, two_by_two_starfield_btd(0x4321, 0x1357)).expect("write BTD");
+        let header = BtdFile::open_header(btd_path.to_str().unwrap()).expect("header");
+        assert!(header.is_starfield_layout);
+        let (fo4_min_x, fo4_max_x) =
+            crate::sf_frame::fo4_cell_range(header.cell_min_x, header.cell_max_x);
+        let (fo4_min_y, fo4_max_y) =
+            crate::sf_frame::fo4_cell_range(header.cell_min_y, header.cell_max_y);
+        let expected_cells = (fo4_max_x - fo4_min_x + 1) * (fo4_max_y - fo4_min_y + 1);
+
+        let mut options = clone_options_for_probe(&btd_path);
+        options.source_max_x = -1;
+        options.source_max_y = -1;
+        options.resample_mode = "lanczos".to_string();
+        let usages = collect_required_texture_usages_lightweight_for_options(options.clone())
+            .expect("Starfield texture scan");
+        assert!(usages.iter().all(|usage| usage.ground_cover_form_key.is_none()));
+        let output = convert_btd(options, TerrainRecordOutput::CollectOnly).expect("convert");
+
+        assert!(expected_cells > 0);
+        assert_eq!(output.report.cells_written as i32, expected_cells);
+        let cells = output
+            .authoring
+            .records
+            .iter()
+            .filter(|record| record.signature == "CELL")
+            .count();
+        assert_eq!(cells as i32, expected_cells);
     }
 
     /// The golden VHGT hex predates the Starfield frame: the FO76 identity path
@@ -8339,262 +8204,4 @@ fields:
         );
     }
 
-    fn starfield_akila_btd_path() -> PathBuf {
-        let root = std::env::var_os("STARFIELD_EXTRACTED_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../extracted/starfield")
-            });
-        root.join("terrain/akilacity.btd")
-    }
-
-    fn starfield_akila_options() -> ConvertOptions {
-        ConvertOptions {
-            btd_path: starfield_akila_btd_path().display().to_string(),
-            output_authoring_dir: String::new(),
-            plugin_name: "B21_AkilaTest.esp".to_string(),
-            worldspace_editor_id: "B21_AkilaTest".to_string(),
-            source_min_x: 0,
-            source_min_y: 0,
-            source_max_x: -1,
-            source_max_y: -1,
-            first_form_id: 0x000800,
-            world_form_id: 0,
-            first_cell_form_id: 0,
-            resample_mode: "lanczos".to_string(),
-            debug_output_dir: String::new(),
-            texture_manifest_path: String::new(),
-            water_manifest_path: String::new(),
-            emit_textures: false,
-            export_heightmap: false,
-            debug_flat_land: false,
-            preserve_source_ids: false,
-            reserved_object_ids: Vec::new(),
-            source_worldspace_authoring_dir: String::new(),
-            source_worldspace_terrain_ids_json: String::new(),
-            heightmap_output_path: String::new(),
-            btd4_output_path: String::new(),
-            conversion_workers: None,
-            land_skip_ground_cover_variants: false,
-            reuse_existing_textures: false,
-        }
-    }
-
-    #[test]
-    fn starfield_lightweight_texture_scan_skips_absent_ground_cover() {
-        let path = starfield_akila_btd_path();
-        if !path.exists() {
-            eprintln!("skip: starfield extracted data not present");
-            return;
-        }
-
-        let usages =
-            collect_required_texture_usages_lightweight_for_options(starfield_akila_options())
-                .expect("Starfield texture scan accepts the emitted FO4 cell window");
-
-        assert!(!usages.is_empty());
-        assert!(
-            usages
-                .iter()
-                .any(|usage| usage.ltex_form_key == "01085C:Starfield.esm")
-        );
-        assert!(
-            usages
-                .iter()
-                .all(|usage| usage.ground_cover_form_key.is_none())
-        );
-    }
-
-    /// Runs the real Akila conversion once per test binary (the 3 real-data
-    /// tests below all need it) and caches the result. `None` means the
-    /// extracted fixture is absent -- every caller must skip, not fail.
-    fn starfield_akila_conversion() -> Option<&'static ConvertOutput> {
-        static RESULT: std::sync::OnceLock<Option<ConvertOutput>> = std::sync::OnceLock::new();
-        RESULT
-            .get_or_init(|| {
-                let path = starfield_akila_btd_path();
-                if !path.exists() {
-                    return None;
-                }
-                let options = starfield_akila_options();
-                Some(convert_btd(options, TerrainRecordOutput::CollectOnly).expect("akila convert"))
-            })
-            .as_ref()
-    }
-
-    fn hex_to_bytes(hex: &str) -> Vec<u8> {
-        (0..hex.len())
-            .step_by(2)
-            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).expect("valid hex byte"))
-            .collect()
-    }
-
-    fn decode_cell_land_heights(record: &AuthoringRecordPayload) -> Vec<f32> {
-        let hex = extract_raw_hex_field(&record.yaml, "VertexHeightMap")
-            .expect("VertexHeightMap raw_hex present");
-        let encoded = EncodedVhgt {
-            offset: 0.0,
-            raw: hex_to_bytes(&hex),
-        };
-        decode_vhgt_heights(&encoded).expect("VHGT decodes")
-    }
-
-    /// Real akilacity.btd, skip-if-missing: the Starfield frame emits the
-    /// FO4 cell window that `sf_frame::fo4_cell_range` predicts for Akila's
-    /// SF cell extent (-4..=4 both axes) -- 16x16 = 256 cells, (-7,-7)..(8,8).
-    #[test]
-    fn starfield_frame_emits_expected_fo4_cell_window() {
-        let Some(output) = starfield_akila_conversion() else {
-            eprintln!("skip: starfield extracted data not present");
-            return;
-        };
-        assert_eq!(output.report.cells_written, 256);
-
-        let mut min_x = i32::MAX;
-        let mut max_x = i32::MIN;
-        let mut min_y = i32::MAX;
-        let mut max_y = i32::MIN;
-        let mut cell_dirs = 0u32;
-        for record in &output.authoring.records {
-            if record.signature != "CELL" {
-                continue;
-            }
-            cell_dirs += 1;
-            let cell_dir = Path::new(&record.relative_path)
-                .parent()
-                .expect("CELL record has a parent dir");
-            let name = cell_dir
-                .file_name()
-                .and_then(|n| n.to_str())
-                .expect("cell dir has a name");
-            let (x_str, y_str) = name.split_once(", ").expect("cell dir name is 'x, y'");
-            let x: i32 = x_str.parse().expect("cell x parses");
-            let y: i32 = y_str.parse().expect("cell y parses");
-            min_x = min_x.min(x);
-            max_x = max_x.max(x);
-            min_y = min_y.min(y);
-            max_y = max_y.max(y);
-        }
-        assert_eq!(cell_dirs, 256);
-        assert_eq!((min_x, min_y), (-7, -7));
-        assert_eq!((max_x, max_y), (8, 8));
-        // 256 cells * 4 quadrants each; the split counter can never exceed
-        // the number of quadrants that had a base to vote on at all.
-        assert!(output.report.quadrant_base_split <= 256 * 4);
-        eprintln!(
-            "Akila quadrant_base_split = {} (of up to {} quadrants)",
-            output.report.quadrant_base_split,
-            256 * 4
-        );
-    }
-
-    /// Real akilacity.btd, skip-if-missing. Expected values come from the BTD's
-    /// own per-cell f32 min/max table (`cell_height_minmax` at HEADER_LEN +
-    /// ltex*4), read independently of the resample code: max 49.187m at SF cell
-    /// (1,0), min -2.998m at SF cell (0,4).
-    ///
-    /// Checks proximity, not containment, since a flat plane (e.g.
-    /// `debug_flat_land`) also lies inside [min, max]. The 0.995 floor allows
-    /// slight lanczos attenuation (a real run measured max 3440, span 3648 FO4
-    /// units, within ~0.15%); the 3-VHGT-step ceiling covers quantisation only,
-    /// because `lanczos_target_height` clamps to its footprint's min/max.
-    #[test]
-    fn starfield_heights_land_in_fo4_units() {
-        let Some(output) = starfield_akila_conversion() else {
-            eprintln!("skip: starfield extracted data not present");
-            return;
-        };
-        let mut min_h = f32::INFINITY;
-        let mut max_h = f32::NEG_INFINITY;
-        for record in &output.authoring.records {
-            if record.signature != "CELL" {
-                continue;
-            }
-            for height in decode_cell_land_heights(record) {
-                min_h = min_h.min(height);
-                max_h = max_h.max(height);
-            }
-        }
-        assert!(min_h.is_finite() && max_h.is_finite(), "no heights decoded");
-        let span_h = max_h - min_h;
-
-        let expected_max_m = 49.187f32;
-        let expected_min_m = -2.998f32;
-        let expected_max_h = expected_max_m * crate::sf_frame::FO4_UNITS_PER_METER as f32;
-        let expected_span_h =
-            (expected_max_m - expected_min_m) * crate::sf_frame::FO4_UNITS_PER_METER as f32;
-        let quantisation_headroom = 3.0 * VHGT_HEIGHT_STEP;
-        let floor_ratio = 0.995;
-
-        assert!(
-            max_h >= expected_max_h * floor_ratio
-                && max_h <= expected_max_h + quantisation_headroom,
-            "max height {max_h} outside [{}, {}]",
-            expected_max_h * floor_ratio,
-            expected_max_h + quantisation_headroom
-        );
-        assert!(
-            span_h >= expected_span_h * floor_ratio
-                && span_h <= expected_span_h + quantisation_headroom,
-            "height span {span_h} outside [{}, {}]",
-            expected_span_h * floor_ratio,
-            expected_span_h + quantisation_headroom
-        );
-    }
-
-    /// Real akilacity.btd, skip-if-missing: VHGT's signed-i8 delta clamp
-    /// should rarely trigger on real terrain -- bound overflows to under 1%
-    /// of the emitted vertices as a sanity check on the Starfield resampler's
-    /// output smoothness.
-    #[test]
-    fn vhgt_delta_clamp_stats_stay_bounded() {
-        let Some(output) = starfield_akila_conversion() else {
-            eprintln!("skip: starfield extracted data not present");
-            return;
-        };
-        let total_vertices = u64::from(output.report.cells_written)
-            * (LAND_CELL_VERTICES as u64)
-            * (LAND_CELL_VERTICES as u64);
-        let overflow_ratio =
-            f64::from(output.report.vhgt_delta_clamp_overflows) / total_vertices as f64;
-        assert!(
-            overflow_ratio < 0.01,
-            "vhgt_delta_clamp_overflows {} / {} vertices = {:.4}%, expected < 1%",
-            output.report.vhgt_delta_clamp_overflows,
-            total_vertices,
-            overflow_ratio * 100.0
-        );
-    }
-
-    /// `sf_frame::SF_BTD_ORIGIN_BIAS_METERS` is a const 0.0, so a shim of the same
-    /// formula with an explicit bias checks that the real function matches it at
-    /// bias 0 and that a 50m bias shifts the grid by ~3500 units.
-    #[test]
-    fn origin_bias_is_zero() {
-        fn shim_fo4_units_to_btd_sample(units: f64, btd_cell_min: i32, bias_meters: f64) -> f64 {
-            let origin_meters = btd_cell_min as f64 * crate::sf_frame::SF_CELL_METERS - bias_meters;
-            (crate::sf_frame::fo4_units_to_meters(units) - origin_meters)
-                / crate::sf_frame::SF_BTD_SAMPLE_METERS
-        }
-
-        let units = crate::sf_frame::fo4_land_vertex_units(3, 17);
-        let btd_cell_min = -2;
-
-        let real = crate::sf_frame::fo4_units_to_btd_sample(units, btd_cell_min);
-        let shim_zero_bias = shim_fo4_units_to_btd_sample(units, btd_cell_min, 0.0);
-        assert!(
-            (real - shim_zero_bias).abs() < 1e-9,
-            "real {real} vs shim-at-zero-bias {shim_zero_bias} -- SF_BTD_ORIGIN_BIAS_METERS may not be 0"
-        );
-
-        let shim_fifty_bias = shim_fo4_units_to_btd_sample(units, btd_cell_min, 50.0);
-        let sample_shift = shim_fifty_bias - shim_zero_bias;
-        let unit_shift = crate::sf_frame::btd_sample_to_fo4_units(sample_shift, 0)
-            - crate::sf_frame::btd_sample_to_fo4_units(0.0, 0);
-        assert!(
-            (unit_shift - 3500.0).abs() < 1.0,
-            "expected a ~3500 unit grid shift for a 50m origin bias, got {unit_shift} -- \
-             SF_BTD_ORIGIN_BIAS_METERS is not load-bearing in the position formula"
-        );
-    }
 }

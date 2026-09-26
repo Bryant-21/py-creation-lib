@@ -18,9 +18,9 @@ def _looks_like_native_module(module: Any | None) -> bool:
 
 
 def _load_umbrella_submodule() -> Any | None:
-    from creation_lib.havok.native_runtime import _configure_native_resources
+    from creation_lib.havok.native_runtime import configure_native_resources
 
-    _configure_native_resources()
+    configure_native_resources()
     try:
         umbrella = import_module("creation_lib._native")
     except ImportError:
@@ -44,9 +44,9 @@ def load_native_module() -> Any | None:
         if _NATIVE_IMPORT_ATTEMPTED:
             return _NATIVE_MODULE
         try:
-            from creation_lib.havok.native_runtime import _configure_native_resources
+            from creation_lib.havok.native_runtime import configure_native_resources
 
-            _configure_native_resources()
+            configure_native_resources()
             mod = import_module("havok_native")
             if not _looks_like_native_module(mod):
                 mod = import_module("havok_native.havok_native")

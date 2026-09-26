@@ -186,16 +186,7 @@ fn reads_fo4_packfile_fixtures_into_descriptor_backed_objects() {
                 "{relative} should contain fixture-specific class {fixture_class}"
             );
         }
-    }
-}
 
-#[test]
-fn descriptor_reader_handles_arrays_pointers_strings_and_nested_structs_without_panics() {
-    for (relative, _) in fo4_fixture_paths() {
-        let data = fixture_bytes(relative);
-        let hkx = read_packfile(&data).unwrap_or_else(|error| {
-            panic!("failed to read {relative}: {error}");
-        });
         let mut counts = ValueCounts::default();
 
         for object in hkx.objects() {
@@ -276,28 +267,6 @@ fn struct_stride_counts_fixed_c_arrays_and_recurses_for_nested_alignment() {
 }
 
 #[test]
-fn nonempty_array_without_local_payload_fixup_is_invalid() {
-    let dir = temp_classxml_dir("missing_array_fixup");
-    write_temp_classxml(
-        &dir,
-        "hkArrayRoot_0.xml",
-        "<class name='hkArrayRoot' version='0' signature='0x1'><members><member name='values' type='hkArray&lt;hkUint32&gt;' offset='0' vtype='TYPE_ARRAY' vsubtype='TYPE_UINT32' arrsize='0' flags='FLAGS_NONE'/></members></class>",
-    );
-    let mut data = vec![0_u8; 0x40];
-    write_u32(&mut data, 8, 1);
-    let packfile = synthetic_packfile_for_class("hkArrayRoot", data.len());
-    let mut registry = DescriptorRegistry::from_dir(&dir).expect("temp descriptors");
-
-    let error = read_objects_with_registry(&data, &packfile, &mut registry).unwrap_err();
-
-    assert!(
-        error.to_string().contains("missing local fixup"),
-        "unexpected error: {error}"
-    );
-    std::fs::remove_dir_all(dir).ok();
-}
-
-#[test]
 fn strings_preserve_null_state_separately_from_empty_string() {
     let dir = temp_classxml_dir("string_null_state");
     write_temp_classxml(
@@ -337,135 +306,101 @@ fn strings_preserve_null_state_separately_from_empty_string() {
 }
 
 #[test]
-fn fixups_validate_section_indices_and_payload_ranges() {
-    let dir = temp_classxml_dir("fixup_validation");
-    write_temp_classxml(
-        &dir,
-        "hkPointerRoot_0.xml",
-        "<class name='hkPointerRoot' version='0' signature='0x1'><members><member name='target' type='struct hkPointerRoot*' ctype='hkPointerRoot' offset='0' vtype='TYPE_POINTER' vsubtype='TYPE_STRUCT' arrsize='0' flags='FLAGS_NONE'/></members></class>",
-    );
-    let data = vec![0_u8; 0x40];
-
-    let mut packfile = synthetic_packfile_for_class("hkPointerRoot", data.len());
-    packfile.global_fixups.push(GlobalFixup {
-        source: 0,
-        section: 99,
-        target: 0,
-    });
-    let mut registry = DescriptorRegistry::from_dir(&dir).expect("temp descriptors");
-    let error = read_objects_with_registry(&data, &packfile, &mut registry).unwrap_err();
-    assert!(
-        error.to_string().contains("section out of bounds"),
-        "unexpected error: {error}"
-    );
-
-    let mut packfile = synthetic_packfile_for_class("hkPointerRoot", data.len());
-    packfile.local_fixups.push(LocalFixup {
-        source: 0,
-        target: 0x80,
-    });
-    let error = read_objects_with_registry(&data, &packfile, &mut registry).unwrap_err();
-    assert!(
-        error.to_string().contains("outside __data__ payload"),
-        "unexpected error: {error}"
-    );
-
-    std::fs::remove_dir_all(dir).ok();
-}
-
-#[test]
-fn virtual_object_fixups_reject_in_bounds_wrong_section() {
-    let dir = temp_classxml_dir("wrong_virtual_section");
-    write_temp_classxml(
-        &dir,
-        "hkVirtualRoot_0.xml",
-        "<class name='hkVirtualRoot' version='0' signature='0x1'><members><member name='value' type='hkUint32' offset='0' vtype='TYPE_UINT32' vsubtype='TYPE_VOID' arrsize='0' flags='FLAGS_NONE'/></members></class>",
-    );
-    let data = vec![0_u8; 0x40];
-    let mut packfile = synthetic_packfile_for_class("hkVirtualRoot", data.len());
-    packfile.sections[1].offset = 0;
-    packfile.sections[1].data1 = data.len();
-    packfile.virtual_fixups[0].section = 1;
+fn malformed_fixups_and_array_headers_are_rejected() {
+    let dir = temp_classxml_dir("malformed_fixups");
+    for (file, xml) in [
+        (
+            "hkArrayRoot_0.xml",
+            "<class name='hkArrayRoot' version='0' signature='0x1'><members><member name='values' type='hkArray&lt;hkUint32&gt;' offset='0' vtype='TYPE_ARRAY' vsubtype='TYPE_UINT32' arrsize='0' flags='FLAGS_NONE'/></members></class>",
+        ),
+        (
+            "hkPointerRoot_0.xml",
+            "<class name='hkPointerRoot' version='0' signature='0x1'><members><member name='target' type='struct hkPointerRoot*' ctype='hkPointerRoot' offset='0' vtype='TYPE_POINTER' vsubtype='TYPE_STRUCT' arrsize='0' flags='FLAGS_NONE'/></members></class>",
+        ),
+        (
+            "hkVirtualRoot_0.xml",
+            "<class name='hkVirtualRoot' version='0' signature='0x1'><members><member name='value' type='hkUint32' offset='0' vtype='TYPE_UINT32' vsubtype='TYPE_VOID' arrsize='0' flags='FLAGS_NONE'/></members></class>",
+        ),
+    ] {
+        write_temp_classxml(&dir, file, xml);
+    }
     let mut registry = DescriptorRegistry::from_dir(&dir).expect("temp descriptors");
 
-    let error = read_objects_with_registry(&data, &packfile, &mut registry).unwrap_err();
+    let mut unfixed_array = vec![0_u8; 0x40];
+    write_u32(&mut unfixed_array, 8, 1);
+    // A count of i32::MAX must fail as a typed error, not a ~2 GiB allocation.
+    let mut huge_array = vec![0_u8; 0x40];
+    write_u32(&mut huge_array, 8, 0x7FFF_FFFF);
+    let zeroed = vec![0_u8; 0x40];
 
-    assert!(
-        error
-            .to_string()
-            .contains("virtual fixup section must be __data__"),
-        "unexpected error: {error}"
-    );
-    std::fs::remove_dir_all(dir).ok();
-}
-
-#[test]
-fn object_pointer_global_fixups_reject_in_bounds_wrong_target_section() {
-    let dir = temp_classxml_dir("wrong_global_section");
-    write_temp_classxml(
-        &dir,
-        "hkPointerRoot_0.xml",
-        "<class name='hkPointerRoot' version='0' signature='0x1'><members><member name='target' type='struct hkPointerRoot*' ctype='hkPointerRoot' offset='0' vtype='TYPE_POINTER' vsubtype='TYPE_STRUCT' arrsize='0' flags='FLAGS_NONE'/></members></class>",
-    );
-    let data = vec![0_u8; 0x40];
-    let mut packfile = synthetic_packfile_for_class("hkPointerRoot", data.len());
-    packfile.sections[1].offset = 0;
-    packfile.sections[1].data1 = data.len();
-    packfile.global_fixups.push(GlobalFixup {
-        source: 0,
-        section: 1,
-        target: 0,
-    });
-    let mut registry = DescriptorRegistry::from_dir(&dir).expect("temp descriptors");
-
-    let error = read_objects_with_registry(&data, &packfile, &mut registry).unwrap_err();
-
-    assert!(
-        error
-            .to_string()
-            .contains("global fixup target section must be __data__"),
-        "unexpected error: {error}"
-    );
-    std::fs::remove_dir_all(dir).ok();
-}
-
-#[test]
-fn read_array_with_huge_count_returns_error_not_oom() {
-    // a malformed array header with count = i32::MAX must return a
-    // typed error instead of attempting a ~2 GiB allocation.
-    let dir = temp_classxml_dir("huge_count");
-    write_temp_classxml(
-        &dir,
-        "BigArray_0.xml",
-        "<struct name='BigArray' version='0' signature='0xDEAD0001'>\
-          <members>\
-            <member name='items' type='hkArray&lt;hkUint32&gt;' offset='0' \
-              vtype='TYPE_ARRAY' vsubtype='TYPE_UINT32' arrsize='0' flags='FLAGS_NONE'/>\
-          </members>\
-        </struct>",
-    );
-
-    // Object body: 16-byte hkArray header + a local fixup pointing to the body.
-    // count = i32::MAX = 0x7FFFFFFF.
-    let mut data = vec![0u8; 32];
-    // hkArray header: ptr(8) = 0, count(4) = i32::MAX, flags(4) = 0
-    data[8..12].copy_from_slice(&0x7FFFFFFFu32.to_le_bytes());
-    // Put the "array data" at offset 16 (just the end of the object body).
-    // local fixup: src=0, dst=16.
-
-    let mut packfile = synthetic_packfile_for_class("BigArray", data.len());
-    packfile.local_fixups.push(LocalFixup {
-        source: 0,
-        target: 16,
-    });
-
-    let mut registry = DescriptorRegistry::from_dir(&dir).expect("temp descriptors");
-    let error = read_objects_with_registry(&data, &packfile, &mut registry).unwrap_err();
-
-    assert!(
-        error.to_string().contains("exceeds available data") || error.to_string().contains("array"),
-        "expected array count error, got: {error}"
-    );
+    type Mutate = fn(&mut ParsedPackfile);
+    let cases: [(&str, &[u8], Mutate, &str); 6] = [
+        ("hkArrayRoot", &unfixed_array, |_| {}, "missing local fixup"),
+        (
+            "hkArrayRoot",
+            &huge_array,
+            |packfile| {
+                packfile.local_fixups.push(LocalFixup {
+                    source: 0,
+                    target: 16,
+                })
+            },
+            "array",
+        ),
+        (
+            "hkPointerRoot",
+            &zeroed,
+            |packfile| {
+                packfile.global_fixups.push(GlobalFixup {
+                    source: 0,
+                    section: 99,
+                    target: 0,
+                })
+            },
+            "section out of bounds",
+        ),
+        (
+            "hkPointerRoot",
+            &zeroed,
+            |packfile| {
+                packfile.local_fixups.push(LocalFixup {
+                    source: 0,
+                    target: 0x80,
+                })
+            },
+            "outside __data__ payload",
+        ),
+        (
+            "hkVirtualRoot",
+            &zeroed,
+            |packfile| {
+                packfile.sections[1].offset = 0;
+                packfile.sections[1].data1 = 0x40;
+                packfile.virtual_fixups[0].section = 1;
+            },
+            "virtual fixup section must be __data__",
+        ),
+        (
+            "hkPointerRoot",
+            &zeroed,
+            |packfile| {
+                packfile.sections[1].offset = 0;
+                packfile.sections[1].data1 = 0x40;
+                packfile.global_fixups.push(GlobalFixup {
+                    source: 0,
+                    section: 1,
+                    target: 0,
+                });
+            },
+            "global fixup target section must be __data__",
+        ),
+    ];
+    for (class, data, mutate, message) in cases {
+        let mut packfile = synthetic_packfile_for_class(class, data.len());
+        mutate(&mut packfile);
+        let error = read_objects_with_registry(data, &packfile, &mut registry).unwrap_err();
+        assert!(error.to_string().contains(message), "{message}: {error}");
+    }
     std::fs::remove_dir_all(dir).ok();
 }
 
@@ -528,73 +463,63 @@ fn legacy_asset_bundle_entries_use_their_2010_string_pointer_stride() {
     std::fs::remove_dir_all(dir).ok();
 }
 
-#[test]
-fn legacy_modifier_list_recovers_the_array_header_from_its_local_fixup() {
-    let dir = temp_classxml_dir("legacy_modifier_list");
-    write_temp_classxml(
-        &dir,
-        "hkbModifierList_0.xml",
-        "<class name='hkbModifierList' version='0'><members><member name='modifiers' type='hkArray&lt;hkbModifier*&gt;' ctype='hkbModifier' offset='8' vtype='TYPE_ARRAY' vsubtype='TYPE_POINTER' arrsize='0' flags='FLAGS_NONE'/></members></class>",
-    );
-    let mut data = vec![0_u8; 0x40];
-    write_u32(&mut data, 8, 2);
-    let mut packfile = synthetic_packfile_for_class("hkbModifierList", data.len());
+fn legacy_packfile(class_name: &str, data_len: usize) -> ParsedPackfile {
+    let mut packfile = synthetic_packfile_for_class(class_name, data_len);
     packfile.header.version = 8;
     packfile.header.version_name = "hk_2010.2.0-r1".to_string();
+    packfile
+}
+
+#[test]
+fn legacy_array_headers_follow_2010_layouts_and_object_bounds() {
+    let dir = temp_classxml_dir("legacy_arrays");
+    for (file, xml) in [
+        (
+            "hkbModifierList_0.xml",
+            "<class name='hkbModifierList' version='0'><members><member name='modifiers' type='hkArray&lt;hkbModifier*&gt;' ctype='hkbModifier' offset='8' vtype='TYPE_ARRAY' vsubtype='TYPE_POINTER' arrsize='0' flags='FLAGS_NONE'/></members></class>",
+        ),
+        (
+            "hkaSkeleton_5.xml",
+            "<class name='hkaSkeleton' version='5'><members><member name='partitions' type='hkArray&lt;struct hkaSkeletonPartition&gt;' ctype='hkaSkeletonPartition' offset='0' vtype='TYPE_ARRAY' vsubtype='TYPE_STRUCT' arrsize='0' flags='FLAGS_NONE'/></members></class>",
+        ),
+        (
+            "hkbMirroredSkeletonInfo_1.xml",
+            "<class name='hkbMirroredSkeletonInfo' version='1'><members><member name='partitionPairMap' type='hkArray&lt;hkInt16&gt;' offset='48' vtype='TYPE_ARRAY' vsubtype='TYPE_INT16' arrsize='0' flags='FLAGS_NONE'/></members></class>",
+        ),
+        (
+            "FollowingObject_0.xml",
+            "<class name='FollowingObject' version='0'><members><member name='value' type='hkUint32' offset='8' vtype='TYPE_UINT32' vsubtype='TYPE_VOID' arrsize='0' flags='FLAGS_NONE'/></members></class>",
+        ),
+    ] {
+        write_temp_classxml(&dir, file, xml);
+    }
+    let mut registry = DescriptorRegistry::from_dir(&dir).expect("temp descriptors");
+
+    // The modifier list's array header is recovered from its local fixup.
+    let mut data = vec![0_u8; 0x40];
+    write_u32(&mut data, 8, 2);
+    let mut packfile = legacy_packfile("hkbModifierList", data.len());
     packfile.local_fixups.push(LocalFixup {
         source: 0,
         target: 0x20,
     });
-    let mut registry = DescriptorRegistry::from_dir(&dir).expect("temp descriptors");
-
     let objects = read_objects_with_registry(&data, &packfile, &mut registry).expect("decode");
     let HkxValue::Array(modifiers) = &objects[0].members[0].value else {
         panic!("modifiers should be an array");
     };
     assert_eq!(modifiers.len(), 2);
 
-    std::fs::remove_dir_all(dir).ok();
-}
-
-#[test]
-fn legacy_skeleton_does_not_read_post_2010_partitions_from_following_payload() {
-    let dir = temp_classxml_dir("legacy_skeleton_partitions");
-    write_temp_classxml(
-        &dir,
-        "hkaSkeleton_5.xml",
-        "<class name='hkaSkeleton' version='5'><members><member name='partitions' type='hkArray&lt;struct hkaSkeletonPartition&gt;' ctype='hkaSkeletonPartition' offset='0' vtype='TYPE_ARRAY' vsubtype='TYPE_STRUCT' arrsize='0' flags='FLAGS_NONE'/></members></class>",
-    );
+    // 2010 skeletons have no partitions; don't read them from later payload.
     let mut data = vec![0_u8; 0x20];
     write_u32(&mut data, 8, 99);
-    let mut packfile = synthetic_packfile_for_class("hkaSkeleton", data.len());
-    packfile.header.version = 8;
-    packfile.header.version_name = "hk_2010.2.0-r1".to_string();
-    let mut registry = DescriptorRegistry::from_dir(&dir).expect("temp descriptors");
-
+    let packfile = legacy_packfile("hkaSkeleton", data.len());
     let objects = read_objects_with_registry(&data, &packfile, &mut registry).expect("decode");
     assert_eq!(objects[0].members[0].value, HkxValue::Array(Vec::new()));
 
-    std::fs::remove_dir_all(dir).ok();
-}
-
-#[test]
-fn legacy_mirrored_skeleton_stops_before_the_following_object() {
-    let dir = temp_classxml_dir("legacy_mirrored_skeleton");
-    write_temp_classxml(
-        &dir,
-        "hkbMirroredSkeletonInfo_1.xml",
-        "<class name='hkbMirroredSkeletonInfo' version='1'><members><member name='partitionPairMap' type='hkArray&lt;hkInt16&gt;' offset='48' vtype='TYPE_ARRAY' vsubtype='TYPE_INT16' arrsize='0' flags='FLAGS_NONE'/></members></class>",
-    );
-    write_temp_classxml(
-        &dir,
-        "FollowingObject_0.xml",
-        "<class name='FollowingObject' version='0'><members><member name='value' type='hkUint32' offset='8' vtype='TYPE_UINT32' vsubtype='TYPE_VOID' arrsize='0' flags='FLAGS_NONE'/></members></class>",
-    );
+    // A mirrored-skeleton member past the object's end belongs to the next one.
     let mut data = vec![0_u8; 0x80];
     write_u32(&mut data, 0x38, 7);
-    let mut packfile = synthetic_packfile_for_class("hkbMirroredSkeletonInfo", data.len());
-    packfile.header.version = 8;
-    packfile.header.version_name = "hk_2010.2.0-r1".to_string();
+    let mut packfile = legacy_packfile("hkbMirroredSkeletonInfo", data.len());
     packfile.classnames.push(ClassnameEntry {
         position: 1,
         signature: 0,
@@ -605,8 +530,6 @@ fn legacy_mirrored_skeleton_stops_before_the_following_object() {
         section: 0,
         classname_offset: 1,
     });
-    let mut registry = DescriptorRegistry::from_dir(&dir).expect("temp descriptors");
-
     let objects = read_objects_with_registry(&data, &packfile, &mut registry).expect("decode");
     assert_eq!(objects[0].members[0].value, HkxValue::Array(Vec::new()));
     assert_eq!(objects[1].members[0].value, HkxValue::U32(7));
@@ -693,6 +616,8 @@ fn legacy_blender_generator_uses_the_v40_class_member_offsets() {
     data[0x5c] = 1;
     write_u32(&mut data, 0x68, 2);
     let mut packfile = synthetic_packfile_for_class("hkbBlenderGenerator", data.len());
+    // v40 member offsets apply only under the Skyrim hkbBlenderGenerator signature.
+    packfile.classnames[0].signature = 0x22df_7147;
     packfile.header.version = 8;
     packfile.header.version_name = "hk_2010.2.0-r1".to_string();
     packfile.local_fixups.push(LocalFixup {
@@ -714,32 +639,6 @@ fn legacy_blender_generator_uses_the_v40_class_member_offsets() {
         panic!("children should be an array");
     };
     assert_eq!(children.len(), 2);
-
-    std::fs::remove_dir_all(dir).ok();
-}
-
-#[test]
-fn unknown_legacy_array_layout_reports_the_exact_member_and_source() {
-    let dir = temp_classxml_dir("unknown_legacy_array");
-    write_temp_classxml(
-        &dir,
-        "UnsupportedLegacyRoot_0.xml",
-        "<class name='UnsupportedLegacyRoot' version='0'><members><member name='futureValues' type='hkArray&lt;hkUint32&gt;' offset='16' vtype='TYPE_ARRAY' vsubtype='TYPE_UINT32' arrsize='0' flags='FLAGS_NONE'/></members></class>",
-    );
-    let mut data = vec![0_u8; 0x40];
-    write_u32(&mut data, 0x18, 3);
-    let mut packfile = synthetic_packfile_for_class("UnsupportedLegacyRoot", data.len());
-    packfile.header.version = 8;
-    packfile.header.version_name = "hk_2010.2.0-r1".to_string();
-    let mut registry = DescriptorRegistry::from_dir(&dir).expect("temp descriptors");
-
-    let error = read_objects_with_registry(&data, &packfile, &mut registry).unwrap_err();
-    assert!(matches!(
-        error,
-        HavokError::FeatureNotImplemented { feature, reason }
-            if feature == "hk_2010.2.0-r1 class layout UnsupportedLegacyRoot.futureValues"
-                && reason.contains("__data__+0x10")
-    ));
 
     std::fs::remove_dir_all(dir).ok();
 }
@@ -803,20 +702,34 @@ fn skyrim_character_data_signature_decodes_the_legacy_direct_controller_layout()
 }
 
 #[test]
-fn unknown_skyrim_character_data_signature_is_a_typed_layout_blocker() {
-    let dir = temp_classxml_dir("unknown_skyrim_character_controller");
+fn unknown_legacy_layouts_are_typed_blockers_naming_member_and_source() {
+    let dir = temp_classxml_dir("legacy_blockers");
+    write_temp_classxml(
+        &dir,
+        "UnsupportedLegacyRoot_0.xml",
+        "<class name='UnsupportedLegacyRoot' version='0'><members><member name='futureValues' type='hkArray&lt;hkUint32&gt;' offset='16' vtype='TYPE_ARRAY' vsubtype='TYPE_UINT32' arrsize='0' flags='FLAGS_NONE'/></members></class>",
+    );
     write_temp_classxml(
         &dir,
         "hkbCharacterData_10.xml",
         "<class name='hkbCharacterData' version='10'><members><member name='characterControllerSetup' type='struct hkbCharacterControllerSetup' ctype='hkbCharacterControllerSetup' offset='16' vtype='TYPE_STRUCT' vsubtype='TYPE_VOID' arrsize='0' flags='FLAGS_NONE'/></members></class>",
     );
-    let data = vec![0_u8; 0x40];
-    let mut packfile = synthetic_packfile_for_class("hkbCharacterData", data.len());
-    packfile.header.version = 8;
-    packfile.header.version_name = "hk_2010.2.0-r1".to_string();
-    packfile.classnames[0].signature = 0xdead_beef;
     let mut registry = DescriptorRegistry::from_dir(&dir).expect("temp descriptors");
 
+    let mut data = vec![0_u8; 0x40];
+    write_u32(&mut data, 0x18, 3);
+    let packfile = legacy_packfile("UnsupportedLegacyRoot", data.len());
+    let error = read_objects_with_registry(&data, &packfile, &mut registry).unwrap_err();
+    assert!(matches!(
+        error,
+        HavokError::FeatureNotImplemented { feature, reason }
+            if feature == "hk_2010.2.0-r1 class layout UnsupportedLegacyRoot.futureValues"
+                && reason.contains("__data__+0x10")
+    ));
+
+    let data = vec![0_u8; 0x40];
+    let mut packfile = legacy_packfile("hkbCharacterData", data.len());
+    packfile.classnames[0].signature = 0xdead_beef;
     let error = read_objects_with_registry(&data, &packfile, &mut registry).unwrap_err();
     assert!(matches!(
         error,

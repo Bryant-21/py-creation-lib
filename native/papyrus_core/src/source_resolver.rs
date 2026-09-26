@@ -159,6 +159,36 @@ impl SourceResolver {
             .unwrap_or_default()
     }
 
+    /// Type of a property declared on `script` or one of its ancestors. A bare
+    /// struct name only resolves inside its declaring script, so it is returned
+    /// qualified as `owner#Struct`.
+    pub fn get_hierarchy_property_type(&self, script: &str, property: &str) -> Option<String> {
+        self.get_hierarchy(script).into_iter().find_map(|ancestor| {
+            let ast = self.parsed(&ancestor)?;
+            let declared = ast
+                .properties
+                .iter()
+                .find(|p| p.name.eq_ignore_ascii_case(property))?;
+            Some(qualify_owned_struct(&ast, &declared.ty))
+        })
+    }
+
+    /// Type of `member` on a struct another script declares, spelled
+    /// `owner#Struct` or `Owner:Struct`.
+    pub fn get_struct_member_type(&self, struct_type: &str, member: &str) -> Option<String> {
+        let (owner, struct_name) = struct_type
+            .split_once('#')
+            .or_else(|| struct_type.rsplit_once(':'))?;
+        let ast = self.parsed(owner)?;
+        ast.structs
+            .iter()
+            .find(|s| s.name.eq_ignore_ascii_case(struct_name))?
+            .members
+            .iter()
+            .find(|m| m.name.eq_ignore_ascii_case(member))
+            .map(|m| m.ty.clone())
+    }
+
     pub fn has_struct(&self, script: &str, struct_name: &str) -> bool {
         self.parsed(script)
             .map(|a| {
@@ -189,6 +219,18 @@ impl SourceResolver {
             }
         }
         None
+    }
+}
+
+fn qualify_owned_struct(owner: &ScriptNode, ty: &str) -> String {
+    let (base, array_suffix) = match ty.trim().strip_suffix("[]") {
+        Some(element) => (element.trim(), "[]"),
+        None => (ty.trim(), ""),
+    };
+    if owner.structs.iter().any(|s| s.name.eq_ignore_ascii_case(base)) {
+        format!("{}#{}{}", owner.name, base, array_suffix)
+    } else {
+        ty.to_string()
     }
 }
 

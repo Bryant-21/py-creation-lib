@@ -189,68 +189,64 @@ mod tests {
     use super::*;
 
     #[test]
-    fn lbs_identity_bone_leaves_vertex_unchanged() {
-        let id = mat4_identity();
-        let verts = vec![[1.0f32, 2.0, 3.0]];
-        let weights = vec![vec![SkinWeight {
-            bone: 0,
-            weight: 1.0,
-        }]];
-        let out = apply_lbs(&verts, &[id], &[id], &weights);
-        assert!((out[0][0] - 1.0).abs() < 1e-5);
-        assert!((out[0][1] - 2.0).abs() < 1e-5);
-        assert!((out[0][2] - 3.0).abs() < 1e-5);
-    }
-
-    #[test]
-    fn lbs_translation_applied() {
-        // bind: identity; current: translate +5 on X
-        let bind_inv = mat4_identity();
-        let mut pose = mat4_identity();
-        pose[3][0] = 5.0; // column 3, row 0 = translation X
-        let verts = vec![[0.0f32, 0.0, 0.0]];
-        let weights = vec![vec![SkinWeight {
-            bone: 0,
-            weight: 1.0,
-        }]];
-        let out = apply_lbs(&verts, &[bind_inv], &[pose], &weights);
-        assert!(
-            (out[0][0] - 5.0).abs() < 1e-5,
-            "X should be 5, got {}",
-            out[0][0]
-        );
-    }
-
-    #[test]
-    fn normalize_weights_sums_to_one() {
-        let mut ws = vec![
-            SkinWeight {
+    fn lbs_and_weight_helpers() {
+        {
+            let id = mat4_identity();
+            let verts = vec![[1.0f32, 2.0, 3.0]];
+            let weights = vec![vec![SkinWeight {
                 bone: 0,
-                weight: 2.0,
-            },
-            SkinWeight {
-                bone: 1,
-                weight: 2.0,
-            },
-        ];
-        normalize_weights(&mut ws);
-        let total: f32 = ws.iter().map(|w| w.weight).sum();
-        assert!((total - 1.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn mat4_inverse_identity() {
-        let id = mat4_identity();
-        let inv = mat4_inverse_affine(id).expect("identity is invertible");
-        // Check inv ≈ identity
-        for col in 0..4 {
-            for row in 0..4 {
-                let expected = if row == col { 1.0 } else { 0.0 };
-                assert!(
-                    (inv[col][row] - expected).abs() < 1e-5,
-                    "[{col}][{row}] expected {expected}, got {}",
-                    inv[col][row]
-                );
+                weight: 1.0,
+            }]];
+            let out = apply_lbs(&verts, &[id], &[id], &weights);
+            assert!((out[0][0] - 1.0).abs() < 1e-5);
+            assert!((out[0][1] - 2.0).abs() < 1e-5);
+            assert!((out[0][2] - 3.0).abs() < 1e-5);
+        }
+        {
+            // bind: identity; current: translate +5 on X
+            let bind_inv = mat4_identity();
+            let mut pose = mat4_identity();
+            pose[3][0] = 5.0; // column 3, row 0 = translation X
+            let verts = vec![[0.0f32, 0.0, 0.0]];
+            let weights = vec![vec![SkinWeight {
+                bone: 0,
+                weight: 1.0,
+            }]];
+            let out = apply_lbs(&verts, &[bind_inv], &[pose], &weights);
+            assert!(
+                (out[0][0] - 5.0).abs() < 1e-5,
+                "X should be 5, got {}",
+                out[0][0]
+            );
+        }
+        {
+            let mut ws = vec![
+                SkinWeight {
+                    bone: 0,
+                    weight: 2.0,
+                },
+                SkinWeight {
+                    bone: 1,
+                    weight: 2.0,
+                },
+            ];
+            normalize_weights(&mut ws);
+            let total: f32 = ws.iter().map(|w| w.weight).sum();
+            assert!((total - 1.0).abs() < 1e-6);
+        }
+        {
+            let id = mat4_identity();
+            let inv = mat4_inverse_affine(id).expect("identity is invertible");
+            // Check inv ≈ identity
+            for col in 0..4 {
+                for row in 0..4 {
+                    let expected = if row == col { 1.0 } else { 0.0 };
+                    assert!(
+                        (inv[col][row] - expected).abs() < 1e-5,
+                        "[{col}][{row}] expected {expected}, got {}",
+                        inv[col][row]
+                    );
+                }
             }
         }
     }

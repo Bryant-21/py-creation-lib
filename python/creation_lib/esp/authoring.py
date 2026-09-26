@@ -196,13 +196,16 @@ def deserialize(
         with importer(yaml_dir.read_text(encoding="utf-8-sig")) as plugin:
             plugin.game = game
             output_path.parent.mkdir(parents=True, exist_ok=True)
-            with tempfile.NamedTemporaryFile(dir=output_path.parent, suffix=output_path.suffix, delete=False) as temporary:
-                staged = Path(temporary.name)
-            try:
+            with tempfile.TemporaryDirectory(dir=output_path.parent) as temporary:
+                staged = Path(temporary) / output_path.name
                 plugin.save(staged)
+                strings = staged.parent / "Strings"
+                if strings.is_dir():
+                    destination = output_path.parent / "Strings"
+                    destination.mkdir(exist_ok=True)
+                    for table in strings.iterdir():
+                        table.replace(destination / table.name)
                 staged.replace(output_path)
-            finally:
-                staged.unlink(missing_ok=True)
         if on_progress:
             on_progress(f"Built {output_path.name} from {yaml_dir.name}")
         return output_path

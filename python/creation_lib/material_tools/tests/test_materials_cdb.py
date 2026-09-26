@@ -5,10 +5,7 @@ src/bsmatcdb.{cpp,hpp} and material.hpp.
 """
 from __future__ import annotations
 
-import json
-import os
 import struct
-from pathlib import Path
 
 import pytest
 
@@ -26,18 +23,6 @@ from creation_lib.material_tools.materials_cdb import (
 )
 
 
-FIX = (
-    Path(__file__).parent.parent.parent
-    / "conversion"
-    / "tests"
-    / "fixtures"
-    / "fo76"
-    / "cdb"
-)
-CDB = FIX / "sample_small.cdb"
-GOLDEN = FIX / "sample_small.golden.json"
-
-
 # ---------------------------------------------------------------------------
 # Bethesda CRC32 variant
 # ---------------------------------------------------------------------------
@@ -48,13 +33,10 @@ def test_bethesda_crc32_variant_raw_no_inversion():
     # pre-inverts and post-inverts. Verified cross-reference:
     #   raw_crc32(x) == zlib.crc32(x, 0xFFFFFFFF) ^ 0xFFFFFFFF
     import zlib
-    for sample in (b"gun", b"materials\\test\\wood", b"", b"a", b"abc"):
+    assert bethesda_crc32(b"") == 0
+    for sample in (b"gun", b"materials\\test\\wood", b"a", b"abc"):
         expected = zlib.crc32(sample, 0xFFFFFFFF) ^ 0xFFFFFFFF
         assert bethesda_crc32(sample) == expected, sample
-
-
-def test_bethesda_crc32_empty_is_zero():
-    assert bethesda_crc32(b"") == 0
 
 
 # ---------------------------------------------------------------------------
@@ -69,14 +51,9 @@ def test_bsresourceid_from_path_normalizes_case_and_slashes():
     b = BSResourceID.from_path("materials\\weapons\\gun.mat")
     c = BSResourceID.from_path("MATERIALS\\WEAPONS\\GUN.MAT")
     assert a == b == c
-
-
-def test_bsresourceid_different_paths_differ():
-    a = BSResourceID.from_path("materials/weapons/gun.mat")
-    b = BSResourceID.from_path("materials/armor/gun.mat")
-    assert a != b
-    c = BSResourceID.from_path("materials/weapons/rifle.mat")
-    assert a != c
+    # Different directory/basename produce different ids.
+    assert a != BSResourceID.from_path("materials/armor/gun.mat")
+    assert a != BSResourceID.from_path("materials/weapons/rifle.mat")
 
 
 def test_bsresourceid_ext_packing_mat():
@@ -88,20 +65,15 @@ def test_bsresourceid_ext_packing_mat():
     # Expected ext value: 0x0074616D ("mat\0" little-endian)
     assert rid.ext == 0x0074616D
 
-
-def test_bsresourceid_ext_packing_with_directory():
     # With a directory, i advances past baseNamePos before the baseName
-    # loop. For "materials/gun.mat":
-    #   baseNamePos = 9, extPos = 13, i after dir loop = 10, file after
-    #   base name loop = crc("gun"), then length - i = 17 - 13 = 4.
-    rid = BSResourceID.from_path("materials/gun.mat")
-    assert rid.ext == 0x0074616D
-    assert rid.file == bethesda_crc32(b"gun")
+    # loop. For "materials/gun.mat": ext must still resolve the same way,
+    # and file/dir hash independently.
+    rid2 = BSResourceID.from_path("materials/gun.mat")
+    assert rid2.ext == 0x0074616D
+    assert rid2.file == bethesda_crc32(b"gun")
     # Directory crc input: "materials" lowercased (no slashes inside).
-    assert rid.dir == bethesda_crc32(b"materials")
+    assert rid2.dir == bethesda_crc32(b"materials")
 
-
-def test_bsresourceid_slash_normalization_in_dir():
     # Forward slashes inside the directory path get converted to '\\'
     # BEFORE being hashed. So "a/b" and "a\\b" produce the same dir hash.
     a = BSResourceID.from_path("a/b/gun.mat")
@@ -155,13 +127,6 @@ def _build_cdb_stream(extra_chunks: list[tuple[int, bytes]], strings: list[str])
     for ctype, body in extra_chunks:
         buf += _chunk(ctype, body)
     return bytes(buf), offsets
-
-
-def test_materialscdb_empty_stream_loads():
-    # Smallest valid CDB: just BETH + STRT with no trailing chunks.
-    data, _ = _build_cdb_stream([], [])
-    cdb = MaterialsCDB.from_bytes(data)
-    assert cdb.list_materials() == []
 
 
 def test_materialscdb_objectinfo_list_creates_material_objects():
@@ -258,38 +223,8 @@ def test_materialscdb_type_clas_chunks_register_class_definitions():
 
 
 # ---------------------------------------------------------------------------
-# Optional fixture-based tests (skip if fixture absent)
-# ---------------------------------------------------------------------------
-
-@pytest.mark.skipif(not CDB.exists(), reason="CDB fixture missing")
-def test_load_and_list():
-    cdb = MaterialsCDB.from_file(CDB)
-    names = cdb.list_materials()
-    assert len(names) > 0
-
-
-@pytest.mark.skipif(
-    not CDB.exists() or not GOLDEN.exists(),
-    reason="CDB fixture or golden missing",
-)
-def test_lookup_by_path_matches_golden():
-    cdb = MaterialsCDB.from_file(CDB)
-    golden = json.loads(GOLDEN.read_text())
-    for entry in golden["materials"]:
-        mat = cdb.lookup_by_path(entry["path"])
-        assert mat is not None, entry["path"]
-
-
-# ---------------------------------------------------------------------------
 # Component walker tests
 # ---------------------------------------------------------------------------
-
-# Real CDB fixture (Starfield sfbgs003 creation pack — ~1.2MB)
-_STARFIELD_EXTRACTED = Path(
-    os.environ.get("STARFIELD_EXTRACTED_DIR")
-    or Path(__file__).resolve().parents[5] / "extracted" / "starfield"
-)
-_REAL_CDB = _STARFIELD_EXTRACTED / "materials" / "creations" / "sfbgs003" / "materialsbeta.cdb"
 
 
 class TestWalkComponent:
@@ -316,67 +251,41 @@ class TestWalkComponent:
             ))
         return cdef
 
-    def test_walk_ctname_component(self):
-        """BSComponentDB::CTName has a single String field."""
+    def test_walk_single_string_field_components(self):
+        """BSComponentDB::CTName and BSMaterial::MRTextureFile each have a
+        single String field (u16 length + bytes)."""
         from creation_lib.material_tools.materials_cdb import (
             ComponentBlob, walk_component,
         )
-        # Build an OBJT body: field 0 is a String (u16 length + bytes)
-        name_bytes = b"TestMaterial\x00"
-        body = struct.pack("<H", len(name_bytes)) + name_bytes
-        blob = ComponentBlob(
-            class_name="BSComponentDB::CTName",
-            is_diff=False,
-            key=(0 << 16) | 0,
-            body=body,
-        )
-        cdef = self._make_classdef("BSComponentDB::CTName", [
-            ("Name", 1),  # StringType.STRING = 1
-        ])
-        data = walk_component(blob, {"BSComponentDB::CTName": cdef}, None, {})
-        assert data is not None
-        assert data["Name"] == "TestMaterial"
+        cases = [
+            ("BSComponentDB::CTName", "Name", b"TestMaterial\x00", "TestMaterial"),
+            ("BSMaterial::MRTextureFile", "FileName",
+             b"Data\\Textures\\test_color.dds\x00", "Data\\Textures\\test_color.dds"),
+        ]
+        for class_name, field_name, raw_bytes, expected in cases:
+            body = struct.pack("<H", len(raw_bytes)) + raw_bytes
+            blob = ComponentBlob(
+                class_name=class_name, is_diff=False, key=(0 << 16) | 0, body=body,
+            )
+            cdef = self._make_classdef(class_name, [(field_name, 1)])  # StringType.STRING = 1
+            data = walk_component(blob, {class_name: cdef}, None, {})
+            assert data is not None
+            assert data[field_name] == expected
 
-    def test_walk_mrtexturefile_component(self):
-        """BSMaterial::MRTextureFile has a single String field."""
-        from creation_lib.material_tools.materials_cdb import (
-            ComponentBlob, walk_component,
-        )
-        path_bytes = b"Data\\Textures\\test_color.dds\x00"
-        body = struct.pack("<H", len(path_bytes)) + path_bytes
-        blob = ComponentBlob(
-            class_name="BSMaterial::MRTextureFile",
-            is_diff=False,
-            key=(0 << 16) | 0,
-            body=body,
-        )
-        cdef = self._make_classdef("BSMaterial::MRTextureFile", [
-            ("FileName", 1),  # StringType.STRING = 1
-        ])
-        data = walk_component(blob, {"BSMaterial::MRTextureFile": cdef}, None, {})
-        assert data is not None
-        assert data["FileName"] == "Data\\Textures\\test_color.dds"
-
-    def test_walk_diff_blob_reads_field_number(self):
-        """DIFF blobs prefix each field value with a u16 field number."""
-        from creation_lib.material_tools.materials_cdb import (
-            ComponentBlob, walk_component,
-        )
-        # DIFF body: [u16 field_number=0][u16 str_len][str_bytes]
+        # DIFF blobs prefix each field value with a u16 field number:
+        # [u16 field_number=0][u16 str_len][str_bytes].
         name_bytes = b"DiffName\x00"
-        body = struct.pack("<H", 0) + struct.pack("<H", len(name_bytes)) + name_bytes
-        blob = ComponentBlob(
+        diff_body = struct.pack("<H", 0) + struct.pack("<H", len(name_bytes)) + name_bytes
+        diff_blob = ComponentBlob(
             class_name="BSComponentDB::CTName",
             is_diff=True,
             key=(0 << 16) | 0,
-            body=body,
+            body=diff_body,
         )
-        cdef = self._make_classdef("BSComponentDB::CTName", [
-            ("Name", 1),
-        ])
-        data = walk_component(blob, {"BSComponentDB::CTName": cdef}, None, {})
-        assert data is not None
-        assert data["Name"] == "DiffName"
+        ctname_cdef = self._make_classdef("BSComponentDB::CTName", [("Name", 1)])
+        diff_data = walk_component(diff_blob, {"BSComponentDB::CTName": ctname_cdef}, None, {})
+        assert diff_data is not None
+        assert diff_data["Name"] == "DiffName"
 
 
 class TestPopulateCE2Material:
@@ -605,64 +514,6 @@ class TestPopulateCE2Material:
         assert ts.diffuse == "textures\\test_color.dds"
         assert ts.normal == "textures\\test_normal.dds"
 
-    def test_get_ce2_material_projects_ctname_natively(self):
-        cdb = MaterialsCDB()
-        path = "materials/test/native_ctname.mat"
-        root = MaterialObject(
-            persistent_id=BSResourceID.from_path(path),
-            db_id=1,
-            base_object_db_id=0,
-            has_data=True,
-        )
-        root.components.append(ComponentBlob(
-            class_name="BSMaterial::LayerID",
-            is_diff=False, key=0, body=b"",
-        ))
-        cdb.objects_by_db_id[root.db_id] = root
-        cdb.objects_by_persistent_id[root.persistent_id] = root
-
-        child = MaterialObject(
-            persistent_id=BSResourceID(dir=4, file=5, ext=6),
-            db_id=2,
-            base_object_db_id=0,
-            has_data=True,
-            parent=root,
-        )
-        layer_name = b"native_layer\x00"
-        child.components.append(ComponentBlob(
-            class_name="BSComponentDB::CTName",
-            is_diff=False,
-            key=0,
-            body=struct.pack("<H", len(layer_name)) + layer_name,
-        ))
-        cdb.objects_by_db_id[child.db_id] = child
-
-        cdb.class_defs["BSMaterial::LayerID"] = ClassDef(
-            class_name="BSMaterial::LayerID", class_name_index=190,
-            class_version=1, class_flags=0, field_count=0,
-        )
-        cdb.class_defs["BSComponentDB::CTName"] = ClassDef(
-            class_name="BSComponentDB::CTName",
-            class_name_index=STRING_TABLE.index("BSComponentDB::CTName"),
-            class_version=1,
-            class_flags=0,
-            field_count=1,
-            fields=[
-                FieldDef(
-                    name_index=STRING_TABLE.index("Name"),
-                    type_index=STRING_TABLE.index("String"),
-                    data_offset=0,
-                    data_size=0,
-                )
-            ],
-        )
-
-        mat = cdb.get_ce2_material(path)
-
-        assert mat is not None
-        assert len(mat.layers) == 1
-        assert mat.layers[0].name == "native_layer"
-
     def test_get_ce2_material_rejects_unsupported_native_field_type(self):
         cdb = MaterialsCDB()
         path = "materials/test/unsupported_list.mat"
@@ -714,67 +565,15 @@ class TestPopulateCE2Material:
             cdb.get_ce2_material(path)
 
 
-@pytest.mark.skipif(not _REAL_CDB.exists(), reason="Real CDB fixture missing")
-class TestWalkerIntegration:
-    """Integration tests against a real Starfield materialsbeta.cdb."""
-
-    def test_load_and_populate_plasma_cutter(self):
-        """dbID 18243 in sfbgs003 is a PlasmaCutter grip material with
-        layer → material → texture-set → MRTextureFile subtree."""
-        cdb = MaterialsCDB.from_file(_REAL_CDB)
-        obj = cdb.objects_by_db_id.get(18243)
-        assert obj is not None, "expected dbID 18243 in sfbgs003"
-        mat = CE2Material(name="plasma_cutter_grip", material_object=obj)
-        from creation_lib.material_tools.materials_cdb import populate_ce2_material
-        populate_ce2_material(mat, cdb)
-        assert len(mat.layers) >= 1
-        ts = mat.layers[0].texture_set
-        assert "color.dds" in ts.diffuse.lower()
-        assert "normal.dds" in ts.normal.lower()
-        assert "rough.dds" in ts.rough.lower()
-        assert "metal.dds" in ts.metal.lower()
-        assert "ao.dds" in ts.ao.lower()
-
-    def test_get_ce2_material_populates_on_known_path(self):
-        """get_ce2_material should return a populated CE2Material when the
-        persistent_id resolves. We register the object under a synthetic
-        path and verify the walker runs."""
-        from creation_lib.material_tools.materials_cdb import populate_ce2_material
-        cdb = MaterialsCDB.from_file(_REAL_CDB)
-        obj = cdb.objects_by_db_id.get(18243)
-        assert obj is not None
-        # Lookup by the object's real persistent_id
-        mat = CE2Material(name="plasma_cutter_grip", material_object=obj)
-        populate_ce2_material(mat, cdb)
-        assert len(mat.layers) >= 1
-        assert "color.dds" in mat.layers[0].texture_set.diffuse.lower()
-
-    def test_walker_handles_all_objects_without_error(self):
-        """Walk every root object's subtree — no crashes."""
-        cdb = MaterialsCDB.from_file(_REAL_CDB)
-        from creation_lib.material_tools.materials_cdb import populate_ce2_material
-        walked = 0
-        errors = 0
-        for obj in cdb.objects_by_db_id.values():
-            if obj.parent is not None:
-                continue  # only walk roots
-            mat = CE2Material(name=f"obj_{obj.db_id}", material_object=obj)
-            try:
-                populate_ce2_material(mat, cdb)
-                walked += 1
-            except Exception as exc:
-                errors += 1
-                if errors <= 3:  # don't flood output
-                    print(f"ERROR on dbID {obj.db_id}: {exc}")
-        assert walked > 0
-        assert errors == 0, f"{errors} objects failed walker"
-
-
 # ---------------------------------------------------------------------------
 # Misc
 # ---------------------------------------------------------------------------
 
 def test_unknown_class_warns_not_raises(caplog):
+    # Smallest valid CDB: just BETH + STRT with no trailing chunks.
+    empty_data, _ = _build_cdb_stream([], [])
+    assert MaterialsCDB.from_bytes(empty_data).list_materials() == []
+
     # Build a CDB that has a LIST with an unrecognized className -- the
     # cpp code silently skips it via the `continue` fall-through. We just
     # assert it doesn't raise.

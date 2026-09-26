@@ -94,12 +94,14 @@ const EXPECTED_DYNAMIC_MAIN: &[u8] = &[
 #[test]
 fn a_dynamic_class_compiles_to_the_locked_bytes() {
     assert_eq!(compile_source(DYNAMIC_MAIN).unwrap(), EXPECTED_DYNAMIC_MAIN);
+    let explicit_super =
+        compile_source(&DYNAMIC_MAIN.replace("Main() { }", "Main() { super(); }")).unwrap();
+    assert_eq!(explicit_super, EXPECTED_DYNAMIC_MAIN);
 }
 
 /// AS3 classes are sealed unless declared `dynamic`, so the *only* thing that
-/// may change between these two sources is the `instance_info` flags byte.
-/// Pinning the difference to one byte at one offset proves the sealed default
-/// is a deliberate one-bit decision rather than an unrelated divergence.
+/// may change between the two is the `instance_info` flags byte. Sealed is not a
+/// guess: `WeaponCND.swf`'s document class carries flags 0x09 (`CLASS_SEALED` set).
 #[test]
 fn sealing_changes_exactly_the_instance_flags_byte() {
     let dynamic = compile_source(DYNAMIC_MAIN).unwrap();
@@ -115,36 +117,13 @@ fn sealing_changes_exactly_the_instance_flags_byte() {
     let at = differing[0];
     assert_eq!(dynamic[at], 0x00, "dynamic class carries no flags");
     assert_eq!(sealed[at], 0x01, "sealed class sets CLASS_SEALED");
-
-    // That byte must be the instance_info flags: it sits directly after the
-    // instance's name and super_name multinames (`Main` is multiname 8,
-    // `MovieClip` is multiname 1).
+    // `Main` is multiname 8, `MovieClip` multiname 1: the flags follow name then super_name.
     assert_eq!(&sealed[at - 2..at], &[0x08, 0x01], "name then super_name");
-}
 
-/// Sealed is not a guess: `WeaponCND.swf`'s document class carries flags 0x09,
-/// i.e. `CLASS_SEALED` set. A plain `public class` must therefore compile to a
-/// sealed class, and `dynamic` must be the thing that clears the bit.
-#[test]
-fn a_plain_public_class_is_sealed_like_the_shipping_widget() {
-    let sealed = compile_source(SEALED_FOO).unwrap();
-    let flags_at = sealed
-        .windows(2)
-        .position(|w| w == [0x08, 0x01])
-        .expect("instance name/super pair");
-    assert_eq!(sealed[flags_at + 2], 0x01, "CLASS_SEALED");
-}
-
-#[test]
-fn the_task_source_compiles_and_names_its_class() {
-    let abc = compile_source(SEALED_FOO).unwrap();
+    let foo = compile_source(SEALED_FOO).unwrap();
     // "Foo" is one byte shorter than "Main".
-    assert_eq!(abc.len(), EXPECTED_DYNAMIC_MAIN.len() - 1);
-    assert!(
-        abc.windows(3).any(|w| w == b"Foo"),
-        "class name is absent from the emitted pool"
-    );
-    assert_eq!(&abc[..4], &[0x10, 0x00, 0x2E, 0x00]);
+    assert_eq!(foo.len(), EXPECTED_DYNAMIC_MAIN.len() - 1);
+    assert!(foo.windows(3).any(|w| w == b"Foo"));
 }
 
 #[test]
@@ -156,27 +135,20 @@ fn the_do_abc_tag_body_carries_the_reference_header() {
     assert_eq!(body.len(), compile_source(SEALED_FOO).unwrap().len() + 5);
 }
 
-/// A named package changes the class's namespace, which is exactly what a
-/// `SymbolClass` entry spelling `hudframework.Widget` needs.
-#[test]
-fn a_named_package_lands_in_the_class_namespace() {
-    let abc = compile_source(
-        r#"
-        package com.example.widgets {
-            import flash.display.MovieClip;
-            public class Widget extends MovieClip {
-                public function Widget() { }
-            }
-        }
-        "#,
-    )
-    .unwrap();
-    assert!(abc.windows(19).any(|w| w == b"com.example.widgets"));
-    assert!(abc.windows(6).any(|w| w == b"Widget"));
+fn contains(abc: &[u8], needle: &[u8]) -> bool {
+    abc.windows(needle.len()).any(|w| w == needle)
 }
 
 #[test]
-fn several_classes_share_one_script_initialiser() {
+fn packages_and_base_classes_resolve_into_the_pool() {
+    // A named package lands in the class namespace (what a `SymbolClass` entry needs).
+    let abc = compile_source(
+        "package com.example.widgets { import flash.display.MovieClip; \
+         public class Widget extends MovieClip { public function Widget() { } } }",
+    )
+    .unwrap();
+    assert!(contains(&abc, b"com.example.widgets") && contains(&abc, b"Widget"));
+
     let abc = compile_source(
         r#"
         package {
@@ -187,130 +159,86 @@ fn several_classes_share_one_script_initialiser() {
         "#,
     )
     .unwrap();
-    assert!(abc.windows(5).any(|w| w == b"Alpha"));
-    assert!(abc.windows(4).any(|w| w == b"Beta"));
-    // "flash.display" and "MovieClip" appear once each: the pool interned the
-    // shared base class rather than storing it twice.
+    assert!(contains(&abc, b"Alpha") && contains(&abc, b"Beta"));
+    // The pool interns the shared base class rather than storing it twice.
     assert_eq!(
         abc.windows(13).filter(|w| *w == b"flash.display").count(),
         1
     );
     assert_eq!(abc.windows(9).filter(|w| *w == b"MovieClip").count(), 1);
-}
 
-/// Resolution really goes through the import table: with no import and no
-/// qualification the name has nowhere to come from.
-#[test]
-fn an_unimported_base_class_is_rejected() {
-    let err = compile_source(
-        "package { public class Foo extends MovieClip { public function Foo() { } } }",
-    )
-    .unwrap_err();
-    assert_eq!(err.stage, Stage::Unsupported);
-    assert!(
-        err.message.contains("cannot resolve type `MovieClip`"),
-        "{err}"
-    );
-}
-
-#[test]
-fn a_fully_qualified_base_class_needs_no_import() {
     let abc = compile_source(
         "package { public class Foo extends flash.display.MovieClip { public function Foo() { } } }",
     )
     .unwrap();
-    assert!(abc.windows(13).any(|w| w == b"flash.display"));
-}
+    assert!(contains(&abc, b"flash.display"));
 
-#[test]
-fn a_class_with_no_extends_derives_from_object() {
     let abc = compile_source("package { public class Foo { public function Foo() { } } }").unwrap();
-    assert!(abc.windows(6).any(|w| w == b"Object"));
+    assert!(contains(&abc, b"Object"));
 }
 
 #[test]
-fn a_wildcard_import_reports_why_it_cannot_resolve() {
-    let err = compile_source(
-        r#"
-        package {
-            import flash.display.*;
-            public class Foo extends MovieClip { public function Foo() { } }
-        }
-        "#,
-    )
-    .unwrap_err();
-    assert_eq!(err.stage, Stage::Unsupported);
-    assert!(err.message.contains("wildcard import"), "{err}");
-    assert!(err.message.contains("flash.display.*"), "{err}");
-}
-
-/// Unlowered constructs must be refused, not dropped. A widget that loads with
-/// its methods silently missing is a worse failure than one that will not
-/// compile.
-#[test]
-fn unlowered_members_are_refused_by_name() {
-    let cases: &[(&str, &str)] = &[
-        ("public var count:int;", "field `count`"),
-        ("public static function f():void { }", "static member `f`"),
-        (
-            "public function get width():int { return 0; }",
-            "accessor `width`",
-        ),
-        ("override public function f():void { }", "`override f`"),
-        ("private function f():void { }", "only `public` members"),
-    ];
-    for (member, expected) in cases {
+fn supported_member_forms_are_emitted() {
+    for member in [
+        "public var count:int;",
+        "public static function f():void { }",
+        "public function get width():int { return 0; }",
+        "override public function f():void { }",
+        "private function f():void { }",
+    ] {
         let src = format!(
-            "package {{ import flash.display.MovieClip; \
-             public class Foo extends MovieClip {{ public function Foo() {{ }} {member} }} }}"
+            "package {{ import flash.display.MovieClip; public class Foo extends MovieClip {{ public function Foo() {{ }} {member} }} }}"
         );
-        let err = compile_source(&src).unwrap_err();
-        assert_eq!(err.stage, Stage::Unsupported, "{member}");
-        assert!(err.message.contains(expected), "{member}: {err}");
+        compile_source(&src).unwrap();
     }
 }
 
-/// A base class whose ancestry is unknown cannot get a correct scope chain, so
-/// it is refused rather than emitted at a guessed depth.
 #[test]
-fn an_unknown_base_class_ancestry_is_refused() {
-    let err = compile_source(
-        "package { import a.b.Unknown; \
-         public class Foo extends Unknown { public function Foo() { } } }",
-    )
-    .unwrap_err();
-    assert_eq!(err.stage, Stage::Unsupported);
-    assert!(err.message.contains("no known ancestry"), "{err}");
-}
-
-#[test]
-fn an_explicit_super_call_compiles_to_the_same_bytes_as_an_implicit_one() {
-    let implicit = compile_source(DYNAMIC_MAIN).unwrap();
-    let explicit =
-        compile_source(&DYNAMIC_MAIN.replace("Main() { }", "Main() { super(); }")).unwrap();
-    assert_eq!(implicit, explicit);
-}
-
-#[test]
-fn a_statement_this_phase_cannot_lower_is_refused() {
-    let err =
-        compile_source(&DYNAMIC_MAIN.replace("Main() { }", "Main() { for (;;) { } }")).unwrap_err();
-    assert_eq!(err.stage, Stage::Unsupported);
-    assert!(err.message.contains("`for` statements"), "{err}");
-}
-
-#[test]
-fn a_constructor_may_not_declare_a_return_type() {
-    let err = compile_source(&DYNAMIC_MAIN.replace("Main() { }", "Main():void { }")).unwrap_err();
-    assert_eq!(err.stage, Stage::Parse);
-    assert!(err.message.contains("return type"), "{err}");
+fn unsupported_or_unresolvable_sources_are_refused() {
+    let cases: Vec<(String, Stage, &[&str])> = vec![
+        // No import and no qualification: the name has nowhere to come from.
+        (
+            "package { public class Foo extends MovieClip { public function Foo() { } } }".into(),
+            Stage::Unsupported,
+            &["cannot resolve type `MovieClip`"],
+        ),
+        (
+            "package { import flash.display.*; \
+             public class Foo extends MovieClip { public function Foo() { } } }"
+                .into(),
+            Stage::Unsupported,
+            &["wildcard import", "flash.display.*"],
+        ),
+        // Unknown ancestry cannot get a correct scope chain, so it is not guessed.
+        (
+            "package { import a.b.Unknown; \
+             public class Foo extends Unknown { public function Foo() { } } }"
+                .into(),
+            Stage::Unsupported,
+            &["no known ancestry"],
+        ),
+        (
+            DYNAMIC_MAIN.replace("Main() { }", "Main() { with (this) { } }"),
+            Stage::Unsupported,
+            &["`with` statements"],
+        ),
+        (
+            DYNAMIC_MAIN.replace("Main() { }", "Main():void { }"),
+            Stage::Parse,
+            &["return type"],
+        ),
+    ];
+    for (src, stage, needles) in cases {
+        let err = compile_source(&src).unwrap_err();
+        assert_eq!(err.stage, stage, "{src}");
+        for needle in needles {
+            assert!(err.message.contains(needle), "{err}");
+        }
+    }
 }
 
 #[test]
 fn diagnostics_carry_the_line_and_column_of_the_offending_construct() {
-    let err = compile_source(SEALED_FOO).ok();
-    assert!(err.is_some());
-
     let err = compile_source(
         "package {\n    import flash.display.MovieClip;\n    public class Foo extends Missing {\n        public function Foo() { }\n    }\n}",
     )

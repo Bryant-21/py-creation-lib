@@ -1,31 +1,24 @@
 """Smoke test for the read-only hkxpack pyclass MVP.
 
-Validates that the new `#[pyclass]` wrappers in `py_creation_lib/native/havok/src/python.rs`
-expose the Rust HkxFile / HkxObject / HkxMember model to Python with the
-shape callers in `py_creation_lib/python/creation_lib/hkxpack/` will need to migrate against.
+Validates that the `#[pyclass]` wrappers in `py_creation_lib/native/havok/src/python.rs`
+expose the Rust HkxFile / HkxObject / HkxMember model to Python, using a synthetic
+packfile built through `creation_lib.hkxpack.write_hkx` (no real game files).
 """
 from __future__ import annotations
 
-from pathlib import Path
-
-import pytest
-
 from creation_lib._native.havok_native import (
-    HKXArrayMember,
-    HKXDirectMember,
-    HKXEnumMember,
     HKXFile,
-    HKXObject,
-    HKXPointerMember,
-    HKXStringMember,
+    HKXObject as NativeHKXObject,
     HKXType,
     HKXTypeFamily,
 )
+from creation_lib.hkxpack import DescriptorRegistry, HKXFile as WriterHKXFile, HKXObject, write_hkx
 
 
-# A small vanilla FO4 packfile shipped under extracted/fo4/. AlienProject.hkx
-# is ~944 bytes and parses cleanly through the v11 packfile reader.
-_FIXTURE = Path("extracted/fo4/Meshes/Actors/Alien/AlienProject.hkx")
+def _synthetic_packfile() -> bytes:
+    hkx = WriterHKXFile(class_version=11, contents_version="hk_2014.1.0-r1")
+    hkx.objects.append(HKXObject(name="#0001", class_name="hkRootLevelContainer"))
+    return write_hkx(hkx, DescriptorRegistry())
 
 
 def test_hkxtype_size_and_family():
@@ -39,90 +32,19 @@ def test_hkxtype_size_and_family():
     assert HKXType.STRUCT.family == HKXTypeFamily.Object
 
 
-def test_hkxfile_read_and_objects():
-    if not _FIXTURE.exists():
-        pytest.skip(f"fixture not present: {_FIXTURE}")
+def test_hkxfile_read_save_round_trip():
+    raw = _synthetic_packfile()
 
-    hkx = HKXFile.read(str(_FIXTURE))
+    hkx = HKXFile.read_bytes(raw)
     assert hkx.class_version == 11
     assert hkx.contents_version.startswith("hk_2014")
 
     objs = hkx.objects
-    # Mutation pass: objects is now an HKXObjectList proxy, not a plain list.
-    # Verify it still implements the list protocol (len, iter, indexing).
-    assert len(objs) > 0
+    assert len(objs) == 1
     assert len(list(objs)) == len(objs)
+    obj = objs[0]
+    assert isinstance(obj, NativeHKXObject)
+    assert obj.class_name == "hkRootLevelContainer"
 
-    print()
-    print(f"=== {_FIXTURE.name}: {len(objs)} objects ===")
-    for obj in list(objs)[:3]:
-        assert isinstance(obj, HKXObject)
-        members = obj.members
-        print(f"  {obj.name!r}  class={obj.class_name!r}  members={len(members)}")
-
-
-def test_member_isinstance_dispatch():
-    if not _FIXTURE.exists():
-        pytest.skip(f"fixture not present: {_FIXTURE}")
-
-    hkx = HKXFile.read(str(_FIXTURE))
-    variants = (
-        HKXDirectMember,
-        HKXArrayMember,
-        HKXPointerMember,
-        HKXStringMember,
-        HKXEnumMember,
-    )
-    saw_any_member = False
-    seen_classes: set[type] = set()
-    for obj in hkx.objects:
-        for m in obj.members:
-            saw_any_member = True
-            assert isinstance(m, variants), (
-                f"member {m!r} on {obj.class_name} is not one of "
-                f"the expected variant pyclasses"
-            )
-            seen_classes.add(type(m))
-            # Every member must expose a name attribute.
-            assert isinstance(m.name, str)
-    assert saw_any_member, "no members surfaced from the test fixture"
-    print(f"=== variant classes seen: {sorted(c.__name__ for c in seen_classes)} ===")
-
-
-def test_save_round_trip_non_empty():
-    if not _FIXTURE.exists():
-        pytest.skip(f"fixture not present: {_FIXTURE}")
-
-    hkx = HKXFile.read(str(_FIXTURE))
-    out = hkx.save()
-    assert isinstance(out, bytes)
-    assert len(out) > 0
-    # Read-only MVP: the snapshot stays clean, so save() echoes source bytes
-    # verbatim.
-    assert out == _FIXTURE.read_bytes()
-
-
-def test_read_bytes_matches_read():
-    if not _FIXTURE.exists():
-        pytest.skip(f"fixture not present: {_FIXTURE}")
-
-    data = _FIXTURE.read_bytes()
-    a = HKXFile.read_bytes(data)
-    b = HKXFile.read(str(_FIXTURE))
-    assert a.class_version == b.class_version
-    assert a.contents_version == b.contents_version
-    assert len(a.objects) == len(b.objects)
-
-
-def test_member_isinstance_dispatch_iterates():
-    """Iterate proxy lists via the __iter__ protocol added in mutation pass."""
-    if not _FIXTURE.exists():
-        pytest.skip(f"fixture not present: {_FIXTURE}")
-
-    hkx = HKXFile.read(str(_FIXTURE))
-    seen_classes = set()
-    for obj in hkx.objects:
-        for m in obj.members:
-            seen_classes.add(type(m).__name__)
-    assert seen_classes, "no members surfaced"
-    print(f"variant classes: {sorted(seen_classes)}")
+    # Read-only MVP: the snapshot stays clean, so save() echoes source bytes verbatim.
+    assert hkx.save() == raw

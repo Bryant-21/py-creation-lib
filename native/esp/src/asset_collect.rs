@@ -952,9 +952,11 @@ fn snap_node_token(key: &FormKey) -> String {
 }
 
 fn euler_degrees_to_quaternion(x: f32, y: f32, z: f32) -> (f32, f32, f32, f32) {
-    let (sx, cx) = (x.to_radians() * 0.5).sin_cos();
-    let (sy, cy) = (y.to_radians() * 0.5).sin_cos();
-    let (sz, cz) = (z.to_radians() * 0.5).sin_cos();
+    // Bethesda Euler angles are clockwise: FO4's NiMatrix3::FromEulerAnglesXYZ negates all
+    // three before building the matrix, and vanilla dlc03barn* connect points confirm the sign.
+    let (sx, cx) = (-x.to_radians() * 0.5).sin_cos();
+    let (sy, cy) = (-y.to_radians() * 0.5).sin_cos();
+    let (sz, cz) = (-z.to_radians() * 0.5).sin_cos();
     (
         cx * cy * cz + sx * sy * sz,
         sx * cy * cz - cx * sy * sz,
@@ -1569,6 +1571,104 @@ mod tests {
                 .count(),
             2
         );
+    }
+
+    fn single_node_snap_points(editor_id: &str, transform: [f32; 6]) -> Vec<WorkshopSnapPoint> {
+        let snap_node = ParsedRecord {
+            signature: SmolStr::new("STND"),
+            form_id: 0x0001_0001,
+            flags: 0,
+            version_control: 0,
+            form_version: Some(195),
+            version2: None,
+            subrecords: vec![subrecord("EDID", editor_id)],
+            raw_payload: None,
+            parse_error: None,
+        };
+        let mut node = Vec::new();
+        node.extend_from_slice(&0u32.to_le_bytes());
+        node.extend_from_slice(&0x0001_0001u32.to_le_bytes());
+        for value in transform {
+            node.extend_from_slice(&value.to_le_bytes());
+        }
+        let template = ParsedRecord {
+            signature: SmolStr::new("STMP"),
+            form_id: 0x0002_0001,
+            flags: 0,
+            version_control: 0,
+            form_version: Some(195),
+            version2: None,
+            subrecords: vec![raw_subrecord("ENAM", node)],
+            raw_payload: None,
+            parse_error: None,
+        };
+        let piece = ParsedRecord {
+            signature: SmolStr::new("STAT"),
+            form_id: 0x0003_0001,
+            flags: 0,
+            version_control: 0,
+            form_version: Some(208),
+            version2: None,
+            subrecords: vec![
+                raw_subrecord("SNTP", 0x0002_0001u32.to_le_bytes().to_vec()),
+                subrecord("MODL", "Workshop/Piece.nif"),
+            ],
+            raw_payload: None,
+            parse_error: None,
+        };
+        let plugin = plugin(vec![snap_node, template, piece]);
+        WorkshopSnapPointIndex::from_plugin(&plugin)
+            .for_record(
+                records(&plugin)
+                    .find(|record| record.signature.as_str() == "STAT")
+                    .unwrap(),
+                &plugin,
+            )
+            .expect("snap points")
+    }
+
+    fn assert_rotation(point: &WorkshopSnapPoint, expected: (f32, f32, f32, f32)) {
+        let actual = point.rotation;
+        let close = |a: f32, b: f32| (a - b).abs() < 1e-4;
+        assert!(
+            close(actual.0, expected.0)
+                && close(actual.1, expected.1)
+                && close(actual.2, expected.2)
+                && close(actual.3, expected.3),
+            "{}: expected {expected:?}, got {actual:?}",
+            point.name
+        );
+    }
+
+    #[test]
+    fn floor_x_edge_rotations_match_vanilla_dlc03barnfloorwood01() {
+        // dlc03barnfloorwood01.nif: P-Floor at x=+128 is (w .7071, z -.7071), x=-128 is z +.7071.
+        let half = std::f32::consts::FRAC_1_SQRT_2;
+        let plus_x = single_node_snap_points("SnapNode_Floor01", [128.0, 0.0, 0.0, 0.0, 0.0, 90.0]);
+        let minus_x =
+            single_node_snap_points("SnapNode_Floor01", [-128.0, 0.0, 0.0, 0.0, 0.0, -90.0]);
+        let floor = |points: &[WorkshopSnapPoint]| {
+            points
+                .iter()
+                .find(|point| point.name == "P-Floor")
+                .cloned()
+                .expect("P-Floor alias")
+        };
+        assert_rotation(&floor(&plus_x), (half, 0.0, 0.0, -half));
+        assert_rotation(&floor(&minus_x), (half, 0.0, 0.0, half));
+    }
+
+    #[test]
+    fn roof_edge_rotation_matches_vanilla_dlc03barnroofa01() {
+        // dlc03barnroofa01.nif: P-WrhsRoof02-Dif at x=+128 is (w .7071, z -.7071).
+        let half = std::f32::consts::FRAC_1_SQRT_2;
+        let points =
+            single_node_snap_points("SnapNode_Roof01L", [128.0, 0.0, 320.0, 0.0, 0.0, 90.0]);
+        let roof = points
+            .iter()
+            .find(|point| point.name == "P-WrhsRoof02-Dif")
+            .expect("P-WrhsRoof02-Dif alias");
+        assert_rotation(roof, (half, 0.0, 0.0, -half));
     }
 
     #[test]

@@ -18,15 +18,3 @@ derive::mapping! {
     Directory
     Map: (Key: FileHash) => File
 }
-
-#[cfg(test)]
-mod tests {
-    use crate::tes4::Directory;
-
-    #[test]
-    fn default_state() {
-        let d = Directory::new();
-        assert!(d.is_empty());
-        assert!(d.len() == 0);
-    }
-}

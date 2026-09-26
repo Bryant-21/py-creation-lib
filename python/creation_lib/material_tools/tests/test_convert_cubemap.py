@@ -6,126 +6,91 @@ heuristic and propagate the result onto the right output fields.
 """
 from __future__ import annotations
 
-import copy
-import io
-from pathlib import Path
-
 import pytest
 
-from creation_lib.material_tools.bgsm_bin import read_bgsm
-from creation_lib.material_tools.bgem_bin import read_bgem
 from creation_lib.material_tools.convert import (
     BGSM_VERSION_FO4,
     BGEM_VERSION_FO4,
     downgrade_bgsm,
     downgrade_bgem,
 )
-
-FIXTURE_DIR = (
-    Path(__file__).parent.parent.parent
-    / "conversion"
-    / "tests"
-    / "fixtures"
-    / "fo76"
-    / "materials"
-)
-BGSM_FIXTURE = FIXTURE_DIR / "sample_v22.bgsm"
-BGEM_FIXTURE = FIXTURE_DIR / "sample_v22.bgem"
-
-
-pytestmark = pytest.mark.skipif(
-    not BGSM_FIXTURE.exists() or not BGEM_FIXTURE.exists(),
-    reason="FO76 BGSM/BGEM fixtures missing",
-)
+from .test_convert_py_regression import _default_bgsm_v20, _default_bgem_v22
 
 
 def _load_bgsm_v20():
-    data = read_bgsm(io.BytesIO(BGSM_FIXTURE.read_bytes()))
-    clone = copy.deepcopy(data)
-    clone.header.version = 20
-    return clone
+    return _default_bgsm_v20()
 
 
 # ----------------------------------------------------------------- BGSM
-def test_downgrade_bgsm_weapons_path_gets_outside_cubemap():
+@pytest.mark.parametrize(
+    ("source_path", "diffuse_override", "expected_envmap", "expected_env_mapping"),
+    [
+        (
+            "materials/weapons/meltdown/MBody.bgsm",
+            None,
+            "Shared/Cubemaps/mipblur_DefaultOutside1.dds",
+            True,
+        ),
+        (
+            # Chrome keyword in the diffuse texture overrides the path heuristic.
+            "materials/weapons/foo/x.bgsm",
+            "textures/weapons/foo/Chrome_d.dds",
+            "Shared/Cubemaps/MetalChrome01Cube_e.dds",
+            None,
+        ),
+        ("materials/effects/blood01.bgsm", None, "", False),
+        (
+            # When source_path is empty/None, the heuristic still runs and the
+            # fallback returns mipblur_DefaultOutside1 — never leaves the slot
+            # empty (current convert.py contract: BGSM downgrade always
+            # populates Envmap unless the path is in an excluded category).
+            None,
+            None,
+            "Shared/Cubemaps/mipblur_DefaultOutside1.dds",
+            True,
+        ),
+    ],
+)
+def test_downgrade_bgsm_envmap_heuristic(source_path, diffuse_override, expected_envmap, expected_env_mapping):
     data = _load_bgsm_v20()
-    fo4 = downgrade_bgsm(
-        data, BGSM_VERSION_FO4, source_path="materials/weapons/meltdown/MBody.bgsm"
-    )
-    assert fo4.EnvmapTexture == "Shared/Cubemaps/mipblur_DefaultOutside1.dds"
-    assert fo4.header.env_mapping is True
-    assert fo4.header.env_mapping_mask_scale == 1.0
-
-
-def test_downgrade_bgsm_chrome_keyword_overrides_path():
-    data = _load_bgsm_v20()
-    data.DiffuseTexture = "textures/weapons/foo/Chrome_d.dds"
-    fo4 = downgrade_bgsm(
-        data, BGSM_VERSION_FO4, source_path="materials/weapons/foo/x.bgsm"
-    )
-    assert fo4.EnvmapTexture == "Shared/Cubemaps/MetalChrome01Cube_e.dds"
-
-
-def test_downgrade_bgsm_effects_path_leaves_envmap_empty():
-    data = _load_bgsm_v20()
-    fo4 = downgrade_bgsm(
-        data, BGSM_VERSION_FO4, source_path="materials/effects/blood01.bgsm"
-    )
-    assert fo4.EnvmapTexture == ""
-    assert fo4.header.env_mapping is False
-
-
-def test_downgrade_bgsm_no_source_path_falls_back_to_default():
-    """When source_path is empty/None, the heuristic still runs and the
-    fallback returns mipblur_DefaultOutside1 — never leaves the slot empty
-    (current convert.py contract: BGSM downgrade always populates Envmap
-    unless the path is in an excluded category)."""
-    data = _load_bgsm_v20()
-    fo4 = downgrade_bgsm(data, BGSM_VERSION_FO4)
-    assert fo4.EnvmapTexture == "Shared/Cubemaps/mipblur_DefaultOutside1.dds"
-    assert fo4.header.env_mapping is True
+    if diffuse_override is not None:
+        data.DiffuseTexture = diffuse_override
+    kwargs = {"source_path": source_path} if source_path is not None else {}
+    fo4 = downgrade_bgsm(data, BGSM_VERSION_FO4, **kwargs)
+    assert fo4.EnvmapTexture == expected_envmap
+    if expected_env_mapping is not None:
+        assert fo4.header.env_mapping is expected_env_mapping
+    if expected_env_mapping is True:
+        assert fo4.header.env_mapping_mask_scale == 1.0
 
 
 # ----------------------------------------------------------------- BGEM
-def test_downgrade_bgem_weapons_path_sets_cubemap_and_mapping():
-    data = read_bgem(io.BytesIO(BGEM_FIXTURE.read_bytes()))
-    # Force EnvmapTexture empty + EnvironmentMapping default-off so we can see
-    # the heuristic populate them.
-    data.EnvmapTexture = ""
+@pytest.mark.parametrize(
+    ("initial_envmap", "source_path", "expected_envmap", "expected_mapping"),
+    [
+        # Empty EnvmapTexture + EnvironmentMapping default-off on a weapons
+        # path: the heuristic populates both.
+        ("", "materials/weapons/foo/x.bgem", "Shared/Cubemaps/mipblur_DefaultOutside1.dds", True),
+        # Empty EnvmapTexture on an effects path: heuristic returns (None,
+        # None), so EnvironmentMapping is left unchanged (still off).
+        ("", "materials/effects/blood01.bgem", "", False),
+        # A source BGEM that already names a cubemap must NOT be overwritten
+        # — the heuristic only populates when the slot is empty. (Whatever
+        # EnvironmentMapping the heuristic derives from the weapons path is
+        # not this case's concern, so it's left unchecked.)
+        ("Shared/Cubemaps/MyCustomCube.dds", "materials/weapons/foo/x.bgem", "Shared/Cubemaps/MyCustomCube.dds", None),
+    ],
+)
+def test_downgrade_bgem_envmap_heuristic(initial_envmap, source_path, expected_envmap, expected_mapping):
+    data = _default_bgem_v22()
+    data.EnvmapTexture = initial_envmap
     data.EnvironmentMapping = False
     data.EnvironmentMappingMaskScale = 0.0
 
-    fo4 = downgrade_bgem(
-        data, BGEM_VERSION_FO4, source_path="materials/weapons/foo/x.bgem"
-    )
+    fo4 = downgrade_bgem(data, BGEM_VERSION_FO4, source_path=source_path)
 
-    assert fo4.EnvmapTexture == "Shared/Cubemaps/mipblur_DefaultOutside1.dds"
-    assert fo4.EnvironmentMapping is True
-    assert fo4.EnvironmentMappingMaskScale == 1.0
-
-
-def test_downgrade_bgem_effects_path_leaves_envmap_alone():
-    data = read_bgem(io.BytesIO(BGEM_FIXTURE.read_bytes()))
-    data.EnvmapTexture = ""
-    data.EnvironmentMapping = False
-
-    fo4 = downgrade_bgem(
-        data, BGEM_VERSION_FO4, source_path="materials/effects/blood01.bgem"
-    )
-
-    assert fo4.EnvmapTexture == ""
-    # EnvironmentMapping unchanged because heuristic returned (None, None).
-    assert fo4.EnvironmentMapping is False
-
-
-def test_downgrade_bgem_preserves_existing_envmap_value():
-    """If the source BGEM already named a cubemap, the heuristic must NOT
-    overwrite it — only populates when the slot is empty."""
-    data = read_bgem(io.BytesIO(BGEM_FIXTURE.read_bytes()))
-    data.EnvmapTexture = "Shared/Cubemaps/MyCustomCube.dds"
-
-    fo4 = downgrade_bgem(
-        data, BGEM_VERSION_FO4, source_path="materials/weapons/foo/x.bgem"
-    )
-
-    assert fo4.EnvmapTexture == "Shared/Cubemaps/MyCustomCube.dds"
+    assert fo4.EnvmapTexture == expected_envmap
+    if expected_mapping is not None:
+        assert fo4.EnvironmentMapping is expected_mapping
+    if expected_mapping is True:
+        assert fo4.EnvironmentMappingMaskScale == 1.0

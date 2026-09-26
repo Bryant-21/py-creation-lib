@@ -2,9 +2,7 @@
 ///
 /// T_bone_from_attachment = inv(T_world_from_bone) * T_world_from_attachment
 /// T_world_from_attachment = T_world_from_bone * T_bone_from_attachment
-use crate::animation::pose::{
-    QsTransform, quat_mul, quat_normalize, quat_rotate, vec3_add, vec3_scale,
-};
+use crate::animation::pose::{QsTransform, quat_rotate};
 
 /// Binding from a skeleton bone to an attached object node.
 #[derive(Debug, Clone)]
@@ -93,70 +91,68 @@ mod tests {
     }
 
     #[test]
-    fn compose_identity_attachment() {
-        let bone_world = QsTransform {
-            translation: [1.0, 2.0, 3.0],
-            rotation: [0.0, 0.0, 0.0, 1.0],
-            scale: [1.0, 1.0, 1.0],
-        };
-        let attachment = BoneAttachment {
-            bone_name: "Hand".into(),
-            attached_object_name: "Weapon".into(),
-            name: "grip".into(),
-            bone_from_attachment: QsTransform::IDENTITY,
-        };
-        let result = compose_world_transform(&bone_world, &attachment);
-        assert!(approx_eq(&result.translation, &[1.0, 2.0, 3.0], 1e-5));
-    }
-
-    #[test]
-    fn compose_offset_attachment() {
-        let bone_world = QsTransform::IDENTITY;
-        let attachment = BoneAttachment {
-            bone_name: "Root".into(),
-            attached_object_name: "Marker".into(),
-            name: "".into(),
-            bone_from_attachment: QsTransform {
-                translation: [0.0, 5.0, 0.0],
+    fn attachment_compose_and_round_trip() {
+        {
+            let bone_world = QsTransform {
+                translation: [1.0, 2.0, 3.0],
                 rotation: [0.0, 0.0, 0.0, 1.0],
                 scale: [1.0, 1.0, 1.0],
-            },
-        };
-        let result = compose_world_transform(&bone_world, &attachment);
-        assert!(approx_eq(&result.translation, &[0.0, 5.0, 0.0], 1e-5));
-    }
-
-    #[test]
-    fn round_trip_world_to_bone_relative() {
-        let bone_world = QsTransform {
-            translation: [2.0, 0.0, 0.0],
-            rotation: [0.0, 0.0, 0.0, 1.0],
-            scale: [1.0, 1.0, 1.0],
-        };
-        let attachment_world = QsTransform {
-            translation: [2.0, 1.0, 0.0],
-            rotation: [0.0, 0.0, 0.0, 1.0],
-            scale: [1.0, 1.0, 1.0],
-        };
-        let bone_from_att = world_to_bone_relative(&bone_world, &attachment_world);
-        // Should give translation ~[0, 1, 0] in bone space.
-        assert!(approx_eq(
-            &bone_from_att.translation,
-            &[0.0, 1.0, 0.0],
-            1e-4
-        ));
-        // Round-trip: compose gives back attachment_world.
-        let att = BoneAttachment {
-            bone_name: "".into(),
-            attached_object_name: "".into(),
-            name: "".into(),
-            bone_from_attachment: bone_from_att,
-        };
-        let back = compose_world_transform(&bone_world, &att);
-        assert!(approx_eq(
-            &back.translation,
-            &attachment_world.translation,
-            1e-4
-        ));
+            };
+            let attachment = BoneAttachment {
+                bone_name: "Hand".into(),
+                attached_object_name: "Weapon".into(),
+                name: "grip".into(),
+                bone_from_attachment: QsTransform::IDENTITY,
+            };
+            let result = compose_world_transform(&bone_world, &attachment);
+            assert!(approx_eq(&result.translation, &[1.0, 2.0, 3.0], 1e-5));
+        }
+        {
+            let bone_world = QsTransform::IDENTITY;
+            let attachment = BoneAttachment {
+                bone_name: "Root".into(),
+                attached_object_name: "Marker".into(),
+                name: "".into(),
+                bone_from_attachment: QsTransform {
+                    translation: [0.0, 5.0, 0.0],
+                    rotation: [0.0, 0.0, 0.0, 1.0],
+                    scale: [1.0, 1.0, 1.0],
+                },
+            };
+            let result = compose_world_transform(&bone_world, &attachment);
+            assert!(approx_eq(&result.translation, &[0.0, 5.0, 0.0], 1e-5));
+        }
+        {
+            let bone_world = QsTransform {
+                translation: [2.0, 0.0, 0.0],
+                rotation: [0.0, 0.0, 0.0, 1.0],
+                scale: [1.0, 1.0, 1.0],
+            };
+            let attachment_world = QsTransform {
+                translation: [2.0, 1.0, 0.0],
+                rotation: [0.0, 0.0, 0.0, 1.0],
+                scale: [1.0, 1.0, 1.0],
+            };
+            let bone_from_att = world_to_bone_relative(&bone_world, &attachment_world);
+            // Should give translation ~[0, 1, 0] in bone space.
+            assert!(approx_eq(
+                &bone_from_att.translation,
+                &[0.0, 1.0, 0.0],
+                1e-4
+            ));
+            // Round-trip: compose gives back attachment_world.
+            let att = BoneAttachment {
+                bone_name: "".into(),
+                attached_object_name: "".into(),
+                name: "".into(),
+                bone_from_attachment: bone_from_att,
+            };
+            let back = compose_world_transform(&bone_world, &att);
+            assert!(approx_eq(
+                &back.translation,
+                &attachment_world.translation,
+                1e-4
+            ));
+        }
     }
 }

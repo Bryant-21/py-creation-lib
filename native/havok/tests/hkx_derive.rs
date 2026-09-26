@@ -16,48 +16,7 @@ struct TestArrayClass {
 }
 
 #[test]
-fn derive_to_hkx_object_produces_correct_members() {
-    let obj = TestArrayClass {
-        count: 7,
-        scale: 2.5,
-        weights: vec![0.1, 0.2, 0.3],
-        label: "spine".to_string(),
-    };
-
-    let hkx = obj.to_hkx_object(Some("#0042".to_string()));
-
-    assert_eq!(hkx.class_name, "TestArrayClass");
-    assert_eq!(hkx.signature, 0x12345678u32);
-    assert_eq!(hkx.name, Some("#0042".to_string()));
-
-    let count = hkx.members.iter().find(|m| m.name == "count").unwrap();
-    assert_eq!(count.value, HkxValue::I32(7));
-
-    let scale = hkx.members.iter().find(|m| m.name == "scale").unwrap();
-    assert_eq!(scale.value, HkxValue::F32(2.5));
-
-    let weights = hkx.members.iter().find(|m| m.name == "weights").unwrap();
-    assert_eq!(
-        weights.value,
-        HkxValue::Array(vec![
-            HkxValue::F32(0.1),
-            HkxValue::F32(0.2),
-            HkxValue::F32(0.3),
-        ])
-    );
-
-    let label = hkx.members.iter().find(|m| m.name == "label").unwrap();
-    assert_eq!(
-        label.value,
-        HkxValue::String {
-            value: "spine".to_string(),
-            is_null: false
-        }
-    );
-}
-
-#[test]
-fn derive_from_hkx_object_round_trips() {
+fn derive_maps_members_round_trips_and_names_missing_members() {
     let original = TestArrayClass {
         count: 7,
         scale: 2.5,
@@ -66,15 +25,42 @@ fn derive_from_hkx_object_round_trips() {
     };
 
     let hkx = original.to_hkx_object(Some("#0042".to_string()));
-    let recovered = TestArrayClass::from_hkx_object(&hkx).expect("round-trip succeeds");
+    assert_eq!(hkx.class_name, "TestArrayClass");
+    assert_eq!(hkx.signature, 0x12345678u32);
+    assert_eq!(hkx.name, Some("#0042".to_string()));
+    let values: Vec<_> = hkx
+        .members
+        .iter()
+        .map(|m| (m.name.as_str(), m.value.clone()))
+        .collect();
+    assert_eq!(
+        values,
+        vec![
+            ("count", HkxValue::I32(7)),
+            ("scale", HkxValue::F32(2.5)),
+            (
+                "weights",
+                HkxValue::Array(vec![
+                    HkxValue::F32(0.1),
+                    HkxValue::F32(0.2),
+                    HkxValue::F32(0.3),
+                ])
+            ),
+            (
+                "label",
+                HkxValue::String {
+                    value: "spine".to_string(),
+                    is_null: false
+                }
+            ),
+        ]
+    );
+    assert_eq!(
+        TestArrayClass::from_hkx_object(&hkx).expect("round-trip succeeds"),
+        original
+    );
 
-    assert_eq!(original, recovered);
-}
-
-#[test]
-fn derive_from_hkx_object_missing_member_is_error() {
-    // Object with only "count" — missing scale, weights, label.
-    let hkx = HkxObject {
+    let partial = HkxObject {
         name: None,
         offset: 0,
         signature: 0x12345678,
@@ -84,8 +70,7 @@ fn derive_from_hkx_object_missing_member_is_error() {
             value: HkxValue::I32(1),
         }],
     };
-
-    let err = TestArrayClass::from_hkx_object(&hkx).expect_err("missing members must error");
+    let err = TestArrayClass::from_hkx_object(&partial).expect_err("missing members must error");
     assert!(
         err.contains("scale"),
         "error names the missing field: {err}"

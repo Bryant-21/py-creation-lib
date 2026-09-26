@@ -829,179 +829,80 @@ mod tests {
     }
 
     #[test]
-    fn version_compare_packed_literal() {
-        // "Version >= 20.2.0.7" — version literal packs to 0x14020007
-        let expr = NifExpr::parse("Version >= 20.2.0.7").unwrap();
-        let c = ctx(&[("Version", 0x14020007)]);
-        assert!(expr.evaluate_bool(&c));
-        let c2 = ctx(&[("Version", 0x14020006)]);
-        assert!(!expr.evaluate_bool(&c2));
-    }
-
-    #[test]
-    fn version_compare_explicit() {
-        let expr = NifExpr::parse("Version == 335675399").unwrap();
-        let c = ctx(&[("Version", 0x14020007)]);
-        assert!(expr.evaluate_bool(&c));
-    }
-
-    #[test]
-    fn logical_and_with_backslash_path() {
-        let expr =
-            NifExpr::parse("(BS Header\\BS Version >= 130) && (BS Header\\BS Version <= 139)")
-                .unwrap();
-        let c = ctx(&[("BS Header\\BS Version", 130)]);
-        assert!(expr.evaluate_bool(&c));
-        let c2 = ctx(&[("BS Header\\BS Version", 140)]);
-        assert!(!expr.evaluate_bool(&c2));
-    }
-
-    #[test]
-    fn logical_or() {
-        let expr = NifExpr::parse("(User Version == 11) || (User Version == 12)").unwrap();
-        let c = ctx(&[("User Version", 12)]);
-        assert!(expr.evaluate_bool(&c));
-        let c2 = ctx(&[("User Version", 0)]);
-        assert!(!expr.evaluate_bool(&c2));
-    }
-
-    #[test]
-    fn bitshift_calc() {
-        let expr = NifExpr::parse("Vertex Desc >> 44").unwrap();
-        let c = ctx(&[("Vertex Desc", 1i64 << 44)]);
-        assert_eq!(expr.evaluate(&c).as_int(), 1);
-    }
-
-    #[test]
-    fn bitand_calc() {
-        // Mimic BSTriShape Data Size calc fragment: (Vertex Desc & 0xF)
-        let expr = NifExpr::parse("Vertex Desc & 0xF").unwrap();
-        let c = ctx(&[("Vertex Desc", 0x5Ai64)]);
-        assert_eq!(expr.evaluate(&c).as_int(), 0xA);
-    }
-
-    #[test]
-    fn arithmetic_precedence() {
-        let expr = NifExpr::parse("2 + 3 * 4").unwrap();
-        let c = MapContext::new();
-        assert_eq!(expr.evaluate(&c).as_int(), 14);
-    }
-
-    #[test]
-    fn parens_override_precedence() {
-        let expr = NifExpr::parse("(2 + 3) * 4").unwrap();
-        let c = MapContext::new();
-        assert_eq!(expr.evaluate(&c).as_int(), 20);
-    }
-
-    #[test]
-    fn ternary_true_branch() {
-        let expr = NifExpr::parse("Num Verts #THEN# Num Verts #ELSE# 0").unwrap();
-        let c = ctx(&[("Num Verts", 5)]);
-        assert_eq!(expr.evaluate(&c).as_int(), 5);
-    }
-
-    #[test]
-    fn ternary_false_branch() {
-        let expr = NifExpr::parse("Num Verts #THEN# Num Verts #ELSE# 42").unwrap();
-        let c = ctx(&[("Num Verts", 0)]);
-        assert_eq!(expr.evaluate(&c).as_int(), 42);
-    }
-
-    #[test]
-    fn missing_field_is_null_eq_zero() {
-        let expr = NifExpr::parse("NonExistent == 0").unwrap();
-        let c = MapContext::new();
-        assert!(expr.evaluate_bool(&c));
-    }
-
-    #[test]
-    fn not_operator() {
-        let expr = NifExpr::parse("!Flag").unwrap();
-        let c = ctx(&[("Flag", 0)]);
-        assert!(expr.evaluate_bool(&c));
-        let c2 = ctx(&[("Flag", 1)]);
-        assert!(!expr.evaluate_bool(&c2));
-    }
-
-    #[test]
-    fn dollar_field_truthiness_sigil_is_ignored() {
-        let expr = NifExpr::parse("!$Name").unwrap();
-        let c = ctx(&[("Name", 0)]);
-        assert!(expr.evaluate_bool(&c));
-        let c2 = ctx(&[("Name", 1)]);
-        assert!(!expr.evaluate_bool(&c2));
-    }
-
-    #[test]
-    fn unary_minus() {
-        let expr = NifExpr::parse("-5 + 10").unwrap();
-        let c = MapContext::new();
-        assert_eq!(expr.evaluate(&c).as_int(), 5);
-    }
-
-    #[test]
-    fn hex_literal() {
-        let expr = NifExpr::parse("Flags & 0xFF").unwrap();
-        let c = ctx(&[("Flags", 0x1234)]);
-        assert_eq!(expr.evaluate(&c).as_int(), 0x34);
-    }
-
-    #[test]
-    fn version_context_resolves_globals() {
-        let mut c = VersionContext::new(0x14020007, 12, 130);
-        c.fields.insert("Num Vertices".to_string(), Value::Int(5));
-        let expr = NifExpr::parse(
-            "(BS Header\\BS Version >= 130) && (Version == 20.2.0.7) && (Num Vertices > 0)",
-        )
-        .unwrap();
-        assert!(expr.evaluate_bool(&c));
-    }
-
-    #[test]
-    fn tokenize_backslash_path() {
-        let toks = tokenize("BS Header\\BS Version >= 130").unwrap();
-        // First token should be the full path identifier.
-        match &toks[0] {
-            Token::Ident(s) => assert_eq!(s, "BS Header\\BS Version"),
-            other => panic!("expected Ident, got {:?}", other),
+    fn boolean_expressions() {
+        let cases: &[(&str, &[(&str, i64)], bool)] = &[
+            ("Version >= 20.2.0.7", &[("Version", 0x14020007)], true),
+            ("Version >= 20.2.0.7", &[("Version", 0x14020006)], false),
+            ("Version == 335675399", &[("Version", 0x14020007)], true),
+            (
+                "(BS Header\\BS Version >= 130) && (BS Header\\BS Version <= 139)",
+                &[("BS Header\\BS Version", 130)],
+                true,
+            ),
+            (
+                "(BS Header\\BS Version >= 130) && (BS Header\\BS Version <= 139)",
+                &[("BS Header\\BS Version", 140)],
+                false,
+            ),
+            ("(User Version == 11) || (User Version == 12)", &[("User Version", 12)], true),
+            ("(User Version == 11) || (User Version == 12)", &[("User Version", 0)], false),
+            ("NonExistent == 0", &[], true),
+            ("!Flag", &[("Flag", 0)], true),
+            ("!Flag", &[("Flag", 1)], false),
+            ("!$Name", &[("Name", 0)], true),
+            ("!$Name", &[("Name", 1)], false),
+        ];
+        for (source, fields, expected) in cases {
+            let expr = NifExpr::parse(source).unwrap();
+            assert_eq!(expr.evaluate_bool(&ctx(fields)), *expected, "{source} {fields:?}");
         }
     }
 
     #[test]
-    fn tokenize_version_literal_packed() {
-        let toks = tokenize("20.2.0.7").unwrap();
-        assert_eq!(toks, vec![Token::NumInt(0x14020007)]);
+    fn integer_expressions() {
+        let cases: &[(&str, &[(&str, i64)], i64)] = &[
+            ("Vertex Desc >> 44", &[("Vertex Desc", 1i64 << 44)], 1),
+            ("Vertex Desc & 0xF", &[("Vertex Desc", 0x5A)], 0xA),
+            ("2 + 3 * 4", &[], 14),
+            ("(2 + 3) * 4", &[], 20),
+            ("Num Verts #THEN# Num Verts #ELSE# 0", &[("Num Verts", 5)], 5),
+            ("Num Verts #THEN# Num Verts #ELSE# 42", &[("Num Verts", 0)], 42),
+            ("-5 + 10", &[], 5),
+            ("Flags & 0xFF", &[("Flags", 0x1234)], 0x34),
+        ];
+        for (source, fields, expected) in cases {
+            let expr = NifExpr::parse(source).unwrap();
+            assert_eq!(expr.evaluate(&ctx(fields)).as_int(), *expected, "{source}");
+        }
     }
 
     #[test]
-    fn tokenize_float_vs_version() {
-        // 3.14 is float (only 2 parts)
-        let toks = tokenize("3.14").unwrap();
-        match &toks[0] {
+    fn tokenizer_paths_version_literals_and_floats() {
+        match &tokenize("BS Header\\BS Version >= 130").unwrap()[0] {
+            Token::Ident(s) => assert_eq!(s, "BS Header\\BS Version"),
+            other => panic!("expected Ident, got {:?}", other),
+        }
+        assert_eq!(tokenize("20.2.0.7").unwrap(), vec![Token::NumInt(0x14020007)]);
+        match &tokenize("3.14").unwrap()[0] {
             Token::NumFloat(f) => assert!((f - 3.14).abs() < 1e-9),
             t => panic!("expected float, got {:?}", t),
         }
     }
 
     #[test]
-    fn len_token() {
-        let expr = NifExpr::parse("#LEN[Children]# > 0").unwrap();
-        let mut c = VersionContext::new(0, 0, 0);
+    fn version_context_resolves_globals_and_lengths() {
+        let mut c = VersionContext::new(0x14020007, 12, 130);
+        c.fields.insert("Num Vertices".to_string(), Value::Int(5));
         c.field_lens.insert("Children".to_string(), 3);
-        assert!(expr.evaluate_bool(&c));
-    }
-
-    #[test]
-    fn len2_token_uses_second_dimension_length() {
-        let mut c = VersionContext::new(0, 0, 0);
         c.field_lens.insert("Strips".to_string(), 1);
         c.field_lens2.insert("Strips".to_string(), 5);
-
-        let len = NifExpr::parse("#LEN[Strips]#").unwrap();
-        let len2 = NifExpr::parse("#LEN2[Strips]#").unwrap();
-
-        assert_eq!(len.evaluate(&c).as_int(), 1);
-        assert_eq!(len2.evaluate(&c).as_int(), 5);
+        let expr = NifExpr::parse(
+            "(BS Header\\BS Version >= 130) && (Version == 20.2.0.7) && (Num Vertices > 0)",
+        )
+        .unwrap();
+        assert!(expr.evaluate_bool(&c));
+        assert!(NifExpr::parse("#LEN[Children]# > 0").unwrap().evaluate_bool(&c));
+        assert_eq!(NifExpr::parse("#LEN[Strips]#").unwrap().evaluate(&c).as_int(), 1);
+        assert_eq!(NifExpr::parse("#LEN2[Strips]#").unwrap().evaluate(&c).as_int(), 5);
     }
 }

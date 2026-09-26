@@ -9,42 +9,24 @@ fn sine_wave(freq: f32, sr: f32, n: usize) -> Array1<f32> {
 }
 
 #[test]
-fn zero_semitones_returns_input_unchanged() {
-    let input = sine_wave(440.0, 44100.0, 4096);
-    let out = pitch_shift(input.view(), 0.0);
-    assert_eq!(out.len(), input.len());
+fn preserves_length_and_signal_across_semitone_range() {
+    let input = sine_wave(440.0, 44100.0, 8192);
+    let unchanged = pitch_shift(input.view(), 0.0);
     for i in 0..input.len() {
         assert!(
-            (out[i] - input[i]).abs() < 1e-5,
+            (unchanged[i] - input[i]).abs() < 1e-5,
             "differ at {}: {} vs {}",
             i,
-            out[i],
+            unchanged[i],
             input[i],
         );
     }
-}
-
-#[test]
-fn preserves_length_across_semitone_range() {
-    let input = sine_wave(440.0, 44100.0, 8192);
     for semi in [-12.0_f32, -1.0, -0.5, 0.5, 1.0, 12.0] {
         let out = pitch_shift(input.view(), semi);
-        assert_eq!(
-            out.len(),
-            input.len(),
-            "length mismatch for {} semitones: got {}",
-            semi,
-            out.len(),
-        );
+        assert_eq!(out.len(), input.len(), "length mismatch for {semi} semitones");
+        let rms: f32 = (out.iter().map(|x| x * x).sum::<f32>() / out.len() as f32).sqrt();
+        assert!(rms > 0.01, "output too quiet for {semi} semitones: rms={rms}");
     }
-}
-
-#[test]
-fn nonzero_semitones_produces_nonsilent_output() {
-    let input = sine_wave(440.0, 44100.0, 8192);
-    let out = pitch_shift(input.view(), 0.5);
-    let rms: f32 = (out.iter().map(|x| x * x).sum::<f32>() / out.len() as f32).sqrt();
-    assert!(rms > 0.01, "output too quiet: rms={}", rms);
 }
 
 #[test]

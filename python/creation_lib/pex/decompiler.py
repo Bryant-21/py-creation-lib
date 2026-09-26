@@ -105,10 +105,6 @@ def _is_none_var(val: PexValue) -> bool:
     return val.type == ValueType.IDENTIFIER and val.data == "::NoneVar"
 
 
-def _is_empty_string_value(val: PexValue) -> bool:
-    return val.type == ValueType.STRING and val.data == ""
-
-
 def _node_references_name(node: object, name: str) -> bool:
     if isinstance(node, NameExpr):
         return node.name.lower() == name.lower()
@@ -236,6 +232,7 @@ def decompile_function(
 
     # Remove trailing Return None for void functions
     if fn.return_type in ("None", "NONE", "none", "") and stmts:
+        stmts = [_bare_void_return(s) for s in stmts]
         last = stmts[-1]
         if isinstance(last, ReturnStmt) and (last.value is None or (
             isinstance(last.value, LiteralExpr) and last.value.type == "none")):
@@ -313,14 +310,31 @@ def _decompile_instruction(
         obj_type = ""
         if obj_value.type == ValueType.IDENTIFIER:
             obj_type = local_types.get(str(obj_value.data), "")
+        # FO76 can attach a sound to a named node; FO4 only plays at the reference.
         if (
             fo4_api_compat
             and (not obj_type or obj_type.lower() == "sound")
             and str(method).lower() in {"play", "playandwait"}
             and raw_call_args
-            and _is_empty_string_value(raw_call_args[-1])
+            and raw_call_args[-1].type == ValueType.STRING
         ):
             raw_call_args = raw_call_args[:-1]
+        # FO76 appends two placement arguments that FO4's five-argument PlaceAtMe cannot take.
+        if (
+            fo4_api_compat
+            and (not obj_type or obj_type.lower() in {"objectreference", "actor"})
+            and str(method).lower() == "placeatme"
+            and len(raw_call_args) == 7
+        ):
+            raw_call_args = raw_call_args[:5]
+        # FO76 appends an explosion override that FO4's four-argument Dismember cannot take.
+        if (
+            fo4_api_compat
+            and (not obj_type or obj_type.lower() == "actor")
+            and str(method).lower() == "dismember"
+            and len(raw_call_args) == 5
+        ):
+            raw_call_args = raw_call_args[:4]
         if (
             fo4_api_compat
             and obj_type.lower() == "weapon"
@@ -902,6 +916,23 @@ def _sanitize_internal_names(node: object) -> object:
             [_sanitize_internal_names(s) for s in node.body], node.pos,
         )
     return node
+
+
+def _bare_void_return(stmt: object) -> object:
+    # The stock compiler cannot type-check `Return None` in an event declared only inside a named state.
+    if isinstance(stmt, ReturnStmt) and isinstance(stmt.value, LiteralExpr) and stmt.value.type == "none":
+        return ReturnStmt(None, stmt.pos)
+    if isinstance(stmt, IfStmt):
+        return IfStmt(
+            stmt.condition,
+            [_bare_void_return(s) for s in stmt.body],
+            [(c, [_bare_void_return(s) for s in b]) for c, b in stmt.elseif_clauses],
+            [_bare_void_return(s) for s in stmt.else_body],
+            stmt.pos,
+        )
+    if isinstance(stmt, WhileStmt):
+        return WhileStmt(stmt.condition, [_bare_void_return(s) for s in stmt.body], stmt.pos)
+    return stmt
 
 
 def _rewrite_auto_vars(node: object, var_map: dict[str, str]) -> object:

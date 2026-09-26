@@ -21,6 +21,28 @@ pub struct Label(usize);
 #[derive(Debug, Clone, PartialEq)]
 pub enum Op {
     Nop,
+    Label,
+    BitAnd,
+    BitOr,
+    BitXor,
+    LShift,
+    RShift,
+    URShift,
+    BitNot,
+    TypeOf,
+    IsTypeLate,
+    AsTypeLate,
+    InstanceOf,
+    In,
+    NextName,
+    NextValue,
+    Throw,
+    Construct(u32),
+    NewArray(u32),
+    NewObject(u32),
+    ApplyType(u32),
+    Call(u32),
+    HasNext2(u32, u32),
     Pop,
     Dup,
 
@@ -107,6 +129,28 @@ impl Op {
     fn opcode(&self) -> u8 {
         match self {
             Op::Nop => 0x02,
+            Op::Label => 0x09,
+            Op::BitAnd => 0xA8,
+            Op::BitOr => 0xA9,
+            Op::BitXor => 0xAA,
+            Op::LShift => 0xA5,
+            Op::RShift => 0xA6,
+            Op::URShift => 0xA7,
+            Op::BitNot => 0x97,
+            Op::TypeOf => 0x95,
+            Op::IsTypeLate => 0xB3,
+            Op::AsTypeLate => 0x87,
+            Op::InstanceOf => 0xB1,
+            Op::In => 0xB4,
+            Op::NextName => 0x1E,
+            Op::NextValue => 0x23,
+            Op::Throw => 0x03,
+            Op::Construct(_) => 0x42,
+            Op::NewArray(_) => 0x56,
+            Op::NewObject(_) => 0x55,
+            Op::ApplyType(_) => 0x53,
+            Op::Call(_) => 0x41,
+            Op::HasNext2(..) => 0x32,
             Op::Pop => 0x29,
             Op::Dup => 0x2A,
             Op::GetLocal0 => 0xD0,
@@ -169,13 +213,31 @@ impl Op {
 
     /// Net change in operand-stack depth.
     ///
-    /// Correct only because every property-bearing op here names a `QName` or
-    /// `Multiname`. The runtime-qualified kinds (`RTQName*`, `MultinameL`) pop
-    /// an extra namespace and/or name operand; this crate never emits them, and
-    /// adding them means teaching this function about the multiname's kind.
+    /// Indexed properties account for their additional runtime-name operand.
     fn stack_delta(&self) -> i32 {
         match self {
-            Op::Nop | Op::PopScope | Op::Jump(_) | Op::ReturnVoid => 0,
+            Op::BitAnd => -1,
+            Op::BitOr => -1,
+            Op::BitXor => -1,
+            Op::LShift => -1,
+            Op::RShift => -1,
+            Op::URShift => -1,
+            Op::BitNot => 0,
+            Op::TypeOf => 0,
+            Op::IsTypeLate => -1,
+            Op::AsTypeLate => -1,
+            Op::InstanceOf => -1,
+            Op::In => -1,
+            Op::NextName => -1,
+            Op::NextValue => -1,
+            Op::Throw => -1,
+            Op::Construct(v) => -(*v as i32),
+            Op::NewArray(v) => 1 - *v as i32,
+            Op::NewObject(v) => 1 - 2 * *v as i32,
+            Op::ApplyType(v) => -(*v as i32),
+            Op::Call(v) => -(*v as i32) - 1,
+            Op::HasNext2(..) => 1,
+            Op::Nop | Op::Label | Op::PopScope | Op::Jump(_) | Op::ReturnVoid => 0,
             // Unary and coercion operators replace the value in place.
             Op::Coerce(_) | Op::CoerceAny | Op::Negate | Op::Not => 0,
             // Binary operators pop both operands and push one result.
@@ -245,6 +307,7 @@ impl Op {
     /// derive `local_count` from observed register use.
     fn register(&self) -> Option<u32> {
         match self {
+            Op::HasNext2(a, b) => Some((*a).max(*b)),
             Op::GetLocal0 => Some(0),
             Op::GetLocal1 => Some(1),
             Op::GetLocal2 => Some(2),
@@ -273,13 +336,38 @@ impl Op {
 
     /// Whether control can continue into the following instruction.
     fn falls_through(&self) -> bool {
-        !matches!(self, Op::ReturnVoid | Op::ReturnValue | Op::Jump(_))
+        !matches!(
+            self,
+            Op::Throw | Op::ReturnVoid | Op::ReturnValue | Op::Jump(_)
+        )
     }
 
     /// Encoded width in bytes, including the opcode.
     fn width(&self) -> usize {
         1 + match self {
+            Op::BitAnd => 0,
+            Op::BitOr => 0,
+            Op::BitXor => 0,
+            Op::LShift => 0,
+            Op::RShift => 0,
+            Op::URShift => 0,
+            Op::BitNot => 0,
+            Op::TypeOf => 0,
+            Op::IsTypeLate => 0,
+            Op::AsTypeLate => 0,
+            Op::InstanceOf => 0,
+            Op::In => 0,
+            Op::NextName => 0,
+            Op::NextValue => 0,
+            Op::Throw => 0,
+            Op::Construct(v) => u30_width(*v),
+            Op::NewArray(v) => u30_width(*v),
+            Op::NewObject(v) => u30_width(*v),
+            Op::ApplyType(v) => u30_width(*v),
+            Op::Call(v) => u30_width(*v),
+            Op::HasNext2(a, b) => u30_width(*a) + u30_width(*b),
             Op::Nop
+            | Op::Label
             | Op::Pop
             | Op::Dup
             | Op::GetLocal0
@@ -372,9 +460,29 @@ pub struct CodeBuilder {
     items: Vec<Item>,
     /// One slot per label; `true` once the label has been placed.
     placed: Vec<bool>,
+    exceptions: Vec<(Label, Label, Label, u32)>,
 }
 
 impl CodeBuilder {
+    pub fn catch(&mut self, from: Label, to: Label, target: Label, ty: u32) {
+        self.exceptions.push((from, to, target, ty));
+    }
+
+    pub fn exception_table(&self) -> Vec<[u32; 5]> {
+        let (_, offsets) = self.layout();
+        self.exceptions
+            .iter()
+            .map(|(from, to, target, ty)| {
+                [
+                    offsets[from.0] as u32,
+                    offsets[to.0] as u32,
+                    offsets[target.0] as u32,
+                    *ty,
+                    0,
+                ]
+            })
+            .collect()
+    }
     pub fn new() -> Self {
         Self::default()
     }
@@ -432,6 +540,7 @@ impl CodeBuilder {
             out.push(op.opcode());
             match op {
                 Op::Nop
+                | Op::Label
                 | Op::Pop
                 | Op::Dup
                 | Op::GetLocal0
@@ -460,6 +569,30 @@ impl CodeBuilder {
                 | Op::LessEquals
                 | Op::GreaterThan
                 | Op::GreaterEquals => {}
+                Op::BitAnd => {}
+                Op::BitOr => {}
+                Op::BitXor => {}
+                Op::LShift => {}
+                Op::RShift => {}
+                Op::URShift => {}
+                Op::BitNot => {}
+                Op::TypeOf => {}
+                Op::IsTypeLate => {}
+                Op::AsTypeLate => {}
+                Op::InstanceOf => {}
+                Op::In => {}
+                Op::NextName => {}
+                Op::NextValue => {}
+                Op::Throw => {}
+                Op::Construct(v) => write_u30(&mut out, *v),
+                Op::NewArray(v) => write_u30(&mut out, *v),
+                Op::NewObject(v) => write_u30(&mut out, *v),
+                Op::ApplyType(v) => write_u30(&mut out, *v),
+                Op::Call(v) => write_u30(&mut out, *v),
+                Op::HasNext2(a, b) => {
+                    write_u30(&mut out, *a);
+                    write_u30(&mut out, *b);
+                }
                 Op::PushByte(v) => out.push(*v as u8),
                 Op::GetScopeObject(v) => out.push(*v),
                 Op::GetLocal(v)
@@ -535,6 +668,13 @@ impl CodeBuilder {
         let mut max_stack = 0i32;
         let mut max_scope = init_scope_depth as i32;
         let mut work = vec![(0usize, 0i32, init_scope_depth as i32)];
+        for (_, _, target, _) in &self.exceptions {
+            let ordinal = *offset_to_ordinal
+                .get(&label_offsets[target.0])
+                .ok_or("catch target is not an instruction")?;
+            work.push((ordinal, 1, init_scope_depth as i32));
+            max_stack = 1;
+        }
 
         while let Some((mut at, mut stack, mut scope)) = work.pop() {
             loop {

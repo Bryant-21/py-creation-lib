@@ -61,60 +61,43 @@ def test_deserialize_calls_build_authoring_dir(tmp_path: Path) -> None:
     assert result == output
 
 
-def test_deserialize_rejects_legacy_authoring_format(tmp_path: Path) -> None:
-    yaml_dir = tmp_path / "yaml"
-    yaml_dir.mkdir()
-    (yaml_dir / "spriggit-meta.json").write_text("{}", encoding="utf-8")
+def test_deserialize_rejects_legacy_format_and_missing_plugin_manifest(tmp_path: Path) -> None:
+    legacy_dir = tmp_path / "legacy_yaml"
+    legacy_dir.mkdir()
+    (legacy_dir / "spriggit-meta.json").write_text("{}", encoding="utf-8")
 
     with pytest.raises(RuntimeError) as exc:
-        authoring.deserialize(
-            yaml_dir,
-            tmp_path / "out.esp",
-            game="fo4",
-        )
+        authoring.deserialize(legacy_dir, tmp_path / "out.esp", game="fo4")
 
     message = str(exc.value)
     assert "Legacy authoring YAML format detected" in message
     assert "modkit mod import" in message
     assert "Spriggit YAML format" not in message
 
-
-def test_deserialize_rejects_directory_without_plugin_manifest(tmp_path: Path) -> None:
-    yaml_dir = tmp_path / "yaml"
-    yaml_dir.mkdir()
-
+    empty_dir = tmp_path / "empty_yaml"
+    empty_dir.mkdir()
     with pytest.raises(RuntimeError, match="does not look like an ESP authoring directory"):
-        authoring.deserialize(
-            yaml_dir,
-            tmp_path / "out.esp",
-            game="fo4",
-        )
+        authoring.deserialize(empty_dir, tmp_path / "out2.esp", game="fo4")
 
 
-def test_get_plugin_ext_reads_plugin_yaml(tmp_path: Path) -> None:
-    mod_dir = tmp_path / "B21_Test"
-    yaml_dir = mod_dir / "yaml"
+def test_get_plugin_ext_reads_plugin_yaml_else_sibling_else_default(tmp_path: Path) -> None:
+    from_yaml_dir = tmp_path / "B21_Test"
+    yaml_dir = from_yaml_dir / "yaml"
     yaml_dir.mkdir(parents=True)
     (yaml_dir / "plugin.yaml").write_text(
         "format_version: 1\nplugin: B21_Test.esl\ngame: fo4\n",
         encoding="utf-8",
     )
+    assert authoring.get_plugin_ext(from_yaml_dir) == "esl"
 
-    assert authoring.get_plugin_ext(mod_dir) == "esl"
+    from_sibling_dir = tmp_path / "B21_Sibling"
+    from_sibling_dir.mkdir()
+    (from_sibling_dir / "B21_Sibling.esp").write_bytes(b"")
+    assert authoring.get_plugin_ext(from_sibling_dir) == "esp"
 
-
-def test_get_plugin_ext_falls_back_to_sibling_plugin(tmp_path: Path) -> None:
-    mod_dir = tmp_path / "B21_Test"
-    mod_dir.mkdir()
-    (mod_dir / "B21_Test.esp").write_bytes(b"")
-
-    assert authoring.get_plugin_ext(mod_dir) == "esp"
-
-
-def test_get_plugin_ext_default_is_esp(tmp_path: Path) -> None:
-    mod_dir = tmp_path / "Empty"
-    mod_dir.mkdir()
-    assert authoring.get_plugin_ext(mod_dir) == "esp"
+    default_dir = tmp_path / "Empty"
+    default_dir.mkdir()
+    assert authoring.get_plugin_ext(default_dir) == "esp"
 
 
 def test_new_mod_yaml_writes_scaffold(tmp_path: Path) -> None:

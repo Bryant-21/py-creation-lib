@@ -1265,8 +1265,9 @@ impl<'a> Codegen<'a> {
                 object,
                 method,
                 args,
+                arg_names,
                 ..
-            } => self.lower_dot_call(object, method, args, line, expected),
+            } => self.lower_dot_call(object, method, args, arg_names, line, expected),
             // Other expression kinds are added in later batches.
             _ => PexValuePayload {
                 value_type: VT_NONE,
@@ -1342,6 +1343,7 @@ impl<'a> Codegen<'a> {
         object: &Expr,
         method: &str,
         args: &[Expr],
+        arg_names: &[Option<String>],
         line: u16,
         expected: Option<&PapyrusType>,
     ) -> PexValuePayload {
@@ -1354,7 +1356,15 @@ impl<'a> Codegen<'a> {
         match object {
             Expr::ParentExpr { .. } => {
                 let parent = self.parent_name();
-                self.build_call(CallRecv::Parent, &parent, method, args, &[], line, None)
+                self.build_call(
+                    CallRecv::Parent,
+                    &parent,
+                    method,
+                    args,
+                    arg_names,
+                    line,
+                    None,
+                )
             }
             // A bare name that is not a value but names a script → static call on
             // that script (e.g. `Utility.Wait(1.0)`, `Game.GetPlayer()`).
@@ -1363,14 +1373,22 @@ impl<'a> Codegen<'a> {
                 name,
                 method,
                 args,
-                &[],
+                arg_names,
                 line,
                 expected,
             ),
             _ => {
                 let obj = self.lower_expr(object, line);
                 let owner = type_name(&self.type_of_expr(object)).unwrap_or_default();
-                self.build_call(CallRecv::Obj(obj), &owner, method, args, &[], line, None)
+                self.build_call(
+                    CallRecv::Obj(obj),
+                    &owner,
+                    method,
+                    args,
+                    arg_names,
+                    line,
+                    None,
+                )
             }
         }
     }

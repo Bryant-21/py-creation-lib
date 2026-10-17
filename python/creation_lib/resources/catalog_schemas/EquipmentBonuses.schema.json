@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://modbox21.local/catalog_schemas/EquipmentBonuses.schema.json",
+  "title": "Equipment bonuses",
+  "allOf": [{"$ref": "envelope.schema.json"}],
+  "properties": {
+    "version": {"const": 1},
+    "settings": {
+      "type": "object",
+      "description": "This feature has no settings; its curves are in the Curves section.",
+      "properties": {},
+      "title": "Settings"
+    },
+    "curves": {
+      "type": "object",
+      "description": "Named curves. The name must be one Tales uses, such as lastBastion.",
+      "x-key": "map",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "points": {
+            "type": "array",
+            "minItems": 2,
+            "items": {
+              "type": "object",
+              "required": ["x", "y"],
+              "properties": {"x": {"type": "number"}, "y": {"type": "number"}}
+            },
+            "x-widget": "curve"
+          },
+          "remove": {"$ref": "envelope.schema.json#/$defs/removeFlag"}
+        },
+        "if": {"not": {"required": ["remove"]}},
+        "then": {"required": ["points"]}
+      },
+      "title": "Curves",
+      "x-key-title": "Curve name"
+    }
+  },
+  "description": "Curves that scale an equipment bonus, such as Last Bastion's armor boost as health drops.",
+  "x-help": "Each curve is named in Tales' code (for example lastBastion). Its x axis is the player's health as a fraction (0 to 1) and its y axis is the bonus. Edit the points to change how strong the bonus is at each health.\n\nOnly the curve names Tales knows are used; a new name has no effect."
+}

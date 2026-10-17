@@ -579,6 +579,198 @@ mod tests {
         assert!(r.ok, "{:?}", r.diagnostics);
     }
 
+    /// A minimal FO4 API with a complete chain to `ScriptObject`, so the
+    /// checker can prove a member absent.
+    fn semantic_api_dir(tag: &str) -> std::path::PathBuf {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "papyrus_semantic_{tag}_{}_{}",
+            std::process::id(),
+            unique,
+        ));
+        std::fs::create_dir_all(&dir).expect("create import dir");
+        for (name, src) in [
+            (
+                "ScriptObject",
+                "ScriptName ScriptObject Native Hidden\n\
+                 Function GotoState(String asNewState) native\n\
+                 Function RegisterForRemoteEvent(ScriptObject akSender, ScriptEventName asEventName) native\n\
+                 Function RegisterForCustomEvent(ScriptObject akSender, CustomEventName asEventName) native\n\
+                 Function SendCustomEvent(CustomEventName asEventName, Var[] akArgs = None) native\n\
+                 Event OnInit()\nEndEvent\n",
+            ),
+            (
+                "Form",
+                "ScriptName Form Native Hidden\nInt Function GetFormID() native\n",
+            ),
+            ("Location", "ScriptName Location extends Form Native Hidden\n"),
+            (
+                "Keyword",
+                "ScriptName Keyword extends Form Native Hidden\n\
+                 Function SendStoryEvent(Location akLoc = None, ObjectReference akRef1 = None, ObjectReference akRef2 = None) native\n",
+            ),
+            (
+                "ObjectReference",
+                "ScriptName ObjectReference extends Form Native Hidden\n\
+                 Function MoveTo(ObjectReference akTarget, Float afXOffset = 0.0, Bool abMatchRotation = True) native\n\
+                 Event OnLoad()\nEndEvent\n",
+            ),
+            (
+                "Quest",
+                "ScriptName Quest extends Form Native Hidden\n\
+                 Int Property Count Auto\n\
+                 Bool Function SetStage(Int aiStage) native\n",
+            ),
+            (
+                "Game",
+                "ScriptName Game Native Hidden\nObjectReference Function GetPlayer() global native\n",
+            ),
+        ] {
+            std::fs::write(dir.join(format!("{name}.psc")), src).expect("write api source");
+        }
+        dir
+    }
+
+    fn compile_quest_body(dir: &std::path::Path, body: &str) -> CompileResult {
+        let src = format!(
+            "ScriptName SemanticCheck extends Quest\n\
+             CustomEvent Ready\n\
+             Keyword Property Kw Auto\n\
+             Function F()\n{body}\nEndFunction\n"
+        );
+        compile_source(
+            &src,
+            &[dir.to_string_lossy().into_owned()],
+            Game::Fo4,
+            None,
+        )
+    }
+
+    #[test]
+    fn rejects_what_the_stock_compiler_rejects() {
+        let dir = semantic_api_dir("reject");
+        let cases = [
+            ("NotARealFunc(5)", "NotARealFunc is not a function or does not exist"),
+            ("Self.NotReal()", "NotReal is not a function or does not exist"),
+            ("Parent.NotReal()", "NotReal is not a function or does not exist"),
+            (
+                "ObjectReference r = None\nr.NotReal()",
+                "NotReal is not a function or does not exist on script ObjectReference",
+            ),
+            ("SetStage(\"a\")", "type mismatch on parameter 1 (aiStage)"),
+            ("SetStage(1, 2)", "too many arguments passed to function SetStage"),
+            ("SetStage()", "argument aiStage is not specified"),
+            ("Int x = Unknown", "variable Unknown is undefined"),
+            (
+                "ObjectReference r = None\nInt x = r.NoProp",
+                "NoProp is not a property on script ObjectReference",
+            ),
+            ("Int x = \"s\"", "cannot assign String to Int"),
+            (
+                "Game.GetPlayer().MoveTo(akBogus = None)",
+                "akBogus is not a parameter of function",
+            ),
+            (
+                "Location l = None\nKw.SendStoryEvent(akRef1 = l)",
+                "type mismatch on parameter 2 (akRef1)",
+            ),
+            ("Quest.SetStage(1)", "cannot call the member function SetStage"),
+            (
+                "RegisterForRemoteEvent(Game.GetPlayer(), \"OnNope\")",
+                "OnNope is not an event on ObjectReference or one of its parents",
+            ),
+            (
+                "RegisterForCustomEvent(Self, \"Nope\")",
+                "Nope is not a custom event on SemanticCheck or one of its parents",
+            ),
+            (
+                "SendCustomEvent(\"Nope\")",
+                "Nope is not a custom event on SemanticCheck or one of its parents",
+            ),
+        ];
+        let results: Vec<_> = cases
+            .iter()
+            .map(|(body, _)| compile_quest_body(&dir, body))
+            .collect();
+        std::fs::remove_dir_all(&dir).expect("remove import dir");
+        for ((body, needle), r) in cases.iter().zip(results) {
+            assert!(!r.ok, "{body:?} compiled");
+            assert!(
+                r.diagnostics.iter().any(|d| d.message.contains(needle)),
+                "{body:?}: expected {needle:?}, got {:?}",
+                r.diagnostics
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_resolvable_calls_properties_and_conversions() {
+        let dir = semantic_api_dir("accept");
+        let r = compile_quest_body(
+            &dir,
+            "ObjectReference p = Game.GetPlayer()\n\
+             p.MoveTo(p, abMatchRotation = False)\n\
+             Kw.SendStoryEvent(akRef1 = p)\n\
+             SetStage(1)\n\
+             Self.SetStage(1)\n\
+             RegisterForRemoteEvent(p, \"OnLoad\")\n\
+             RegisterForCustomEvent(Self, \"Ready\")\n\
+             SendCustomEvent(\"Ready\")\n\
+             GotoState(\"Busy\")\n\
+             OnInit()\n\
+             Int n = Count + Self.Count + GetFormID()",
+        );
+        std::fs::remove_dir_all(&dir).expect("remove import dir");
+        assert!(r.ok, "{:?}", r.diagnostics);
+    }
+
+    /// Without the parent on the import path nothing can be proven missing.
+    #[test]
+    fn incomplete_parent_chain_reports_no_unresolved_members() {
+        let r = compile_source(
+            "ScriptName OrphanCheck extends MissingParent\n\
+             Function F()\n  Whatever(1)\n  Int y = z\n  Self.Other()\nEndFunction\n",
+            &[],
+            Game::Fo4,
+            None,
+        );
+        assert!(r.ok, "{:?}", r.diagnostics);
+    }
+
+    /// `Kw.SendStoryEvent(akRef1 = p)` must land `p` in the second slot; the
+    /// dot-call parser used to drop argument names and bind it to `akLoc`.
+    #[test]
+    fn dot_call_named_argument_binds_by_name() {
+        let dir = semantic_api_dir("named");
+        let r = compile_quest_body(
+            &dir,
+            "ObjectReference p = Game.GetPlayer()\nKw.SendStoryEvent(akRef1 = p)",
+        );
+        std::fs::remove_dir_all(&dir).expect("remove import dir");
+        assert!(r.ok, "{:?}", r.diagnostics);
+        let pex = crate::pex::parse_pex_bytes(&r.pex_bytes.expect("bytes")).expect("parse");
+        let call = pex.objects[0]
+            .states
+            .iter()
+            .flat_map(|s| &s.functions)
+            .flat_map(|f| &f.instructions)
+            .find(|i| {
+                i.args
+                    .first()
+                    .and_then(|a| a.data.as_str())
+                    .is_some_and(|m| m.eq_ignore_ascii_case("SendStoryEvent"))
+            })
+            .expect("SendStoryEvent call");
+        // [method, receiver, dest, argc, akLoc, akRef1, akRef2]
+        let slots = &call.args[4..];
+        assert_eq!(slots.len(), 3, "{slots:?}");
+        assert_eq!(slots[0].value_type, 0, "akLoc must be None: {slots:?}");
+        assert_eq!(slots[1].data.as_str(), Some("p"), "{slots:?}");
+    }
+
     #[test]
     fn source_path_script_name_lowercases_lowercase_file_stem() {
         let imports = vec!["User".to_string()];

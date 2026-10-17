@@ -57,7 +57,7 @@ const FLAT_MSN_NORMAL: [u8; 4] = [128, 255, 128, 255];
 /// is unavailable too, this neutral gray keeps the buffer valid.
 const FALLBACK_DIFFUSE: [u8; 4] = [55, 55, 55, 255];
 
-fn lod_index(level: i32) -> usize {
+pub(crate) fn lod_index(level: i32) -> usize {
     match level {
         4 => 0,
         8 => 1,
@@ -480,8 +480,6 @@ pub fn composite_quad(
 ) -> anyhow::Result<CompositeTile> {
     let level = quad.quad_level.max(1);
     let lod = lod_index(level);
-    let normal_rise = settings.terrain.levels[lod].normal_rise;
-    let warnings: Vec<String> = Vec::new();
 
     // Index cells by (x,y) for fast lookup; the quad covers
     // [quad.x .. quad.x+level) x [quad.y .. quad.y+level).
@@ -520,6 +518,26 @@ pub fn composite_quad(
         settings.terrain.levels[lod].normal_size
     }
     .max(1);
+    composite_quad_at(world, quad, settings, paths, diffuse_size, normal_size)
+}
+
+/// `composite_quad` at explicit tile sizes (the dense composite merges LAND texels at its own size).
+pub(crate) fn composite_quad_at(
+    world: &WorldspaceInput,
+    quad: &QuadDesc,
+    settings: &LodSettings,
+    paths: &LodPaths,
+    diffuse_size: u32,
+    normal_size: u32,
+) -> anyhow::Result<CompositeTile> {
+    let level = quad.quad_level.max(1);
+    let lod = lod_index(level);
+    let normal_rise = settings.terrain.levels[lod].normal_rise;
+    let warnings: Vec<String> = Vec::new();
+    let cell_at = |cx: i32, cy: i32| -> Option<&CellInput> {
+        world.cells.iter().find(|c| c.x == cx && c.y == cy)
+    };
+    let (diffuse_size, normal_size) = (diffuse_size.max(1), normal_size.max(1));
 
     // --- diffuse pass (at diffuse_size) ---
     // The worldspace default land texture (used as the opaque base for cells with
@@ -800,7 +818,7 @@ fn overlay_vertex_colors<'a, F>(
     }
 }
 
-fn format_to_dxgi(format: &Format) -> &'static str {
+pub(crate) fn format_to_dxgi(format: &Format) -> &'static str {
     match format {
         Format::Bc1 => "BC1_UNORM",
         Format::Bc2 => "BC2_UNORM",

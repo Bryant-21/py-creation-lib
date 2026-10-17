@@ -142,7 +142,7 @@ fn pooled<T: ToString>(values: &[T], index: u32) -> String {
         .map_or_else(|| "?".into(), ToString::to_string)
 }
 
-fn instruction(abc: &AbcFile, op: &Op, offset: usize, next: usize) -> String {
+pub(crate) fn instruction(abc: &AbcFile, op: &Op, offset: usize, next: usize) -> String {
     let pool = &abc.constant_pool;
     let debug = format!("{op:?}");
     let mnemonic = debug.split([' ', '(']).next().unwrap_or_default();

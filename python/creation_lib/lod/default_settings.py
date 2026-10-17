@@ -68,6 +68,10 @@ def _hardcoded_fo4_defaults() -> dict:
             "default_normal_size": 128,
             # Landless/ocean WATER block (settings.rs TerrainSettings.emit_water).
             "emit_water": True,
+            "source": "land",
+            "btd_path": None,
+            # Dense terrain sidecar (.btd4); with source "btd" the LOD textures composite from it.
+            "btd4_path": None,
         },
         "objects": {
             "source": "records",
@@ -119,6 +123,10 @@ def _hardcoded_fo4_defaults() -> dict:
             "fo76_bto_tree_billboard_from_lod": None,
             "fo76_bto_multibound_mode": "shape",
             "fo76_bto_node_layout": "fo4_per_shape",
+            "fo76_bto_instanced_min_count": 2,
+            "fo76_bto_instanced_atlas_size": 8192,
+            "instance_records": False,
+            "fo76_bto_pbr_maps": False,
         },
         "trees": {
             "trees_3d": True,

@@ -671,7 +671,11 @@ fn lookup_enum_int(
         }
         current = parent.filter(|p| !p.is_empty());
     }
-    registry.get_external_enum_int(enum_name, str_value)
+    if registry.declares_enum(class_name, enum_name) {
+        None
+    } else {
+        registry.get_external_enum_int(enum_name, str_value)
+    }
 }
 
 fn try_parse_packed_hex(
@@ -1043,7 +1047,9 @@ fn value_to_text_typed(
             if name.parse::<i32>().is_err() {
                 return escape_text(&name);
             }
-            if let Some(name) = registry.get_external_enum_name(&template.etype, int_value) {
+            if !registry.declares_enum(owner_class, &template.etype)
+                && let Some(name) = registry.get_external_enum_name(&template.etype, int_value)
+            {
                 return escape_text(&name);
             }
         }
@@ -1272,4 +1278,66 @@ fn escape_text(value: &str) -> String {
         .replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
+}
+
+#[cfg(test)]
+mod enum_ownership_tests {
+    use super::*;
+
+    #[test]
+    fn event_flag_combination_does_not_use_an_unrelated_external_enum() {
+        let mut registry = DescriptorRegistry::new();
+        let flag = registry
+            .get_all_members("hkbEventInfo")
+            .unwrap()
+            .into_iter()
+            .find(|member| member.name == "flags")
+            .unwrap();
+        assert_eq!(
+            value_to_text_typed(
+                &HkxValue::U32(3),
+                &mut registry,
+                "hkbEventInfo",
+                Some(&flag)
+            ),
+            "3"
+        );
+        assert_eq!(
+            lookup_enum_int(&mut registry, "hkbEventInfo", "Flags", "ACCESS_READ_WRITE"),
+            None
+        );
+        assert_eq!(
+            lookup_enum_int(&mut registry, "hkbEventInfo", "Flags", "FLAG_SYNC_POINT"),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn external_blend_curve_enum_still_resolves() {
+        let mut registry = DescriptorRegistry::new();
+        let blend = registry
+            .get_all_members("hkbBlendingTransitionEffect")
+            .unwrap()
+            .into_iter()
+            .find(|member| member.name == "blendCurve")
+            .unwrap();
+        assert_eq!(
+            lookup_enum_int(
+                &mut registry,
+                "hkbBlendingTransitionEffect",
+                "BlendCurve",
+                "BLEND_CURVE_SMOOTH"
+            ),
+            Some(0)
+        );
+        assert_eq!(
+            value_to_text_typed(
+                &HkxValue::I8(0),
+                &mut registry,
+                "hkbBlendingTransitionEffect",
+                Some(&blend)
+            ),
+            "BLEND_CURVE_SMOOTH"
+        );
+    }
 }

@@ -65,6 +65,11 @@ impl<T: Clone> FileMemo<T> {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clear();
     }
+
+    pub(super) fn remove(&self, key: &str) {
+        self.entries.get_or_init(Default::default)
+            .write().unwrap_or_else(|poisoned| poisoned.into_inner()).remove(key);
+    }
 }
 
 /// Normalized cache key for an on-disk path (case- and separator-insensitive).
@@ -85,11 +90,19 @@ pub(super) fn behavior_packfile(path: &Path) -> Option<Arc<HkxFile>> {
     })
 }
 
+pub(super) fn invalidate_behavior(path: &Path) {
+    BEHAVIORS.remove(&path_key(path));
+}
+
+pub(super) fn clear_derived() {
+    super::offsets::clear_clip_memo();
+    super::speed::clear_behavior_memo();
+    super::stance::clear_stance_memo();
+}
+
 /// Drop every memoized entry. Called once AnimTextData generation completes so the
 /// retained packfiles and clip data do not follow the run into later conversion phases.
 pub fn clear_all() {
     BEHAVIORS.clear();
-    super::offsets::clear_clip_memo();
-    super::speed::clear_behavior_memo();
-    super::stance::clear_stance_memo();
+    clear_derived();
 }

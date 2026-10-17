@@ -358,6 +358,7 @@ class FillStyle:
     gradient: Gradient | None = None
     bitmap_id: int | None = None
     bitmap_matrix: MATRIX | None = None
+    focal_point: float = 0.0  # focal radial gradient: signed FIXED8
 
     @classmethod
     def parse(cls, reader: BitReader, has_alpha: bool) -> "FillStyle":
@@ -367,18 +368,21 @@ class FillStyle:
         grad = None
         bmp_id = None
         bmp_matrix = None
+        focal_point = 0.0
 
         if ft == 0x00:
             color = RGBA.parse(reader) if has_alpha else _rgb_to_rgba(COLOR.parse(reader))
         elif ft in (0x10, 0x12, 0x13):
             grad_matrix = MATRIX.parse(reader)
             grad = Gradient.parse(reader, has_alpha)
+            if ft == 0x13:
+                focal_point = reader.read_si16() / 256.0
         elif ft in (0x40, 0x41, 0x42, 0x43):
             bmp_id = reader.read_ui16()
             bmp_matrix = MATRIX.parse(reader)
 
         return cls(fill_type=ft, color=color, gradient_matrix=grad_matrix,
-                   gradient=grad, bitmap_id=bmp_id, bitmap_matrix=bmp_matrix)
+                   gradient=grad, bitmap_id=bmp_id, bitmap_matrix=bmp_matrix, focal_point=focal_point)
 
     def write(self, writer: BitWriter, has_alpha: bool) -> None:
         writer.write_ui8(self.fill_type)
@@ -390,6 +394,8 @@ class FillStyle:
         elif self.fill_type in (0x10, 0x12, 0x13):
             self.gradient_matrix.write(writer)
             self.gradient.write(writer, has_alpha)
+            if self.fill_type == 0x13:
+                writer.write_si16(round(self.focal_point * 256))
         elif self.fill_type in (0x40, 0x41, 0x42, 0x43):
             writer.write_ui16(self.bitmap_id)
             self.bitmap_matrix.write(writer)

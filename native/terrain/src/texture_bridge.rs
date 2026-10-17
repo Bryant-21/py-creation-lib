@@ -2,6 +2,36 @@ use serde::Deserialize;
 #[derive(Debug, Clone, Deserialize)]
 pub struct TextureManifest {
     pub textures: Vec<TextureBundle>,
+    /// FO76 sources only: every GCVR in the BTD's table, as the runtime loads it. Feeds the
+    /// `.btd4` v5 grass-point channel; never emitted as records.
+    #[serde(default)]
+    pub ground_covers: Vec<GroundCoverManifest>,
+}
+
+/// One FO76 GCVR as `BGSGroundCover::Load` keeps it.
+#[derive(Debug, Clone, Deserialize)]
+pub struct GroundCoverManifest {
+    pub form_key: String,
+    #[serde(default)]
+    pub editor_id: String,
+    #[serde(default = "default_ground_cover_ynam")]
+    pub ynam: f32,
+    #[serde(default)]
+    pub ltex_form_keys: Vec<String>,
+    /// GNAMs followed by a DNAM, in file order; first occurrence of a repeated GNAM only.
+    #[serde(default)]
+    pub grasses: Vec<GroundCoverGrassManifest>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct GroundCoverGrassManifest {
+    pub form_key: String,
+    /// Density percent, or 0xFFFF for the GRAS DNAM density byte.
+    pub dnam: u16,
+}
+
+fn default_ground_cover_ynam() -> f32 {
+    crate::fo76_grass::GCVR_DEFAULT_YNAM
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -20,6 +50,13 @@ pub struct TextureBundle {
     pub reflectivity_path: String,
     pub lighting_path: String,
     pub output_prefix: String,
+    #[serde(default)]
+    pub raw_source_prefix: Option<String>,
+    #[serde(default)]
+    pub raw_material_rows: Option<[[f32; 4]; 3]>,
+    // Present only for the .btd4 raw source bank: a texture to deliver, never a record.
+    #[serde(default)]
+    pub raw_bank_only: bool,
     pub output_material_path: Option<String>,
     pub material_type_object_id: Option<String>,
     pub havok_friction: Option<u8>,
@@ -68,6 +105,9 @@ pub struct ConvertedTerrainGrass {
     /// import drops the emitted GRAS in favour of it, so `.btd4` references must use it.
     #[serde(default)]
     pub target_form_key: Option<String>,
+    /// FO76 sources only: the raw GRAS DNAM, which places the `.btd4` v5 grass points.
+    #[serde(default)]
+    pub fo76_dnam: Option<crate::fo76_grass::GrassDnam>,
 }
 
 #[derive(Debug, Clone)]
@@ -92,7 +132,12 @@ pub struct ConvertedTerrainTexture {
 pub fn plan_required_textures(
     manifest: &TextureManifest,
 ) -> Result<Vec<ConvertedTerrainTexture>, String> {
-    manifest.textures.iter().map(plan_texture_bundle).collect()
+    manifest
+        .textures
+        .iter()
+        .filter(|bundle| !bundle.raw_bank_only)
+        .map(plan_texture_bundle)
+        .collect()
 }
 
 fn plan_texture_bundle(bundle: &TextureBundle) -> Result<ConvertedTerrainTexture, String> {
@@ -159,12 +204,16 @@ mod tests {
                 reflectivity_path: "missing/test_r.dds".to_owned(),
                 lighting_path: "missing/test_l.dds".to_owned(),
                 output_prefix: "textures/terrain/appalachia/LTest".to_owned(),
+                raw_source_prefix: None,
+                raw_material_rows: None,
+                raw_bank_only: false,
                 output_material_path: None,
                 material_type_object_id: None,
                 havok_friction: None,
                 havok_restitution: None,
                 grass: Vec::new(),
             }],
+            ground_covers: Vec::new(),
         };
 
         let planned = plan_required_textures(&manifest).unwrap();

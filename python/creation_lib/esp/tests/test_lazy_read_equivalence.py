@@ -69,3 +69,27 @@ def test_lazy_handle_reads_match_full_handle_on_fixture(fixture_plugin: Path) ->
     finally:
         nr.plugin_handle_close(full)
         nr.plugin_handle_close(lazy)
+
+
+def test_lazy_search_matches_eager_and_rejects_mutation(fixture_plugin: Path) -> None:
+    full = nr.plugin_handle_load(str(fixture_plugin), game="fo4", eager_compressed=True)
+    lazy = nr.plugin_handle_load_index(str(fixture_plugin), game="fo4")
+    try:
+        for options in (
+            {"pattern": "*", "signatures": ["STAT", "MISC"]},
+            {"pattern": "b21_lazy_misc_000", "signatures": ["MISC"]},
+            {"pattern": "B21_Lazy_MISC_000", "signatures": ["MISC"], "case_sensitive": True},
+            {"pattern": "*", "signatures": ["STAT", "MISC"], "limit": 3},
+            {"pattern": "*", "signatures": ["STAT"], "read_full": True},
+            {"pattern": "_MISC_", "signatures": ["MISC"], "mode": "substring"},
+        ):
+            assert nr.plugin_handle_search_records(lazy, **options) == nr.plugin_handle_search_records(full, **options)
+        match = nr.plugin_handle_search_records(lazy, "B21_Lazy_MISC_000", signatures=["MISC"])[0]
+        with pytest.raises(KeyError, match="unknown record"):
+            nr.plugin_handle_set_record_subrecords(
+                lazy, match["form_id"], [("EDID", b"B21_Changed\0", None)],
+            )
+        assert nr.plugin_handle_search_records(lazy, "B21_Lazy_MISC_000", signatures=["MISC"]) == [match]
+    finally:
+        nr.plugin_handle_close(full)
+        nr.plugin_handle_close(lazy)

@@ -1849,6 +1849,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "libz-sys"
+version = "1.1.29"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "85bc9657773828b90eeb625adff10eeac83cc21bbfd8e23a03eaa8a33c9e28d9"
+dependencies = [
+ "cc",
+ "libc",
+ "pkg-config",
+ "vcpkg",
+]
+
+[[package]]
 name = "linfa"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2013,6 +2025,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "670fdfda89751bc4a84ac13eaa63e205cf0fd22b4c9a5fbfa085b63c1f1d3a30"
 
 [[package]]
+name = "material_upgrade_native"
+version = "0.1.0"
+dependencies = [
+ "bsarchive_native",
+ "directxtex_native",
+ "esp_authoring_core",
+ "materials_native",
+ "nif_core_native",
+ "pyo3",
+ "rayon",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "terrain_native",
+ "walkdir",
+]
+
+[[package]]
 name = "materials_native"
 version = "0.1.0"
 dependencies = [
@@ -2032,6 +2062,16 @@ checksum = "a06de3016e9fae57a36fd14dba131fccf49f74b40b7fbdb472f96e361ec71a08"
 dependencies = [
  "autocfg",
  "rawpointer",
+]
+
+[[package]]
+name = "md-5"
+version = "0.10.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d89e7ee0cfbedfc4da3340218492196241d89eefb6dab27de5df917a6d2e78cf"
+dependencies = [
+ "cfg-if",
+ "digest",
 ]
 
 [[package]]
@@ -2091,6 +2131,22 @@ name = "mintex"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c505b3e17ed6b70a7ed2e67fbb2c560ee327353556120d6e72f5232b6880d536"
+
+[[package]]
+name = "mod_manager_native"
+version = "0.1.0"
+dependencies = [
+ "md-5",
+ "pyo3",
+ "rusqlite",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "unicode-casefold",
+ "url",
+ "uuid",
+ "windows-sys 0.61.2",
+]
 
 [[package]]
 name = "model2vec-rs"
@@ -2642,6 +2698,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "unicode-casefold",
 ]
 
 [[package]]
@@ -2785,6 +2842,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "previs_native"
+version = "0.1.0"
+dependencies = [
+ "bsarchive_native",
+ "esp_authoring_core",
+ "flate2",
+ "half",
+ "havok_native",
+ "hex",
+ "indexmap",
+ "libz-sys",
+ "materials_native",
+ "memmap2",
+ "mimalloc",
+ "nif_core_native",
+ "pyo3",
+ "rayon",
+ "rustc-hash 2.1.2",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.18",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
 name = "primal-check"
 version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2815,10 +2899,13 @@ dependencies = [
  "fnv_script_native",
  "havok_native",
  "lodgen_native",
+ "material_upgrade_native",
  "materials_native",
+ "mod_manager_native",
  "nif_core_native",
  "palette_native",
  "papyrus_core",
+ "previs_native",
  "pyo3",
  "scientific_native",
  "swf_native",
@@ -4215,6 +4302,12 @@ name = "typenum"
 version = "1.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40ce102ab67701b8526c123c1bab5cbe42d7040ccfd0f64af1a385808d2f43de"
+
+[[package]]
+name = "unicode-casefold"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b7f66b1c8f8caa2ab31dc6d3f35386f16efdab89668f93411e565ac368908e8f"
 
 [[package]]
 name = "unicode-ident"

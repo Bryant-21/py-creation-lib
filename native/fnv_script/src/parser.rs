@@ -4,7 +4,7 @@ use crate::lexer::{Token, TokenKind, tokenize};
 
 pub fn parse_script(src: &str) -> Result<Script, FnvScriptError> {
     let toks = tokenize(src)?;
-    let mut parser = Parser { toks, pos: 0 };
+    let mut parser = Parser { toks, pos: 0, event_variables: Vec::new() };
     parser.skip_newlines();
     let name = parser.try_parse_script_name()?;
     let mut variables = Vec::new();
@@ -32,6 +32,7 @@ pub fn parse_script(src: &str) -> Result<Script, FnvScriptError> {
         parser.ensure_progress(start, "top-level declaration or block")?;
     }
 
+    variables.extend(parser.event_variables);
     Ok(Script {
         name,
         variables,
@@ -43,6 +44,7 @@ pub fn parse_script(src: &str) -> Result<Script, FnvScriptError> {
 struct Parser {
     toks: Vec<Token>,
     pos: usize,
+    event_variables: Vec<VarDecl>,
 }
 
 impl Parser {
@@ -241,6 +243,12 @@ impl Parser {
                 break;
             }
             let start = self.pos;
+            if self.peek_keyword_one_of(&["int", "long", "short", "float", "ref", "string_var"]) {
+                let variable = self.parse_var_decl()?;
+                self.event_variables.push(variable);
+                self.ensure_progress(start, "event variable declaration")?;
+                continue;
+            }
             if self.peek_keyword("Set") {
                 statements.push(self.parse_set()?);
                 self.ensure_progress(start, "set statement")?;

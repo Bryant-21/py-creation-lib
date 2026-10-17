@@ -114,7 +114,9 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, FnvScriptError> {
                     col: start_col,
                 });
             }
-            c if c.is_ascii_digit() || (c == '-' && matches_digit_lookahead(&chars)) => {
+            c if c.is_ascii_digit()
+                || (matches!(c, '-' | '.') && matches_digit_lookahead(&chars)) =>
+            {
                 let start_col = col;
                 let mut s = String::new();
                 let mut is_float = false;

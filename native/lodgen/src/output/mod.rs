@@ -1,6 +1,7 @@
 pub mod bto;
 pub mod btr;
 pub mod btt;
+pub mod instance_block;
 pub mod lodsettings;
 
 fn triangle_values<T: Copy + Into<i64>>(triangles: &[[T; 3]]) -> Vec<nif_core_native::model::NifValue> {

@@ -60,7 +60,15 @@ const ALWAYS_ON_TRANSFORMS: &[&str] = &[
     "_fix_behavior_variable_infos",
 ];
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// Bone names of the FO76 rig a clip was authored on (`source`) and of the rig it
+/// plays on after conversion (`target`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Fo76RigBones {
+    pub source: Vec<String>,
+    pub target: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Fo76MigrationOptions {
     pub infer_roles: bool,
     /// Decompress hkaSplineCompressedAnimation → hkaInterleavedUncompressedAnimation.
@@ -73,6 +81,13 @@ pub struct Fo76MigrationOptions {
     /// Recompress hkaInterleavedUncompressedAnimation → hkaSplineCompressedAnimation.
     /// Runs after `strip_bones`.
     pub recompress: bool,
+    /// Keep the human AimSource track as bone 95, appended after FO4's bones, instead of
+    /// stripping it. Only for callers that ship a 3P human rig carrying that bone.
+    pub keep_aim_source: bool,
+    /// The clip's rig pair. A clip file cannot tell a partial human clip from a clip on
+    /// another rig with the same track count, so without this every clip is treated as
+    /// human; with a non-human source rig, tracks are rebound by bone name instead.
+    pub rig_bones: Option<std::sync::Arc<Fo76RigBones>>,
 }
 
 pub fn always_on_transform_names() -> &'static [&'static str] {
@@ -117,8 +132,13 @@ fn migrate_2015_hkx_to_2014_with_warnings(
     let _options = options;
     let mut registry = DescriptorRegistry::new();
     let mut warnings = Vec::new();
-    let last_applied_transform =
-        apply_implemented_transforms(&mut hkx, &mut registry, &mut warnings);
+    let last_applied_transform = apply_implemented_transforms(
+        &mut hkx,
+        &mut registry,
+        &mut warnings,
+        _options.keep_aim_source,
+        _options.rig_bones.as_deref(),
+    );
 
     if last_applied_transform + 1 < ALWAYS_ON_TRANSFORMS.len() {
         let next_transform = last_applied_transform + 1;
@@ -152,6 +172,8 @@ fn apply_implemented_transforms(
     hkx: &mut HkxFile,
     registry: &mut DescriptorRegistry,
     warnings: &mut Vec<String>,
+    keep_aim_source: bool,
+    rig_bones: Option<&Fo76RigBones>,
 ) -> usize {
     strip_heap_allocator(hkx);
     strip_resource_data(hkx);
@@ -162,7 +184,10 @@ fn apply_implemented_transforms(
     stamp_fo76_schema_versions(hkx);
     synthesize_memory_resource_container(hkx);
 
-    auto_fix_human_bone_tracks(hkx);
+    match rig_bones.filter(|rig| !is_human_rig(&rig.source)) {
+        Some(rig) => remap_rig_bone_tracks(hkx, rig, warnings),
+        None => auto_fix_human_bone_tracks(hkx, keep_aim_source),
+    }
     #[allow(unused_assignments)]
     let mut last_applied = 6;
 
@@ -1744,9 +1769,6 @@ fn classxml_safe_defaults() -> &'static [(&'static str, &'static str, fn() -> Hk
         ),
         ("hkbLayer", "onEventId", || HkxValue::I32(-1)),
         ("hkbLayer", "offEventId", || HkxValue::I32(-1)),
-        ("hkbBlenderGeneratorChild", "worldFromModelWeight", || {
-            HkxValue::F32(1.0)
-        }),
         ("hkbStateMachineStateInfo", "probability", || {
             HkxValue::F32(1.0)
         }),
@@ -3958,7 +3980,10 @@ struct ZeroWeightActionLayerCollapse {
     action_generator_name: String,
 }
 
-fn collapse_zero_weight_action_layers(hkx: &mut HkxFile, warnings: &mut Vec<String>) -> std::collections::HashSet<usize> {
+fn collapse_zero_weight_action_layers(
+    hkx: &mut HkxFile,
+    warnings: &mut Vec<String>,
+) -> std::collections::HashSet<usize> {
     let mut delegated = std::collections::HashSet::new();
     let collapses: Vec<_> = hkx
         .objects()
@@ -7209,14 +7234,16 @@ fn remap_human_character_property_bone_indices(hkx: &mut HkxFile) {
 /// For 90-95 track spline with non-identity indices: decompress → reorder → recompress,
 /// set identity indices.
 /// For 90-95 track interleaved with non-identity indices: remap indices in-place.
-fn auto_fix_human_bone_tracks(hkx: &mut HkxFile) {
+/// `keep_aim_source` keeps AimSource as bone 95 instead of stripping it.
+fn auto_fix_human_bone_tracks(hkx: &mut HkxFile, keep_aim_source: bool) {
     use std::collections::HashMap;
 
-    // Build FO4 bone name → index map.
     let fo4_index: HashMap<&str, usize> = FO4_BONES
         .iter()
+        .copied()
+        .chain(keep_aim_source.then_some("AimSource"))
         .enumerate()
-        .map(|(i, &name)| (name, i))
+        .map(|(i, name)| (name, i))
         .collect();
 
     // Build animation object-name → binding-object-index map.
@@ -7297,9 +7324,10 @@ fn auto_fix_human_bone_tracks(hkx: &mut HkxFile) {
 
     // Build the FO76-post-strip → FO4 permutation for 96-track animations.
     // bone_mapping96[post_strip_track] = FO4 bone index.
-    const STRIP_INDEX: usize = 12; // AimSource
+    const AIM_SOURCE_INDEX: usize = 12;
+    let strip_index = (!keep_aim_source).then_some(AIM_SOURCE_INDEX);
     let bone_mapping96: Vec<i32> = (0..96_usize)
-        .filter(|&i| i != STRIP_INDEX)
+        .filter(|&i| Some(i) != strip_index)
         .filter_map(|fo76_idx| {
             FO76_BONES
                 .get(fo76_idx)
@@ -7313,10 +7341,12 @@ fn auto_fix_human_bone_tracks(hkx: &mut HkxFile) {
         let objects = hkx.objects_mut();
         for &anim_idx in &strip_interleaved {
             let binding_idx = binding_by_anim_name.get(&objects[anim_idx].name).copied();
-            strip_and_reorder_interleaved(&mut objects[anim_idx], STRIP_INDEX, &bone_mapping96);
+            strip_and_reorder_interleaved(&mut objects[anim_idx], strip_index, &bone_mapping96);
             if let Some(bidx) = binding_idx {
                 // Safety: anim_idx != bidx (different class names).
-                let identity: Vec<HkxValue> = (0_i32..95).map(HkxValue::I32).collect();
+                let identity: Vec<HkxValue> = (0..bone_mapping96.len() as i32)
+                    .map(HkxValue::I32)
+                    .collect();
                 set_binding_bone_indices(&mut objects[bidx], identity);
             }
         }
@@ -7368,8 +7398,155 @@ fn auto_fix_human_bone_tracks(hkx: &mut HkxFile) {
             hkx,
             &spline_targets,
             &binding_by_anim_name,
+            strip_index,
             &bone_mapping96,
-            &fo4_index,
+            &|fo76_idx| {
+                FO76_BONES
+                    .get(fo76_idx as usize)
+                    .and_then(|name| fo4_index.get(name))
+                    .map(|&fi| fi as i32)
+                    .unwrap_or(fo76_idx)
+            },
+        );
+    }
+}
+
+fn is_human_rig(bones: &[String]) -> bool {
+    bones.len() >= FO76_BONES.len()
+        && bones.iter().zip(FO76_BONES).all(|(bone, human)| bone == human)
+}
+
+/// Rebinds clips authored on a non-human FO76 rig to the rig they play on, matching
+/// bones by name. A clip whose tracks cover the target's leading bones is reordered to
+/// an identity binding, as the human path does; any other clip keeps its track data
+/// and gets a name-mapped binding.
+fn remap_rig_bone_tracks(hkx: &mut HkxFile, rig: &Fo76RigBones, warnings: &mut Vec<String>) {
+    use std::collections::HashMap;
+
+    let target_index: HashMap<&str, i32> = rig
+        .target
+        .iter()
+        .enumerate()
+        .map(|(index, name)| (name.as_str(), index as i32))
+        .collect();
+    let source_to_target: Vec<Option<i32>> = rig
+        .source
+        .iter()
+        .map(|name| target_index.get(name.as_str()).copied())
+        .collect();
+    let binding_by_anim_name: HashMap<Option<String>, usize> = hkx
+        .objects()
+        .iter()
+        .enumerate()
+        .filter(|(_, obj)| obj.class_name == "hkaAnimationBinding")
+        .filter_map(|(binding_idx, obj)| {
+            let anim_member = obj.members.iter().find(|m| m.name == "animation")?;
+            if let HkxValue::Pointer(Some(anim_idx)) = anim_member.value {
+                Some((hkx.objects().get(anim_idx)?.name.clone(), binding_idx))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    let mut reorder_interleaved: Vec<(usize, usize, Vec<i32>)> = Vec::new();
+    let mut reorder_spline: Vec<(usize, usize, Vec<i32>)> = Vec::new();
+    let mut rebind: Vec<(usize, Vec<i32>)> = Vec::new();
+    for (anim_idx, obj) in hkx.objects().iter().enumerate() {
+        let spline = match obj.class_name.as_str() {
+            "hkaSplineCompressedAnimation" => true,
+            "hkaInterleavedUncompressedAnimation" => false,
+            _ => continue,
+        };
+        let Some(num_tracks) = obj
+            .members
+            .iter()
+            .find(|m| m.name == "numberOfTransformTracks")
+            .and_then(|m| direct_member_as_i32(&m.value))
+            .filter(|&n| n > 0)
+        else {
+            continue;
+        };
+        let Some(&binding_idx) = binding_by_anim_name.get(&obj.name) else {
+            continue;
+        };
+        let stored = get_array_i32s(&hkx.objects()[binding_idx], "transformTrackToBoneIndices");
+        let bound = if stored.is_empty() {
+            (0..num_tracks).collect()
+        } else {
+            stored.clone()
+        };
+        let mapped: Option<Vec<i32>> = bound
+            .iter()
+            .map(|&bone| {
+                usize::try_from(bone)
+                    .ok()
+                    .and_then(|bone| source_to_target.get(bone).copied().flatten())
+            })
+            .collect();
+        let Some(mapped) = mapped.filter(|mapped| mapped.len() == num_tracks as usize) else {
+            warnings.push(format!(
+                "{}: a track's bone is missing from the target rig; binding left as authored",
+                obj.name.as_deref().unwrap_or("animation")
+            ));
+            continue;
+        };
+        if mapped.iter().enumerate().all(|(track, &bone)| bone == track as i32) {
+            if !stored.is_empty() && stored != mapped {
+                rebind.push((binding_idx, mapped));
+            }
+            continue;
+        }
+        let mut sorted = mapped.clone();
+        sorted.sort_unstable();
+        if sorted.iter().enumerate().all(|(track, &bone)| bone == track as i32) {
+            if spline {
+                reorder_spline.push((anim_idx, binding_idx, bound));
+            } else {
+                reorder_interleaved.push((anim_idx, binding_idx, mapped));
+            }
+        } else {
+            rebind.push((binding_idx, mapped));
+        }
+    }
+
+    let objects = hkx.objects_mut();
+    for (anim_idx, binding_idx, mapped) in reorder_interleaved {
+        reorder_interleaved_transforms(&mut objects[anim_idx], mapped.len(), &mapped);
+        reorder_annotation_tracks(&mut objects[anim_idx], mapped.len(), &mapped);
+        let identity = (0..mapped.len() as i32).map(HkxValue::I32).collect();
+        set_binding_bone_indices(&mut objects[binding_idx], identity);
+    }
+    for (binding_idx, mapped) in rebind {
+        set_binding_bone_indices(
+            &mut objects[binding_idx],
+            mapped.into_iter().map(HkxValue::I32).collect(),
+        );
+    }
+    // The spline rewrite reads the source bones back off the binding.
+    for (_, binding_idx, bound) in &reorder_spline {
+        set_binding_bone_indices(
+            &mut objects[*binding_idx],
+            bound.iter().copied().map(HkxValue::I32).collect(),
+        );
+    }
+    if !reorder_spline.is_empty() {
+        let targets: Vec<(usize, bool)> = reorder_spline
+            .iter()
+            .map(|&(anim_idx, _, _)| (anim_idx, false))
+            .collect();
+        decompress_then_mutate_recompress(
+            hkx,
+            &targets,
+            &binding_by_anim_name,
+            None,
+            &[],
+            &|bone| {
+                usize::try_from(bone)
+                    .ok()
+                    .and_then(|bone| source_to_target.get(bone).copied().flatten())
+                    .unwrap_or(bone)
+            },
         );
     }
 }
@@ -7402,12 +7579,17 @@ fn get_array_i32s(obj: &HkxObject, member_name: &str) -> Vec<i32> {
         .unwrap_or_default()
 }
 
-/// Strip AimSource track (`strip_idx`) from an interleaved animation, then
-/// reorder the remaining tracks from FO76 bone order to FO4 bone order.
+/// Strip the trailing Jaw and, when `strip_idx` is set, the AimSource track from an
+/// interleaved animation, then reorder the remaining tracks from FO76 bone order to
+/// FO4 bone order.
 ///
 /// `bone_mapping[post_strip_track] = FO4 bone index` — used to build the
 /// inverse permutation so track data lands in FO4 bone order.
-fn strip_and_reorder_interleaved(obj: &mut HkxObject, strip_idx: usize, bone_mapping: &[i32]) {
+fn strip_and_reorder_interleaved(
+    obj: &mut HkxObject,
+    strip_idx: Option<usize>,
+    bone_mapping: &[i32],
+) {
     let num_tracks = match obj
         .members
         .iter()
@@ -7419,6 +7601,7 @@ fn strip_and_reorder_interleaved(obj: &mut HkxObject, strip_idx: usize, bone_map
     };
 
     let expected = bone_mapping.len();
+    let source_tracks = expected + usize::from(strip_idx.is_some());
 
     // --- Strip transforms ---
     if let Some(m) = obj.members.iter_mut().find(|m| m.name == "transforms") {
@@ -7427,7 +7610,8 @@ fn strip_and_reorder_interleaved(obj: &mut HkxObject, strip_idx: usize, bone_map
             if total % num_tracks == 0 {
                 let mut kept = Vec::with_capacity(total - total / num_tracks);
                 for (flat_idx, val) in transforms.drain(..).enumerate() {
-                    if flat_idx % num_tracks != strip_idx && flat_idx % num_tracks < expected + 1 {
+                    let track = flat_idx % num_tracks;
+                    if Some(track) != strip_idx && track < source_tracks {
                         kept.push(val);
                     }
                 }
@@ -7444,8 +7628,10 @@ fn strip_and_reorder_interleaved(obj: &mut HkxObject, strip_idx: usize, bone_map
     {
         if let HkxValue::Array(ref mut tracks) = m.value {
             if tracks.len() == num_tracks {
-                tracks.truncate(expected + 1);
-                tracks.remove(strip_idx);
+                tracks.truncate(source_tracks);
+                if let Some(strip_idx) = strip_idx {
+                    tracks.remove(strip_idx);
+                }
             }
         }
     }
@@ -7577,6 +7763,8 @@ fn remap_annotation_tracks_member(
             tracks.truncate(num_tracks_out + 1);
             tracks.remove(strip_idx);
         }
+    } else {
+        tracks.truncate(num_tracks_out);
     }
 
     if tracks.len() == num_tracks_out && inverse.len() == num_tracks_out {
@@ -7601,8 +7789,9 @@ fn decompress_then_mutate_recompress(
     hkx: &mut HkxFile,
     targets: &[(usize, bool)],
     binding_by_anim_name: &std::collections::HashMap<Option<String>, usize>,
+    strip_index: Option<usize>,
     bone_mapping96: &[i32],
-    fo4_index: &std::collections::HashMap<&str, usize>,
+    remap_bone: &dyn Fn(i32) -> i32,
 ) {
     use crate::animation::spline::{compress_spline, decompress_spline};
 
@@ -7738,11 +7927,14 @@ fn decompress_then_mutate_recompress(
 
         let (num_tracks_out, bone_indices_out, annotation_tracks_out) = if is_strip {
             // The optional Jaw follows the legacy rig; FO4 has neither it nor AimSource.
-            const STRIP_IDX: usize = 12;
             let expected = bone_mapping96.len();
             for frame in &mut frames {
-                frame.transforms.truncate(expected + 1);
-                frame.transforms.remove(STRIP_IDX);
+                frame
+                    .transforms
+                    .truncate(expected + usize::from(strip_index.is_some()));
+                if let Some(strip_index) = strip_index {
+                    frame.transforms.remove(strip_index);
+                }
             }
             // Reorder frame transforms using bone_mapping96 inverse.
             let mut inverse = vec![0usize; expected];
@@ -7760,7 +7952,7 @@ fn decompress_then_mutate_recompress(
             }
             let identity: Vec<HkxValue> = (0..expected as i32).map(HkxValue::I32).collect();
             let annotation_tracks_out =
-                remap_annotation_tracks_member(obj, expected, Some(STRIP_IDX), &inverse);
+                remap_annotation_tracks_member(obj, expected, strip_index, &inverse);
             (expected, identity, annotation_tracks_out)
         } else {
             // 90-95 track: reorder using binding's FO76 indices.
@@ -7776,17 +7968,7 @@ fn decompress_then_mutate_recompress(
             if fo76_indices.is_empty() || fo76_indices.len() != num_tracks_orig {
                 continue;
             }
-            let fo4_indices: Vec<i32> = fo76_indices
-                .iter()
-                .map(|&fo76_idx| {
-                    let fo76_idx = fo76_idx as usize;
-                    FO76_BONES
-                        .get(fo76_idx)
-                        .and_then(|name| fo4_index.get(name))
-                        .map(|&fi| fi as i32)
-                        .unwrap_or(fo76_idx as i32)
-                })
-                .collect();
+            let fo4_indices: Vec<i32> = fo76_indices.iter().map(|&idx| remap_bone(idx)).collect();
 
             // Build inverse permutation.
             let mut inverse = vec![0usize; num_tracks_orig];
@@ -9486,7 +9668,7 @@ mod tests {
     fn apply_for_test(hkx: &mut HkxFile) -> usize {
         let mut registry = DescriptorRegistry::new();
         let mut warnings = Vec::new();
-        apply_implemented_transforms(hkx, &mut registry, &mut warnings)
+        apply_implemented_transforms(hkx, &mut registry, &mut warnings, false, None)
     }
 
     fn object(class_name: &str, members: Vec<HkxMember>) -> HkxObject {
@@ -10847,6 +11029,22 @@ mod tests {
                 .map(|m| &m.value),
             Some(&HkxValue::I32(-1))
         );
+    }
+
+    #[test]
+    fn apply_classxml_defaults_preserves_disabled_additive_root_motion() {
+        let mut hkx = HkxFile::from_tagxml(
+            11,
+            "hk_2015.1.0-r1",
+            vec![object(
+                "hkbBlenderGeneratorChild",
+                vec![member("worldFromModelWeight", HkxValue::F32(0.0))],
+            )],
+        );
+
+        apply_classxml_defaults(&mut hkx);
+
+        assert_eq!(hkx.objects()[0].members[0].value, HkxValue::F32(0.0));
     }
 
     #[test]
@@ -13368,7 +13566,7 @@ mod tests {
     fn auto_fix_human_bone_tracks_96track_interleaved_strips_and_reorders() {
         let mut hkx = make_96track_interleaved_hkx();
 
-        auto_fix_human_bone_tracks(&mut hkx);
+        auto_fix_human_bone_tracks(&mut hkx, false);
 
         let anim = &hkx.objects()[0];
         // (a) numberOfTransformTracks should be 95.
@@ -13456,7 +13654,7 @@ mod tests {
 
         let mut hkx = HkxFile::from_tagxml(11, "hk_2015.1.0-r1", vec![anim_obj, binding_obj]);
 
-        auto_fix_human_bone_tracks(&mut hkx);
+        auto_fix_human_bone_tracks(&mut hkx, false);
 
         // After remap, binding indices should be identity [0..90] (FO4 order).
         let binding = &hkx.objects()[1];
@@ -13476,6 +13674,212 @@ mod tests {
         assert_eq!(
             indices, expected_identity,
             "90-track binding indices should be identity after remap"
+        );
+    }
+
+    // FO76 supermutant order vs FO4: same bones, Spine1 and LLeg_Thigh swapped, plus
+    // FO76's AimSource that FO4 lacks (restored at the end of the shipped rig).
+    fn supermutant_style_rig() -> std::sync::Arc<Fo76RigBones> {
+        let names = |bones: &[&str]| bones.iter().map(|bone| bone.to_string()).collect();
+        std::sync::Arc::new(Fo76RigBones {
+            source: names(&["Root", "COM", "Spine1", "AimSource", "LLeg_Thigh"]),
+            target: names(&["Root", "COM", "LLeg_Thigh", "Spine1", "AimSource"]),
+        })
+    }
+
+    fn translated_qs(x: f32) -> HkxValue {
+        HkxValue::F32List(vec![
+            x, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.0,
+        ])
+    }
+
+    fn rig_clip(spline: bool, track_x: &[f32], bound: &[i32]) -> HkxFile {
+        use crate::animation::spline::{SplineFrame, SplineTransform, compress_spline};
+
+        let num_tracks = track_x.len();
+        let duration = 1.0 / 30.0;
+        let annotation_tracks: Vec<HkxValue> =
+            (0..num_tracks).map(|_| HkxValue::Object(vec![])).collect();
+        let mut anim_obj = if spline {
+            let frame = SplineFrame {
+                transforms: track_x
+                    .iter()
+                    .map(|&x| SplineTransform {
+                        translation: [x, 0.0, 0.0],
+                        rotation: [0.0, 0.0, 0.0, 1.0],
+                        scale: [1.0, 1.0, 1.0],
+                    })
+                    .collect(),
+            };
+            let blob = compress_spline(&[frame.clone(), frame], duration, 30.0)
+                .expect("compress test spline");
+            let u32s = |values: &[u32]| {
+                HkxValue::Array(values.iter().map(|&value| HkxValue::U32(value)).collect())
+            };
+            object(
+                "hkaSplineCompressedAnimation",
+                vec![
+                    member("duration", HkxValue::F32(duration)),
+                    member("numberOfTransformTracks", HkxValue::I32(num_tracks as i32)),
+                    member("numberOfFloatTracks", HkxValue::I32(0)),
+                    member("annotationTracks", HkxValue::Array(annotation_tracks)),
+                    member("numFrames", HkxValue::I32(blob.num_frames as i32)),
+                    member("numBlocks", HkxValue::I32(blob.num_blocks as i32)),
+                    member(
+                        "maxFramesPerBlock",
+                        HkxValue::I32(blob.max_frames_per_block as i32),
+                    ),
+                    member("blockOffsets", u32s(&blob.block_offsets)),
+                    member("floatBlockOffsets", u32s(&blob.float_block_offsets)),
+                    member(
+                        "data",
+                        HkxValue::Array(blob.data.iter().map(|&b| HkxValue::U8(b)).collect()),
+                    ),
+                ],
+            )
+        } else {
+            let transforms = track_x
+                .iter()
+                .chain(track_x)
+                .map(|&x| translated_qs(x))
+                .collect();
+            object(
+                "hkaInterleavedUncompressedAnimation",
+                vec![
+                    member("duration", HkxValue::F32(duration)),
+                    member("numberOfTransformTracks", HkxValue::I32(num_tracks as i32)),
+                    member("numberOfFloatTracks", HkxValue::I32(0)),
+                    member("transforms", HkxValue::Array(transforms)),
+                    member("annotationTracks", HkxValue::Array(annotation_tracks)),
+                ],
+            )
+        };
+        anim_obj.name = Some("#clip".into());
+        let mut binding_obj = object(
+            "hkaAnimationBinding",
+            vec![
+                member("animation", HkxValue::Pointer(Some(0))),
+                member(
+                    "transformTrackToBoneIndices",
+                    HkxValue::Array(bound.iter().copied().map(HkxValue::I32).collect()),
+                ),
+            ],
+        );
+        binding_obj.name = Some("#binding".into());
+        HkxFile::from_tagxml(11, "hk_2015.1.0-r1", vec![anim_obj, binding_obj])
+    }
+
+    fn migrate_on_rig(hkx: HkxFile, rig: std::sync::Arc<Fo76RigBones>) -> HkxFile {
+        let mut hkx = migrate_2015_packfile_to_2014_with_warnings(
+            hkx,
+            Fo76MigrationOptions {
+                rig_bones: Some(rig),
+                ..Default::default()
+            },
+        )
+        .expect("migration")
+        .hkx;
+        decompress_spline_animations(&mut hkx).expect("decompress for inspection");
+        hkx
+    }
+
+    fn first_frame_track_x(hkx: &HkxFile) -> Vec<f32> {
+        let animation = &hkx.objects()[0];
+        let num_tracks = animation
+            .members
+            .iter()
+            .find(|m| m.name == "numberOfTransformTracks")
+            .and_then(|m| direct_member_as_i32(&m.value))
+            .unwrap() as usize;
+        let Some(HkxValue::Array(transforms)) = animation
+            .members
+            .iter()
+            .find(|m| m.name == "transforms")
+            .map(|m| &m.value)
+        else {
+            panic!("interleaved transforms");
+        };
+        transforms[..num_tracks]
+            .iter()
+            .map(|value| match value {
+                HkxValue::F32List(values) => values[0],
+                other => panic!("QsTransform expected, got {other:?}"),
+            })
+            .collect()
+    }
+
+    fn bound_bones(hkx: &HkxFile) -> Vec<i32> {
+        get_array_i32s(&hkx.objects()[1], "transformTrackToBoneIndices")
+    }
+
+    #[test]
+    fn rig_bones_reorder_a_full_body_clip_by_name_for_both_codecs() {
+        // Tracks carry their FO76 bone index as X so each one can be traced.
+        for spline in [false, true] {
+            let clip = rig_clip(spline, &[0.0, 1.0, 2.0, 3.0, 4.0], &[0, 1, 2, 3, 4]);
+            let hkx = migrate_on_rig(clip, supermutant_style_rig());
+
+            let x = first_frame_track_x(&hkx);
+            assert!(
+                x.iter()
+                    .zip([0.0, 1.0, 4.0, 2.0, 3.0])
+                    .all(|(got, want)| (got - want).abs() < 1e-3),
+                "spline={spline}: tracks must land on the FO4 bone of the same name, got {x:?}"
+            );
+            assert_eq!(bound_bones(&hkx), vec![0, 1, 2, 3, 4], "spline={spline}");
+        }
+    }
+
+    #[test]
+    fn rig_bones_skip_the_human_table_for_a_93_track_style_binding() {
+        // Non-identity binding that skips AimSource, like FO76's 93-track supermutant
+        // clips; the human tables would leave Spine1/LLeg_Thigh in FO76 order.
+        let clip = rig_clip(true, &[0.0, 1.0, 2.0, 4.0], &[0, 1, 2, 4]);
+        let hkx = migrate_on_rig(clip, supermutant_style_rig());
+
+        let x = first_frame_track_x(&hkx);
+        assert!(
+            x.iter()
+                .zip([0.0, 1.0, 4.0, 2.0])
+                .all(|(got, want)| (got - want).abs() < 1e-3),
+            "got {x:?}"
+        );
+        assert_eq!(bound_bones(&hkx), vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn rig_bones_rebind_a_partial_clip_without_moving_its_tracks() {
+        let clip = rig_clip(false, &[2.0, 4.0], &[2, 4]);
+        let hkx = migrate_on_rig(clip, supermutant_style_rig());
+
+        assert_eq!(first_frame_track_x(&hkx), vec![2.0, 4.0]);
+        assert_eq!(bound_bones(&hkx), vec![3, 2]);
+    }
+
+    #[test]
+    fn rig_bones_for_the_human_rig_keep_the_human_remap() {
+        let human = std::sync::Arc::new(Fo76RigBones {
+            source: FO76_BONES.iter().map(|bone| bone.to_string()).collect(),
+            target: FO4_BONES.iter().map(|bone| bone.to_string()).collect(),
+        });
+        let hkx = migrate_2015_packfile_to_2014_with_warnings(
+            make_96track_interleaved_hkx(),
+            Fo76MigrationOptions {
+                rig_bones: Some(human),
+                ..Default::default()
+            },
+        )
+        .expect("migration")
+        .hkx;
+
+        assert_eq!(
+            hkx.objects()[0]
+                .members
+                .iter()
+                .find(|m| m.name == "numberOfTransformTracks")
+                .and_then(|m| direct_member_as_i32(&m.value)),
+            Some(95),
+            "the human path strips AimSource from 96-track clips"
         );
     }
 

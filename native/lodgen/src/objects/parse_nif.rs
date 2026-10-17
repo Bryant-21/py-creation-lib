@@ -1349,7 +1349,7 @@ fn strip_data_prefix(s: &str) -> Option<String> {
 
 /// Build a 3x3 rotation matrix from the ref's (rotX,rotY,rotZ) in radians,
 /// using negated angles per ShapeDesc.cs:361-367 (R = Rx(-x)·Ry(-y)·Rz(-z)).
-fn rotation_from_ref(rot: [f32; 3]) -> [[f32; 3]; 3] {
+pub(crate) fn rotation_from_ref(rot: [f32; 3]) -> [[f32; 3]; 3] {
     let mx = rot_x(-rot[0]);
     let my = rot_y(-rot[1]);
     let mz = rot_z(-rot[2]);

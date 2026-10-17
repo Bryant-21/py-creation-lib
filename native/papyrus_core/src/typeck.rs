@@ -7,7 +7,8 @@ use crate::ast::*;
 use crate::profile::GameProfile;
 use crate::resolver::{Diagnostic, DiagnosticSeverity};
 use crate::source_resolver::SourceResolver;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -172,7 +173,7 @@ pub fn is_implicitly_assignable(
             matches!((&**c, &**p), (Object(a), Object(b)) if struct_qual_eq(a, b))
         }
         // Bool context: any type is truthy/falsy.
-        (Int, Bool) | (Float, Bool) | (String, Bool) | (Object(_), Bool) => true,
+        (None, Bool) | (Int, Bool) | (Float, Bool) | (String, Bool) | (Object(_), Bool) => true,
         // Var accepts / produces anything (FO4 / Starfield).
         (Var, _) | (_, Var) => true,
         _ => false,
@@ -183,10 +184,64 @@ pub fn is_implicitly_assignable(
 // Internal checker
 // ---------------------------------------------------------------------------
 
+/// What a call site needs from its callee: a function, or an event (callable
+/// like a function that returns nothing).
+struct CalleeSig {
+    return_type: std::string::String,
+    params: Vec<Parameter>,
+    is_global: bool,
+}
+
+impl CalleeSig {
+    fn of_function(f: &FunctionDef) -> Self {
+        Self {
+            return_type: f.return_type.clone(),
+            params: f.params.clone(),
+            is_global: f.is_global,
+        }
+    }
+}
+
+/// A script's own declarations and its ancestors'. `complete` is false when a
+/// link is missing from the import path: a member can only be proven absent
+/// from a complete chain, so incomplete chains never produce "does not exist".
+struct Chain {
+    scripts: Vec<Arc<ScriptNode>>,
+    complete: bool,
+}
+
+impl Chain {
+    fn callee(&self, name: &str) -> Option<CalleeSig> {
+        self.scripts.iter().find_map(|ast| {
+            if let Some(f) = ast
+                .functions
+                .iter()
+                .find(|f| f.name.eq_ignore_ascii_case(name))
+            {
+                return Some(CalleeSig::of_function(f));
+            }
+            ast.events
+                .iter()
+                .find(|e| e.name.eq_ignore_ascii_case(name))
+                .map(|e| CalleeSig {
+                    return_type: std::string::String::new(),
+                    params: e.params.clone(),
+                    is_global: false,
+                })
+        })
+    }
+}
+
+/// Skyrim has no `ScriptObject`; its state functions are compiler intrinsics.
+fn is_state_intrinsic(name: &str) -> bool {
+    ["gotostate", "getstate", "onbeginstate", "onendstate"]
+        .iter()
+        .any(|n| name.eq_ignore_ascii_case(n))
+}
+
 struct TypeChecker<'a> {
     ast: &'a ScriptNode,
     resolver: &'a SourceResolver,
-    #[allow(dead_code)]
     profile: GameProfile,
     types: TypeTable,
     casts: Vec<CastSite>,
@@ -198,6 +253,12 @@ struct TypeChecker<'a> {
     node_order: Vec<(NodeId, String)>,
     /// Script-level scope (properties + variables).
     script_scope: HashMap<std::string::String, PapyrusType>,
+    /// Expressions whose type could not be resolved. They are typed `None` for
+    /// codegen but exempt from assignability errors, so one unresolved name
+    /// is reported once instead of cascading into every use of its value.
+    unknown: HashSet<NodeId>,
+    /// Bare names that denote a script type (the receiver of a static call).
+    script_type_names: HashSet<NodeId>,
 }
 
 impl<'a> TypeChecker<'a> {
@@ -212,7 +273,258 @@ impl<'a> TypeChecker<'a> {
             node_ids: HashMap::new(),
             node_order: Vec::new(),
             script_scope: HashMap::new(),
+            unknown: HashSet::new(),
+            script_type_names: HashSet::new(),
         }
+    }
+
+    fn error(&mut self, pos: Pos, message: std::string::String) {
+        self.diagnostics.push(Diagnostic {
+            line: pos.line,
+            col: pos.col,
+            end_line: pos.end_line,
+            end_col: pos.end_col,
+            message,
+            severity: DiagnosticSeverity::Error,
+        });
+    }
+
+    fn chain(&self, script: &str) -> Chain {
+        let mut scripts: Vec<Arc<ScriptNode>> = Vec::new();
+        let mut current = script.to_owned();
+        loop {
+            if scripts.len() >= 20
+                || scripts
+                    .iter()
+                    .any(|a| a.name.eq_ignore_ascii_case(&current))
+            {
+                return Chain {
+                    scripts,
+                    complete: false,
+                };
+            }
+            let Some(ast) = self.resolver.parsed(&current) else {
+                return Chain {
+                    scripts,
+                    complete: false,
+                };
+            };
+            let parent = ast.parent.clone().filter(|p| !p.is_empty());
+            scripts.push(ast);
+            match parent {
+                Some(p) => current = p,
+                None => break,
+            }
+        }
+        let at_root = scripts
+            .last()
+            .is_some_and(|a| a.name.eq_ignore_ascii_case("ScriptObject"));
+        if self.profile.script_object_root && !at_root {
+            match self.resolver.parsed("ScriptObject") {
+                Some(root) => scripts.push(root),
+                None => {
+                    return Chain {
+                        scripts,
+                        complete: false,
+                    };
+                }
+            }
+        }
+        Chain {
+            scripts,
+            complete: true,
+        }
+    }
+
+    fn is_unknown(&self, id: NodeId) -> bool {
+        self.unknown.contains(&id)
+    }
+
+    fn assignable(&self, from: &PapyrusType, to: &PapyrusType) -> bool {
+        if let PapyrusType::Object(target) = to {
+            // Native-only pseudo-types that name an event or struct member by string.
+            let names_by_string = ["ScriptEventName", "CustomEventName", "StructVarName"]
+                .iter()
+                .any(|n| target.eq_ignore_ascii_case(n));
+            if names_by_string && *from == PapyrusType::String {
+                return true;
+            }
+            // `get_hierarchy` stops at the last explicit `Extends`.
+            if self.profile.script_object_root
+                && target.eq_ignore_ascii_case("ScriptObject")
+                && matches!(from, PapyrusType::Object(n) if !self.is_struct_type(n))
+            {
+                return true;
+            }
+        }
+        let resolver = self.resolver;
+        is_implicitly_assignable(from, to, &|child, parent| {
+            resolver
+                .get_hierarchy(child)
+                .iter()
+                .any(|s| s.eq_ignore_ascii_case(parent))
+        })
+    }
+
+    /// Bind call arguments to `sig`'s parameters the way codegen does (named
+    /// arguments by name, the rest positionally) and report what the stock
+    /// compiler rejects: surplus or unknown arguments, missing required ones,
+    /// and arguments not implicitly convertible to their parameter's type.
+    fn check_call_args(
+        &mut self,
+        callee: &str,
+        sig: &CalleeSig,
+        receiver: &str,
+        args: &[(NodeId, PapyrusType)],
+        arg_exprs: &[Expr],
+        arg_names: &[Option<std::string::String>],
+        pos: Pos,
+    ) {
+        let params = &sig.params;
+        let mut bound: Vec<Option<usize>> = vec![None; params.len()];
+        let mut next_positional = 0usize;
+        for i in 0..args.len() {
+            let slot = match arg_names.get(i).and_then(|n| n.as_deref()) {
+                Some(name) => match params
+                    .iter()
+                    .position(|p| p.name.eq_ignore_ascii_case(name))
+                {
+                    Some(j) => j,
+                    None => {
+                        self.error(
+                            pos,
+                            format!("{name} is not a parameter of function {callee}"),
+                        );
+                        continue;
+                    }
+                },
+                None => {
+                    while next_positional < params.len() && bound[next_positional].is_some() {
+                        next_positional += 1;
+                    }
+                    if next_positional >= params.len() {
+                        self.error(
+                            pos,
+                            format!("too many arguments passed to function {callee}"),
+                        );
+                        break;
+                    }
+                    next_positional
+                }
+            };
+            if bound[slot].is_some() {
+                self.error(
+                    pos,
+                    format!(
+                        "parameter {} of function {callee} is specified more than once",
+                        params[slot].name
+                    ),
+                );
+                continue;
+            }
+            bound[slot] = Some(i);
+        }
+        for (j, param) in params.iter().enumerate() {
+            match bound[j] {
+                None if param.default.is_none() => self.error(
+                    pos,
+                    format!(
+                        "argument {} is not specified for function {callee} and has no default value",
+                        param.name
+                    ),
+                ),
+                Some(i) => {
+                    let (arg_id, arg_ty) = &args[i];
+                    let param_ty = self.parse_type(&param.ty);
+                    if !self.is_unknown(*arg_id) && !self.assignable(arg_ty, &param_ty) {
+                        self.error(
+                            pos,
+                            format!(
+                                "type mismatch on parameter {} ({}) of function {callee}: cannot pass {arg_ty} as {param_ty}",
+                                j + 1,
+                                param.name
+                            ),
+                        );
+                    }
+                }
+                None => {}
+            }
+        }
+        self.check_event_name_args(params, &bound, args, arg_exprs, receiver, pos);
+    }
+
+    /// A `ScriptEventName`/`CustomEventName` string literal must name an event
+    /// the sender declares — else the registration or send silently does nothing.
+    /// The sender is the call's `ScriptObject` argument (`RegisterForRemoteEvent`,
+    /// `RegisterForCustomEvent`), otherwise the receiver (`SendCustomEvent`).
+    fn check_event_name_args(
+        &mut self,
+        params: &[Parameter],
+        bound: &[Option<usize>],
+        args: &[(NodeId, PapyrusType)],
+        arg_exprs: &[Expr],
+        receiver: &str,
+        pos: Pos,
+    ) {
+        let bound_of_type = |ty: &str| {
+            params
+                .iter()
+                .position(|p| p.ty.eq_ignore_ascii_case(ty))
+                .and_then(|j| bound[j])
+        };
+        for (kind, custom) in [("ScriptEventName", false), ("CustomEventName", true)] {
+            let Some(i) = bound_of_type(kind) else {
+                continue;
+            };
+            let Some(Expr::LiteralExpr {
+                value: LiteralValue::Str(event),
+                ..
+            }) = arg_exprs.get(i)
+            else {
+                continue;
+            };
+            let sender = match bound_of_type("ScriptObject") {
+                Some(s) => match &args[s] {
+                    (id, PapyrusType::Object(n)) if !self.is_unknown(*id) => n.clone(),
+                    _ => continue,
+                },
+                None => receiver.to_owned(),
+            };
+            let chain = self.chain(&sender);
+            let declared = chain.scripts.iter().any(|ast| {
+                if custom {
+                    ast.custom_events.iter().any(|e| e.eq_ignore_ascii_case(event))
+                } else {
+                    ast.events.iter().any(|e| e.name.eq_ignore_ascii_case(event))
+                }
+            });
+            if chain.complete && !declared {
+                let what = if custom { "a custom event" } else { "an event" };
+                self.error(
+                    pos,
+                    format!("{event} is not {what} on {sender} or one of its parents"),
+                );
+            }
+        }
+    }
+
+    /// Whether `name` spells a struct type this checker can see.
+    fn is_struct_type(&self, name: &str) -> bool {
+        let own_struct = |st: &str| {
+            self.ast
+                .structs
+                .iter()
+                .any(|s| s.name.eq_ignore_ascii_case(st))
+        };
+        if own_struct(name) {
+            return true;
+        }
+        name.split_once('#')
+            .or_else(|| name.rsplit_once(':'))
+            .is_some_and(|(owner, st)| {
+                (owner.eq_ignore_ascii_case(&self.ast.name) && own_struct(st))
+                    || self.resolver.has_struct(owner, st)
+            })
     }
 
     /// Look up the NodeId the shared walk assigned to `node`, recording it in
@@ -435,7 +747,9 @@ impl<'a> TypeChecker<'a> {
                         &val_ty,
                         *pos,
                     );
-                    self.check_assignable(&result_ty, &target_ty, target_id, *pos);
+                    if !self.is_unknown(val_id) {
+                        self.check_assignable(&result_ty, &target_ty, target_id, *pos);
+                    }
                 }
             }
             Stmt::ReturnStmt {
@@ -490,18 +804,27 @@ impl<'a> TypeChecker<'a> {
         scope: &HashMap<std::string::String, PapyrusType>,
     ) -> (NodeId, PapyrusType) {
         let id = self.record(crate::compiler::WalkNode::Expr(expr));
-        let ty = self.infer_expr(expr, scope);
+        let ty = match self.infer_expr(id, expr, scope) {
+            Some(ty) => ty,
+            None => {
+                self.unknown.insert(id);
+                PapyrusType::None
+            }
+        };
         self.types.set(id, ty.clone());
         (id, ty)
     }
 
+    /// `None` when the type is unresolvable; any error that makes it so has
+    /// already been reported.
     fn infer_expr(
         &mut self,
+        id: NodeId,
         expr: &Expr,
         scope: &HashMap<std::string::String, PapyrusType>,
-    ) -> PapyrusType {
+    ) -> Option<PapyrusType> {
         match expr {
-            Expr::LiteralExpr { ty, value, .. } => match ty.as_str() {
+            Expr::LiteralExpr { ty, value, .. } => Some(match ty.as_str() {
                 "int" => PapyrusType::Int,
                 "float" => PapyrusType::Float,
                 "bool" => PapyrusType::Bool,
@@ -514,39 +837,47 @@ impl<'a> TypeChecker<'a> {
                     LiteralValue::Float(_) => PapyrusType::Float,
                     LiteralValue::Str(_) => PapyrusType::String,
                 },
-            },
+            }),
 
-            Expr::NameExpr { name, .. } => {
+            Expr::NameExpr { name, pos } => {
                 let lower = name.to_ascii_lowercase();
                 if lower == "self" {
-                    return PapyrusType::Object(self.ast.name.clone());
+                    return Some(PapyrusType::Object(self.ast.name.clone()));
                 }
                 if lower == "parent" {
-                    return self
-                        .ast
-                        .parent
-                        .as_deref()
-                        .map(|p| PapyrusType::Object(p.to_owned()))
-                        .unwrap_or(PapyrusType::None);
-                }
-                scope
-                    .get(&lower)
-                    .cloned()
-                    .or_else(|| {
+                    return Some(
                         self.ast
                             .parent
                             .as_deref()
-                            .and_then(|parent| self.hierarchy_property_ty(parent, name))
-                    })
-                    .unwrap_or(PapyrusType::None)
+                            .map(|p| PapyrusType::Object(p.to_owned()))
+                            .unwrap_or(PapyrusType::None),
+                    );
+                }
+                if let Some(t) = scope.get(&lower).cloned().or_else(|| {
+                    self.ast
+                        .parent
+                        .as_deref()
+                        .and_then(|parent| self.hierarchy_property_ty(parent, name))
+                }) {
+                    return Some(t);
+                }
+                if self.resolver.script_exists(name) {
+                    self.script_type_names.insert(id);
+                    return Some(PapyrusType::None);
+                }
+                if self.chain(&self.ast.name).complete {
+                    self.error(*pos, format!("variable {name} is undefined"));
+                }
+                None
             }
 
-            Expr::ParentExpr { .. } => self
-                .ast
-                .parent
-                .as_deref()
-                .map(|p| PapyrusType::Object(p.to_owned()))
-                .unwrap_or(PapyrusType::None),
+            Expr::ParentExpr { .. } => Some(
+                self.ast
+                    .parent
+                    .as_deref()
+                    .map(|p| PapyrusType::Object(p.to_owned()))
+                    .unwrap_or(PapyrusType::None),
+            ),
 
             Expr::CastExpr {
                 expr: inner,
@@ -554,7 +885,7 @@ impl<'a> TypeChecker<'a> {
                 ..
             } => {
                 self.visit_expr(inner, scope);
-                self.parse_type(target_type)
+                Some(self.parse_type(target_type))
             }
 
             Expr::BinaryExpr {
@@ -565,101 +896,202 @@ impl<'a> TypeChecker<'a> {
             } => {
                 let (left_id, left_ty) = self.visit_expr(left, scope);
                 let (right_id, right_ty) = self.visit_expr(right, scope);
-                self.binary_result_type(op, left_id, &left_ty, right_id, &right_ty, *pos)
+                let ty = self.binary_result_type(op, left_id, &left_ty, right_id, &right_ty, *pos);
+                let comparison = matches!(
+                    op.as_str(),
+                    "==" | "!=" | "<" | "<=" | ">" | ">=" | "&&" | "||"
+                );
+                (comparison || !(self.is_unknown(left_id) || self.is_unknown(right_id)))
+                    .then_some(ty)
             }
 
             Expr::UnaryExpr { op, operand, .. } => {
-                let (_oid, oty) = self.visit_expr(operand, scope);
+                let (oid, oty) = self.visit_expr(operand, scope);
                 match op.as_str() {
-                    "!" => PapyrusType::Bool,
-                    _ => oty,
+                    "!" => Some(PapyrusType::Bool),
+                    _ => (!self.is_unknown(oid)).then_some(oty),
                 }
             }
 
-            Expr::CallExpr { args, function, .. } => {
-                for a in args {
-                    self.visit_expr(a, scope);
+            Expr::CallExpr {
+                args,
+                arg_names,
+                function,
+                pos,
+            } => {
+                let arg_tys: Vec<(NodeId, PapyrusType)> =
+                    args.iter().map(|a| self.visit_expr(a, scope)).collect();
+                // `new Struct` parses as a synthetic call; codegen types it itself.
+                if function.starts_with("new ") {
+                    return Some(PapyrusType::None);
                 }
+                if function == "<expr>" {
+                    return None;
+                }
+                let own = self.chain(&self.ast.name);
                 let imports: Vec<String> = self
                     .ast
                     .imports
                     .iter()
                     .map(|i| i.script_name.clone())
                     .collect();
-                self.resolver
-                    .get_function_return_type(&self.ast.name, function)
-                    .or_else(|| {
-                        self.resolver
-                            .find_imported_global(&imports, function)
-                            .map(|(_, f)| f.return_type)
-                    })
-                    .map(|t| self.parse_type(&t))
-                    .unwrap_or(PapyrusType::None)
+                let sig = own.callee(function).or_else(|| {
+                    self.resolver
+                        .find_imported_global(&imports, function)
+                        .map(|(_, f)| CalleeSig::of_function(&f))
+                });
+                match sig {
+                    Some(sig) => {
+                        let ast = self.ast;
+                        self.check_call_args(
+                            function, &sig, &ast.name, &arg_tys, args, arg_names, *pos,
+                        );
+                        Some(self.parse_type(&sig.return_type))
+                    }
+                    None => {
+                        if own.complete && !is_state_intrinsic(function) {
+                            self.error(
+                                *pos,
+                                format!("{function} is not a function or does not exist"),
+                            );
+                        }
+                        None
+                    }
+                }
             }
 
             Expr::DotCallExpr {
                 object,
                 method,
                 args,
-                ..
+                arg_names,
+                pos,
             } => {
-                let (_oid, obj_ty) = self.visit_expr(object, scope);
-                for a in args {
-                    self.visit_expr(a, scope);
-                }
+                let (oid, obj_ty) = self.visit_expr(object, scope);
+                let arg_tys: Vec<(NodeId, PapyrusType)> =
+                    args.iter().map(|a| self.visit_expr(a, scope)).collect();
                 // Array built-in methods: the search methods return Int; the
                 // mutators (Add/Insert/Remove/RemoveLast/Clear) are void.
                 if matches!(obj_ty, PapyrusType::Array(_)) {
-                    match method.to_ascii_lowercase().as_str() {
-                        "find" | "rfind" | "findstruct" | "rfindstruct" => return PapyrusType::Int,
+                    return match method.to_ascii_lowercase().as_str() {
+                        "find" | "rfind" | "findstruct" | "rfindstruct" => Some(PapyrusType::Int),
                         "add" | "insert" | "remove" | "removelast" | "clear" => {
-                            return PapyrusType::None;
+                            Some(PapyrusType::None)
                         }
-                        _ => {}
+                        _ => {
+                            self.error(*pos, format!("{method} is not a function on arrays"));
+                            None
+                        }
+                    };
+                }
+                let is_static = self.script_type_names.contains(&oid);
+                let script_name = match (&obj_ty, &**object) {
+                    (PapyrusType::Object(n), _) => n.clone(),
+                    // A script TYPE name calling a global function on it (e.g.
+                    // `Utility.RandomFloat()`, `Math.Cos()`).
+                    (_, Expr::NameExpr { name, .. }) if is_static => name.clone(),
+                    _ => return None,
+                };
+                let chain = self.chain(&script_name);
+                match chain.callee(method) {
+                    Some(sig) => {
+                        if is_static && !sig.is_global {
+                            self.error(
+                                *pos,
+                                format!(
+                                    "cannot call the member function {method} alone or on a type, must call it on a variable"
+                                ),
+                            );
+                        }
+                        let callee = format!("{script_name}.{method}");
+                        self.check_call_args(
+                            &callee,
+                            &sig,
+                            &script_name,
+                            &arg_tys,
+                            args,
+                            arg_names,
+                            *pos,
+                        );
+                        Some(self.parse_type(&sig.return_type))
+                    }
+                    None => {
+                        if chain.complete && !is_state_intrinsic(method) {
+                            self.error(
+                                *pos,
+                                format!(
+                                    "{method} is not a function or does not exist on script {script_name}"
+                                ),
+                            );
+                        }
+                        None
                     }
                 }
-                let script_name = match &obj_ty {
-                    PapyrusType::Object(n) => n.clone(),
-                    // Receiver may be a script TYPE name calling a global function
-                    // on it (e.g. `Utility.RandomFloat()`, `Math.Cos()`).
-                    _ => match &**object {
-                        Expr::NameExpr { name, .. } if self.resolver.script_exists(name) => {
-                            name.clone()
-                        }
-                        _ => std::string::String::new(),
-                    },
-                };
-                self.resolver
-                    .get_function_return_type(&script_name, method)
-                    .map(|t| self.parse_type(&t))
-                    .unwrap_or(PapyrusType::None)
             }
 
-            Expr::DotExpr { object, member, .. } => {
-                let (_oid, obj_ty) = self.visit_expr(object, scope);
+            Expr::DotExpr {
+                object,
+                member,
+                pos,
+            } => {
+                let (oid, obj_ty) = self.visit_expr(object, scope);
                 // Array pseudo-property `.Length` is Int.
                 if matches!(obj_ty, PapyrusType::Array(_)) && member.eq_ignore_ascii_case("length")
                 {
-                    return PapyrusType::Int;
+                    return Some(PapyrusType::Int);
                 }
                 // Same-script struct member access.
                 if let Some(t) = self.struct_member_ty(&obj_ty.to_string(), member) {
-                    return t;
+                    return Some(t);
                 }
-                let script_name = match &obj_ty {
-                    PapyrusType::Object(n) => n.clone(),
-                    _ => std::string::String::new(),
+                let PapyrusType::Object(script_name) = &obj_ty else {
+                    return None;
                 };
-                self.hierarchy_property_ty(&script_name, member)
-                    .unwrap_or(PapyrusType::None)
+                if let Some(t) = self.hierarchy_property_ty(script_name, member) {
+                    return Some(t);
+                }
+                if self.is_unknown(oid) {
+                    return None;
+                }
+                if self.is_struct_type(script_name) {
+                    self.error(
+                        *pos,
+                        format!("{member} is not a member of struct {script_name}"),
+                    );
+                } else if script_name.eq_ignore_ascii_case(&self.ast.name) {
+                    if let Some(v) = self
+                        .ast
+                        .variables
+                        .iter()
+                        .find(|v| v.name.eq_ignore_ascii_case(member))
+                    {
+                        return Some(self.parse_type(&v.ty));
+                    }
+                    if self.chain(script_name).complete {
+                        self.error(
+                            *pos,
+                            format!(
+                                "{member} is not a property on script {script_name} or one of its parents"
+                            ),
+                        );
+                    }
+                } else if self.chain(script_name).complete {
+                    self.error(
+                        *pos,
+                        format!(
+                            "{member} is not a property on script {script_name} or one of its parents"
+                        ),
+                    );
+                }
+                None
             }
 
             Expr::ArrayAccessExpr { array, index, .. } => {
                 let (_aid, arr_ty) = self.visit_expr(array, scope);
                 self.visit_expr(index, scope);
                 match arr_ty {
-                    PapyrusType::Array(elem) => *elem,
-                    _ => PapyrusType::None,
+                    PapyrusType::Array(elem) => Some(*elem),
+                    _ => None,
                 }
             }
 
@@ -668,7 +1100,7 @@ impl<'a> TypeChecker<'a> {
             } => {
                 self.visit_expr(size, scope);
                 let elem = self.parse_type(element_type);
-                PapyrusType::Array(Box::new(elem))
+                Some(PapyrusType::Array(Box::new(elem)))
             }
         }
     }
@@ -711,14 +1143,10 @@ impl<'a> TypeChecker<'a> {
             // Void return type — nothing to check.
             return;
         }
-        let resolver = self.resolver;
-        let ok = is_implicitly_assignable(from, to, &|child, parent| {
-            resolver
-                .get_hierarchy(child)
-                .iter()
-                .any(|s| s.eq_ignore_ascii_case(parent))
-        });
-        if ok {
+        if self.is_unknown(node) {
+            return;
+        }
+        if self.assignable(from, to) {
             if from != to {
                 self.casts.push(CastSite {
                     node,
@@ -826,6 +1254,7 @@ mod tests {
             (None, Object("ObjectReference".into()), true),
             (Object("Actor".into()), String, true),
             (String, Int, false),
+            (None, Bool, true),
             (Object("Ns:Owner#Pair".into()), Object("ns:owner:pair".into()), true),
             (
                 Array(Box::new(Object("Owner#Pair".into()))),

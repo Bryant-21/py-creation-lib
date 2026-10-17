@@ -1,7 +1,9 @@
 use std::collections::{BTreeMap, HashMap};
 use std::io::Read;
 
-use swf::{ColorTransform, FillStyle, Matrix, PlaceObjectAction, Shape, ShapeRecord, Sprite, Tag, TagCode};
+use swf::{
+    ColorTransform, FillStyle, Matrix, PlaceObjectAction, Shape, ShapeRecord, Sprite, Tag, TagCode,
+};
 use tiny_skia::{FillRule, Paint, Path, PathBuilder, Pixmap, Stroke, Transform};
 
 #[derive(Clone)]
@@ -11,13 +13,14 @@ struct Placement {
     color: ColorTransform,
 }
 
-struct Draw {
-    path: Path,
-    fill: FillStyle,
-    color: ColorTransform,
-    stroke: Option<Stroke>,
-    transform: Transform,
-    bounds: tiny_skia::Rect,
+pub(crate) struct Draw {
+    pub(crate) path: Path,
+    pub(crate) fill: FillStyle,
+    pub(crate) color: ColorTransform,
+    pub(crate) stroke: Option<Stroke>,
+    pub(crate) transform: Transform,
+    pub(crate) bounds: tiny_skia::Rect,
+    pub(crate) fill_rule: FillRule,
 }
 
 #[derive(Clone, Copy)]
@@ -73,7 +76,7 @@ fn paths(edges: &[Edge], close: bool) -> Result<Path, String> {
     path.finish().ok_or_else(|| "Empty SWF path".into())
 }
 
-fn transform(matrix: Matrix) -> Transform {
+pub(crate) fn transform(matrix: Matrix) -> Transform {
     Transform::from_row(
         matrix.a.to_f32(),
         matrix.b.to_f32(),
@@ -95,7 +98,7 @@ fn tint(value: swf::Color, color: ColorTransform) -> tiny_skia::Color {
     )
 }
 
-fn shader<'a>(
+pub(crate) fn shader<'a>(
     style: &FillStyle,
     color: ColorTransform,
     bitmap: Option<&'a Pixmap>,
@@ -168,7 +171,11 @@ fn shader<'a>(
     }
 }
 
-fn shape_draws(shape: &Shape, matrix: Matrix, color: ColorTransform) -> Result<Vec<Draw>, String> {
+pub(crate) fn shape_draws(
+    shape: &Shape,
+    matrix: Matrix,
+    color: ColorTransform,
+) -> Result<Vec<Draw>, String> {
     let b = &shape.shape_bounds;
     let bounds = tiny_skia::Rect::from_ltrb(
         b.x_min.to_pixels() as f32,
@@ -252,6 +259,11 @@ fn shape_draws(shape: &Shape, matrix: Matrix, color: ColorTransform) -> Result<V
             stroke: None,
             transform: transform(matrix),
             bounds,
+            fill_rule: if shape.flags.contains(swf::ShapeFlag::NON_ZERO_WINDING_RULE) {
+                FillRule::Winding
+            } else {
+                FillRule::EvenOdd
+            },
         });
     }
     for (i, edges) in line_edges {
@@ -277,6 +289,7 @@ fn shape_draws(shape: &Shape, matrix: Matrix, color: ColorTransform) -> Result<V
             stroke: Some(stroke),
             transform: transform(matrix),
             bounds,
+            fill_rule: FillRule::EvenOdd,
         });
     }
     Ok(draws)
@@ -380,7 +393,7 @@ fn collect<'a>(
     Ok(())
 }
 
-fn bitmap_image(tag: &Tag<'_>, color: ColorTransform) -> Result<Pixmap, String> {
+pub(crate) fn bitmap_image(tag: &Tag<'_>, color: ColorTransform) -> Result<Pixmap, String> {
     let Tag::DefineBitsLossless(bits) = tag else {
         return Err("Unsupported sprite bitmap encoding".into());
     };
@@ -572,7 +585,7 @@ pub fn render_symbol_png(
         if let Some(stroke) = draw.stroke {
             pixmap.stroke_path(&draw.path, &paint, &stroke, transform, None);
         } else {
-            pixmap.fill_path(&draw.path, &paint, FillRule::Winding, transform, None);
+            pixmap.fill_path(&draw.path, &paint, draw.fill_rule, transform, None);
         }
     }
     if !pixmap.pixels().iter().any(|p| p.alpha() != 0) {

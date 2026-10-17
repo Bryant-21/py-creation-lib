@@ -1,7 +1,7 @@
 use havok_native::convert::creature_ragdoll::{
     BoneMappingIr, ConstraintIr, ConstraintKindIr, ConvexHullIr, CreatureRagdollError,
-    CreatureRagdollIr, LimitedHingeIr, MassPropertiesIr, QsTransformIr, RagdollLimitsIr,
-    RagdollShapeIr, RigBoneIr, RigSkeletonIr, RigidBodyIr,
+    CreatureRagdollIr, HingeIr, LimitedHingeIr, MassPropertiesIr, PrismaticIr, QsTransformIr,
+    RagdollLimitsIr, RagdollShapeIr, RigBoneIr, RigSkeletonIr, RigidBodyIr,
     lower_primitive_shapes_to_fo4_convex_hulls, reconstruct_fo4_creature_ragdoll_packfile,
     reconstruct_fo4_embedded_creature_ragdoll,
 };
@@ -411,5 +411,131 @@ fn invalid_ragdoll_ir_is_rejected_before_packing() {
     assert!(matches!(
         reconstruct_fo4_creature_ragdoll_packfile(&non_finite),
         Err(CreatureRagdollError::NonFinite { path }) if path.ends_with("inertia[1]")
+    ));
+}
+
+#[test]
+fn malleable_constraints_preserve_strength_inner_data_and_bridge_after_packing() {
+    let cases = [
+        (
+            ConstraintKindIr::Hinge(HingeIr {
+                frame_a: QsTransformIr::identity(),
+                frame_b: QsTransformIr::identity(),
+            }),
+            "hkpHingeConstraintData",
+            5,
+        ),
+        (
+            mechanical_ir().constraints[0].kind.clone(),
+            "hkpLimitedHingeConstraintData",
+            10,
+        ),
+        (
+            ConstraintKindIr::Prismatic(PrismaticIr {
+                frame_a: QsTransformIr::identity(),
+                frame_b: QsTransformIr::identity(),
+                min_distance: -0.7,
+                max_distance: 1.3,
+                max_friction_force: 2.0,
+            }),
+            "hkpPrismaticConstraintData",
+            10,
+        ),
+        (
+            ConstraintKindIr::Ragdoll(RagdollLimitsIr {
+                frame_a: QsTransformIr::identity(),
+                frame_b: QsTransformIr::identity(),
+                cone_limit: 0.6,
+                plane_min: -0.4,
+                plane_max: 0.7,
+                twist_min: -0.2,
+                twist_max: 0.2,
+                max_friction_torque: 3.0,
+            }),
+            "hkpRagdollConstraintData",
+            18,
+        ),
+    ];
+    for (inner, class_name, solver_results) in cases {
+        let mut ir = mechanical_ir();
+        ir.constraints[0].kind = inner.clone();
+        let plain =
+            HkxFile::read(&reconstruct_fo4_creature_ragdoll_packfile(&ir).unwrap()).unwrap();
+        let expected_inner = plain
+            .objects()
+            .iter()
+            .find(|object| object.class_name == class_name)
+            .unwrap();
+        ir.constraints[0].kind = ConstraintKindIr::Malleable {
+            inner: Box::new(inner),
+            strength: 0.9,
+        };
+        let packed = reconstruct_fo4_creature_ragdoll_packfile(&ir).unwrap();
+        let embedded = reconstruct_fo4_embedded_creature_ragdoll(&ir).unwrap();
+        for bytes in [packed, embedded.binary_data] {
+            let reread = HkxFile::read(&bytes).unwrap();
+            let (wrapper_index, wrapper) = reread
+                .objects()
+                .iter()
+                .enumerate()
+                .find(|(_, object)| object.class_name == "hknpMalleableConstraintData")
+                .unwrap();
+            let field = |name: &str| {
+                &wrapper
+                    .members
+                    .iter()
+                    .find(|member| member.name == name)
+                    .unwrap()
+                    .value
+            };
+            assert_eq!(wrapper.signature, 0x56be_acef);
+            assert_eq!(field("strength"), &HkxValue::F32(0.9));
+            assert_eq!(field("wantsRuntime"), &HkxValue::Bool(true));
+            let HkxValue::Pointer(Some(inner_index)) = field("constraintData") else {
+                panic!("missing inner constraint")
+            };
+            let inner = &reread.objects()[*inner_index];
+            assert_eq!(inner.class_name, class_name);
+            assert_eq!(inner.members, expected_inner.members);
+            let atom = field("atom").as_object_members().unwrap();
+            for (name, expected) in [
+                ("type", HkxValue::U16(1)),
+                ("numSolverResults", HkxValue::I32(solver_results)),
+                ("constraintData", HkxValue::Pointer(Some(wrapper_index))),
+            ] {
+                assert_eq!(
+                    atom.iter()
+                        .find(|member| member.name == name)
+                        .unwrap()
+                        .value,
+                    expected
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn malleable_constraint_rejects_invalid_strength_and_inner_limits() {
+    for strength in [f32::NAN, f32::INFINITY, -0.01] {
+        let mut ir = mechanical_ir();
+        ir.constraints[0].kind = ConstraintKindIr::Malleable {
+            inner: Box::new(ir.constraints[0].kind.clone()),
+            strength,
+        };
+        assert!(reconstruct_fo4_creature_ragdoll_packfile(&ir).is_err());
+    }
+    let mut ir = mechanical_ir();
+    let ConstraintKindIr::LimitedHinge(mut hinge) = ir.constraints[0].kind.clone() else {
+        unreachable!()
+    };
+    hinge.min_angle = 2.0;
+    ir.constraints[0].kind = ConstraintKindIr::Malleable {
+        inner: Box::new(ConstraintKindIr::LimitedHinge(hinge)),
+        strength: 0.9,
+    };
+    assert!(matches!(
+        reconstruct_fo4_creature_ragdoll_packfile(&ir),
+        Err(CreatureRagdollError::InvalidAngleRange { .. })
     ));
 }

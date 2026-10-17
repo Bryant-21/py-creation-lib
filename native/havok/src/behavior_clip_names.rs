@@ -8,29 +8,50 @@ use crate::hkx::types::HkxValue;
 /// Extract unique animation names from `hkbClipGenerator.animationName` in a single
 /// behavior `.hkx` file.
 pub fn collect_behavior_clip_names_from_file(path: &Path) -> HashSet<String> {
-    let mut clip_names = HashSet::new();
+    read_behavior_names(path).clips
+}
+
+#[derive(Default)]
+pub struct BehaviorNames {
+    pub clips: HashSet<String>,
+    pub mounted: Vec<String>,
+}
+
+pub fn read_behavior_names(path: &Path) -> BehaviorNames {
+    let mut names = BehaviorNames::default();
     let Ok(data) = std::fs::read(path) else {
-        return clip_names;
+        return names;
     };
     let Ok(hkx) = read_packfile(&data) else {
-        return clip_names;
+        return names;
     };
     for obj in hkx.objects() {
-        if obj.class_name != "hkbClipGenerator" {
-            continue;
-        }
+        let member_name = match obj.class_name.as_str() {
+            "hkbClipGenerator" => "animationName",
+            "hkbBehaviorReferenceGenerator" => "behaviorName",
+            _ => continue,
+        };
         for m in &obj.members {
-            if m.name != "animationName" {
+            if m.name != member_name {
                 continue;
             }
             if let HkxValue::String { value, .. } = &m.value {
                 if !value.is_empty() {
-                    clip_names.insert(value.clone());
+                    if member_name == "animationName" {
+                        names.clips.insert(value.clone());
+                    } else {
+                        let normalized = value.replace('/', "\\");
+                        names.mounted.push(if normalized.to_lowercase().ends_with(".hkx") {
+                            normalized
+                        } else {
+                            format!("{normalized}.hkx")
+                        });
+                    }
                 }
             }
         }
     }
-    clip_names
+    names
 }
 
 /// Extract unique animation names from `hkbClipGenerator.animationName` across

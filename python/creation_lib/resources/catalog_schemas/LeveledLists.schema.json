@@ -1,0 +1,265 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://modbox21.local/catalog_schemas/LeveledLists.schema.json",
+  "title": "Leveled lists",
+  "allOf": [{"$ref": "envelope.schema.json"}],
+  "$defs": {
+    "formKeyOrNull": {"oneOf": [{"$ref": "envelope.schema.json#/$defs/formKey"}, {"type": "null"}]},
+    "value": {
+      "type": "object",
+      "description": "A list or entry number: literal plus the global and/or curve authored beside it",
+      "properties": {
+        "value": {"type": "number"},
+        "global": {"$ref": "envelope.schema.json#/$defs/formKey", "x-form-type": ["GLOB"]},
+        "curve": {"$ref": "envelope.schema.json#/$defs/formKey", "x-form-type": ["CURV"]},
+        "unresolved": {"type": "boolean"}
+      }
+    },
+    "condition": {
+      "type": "object",
+      "required": ["function"],
+      "properties": {
+        "function": {"type": "integer", "minimum": 0},
+        "op": {"enum": ["==", "!=", ">", ">=", "<", "<="]},
+        "or": {"type": "boolean"},
+        "swap": {"type": "boolean"},
+        "value": {"type": "number"},
+        "global": {"$ref": "envelope.schema.json#/$defs/formKey", "x-form-type": ["GLOB"]},
+        "run_on": {"type": "string"},
+        "reference": {"$ref": "envelope.schema.json#/$defs/formKey"},
+        "params": {
+          "type": "array",
+          "maxItems": 2,
+          "items": {
+            "oneOf": [
+              {"type": "null"},
+              {
+                "type": "object",
+                "properties": {"source": {"$ref": "envelope.schema.json#/$defs/formKey"}, "form": {"$ref": "#/$defs/formKeyOrNull"}}
+              }
+            ]
+          }
+        },
+        "unresolved": {"type": "boolean"}
+      }
+    }
+  },
+  "properties": {
+    "version": {"const": 1},
+    "settings": {
+      "type": "object",
+      "description": "Values for the whole feature. A later plugin's value replaces an earlier one.",
+      "properties": {
+        "source_plugin": {"type": "string", "title": "Source plugin", "description": "The plugin this catalog was written for."}
+      },
+      "title": "Settings"
+    },
+    "lists": {
+      "type": "array",
+      "description": "Leveled lists that roll the Fallout 76 way. One row per list, keyed by the list's record.",
+      "x-key": ["target"],
+      "items": {
+        "type": "object",
+        "properties": {
+          "source": {
+            "$ref": "envelope.schema.json#/$defs/formKey",
+            "title": "Converted from",
+            "description": "The Fallout 76 list this one was converted from. Only needed for lists that BACUP converted."
+          },
+          "target": {
+            "$ref": "envelope.schema.json#/$defs/formKey",
+            "x-form-type": ["LVLI", "LVLN"],
+            "title": "List",
+            "description": "The leveled list in your plugin or a master that rolls this way."
+          },
+          "editor_id": {"type": "string", "title": "Editor ID", "description": "The list's name, for your reference."},
+          "signature": {
+            "enum": ["LVLI", "LVLN"],
+            "title": "Kind",
+            "description": "LVLI is an item list; LVLN is a creature list.",
+            "x-enum-labels": {"LVLI": "Items (LVLI)", "LVLN": "Creatures (LVLN)"}
+          },
+          "scope": {
+            "enum": ["seventysix", "always"],
+            "title": "Applies",
+            "description": "Where the Fallout 76 rules apply.",
+            "x-enum-labels": {"seventysix": "Only in the SeventySix world", "always": "Everywhere"}
+          },
+          "flags": {
+            "type": "integer",
+            "minimum": 0,
+            "title": "How it rolls",
+            "description": "Tick the behaviours this list should have.",
+            "x-flags": {
+              "1": "Any item level",
+              "2": "Roll once per count",
+              "4": "Give every item",
+              "8": "Disable the actor if empty",
+              "64": "First passing item wins",
+              "128": "Step up a level band",
+              "512": "Weighted",
+              "16": "Dispenser (ignored)",
+              "32": "Hide marker (ignored)",
+              "256": "Workshop list (ignored)"
+            }
+          },
+          "chance_none": {
+            "$ref": "#/$defs/value",
+            "title": "Chance of nothing",
+            "description": "Percent chance that rolling the whole list gives nothing."
+          },
+          "max_count": {
+            "$ref": "#/$defs/value",
+            "title": "Most of one item",
+            "description": "Upper limit on how many of one item a roll can give; 0 means no limit."
+          },
+          "conditions": {
+            "type": "array",
+            "items": {"$ref": "#/$defs/condition"},
+            "x-widget": "conditions",
+            "title": "List checks",
+            "description": "Checks the whole list must pass; otherwise Fallout 4 rolls it."
+          },
+          "quest": {
+            "$ref": "envelope.schema.json#/$defs/formKey",
+            "x-form-type": ["QUST"],
+            "title": "Quest",
+            "description": "Optional quest whose aliases the checks may refer to."
+          },
+          "entries": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["form"],
+              "properties": {
+                "form": {
+                  "$ref": "envelope.schema.json#/$defs/formKey",
+                  "title": "Item",
+                  "description": "The item, or another leveled list, this row gives."
+                },
+                "level": {
+                  "$ref": "#/$defs/value",
+                  "title": "Level",
+                  "description": "The player level from which this row can be picked."
+                },
+                "count": {"$ref": "#/$defs/value", "title": "Count", "description": "How many of the item are given."},
+                "chance_none": {
+                  "$ref": "#/$defs/value",
+                  "title": "Chance of nothing",
+                  "description": "Percent chance this row gives nothing when picked (its weight when the list is Weighted)."
+                },
+                "conditions": {
+                  "type": "array",
+                  "items": {"$ref": "#/$defs/condition"},
+                  "x-widget": "conditions",
+                  "title": "Item checks",
+                  "description": "Checks this row must pass before it can be picked."
+                },
+                "extra": {
+                  "type": "object",
+                  "title": "Owner and condition",
+                  "description": "Who owns the item when it is handed out and how worn it is.",
+                  "properties": {
+                    "owner": {
+                      "$ref": "envelope.schema.json#/$defs/formKey",
+                      "x-form-type": ["FACT", "NPC_"],
+                      "title": "Owner",
+                      "description": "The faction or NPC that owns the item."
+                    },
+                    "rank": {
+                      "type": "integer",
+                      "title": "Faction rank",
+                      "description": "Rank in the owning faction needed to take it without stealing. Beats the global."
+                    },
+                    "global": {
+                      "$ref": "envelope.schema.json#/$defs/formKey",
+                      "x-form-type": ["GLOB"],
+                      "title": "Required global",
+                      "description": "A global the owner's ownership check reads. Used only when no rank is set."
+                    },
+                    "health": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 1,
+                      "title": "Item condition",
+                      "description": "Condition of the handed-out item as a fraction of new (1 is brand new)."
+                    }
+                  }
+                }
+              }
+            },
+            "title": "Items",
+            "description": "What the list can give, in order."
+          },
+          "remove": {"$ref": "envelope.schema.json#/$defs/removeFlag"}
+        },
+        "if": {"not": {"required": ["remove"]}},
+        "then": {"required": ["target"]}
+      },
+      "title": "Lists"
+    },
+    "condition_forms": {
+      "type": "object",
+      "description": "Named groups of checks that other conditions can point at; key is the record they belong to.",
+      "x-key": "map",
+      "propertyNames": {"$ref": "envelope.schema.json#/$defs/formKey"},
+      "additionalProperties": {
+        "anyOf": [
+          {"type": "array", "items": {"$ref": "#/$defs/condition"}, "x-widget": "conditions"},
+          {"$ref": "envelope.schema.json#/$defs/removeMarker"}
+        ]
+      },
+      "title": "Shared checks"
+    },
+    "curves": {
+      "type": "object",
+      "description": "Value curves a list or item number can follow instead of a fixed value; each is a list of [x, y] points.",
+      "x-key": "map",
+      "propertyNames": {"$ref": "envelope.schema.json#/$defs/formKey"},
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "points": {
+            "type": "array",
+            "items": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2},
+            "x-widget": "curve"
+          },
+          "remove": {"$ref": "envelope.schema.json#/$defs/removeFlag"}
+        }
+      },
+      "title": "Curves"
+    },
+    "regions": {
+      "type": "object",
+      "description": "Map regions drawn as polygons for the region checks. Comes from the Fallout 76 conversion.",
+      "x-key": "map",
+      "propertyNames": {"$ref": "envelope.schema.json#/$defs/formKey"},
+      "additionalProperties": {"anyOf": [{"type": "object"}, {"$ref": "envelope.schema.json#/$defs/removeMarker"}]},
+      "title": "Regions"
+    },
+    "delegates": {
+      "type": "object",
+      "description": "Actor that takes its starting inventory from a creature list: the actor, then the list.",
+      "x-key": "map",
+      "propertyNames": {"$ref": "envelope.schema.json#/$defs/formKey"},
+      "additionalProperties": {
+        "oneOf": [{"$ref": "envelope.schema.json#/$defs/formKey"}, {"$ref": "envelope.schema.json#/$defs/removeMarker"}]
+      },
+      "title": "Template actors"
+    },
+    "ess": {
+      "type": "object",
+      "description": "Fallout 76 world spawn data. Generated by BACUP from the Fallout 76 data; you normally leave it alone. Read only from SeventySix.esm.json.",
+      "x-opaque": true,
+      "title": "Encounter spawns"
+    },
+    "diagnostics": {
+      "type": "object",
+      "description": "Notes from the last conversion. Generated by BACUP from the Fallout 76 data; you normally leave it alone.",
+      "x-opaque": true,
+      "title": "Diagnostics"
+    }
+  },
+  "description": "Gives Fallout 4 loot and creature lists Fallout 76's rules: per-item conditions, weights, curves and flags.",
+  "x-help": "A leveled list decides what a container, a creature or a spawn gives when it is rolled. Each entry here replaces how one of your plugin's lists (or a master's list) rolls, so it can follow Fallout 76 rules instead of Fallout 4's.\n\nUse 'Import from plugin' to copy a list from your plugin; it then rolls exactly as it does now. After that, tick behaviours under 'How it rolls', add checks to items (for example only when the player has a perk), or give the whole list checks.\n\nIf something in a list is not supported, Tales rolls that list the Fallout 4 way and the editor lists the reason under Problems. The list still saves."
+}

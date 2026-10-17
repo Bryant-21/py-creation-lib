@@ -1,0 +1,531 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://modbox21.local/catalog_schemas/Diseases.schema.json",
+  "title": "Diseases",
+  "allOf": [{"$ref": "envelope.schema.json"}],
+  "$defs": {
+    "optionalForm": {"oneOf": [{"$ref": "envelope.schema.json#/$defs/formKey"}, {"type": "null"}]},
+    "formList": {"type": "array", "items": {"$ref": "envelope.schema.json#/$defs/formKey"}}
+  },
+  "properties": {
+    "version": {"const": 1},
+    "settings": {
+      "type": "object",
+      "description": "How easily and how often diseases are caught. A later plugin's value replaces an earlier one.",
+      "properties": {
+        "min_player_level": {
+          "type": "number",
+          "title": "Lowest player level",
+          "description": "Players below this level never catch diseases.",
+          "minimum": 0
+        },
+        "global_immunity_seconds": {
+          "type": "number",
+          "title": "Immunity after any disease (s)",
+          "description": "After catching one disease, no new disease can be caught for this many seconds.",
+          "minimum": 0
+        },
+        "intervals": {
+          "type": "object",
+          "properties": {
+            "water": {
+              "type": "number",
+              "title": "Water (s)",
+              "description": "Seconds between rolls in dirty or toxic water.",
+              "minimum": 0
+            },
+            "hazard": {
+              "type": "number",
+              "title": "Hazard (s)",
+              "description": "Seconds between rolls in toxic air.",
+              "minimum": 0
+            }
+          },
+          "title": "Roll intervals",
+          "description": "Seconds between chance rolls while standing in water or a hazard."
+        },
+        "resistance": {
+          "$ref": "#/$defs/optionalForm",
+          "x-form-type": ["AVIF"],
+          "title": "Resistance value",
+          "description": "The actor value that lowers all disease chances (percent)."
+        },
+        "chance_multipliers": {
+          "type": "object",
+          "additionalProperties": {"$ref": "#/$defs/optionalForm"},
+          "x-form-type": ["AVIF"],
+          "title": "Chance reducers",
+          "x-key-title": "Source",
+          "description": "Actor values that cut the chance for one way of catching it (food, drink, water, bed...), in percent."
+        },
+        "endurance_multipliers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["endurance", "mult"],
+            "properties": {
+              "endurance": {"type": "number", "title": "Endurance", "description": "The Endurance value."},
+              "mult": {
+                "type": "number",
+                "title": "Chance factor",
+                "description": "Multiplies the chance (2 doubles it, 0.85 trims 15%)."
+              }
+            }
+          },
+          "title": "Endurance factors",
+          "description": "Chance factor by Endurance; low Endurance catches more.",
+          "x-columns": ["endurance", "mult"]
+        },
+        "bed_ignore_keyword": {
+          "$ref": "#/$defs/optionalForm",
+          "x-form-type": ["KYWD"],
+          "title": "Safe bed keyword",
+          "description": "Beds with this keyword never cause disease."
+        },
+        "dirty_water_contact": {
+          "$ref": "#/$defs/optionalForm",
+          "x-form-type": ["SPEL"],
+          "title": "Dirty water spell",
+          "description": "Water spell that counts as dirty rather than toxic."
+        },
+        "carriers": {
+          "type": "object",
+          "properties": {
+            "min_level": {
+              "type": "number",
+              "title": "Lowest creature level",
+              "description": "Creatures below this level are never carriers.",
+              "minimum": 0
+            },
+            "transmission_max": {
+              "type": "number",
+              "title": "Highest chance",
+              "description": "Cap on the chance per hit (percent).",
+              "minimum": 0,
+              "maximum": 100
+            },
+            "transmission_level_mult": {
+              "type": "number",
+              "title": "Chance per level",
+              "description": "How much each creature level adds to the chance.",
+              "minimum": 0
+            },
+            "ignore_min_level": {
+              "$ref": "#/$defs/formList",
+              "x-form-type": ["KYWD"],
+              "title": "Ignore lowest level for",
+              "description": "Creature types that can be carriers at any level."
+            },
+            "exclude": {
+              "$ref": "#/$defs/formList",
+              "x-form-type": ["KYWD"],
+              "title": "Never carriers",
+              "description": "Creature types that are never diseased."
+            }
+          },
+          "title": "Creature carriers",
+          "description": "Which creatures are diseased and how often they pass it on."
+        },
+        "antibiotic": {
+          "type": "object",
+          "properties": {
+            "card": {
+              "$ref": "envelope.schema.json#/$defs/formKey",
+              "x-form-type": ["PERK"],
+              "description": "First-rank perk of the card.",
+              "title": "Card perk"
+            },
+            "chances": {
+              "type": "array",
+              "items": {"type": "number"},
+              "title": "Cure chance per rank",
+              "description": "Percent chance that using a stimpak also cures one disease, for card rank 1 and 2.",
+              "x-columns": ["Rank 1", "Rank 2"]
+            },
+            "stimpaks": {
+              "$ref": "#/$defs/formList",
+              "x-form-type": ["ALCH"],
+              "title": "Stimpaks",
+              "description": "Stimpak items the card applies to."
+            }
+          },
+          "title": "Antibiotics card",
+          "description": "The Antibiotics perk card and the stimpaks it makes cure disease."
+        },
+        "allowed": {
+          "type": "object",
+          "properties": {
+            "player_level": {
+              "type": "number",
+              "title": "Level below which it applies",
+              "description": "Players under this level get the grace."
+            },
+            "distance": {
+              "type": "number",
+              "title": "Distance from the vault",
+              "description": "Units from the vault marker before diseases can be caught.",
+              "minimum": 0
+            },
+            "vault76_marker": {
+              "$ref": "#/$defs/optionalForm",
+              "title": "Vault marker",
+              "description": "The map marker the distance is measured from."
+            }
+          },
+          "title": "Starting-area grace",
+          "description": "Low-level players only catch diseases far from Vault 76."
+        },
+        "sounds": {
+          "type": "object",
+          "additionalProperties": {"$ref": "#/$defs/optionalForm"},
+          "x-form-type": ["SNDR"],
+          "title": "Sounds",
+          "x-key-title": "Sound role",
+          "description": "Sounds for catching and curing a disease."
+        }
+      },
+      "title": "Settings"
+    },
+    "diseases": {
+      "type": "array",
+      "description": "The disease spells. 'Immunity' is how many seconds the same disease cannot return after it ends.",
+      "x-key": ["spell"],
+      "x-order": "entries",
+      "items": {
+        "type": "object",
+        "properties": {
+          "spell": {
+            "$ref": "envelope.schema.json#/$defs/formKey",
+            "x-form-type": ["SPEL"],
+            "title": "Disease",
+            "description": "The disease spell."
+          },
+          "immunity_seconds": {
+            "type": "number",
+            "title": "Immunity after it ends (s)",
+            "description": "Seconds the same disease cannot return.",
+            "minimum": 0
+          },
+          "remove": {"$ref": "envelope.schema.json#/$defs/removeFlag"}
+        },
+        "if": {"not": {"required": ["remove"]}},
+        "then": {"required": ["spell"]}
+      },
+      "title": "Diseases"
+    },
+    "chance_rows": {
+      "type": "array",
+      "description": "Chance of a disease at a place: dirty or toxic water, a bed, an air hazard or a trap.",
+      "x-key": ["risk", "disease"],
+      "x-order": "entries",
+      "items": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "enum": ["water", "bed", "hazard", "trap"],
+            "title": "Where",
+            "description": "What kind of place the risk is.",
+            "x-enum-labels": {"water": "Water", "bed": "Bed", "hazard": "Toxic air", "trap": "Trap"}
+          },
+          "risk": {
+            "$ref": "envelope.schema.json#/$defs/formKey",
+            "title": "Risk record",
+            "description": "The water spell, bed type or trap effect this row is for."
+          },
+          "disease": {
+            "$ref": "envelope.schema.json#/$defs/formKey",
+            "x-form-type": ["SPEL"],
+            "x-ref": "diseases",
+            "title": "Disease",
+            "description": "The disease it can cause."
+          },
+          "chance": {
+            "type": "number",
+            "title": "Chance (%)",
+            "description": "Percent chance per roll.",
+            "minimum": 0,
+            "maximum": 100
+          },
+          "remove": {"$ref": "envelope.schema.json#/$defs/removeFlag"}
+        },
+        "if": {"not": {"required": ["remove"]}},
+        "then": {"required": ["type", "risk", "disease"]}
+      },
+      "title": "Water, bed and trap chances"
+    },
+    "hits": {
+      "type": "array",
+      "description": "Diseases a creature can pass on when it hits you, by creature type or race.",
+      "x-key": ["aggressor", "aggressor_races", "disease"],
+      "x-order": "entries",
+      "items": {
+        "type": "object",
+        "properties": {
+          "aggressor": {
+            "$ref": "#/$defs/optionalForm",
+            "x-form-type": ["KYWD"],
+            "title": "Creature type",
+            "description": "Keyword of the attacker's type."
+          },
+          "aggressor_races": {
+            "$ref": "#/$defs/formList",
+            "x-form-type": ["RACE"],
+            "title": "Creature races",
+            "description": "Specific races, used when there is no type keyword."
+          },
+          "disease": {
+            "$ref": "envelope.schema.json#/$defs/formKey",
+            "x-form-type": ["SPEL"],
+            "x-ref": "diseases",
+            "title": "Disease",
+            "description": "The disease passed on."
+          },
+          "chance": {
+            "type": "number",
+            "title": "Chance (%)",
+            "description": "Base chance per hit.",
+            "minimum": 0,
+            "maximum": 100
+          },
+          "remove": {"$ref": "envelope.schema.json#/$defs/removeFlag"}
+        },
+        "if": {"not": {"required": ["remove"]}},
+        "then": {"required": ["disease", "chance"]}
+      },
+      "title": "Creature hits"
+    },
+    "carriers": {
+      "type": "array",
+      "description": "Creature types that can show up diseased, and the chance each creature is one.",
+      "x-key": ["actor_type", "races"],
+      "x-order": "entries",
+      "items": {
+        "type": "object",
+        "properties": {
+          "actor_type": {
+            "$ref": "#/$defs/optionalForm",
+            "x-form-type": ["KYWD"],
+            "title": "Creature type",
+            "description": "Keyword of the creature type."
+          },
+          "races": {
+            "$ref": "#/$defs/formList",
+            "x-form-type": ["RACE"],
+            "title": "Races",
+            "description": "Specific races, used without a type keyword."
+          },
+          "chance": {
+            "type": "number",
+            "title": "Chance diseased (%)",
+            "description": "Percent of these creatures that are carriers.",
+            "minimum": 0,
+            "maximum": 100
+          },
+          "remove": {"$ref": "envelope.schema.json#/$defs/removeFlag"}
+        },
+        "if": {"not": {"required": ["remove"]}},
+        "then": {"required": ["chance"]}
+      },
+      "title": "Carrier creatures"
+    },
+    "vectors": {
+      "type": "array",
+      "description": "Eating or drinking an item with this effect can give one of the listed diseases.",
+      "x-key": ["effect"],
+      "x-order": "entries",
+      "items": {
+        "type": "object",
+        "properties": {
+          "effect": {
+            "$ref": "envelope.schema.json#/$defs/formKey",
+            "x-form-type": ["MGEF"],
+            "title": "Item effect",
+            "description": "The effect on the food or drink."
+          },
+          "kind": {
+            "enum": ["food", "drink"],
+            "title": "Food or drink",
+            "description": "Whether the effect is on food or on a drink.",
+            "x-enum-labels": {"food": "Food", "drink": "Drink"}
+          },
+          "diseases": {
+            "$ref": "#/$defs/formList",
+            "x-form-type": ["SPEL"],
+            "x-ref": "diseases",
+            "title": "Diseases",
+            "description": "Diseases it can cause; the effect's magnitude is the chance."
+          },
+          "remove": {"$ref": "envelope.schema.json#/$defs/removeFlag"}
+        },
+        "if": {"not": {"required": ["remove"]}},
+        "then": {"required": ["effect", "kind", "diseases"]}
+      },
+      "title": "Food and drink"
+    },
+    "cures": {
+      "type": "array",
+      "description": "Effects that cure diseases. A cure removes every disease up to its 'Highest severity'.",
+      "x-key": ["effect"],
+      "x-order": "entries",
+      "items": {
+        "type": "object",
+        "properties": {
+          "effect": {
+            "$ref": "envelope.schema.json#/$defs/formKey",
+            "x-form-type": ["MGEF"],
+            "title": "Cure effect",
+            "description": "The effect that cures."
+          },
+          "max_severity": {
+            "type": ["integer", "null"],
+            "title": "Highest severity cured",
+            "description": "Cures diseases up to this severity (0 to 4). Leave empty to cure every disease."
+          },
+          "remove": {"$ref": "envelope.schema.json#/$defs/removeFlag"}
+        },
+        "if": {"not": {"required": ["remove"]}},
+        "then": {"required": ["effect"]}
+      },
+      "title": "Cures"
+    },
+    "addiction_cures": {
+      "type": "array",
+      "description": "Effects that cure chem addictions.",
+      "x-key": ["effect"],
+      "x-order": "entries",
+      "items": {
+        "type": "object",
+        "properties": {
+          "effect": {
+            "$ref": "envelope.schema.json#/$defs/formKey",
+            "x-form-type": ["MGEF"],
+            "title": "Cure effect",
+            "description": "The effect that cures."
+          },
+          "all": {"type": "boolean", "title": "Cures all", "description": "Cure every addiction."},
+          "random": {"type": "boolean", "title": "Cures one at random", "description": "Cure one addiction chosen at random."},
+          "remove": {"$ref": "envelope.schema.json#/$defs/removeFlag"}
+        },
+        "if": {"not": {"required": ["remove"]}},
+        "then": {"required": ["effect"]}
+      },
+      "title": "Addiction cures"
+    },
+    "addictions": {
+      "type": "array",
+      "description": "Addiction spells and the value that tracks each.",
+      "x-key": ["spell"],
+      "x-order": "entries",
+      "items": {
+        "type": "object",
+        "properties": {
+          "spell": {
+            "$ref": "envelope.schema.json#/$defs/formKey",
+            "x-form-type": ["SPEL"],
+            "title": "Addiction",
+            "description": "The addiction spell."
+          },
+          "value": {
+            "$ref": "#/$defs/optionalForm",
+            "x-form-type": ["AVIF"],
+            "title": "Tracking value",
+            "description": "Actor value that holds the addiction."
+          },
+          "remove": {"$ref": "envelope.schema.json#/$defs/removeFlag"}
+        },
+        "if": {"not": {"required": ["remove"]}},
+        "then": {"required": ["spell"]}
+      },
+      "title": "Addictions"
+    },
+    "location_severity": {
+      "type": "array",
+      "description": "How bad a disease is when caught in a place. Longer, worse diseases in worse regions.",
+      "x-key": ["location"],
+      "x-order": "entries",
+      "items": {
+        "type": "object",
+        "properties": {
+          "location": {
+            "$ref": "envelope.schema.json#/$defs/formKey",
+            "x-form-type": ["LCTN"],
+            "title": "Location",
+            "description": "The place (or a parent of it)."
+          },
+          "severity": {
+            "type": "integer",
+            "title": "Severity",
+            "description": "0 (none) to 4 (worst).",
+            "minimum": 0,
+            "maximum": 4
+          },
+          "remove": {"$ref": "envelope.schema.json#/$defs/removeFlag"}
+        },
+        "if": {"not": {"required": ["remove"]}},
+        "then": {"required": ["location"]}
+      },
+      "title": "Region severity"
+    },
+    "triggers": {
+      "type": "array",
+      "description": "Placed boxes that give an effect to anyone inside (such as a toxic-air area).",
+      "x-key": ["ref"],
+      "x-order": "entries",
+      "items": {
+        "type": "object",
+        "properties": {
+          "ref": {
+            "$ref": "envelope.schema.json#/$defs/formKey",
+            "x-form-type": ["REFR"],
+            "title": "Placed box",
+            "description": "The placed reference."
+          },
+          "effect": {
+            "$ref": "envelope.schema.json#/$defs/formKey",
+            "x-form-type": ["MGEF"],
+            "title": "Effect",
+            "description": "Effect applied while inside."
+          },
+          "bounds": {
+            "type": "array",
+            "items": {"type": "number"},
+            "minItems": 3,
+            "maxItems": 3,
+            "title": "Size",
+            "description": "Width, depth and height of the box.",
+            "x-columns": ["X", "Y", "Z"]
+          },
+          "remove": {"$ref": "envelope.schema.json#/$defs/removeFlag"}
+        },
+        "if": {"not": {"required": ["remove"]}},
+        "then": {"required": ["ref", "effect", "bounds"]}
+      },
+      "title": "Trigger boxes"
+    },
+    "resistance_items": {
+      "type": "array",
+      "description": "Items that change disease resistance for a while after use (RadAway lowers it).",
+      "x-key": ["item"],
+      "x-order": "entries",
+      "items": {
+        "type": "object",
+        "properties": {
+          "item": {
+            "$ref": "envelope.schema.json#/$defs/formKey",
+            "x-form-type": ["ALCH"],
+            "title": "Item",
+            "description": "The item."
+          },
+          "resistance": {"type": "number", "title": "Resistance change", "description": "Added to resistance (negative lowers it)."},
+          "duration": {"type": "number", "title": "Duration (s)", "description": "How long it lasts.", "minimum": 0},
+          "remove": {"$ref": "envelope.schema.json#/$defs/removeFlag"}
+        },
+        "if": {"not": {"required": ["remove"]}},
+        "then": {"required": ["item"]}
+      },
+      "title": "Resistance items"
+    }
+  },
+  "description": "Outside Survival mode the player can catch Fallout 76 diseases from water, food, beds, traps and creatures, and cures remove them.",
+  "x-help": "A disease is a spell. 'Diseases' lists them. The other sections say how a disease is caught: 'Water, bed and trap chances' by place, 'Creature hits' by attacker, 'Carriers' which creature types are diseased, and 'Food and drink' by the item eaten. 'Cures' and 'Addiction cures' say which effects remove them.\n\nExample: add a disease, give it a row under Water, bed and trap chances with a 5 percent chance at a hazard, and add a cure effect. A disease nothing can catch, or nothing can cure, is flagged as a warning.\n\nChance = the row's chance x endurance factor x resistance. Level 4 and Survival mode never catch diseases."
+}

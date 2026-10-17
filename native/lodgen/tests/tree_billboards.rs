@@ -30,6 +30,7 @@ mod task1_is_tree {
             part_transform: lodgen_native::input::identity_part_transform(),
             part_scale: 1.0,
             material_swap: Default::default(),
+            hideable_by_id: true,
         }
     }
 
@@ -267,6 +268,7 @@ mod task4_tree3d {
             part_transform: lodgen_native::input::identity_part_transform(),
             part_scale: 1.0,
             material_swap: Default::default(),
+            hideable_by_id: true,
         }
     }
 
@@ -537,6 +539,7 @@ mod task8_billboard_place {
             part_transform: lodgen_native::input::identity_part_transform(),
             part_scale: 1.0,
             material_swap: Default::default(),
+            hideable_by_id: true,
         }
     }
 
@@ -799,6 +802,7 @@ mod task9_generate_quad_wired {
             part_transform: lodgen_native::input::identity_part_transform(),
             part_scale: 1.0,
             material_swap: Default::default(),
+            hideable_by_id: true,
         }
     }
 

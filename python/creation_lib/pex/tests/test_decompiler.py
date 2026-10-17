@@ -1154,3 +1154,58 @@ def test_decompile_fo4_compat_rewrites():
     _trims_active_magic_effect_on_effect_start_params()
     _rewrites_topic_info_event_params()
     _trims_get_refs_linked_to_me_bool_arg()
+
+
+def _compat_source(parent, functions, variables=None):
+    pex = PexFile(
+        magic=0xFA57C0DE, major_version=3, minor_version=9, game_id=2,
+        compilation_time=0, source_filename="test.psc",
+        username="u", machine_name="m", string_table=[], debug_info=None,
+        user_flags=[],
+        objects=[PexObject(
+            name="MyScript", parent=parent, variables=variables or [],
+            states=[PexState("", functions=functions)],
+        )],
+    )
+    return emit_script_native(decompile_pex_file(pex, fo4_api_compat=True))
+
+
+def _fn(name, instructions, params=None):
+    return PexFunction(
+        name=name, return_type="None", docstring="", is_native=False,
+        is_global=False, params=params or [],
+        instructions=[*instructions, PexInstruction(PexOpcode.RETURN, [PexValue.none()])],
+    )
+
+
+def test_decompile_fo4_compat_trims_wider_fo76_signatures():
+    static = lambda cls, method, *args: PexInstruction(PexOpcode.CALLSTATIC, [
+        _make_id(cls), _make_id(method), PexValue.none(), _make_int(len(args)), *args,
+    ])
+    method = lambda name, obj, *args: PexInstruction(PexOpcode.CALLMETHOD, [
+        _make_id(name), _make_id(obj), PexValue.none(), _make_int(len(args)), *args,
+    ])
+    source = _compat_source("ObjectReference", [_fn("Run", [
+        static("Debug", "TraceUser", _make_id("logName"), PexValue.string("x"),
+               _make_int(1), _make_id("logName")),
+        static("Debug", "Trace", PexValue.string("x"), _make_int(1), _make_id("channel")),
+        static("Message", "ClearHelpMessages", _make_id("players")),
+        method("ShowAsHelpMessage", "helpMsg", _make_id("players"), PexValue.string("ev"),
+               _make_int(5), _make_int(30), _make_int(3), PexValue.string(""), _make_int(0)),
+        method("Mute", "duck", _make_id("fade")),
+    ])], variables=[PexVariable("duck", "soundcategory"), PexVariable("helpMsg", "message")])
+
+    assert 'Debug.TraceUser(logName, "x", 1)' in source
+    assert 'Debug.Trace("x", 1)' in source
+    assert "Message.ClearHelpMessages()" in source.replace("message.", "Message.")
+    assert 'helpMsg.ShowAsHelpMessage("ev", 5, 30, 3, "", 0)' in source
+    assert "duck.Mute()" in source
+
+
+def test_decompile_fo4_compat_drops_player_param_from_workshop_events():
+    for event in ("OnWorkshopObjectMoved", "OnWorkshopObjectPlaced"):
+        source = _compat_source("ObjectReference", [_fn(
+            event, [],
+            params=[PexParam("akReference", "ObjectReference"), PexParam("akPlayer", "Player")],
+        )])
+        assert f"Event {event}(ObjectReference akReference)" in source

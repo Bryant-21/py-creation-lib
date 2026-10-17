@@ -1,4 +1,6 @@
+pub mod btd_source;
 pub mod delaunay;
+pub mod dense_textures;
 pub mod terra;
 pub mod terrain_lod;
 pub mod textures;
@@ -8,14 +10,23 @@ use crate::descriptors::QuadDesc;
 use crate::naming;
 use crate::output::btr::{build_btr_nif, build_btr_nif_with_water};
 use crate::progress::{QuadCtx, QuadOutputs};
-use crate::terrain::terrain_lod::build_terrain_mesh;
-use crate::terrain::textures::{composite_quad, write_tile_dds};
+use crate::terrain::terrain_lod::{build_terrain_mesh_from_block, terrain_block};
+use crate::terrain::textures::{composite_quad, composite_quad_at, lod_index, write_tile_dds};
 use crate::terrain::water::build_water_mesh;
 
 /// Generate one terrain LOD quad: mesh + textures.
 ///
 /// Port of `TerrainLOD.GenerateBTR` (TerrainLOD.cs:1319-1500).
 pub fn generate_quad(quad: &QuadDesc, ctx: &QuadCtx) -> anyhow::Result<QuadOutputs> {
+    generate_quad_with(quad, ctx, None)
+}
+
+/// `generate_quad`, compositing the textures from the dense terrain data when `dense` is given.
+pub fn generate_quad_with(
+    quad: &QuadDesc,
+    ctx: &QuadCtx,
+    dense: Option<&dense_textures::DenseTerrainSource>,
+) -> anyhow::Result<QuadOutputs> {
     let level = quad.quad_level;
     let world_id = &ctx.world.editor_id;
     let season = ctx
@@ -34,7 +45,9 @@ pub fn generate_quad(quad: &QuadDesc, ctx: &QuadCtx) -> anyhow::Result<QuadOutpu
 
     // TODO(P1-FIDELITY): optimize_unseen and hide_quads are not ported; see
     // build_terrain_mesh in terrain_lod.rs and the one-time warning in driver.rs.
-    let mesh = build_terrain_mesh(ctx.world, quad, ctx.settings)?;
+    let block = terrain_block(ctx.world, quad, ctx.settings)?;
+    let dense_block = dense.map(|_| block.clone());
+    let mesh = build_terrain_mesh_from_block(ctx.world, quad, ctx.settings, block)?;
 
     // Early-return if no geometry (TerrainLOD.cs:1322-1325).
     if mesh.verts.is_empty() {
@@ -95,13 +108,42 @@ pub fn generate_quad(quad: &QuadDesc, ctx: &QuadCtx) -> anyhow::Result<QuadOutpu
     nif.save(Some(btr_path.clone()))
         .map_err(|e| anyhow::anyhow!("btr save: {e}"))?;
 
-    // Composite + write diffuse/_msn tiles.
-    let tile = composite_quad(ctx.world, quad, ctx.settings, ctx.paths)?;
-    write_tile_dds(&tile, &diff_path, &msn_path, ctx.settings, level)?;
+    let dense_tile = match (dense, &dense_block) {
+        (Some(source), Some(block)) => {
+            let size = ctx.settings.terrain.levels[lod_index(level)].diffuse_size.max(1);
+            Some(dense_textures::composite_quad_dense(source, quad, block, size)?)
+        }
+        _ => None,
+    };
+    let mut textures = vec![diff_path.clone(), msn_path.clone()];
+    match dense_tile.filter(|tile| tile.uncovered.iter().any(|&u| !u)) {
+        Some(tile) => {
+            let land = if tile.uncovered.iter().any(|&u| u) {
+                Some(composite_quad_at(ctx.world, quad, ctx.settings, ctx.paths, tile.size, tile.size)?)
+            } else {
+                None
+            };
+            let rmaos_rel = naming::terrain_rmaos(world_id, level, quad.x, quad.y, &season);
+            let glow_rel = naming::terrain_glow(world_id, level, quad.x, quad.y, &season);
+            let rmaos_path = ctx.paths.output_dir.join(rmaos_rel.replace('\\', "/"));
+            let glow_path = ctx.paths.output_dir.join(glow_rel.replace('\\', "/"));
+            let paths = dense_textures::DenseTilePaths { diffuse: &diff_path, msn: &msn_path, rmaos: &rmaos_path, glow: &glow_path };
+            let glows = dense_textures::write_dense_tile(&tile, land.as_ref(), &paths, ctx.settings, level)?;
+            textures.push(rmaos_path);
+            if glows {
+                textures.push(glow_path);
+            }
+        }
+        // Nothing dense covers this quad: FO4CS draws its engine layers there, which the LAND composite matches.
+        None => {
+            let tile = composite_quad(ctx.world, quad, ctx.settings, ctx.paths)?;
+            write_tile_dds(&tile, &diff_path, &msn_path, ctx.settings, level)?;
+        }
+    }
 
     Ok(QuadOutputs {
         meshes: vec![btr_path],
-        textures: vec![diff_path, msn_path],
+        textures,
         object_lod: None,
     })
 }

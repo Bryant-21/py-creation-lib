@@ -1,0 +1,141 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://modbox21.local/catalog_schemas/Infestations.schema.json",
+  "title": "Infestations catalog",
+  "description": "Infestation events: a hostile faction takes over a location, and killing its mob and boss pays a reward.",
+  "x-help": "An Infestation takes over one site at a time. The map shows a dark fog over the area; walking into the fog reveals the exact site. Killing enough of the faction's mob summons a mutated legendary boss, and killing the boss pays out XP, caps and scrip.\n\nSites carry Fallout 76 world coordinates and are only read from SeventySix.esm, so adding your own sites does nothing. What a mod can add or change are the factions that take sites over (a mob list and a boss list each), the regions that can be toggled on or off, and the boss mutations.\n\nThe Settings tab holds the timing, the reward and the records used for messages and effects. They come from the conversion.",
+  "allOf": [
+    {"$ref": "envelope.schema.json"}
+  ],
+  "$defs": {
+    "optionalForm": {"oneOf": [{"$ref": "envelope.schema.json#/$defs/formKey"}, {"type": "null"}]},
+    "formMap": {"type": "object", "additionalProperties": {"oneOf": [{"$ref": "envelope.schema.json#/$defs/formKey"}, {"type": "integer"}, {"type": "null"}]}}
+  },
+  "properties": {
+    "version": {"const": 1},
+    "settings": {
+      "type": "object",
+      "description": "Feature-wide values; a later plugin's field replaces the earlier one.",
+      "properties": {
+        "plugin": {"const": "SeventySix.esm", "title": "Plugin", "description": "Tales only supports infestations built for SeventySix.esm."},
+        "tuning": {
+          "type": "object",
+          "required": ["expire_seconds", "marker_radius", "boss_kill_fraction", "remaining_fraction"],
+          "title": "Timing and thresholds",
+          "description": "How long an infestation lasts and when its stages trigger.",
+          "properties": {
+            "expire_seconds": {"type": "number", "title": "Lasts (seconds)", "description": "How long an infestation stays up before it expires."},
+            "marker_radius": {"type": "number", "title": "Fog radius", "description": "Radius, in game units, of the dark fog on the map."},
+            "boss_kill_fraction": {"type": "number", "title": "Boss appears after (fraction killed)", "description": "Share of the mob that must die before the boss appears, from 0 to 1."},
+            "remaining_fraction": {"type": "number", "title": "Show remaining count after (fraction killed)", "description": "Share of the mob that must die before the HUD lists how many enemies remain, from 0 to 1."}
+          }
+        },
+        "forms": {
+          "$ref": "#/$defs/formMap",
+          "title": "Records used by the event",
+          "description": "Quest, messages, toggle and boss effects.",
+          "properties": {
+            "quest": {"$ref": "#/$defs/optionalForm", "x-form-type": ["QUST"], "title": "Event quest", "description": "Quest that shows the Infestation objectives."},
+            "started_message": {"$ref": "#/$defs/optionalForm", "x-form-type": ["MESG"], "title": "Started message", "description": "Message shown when an infestation begins."},
+            "ended_message": {"$ref": "#/$defs/optionalForm", "x-form-type": ["MESG"], "title": "Cleared message", "description": "Message shown when an infestation is cleared."},
+            "boss_message": {"$ref": "#/$defs/optionalForm", "x-form-type": ["MESG"], "title": "Boss message", "description": "Message shown when the boss appears."},
+            "announce_toggle": {"$ref": "#/$defs/optionalForm", "x-form-type": ["GLOB"], "title": "Announcements toggle", "description": "Global that turns the announcement messages on or off."},
+            "boss_explosion": {"$ref": "#/$defs/optionalForm", "x-form-type": ["EXPL"], "title": "Boss spawn explosion", "description": "Explosion played where the boss appears."},
+            "boss_roar": {"$ref": "#/$defs/optionalForm", "x-form-type": ["SNDR"], "title": "Boss roar", "description": "Sound played when the boss appears."}
+          }
+        },
+        "reward": {
+          "$ref": "#/$defs/formMap",
+          "title": "Reward",
+          "description": "What clearing the boss pays.",
+          "properties": {
+            "xp_global": {"$ref": "#/$defs/optionalForm", "x-form-type": ["GLOB"], "title": "XP amount", "description": "Global holding the XP paid."},
+            "caps_global": {"$ref": "#/$defs/optionalForm", "x-form-type": ["GLOB"], "title": "Caps amount", "description": "Global holding the caps paid."},
+            "scrip_global": {"$ref": "#/$defs/optionalForm", "x-form-type": ["GLOB"], "title": "Scrip amount", "description": "Global holding the scrip paid."},
+            "scrip_item": {"$ref": "#/$defs/optionalForm", "x-form-type": ["MISC"], "title": "Scrip item", "description": "The item that stands for scrip."},
+            "toggle": {"$ref": "#/$defs/optionalForm", "x-form-type": ["GLOB"], "title": "Reward toggle", "description": "Global that turns the reward on or off."},
+            "boss_rank": {"type": "integer", "minimum": 1, "maximum": 5, "title": "Boss legendary rank", "description": "Stars of the legendary boss, from 1 to 5. Defaults to 4."}
+          }
+        },
+        "source": {"type": "object", "title": "Source", "description": "Where the catalog was converted from. Informational."},
+        "fog_sha256": {"type": "array", "items": {"type": "string"}, "title": "Fog bitmap hashes", "description": "Fingerprints of the map fog bitmaps. Informational."},
+        "skipped": {"type": "object", "additionalProperties": {"type": "integer"}, "title": "Skipped counts", "description": "How many source rows the converter skipped, by reason. Informational."}
+      }
+    },
+    "sites": {
+      "type": "array",
+      "title": "Sites",
+      "description": "Locations that can be taken over. Read from SeventySix.esm only: they carry Fallout 76 world coordinates.",
+      "x-key": ["location"],
+      "items": {
+        "type": "object",
+        "properties": {
+          "location": {"$ref": "envelope.schema.json#/$defs/formKey", "x-form-type": ["LCTN"], "title": "Location", "description": "The location that gets taken over."},
+          "editor_id": {"type": "string", "title": "Editor ID", "description": "Label only."},
+          "region": {"$ref": "envelope.schema.json#/$defs/formKey", "x-form-type": ["LCTN"], "title": "Region", "description": "The region the site belongs to. A region can be switched off in the Regions tab."},
+          "world": {"$ref": "envelope.schema.json#/$defs/formKey", "x-form-type": ["WRLD"], "title": "Worldspace", "description": "The worldspace the site is in."},
+          "center": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3, "title": "Centre (X, Y, Z)", "description": "World position of the site's centre, where the fog is centred.", "x-columns": ["X", "Y", "Z"]},
+          "marker": {"$ref": "envelope.schema.json#/$defs/formKey", "x-form-type": ["REFR"], "title": "Map marker", "description": "The reference that marks the site on the map."},
+          "clear": {"type": "array", "items": {"$ref": "envelope.schema.json#/$defs/formKey"}, "minItems": 1, "x-form-type": ["REFR"], "title": "Mob spawn points", "description": "References whose actors are replaced by the faction's mob. At least one."},
+          "boss": {"type": "array", "items": {"$ref": "envelope.schema.json#/$defs/formKey"}, "minItems": 1, "x-form-type": ["REFR"], "title": "Boss spawn points", "description": "References where the boss can appear. At least one."},
+          "remove": {"$ref": "envelope.schema.json#/$defs/removeFlag"}
+        },
+        "if": {"not": {"required": ["remove"]}},
+        "then": {"required": ["location", "region", "world", "center", "clear", "boss"]}
+      }
+    },
+    "factions": {
+      "type": "array",
+      "title": "Factions",
+      "description": "The groups that can take a site over. Each has a mob list and a boss list.",
+      "x-key": ["key"],
+      "x-order": "entries",
+      "items": {
+        "type": "object",
+        "properties": {
+          "key": {"type": "string", "title": "Name", "description": "The faction's name, for example Scorched."},
+          "keyword": {"$ref": "envelope.schema.json#/$defs/formKey", "x-form-type": ["KYWD"], "title": "Faction keyword", "description": "Keyword that identifies the faction's actors. Optional."},
+          "mob": {"$ref": "envelope.schema.json#/$defs/formKey", "x-form-type": ["LVLN"], "title": "Mob list", "description": "Leveled list of the ordinary enemies that fill the site."},
+          "boss": {"$ref": "envelope.schema.json#/$defs/formKey", "x-form-type": ["LVLN"], "title": "Boss list", "description": "Leveled list the boss is chosen from."},
+          "remove": {"$ref": "envelope.schema.json#/$defs/removeFlag"}
+        },
+        "if": {"not": {"required": ["remove"]}},
+        "then": {"required": ["key", "mob", "boss"]}
+      }
+    },
+    "regions": {
+      "type": "array",
+      "title": "Regions",
+      "description": "Areas of the map that infestations can be switched on or off for, one toggle global each.",
+      "x-key": ["location"],
+      "x-order": "entries",
+      "items": {
+        "type": "object",
+        "properties": {
+          "key": {"type": "string", "title": "Name", "description": "Label for the region."},
+          "location": {"$ref": "envelope.schema.json#/$defs/formKey", "x-form-type": ["LCTN"], "title": "Region location", "description": "The region's location record."},
+          "toggle": {"$ref": "envelope.schema.json#/$defs/formKey", "x-form-type": ["GLOB"], "title": "Toggle global", "description": "Global that is non-zero while infestations are allowed in this region."},
+          "remove": {"$ref": "envelope.schema.json#/$defs/removeFlag"}
+        },
+        "if": {"not": {"required": ["remove"]}},
+        "then": {"required": ["location", "toggle"]}
+      }
+    },
+    "mutations": {
+      "type": "array",
+      "title": "Boss mutations",
+      "description": "Spells or perks a boss can be given. One is chosen for each boss.",
+      "x-key": ["form"],
+      "x-order": "entries",
+      "items": {
+        "type": "object",
+        "properties": {
+          "form": {"$ref": "envelope.schema.json#/$defs/formKey", "x-form-type": ["PERK", "SPEL"], "title": "Mutation", "description": "The perk or spell applied to the boss."},
+          "remove": {"$ref": "envelope.schema.json#/$defs/removeFlag"}
+        },
+        "if": {"not": {"required": ["remove"]}},
+        "then": {"required": ["form"]}
+      }
+    }
+  }
+}

@@ -105,11 +105,28 @@ pub struct TerrainSettings {
     /// `serde(default)` keeps pre-existing settings JSON deserializing.
     #[serde(default = "default_emit_water")]
     pub emit_water: bool,
+    /// Where terrain LOD heights come from. `Btd` reads FO76's height pyramid at `btd_path`.
+    #[serde(default)]
+    pub source: TerrainSource,
+    #[serde(default)]
+    pub btd_path: Option<String>,
+    /// The converted worldspace's dense terrain sidecar. With `source = btd`, its raw material bank (the
+    /// one FO4CS dense terrain shades with) composites the LOD textures; without it they come from LAND.
+    #[serde(default)]
+    pub btd4_path: Option<String>,
 }
 
 /// Default for the additive `emit_water` field (ON — see `TerrainSettings`).
 fn default_emit_water() -> bool {
     true
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TerrainSource {
+    #[default]
+    Land,
+    Btd,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -118,6 +135,7 @@ pub enum ObjectSource {
     Records,
     Fo76Bto,
     Fo76BtoAtlas,
+    Fo76BtoInstanced,
 }
 
 fn default_object_source() -> ObjectSource {
@@ -233,6 +251,19 @@ pub struct ObjectSettings {
     pub fo76_bto_multibound_mode: Fo76BtoMultiboundMode,
     #[serde(default = "default_fo76_bto_node_layout")]
     pub fo76_bto_node_layout: Fo76BtoNodeLayout,
+    /// Shapes repeated fewer times than this stay merged in their tile.
+    #[serde(default = "default_fo76_bto_instanced_min_count")]
+    pub fo76_bto_instanced_min_count: u32,
+    /// Size of the single world atlas the instanced shapes sample.
+    #[serde(default = "default_fo76_bto_instanced_atlas_size")]
+    pub fo76_bto_instanced_atlas_size: u32,
+    /// Records source: refs sharing a LOD model and texture swap become instance groups on the world atlas.
+    #[serde(default)]
+    pub instance_records: bool,
+    /// FO76 native assets: the hybrid object LOD also ships FO76 `_l`/`_r` maps (texture-set slots 8 and 9)
+    /// and keeps FO76 albedo in slot 0, so FO4CS can shade distant objects with the full-detail PBR data.
+    #[serde(default)]
+    pub fo76_bto_pbr_maps: bool,
 }
 
 fn default_qem_decimate_full_model_lod() -> bool {
@@ -321,6 +352,14 @@ fn default_fo76_bto_include_tree_instances() -> bool {
 
 fn default_fo76_bto_atlas_pages() -> bool {
     false
+}
+
+fn default_fo76_bto_instanced_min_count() -> u32 {
+    2
+}
+
+fn default_fo76_bto_instanced_atlas_size() -> u32 {
+    8192
 }
 
 fn default_fo76_bto_merge_atlassed_shapes() -> bool {
@@ -469,6 +508,9 @@ impl LodSettings {
                 default_diffuse_size: Some(128),
                 default_normal_size: Some(128),
                 emit_water: true,
+                source: TerrainSource::Land,
+                btd_path: None,
+                btd4_path: None,
             },
             objects: ObjectSettings {
                 source: ObjectSource::Records,
@@ -520,6 +562,10 @@ impl LodSettings {
                 fo76_bto_tree_billboard_from_lod: None,
                 fo76_bto_multibound_mode: Fo76BtoMultiboundMode::Shape,
                 fo76_bto_node_layout: Fo76BtoNodeLayout::Fo4PerShape,
+                fo76_bto_instanced_min_count: 2,
+                fo76_bto_instanced_atlas_size: 8192,
+                instance_records: false,
+                fo76_bto_pbr_maps: false,
             },
             trees: TreeSettings {
                 trees_3d: true,
@@ -535,6 +581,16 @@ impl LodSettings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn profiles_may_carry_a_comment_and_opt_into_record_instancing() {
+        let mut v = serde_json::to_value(LodSettings::fo4_default()).unwrap();
+        assert_eq!(v["objects"]["instance_records"], false);
+        v["_comment"] = "an optional mod".into();
+        v["objects"]["instance_records"] = true.into();
+        let back: LodSettings = serde_json::from_value(v).unwrap();
+        assert!(back.objects.instance_records);
+    }
 
     /// Settings JSON that predates additive object fields must still deserialize.
     #[test]
@@ -584,6 +640,10 @@ mod tests {
             "fo76_bto_tree_billboard_from_lod",
             "fo76_bto_multibound_mode",
             "fo76_bto_node_layout",
+            "fo76_bto_instanced_min_count",
+            "fo76_bto_instanced_atlas_size",
+            "instance_records",
+            "fo76_bto_pbr_maps",
         ] {
             objects.remove(field);
         }
@@ -652,6 +712,35 @@ mod tests {
         let json = serde_json::to_string(&s).unwrap();
         let back: LodSettings = serde_json::from_str(&json).unwrap();
         assert_eq!(s, back);
+    }
+
+    #[test]
+    fn instanced_source_parses_with_defaults() {
+        let mut v = serde_json::to_value(LodSettings::fo4_default()).unwrap();
+        let objects = v["objects"].as_object_mut().unwrap();
+        objects.insert("source".into(), "fo76_bto_instanced".into());
+        objects.remove("fo76_bto_instanced_min_count");
+        objects.remove("fo76_bto_instanced_atlas_size");
+        let s: LodSettings = serde_json::from_value(v).unwrap();
+        assert_eq!(s.objects.source, ObjectSource::Fo76BtoInstanced);
+        assert_eq!(s.objects.fo76_bto_instanced_min_count, 2);
+        assert_eq!(s.objects.fo76_bto_instanced_atlas_size, 8192);
+    }
+
+    #[test]
+    fn terrain_source_defaults_to_land() {
+        let mut v = serde_json::to_value(LodSettings::fo4_default()).unwrap();
+        let terrain = v["terrain"].as_object_mut().unwrap();
+        terrain.remove("source");
+        terrain.remove("btd_path");
+        let s: LodSettings = serde_json::from_value(v.clone()).unwrap();
+        assert_eq!(s.terrain.source, TerrainSource::Land);
+        assert_eq!(s.terrain.btd_path, None);
+        v["terrain"]["source"] = "btd".into();
+        v["terrain"]["btd_path"] = "D:/FO76/Data/Terrain/Appalachia.btd".into();
+        let s: LodSettings = serde_json::from_value(v).unwrap();
+        assert_eq!(s.terrain.source, TerrainSource::Btd);
+        assert_eq!(s.terrain.btd_path.as_deref(), Some("D:/FO76/Data/Terrain/Appalachia.btd"));
     }
 
 }

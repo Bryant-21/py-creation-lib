@@ -409,7 +409,7 @@ fn skeleton_world_by_name(skel: &NifFile) -> HashMap<String, BindMatrix> {
 
 /// Return node block ids in parent-before-child order, plus a `child → parent`
 /// map. Nodes are every `NiNode` (and subtype) block.
-fn node_order_and_parents(skel: &NifFile) -> (Vec<usize>, HashMap<usize, usize>) {
+pub(crate) fn node_order_and_parents(skel: &NifFile) -> (Vec<usize>, HashMap<usize, usize>) {
     let nodes = skel.find_blocks("NiNode");
     let node_set: HashSet<usize> = nodes.iter().copied().collect();
 
@@ -470,7 +470,7 @@ fn node_name(block: &NifBlock) -> Option<String> {
     }
 }
 
-fn local_of(block: &NifBlock) -> BindMatrix {
+pub(crate) fn local_of(block: &NifBlock) -> BindMatrix {
     let rot = block
         .get_field("Rotation")
         .map(read_rotation)
@@ -485,7 +485,7 @@ fn local_of(block: &NifBlock) -> BindMatrix {
 /// Write a local 4×4 affine back onto a node, preserving the on-disk
 /// representation (Struct `m11..m33` / `x,y,z`, or the rare `Matrix33`/`Vec3`
 /// variant). Scale is left untouched.
-fn set_local(block: &mut NifBlock, m: &BindMatrix) {
+pub(crate) fn set_local(block: &mut NifBlock, m: &BindMatrix) {
     let rot = [
         [m[0][0], m[0][1], m[0][2]],
         [m[1][0], m[1][1], m[1][2]],
@@ -678,7 +678,7 @@ fn rot_trans_to_mat4(rot: [[f64; 3]; 3], trans: [f64; 3]) -> BindMatrix {
     ]
 }
 
-fn mat4_mul(a: &BindMatrix, b: &BindMatrix) -> BindMatrix {
+pub(crate) fn mat4_mul(a: &BindMatrix, b: &BindMatrix) -> BindMatrix {
     let mut out = [[0.0_f64; 4]; 4];
     for (i, row) in out.iter_mut().enumerate() {
         for (j, cell) in row.iter_mut().enumerate() {
@@ -691,7 +691,7 @@ fn mat4_mul(a: &BindMatrix, b: &BindMatrix) -> BindMatrix {
 /// Inverse of an affine 4×4 (bottom row `[0,0,0,1]`) via 3×3 adjugate.
 /// Returns `None` when the linear part is singular. Handles baked scale
 /// (non-orthonormal linear part), so it is general for bind matrices.
-fn mat4_affine_inverse(m: &BindMatrix) -> Option<BindMatrix> {
+pub(crate) fn mat4_affine_inverse(m: &BindMatrix) -> Option<BindMatrix> {
     let a = [
         [m[0][0], m[0][1], m[0][2]],
         [m[1][0], m[1][1], m[1][2]],

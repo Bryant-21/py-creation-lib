@@ -6,6 +6,7 @@ pub mod hooks;
 pub mod manager;
 pub mod ops;
 pub mod skyrim_animation;
+pub mod skyrim_fx;
 pub mod templates;
 pub mod version;
 

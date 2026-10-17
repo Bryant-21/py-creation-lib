@@ -56,7 +56,7 @@ use havok_native::hkx::{HkxMember, HkxObject};
 
 use super::behavior_index::{clip_leaf, core_project_dir, resolve_leaf};
 use super::emit::{AnimTextDataInputs, SubgraphInput};
-use super::event_resolver::resolve_anim_events;
+use super::event_resolver::{candidate_spellings, resolve_anim_events_from_objects};
 
 const HIT_FRAME: &str = "HitFrame";
 
@@ -138,6 +138,7 @@ pub fn synthesize_missing_hit_frames(
     let mut added = 0u32;
     let started = Instant::now();
     let mut annotations = AnnotationCache::default();
+    let event_candidates = candidate_spellings(&inputs.event_candidates);
     let mut seen_core: BTreeSet<String> = BTreeSet::new();
     for subgraph in &inputs.subgraphs {
         if !seen_core.insert(subgraph.core_behavior.to_ascii_lowercase()) {
@@ -151,16 +152,12 @@ pub fn synthesize_missing_hit_frames(
             &core_file,
             subgraph,
             src_meshes_root,
-            &inputs.event_candidates,
+            &event_candidates,
             &mut annotations,
         )?;
     }
     if added > 0 {
-        // Same invalidation the alignment pass needs, for the same reason: deciding what to
-        // repair reads through `hkx_cache::behavior_packfile`, so the memo now holds the
-        // PRE-repair parse of every graph touched. Leave it and the buckets emit the old
-        // trigger lists while the graph on disk is correct.
-        super::hkx_cache::clear_all();
+        super::hkx_cache::clear_derived();
     }
     eprintln!(
         "[animtext_hitframe_timing] total={:.3}s annotations={:.3}s reads={} parses={} cache_hits={} paths={} triggers={added}",
@@ -178,10 +175,13 @@ fn repair_one_core(
     core_file: &Path,
     subgraph: &SubgraphInput,
     src_meshes_root: &Path,
-    event_candidates: &[String],
+    event_candidates: &HashMap<String, String>,
     annotations: &mut AnnotationCache,
 ) -> Result<u32, String> {
-    let events = resolve_anim_events(core_file, event_candidates);
+    let Some(hkx) = super::hkx_cache::behavior_packfile(core_file) else {
+        return Ok(0);
+    };
+    let events = resolve_anim_events_from_objects(hkx.objects(), event_candidates);
     if events.is_empty() {
         return Ok(0);
     }
@@ -189,9 +189,6 @@ fn repair_one_core(
         .iter()
         .flat_map(|e| e.clips.iter().map(|c| c.to_ascii_lowercase()))
         .collect();
-
-    let data = std::fs::read(core_file).map_err(|e| format!("{}: {e}", core_file.display()))?;
-    let mut hkx = read_packfile(&data).map_err(|e| format!("{}: {e}", core_file.display()))?;
 
     let names = event_names(hkx.objects());
     if names.is_empty() {
@@ -218,6 +215,8 @@ fn repair_one_core(
     if missing.is_empty() {
         return Ok(0);
     }
+
+    let mut hkx = (*hkx).clone();
 
     let hit_id = match names.iter().position(|n| n.eq_ignore_ascii_case(HIT_FRAME)) {
         Some(index) => index,
@@ -249,6 +248,7 @@ fn repair_one_core(
     if added > 0 {
         let out = hkx.save();
         std::fs::write(core_file, out).map_err(|e| format!("{}: {e}", core_file.display()))?;
+        super::hkx_cache::invalidate_behavior(core_file);
         register_in_chain(core_file)?;
     }
     Ok(added)
@@ -304,6 +304,7 @@ fn register_in_chain(core_file: &Path) -> Result<u32, String> {
         if append_event(&mut hkx, names.len()).is_ok() {
             let out = hkx.save();
             std::fs::write(&path, out).map_err(|e| format!("{}: {e}", path.display()))?;
+            super::hkx_cache::invalidate_behavior(&path);
             registered += 1;
         }
     }

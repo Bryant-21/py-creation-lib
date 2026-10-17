@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import re
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass
 
 from creation_lib.swf.types import RGBA, FillStyle, LineStyle, LineStyle2, TWIPS_PER_PIXEL
 from creation_lib.swf.shapes import (
@@ -210,6 +209,8 @@ def svg_to_shapes(svg_content: str) -> list[ShapeDef]:
     for elem in _iter_elements(root, ns):
         tag = _strip_ns(elem.tag)
         fill_color = _parse_fill(elem.get("fill", "white"))
+        opacity = float(elem.get('fill-opacity', '1')) * float(elem.get('opacity', '1'))
+        fill_color.a = round(fill_color.a * max(0, min(1, opacity)))
         fill_style = FillStyle(fill_type=0x00, color=fill_color)
         records: list[ShapeRecord] = []
 
@@ -284,10 +285,14 @@ def _parse_svg_path_d(d: str) -> list[ShapeRecord]:
     Converts cubic beziers (C) to quadratic via midpoint approximation.
     """
     records: list[ShapeRecord] = []
-    tokens = re.findall(r"[MmLlHhVvCcSsQqTtAaZz]|[-+]?[0-9]*\.?[0-9]+", d)
+    tokens = re.findall(r"[A-Za-z]|[-+]?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?", d)
     i = 0
     cx, cy = 0.0, 0.0
     start_x, start_y = 0.0, 0.0
+    current_command = 'L'
+
+    def twips(value):
+        return round(value * TWIPS_PER_PIXEL)
 
     def _next_float() -> float:
         nonlocal i
@@ -299,51 +304,54 @@ def _parse_svg_path_d(d: str) -> list[ShapeRecord]:
         cmd = tokens[i]
         if cmd.isalpha():
             i += 1
+            current_command = cmd
         else:
-            cmd = "L"  # implicit lineto
+            cmd = current_command
 
         if cmd == "M":
             x, y = _next_float(), _next_float()
-            twx, twy = int(x * TWIPS_PER_PIXEL), int(y * TWIPS_PER_PIXEL)
+            twx, twy = twips(x), twips(y)
             records.append(StyleChange(move_x=twx, move_y=twy))
             cx, cy = x, y
             start_x, start_y = x, y
+            current_command = 'L'
         elif cmd == "m":
             dx, dy = _next_float(), _next_float()
             cx += dx
             cy += dy
-            twx, twy = int(cx * TWIPS_PER_PIXEL), int(cy * TWIPS_PER_PIXEL)
+            twx, twy = twips(cx), twips(cy)
             records.append(StyleChange(move_x=twx, move_y=twy))
             start_x, start_y = cx, cy
+            current_command = 'l'
         elif cmd == "L":
             x, y = _next_float(), _next_float()
-            dx = int((x - cx) * TWIPS_PER_PIXEL)
-            dy = int((y - cy) * TWIPS_PER_PIXEL)
+            dx = twips(x) - twips(cx)
+            dy = twips(y) - twips(cy)
             records.append(StraightEdge(dx=dx, dy=dy))
             cx, cy = x, y
         elif cmd == "l":
             dx, dy = _next_float(), _next_float()
             records.append(StraightEdge(
-                dx=int(dx * TWIPS_PER_PIXEL),
-                dy=int(dy * TWIPS_PER_PIXEL),
+                dx=twips(cx + dx) - twips(cx),
+                dy=twips(cy + dy) - twips(cy),
             ))
             cx += dx
             cy += dy
         elif cmd == "H":
             x = _next_float()
-            records.append(StraightEdge(dx=int((x - cx) * TWIPS_PER_PIXEL), dy=0))
+            records.append(StraightEdge(dx=twips(x) - twips(cx), dy=0))
             cx = x
         elif cmd == "h":
             dx = _next_float()
-            records.append(StraightEdge(dx=int(dx * TWIPS_PER_PIXEL), dy=0))
+            records.append(StraightEdge(dx=twips(cx + dx) - twips(cx), dy=0))
             cx += dx
         elif cmd == "V":
             y = _next_float()
-            records.append(StraightEdge(dx=0, dy=int((y - cy) * TWIPS_PER_PIXEL)))
+            records.append(StraightEdge(dx=0, dy=twips(y) - twips(cy)))
             cy = y
         elif cmd == "v":
             dy = _next_float()
-            records.append(StraightEdge(dx=0, dy=int(dy * TWIPS_PER_PIXEL)))
+            records.append(StraightEdge(dx=0, dy=twips(cy + dy) - twips(cy)))
             cy += dy
         elif cmd == "C":
             # Cubic bezier -> approximate as quadratic
@@ -367,32 +375,32 @@ def _parse_svg_path_d(d: str) -> list[ShapeRecord]:
             qcx, qcy = _next_float(), _next_float()
             ex, ey = _next_float(), _next_float()
             records.append(CurvedEdge(
-                cx=int((qcx - cx) * TWIPS_PER_PIXEL),
-                cy=int((qcy - cy) * TWIPS_PER_PIXEL),
-                ax=int((ex - qcx) * TWIPS_PER_PIXEL),
-                ay=int((ey - qcy) * TWIPS_PER_PIXEL),
+                cx=twips(qcx) - twips(cx),
+                cy=twips(qcy) - twips(cy),
+                ax=twips(ex) - twips(qcx),
+                ay=twips(ey) - twips(qcy),
             ))
             cx, cy = ex, ey
         elif cmd == "q":
             dcx, dcy = _next_float(), _next_float()
             dx, dy = _next_float(), _next_float()
             records.append(CurvedEdge(
-                cx=int(dcx * TWIPS_PER_PIXEL),
-                cy=int(dcy * TWIPS_PER_PIXEL),
-                ax=int((dx - dcx) * TWIPS_PER_PIXEL),
-                ay=int((dy - dcy) * TWIPS_PER_PIXEL),
+                cx=twips(cx + dcx) - twips(cx),
+                cy=twips(cy + dcy) - twips(cy),
+                ax=twips(cx + dx) - twips(cx + dcx),
+                ay=twips(cy + dy) - twips(cy + dcy),
             ))
             cx += dx
             cy += dy
         elif cmd in ("Z", "z"):
-            dx = int((start_x - cx) * TWIPS_PER_PIXEL)
-            dy = int((start_y - cy) * TWIPS_PER_PIXEL)
+            dx = twips(start_x) - twips(cx)
+            dy = twips(start_y) - twips(cy)
             if dx != 0 or dy != 0:
                 records.append(StraightEdge(dx=dx, dy=dy))
             cx, cy = start_x, start_y
+            current_command = ''
         else:
-            # Skip unsupported commands (A, S, T, etc.)
-            i += 1
+            raise ValueError(f'Unsupported SVG path command {cmd}; convert arcs/smooth curves to explicit curves before importing')
 
     return records
 
@@ -403,6 +411,7 @@ def _cubic_to_quadratics(
     c2x: float, c2y: float,
     x3: float, y3: float,
     tolerance: float = 0.5,
+    _depth: int = 0,
 ) -> list[CurvedEdge]:
     """Approximate cubic bezier with one or more quadratic beziers.
 
@@ -412,31 +421,35 @@ def _cubic_to_quadratics(
     qx = (3 * (c1x + c2x) - (x0 + x3)) / 4
     qy = (3 * (c1y + c2y) - (y0 + y3)) / 4
 
-    # Measure error: distance from cubic midpoint to quadratic midpoint
-    cubic_mid_x = (x0 + 3 * c1x + 3 * c2x + x3) / 8
-    cubic_mid_y = (y0 + 3 * c1y + 3 * c2y + y3) / 8
-    quad_mid_x = (x0 + 2 * qx + x3) / 4
-    quad_mid_y = (y0 + 2 * qy + y3) / 4
-    error = ((cubic_mid_x - quad_mid_x) ** 2 + (cubic_mid_y - quad_mid_y) ** 2) ** 0.5
+    errors = []
+    for t in (.25, .5, .75):
+        u = 1 - t
+        bx = u**3*x0 + 3*u*u*t*c1x + 3*u*t*t*c2x + t**3*x3
+        by = u**3*y0 + 3*u*u*t*c1y + 3*u*t*t*c2y + t**3*y3
+        px, py = u*u*x0 + 2*u*t*qx + t*t*x3, u*u*y0 + 2*u*t*qy + t*t*y3
+        errors.append(((bx-px)**2 + (by-py)**2)**.5)
+    error = max(errors)
 
     if error <= tolerance:
         return [CurvedEdge(
-            cx=int((qx - x0) * TWIPS_PER_PIXEL),
-            cy=int((qy - y0) * TWIPS_PER_PIXEL),
-            ax=int((x3 - qx) * TWIPS_PER_PIXEL),
-            ay=int((y3 - qy) * TWIPS_PER_PIXEL),
+            cx=round(qx * TWIPS_PER_PIXEL) - round(x0 * TWIPS_PER_PIXEL),
+            cy=round(qy * TWIPS_PER_PIXEL) - round(y0 * TWIPS_PER_PIXEL),
+            ax=round(x3 * TWIPS_PER_PIXEL) - round(qx * TWIPS_PER_PIXEL),
+            ay=round(y3 * TWIPS_PER_PIXEL) - round(qy * TWIPS_PER_PIXEL),
         )]
+    if _depth >= 16:
+        raise ValueError('SVG curve exceeds the subdivision limit')
 
     # Subdivide at t=0.5 (de Casteljau)
-    m01x = (x0 + c1x) / 2;  m01y = (y0 + c1y) / 2
-    m12x = (c1x + c2x) / 2; m12y = (c1y + c2y) / 2
-    m23x = (c2x + x3) / 2;  m23y = (c2y + y3) / 2
-    m012x = (m01x + m12x) / 2; m012y = (m01y + m12y) / 2
-    m123x = (m12x + m23x) / 2; m123y = (m12y + m23y) / 2
-    mx = (m012x + m123x) / 2;  my = (m012y + m123y) / 2
+    m01x, m01y = (x0 + c1x) / 2, (y0 + c1y) / 2
+    m12x, m12y = (c1x + c2x) / 2, (c1y + c2y) / 2
+    m23x, m23y = (c2x + x3) / 2, (c2y + y3) / 2
+    m012x, m012y = (m01x + m12x) / 2, (m01y + m12y) / 2
+    m123x, m123y = (m12x + m23x) / 2, (m12y + m23y) / 2
+    mx, my = (m012x + m123x) / 2, (m012y + m123y) / 2
 
-    left = _cubic_to_quadratics(x0, y0, m01x, m01y, m012x, m012y, mx, my, tolerance)
-    right = _cubic_to_quadratics(mx, my, m123x, m123y, m23x, m23y, x3, y3, tolerance)
+    left = _cubic_to_quadratics(x0, y0, m01x, m01y, m012x, m012y, mx, my, tolerance, _depth+1)
+    right = _cubic_to_quadratics(mx, my, m123x, m123y, m23x, m23y, x3, y3, tolerance, _depth+1)
     return left + right
 
 
@@ -476,7 +489,7 @@ def _svg_ellipse_records(cx: float, cy: float, rx: float, ry: float) -> list[Sha
     # Kappa for quadratic approximation of quarter circle
     k = 0.4142
     records: list[ShapeRecord] = [
-        StyleChange(move_x=int((cx + rx) * tw), move_y=int(cy * tw)),
+        StyleChange(move_x=round((cx + rx) * tw), move_y=round(cy * tw)),
     ]
     # 4 quadrant control/end points (start at right, go clockwise)
     quadrants = [
@@ -488,10 +501,10 @@ def _svg_ellipse_records(cx: float, cy: float, rx: float, ry: float) -> list[Sha
     prev_x, prev_y = cx + rx, cy
     for ctrl, end in quadrants:
         records.append(CurvedEdge(
-            cx=int((ctrl[0] - prev_x) * tw),
-            cy=int((ctrl[1] - prev_y) * tw),
-            ax=int((end[0] - ctrl[0]) * tw),
-            ay=int((end[1] - ctrl[1]) * tw),
+            cx=round(ctrl[0]*tw) - round(prev_x*tw),
+            cy=round(ctrl[1]*tw) - round(prev_y*tw),
+            ax=round(end[0]*tw) - round(ctrl[0]*tw),
+            ay=round(end[1]*tw) - round(ctrl[1]*tw),
         ))
         prev_x, prev_y = end
     return records

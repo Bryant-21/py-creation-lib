@@ -83,6 +83,45 @@ def bundled_corpus_root(game: str) -> Path | None:
     return target if (target / ".complete").is_file() else None
 
 
+def install_headers_root(game: str, scripts_dir: Path) -> Path | None:
+    """Headers for the loose `.pex` in the install's `Data/Scripts`, else None.
+
+    Script extenders (F4SE) ship their extended Form, ObjectReference, ... as loose
+    `.pex` only. The bundled corpus is vanilla, so these headers go ahead of it.
+    """
+    from creation_lib.pex.headers import emit_headers_for_file
+
+    pex_paths = sorted(Path(scripts_dir).glob("*.pex"))
+    if not pex_paths:
+        return None
+    digest = sha256()
+    for path in pex_paths:
+        stat = path.stat()
+        digest.update(f"{path.name}|{stat.st_size}|{stat.st_mtime_ns}\n".encode())
+    target = _cache_root() / f"{game.lower()}-install-{digest.hexdigest()[:12]}"
+    if (target / ".complete").is_file():
+        return target
+
+    staging = target.with_name(f"{target.name}.{os.getpid()}.part")
+    shutil.rmtree(staging, ignore_errors=True)
+    staging.mkdir(parents=True, exist_ok=True)
+    try:
+        for path in pex_paths:
+            for name, text in emit_headers_for_file(path):
+                header = staging.joinpath(*name.split(":")).with_suffix(".psc")
+                header.parent.mkdir(parents=True, exist_ok=True)
+                header.write_text(text, encoding="utf-8", newline="\n")
+        (staging / ".complete").write_text("", encoding="utf-8")
+        try:
+            staging.replace(target)
+        except OSError:
+            shutil.rmtree(staging, ignore_errors=True)
+    except Exception:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    return target if (target / ".complete").is_file() else None
+
+
 def bundled_flags_file(root: Path) -> Path | None:
     """The user-flag definitions shipped alongside a corpus."""
     return next(Path(root).glob(f"*{FLAGS_SUFFIX}"), None)

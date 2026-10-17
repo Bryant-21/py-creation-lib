@@ -41,4 +41,5 @@ tempfile = { workspace = true }
 thiserror = { workspace = true }
 
 [build-dependencies]
+flate2 = "1.1.9"
 pyo3-build-config = { version = "0.28.3", features = ["resolve-config"] }

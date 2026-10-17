@@ -300,10 +300,11 @@ mod tests {
         for list in [false, true] {
             let mut file = fixture(list);
             lower(&mut file, &HashSet::from([1]));
-            assert!(file
-                .objects()
-                .iter()
-                .all(|o| o.class_name != "hkbBlenderGenerator"));
+            assert!(
+                file.objects()
+                    .iter()
+                    .all(|o| o.class_name != "hkbBlenderGenerator")
+            );
             assert_eq!(
                 pointer_member_value(&file.objects()[1].members, "generator"),
                 Some(3)

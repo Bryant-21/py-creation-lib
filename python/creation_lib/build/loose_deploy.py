@@ -628,12 +628,13 @@ def undeploy_loose_assets(
     game_data_dir: Path | None = None,
     project_root: Path | str | None = None,
     dry_run: bool = False,
+    preserve_manifest: bool = False,
     on_progress: Callable[[str], None] | None = None,
 ) -> list[str]:
     """Remove every file recorded in the mod's loose manifest from the game.
 
     ``game_data_dir`` overrides the path stored in the manifest if supplied.
-    The manifest file itself is deleted after a successful undeploy.
+    The manifest is deleted unless preserved for another deployment destination.
     """
     if project_root is None:
         raise ValueError("project_root is required")
@@ -681,7 +682,8 @@ def undeploy_loose_assets(
         except OSError:
             pass
 
-    _manifest_path(mod_dir).unlink(missing_ok=True)
+    if not preserve_manifest:
+        _manifest_path(mod_dir).unlink(missing_ok=True)
     _emit(f"=== Loose undeploy complete === ({len(removed)} file(s) removed)")
     return removed
 

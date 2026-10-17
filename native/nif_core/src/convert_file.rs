@@ -117,6 +117,7 @@ const LEGACY_HAVOK_SCALE: f32 = 10.0;
 const LEGACY_HAVOK_UNIT_SCALE: f32 = 1.0 / LEGACY_HAVOK_SCALE;
 const DEFAULT_COLLISION_RADIUS: f64 = 0.01;
 const FO76_PBR_SHADER_FLAG_CRC: u64 = 731263983;
+const FO76_NO_EXPOSURE_SHADER_FLAG_CRC: u64 = 3707406987;
 const FO76_TEMP_GROUND_DECAL_MATERIAL: &str =
     "materials\\landscape\\ground\\temp_groundtexture01decal.bgsm";
 const FO4_DIRT_PATH_MATERIAL: &str = "Materials\\Landscape\\Ground\\DirtPath01.bgsm";
@@ -160,6 +161,12 @@ pub struct ConvertFileOptions {
     /// The NIF keeps the original material reference, but shader texture data is
     /// read from the replacement source material.
     pub material_source_overrides: HashMap<String, String>,
+    /// FO76→FO4 only: FO4CS loads the FO76 BGSM/BGEM files and textures, so the shaders keep
+    /// FO76's material data, texture names and the `_r`/`_l` maps (FO4 slots 9 and 8, which no
+    /// FO4 lighting material reads).
+    pub keep_fo76_materials: bool,
+    pub keep_starfield_materials: bool,
+    pub cloth_companions: Vec<PathBuf>,
 }
 
 impl Default for ConvertFileOptions {
@@ -181,6 +188,9 @@ impl Default for ConvertFileOptions {
             strip_cloth: false,
             source_material_dir: None,
             material_source_overrides: HashMap::new(),
+            keep_fo76_materials: false,
+            keep_starfield_materials: false,
+            cloth_companions: Vec::new(),
         }
     }
 }
@@ -193,6 +203,7 @@ pub struct ConvertFileReport {
     pub errors: Vec<String>,
     pub emitted_bgsms: Vec<String>,
     pub emitted_textures: Vec<String>,
+    pub emitted_behaviors: Vec<String>,
     pub emitted_first_person: Option<String>,
     pub final_dependencies: Option<FinalNifDependencies>,
     pub shapes_skinned: usize,
@@ -252,6 +263,7 @@ pub enum ConvertFileError {
 pub enum SourceRigNifKind {
     Body,
     Skeleton,
+    BodyPartReplacement,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -283,13 +295,14 @@ pub fn stage_preserve_source_rig_nif(
     let target_relative_path = normalize_source_rig_target_path(target_relative_path)?;
     let mut options = base_options.clone();
     options.skin_policy = crate::skin::LegacySkinPolicy::PreserveSourceRig;
-    let report = convert_nif_file(
+    let report = convert_nif_file_impl(
         source_path,
         staged_target_path,
         source_game,
         "fo4",
         bgsm_output_dir,
         &options,
+        kind == SourceRigNifKind::BodyPartReplacement,
     )?;
     if !report.supported {
         return Err(ConvertFileError::PreserveSourceRig {
@@ -369,6 +382,26 @@ pub fn convert_nif_file(
     bgsm_output_dir: Option<&Path>,
     options: &ConvertFileOptions,
 ) -> Result<ConvertFileReport, ConvertFileError> {
+    convert_nif_file_impl(
+        src,
+        dst,
+        source_game,
+        target_game,
+        bgsm_output_dir,
+        options,
+        false,
+    )
+}
+
+fn convert_nif_file_impl(
+    src: &Path,
+    dst: &Path,
+    source_game: &str,
+    target_game: &str,
+    bgsm_output_dir: Option<&Path>,
+    options: &ConvertFileOptions,
+    embedded_source_rig_collision: bool,
+) -> Result<ConvertFileReport, ConvertFileError> {
     let total_started = Instant::now();
     let source_game = normalize_game(source_game);
     let target_game = normalize_game(target_game);
@@ -425,9 +458,38 @@ pub fn convert_nif_file(
 
     if source_game == "starfield" && target_game == "fo4" {
         let sf_started = Instant::now();
+        let material_namespace = options.material_namespace.clone();
+        let material_namespace_paths = options
+            .material_namespace_paths
+            .iter()
+            .map(|path| {
+                if !options.keep_starfield_materials && path.to_ascii_lowercase().ends_with(".mat")
+                {
+                    format!("{}.bgsm", &path[..path.len() - 4])
+                } else {
+                    path.clone()
+                }
+            })
+            .collect::<std::collections::HashSet<_>>();
+        let keep_materials = options.keep_starfield_materials;
         let sf_opts = crate::sf_convert::SfConvertOptions {
             geometries_root: crate::sf_convert::default_geometries_root(src),
-            material_path_rewriter: None,
+            material_path_rewriter: Some(Box::new(move |path| {
+                let path = if keep_materials {
+                    path.to_owned()
+                } else {
+                    crate::sf_convert::converted_material_path(path)
+                };
+                namespace_external_material_path(
+                    &path,
+                    material_namespace.as_deref(),
+                    &material_namespace_paths,
+                )
+            })),
+            target_skeleton: options.target_skeleton.clone(),
+            translation_maps_dir: options.translation_maps_dir.clone(),
+            weapon_role: options.weapon_role.clone(),
+            cloth_companions: options.cloth_companions.clone(),
         };
         match crate::sf_convert::convert_starfield_nif(src, dst, &sf_opts) {
             Ok(sf_report) => {
@@ -439,6 +501,19 @@ pub fn convert_nif_file(
                     sf_report.collision_fallback,
                     sf_report.collision_none
                 ));
+                if sf_report.skinned_shapes > 0 {
+                    report.changes.push(format!(
+                        "Starfield skin retarget: {} shape(s), {} vertices reduced to four merged influences, maximum discarded weight {:.6}",
+                        sf_report.skinned_shapes, sf_report.reduced_skin_vertices,
+                        sf_report.max_discarded_skin_weight,
+                    ));
+                }
+                if sf_report.cloth_blobs > 0 {
+                    report.changes.push(format!(
+                        "Starfield cloth retarget: {} validated blob(s), {} custom simulation bone(s), {} unused unbound transform(s)",
+                        sf_report.cloth_blobs, sf_report.custom_cloth_bones, sf_report.unbound_cloth_bones,
+                    ));
+                }
             }
             Err(error) => report.errors.push(error),
         }
@@ -458,12 +533,22 @@ pub fn convert_nif_file(
         required_legacy_glow_texture_paths(&nif, &source_game, &target_game);
     let mut planned_texture_emissions = Vec::new();
     let skyrim_to_fo4 = source_game == "skyrimse" && target_game == "fo4";
-    let defer_legacy_source_rig_ragdoll = should_defer_legacy_source_rig_ragdoll(
-        &nif,
-        &source_game,
-        &target_game,
-        options.skin_policy,
-    );
+    let source_weapon_options = skyrim_to_fo4
+        .then(|| crate::skyrim_weapon::source_rig_options(&mut nif, options))
+        .flatten();
+    let options = source_weapon_options.as_ref().unwrap_or(options);
+    if source_weapon_options.is_some() {
+        report
+            .changes
+            .push("Preserved Skyrim bow/crossbow local rig and attached it to FO4 WEAPON".into());
+    }
+    let defer_legacy_source_rig_ragdoll = !embedded_source_rig_collision
+        && should_defer_legacy_source_rig_ragdoll(
+            &nif,
+            &source_game,
+            &target_game,
+            options.skin_policy,
+        );
     if skyrim_to_fo4
         && nif
             .blocks
@@ -590,10 +675,11 @@ pub fn convert_nif_file(
             report.record_timing_ms("skyrim_fo4_shader_defaults", step_started);
 
             let step_started = Instant::now();
-            let preserve_source_rig = matches!(
-                options.skin_policy,
-                crate::skin::LegacySkinPolicy::PreserveSourceRig
-            );
+            let preserve_source_rig = !embedded_source_rig_collision
+                && matches!(
+                    options.skin_policy,
+                    crate::skin::LegacySkinPolicy::PreserveSourceRig
+                );
             let had_active_legacy_collision = !preserve_source_rig
                 && matches!(weapon_role, Some("melee"))
                 && nif.blocks.iter().any(|block| {
@@ -664,24 +750,30 @@ pub fn convert_nif_file(
             ensure_fo4_lighting_shader_defaults(&mut nif, &mut report, false);
             report.record_timing_ms("fo4_lighting_shader_defaults", step_started);
             let step_started = Instant::now();
-            remap_fo76_texture_slots(&mut nif, &mut report);
+            if options.keep_fo76_materials {
+                keep_fo76_pbr_texture_slots(&mut nif, &mut report);
+            } else {
+                remap_fo76_texture_slots(&mut nif, &mut report);
+            }
             report.record_timing_ms("fo76_texture_slots", step_started);
-            let step_started = Instant::now();
-            normalize_external_bgsm_shader_data_with_overrides(
-                &mut nif,
-                options.source_material_dir.as_deref(),
-                &options.material_source_overrides,
-                &mut report,
-            );
-            report.record_timing_ms("fo4_external_bgsm_shader_data", step_started);
-            let step_started = Instant::now();
-            normalize_external_bgem_shader_data_with_overrides(
-                &mut nif,
-                options.source_material_dir.as_deref(),
-                &options.material_source_overrides,
-                &mut report,
-            );
-            report.record_timing_ms("fo4_external_bgem_shader_data", step_started);
+            if !options.keep_fo76_materials {
+                let step_started = Instant::now();
+                normalize_external_bgsm_shader_data_with_overrides(
+                    &mut nif,
+                    options.source_material_dir.as_deref(),
+                    &options.material_source_overrides,
+                    &mut report,
+                );
+                report.record_timing_ms("fo4_external_bgsm_shader_data", step_started);
+                let step_started = Instant::now();
+                normalize_external_bgem_shader_data_with_overrides(
+                    &mut nif,
+                    options.source_material_dir.as_deref(),
+                    &options.material_source_overrides,
+                    &mut report,
+                );
+                report.record_timing_ms("fo4_external_bgem_shader_data", step_started);
+            }
             let step_started = Instant::now();
             normalize_fo76_environment_mapping(&mut nif, &mut report);
             report.record_timing_ms("fo76_environment_mapping", step_started);
@@ -777,17 +869,19 @@ pub fn convert_nif_file(
             report.record_timing_ms("fo76_flatwoods_skeleton_hand_helpers", step_started);
         }
         if !skyrim_to_fo4 {
+            let keep_fo76_textures =
+                options.keep_fo76_materials && source_game == "fo76" && target_game == "fo4";
             let step_started = Instant::now();
             normalize_texture_sets(
                 &mut nif,
-                &source_game,
+                if keep_fo76_textures { "" } else { &source_game },
                 &target_game,
                 options.asset_prefix.as_deref(),
                 &options.asset_namespace_paths,
                 &mut report,
             );
             report.record_timing_ms("normalize_texture_sets", step_started);
-            if source_game == "fo76" && target_game == "fo4" {
+            if source_game == "fo76" && target_game == "fo4" && !keep_fo76_textures {
                 let step_started = Instant::now();
                 normalize_fo76_inline_texture_paths(&mut nif, &mut report);
                 report.record_timing_ms("fo76_inline_texture_paths", step_started);
@@ -825,6 +919,15 @@ pub fn convert_nif_file(
         preserve_fo76_static_root_flag,
         &mut report,
     );
+    if matches!(source_game.as_str(), "fnv" | "fo3")
+        && target_game == "fo4"
+        && matches!(weapon_role, Some("gun"))
+    {
+        crate::legacy_weapon::align_gun_axes(&mut nif);
+        report
+            .changes
+            .push("Aligned legacy gun forward/up axes to FO4".into());
+    }
     report.record_timing_ms("normalize_fo4_root_node", step_started);
     if source_game == "fo76" && target_game == "fo4" {
         let step_started = Instant::now();
@@ -2954,7 +3057,14 @@ fn apply_material(shader: &mut NifBlock, material: &NifBlock) {
         shader.set_field("Alpha", NifValue::Float(alpha));
     }
     if let Some(glossiness) = value_f64(material.get_field("Glossiness")) {
-        shader.set_field("Smoothness", NifValue::Float(glossiness / 100.0));
+        shader.set_field(
+            "Smoothness",
+            NifValue::Float(f64::from(
+                materials_native::texture_convert::legacy_specular_exponent_to_fo4_smoothness(
+                    glossiness as f32,
+                ),
+            )),
+        );
     }
     if let Some(emissive_mult) = value_f64(material.get_field("Emissive Mult")) {
         shader.set_field("Emissive Multiple", NifValue::Float(emissive_mult));
@@ -3352,17 +3462,81 @@ fn next_alive_controller(
     reference
 }
 
+/// FO4CS reads an inline effect shader's exposure inputs (FO76's luminance block, which the 130
+/// layout cannot hold) from this NiStringExtraData: "offset min max".
+const FO4CS_EFFECT_EXPOSURE_EXTRA_DATA: &str = "FO4CS_EffectExposure";
+/// The same for an inline lighting shader: "lum offset min max" (FO4CS Materials/LightingExposure.h).
+const FO4CS_LIGHTING_EXPOSURE_EXTRA_DATA: &str = "FO4CS_LightingExposure";
+
+fn fo76_luminance_values(spd: &IndexMap<String, NifValue>) -> Option<(Option<f32>, [f32; 3])> {
+    let NifValue::Struct(luminance) = struct_get(spd, "Luminance")? else {
+        return None;
+    };
+    let value = |name: &str| value_f64(struct_get(luminance, name)).map(|v| v as f32);
+    Some((
+        value("Lum Emittance"),
+        [
+            value("Exposure Offset")?,
+            value("Final Exposure Min")?,
+            value("Final Exposure Max")?,
+        ],
+    ))
+}
+
+fn fo4cs_effect_exposure_tag(spd: &IndexMap<String, NifValue>) -> Option<String> {
+    let (_, [offset, min, max]) = fo76_luminance_values(spd)?;
+    // FO76's NO_EXPOSURE effect shaders skip the exposure multiply and output the authored
+    // colour itself; a factor pinned to 1 is the FO4CS equivalent.
+    let no_exposure = shader_crc_array(struct_get(spd, "SF1"))
+        .into_iter()
+        .chain(shader_crc_array(struct_get(spd, "SF2")))
+        .any(|crc| crc & 0xFFFF_FFFF == FO76_NO_EXPOSURE_SHADER_FLAG_CRC);
+    Some(if no_exposure {
+        "0 1 1".to_string()
+    } else {
+        format!("{offset} {min} {max}")
+    })
+}
+
+fn fo4cs_lighting_exposure_tag(spd: &IndexMap<String, NifValue>) -> Option<String> {
+    let (lum, [offset, min, max]) = fo76_luminance_values(spd)?;
+    let lum = lum?;
+    Some(format!("{lum} {offset} {min} {max}"))
+}
+
+fn attach_fo4cs_string_extra(nif: &mut NifFile, shader_id: usize, name: &str, value: String) {
+    let mut fields = IndexMap::new();
+    fields.insert("Name".to_string(), NifValue::String(name.to_string()));
+    fields.insert("String Data".to_string(), NifValue::String(value));
+    let extra_id = nif.add_block("NiStringExtraData", Some(fields));
+    let shader = &mut nif.blocks[shader_id];
+    let mut extra_ids = ref_array(shader.get_field("Extra Data List"));
+    extra_ids.push(extra_id as i32);
+    shader.set_field(
+        "Num Extra Data List",
+        NifValue::UInt(extra_ids.len() as u64),
+    );
+    shader.set_field(
+        "Extra Data List",
+        NifValue::Array(extra_ids.into_iter().map(NifValue::Ref).collect()),
+    );
+}
+
 fn flatten_fo76_effect_shader(nif: &mut NifFile, report: &mut ConvertFileReport) {
     let mut flattened = 0usize;
     let mut dropped_flags = 0usize;
     let mut cleared_remainders = 0usize;
-    for block in nif.blocks.iter_mut() {
+    let mut exposure_tags = Vec::new();
+    for (index, block) in nif.blocks.iter_mut().enumerate() {
         if block.type_name != "BSEffectShaderProperty" {
             continue;
         }
         let Some(spd) = shader_property_data(block) else {
             continue;
         };
+        if let Some(tag) = fo4cs_effect_exposure_tag(&spd) {
+            exposure_tags.push((index, tag));
+        }
         for key in [
             "UV Offset",
             "UV Scale",
@@ -3407,10 +3581,19 @@ fn flatten_fo76_effect_shader(nif: &mut NifFile, report: &mut ConvertFileReport)
         }
         flattened += 1;
     }
+    let tagged = exposure_tags.len();
+    for (shader_id, tag) in exposure_tags {
+        attach_fo4cs_string_extra(nif, shader_id, FO4CS_EFFECT_EXPOSURE_EXTRA_DATA, tag);
+    }
     if flattened > 0 {
         let mut msg = format!(
             "BSEffectShaderProperty: flattened {flattened} FO76 'Shader Property Data' nested struct(s) to FO4 top-level fields"
         );
+        if tagged > 0 {
+            msg.push_str(&format!(
+                " (carried {tagged} luminance block(s) as {FO4CS_EFFECT_EXPOSURE_EXTRA_DATA} extra data)"
+            ));
+        }
         if dropped_flags > 0 {
             msg.push_str(&format!(
                 " (dropped {dropped_flags} FO76-only shader flag CRC(s))"
@@ -3547,13 +3730,22 @@ fn flatten_fo76_lighting_shader(nif: &mut NifFile, report: &mut ConvertFileRepor
     let mut pbr_reweighted = 0usize;
     let mut cleared_remainders = 0usize;
     let mut types_renumbered = 0usize;
-    for block in nif.blocks.iter_mut() {
+    let mut exposure_tags = Vec::new();
+    for (index, block) in nif.blocks.iter_mut().enumerate() {
         if block.type_name != "BSLightingShaderProperty" {
             continue;
         }
         let Some(spd) = shader_property_data(block) else {
             continue;
         };
+        // FO4CS tags only shaders that name no material, as its own translator does.
+        let names_material =
+            string_field(block, "Name").is_some_and(|name| !name.trim().is_empty());
+        if !names_material {
+            if let Some(tag) = fo4cs_lighting_exposure_tag(&spd) {
+                exposure_tags.push((index, tag));
+            }
+        }
         let is_pbr = shader_crc_array(struct_get(&spd, "SF1")).contains(&FO76_PBR_SHADER_FLAG_CRC)
             || shader_crc_array(struct_get(&spd, "SF2")).contains(&FO76_PBR_SHADER_FLAG_CRC);
         for key in [
@@ -3638,10 +3830,19 @@ fn flatten_fo76_lighting_shader(nif: &mut NifFile, report: &mut ConvertFileRepor
         }
         flattened += 1;
     }
+    let tagged = exposure_tags.len();
+    for (shader_id, tag) in exposure_tags {
+        attach_fo4cs_string_extra(nif, shader_id, FO4CS_LIGHTING_EXPOSURE_EXTRA_DATA, tag);
+    }
     if flattened > 0 {
         let mut msg = format!(
             "BSLightingShaderProperty: flattened {flattened} FO76 'Shader Property Data' nested struct(s) to FO4 top-level fields"
         );
+        if tagged > 0 {
+            msg.push_str(&format!(
+                " (carried {tagged} luminance block(s) as {FO4CS_LIGHTING_EXPOSURE_EXTRA_DATA} extra data)"
+            ));
+        }
         if pbr_reweighted > 0 {
             msg.push_str(&format!(
                 " ({pbr_reweighted} PBR material(s) kept in FO76 smoothness range)"
@@ -4262,6 +4463,34 @@ fn remap_fo76_texture_slots(nif: &mut NifFile, report: &mut ConvertFileReport) {
     if non_emissive_lighting_dropped > 0 {
         report.changes.push(format!(
             "BSShaderTextureSet: dropped non-emissive FO76 lighting slot 10 on {non_emissive_lighting_dropped} set(s)"
+        ));
+    }
+}
+
+const FO4_FREE_SLOT_FOR_FO76_LIGHTING: usize = 8;
+
+fn keep_fo76_pbr_texture_slots(nif: &mut NifFile, report: &mut ConvertFileReport) {
+    let mut kept = 0usize;
+    for block in nif.blocks.iter_mut() {
+        if block.type_name != "BSShaderTextureSet" {
+            continue;
+        }
+        let textures = value_array(block.get_field("Textures"));
+        if textures.len() <= FO4_TEXTURE_SLOT_COUNT {
+            continue;
+        }
+        let mut placed = textures[..FO4_TEXTURE_SLOT_COUNT].to_vec();
+        placed[FO4_FREE_SLOT_FOR_FO76_LIGHTING] = textures[10].clone();
+        block.set_field("Textures", NifValue::Array(placed));
+        block.set_field(
+            "Num Textures",
+            NifValue::UInt(FO4_TEXTURE_SLOT_COUNT as u64),
+        );
+        kept += 1;
+    }
+    if kept > 0 {
+        report.changes.push(format!(
+            "BSShaderTextureSet: kept FO76 _r in slot 9 and _l in slot 8 on {kept} set(s) for FO4CS"
         ));
     }
 }
@@ -5318,7 +5547,9 @@ fn normalize_facegen_hair_shaders(nif: &mut NifFile, report: &mut ConvertFileRep
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum BakedHairShader {
     /// Flow-mapped 1-bit hair; `specular` is the vanilla BGSM's specular file.
-    Glow { specular: &'static str },
+    Glow {
+        specular: &'static str,
+    },
     Default,
     /// `beard_*` BGSMs: Default shader without Anisotropic_Lighting.
     Beard,
@@ -6461,15 +6692,15 @@ fn is_fo76_weapon_nif(nif: &NifFile) -> bool {
     under_weapons_dir
         || nif
             .blocks
-        .iter()
-        .filter(|block| block.type_name == "NiStringExtraData")
-        .any(|block| {
-            string_field(block, "Name")
-                .is_some_and(|name| name.trim_end_matches('\0').eq_ignore_ascii_case("Prn"))
-                && string_field(block, "String Data").is_some_and(|value| {
-                    value.trim_end_matches('\0').eq_ignore_ascii_case("WEAPON")
-                })
-        })
+            .iter()
+            .filter(|block| block.type_name == "NiStringExtraData")
+            .any(|block| {
+                string_field(block, "Name")
+                    .is_some_and(|name| name.trim_end_matches('\0').eq_ignore_ascii_case("Prn"))
+                    && string_field(block, "String Data").is_some_and(|value| {
+                        value.trim_end_matches('\0').eq_ignore_ascii_case("WEAPON")
+                    })
+            })
 }
 
 fn rebuild_fo76_np_collision(nif: &mut NifFile, report: &mut ConvertFileReport) {
@@ -6823,7 +7054,9 @@ fn direct_convert_eligible_fo76_static_np_collision_systems(
             continue;
         }
 
-        let Some(source_blob) = source_blobs.get(&system_id).and_then(|blob| blob.as_ref().ok())
+        let Some(source_blob) = source_blobs
+            .get(&system_id)
+            .and_then(|blob| blob.as_ref().ok())
         else {
             continue;
         };
@@ -8663,7 +8896,9 @@ fn deduplicate_fo76_exact_vertices(nif: &mut NifFile, report: &mut ConvertFileRe
                         VertexBucket::Collisions(candidates) => candidates
                             .iter()
                             .copied()
-                            .find(|candidate| &vertices[unique_source_indices[*candidate]] == vertex)
+                            .find(|candidate| {
+                                &vertices[unique_source_indices[*candidate]] == vertex
+                            })
                             .unwrap_or_else(|| {
                                 let unique_id = unique_source_indices.len();
                                 unique_source_indices.push(source_id);
@@ -10647,8 +10882,16 @@ mod tests {
     fn nif_header_probe_accepts_both_prefixes_and_short_non_nifs() {
         let temp = tempfile::tempdir().unwrap();
         for (name, bytes, expected) in [
-            ("gamebryo", b"Gamebryo File Format trailing data".as_slice(), true),
-            ("netimmerse", b"NetImmerse File Format trailing data".as_slice(), true),
+            (
+                "gamebryo",
+                b"Gamebryo File Format trailing data".as_slice(),
+                true,
+            ),
+            (
+                "netimmerse",
+                b"NetImmerse File Format trailing data".as_slice(),
+                true,
+            ),
             ("short", b"Gamebryo".as_slice(), false),
             ("other", b"not a nif".as_slice(), false),
         ] {
@@ -10669,13 +10912,24 @@ mod tests {
             let source = temp.path().join(format!("{game}.nif"));
             let output = temp.path().join(format!("{game}-fo4.nif"));
             std::fs::write(&source, nif.to_bytes().unwrap()).unwrap();
-            let report = convert_nif_file(&source, &output, game, "fo4", None, &ConvertFileOptions::default()).unwrap();
+            let report = convert_nif_file(
+                &source,
+                &output,
+                game,
+                "fo4",
+                None,
+                &ConvertFileOptions::default(),
+            )
+            .unwrap();
             assert!(report.supported, "{game}: {:?}", report.errors);
             let captured = report.final_dependencies.unwrap();
             let bytes = std::fs::read(&output).unwrap();
             let actual = NifFile::from_bytes(&bytes, Some(output)).unwrap();
             assert_eq!(captured.digest, *blake3::hash(&bytes).as_bytes());
-            assert_eq!(captured.materials, actual.referenced_asset_paths().materials);
+            assert_eq!(
+                captured.materials,
+                actual.referenced_asset_paths().materials
+            );
         }
     }
 
@@ -10855,13 +11109,19 @@ mod tests {
 
         deduplicate_fo76_exact_vertices(&mut nif, &mut report);
 
-        assert_eq!(nif.blocks[shape_id].get_field("Vertex Data"), Some(&vertices));
+        assert_eq!(
+            nif.blocks[shape_id].get_field("Vertex Data"),
+            Some(&vertices)
+        );
         assert!(report.changes.is_empty());
 
         let nan_bits = 0x7ff8_0000_0000_0042;
         let first = NifValue::Float(f64::from_bits(nan_bits));
         let second = NifValue::Float(f64::from_bits(nan_bits));
-        assert_eq!(conversion_value_hash(&first), conversion_value_hash(&second));
+        assert_eq!(
+            conversion_value_hash(&first),
+            conversion_value_hash(&second)
+        );
         assert_ne!(first, second);
         let mut nif = NifFile::new("fo4");
         let shape_id = nif.add_block("BSTriShape", None);
@@ -11041,6 +11301,149 @@ mod tests {
             .find(|block| block.type_name == "BSLightingShaderProperty")
             .expect("shader");
         assert_eq!(field_ref(shader, "Controller"), Some(-1));
+    }
+
+    #[test]
+    fn inline_effect_luminance_survives_as_fo4cs_extra_data() {
+        let mut nif = NifFile::new("fo76");
+        let shader_id = nif.add_block("BSEffectShaderProperty", None);
+        let mut luminance = IndexMap::new();
+        luminance.insert("Lum Emittance".to_string(), NifValue::Float(0.0));
+        luminance.insert("Exposure Offset".to_string(), NifValue::Float(11.0));
+        luminance.insert("Final Exposure Min".to_string(), NifValue::Float(1.0));
+        luminance.insert(
+            "Final Exposure Max".to_string(),
+            NifValue::Float(0.1f32 as f64),
+        );
+        let mut spd = IndexMap::new();
+        spd.insert("Luminance".to_string(), NifValue::Struct(luminance));
+        nif.blocks[shader_id].set_field("Shader Property Data", NifValue::Struct(spd));
+        let mut report = ConvertFileReport::default();
+
+        flatten_fo76_effect_shader(&mut nif, &mut report);
+
+        let shader = &nif.blocks[shader_id];
+        assert!(shader.get_field("Shader Property Data").is_none());
+        let extra_ids = ref_array(shader.get_field("Extra Data List"));
+        assert_eq!(extra_ids.len(), 1);
+        assert_eq!(value_u64(shader.get_field("Num Extra Data List")), Some(1));
+        let extra = &nif.blocks[extra_ids[0] as usize];
+        assert_eq!(extra.type_name, "NiStringExtraData");
+        assert_eq!(
+            string_field(extra, "Name").as_deref(),
+            Some("FO4CS_EffectExposure")
+        );
+        assert_eq!(
+            string_field(extra, "String Data").as_deref(),
+            Some("11 1 0.1")
+        );
+    }
+
+    fn fo76_luminance(lum: f64, offset: f64, min: f64, max: f64) -> NifValue {
+        let mut luminance = IndexMap::new();
+        luminance.insert("Lum Emittance".to_string(), NifValue::Float(lum));
+        luminance.insert("Exposure Offset".to_string(), NifValue::Float(offset));
+        luminance.insert("Final Exposure Min".to_string(), NifValue::Float(min));
+        luminance.insert("Final Exposure Max".to_string(), NifValue::Float(max));
+        NifValue::Struct(luminance)
+    }
+
+    fn single_string_extra(nif: &NifFile, shader_id: usize) -> (Option<String>, Option<String>) {
+        let shader = &nif.blocks[shader_id];
+        let extra_ids = ref_array(shader.get_field("Extra Data List"));
+        assert_eq!(extra_ids.len(), 1);
+        assert_eq!(value_u64(shader.get_field("Num Extra Data List")), Some(1));
+        let extra = &nif.blocks[extra_ids[0] as usize];
+        assert_eq!(extra.type_name, "NiStringExtraData");
+        (
+            string_field(extra, "Name"),
+            string_field(extra, "String Data"),
+        )
+    }
+
+    #[test]
+    fn no_exposure_inline_effect_is_tagged_as_display_colour() {
+        let mut nif = NifFile::new("fo76");
+        let shader_id = nif.add_block("BSEffectShaderProperty", None);
+        let mut spd = IndexMap::new();
+        spd.insert("Num SF1".to_string(), NifValue::UInt(1));
+        spd.insert(
+            "SF1".to_string(),
+            NifValue::Array(vec![NifValue::UInt(FO76_NO_EXPOSURE_SHADER_FLAG_CRC)]),
+        );
+        spd.insert(
+            "Luminance".to_string(),
+            fo76_luminance(100.0, 13.5, 2.0, 3.0),
+        );
+        nif.blocks[shader_id].set_field("Shader Property Data", NifValue::Struct(spd));
+        let mut report = ConvertFileReport::default();
+
+        flatten_fo76_effect_shader(&mut nif, &mut report);
+
+        let (name, data) = single_string_extra(&nif, shader_id);
+        assert_eq!(name.as_deref(), Some("FO4CS_EffectExposure"));
+        assert_eq!(data.as_deref(), Some("0 1 1"));
+    }
+
+    #[test]
+    fn inline_lighting_luminance_survives_as_fo4cs_extra_data() {
+        let mut nif = NifFile::new("fo76");
+        let shader_id = nif.add_block("BSLightingShaderProperty", None);
+        let mut spd = IndexMap::new();
+        spd.insert(
+            "Luminance".to_string(),
+            fo76_luminance(250.0, 13.5, 2.0, 3.0),
+        );
+        nif.blocks[shader_id].set_field("Shader Property Data", NifValue::Struct(spd));
+        let mut report = ConvertFileReport::default();
+
+        flatten_fo76_lighting_shader(&mut nif, &mut report);
+
+        assert!(
+            nif.blocks[shader_id]
+                .get_field("Shader Property Data")
+                .is_none()
+        );
+        let (name, data) = single_string_extra(&nif, shader_id);
+        assert_eq!(name.as_deref(), Some("FO4CS_LightingExposure"));
+        assert_eq!(data.as_deref(), Some("250 13.5 2 3"));
+    }
+
+    #[test]
+    fn named_lighting_shader_gets_no_luminance_tag() {
+        let mut nif = NifFile::new("fo76");
+        let shader_id = nif.add_block("BSLightingShaderProperty", None);
+        nif.blocks[shader_id].set_field(
+            "Name",
+            NifValue::String("materials/architecture/test.bgsm".to_string()),
+        );
+        let mut spd = IndexMap::new();
+        spd.insert(
+            "Luminance".to_string(),
+            fo76_luminance(250.0, 13.5, 2.0, 3.0),
+        );
+        nif.blocks[shader_id].set_field("Shader Property Data", NifValue::Struct(spd));
+        let mut report = ConvertFileReport::default();
+
+        flatten_fo76_lighting_shader(&mut nif, &mut report);
+
+        assert!(ref_array(nif.blocks[shader_id].get_field("Extra Data List")).is_empty());
+        assert!(
+            nif.blocks
+                .iter()
+                .all(|block| block.type_name != "NiStringExtraData")
+        );
+    }
+
+    #[test]
+    fn lighting_luminance_without_lum_emittance_gets_no_tag() {
+        let mut spd = IndexMap::new();
+        let NifValue::Struct(mut luminance) = fo76_luminance(250.0, 13.5, 2.0, 3.0) else {
+            unreachable!()
+        };
+        luminance.shift_remove("Lum Emittance");
+        spd.insert("Luminance".to_string(), NifValue::Struct(luminance));
+        assert_eq!(fo4cs_lighting_exposure_tag(&spd), None);
     }
 
     #[test]
@@ -12444,7 +12847,9 @@ mod tests {
                     ),
                     NifValue::String(r"textures\Actors\Character\Hair\HairLong01_n.dds".into()),
                     NifValue::String(String::new()),
-                    NifValue::String(r"textures\Actors\Character\Hair\HairColor_LGrad_g.dds".into()),
+                    NifValue::String(
+                        r"textures\Actors\Character\Hair\HairColor_LGrad_g.dds".into(),
+                    ),
                     NifValue::String(String::new()),
                     NifValue::String(String::new()),
                     NifValue::String(String::new()),
@@ -12524,10 +12929,7 @@ mod tests {
                 hair.set_field("Alpha Property", NifValue::Ref(4));
                 let mut shader = NifBlock::new(2, "BSLightingShaderProperty");
                 shader.set_field("Shader Type", NifValue::UInt(BSLSP_SHADER_TYPE_HAIR_TINT));
-                shader.set_field(
-                    "Shader Flags 1",
-                    NifValue::UInt(SLSF1_HAIR | SLSF1_SKINNED),
-                );
+                shader.set_field("Shader Flags 1", NifValue::UInt(SLSF1_HAIR | SLSF1_SKINNED));
                 shader.set_field("Shader Flags 2", NifValue::UInt(SLSF2_VERTEX_COLORS as u64));
                 shader.set_field("Texture Set", NifValue::Ref(3));
                 let mut texset = NifBlock::new(3, "BSShaderTextureSet");
@@ -12574,7 +12976,9 @@ mod tests {
                 Some(BSLSP_SHADER_TYPE_DEFAULT)
             );
             let f1 = value_u64(shader.get_field("Shader Flags 1")).unwrap();
-            assert!(f1 & SLSF1_HAIR == 0 && f1 & SLSF1_CAST_SHADOWS != 0 && f1 & SLSF1_OWN_EMIT != 0);
+            assert!(
+                f1 & SLSF1_HAIR == 0 && f1 & SLSF1_CAST_SHADOWS != 0 && f1 & SLSF1_OWN_EMIT != 0
+            );
             let f2 = value_u64(shader.get_field("Shader Flags 2")).unwrap();
             assert!(f2 & SLSF2_GLOW_MAP == 0);
             assert!(f2 & SLSF2_ANISOTROPIC_LIGHTING != 0 && f2 & SLSF2_ZBUFFER_WRITE as u64 != 0);
@@ -13055,8 +13459,8 @@ mod tests {
                 },
             ];
 
-            let installed =
-                install_fo4_np_collision_system(&mut nif, &entries, None).expect("install collision");
+            let installed = install_fo4_np_collision_system(&mut nif, &entries, None)
+                .expect("install collision");
             assert_eq!(installed, 2);
 
             let physics = nif
@@ -14791,6 +15195,110 @@ mod tests {
             "temp ground material must NOT be retargeted to FO4 DirtPath01, got {joined:?}"
         );
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    fn convert_fo76_shader_pair(options: &ConvertFileOptions) -> NifFile {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src.nif");
+        let dst = tmp.path().join("dst.nif");
+
+        let mut nif = NifFile::new("fo76");
+        let mut named = IndexMap::new();
+        named.insert(
+            "Name".to_string(),
+            NifValue::String("Materials\\Architecture\\Barn01.bgsm".to_string()),
+        );
+        nif.add_block("BSLightingShaderProperty", Some(named));
+        let mut unnamed = IndexMap::new();
+        unnamed.insert("Texture Set".to_string(), NifValue::Ref(2));
+        nif.add_block("BSLightingShaderProperty", Some(unnamed));
+        let mut textures = vec![NifValue::String(String::new()); 15];
+        textures[0] = NifValue::String("Architecture/Barn01_d.dds".to_owned());
+        textures[1] = NifValue::String("Architecture/Barn01_n.dds".to_owned());
+        textures[9] = NifValue::String("Architecture/Barn01_r.dds".to_owned());
+        textures[10] = NifValue::String("Architecture/Barn01_l.dds".to_owned());
+        let mut texset = IndexMap::new();
+        texset.insert("Num Textures".to_string(), NifValue::UInt(15));
+        texset.insert("Textures".to_string(), NifValue::Array(textures));
+        nif.add_block("BSShaderTextureSet", Some(texset));
+        let mut effect = IndexMap::new();
+        effect.insert(
+            "Shader Property Data".to_string(),
+            NifValue::Struct(IndexMap::from([(
+                "Source Texture".to_string(),
+                NifValue::String("textures\\Effects\\Glow01_l.dds".to_string()),
+            )])),
+        );
+        nif.add_block("BSEffectShaderProperty", Some(effect));
+        nif.save(Some(src.clone())).unwrap();
+
+        convert_nif_file(&src, &dst, "fo76", "fo4", None, options).unwrap();
+        NifFile::load(&dst).unwrap()
+    }
+
+    #[test]
+    fn keeping_fo76_materials_keeps_the_texture_info_fo4cs_reads() {
+        let nif = convert_fo76_shader_pair(&ConvertFileOptions {
+            keep_fo76_materials: true,
+            ..ConvertFileOptions::default()
+        });
+
+        let texset = nif
+            .blocks
+            .iter()
+            .find(|block| block.type_name == "BSShaderTextureSet")
+            .unwrap();
+        assert_eq!(
+            value_array(texset.get_field("Textures")).len(),
+            FO4_TEXTURE_SLOT_COUNT
+        );
+        assert_eq!(
+            texture_at(texset, 0),
+            "textures\\Architecture\\Barn01_d.dds"
+        );
+        assert_eq!(texture_at(texset, 2), "");
+        assert_eq!(texture_at(texset, 7), "");
+        assert_eq!(
+            texture_at(texset, 8),
+            "textures\\Architecture\\Barn01_l.dds"
+        );
+        assert_eq!(
+            texture_at(texset, 9),
+            "textures\\Architecture\\Barn01_r.dds"
+        );
+
+        let effect = nif
+            .blocks
+            .iter()
+            .find(|block| block.type_name == "BSEffectShaderProperty")
+            .unwrap();
+        assert_eq!(
+            string_field(effect, "Source Texture").as_deref(),
+            Some("textures\\Effects\\Glow01_l.dds")
+        );
+        assert!(
+            nif.referenced_asset_paths()
+                .materials
+                .iter()
+                .any(|path| path == "materials/architecture/barn01.bgsm")
+        );
+    }
+
+    #[test]
+    fn converting_fo76_materials_still_moves_the_texture_info_to_fo4_slots() {
+        let nif = convert_fo76_shader_pair(&ConvertFileOptions::default());
+
+        let texset = nif
+            .blocks
+            .iter()
+            .find(|block| block.type_name == "BSShaderTextureSet")
+            .unwrap();
+        assert_eq!(
+            texture_at(texset, 7),
+            "textures\\Architecture\\Barn01_s.dds"
+        );
+        assert_eq!(texture_at(texset, 8), "");
+        assert_eq!(texture_at(texset, 9), "");
     }
 
     #[test]

@@ -674,6 +674,10 @@ def _can_use_direct_compact_ba2_path(
             return False
         if any(len(Path(entry.relative_path).parts) == 1 for entry in plan.entries):
             return False
+        if not plan.texture_archive and any(
+            Path(entry.relative_path).parts[0].lower() == "textures" for entry in plan.entries
+        ):
+            return False
     return True
 
 

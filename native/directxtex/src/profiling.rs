@@ -28,6 +28,8 @@ pub struct Timings {
     pub mips_ns: u64,
     pub encode_ns: u64,
     pub gpu_wait_ns: u64,
+    pub gpu_attempts: u64,
+    pub gpu_failures: u64,
     pub write_ns: u64,
     pub copy_ns: u64,
     pub directory_ns: u64,
@@ -49,6 +51,8 @@ impl Timings {
         self.mips_ns += other.mips_ns;
         self.encode_ns += other.encode_ns;
         self.gpu_wait_ns += other.gpu_wait_ns;
+        self.gpu_attempts += other.gpu_attempts;
+        self.gpu_failures += other.gpu_failures;
         self.write_ns += other.write_ns;
         self.copy_ns += other.copy_ns;
         self.directory_ns += other.directory_ns;
@@ -176,6 +180,13 @@ fn record_io(update: impl FnOnce(&mut Timings)) {
 
 pub(crate) fn directory_cache_hit() {
     record_io(|timings| timings.directory_cache_hits += 1);
+}
+
+pub(crate) fn gpu_attempt(failed: bool) {
+    record_io(|timings| {
+        timings.gpu_attempts += 1;
+        timings.gpu_failures += u64::from(failed);
+    });
 }
 
 pub fn write(path: impl AsRef<std::path::Path>, bytes: impl AsRef<[u8]>) -> std::io::Result<()> {

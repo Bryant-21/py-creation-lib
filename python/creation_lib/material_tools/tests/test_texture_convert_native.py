@@ -41,7 +41,7 @@ def test_native_runtime_byte_wrappers_transform_source_values():
 
     np.testing.assert_allclose(_rgba_from_bytes(bundle_result["diffuse"])[0, 0], [1.0, 0.0, 0.0, 1.0])
     np.testing.assert_allclose(
-        _rgba_from_bytes(bundle_result["specgloss"])[0, 0], [0.22, 0.5, 0.0, 1.0]
+        _rgba_from_bytes(bundle_result["specgloss"])[0, 0], [0.32, 0.5, 0.0, 1.0], rtol=1e-6
     )
     assert "glow" not in bundle_result
 
@@ -76,7 +76,7 @@ def test_numpy_wrapper_returns_shaped_arrays():
     assert result.specgloss.shape == (1, 1, 4)
     assert result.glow is not None
     np.testing.assert_allclose(result.diffuse[0, 0], [1.0, 0.0, 0.0, 1.0])
-    np.testing.assert_allclose(result.specgloss[0, 0], [0.22, 0.5, 0.0, 1.0])
+    np.testing.assert_allclose(result.specgloss[0, 0], [0.32, 0.5, 0.0, 1.0], rtol=1e-6)
     # Default params broadcast the `_l` alpha emissive mask across RGB
     # (preserve_lighting_rgb_for_glow is off unless explicitly requested).
     np.testing.assert_allclose(result.glow[0, 0], [0.75, 0.75, 0.75, 1.0])

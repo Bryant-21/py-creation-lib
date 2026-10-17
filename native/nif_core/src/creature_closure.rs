@@ -5,6 +5,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 
+mod behavior;
+pub use behavior::stage_attached_behavior_closure;
+
 use crate::convert_file::{ConvertFileOptions, SourceRigNifKind, stage_preserve_source_rig_nif};
 use crate::model::{NifBlock, NifFile, NifValue};
 use materials_native::texture_convert::{
@@ -20,6 +23,8 @@ static TRANSACTION_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 pub enum CreatureNifRole {
     Body,
     Skeleton,
+    BodyPartReplacement,
+    DependencyModel,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -88,6 +93,9 @@ impl std::error::Error for CreatureClosureError {}
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CreatureCollisionDisposition {
     None,
+    ConvertedReplacement {
+        source_block_types: Vec<String>,
+    },
     ArticulatedDeferredForHkx {
         source_block_types: Vec<String>,
     },
@@ -124,6 +132,7 @@ pub struct CreatureInputDisposition {
 #[serde(rename_all = "snake_case")]
 pub enum CreatureArtifactKind {
     Nif,
+    Hkx,
     Bgsm,
     Bgem,
     Dds,
@@ -439,8 +448,35 @@ struct MaterialTask {
     synthesized_path: Option<PathBuf>,
 }
 
+fn dependency_namespace(source_blake3: &str) -> String {
+    format!("b21_creature_dependencies/{}", &source_blake3[..16])
+}
+
+fn input_namespace(input: &PreparedInput, family_namespace: &str) -> String {
+    if input.role == CreatureNifRole::DependencyModel {
+        dependency_namespace(&input.source_blake3)
+    } else {
+        family_namespace.to_string()
+    }
+}
+
 pub fn stage_creature_nif_closure(
     request: &CreatureClosureRequest,
+) -> Result<CreatureClosureReceipt, CreatureClosureError> {
+    stage_creature_nif_closure_with_body_parts(request, &[])
+}
+
+pub fn stage_creature_nif_closure_with_body_parts(
+    request: &CreatureClosureRequest,
+    body_parts: &[crate::skin::creature_parts::CreatureBodyPartSegment],
+) -> Result<CreatureClosureReceipt, CreatureClosureError> {
+    stage_creature_nif_closure_with_dependency_models(request, body_parts, &BTreeMap::new())
+}
+
+pub fn stage_creature_nif_closure_with_dependency_models(
+    request: &CreatureClosureRequest,
+    body_parts: &[crate::skin::creature_parts::CreatureBodyPartSegment],
+    dependency_targets: &BTreeMap<String, String>,
 ) -> Result<CreatureClosureReceipt, CreatureClosureError> {
     let source_game = normalize_source_game(&request.source_game)?;
     let namespace = normalize_namespace(&request.target_namespace)?;
@@ -466,6 +502,59 @@ pub fn stage_creature_nif_closure(
     }
 
     let mut prepared = prepare_inputs(request, source_game, &namespace)?;
+    let mut used_targets = BTreeMap::new();
+    let mut used_sources = BTreeSet::new();
+    for input in &mut prepared {
+        if input.role == CreatureNifRole::DependencyModel {
+            let target = dependency_targets
+                .get(&input.source_relative)
+                .ok_or_else(|| {
+                    error(
+                        CreatureTerminalKind::InvalidRequest,
+                        Some(input.input_key.clone()),
+                        Some(input.source_relative.clone()),
+                        "dependency model lacks an exact target record path",
+                    )
+                })?;
+            let target = normalize_data_relative(target, "nif").map_err(|message| {
+                error(
+                    CreatureTerminalKind::InvalidPath,
+                    Some(input.input_key.clone()),
+                    Some(input.source_relative.clone()),
+                    message,
+                )
+            })?;
+            if !target.starts_with("meshes/") {
+                return Err(error(
+                    CreatureTerminalKind::InvalidPath,
+                    Some(input.input_key.clone()),
+                    Some(input.source_relative.clone()),
+                    "dependency model target must be under meshes/",
+                ));
+            }
+            input.target_relative = target;
+            used_sources.insert(input.source_relative.clone());
+        }
+        if used_targets
+            .insert(input.target_relative.clone(), input.source_relative.clone())
+            .is_some_and(|previous| previous != input.source_relative)
+        {
+            return Err(error(
+                CreatureTerminalKind::TargetCollision,
+                Some(input.input_key.clone()),
+                Some(input.source_relative.clone()),
+                "creature inputs share a target path",
+            ));
+        }
+    }
+    if used_sources.len() != dependency_targets.len() {
+        return Err(error(
+            CreatureTerminalKind::InvalidRequest,
+            None,
+            None,
+            "dependency target paths include an unstaged source model",
+        ));
+    }
     prepared.sort_by(|left, right| left.input_key.cmp(&right.input_key));
 
     fs::create_dir_all(&request.private_staging_root).map_err(|io| {
@@ -504,6 +593,7 @@ pub fn stage_creature_nif_closure(
         &namespace,
         &prepared,
         &transaction_root,
+        body_parts,
     );
     match result {
         Ok(mut receipt) => {
@@ -544,6 +634,7 @@ fn stage_transaction(
     namespace: &str,
     prepared: &[PreparedInput],
     transaction_root: &Path,
+    body_parts: &[crate::skin::creature_parts::CreatureBodyPartSegment],
 ) -> Result<CreatureClosureReceipt, CreatureClosureError> {
     let work_root = transaction_root.join("work");
     let output_root = transaction_root.join("data");
@@ -552,13 +643,25 @@ fn stage_transaction(
 
     let mut artifacts = BTreeMap::<String, PendingArtifact>::new();
     let mut dispositions = Vec::with_capacity(prepared.len());
-    let mut converted_sources = HashMap::<(String, String), (String, String, String)>::new();
+    let mut converted_sources =
+        HashMap::<(String, String, String, bool, bool), (String, String, String)>::new();
     let mut input_aliases = Vec::<(String, String)>::new();
     let mut material_tasks = VecDeque::<MaterialTask>::new();
     let mut texture_tasks = BTreeMap::<String, (String, BTreeSet<String>)>::new();
 
     for input in prepared {
-        let dedupe_key = (input.source_relative.clone(), input.source_blake3.clone());
+        let input_namespace = input_namespace(input, namespace);
+        let namespace = input_namespace.as_str();
+        let dedupe_key = (
+            input.source_relative.clone(),
+            input.source_blake3.clone(),
+            input.target_relative.clone(),
+            input.role == CreatureNifRole::Body && !body_parts.is_empty(),
+            matches!(
+                input.role,
+                CreatureNifRole::BodyPartReplacement | CreatureNifRole::DependencyModel
+            ),
+        );
         if let Some((target, fingerprint, primary_input)) = converted_sources.get(&dedupe_key) {
             dispositions.push(disposition(
                 input,
@@ -596,6 +699,9 @@ fn stage_transaction(
         let kind = match input.role {
             CreatureNifRole::Body => SourceRigNifKind::Body,
             CreatureNifRole::Skeleton => SourceRigNifKind::Skeleton,
+            CreatureNifRole::BodyPartReplacement | CreatureNifRole::DependencyModel => {
+                SourceRigNifKind::BodyPartReplacement
+            }
         };
         let stage = stage_preserve_source_rig_nif(
             kind,
@@ -621,13 +727,75 @@ fn stage_transaction(
             ));
         }
 
-        let converted = NifFile::load(converted_path.clone()).map_err(|failure| {
+        let mut converted = NifFile::load(converted_path.clone()).map_err(|failure| {
             input_error(
                 CreatureTerminalKind::ValidationFailed,
                 input,
                 format!("FO4 reread failed: {failure}"),
             )
         })?;
+        if input.role == CreatureNifRole::Body && !body_parts.is_empty() {
+            let source = NifFile::from_bytes(&input.source_bytes, None).map_err(|failure| {
+                input_error(
+                    CreatureTerminalKind::ValidationFailed,
+                    input,
+                    failure.to_string(),
+                )
+            })?;
+            crate::skin::creature_parts::segment_source_creature_body(
+                &source,
+                &mut converted,
+                body_parts,
+            )
+            .map_err(|failure| {
+                input_error(CreatureTerminalKind::ValidationFailed, input, failure)
+            })?;
+            converted
+                .save(Some(converted_path.clone()))
+                .map_err(|failure| {
+                    input_error(
+                        CreatureTerminalKind::ValidationFailed,
+                        input,
+                        failure.to_string(),
+                    )
+                })?;
+            converted = NifFile::load(converted_path.clone()).map_err(|failure| {
+                input_error(
+                    CreatureTerminalKind::ValidationFailed,
+                    input,
+                    failure.to_string(),
+                )
+            })?;
+        }
+        if source_game == "skyrimse" {
+            let source = NifFile::from_bytes(&input.source_bytes, None).map_err(|failure| {
+                input_error(
+                    CreatureTerminalKind::ValidationFailed,
+                    input,
+                    failure.to_string(),
+                )
+            })?;
+            behavior::validate_sequences(&source, &converted).map_err(|message| {
+                input_error(CreatureTerminalKind::ValidationFailed, input, message)
+            })?;
+        }
+        if behavior::stage(
+            &mut converted,
+            &request.source_data_root,
+            namespace,
+            input,
+            &mut artifacts,
+        )? {
+            converted
+                .save(Some(converted_path.clone()))
+                .map_err(|failure| {
+                    input_error(
+                        CreatureTerminalKind::ValidationFailed,
+                        input,
+                        failure.to_string(),
+                    )
+                })?;
+        }
         validate_converted_nif(&converted, input, &request.source_data_root, namespace)?;
         let bytes = fs::read(&converted_path)
             .map_err(|io| input_io_error(input, "read converted NIF", io))?;
@@ -825,7 +993,22 @@ fn prepare_inputs(
         validate_source_blocks(source_game, &source_nif, &input_key, &source_relative)?;
         let source_materials =
             source_external_materials(&source_nif, &input_key, &source_relative)?;
-        let collision = classify_collision(&source_nif, &input_key, &source_relative)?;
+        let collision = if matches!(
+            raw.role,
+            CreatureNifRole::BodyPartReplacement | CreatureNifRole::DependencyModel
+        ) {
+            let source_block_types = source_nif
+                .blocks
+                .iter()
+                .filter(|block| block.type_name.starts_with("bhk"))
+                .map(|block| block.type_name.clone())
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect();
+            CreatureCollisionDisposition::ConvertedReplacement { source_block_types }
+        } else {
+            classify_collision(&source_nif, &input_key, &source_relative)?
+        };
         let target_relative = format!(
             "meshes/{namespace}/{}",
             source_relative.trim_start_matches("meshes/")
@@ -1015,11 +1198,16 @@ fn validate_converted_nif(
             ),
         ));
     }
-    if let Some(block) = nif
-        .blocks
-        .iter()
-        .find(|block| block.type_name.starts_with("bhk"))
-    {
+    if let Some(block) = nif.blocks.iter().find(|block| {
+        block.type_name.starts_with("bhk")
+            && !(matches!(
+                input.role,
+                CreatureNifRole::BodyPartReplacement | CreatureNifRole::DependencyModel
+            ) && matches!(
+                block.type_name.as_str(),
+                "bhkNPCollisionObject" | "bhkPhysicsSystem" | "bhkRagdollSystem"
+            ))
+    }) {
         return Err(input_error(
             CreatureTerminalKind::ValidationFailed,
             input,
@@ -1030,6 +1218,40 @@ fn validate_converted_nif(
         ));
     }
     validate_skin_closure(nif, input)?;
+    if matches!(
+        input.role,
+        CreatureNifRole::BodyPartReplacement | CreatureNifRole::DependencyModel
+    ) {
+        let source = NifFile::from_bytes(&input.source_bytes, None).map_err(|failure| {
+            input_error(
+                CreatureTerminalKind::ValidationFailed,
+                input,
+                failure.to_string(),
+            )
+        })?;
+        if source.blocks.iter().any(|block| {
+            matches!(
+                block.type_name.as_str(),
+                "bhkCollisionObject" | "bhkBlendCollisionObject"
+            )
+        }) && (!nif
+            .blocks
+            .iter()
+            .any(|block| block.type_name == "bhkNPCollisionObject")
+            || !nif.blocks.iter().any(|block| {
+                matches!(
+                    block.type_name.as_str(),
+                    "bhkPhysicsSystem" | "bhkRagdollSystem"
+                )
+            }))
+        {
+            return Err(input_error(
+                CreatureTerminalKind::ValidationFailed,
+                input,
+                "embedded dependency collision was lost",
+            ));
+        }
+    }
     let source_root_text = source_root
         .to_string_lossy()
         .replace('\\', "/")
@@ -1217,6 +1439,9 @@ fn process_materials(
 ) -> Result<(), CreatureClosureError> {
     let mut propagated = BTreeMap::<(String, String), BTreeSet<String>>::new();
     while let Some(task) = tasks.pop_front() {
+        let input_namespace =
+            input_namespace(input_for_task(&task.source_inputs, inputs), namespace);
+        let namespace = input_namespace.as_str();
         let target_runtime = canonical_runtime_path(&task.target_runtime_path, "materials")
             .map_err(|message| {
                 task_error(
@@ -1938,6 +2163,14 @@ fn validate_published_closure(
             ));
         }
         match artifact.kind {
+            CreatureArtifactKind::Hkx => behavior::validate_hkx(&bytes).map_err(|message| {
+                error(
+                    CreatureTerminalKind::ValidationFailed,
+                    None,
+                    Some(path.clone()),
+                    message,
+                )
+            })?,
             CreatureArtifactKind::Nif => {
                 NifFile::load(staged).map_err(|failure| {
                     error(
@@ -1993,6 +2226,7 @@ fn add_artifact(
         target,
         match kind {
             CreatureArtifactKind::Nif => "nif",
+            CreatureArtifactKind::Hkx => "hkx",
             CreatureArtifactKind::Bgsm => "bgsm",
             CreatureArtifactKind::Bgem => "bgem",
             CreatureArtifactKind::Dds => "dds",
@@ -2410,7 +2644,9 @@ fn validate_receipt(receipt: &CreatureClosureReceipt) -> Result<(), CreatureClos
                     input.input_key
                 )));
             }
-            CreatureNifRole::Skeleton => {}
+            CreatureNifRole::Skeleton
+            | CreatureNifRole::BodyPartReplacement
+            | CreatureNifRole::DependencyModel => {}
         }
         let expected_key = stable_input_key(
             input.role,
@@ -2440,7 +2676,8 @@ fn validate_receipt(receipt: &CreatureClosureReceipt) -> Result<(), CreatureClos
                 source_block_types,
                 body_count,
             } => Some((source_block_types, Some(*body_count))),
-            CreatureCollisionDisposition::None => None,
+            CreatureCollisionDisposition::None
+            | CreatureCollisionDisposition::ConvertedReplacement { .. } => None,
         };
         if let Some((source_block_types, body_count)) = articulated {
             if source_block_types.is_empty()
@@ -2457,7 +2694,11 @@ fn validate_receipt(receipt: &CreatureClosureReceipt) -> Result<(), CreatureClos
         let target =
             normalize_data_relative(&input.target_data_relative_path, "nif").map_err(invalid)?;
         if target != input.target_data_relative_path
-            || !target.starts_with(&format!("meshes/{namespace}/"))
+            || if input.role == CreatureNifRole::DependencyModel {
+                !target.starts_with("meshes/")
+            } else {
+                !target.starts_with(&format!("meshes/{namespace}/"))
+            }
         {
             return Err(invalid(format!(
                 "input {} target path is outside its namespace",
@@ -2490,6 +2731,7 @@ fn validate_receipt(receipt: &CreatureClosureReceipt) -> Result<(), CreatureClos
         previous_artifact = Some(&artifact.target_data_relative_path);
         let (root, extension) = match artifact.kind {
             CreatureArtifactKind::Nif => ("meshes", "nif"),
+            CreatureArtifactKind::Hkx => ("meshes", "hkx"),
             CreatureArtifactKind::Bgsm => ("materials", "bgsm"),
             CreatureArtifactKind::Bgem => ("materials", "bgem"),
             CreatureArtifactKind::Dds => ("textures", "dds"),
@@ -2497,7 +2739,20 @@ fn validate_receipt(receipt: &CreatureClosureReceipt) -> Result<(), CreatureClos
         let target = normalize_data_relative(&artifact.target_data_relative_path, extension)
             .map_err(invalid)?;
         if target != artifact.target_data_relative_path
-            || !target.starts_with(&format!("{root}/{namespace}/"))
+            || (!target.starts_with(&format!("{root}/{namespace}/"))
+                && !(artifact.kind == CreatureArtifactKind::Nif
+                    && receipt.inputs.iter().any(|input| {
+                        input.role == CreatureNifRole::DependencyModel
+                            && input.target_data_relative_path == target
+                    }))
+                && !receipt.inputs.iter().any(|input| {
+                    input.role == CreatureNifRole::DependencyModel
+                        && artifact.source_inputs.contains(&input.input_key)
+                        && target.starts_with(&format!(
+                            "{root}/{}/",
+                            dependency_namespace(&input.source_blake3)
+                        ))
+                }))
         {
             return Err(invalid(format!(
                 "artifact path {} is outside its canonical namespace",

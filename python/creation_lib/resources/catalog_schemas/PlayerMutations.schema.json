@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://modbox21.local/catalog_schemas/PlayerMutations.schema.json",
+  "title": "PlayerMutations catalog",
+  "description": "Foods that feed the mutation diet, consumables that trigger mutation actions, and decontamination effects. Every section is keyed by form.",
+  "x-help": "Tales ports the 19 Fallout 76 player mutations. This catalog tells it which items and effects take part.\n\nFoods: Carnivore and Herbivore depend on what the player eats. Mark each food as meat or vegetable.\n\nConsumables: an item that, when used, triggers a mutation action: starting or stopping Starched Genes, curing a random mutation, or the Rad-X effects. Pick the action that matches what the item should do.\n\nDecontamination: magic effects that count as decontamination and can remove a random mutation (unless Starched Genes protects the player).",
+  "allOf": [
+    {"$ref": "envelope.schema.json"}
+  ],
+  "properties": {
+    "version": {"const": 1},
+    "settings": {"type": "object", "description": "Feature-wide values; a later plugin's field replaces the earlier one.", "properties": {}},
+    "foods": {
+      "type": "array",
+      "title": "Foods",
+      "description": "Foods that feed the mutation diet.",
+      "x-key": ["form"],
+      "items": {
+        "type": "object",
+        "required": ["form"],
+        "properties": {
+          "form": {"$ref": "envelope.schema.json#/$defs/formKey", "x-form-type": ["ALCH"], "title": "Food (ALCH)", "description": "The food item."},
+          "remove": {"$ref": "envelope.schema.json#/$defs/removeFlag"},
+          "type": {"enum": [1, 2], "title": "Kind of food", "description": "Meat feeds Carnivore; vegetable feeds Herbivore.", "x-enum-labels": {"1": "Meat", "2": "Vegetable"}}
+        },
+        "if": {"not": {"required": ["remove"]}},
+        "then": {"required": ["type"]}
+      }
+    },
+    "consumables": {
+      "type": "array",
+      "title": "Consumables",
+      "description": "Items that trigger a mutation action when used.",
+      "x-key": ["form"],
+      "items": {
+        "type": "object",
+        "required": ["form"],
+        "properties": {
+          "form": {"$ref": "envelope.schema.json#/$defs/formKey", "x-form-type": ["ALCH"], "title": "Item (ALCH)", "description": "The consumable."},
+          "remove": {"$ref": "envelope.schema.json#/$defs/removeFlag"},
+          "action": {"type": "integer", "minimum": 0, "maximum": 4, "title": "Action", "description": "What using the item does.", "x-enum-labels": {"0": "Toggle Starched Genes", "1": "Cure one random mutation (like RadAway)", "2": "End Rad-X suppression (like diluted Rad-X)", "3": "Suppress mutations for 10 minutes (like Rad-X)", "4": "Cure one random mutation (like diluted RadAway)"}}
+        },
+        "if": {"not": {"required": ["remove"]}},
+        "then": {"required": ["action"]}
+      }
+    },
+    "decontamination": {
+      "type": "array",
+      "title": "Decontamination effects",
+      "description": "Magic effects that can remove a random mutation.",
+      "x-key": ["form"],
+      "items": {
+        "type": "object",
+        "properties": {
+          "form": {"$ref": "envelope.schema.json#/$defs/formKey", "x-form-type": ["MGEF"], "title": "Effect (MGEF)", "description": "The effect that counts as decontamination."},
+          "remove": {"$ref": "envelope.schema.json#/$defs/removeFlag"}
+        },
+        "if": {"not": {"required": ["remove"]}},
+        "then": {"required": ["form"]}
+      }
+    }
+  }
+}

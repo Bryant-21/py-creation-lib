@@ -154,6 +154,10 @@ pub enum ConstraintKindIr {
         inner: Box<ConstraintKindIr>,
         threshold: f32,
     },
+    Malleable {
+        inner: Box<ConstraintKindIr>,
+        strength: f32,
+    },
     Ragdoll(RagdollLimitsIr),
     Fixed {
         frame_a: QsTransformIr,
@@ -1047,6 +1051,7 @@ pub fn validate_fo4_creature_ragdoll_file(
                     | "hkpHingeConstraintData"
                     | "hkpPrismaticConstraintData"
                     | "hknpBreakableConstraintData"
+                    | "hknpMalleableConstraintData"
                     | "hkpRagdollConstraintData"
                     | "hkpFixedConstraintData"
             )
@@ -1360,6 +1365,18 @@ fn validate_constraint_kind(
                 return Err(CreatureRagdollError::UnsupportedTargetConstraint {
                     constraint: constraint_name.to_string(),
                     kind: "nested_breakable".to_string(),
+                });
+            }
+            validate_constraint_kind(constraint_name, inner)?;
+        }
+        ConstraintKindIr::Malleable { inner, strength } => {
+            validate_finite_slice(
+                &format!("constraints[{constraint_name}].strength"),
+                &[*strength],
+            )?;
+            if *strength < 0.0 {
+                return Err(CreatureRagdollError::Negative {
+                    path: format!("constraints[{constraint_name}].strength"),
                 });
             }
             validate_constraint_kind(constraint_name, inner)?;
@@ -1983,11 +2000,50 @@ fn push_constraint_kind(
                 ],
             )
         }
+        ConstraintKindIr::Malleable { inner, strength } => {
+            let inner_index = push_constraint_kind(registry, objects, inner)?;
+            let wrapper_index = objects.len();
+            push_target_object(
+                registry,
+                objects,
+                "hknpMalleableConstraintData",
+                vec![
+                    member("userData", HkxValue::U64(0)),
+                    member("constraintData", HkxValue::Pointer(Some(inner_index))),
+                    member(
+                        "atom",
+                        HkxValue::Object(vec![
+                            member("type", HkxValue::U16(1)),
+                            member(
+                                "numSolverResults",
+                                HkxValue::I32(constraint_solver_results(inner)),
+                            ),
+                            // The bridge must call the wrapper's strength-scaled Jacobian.
+                            member("constraintData", HkxValue::Pointer(Some(wrapper_index))),
+                        ]),
+                    ),
+                    member("wantsRuntime", HkxValue::Bool(true)),
+                    member("strength", HkxValue::F32(*strength)),
+                ],
+            )
+        }
         ConstraintKindIr::Ragdoll(limits) => {
             push_ragdoll_constraint_data(registry, objects, limits)
         }
         ConstraintKindIr::Fixed { frame_a, frame_b } => {
             push_fixed_constraint_data(registry, objects, frame_a, frame_b)
+        }
+    }
+}
+
+fn constraint_solver_results(kind: &ConstraintKindIr) -> i32 {
+    match kind {
+        ConstraintKindIr::LimitedHinge(_) | ConstraintKindIr::Prismatic(_) => 10,
+        ConstraintKindIr::Hinge(_) => 5,
+        ConstraintKindIr::Ragdoll(_) => 18,
+        ConstraintKindIr::Fixed { .. } => 6,
+        ConstraintKindIr::Breakable { inner, .. } | ConstraintKindIr::Malleable { inner, .. } => {
+            constraint_solver_results(inner)
         }
     }
 }

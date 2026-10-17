@@ -76,6 +76,9 @@ pub enum Expr {
         object: Box<Expr>,
         method: String,
         args: Vec<Expr>,
+        /// Parallel to `args`, as on `CallExpr`.
+        #[serde(default)]
+        arg_names: Vec<Option<String>>,
         pos: Pos,
     },
     BinaryExpr {
@@ -312,6 +315,9 @@ pub struct ScriptNode {
     pub functions: Vec<FunctionDef>,
     pub events: Vec<EventDef>,
     pub states: Vec<StateDef>,
+    /// `CustomEvent` names this script declares.
+    #[serde(default)]
+    pub custom_events: Vec<String>,
     #[serde(default)]
     pub pos: Pos,
 }

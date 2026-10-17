@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from creation_lib.build import packer
-from creation_lib.build.archive_plan import ArchiveEntry
+from creation_lib.build.archive_plan import ArchiveEntry, PlannedArchive
 
 
 def _write_mod_file(
@@ -433,6 +433,25 @@ def test_pack_mod_ba2_defaults_to_main_and_texture_labels_pc_and_ps(tmp_path, mo
             },
         ),
     ]
+
+
+def test_direct_compact_ba2_path_declines_textures_planned_into_main(tmp_path):
+    def plan(label, rel_paths, texture_archive):
+        entries = tuple(ArchiveEntry(rel, tmp_path / rel, 1) for rel in rel_paths)
+        return PlannedArchive("Misc", label, f"B21_Test - {label}.ba2", entries, texture_archive)
+
+    textures = plan("Textures", ["Textures/Terrain/W/Objects/W.Objects.dds"], True)
+    main = ["Meshes/test.nif"]
+    array = ["Textures/Terrain/W/Objects/W.InstanceArray.dds", "Textures/Terrain/W/Objects/W.InstanceArray.txt"]
+
+    def direct(plans):
+        return packer._can_use_direct_compact_ba2_path(
+            plans, mod_name="B21_Test", archive_ext="ba2", platform_suffix=""
+        )
+
+    assert direct([plan("Main", main, False), textures])
+    # The direct path packs Main without Textures/ and Textures/ whole as DX10, which would lose these.
+    assert not direct([plan("Main", main + array, False), textures])
 
 
 def test_pack_mod_ba2_expanded_archives_merges_misc_and_splits_families(tmp_path, monkeypatch):

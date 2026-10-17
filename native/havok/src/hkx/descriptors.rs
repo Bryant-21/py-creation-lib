@@ -408,6 +408,27 @@ impl DescriptorRegistry {
         Ok(element_span * member.arrsize.max(1))
     }
 
+    pub(crate) fn declares_enum(&mut self, class_name: &str, enum_name: &str) -> bool {
+        let mut current = Some(class_name.to_string());
+        let mut seen = HashSet::new();
+        while let Some(name) = current {
+            if !seen.insert(name.clone()) {
+                break;
+            }
+            let Ok(Some(descriptor)) = self.get(&name) else {
+                break;
+            };
+            if descriptor.enums.contains_key(enum_name) {
+                return true;
+            }
+            current = descriptor
+                .parent
+                .clone()
+                .filter(|parent| !parent.is_empty());
+        }
+        false
+    }
+
     pub fn get_enum_value(&mut self, class_name: &str, enum_name: &str, int_value: i32) -> String {
         let mut current = Some(class_name.to_string());
         let mut seen_classes = HashSet::new();

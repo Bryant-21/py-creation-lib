@@ -1,13 +1,12 @@
-//! Bounded-memory verification of a BTD4 v2 sidecar.
+//! Bounded-memory verification of a BTD4 sidecar.
 //!
-//! Reads only the header and the 88-byte index rows up front, then decodes one
+//! Reads only the header and the index rows up front, then decodes one
 //! cell at a time. Edge continuity is checked against the previous index row and
 //! the west neighbour, so resident memory is one row of cell edges no matter how
 //! large the worldspace is. The same decode rules as `Btd4Reader` and the Tales
 //! runtime reader apply; any rejection is an error the runtime would also hit.
 
-use crate::btd4::{ALPH_PLANE_COUNT, ALPH_PLANE_LEN, BTD4_VERSION, Btd4Header};
-use flate2::read::ZlibDecoder;
+use crate::btd4::{ALPH_PLANE_COUNT, ALPH_PLANE_LEN, Btd4Header, LAYER_COUNT};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
 use std::io::{BufReader, Read, Seek, SeekFrom};
@@ -16,7 +15,6 @@ use std::path::Path;
 const CELL_VERTS: usize = 129;
 const CELL_VERTEX_COUNT: usize = CELL_VERTS * CELL_VERTS;
 const GRASS_MASK_LEN: usize = 128 * 128;
-const LAYER_COUNT: usize = 24;
 const SAMPLE_SPACING: f32 = 32.0;
 const CELL_UNITS: f32 = 4096.0;
 const MAX_ERRORS: usize = 64;
@@ -75,6 +73,9 @@ pub struct Btd4VerifyReport {
     pub cells_with_alpha: usize,
     pub cells_with_grass: usize,
     pub cells_with_colors: usize,
+    /// GRSP: cells carrying FO76 ground-cover grass points, and their point total.
+    pub cells_with_grass_points: usize,
+    pub grass_points_total: u64,
     pub height_min_world: f32,
     pub height_max_world: f32,
     pub edges_checked: usize,
@@ -115,7 +116,7 @@ struct ChannelEntry {
 struct IndexRow {
     x: i32,
     y: i32,
-    channels: [ChannelEntry; 5],
+    channels: [ChannelEntry; 7],
 }
 
 struct DecodedCell {
@@ -124,6 +125,7 @@ struct DecodedCell {
     layers: Option<Vec<(u8, u32)>>,
     grass: Option<Vec<(u8, u32, Vec<u8>)>>,
     colors: Option<Vec<u8>>,
+    grass_points: Option<crate::btd4::GrassPointsChunk>,
 }
 
 struct Edges {
@@ -169,7 +171,7 @@ fn read_string<R: Read>(reader: &mut R) -> Result<String, String> {
     String::from_utf8(read_exact(reader, len)?).map_err(|e| format!("btd4 verify: string: {e}"))
 }
 
-fn read_head(path: &Path) -> Result<(Btd4Header, Vec<IndexRow>, u64), String> {
+fn read_head(path: &Path) -> Result<(Btd4Header, Vec<IndexRow>, u64, Vec<u8>), String> {
     let file = std::fs::File::open(path).map_err(|e| format!("btd4 verify: open: {e}"))?;
     let file_len = file
         .metadata()
@@ -178,10 +180,6 @@ fn read_head(path: &Path) -> Result<(Btd4Header, Vec<IndexRow>, u64), String> {
     let mut reader = BufReader::new(file);
     if read_exact(&mut reader, 4)? != b"BTD4" {
         return Err("btd4 verify: bad magic".into());
-    }
-    let version = read_u32(&mut reader)?;
-    if version != BTD4_VERSION {
-        return Err(format!("btd4 verify: unsupported version {version}"));
     }
     let density = read_u32(&mut reader)?;
     let height_min = read_f32(&mut reader)?;
@@ -193,7 +191,7 @@ fn read_head(path: &Path) -> Result<(Btd4Header, Vec<IndexRow>, u64), String> {
         || height_scale <= 0.0
         || worldspace_editor_id.is_empty()
     {
-        return Err("btd4 verify: invalid v2 header".into());
+        return Err("btd4 verify: invalid header".into());
     }
     let plugin_count = read_u16(&mut reader)? as usize;
     if plugin_count == 0 {
@@ -215,6 +213,10 @@ fn read_head(path: &Path) -> Result<(Btd4Header, Vec<IndexRow>, u64), String> {
     if cell_min_x > cell_max_x || cell_min_y > cell_max_y || cell_count > 1_000_000 {
         return Err("btd4 verify: invalid cell bounds or count".into());
     }
+    let length = read_u32(&mut reader)? as usize;
+    if length > crate::raw_terrain::MAX_BANK_BYTES { return Err("raw bank exceeds size limit".into()); }
+    let raw_bank = read_exact(&mut reader, length)?;
+    crate::raw_terrain::validate_bank(&raw_bank)?;
     let mut rows = Vec::with_capacity(cell_count);
     let mut previous: Option<(i32, i32)> = None;
     for _ in 0..cell_count {
@@ -229,8 +231,8 @@ fn read_head(path: &Path) -> Result<(Btd4Header, Vec<IndexRow>, u64), String> {
             ));
         }
         previous = Some((y, x));
-        let mut channels = [ChannelEntry::default(); 5];
-        for channel in &mut channels {
+        let mut channels = [ChannelEntry::default(); 7];
+        for channel in channels.iter_mut() {
             channel.offset = read_u64(&mut reader)?;
             channel.len = read_u64(&mut reader)?;
             if channel.len != 0
@@ -247,10 +249,12 @@ fn read_head(path: &Path) -> Result<(Btd4Header, Vec<IndexRow>, u64), String> {
         if channels[0].len == 0 {
             return Err(format!("btd4 verify: cell ({x},{y}) has no HGTS"));
         }
+        if channels[5].len == 0 {
+            return Err(format!("btd4 verify: cell ({x},{y}) has no RAWT"));
+        }
         rows.push(IndexRow { x, y, channels });
     }
     let header = Btd4Header {
-        version,
         density,
         height_min,
         height_scale,
@@ -261,7 +265,7 @@ fn read_head(path: &Path) -> Result<(Btd4Header, Vec<IndexRow>, u64), String> {
         cell_max_x,
         cell_max_y,
     };
-    Ok((header, rows, file_len))
+    Ok((header, rows, file_len, raw_bank))
 }
 
 fn inflate<R: Read + Seek>(
@@ -270,16 +274,14 @@ fn inflate<R: Read + Seek>(
     expected: Option<usize>,
     maximum: usize,
 ) -> Result<Vec<u8>, String> {
+    let compressed_limit = crate::btd4::compressed_bound(maximum) as u64;
+    if entry.len == 0 || entry.len > compressed_limit { return Err("compressed channel exceeds writer bound".into()); }
     file.seek(SeekFrom::Start(entry.offset))
         .map_err(|e| format!("seek: {e}"))?;
     let mut compressed = vec![0u8; entry.len as usize];
     file.read_exact(&mut compressed)
         .map_err(|e| format!("read chunk: {e}"))?;
-    let mut out = Vec::with_capacity(expected.unwrap_or(0));
-    ZlibDecoder::new(compressed.as_slice())
-        .take(maximum as u64 + 1)
-        .read_to_end(&mut out)
-        .map_err(|e| format!("inflate: {e}"))?;
+    let out = crate::btd4::decompress_bounded(&compressed, maximum)?;
     if out.len() > maximum || expected.is_some_and(|size| out.len() != size) {
         return Err(format!("decoded size {} is wrong", out.len()));
     }
@@ -290,6 +292,7 @@ fn decode_cell<R: Read + Seek>(
     file: &mut R,
     row: &IndexRow,
     plugin_count: usize,
+    raw_bank: &[u8],
 ) -> Result<DecodedCell, String> {
     let raw = inflate(file, row.channels[0], Some(CELL_VERTEX_COUNT * 2), CELL_VERTEX_COUNT * 2)
         .map_err(|e| format!("HGTS: {e}"))?;
@@ -304,7 +307,7 @@ fn decode_cell<R: Read + Seek>(
         let size = 1 + ALPH_PLANE_COUNT * ALPH_PLANE_LEN;
         let raw = inflate(file, row.channels[1], Some(size), size).map_err(|e| format!("ALPH: {e}"))?;
         if raw[0] as usize != ALPH_PLANE_COUNT {
-            return Err("ALPH: plane count is not 20".into());
+            return Err("ALPH: wrong plane count".into());
         }
         if row.channels[2].len == 0 {
             return Err("ALPH present without LAYR".into());
@@ -318,7 +321,7 @@ fn decode_cell<R: Read + Seek>(
         let size = 1 + LAYER_COUNT * 6;
         let raw = inflate(file, row.channels[2], Some(size), size).map_err(|e| format!("LAYR: {e}"))?;
         if raw[0] as usize != LAYER_COUNT {
-            return Err("LAYR: row count is not 24".into());
+            return Err("LAYR: wrong row count".into());
         }
         let mut layers = Vec::with_capacity(LAYER_COUNT);
         for slot in 0..LAYER_COUNT {
@@ -364,12 +367,25 @@ fn decode_cell<R: Read + Seek>(
         Some(inflate(file, row.channels[4], Some(size), size).map_err(|e| format!("CLRS: {e}"))?)
     };
 
+    let raw = inflate(file, row.channels[5], Some(crate::raw_terrain::CELL_BYTES), crate::raw_terrain::CELL_BYTES)
+        .map_err(|e| format!("RAWT: {e}"))?;
+    crate::raw_terrain::validate_cell(raw_bank, &raw, row.x, row.y)?;
+
+    let grass_points = if row.channels[6].len == 0 {
+        None
+    } else {
+        let raw = inflate(file, row.channels[6], None, crate::btd4::MAX_GRASS_POINTS_BYTES)
+            .map_err(|e| format!("GRSP: {e}"))?;
+        Some(crate::btd4::decode_grass_points(&raw, plugin_count).map_err(|e| format!("GRSP: {e}"))?)
+    };
+
     Ok(DecodedCell {
         heights,
         alphas,
         layers,
         grass,
         colors,
+        grass_points,
     })
 }
 
@@ -437,13 +453,13 @@ fn road_fraction(cell: &DecodedCell, road: &BTreeSet<u32>) -> f32 {
     };
     let mut covered = 0usize;
     for quadrant in 0..4 {
-        let is_road = |slot: usize| road.contains(&layers[quadrant * 6 + slot].1);
+        let is_road = |slot: usize| road.contains(&layers[quadrant * 8 + slot].1);
         for texel in 0..ALPH_PLANE_LEN {
             let mut sum = 0u32;
             let mut on_road = false;
             if let Some(alphas) = &cell.alphas {
-                for slot in 0..5 {
-                    let value = alphas[(quadrant * 5 + slot) * ALPH_PLANE_LEN + texel];
+                for slot in 0..7 {
+                    let value = alphas[(quadrant * 7 + slot) * ALPH_PLANE_LEN + texel];
                     sum += u32::from(value);
                     on_road |= value > 127 && is_road(slot + 1);
                 }
@@ -502,7 +518,7 @@ fn hex_ids(ids: &BTreeSet<u32>) -> Vec<String> {
 }
 
 pub fn verify_btd4(path: &Path, options: &VerifyOptions) -> Result<Btd4VerifyReport, String> {
-    let (header, rows, file_len) = read_head(path)?;
+    let (header, rows, file_len, raw_bank) = read_head(path)?;
     let plugin_count = header.plugin_names.len();
     let limit = options.locations_per_category.max(1);
     let water_heights: HashMap<(i32, i32), f32> =
@@ -572,7 +588,7 @@ pub fn verify_btd4(path: &Path, options: &VerifyOptions) -> Result<Btd4VerifyRep
             row_y = Some(row.y);
             west = None;
         }
-        let cell = match decode_cell(&mut file, row, plugin_count) {
+        let cell = match decode_cell(&mut file, row, plugin_count, &raw_bank) {
             Ok(cell) => cell,
             Err(error) => {
                 report.error_count += 1;
@@ -700,6 +716,12 @@ pub fn verify_btd4(path: &Path, options: &VerifyOptions) -> Result<Btd4VerifyRep
                 / GRASS_MASK_LEN as f32;
             grass_best.offer(location(row.x, row.y, &heights, 64, 64, covered));
         }
+        if let Some(points) = &cell.grass_points {
+            report.cells_with_grass_points += 1;
+            report.grass_points_total += points.runs.iter().map(|run| run.points.len() as u64).sum::<u64>();
+            grass_ids.extend(points.grasses.iter().map(|grass| grass.object_id));
+            own_grass_ids.extend(points.grasses.iter().filter(|grass| grass.plugin_index == 0).map(|grass| grass.object_id));
+        }
     }
 
     if report.cells == 0 {
@@ -729,11 +751,11 @@ pub fn verify_btd4(path: &Path, options: &VerifyOptions) -> Result<Btd4VerifyRep
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::btd4::tests::{grass_points_chunk, raw_bank, raw_cell};
     use crate::btd4::{Btd4Writer, CellChannels, GcvrChunk, GcvrEntry, LayerRef, spill_path_for};
 
     fn header(max_x: i32, max_y: i32) -> Btd4Header {
         Btd4Header {
-            version: BTD4_VERSION,
             density: 128,
             height_min: -1000.0,
             height_scale: 0.5,
@@ -757,13 +779,15 @@ mod tests {
         heights
     }
 
-    fn channels(heights: Vec<u16>) -> CellChannels {
+    fn channels(cx: i32, cy: i32, heights: Vec<u16>) -> CellChannels {
         CellChannels {
+            raw_terrain: Some(raw_cell(cx, cy)),
             heights: Some(heights),
             alphas: None,
             layers: None,
             gcvr: None,
             colors: None,
+            grass_points: None,
         }
     }
 
@@ -772,16 +796,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("Terrain").join("B21TestWorld.btd4");
         let spill = spill_path_for(&path);
-        let mut writer = Btd4Writer::with_spill_file(header(2, 1), &spill).unwrap();
+        let mut writer = Btd4Writer::with_spill_file(header(2, 1), raw_bank(), &spill).unwrap();
         let slope = |x: i64, y: i64| (2000 + x * 3 + y) as u16;
         for cy in 0..=1 {
             for cx in 0..=2 {
                 if (cx, cy) == (2, 1) {
                     continue;
                 }
-                let mut cell = channels(cell_heights(cx, cy, slope));
+                let mut cell = channels(cx, cy, cell_heights(cx, cy, slope));
                 if (cx, cy) == (0, 0) {
-                    let mut layers = vec![LayerRef { plugin_index: u8::MAX, object_id: 0, kind: 0 }; 24];
+                    let mut layers = vec![LayerRef { plugin_index: u8::MAX, object_id: 0, kind: 0 }; LAYER_COUNT];
                     layers[0] = LayerRef { plugin_index: 0, object_id: 0x0101, kind: 0 };
                     cell.layers = Some(layers);
                     let mut mask = vec![0u8; GRASS_MASK_LEN];
@@ -818,12 +842,37 @@ mod tests {
     }
 
     #[test]
+    fn grass_points_verify_clean_and_report_their_grass() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("w.btd4");
+        let mut with_fo4 = header(1, 0);
+        with_fo4.plugin_names.push("Fallout4.esm".into());
+        let mut writer = Btd4Writer::new(with_fo4, raw_bank()).unwrap();
+        let slope = |x: i64, y: i64| (2000 + x * 3 + y) as u16;
+        for cx in 0..=1 {
+            let mut cell = channels(cx, 0, cell_heights(cx, 0, slope));
+            cell.grass_points = (cx == 0).then(grass_points_chunk);
+            writer.add_cell(cx, 0, cell).unwrap();
+        }
+        writer.finish(&path).unwrap();
+
+        let options = VerifyOptions { written_grass_ids: Some([0x000900].into()), ..Default::default() };
+        let report = verify_btd4(&path, &options).unwrap();
+        assert!(report.is_valid(), "{report:?}");
+        assert_eq!((report.cells_with_grass_points, report.grass_points_total), (1, 4));
+        assert_eq!(report.referenced_grass_ids, vec!["000900", "0BA520"]);
+
+        let unwritten = VerifyOptions { written_grass_ids: Some(BTreeSet::new()), ..Default::default() };
+        assert_eq!(verify_btd4(&path, &unwritten).unwrap().unresolved_grass_ids, vec!["000900"]);
+    }
+
+    #[test]
     fn edge_mismatch_and_unresolved_references_fail_verification() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("w.btd4");
-        let mut writer = Btd4Writer::new(header(1, 0));
-        writer.add_cell(0, 0, channels(vec![100; CELL_VERTEX_COUNT])).unwrap();
-        let mut gcvr_cell = channels(vec![101; CELL_VERTEX_COUNT]);
+        let mut writer = Btd4Writer::new(header(1, 0), raw_bank()).unwrap();
+        writer.add_cell(0, 0, channels(0, 0, vec![100; CELL_VERTEX_COUNT])).unwrap();
+        let mut gcvr_cell = channels(1, 0, vec![101; CELL_VERTEX_COUNT]);
         gcvr_cell.gcvr = Some(GcvrChunk {
             entries: vec![GcvrEntry { plugin_index: 0, object_id: 0x0999, mask: vec![1; GRASS_MASK_LEN] }],
         });

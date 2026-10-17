@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://modbox21.local/catalog_schemas/Pets.schema.json",
+  "title": "Pets catalog",
+  "description": "CAMP pets: which pet actor spawns from which piece of furniture, plus the apparel pets can wear.",
+  "x-help": "A CAMP pet is an NPC that appears when the player builds its home, a piece of furniture such as a doghouse. Tales lets the player name the pet, pet it, make it speak or sit, and dress it.\n\nEach pet row links a pet actor (NPC) to the furniture it spawns from and to a species (dog, cat, radhog or deathclaw). The species decides which interaction animations and apparel it uses, and the XP track it levels on.\n\nEach apparel row is an armor (ARMO) a pet of one species can wear. The slots list stops two pieces occupying the same body slot.\n\nThe Settings tab holds the wiring Tales needs (packages, keywords and animations). They come from the conversion; change them only when you build pets on your own forms.",
+  "allOf": [
+    {"$ref": "envelope.schema.json"}
+  ],
+  "$defs": {
+    "optionalForm": {"oneOf": [{"$ref": "envelope.schema.json#/$defs/formKey"}, {"type": "null"}]}
+  },
+  "properties": {
+    "version": {"const": 1},
+    "settings": {
+      "type": "object",
+      "description": "Feature-wide values; a later plugin's field replaces the earlier one.",
+      "properties": {
+        "bindings": {
+          "type": "object",
+          "title": "Runtime forms",
+          "description": "The forms Tales uses to run pets, by role. A role left empty disables what depends on it.",
+          "properties": {
+            "sandbox": {"$ref": "#/$defs/optionalForm", "x-form-type": ["PACK"], "title": "Idle behavior", "description": "Package the pet follows at home (wandering near its furniture). Required."},
+            "follow": {"$ref": "#/$defs/optionalForm", "x-form-type": ["PACK"], "title": "Follow package", "description": "Package that makes an assigned world pet follow the player."},
+            "world_keyword": {"$ref": "#/$defs/optionalForm", "x-form-type": ["KYWD"], "title": "World pet keyword", "description": "Keyword that marks an actor as an assigned world pet."},
+            "owner_link": {"$ref": "#/$defs/optionalForm", "x-form-type": ["KYWD"], "title": "Owner link", "description": "Link keyword from the pet to its owner."},
+            "player_link": {"$ref": "#/$defs/optionalForm", "x-form-type": ["KYWD"], "title": "Player link", "description": "Link keyword pointing at the player."},
+            "home_link": {"$ref": "#/$defs/optionalForm", "x-form-type": ["KYWD"], "title": "Home link", "description": "Link keyword from the pet to its home furniture."},
+            "marker_link": {"$ref": "#/$defs/optionalForm", "x-form-type": ["KYWD"], "title": "Marker link", "description": "Link keyword from the pet to its idle marker."},
+            "workshop_link": {"$ref": "#/$defs/optionalForm", "x-form-type": ["KYWD"], "title": "Workshop link", "description": "Link keyword from the pet to its workshop."},
+            "object_workshop_link": {"$ref": "#/$defs/optionalForm", "x-form-type": ["KYWD"], "title": "Object workshop link", "description": "Link keyword from a workshop object to its workshop."},
+            "player_pet": {"$ref": "#/$defs/optionalForm", "x-form-type": ["IDLE"], "title": "Petting idle (third person)", "description": "Idle the player plays when petting a pet in third person."},
+            "player_pet_first": {"$ref": "#/$defs/optionalForm", "x-form-type": ["IDLE"], "title": "Petting idle (first person)", "description": "Idle the player plays when petting a pet in first person."},
+            "player_pet_pa": {"$ref": "#/$defs/optionalForm", "x-form-type": ["IDLE"], "title": "Petting idle (power armor)", "description": "Idle the player plays when petting a pet in power armor."},
+            "stimpak": {"$ref": "#/$defs/optionalForm", "x-form-type": ["ALCH"], "title": "Healing item", "description": "Item consumed when the player heals a pet."}
+          },
+          "additionalProperties": {"$ref": "#/$defs/optionalForm"}
+        },
+        "interactions": {
+          "type": "object",
+          "title": "Interaction idles",
+          "description": "For each species, the idles played for Pet, Speak and Sit. Keys are species numbers: 0 dog, 1 cat, 2 radhog, 3 deathclaw.",
+          "x-key-title": "Species number",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "pet": {"$ref": "#/$defs/optionalForm", "x-form-type": ["IDLE"], "title": "Pet", "description": "Idle the pet plays when petted."},
+              "speak": {"$ref": "#/$defs/optionalForm", "x-form-type": ["IDLE"], "title": "Speak", "description": "Idle the pet plays when told to speak."},
+              "sit": {"$ref": "#/$defs/optionalForm", "x-form-type": ["IDLE"], "title": "Sit", "description": "Idle the pet plays when told to sit."}
+            },
+            "additionalProperties": {"$ref": "#/$defs/optionalForm"}
+          }
+        },
+        "xp_thresholds": {"type": "array", "items": {"type": "number"}, "minItems": 1, "title": "XP per level", "description": "XP needed to reach each pet level, in order."},
+        "xp_per_second": {"type": "number", "title": "XP per second", "description": "Pet XP gained per second of banked player XP award time."},
+        "progression": {"type": "object", "title": "Progression board", "description": "The pet reward tracks (passives and gifts) generated by the conversion. Edit only with care."},
+        "missing_converted": {"type": "array", "items": {"type": "string"}, "title": "Missing converted pets", "description": "Source pets that are absent from the converted plugin. Informational."},
+        "rejected": {"type": "array", "title": "Rejected pets", "description": "Source pets the converter could not pair. Informational."}
+      }
+    },
+    "pets": {
+      "type": "array",
+      "title": "Pets",
+      "description": "Each pet actor and the furniture it spawns from. Pets keep the order listed.",
+      "x-key": ["actor"],
+      "x-order": "entries",
+      "items": {
+        "type": "object",
+        "properties": {
+          "actor": {"$ref": "envelope.schema.json#/$defs/formKey", "x-form-type": ["NPC_"], "title": "Pet (NPC)", "description": "The pet actor that spawns."},
+          "home": {"$ref": "envelope.schema.json#/$defs/formKey", "x-form-type": ["FURN"], "title": "Home (furniture)", "description": "The furniture the player builds to get this pet, for example a doghouse."},
+          "species": {"enum": ["dog", "cat", "radhog", "deathclaw"], "title": "Species", "description": "Decides the interaction animations, apparel and XP track.", "x-enum-labels": {"dog": "Dog", "cat": "Cat", "radhog": "Radhog", "deathclaw": "Deathclaw"}},
+          "source_keyword": {"$ref": "envelope.schema.json#/$defs/formKey", "x-form-type": ["KYWD"], "title": "Breed keyword", "description": "Keyword shared by the home and the pet that identifies the breed. Optional."},
+          "remove": {"$ref": "envelope.schema.json#/$defs/removeFlag"}
+        },
+        "if": {"not": {"required": ["remove"]}},
+        "then": {"required": ["actor", "home", "species"]}
+      }
+    },
+    "apparel": {
+      "type": "array",
+      "title": "Pet apparel",
+      "description": "Armor pieces a pet can wear.",
+      "x-key": ["form"],
+      "x-order": "entries",
+      "items": {
+        "type": "object",
+        "properties": {
+          "form": {"$ref": "envelope.schema.json#/$defs/formKey", "x-form-type": ["ARMO"], "title": "Apparel (ARMO)", "description": "The armor the player crafts and puts on the pet."},
+          "species": {"type": "integer", "minimum": 0, "maximum": 3, "title": "Species", "description": "Which species can wear it.", "x-enum-labels": {"0": "Dog", "1": "Cat", "2": "Radhog", "3": "Deathclaw"}},
+          "slots": {"type": "array", "title": "Body slots", "description": "Body slots the piece occupies. Two pieces that share a slot cannot be worn together."},
+          "remove": {"$ref": "envelope.schema.json#/$defs/removeFlag"}
+        },
+        "if": {"not": {"required": ["remove"]}},
+        "then": {"required": ["form", "species"]}
+      }
+    }
+  }
+}

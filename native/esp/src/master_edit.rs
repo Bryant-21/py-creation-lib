@@ -274,3 +274,72 @@ pub(super) fn null_refs(slot: &mut NativePluginSlot, index: u8) -> Result<usize,
     slot.parsed.header.raw_subrecords.clear();
     Ok(count)
 }
+
+/// Copies one raw record (header + payload) into a plugin with a different
+/// master list. Every FormID the schema knows about is rewritten; a FormID
+/// whose owner is not in `target_masters` + `target_name` is an error, never
+/// left pointing at the wrong file.
+pub fn remap_record_bytes(
+    raw: &[u8],
+    game: &str,
+    source_masters: &[String],
+    source_name: &str,
+    target_masters: &[String],
+    target_name: &str,
+) -> Result<Vec<u8>, String> {
+    let schema = compiled_schema_for_game_str(game)?;
+    let header_size = detect_header_size(raw);
+    let data = Bytes::copy_from_slice(raw);
+    let (record, _) = parse_record(&data, 0, header_size, true).map_err(|error| error.to_string())?;
+    let source_own = source_masters.len();
+    let target_own = target_masters.len() as u32;
+    let mut missing = BTreeSet::new();
+    let mut rewrite = |raw: u32| {
+        if raw == 0 || raw == u32::MAX {
+            return None;
+        }
+        let index = (raw >> 24) as usize;
+        let owner = if index >= source_own { source_name } else { source_masters[index].as_str() };
+        let target = if owner.eq_ignore_ascii_case(target_name) {
+            Some(target_own)
+        } else {
+            target_masters.iter().position(|m| m.eq_ignore_ascii_case(owner)).map(|i| i as u32)
+        };
+        match target {
+            Some(target) => {
+                let replacement = (target << 24) | (raw & 0x00FF_FFFF);
+                (replacement != raw).then_some(replacement)
+            }
+            None => {
+                missing.insert(owner.to_string());
+                None
+            }
+        }
+    };
+    let mut items = [ParsedItem::Record(record)];
+    rewrite_items(&mut items, Some(&schema), true, &mut rewrite)?;
+    if !missing.is_empty() {
+        return Err(format!(
+            "record references plugins missing from the target master list: {}",
+            missing.into_iter().collect::<Vec<_>>().join(", ")
+        ));
+    }
+    let [ParsedItem::Record(record)] = items else { unreachable!() };
+    record_bytes_from_parsed(&record, header_size).map_err(|error| error.to_string())
+}
+
+/// Every FormID the schema finds in one raw record, its own included.
+pub fn record_form_ids(raw: &[u8], game: &str) -> Result<Vec<u32>, String> {
+    let schema = compiled_schema_for_game_str(game)?;
+    let data = Bytes::copy_from_slice(raw);
+    let (record, _) = parse_record(&data, 0, detect_header_size(raw), true).map_err(|error| error.to_string())?;
+    let mut found = Vec::new();
+    let mut visit = |raw: u32| {
+        if raw != 0 && raw != u32::MAX {
+            found.push(raw);
+        }
+        None
+    };
+    rewrite_items(&mut [ParsedItem::Record(record)], Some(&schema), true, &mut visit)?;
+    Ok(found)
+}

@@ -1133,20 +1133,18 @@ pub(crate) fn serialize_record_payload_text_value(
     compact_for_authoring_dir: bool,
 ) -> PyResult<JsonValue> {
     if mode == "authoring" {
-        let mut payload = serialize_record_payload_to_json(record, plugin, strings);
         if !compact_for_authoring_dir {
-            let Some(map) = payload.as_object_mut() else {
-                return Ok(payload);
-            };
+            // Expand from the per-subrecord entries: the grouped authoring
+            // `fields` fold row groups and object templates into one entry
+            // each, so zipping them against subrecords shifts every later value.
+            let (header, entries) = compact_record_payload_entries(record, plugin, strings);
             let mut full = JsonMap::new();
             full.insert("type".to_string(), JsonValue::String("record".to_string()));
             full.insert(
                 "signature".to_string(),
                 JsonValue::String(record.signature.to_string()),
             );
-            for (key, value) in std::mem::take(map) {
-                full.insert(key, value);
-            }
+            full.extend(header);
             if let Some(editor_id) = editor_id_from_parsed(record).filter(|value| !value.is_empty())
             {
                 full.entry("eid".to_string())
@@ -1156,10 +1154,6 @@ pub(crate) fn serialize_record_payload_text_value(
             {
                 full.insert("full_name".to_string(), JsonValue::String(full_name));
             }
-            let fields = full
-                .remove("fields")
-                .and_then(|value| value.as_array().cloned())
-                .unwrap_or_default();
             let schema_game = schema_game_for_parsed(plugin);
             let schema = schema_game
                 .as_deref()
@@ -1168,17 +1162,9 @@ pub(crate) fn serialize_record_payload_text_value(
                 schema_record_spec(schema.as_ref(), record.signature.as_str()).cloned()
             });
             let mut occurrence_counts: HashMap<&str, usize> = HashMap::new();
-            let mut expanded_fields = Vec::with_capacity(record.subrecords.len());
-            let mut compact_field_index = 0usize;
-            for sub in &record.subrecords {
-                let signature = sub.signature.as_str();
-                if signature == "EDID" {
-                    occurrence_counts.insert(
-                        signature,
-                        occurrence_counts.get(signature).copied().unwrap_or(0) + 1,
-                    );
-                    continue;
-                }
+            let mut expanded_fields = Vec::with_capacity(entries.len());
+            for entry in &entries {
+                let signature = entry.signature.as_str();
                 let occurrence = *occurrence_counts.get(signature).unwrap_or(&0);
                 let spec_json = lookup_subrecord_spec_for_parsed(
                     schema.as_deref(),
@@ -1186,16 +1172,9 @@ pub(crate) fn serialize_record_payload_text_value(
                     signature,
                     occurrence,
                 );
-                let compact_payload = fields
-                    .get(compact_field_index)
-                    .and_then(|entry| entry.as_object())
-                    .and_then(|entry| entry.values().next())
-                    .cloned()
-                    .unwrap_or(JsonValue::Null);
-                compact_field_index += 1;
                 expanded_fields.push(native_text_field_payload_value(
                     signature,
-                    &compact_payload,
+                    &entry.value,
                     spec_json.as_ref().map(|(spec, _)| *spec),
                 ));
                 occurrence_counts.insert(signature, occurrence + 1);
@@ -1203,7 +1182,7 @@ pub(crate) fn serialize_record_payload_text_value(
             full.insert("fields".to_string(), JsonValue::Array(expanded_fields));
             return Ok(JsonValue::Object(full));
         }
-        return Ok(payload);
+        return Ok(serialize_record_payload_to_json(record, plugin, strings));
     }
 
     let mut payload = JsonMap::new();

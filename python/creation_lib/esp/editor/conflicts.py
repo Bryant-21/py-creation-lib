@@ -14,7 +14,8 @@ from dataclasses import dataclass, field
 from typing import Iterable
 
 from creation_lib.esp.editor.session import ConflictStatus, EditorSession
-from creation_lib.esp.native_runtime import scan_conflicts
+from creation_lib.esp.native_runtime import scan_conflicts, plugin_handle_record_flags
+from creation_lib.esp.schema import get_schema
 
 _log = logging.getLogger("creation_lib.esp.editor.conflicts")
 
@@ -34,6 +35,7 @@ class OverrideEntry:
         "load_order_index",
         "form_id",
         "payload_hash",
+        "is_partial",
     )
 
     def __init__(
@@ -44,12 +46,14 @@ class OverrideEntry:
         load_order_index: int,
         form_id: int,
         payload_hash: int,
+        is_partial: bool = False,
     ) -> None:
         self.plugin_handle = plugin_handle
         self.plugin_name = plugin_name
         self.load_order_index = load_order_index
         self.form_id = form_id
         self.payload_hash = payload_hash
+        self.is_partial = is_partial
 
 
 @dataclass
@@ -65,7 +69,7 @@ class ConflictReport:
 
     @property
     def winner(self) -> OverrideEntry:
-        return self.chain[-1]
+        return next((entry for entry in reversed(self.chain) if not entry.is_partial), self.chain[0])
 
     @property
     def master_entry(self) -> OverrideEntry:
@@ -85,15 +89,22 @@ class ConflictScan:
     by_form_id: dict[int, ConflictReport] = field(default_factory=dict)
     by_signature: dict[str, list[int]] = field(default_factory=dict)
     by_handle_form_id: dict[tuple[int, int], ConflictReport] = field(default_factory=dict)
+    # Winner raw IDs can collide between unrelated origin plugins. The scoped
+    # index is authoritative; by_form_id remains a compatibility view.
+    by_record_key: dict[tuple[int, int], ConflictReport] = field(default_factory=dict)
+
+    @property
+    def reports(self) -> list[ConflictReport]:
+        return list((self.by_record_key or self.by_form_id).values())
 
     def __len__(self) -> int:
-        return len(self.by_form_id)
+        return len(self.by_record_key or self.by_form_id)
 
     def __iter__(self):
-        return iter(self.by_form_id.values())
+        return iter(self.reports)
 
     def reports_for(self, signature: str) -> list[ConflictReport]:
-        return [self.by_form_id[fid] for fid in self.by_signature.get(signature, [])]
+        return [r for r in self.reports if r.signature == signature]
 
     def report_for(self, plugin_handle: int, form_id: int) -> ConflictReport | None:
         """Look up the conflict report for a specific plugin's view of a record.
@@ -129,9 +140,10 @@ class ConflictScanner:
             payload = scan_conflicts(handles, signatures=sig_list)
         except Exception:
             _log.exception("Native conflict scan failed")
-            return ConflictScan()
+            raise
 
         scan = ConflictScan()
+        games = {p.handle: p.game for p in session.plugins}
         for report_dict in payload:
             form_id = int(report_dict["form_id"])
             signature = str(report_dict["signature"])
@@ -156,6 +168,14 @@ class ConflictScanner:
                 )
                 for c in chain_payload
             ]
+            for entry in chain:
+                game = games.get(entry.plugin_handle)
+                spec = get_schema(game).records.get(signature) if game else None
+                flags_spec = spec.record_flags if spec else None
+                partial_bits = [bit.bit for bit in flags_spec.bits if bit.name.casefold() == "partial form"] if flags_spec else []
+                if partial_bits:
+                    flags = int(plugin_handle_record_flags(entry.plugin_handle, entry.form_id) or 0)
+                    entry.is_partial = any(flags & (1 << bit) for bit in partial_bits)
             report = ConflictReport(
                 form_id=form_id,
                 signature=signature,
@@ -165,6 +185,8 @@ class ConflictScanner:
                 mergeable=mergeable,
             )
             scan.by_form_id[form_id] = report
+            if chain:
+                scan.by_record_key[(report.winner.plugin_handle, report.winner.form_id)] = report
             scan.by_signature.setdefault(signature, []).append(form_id)
             for entry in chain:
                 scan.by_handle_form_id[(entry.plugin_handle, entry.form_id)] = report

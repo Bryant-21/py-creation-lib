@@ -400,6 +400,15 @@ fn is_dds_entry(entry: &ArchiveEntry) -> bool {
         .is_some_and(|extension| extension.eq_ignore_ascii_case("dds"))
 }
 
+// A DX10 BA2 record has no array size, so a LOD texture array only survives in a general archive.
+fn is_dx10_texture_entry(entry: &ArchiveEntry) -> bool {
+    is_dds_entry(entry)
+        && !Path::new(&entry.relative_path)
+            .file_name()
+            .and_then(|value| value.to_str())
+            .is_some_and(|name| name.to_ascii_lowercase().contains(".instancearray"))
+}
+
 fn plan_texture_archives(
     mod_name: &str,
     family: ArchiveFamily,
@@ -639,7 +648,7 @@ fn plan_archive_outputs(
             let (texture_entries, general_entries) = if family == ArchiveFamily::Textures {
                 (family_entries, Vec::new())
             } else {
-                family_entries.into_iter().partition(is_dds_entry)
+                family_entries.into_iter().partition(is_dx10_texture_entry)
             };
             if !general_entries.is_empty() {
                 by_family.insert(family, general_entries);
@@ -661,7 +670,7 @@ fn plan_archive_outputs(
         for family in [ArchiveFamily::Lod, ArchiveFamily::Terrain] {
             let family_entries = by_family.remove(&family).unwrap_or_default();
             let (family_textures, general_entries): (Vec<_>, Vec<_>) =
-                family_entries.into_iter().partition(is_dds_entry);
+                family_entries.into_iter().partition(is_dx10_texture_entry);
             texture_entries.extend(family_textures);
             if !general_entries.is_empty() {
                 by_family.insert(family, general_entries);
@@ -2256,6 +2265,41 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["Textures/Terrain/Appalachia/lswamprocks01_d.dds"]
         );
+    }
+
+    #[test]
+    fn planner_keeps_lod_texture_arrays_and_their_index_out_of_dx10_archives() {
+        let entries = vec![
+            entry("Textures/Terrain/W/Objects/W.Objects.dds", 10),
+            entry("Textures/Terrain/W/Objects/W.InstanceArray.dds", 10),
+            entry("Textures/Terrain/W/Objects/W.InstanceArray_n.dds", 10),
+            entry("Textures/Terrain/W/Objects/W.InstanceArray_s.dds", 10),
+            entry("Textures/Terrain/W/Objects/W.InstanceArray.txt", 10),
+        ];
+        for expanded in [true, false] {
+            let plans = plan_archive_outputs("B21_Test", &entries, "ba2", "", 1024 * 1024, "fo4", expanded)
+                .expect("planning should succeed");
+            let paths = |texture_archive: bool| {
+                let mut paths: Vec<&str> = plans
+                    .iter()
+                    .filter(|plan| plan.texture_archive == texture_archive)
+                    .flat_map(|plan| plan.entries.iter().map(|entry| entry.relative_path.as_str()))
+                    .collect();
+                paths.sort_unstable();
+                paths
+            };
+            assert_eq!(paths(true), vec!["Textures/Terrain/W/Objects/W.Objects.dds"], "expanded={expanded}");
+            assert_eq!(
+                paths(false),
+                vec![
+                    "Textures/Terrain/W/Objects/W.InstanceArray.dds",
+                    "Textures/Terrain/W/Objects/W.InstanceArray.txt",
+                    "Textures/Terrain/W/Objects/W.InstanceArray_n.dds",
+                    "Textures/Terrain/W/Objects/W.InstanceArray_s.dds",
+                ],
+                "expanded={expanded}"
+            );
+        }
     }
 
     #[test]

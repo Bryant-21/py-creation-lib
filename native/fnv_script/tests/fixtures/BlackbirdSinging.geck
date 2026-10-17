@@ -1,0 +1,51 @@
+Scn	BlackbirdSinging
+
+; Fly, little one, fly!
+
+Float	fFlyTime
+Short	bFlying
+Short	bFlyReady
+
+Begin OnLoad
+
+	If bFlyReady != 1
+		Set bFlyReady to 1
+	Endif
+
+End
+
+Begin OnHit
+
+	PlayIdle NVRavenFlyAway
+	Set fFlyTime to 9
+	Set bFlying to 1
+
+End
+
+Begin GameMode
+
+	If bFlyReady != 1
+		Return
+	Elseif bFlyReady == 1
+		If bFlying != 1
+			If GetDistance Player >= 512
+				Return
+			Else
+				PlayIdle NVRavenFlyAway
+				Set fFlyTime to 9
+				Set bFlying to 1
+			Endif
+		Elseif bFlying == 1
+			Set fFlyTime to ( fFlyTime - GetSecondsPassed )
+			If fFlyTime <= 0
+				Set bFlyReady to 0
+				Disable
+				MarkForDelete
+			Else
+				Set fFlyTime to ( fFlyTime - GetSecondsPassed )
+			Endif
+		Endif
+	Endif
+
+End
+	

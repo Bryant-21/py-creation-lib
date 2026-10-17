@@ -46,15 +46,18 @@ use std::fs;
 use std::path::Path;
 use std::slice;
 
+mod alpha_coverage;
 mod ispc_bc;
 mod python;
+
+pub use alpha_coverage::{preserve_alpha_coverage, rgba8_cutout_mip_chain};
 
 #[cfg(test)]
 mod decode_bench;
 #[cfg(test)]
 mod encode_bench;
 
-pub use gpu::{compress_bc7_gpu, compress_bc7_gpu_batch};
+pub use gpu::{compress_bc7_gpu, compress_bc7_gpu_batch, normal_crevice_gpu};
 pub(crate) use hresult::HResult;
 pub use python::register_module;
 
@@ -1818,6 +1821,98 @@ pub fn write_dds_rgba_image_mip_flooded_srgb_payload_unorm_header(
     write_srgb_payload_with_unorm_header(output_path, &chain, output_format)
 }
 
+/// Equal-size RGBA8 slices as one DX10 Texture2DArray DDS, every slice with a full mip chain. Each slice's payload is
+/// what the single-image writers store for it: `srgb_payload_unorm_header` as
+/// `write_dds_rgba_image_srgb_payload_unorm_header`, `mip_flooding` as the `_mip_flooded` writers (whose output
+/// format then holds for every slice when any one needs it).
+pub fn encode_dds_rgba8_array(
+    width: u32,
+    height: u32,
+    slices: &[&[u8]],
+    format: &str,
+    srgb_payload_unorm_header: bool,
+    mip_flooding: bool,
+) -> core::result::Result<Vec<u8>, String> {
+    if slices.is_empty() {
+        return Err("a texture array needs at least one slice".to_string());
+    }
+    for rgba in slices {
+        validate_rgba8_buffer(width, height, rgba)?;
+    }
+    let output_format = if mip_flooding {
+        slices.iter().fold(format, |format, rgba| mip_flood_output_format(format, rgba))
+    } else {
+        format
+    };
+    let header_format = legacy_dxt_target(output_format)
+        .map(|(target, ..)| target)
+        .or_else(|| parse_dxgi_format(output_format))
+        .ok_or_else(|| format!("unsupported DDS format: {output_format}"))?;
+
+    let mut payload = Vec::new();
+    let mut mip_count = 0usize;
+    for rgba in slices {
+        let chain = if mip_flooding {
+            rgba8_mip_flood_chain(width, height, rgba)?
+        } else {
+            rgba8_box_mip_chain(width, height, rgba)?
+        };
+        mip_count = chain.len();
+        let encoded = if srgb_payload_unorm_header {
+            encode_srgb_payload_with_unorm_header(&chain, output_format)?
+        } else {
+            encode_dds_from_rgba8_chain(&chain, output_format, true, None)?
+        };
+        let header_len = if encoded.get(84..88) == Some(b"DX10") { 148 } else { 128 };
+        payload.extend_from_slice(
+            encoded
+                .get(header_len..)
+                .ok_or_else(|| "encoded DDS slice is missing its payload".to_string())?,
+        );
+    }
+
+    let linear_size = if header_format.is_compressed() {
+        let one_channel_blocks = matches!(
+            header_format,
+            DXGI_FORMAT::DXGI_FORMAT_BC1_UNORM
+                | DXGI_FORMAT::DXGI_FORMAT_BC1_UNORM_SRGB
+                | DXGI_FORMAT::DXGI_FORMAT_BC4_UNORM
+                | DXGI_FORMAT::DXGI_FORMAT_BC4_SNORM
+        );
+        bc_level_size(width as usize, height as usize, if one_channel_blocks { 1 } else { 2 })?
+    } else {
+        (width as usize) * 4
+    };
+    let mut out = dds_dx10_header(
+        width,
+        height,
+        u32::try_from(linear_size).map_err(|_| "dds linear size overflow".to_string())?,
+        header_format,
+        u32::try_from(mip_count).map_err(|_| "mip count does not fit u32".to_string())?,
+    );
+    let array_size = u32::try_from(slices.len()).map_err(|_| "array size does not fit u32".to_string())?;
+    out[140..144].copy_from_slice(&array_size.to_le_bytes());
+    out.extend_from_slice(&payload);
+    Ok(out)
+}
+
+pub fn write_dds_rgba8_array(
+    output_path: &Path,
+    width: u32,
+    height: u32,
+    slices: &[&[u8]],
+    format: &str,
+    srgb_payload_unorm_header: bool,
+    mip_flooding: bool,
+) -> core::result::Result<(), String> {
+    let encoded =
+        encode_dds_rgba8_array(width, height, slices, format, srgb_payload_unorm_header, mip_flooding)?;
+    if let Some(parent) = output_path.parent() {
+        crate::profiling::create_dir_all(parent).map_err(|err| err.to_string())?;
+    }
+    crate::profiling::write(output_path, encoded).map_err(|err| err.to_string())
+}
+
 pub fn write_dds_rgba_image_gpu(
     output_path: &Path,
     width: u32,
@@ -1923,6 +2018,7 @@ pub fn read_dds_probe_bytes(bytes: &[u8]) -> core::result::Result<DdsProbe, Stri
             b"DXT4" | b"DXT5" => 77, // BC3_UNORM
             b"ATI1" | b"BC4U" => 80, // BC4_UNORM
             b"ATI2" | b"BC5U" => 83, // BC5_UNORM
+            b"BC5S" => 84,          // BC5_SNORM
             _ => {
                 // Uncompressed RGB path: only claim the one layout we can prove.
                 let rgb_bits = u32_at(88);
@@ -3143,6 +3239,20 @@ mod tests {
     }
 
     #[test]
+    fn dds_probe_recognizes_legacy_signed_bc5() {
+        let mut bytes = encode_dds_from_rgba8_chain(
+            &[(4, 4, [64, 192, 0, 255].repeat(16))],
+            "BC5_UNORM", false, None,
+        ).unwrap();
+        assert_eq!(&bytes[84..88], b"ATI2");
+        bytes[84..88].copy_from_slice(b"BC5S");
+        let probe = read_dds_probe_bytes(&bytes).unwrap();
+        assert_eq!(probe.dxgi_format, 84);
+        let decoded = ScratchImage::load_dds(&bytes, DDS_FLAGS::DDS_FLAGS_NONE, None, None).unwrap();
+        assert_eq!(decoded.metadata().format.bits(), probe.dxgi_format);
+    }
+
+    #[test]
     fn read_dds_mips_rgba8_returns_every_level() {
         let tmp = std::env::temp_dir().join(format!("dxt_mips_{}", std::process::id()));
         let _ = fs::remove_dir_all(&tmp);
@@ -3227,6 +3337,74 @@ mod tests {
         // Must equal the no-encoder CPU output (the closure delegates to the same CPU encode).
         let cpu = encode_dds_from_rgba8_chain(&chain, "BC7_UNORM_SRGB", false, None).unwrap();
         assert_eq!(out, cpu);
+    }
+
+    fn dds_payload(bytes: &[u8]) -> &[u8] {
+        &bytes[if bytes.get(84..88) == Some(b"DX10") { 148 } else { 128 }..]
+    }
+
+    #[test]
+    fn texture_arrays_store_each_slice_as_the_single_image_writers_do() {
+        let (width, height) = (256u32, 256u32);
+        let red = [200u8, 30, 30, 255].repeat((width * height) as usize);
+        let blue = [20u8, 40, 220, 255].repeat((width * height) as usize);
+        for (format, srgb_payload, dxgi_format) in [
+            ("BC1_UNORM", false, 71),
+            ("BC2_UNORM", true, 74),
+            ("BC5_UNORM", false, 83),
+            ("R8G8B8A8_UNORM", true, 28),
+        ] {
+            let bytes = encode_dds_rgba8_array(width, height, &[&red, &blue], format, srgb_payload, false).unwrap();
+
+            let probe = read_dds_probe_bytes(&bytes).unwrap();
+            assert_eq!(&bytes[84..88], b"DX10", "{format}");
+            assert_eq!(
+                (probe.width, probe.height, probe.array_size, probe.mip_levels, probe.dxgi_format, probe.is_cubemap),
+                (256, 256, 2, 9, dxgi_format, false),
+                "{format}"
+            );
+            let scratch = ScratchImage::load_dds(&bytes, DDS_FLAGS::DDS_FLAGS_NONE, None, None).unwrap();
+            let metadata = *scratch.metadata();
+            assert_eq!((metadata.array_size, metadata.mip_levels, metadata.format.bits()), (2, 9, dxgi_format));
+
+            let single = |rgba: &[u8]| {
+                let chain = rgba8_box_mip_chain(width, height, rgba).unwrap();
+                let encoded = if srgb_payload {
+                    encode_srgb_payload_with_unorm_header(&chain, format).unwrap()
+                } else {
+                    encode_dds_from_rgba8_chain(&chain, format, true, None).unwrap()
+                };
+                dds_payload(&encoded).to_vec()
+            };
+            let (first, second) = (single(&red), single(&blue));
+            assert_eq!(&bytes[148..], [first, second].concat(), "{format}");
+        }
+    }
+
+    #[test]
+    fn mip_flooded_texture_arrays_share_the_flooded_format() {
+        let opaque = [90u8, 90, 90, 255].repeat(16 * 16);
+        let mut cutout = opaque.clone();
+        cutout[3] = 0;
+        let bytes = encode_dds_rgba8_array(16, 16, &[&opaque, &cutout], "BC1_UNORM", false, true).unwrap();
+        let probe = read_dds_probe_bytes(&bytes).unwrap();
+        assert_eq!((probe.array_size, probe.mip_levels, probe.dxgi_format), (2, 5, 77));
+        let flooded = encode_dds_from_rgba8_chain(&rgba8_mip_flood_chain(16, 16, &cutout).unwrap(), "BC3_UNORM", true, None)
+            .unwrap();
+        assert!(bytes.ends_with(dds_payload(&flooded)));
+    }
+
+    #[test]
+    fn texture_array_writer_rejects_mismatched_slices_and_writes_the_file() {
+        let a = [1u8, 2, 3, 255].repeat(8 * 8);
+        assert!(encode_dds_rgba8_array(8, 8, &[], "BC1_UNORM", false, false).is_err());
+        assert!(encode_dds_rgba8_array(8, 8, &[&a, &a[4..]], "BC1_UNORM", false, false).is_err());
+        let dir = std::env::temp_dir().join(format!("dxt_array_{}", std::process::id()));
+        let path = dir.join("nested/W.InstanceArray.dds");
+        write_dds_rgba8_array(&path, 8, 8, &[&a, &a, &a], "BC1_UNORM", false, false).unwrap();
+        let probe = read_dds_probe(&path).unwrap();
+        let _ = fs::remove_dir_all(&dir);
+        assert_eq!((probe.width, probe.array_size, probe.mip_levels), (8, 3, 4));
     }
 
 }

@@ -525,6 +525,9 @@ pub struct RequiredTextureUsage {
 #[derive(Debug, Clone)]
 pub struct RequiredTextureUsageProfile {
     pub usages: Vec<RequiredTextureUsage>,
+    // The BTD4-off set: only these may become LTEX/TXST/GRAS records. `usages` adds the
+    // raw .btd4 source bank, which is delivered as textures and never as records.
+    pub record_usages: Vec<RequiredTextureUsage>,
     pub timings: Vec<TimingEntry>,
     pub operation_counts: BTreeMap<String, u64>,
 }
@@ -556,8 +559,8 @@ struct LandTextureFields {
     layer_count: u32,
     ground_cover_layer_count: u32,
     no_ground_cover_layer_count: u32,
-    // Ordered as four repetitions of [base, alpha0..alpha4]. Empty material
-    // slots remain None so the v2 runtime can validate the exact live LAND stack.
+    // Authoritative v3 palette: four repetitions of [base, alpha0..alpha6].
+    // Native LAND keeps a separate four-material fallback.
     btd4_layer_object_ids: Vec<Option<u32>>,
     btd4_source_layer_object_ids: Vec<Option<u32>>,
 }
@@ -1517,6 +1520,10 @@ fn convert_btd_inner(
         global_blend_profile.land_alpha_payload_bytes_released,
     );
     operation_counts.insert(
+        "global_blend.land_alpha_payload_bytes_released_during_materialization".to_owned(),
+        global_blend_profile.land_alpha_payload_bytes_released_during_materialization,
+    );
+    operation_counts.insert(
         "global_blend.land_alpha_payload_bytes_after_release".to_owned(),
         global_blend_profile.land_alpha_payload_bytes_after_release,
     );
@@ -1610,6 +1617,19 @@ fn convert_btd_inner(
     // Optional dense `.btd4` sidecar. It carries the lossless raw grid, which only
     // exists for FO76 identity; Starfield samples are already resampled onto the
     // FO4 lattice, so no .btd4 is written for them.
+    let raw_material_bank = raw_material_bank(&btd, &options)?;
+    let raw_sidecar = raw_material_bank.is_some();
+    let grass_points_plan = if raw_sidecar && frame == SourceFrame::Fo76Identity && !options.btd4_output_path.is_empty() {
+        let ground_covers = load_ground_covers(&options)?;
+        if ground_covers.is_empty() {
+            None
+        } else {
+            Some(build_grass_points_plan(&ground_covers, &emitted_textures, &btd4_grass_refs)?)
+        }
+    } else {
+        None
+    };
+    let mut grass_points_stats = GrassPointsStats::default();
     let mut btd4_writer = if frame == SourceFrame::Starfield {
         if !options.btd4_output_path.is_empty() {
             eprintln!(
@@ -1622,10 +1642,9 @@ fn convert_btd_inner(
         None
     } else if options.btd4_output_path.is_empty() {
         None
-    } else {
+    } else if let Some(bank) = raw_material_bank {
         let spill_path = crate::btd4::spill_path_for(Path::new(&options.btd4_output_path));
         Some(crate::btd4::Btd4Writer::with_spill_file(crate::btd4::Btd4Header {
-            version: crate::btd4::BTD4_VERSION,
             density: CELL_SOURCE_SAMPLES as u32,
             height_min: source_cache.height_min,
             height_scale: source_cache.height_scale,
@@ -1635,8 +1654,14 @@ fn convert_btd_inner(
             cell_min_y: options.source_min_y,
             cell_max_x: options.source_max_x,
             cell_max_y: options.source_max_y,
-        }, &spill_path)
+        }, bank, &spill_path)
         .map_err(AuthoringEmitError::Message)?)
+    } else {
+        eprintln!(
+            "terrain_native: no .btd4 sidecar for {world_editor_id}: the source has no land textures \
+             to build the raw material bank from, and every sidecar cell needs one."
+        );
+        None
     };
     let mut btd4_layers_recovered = 0u32;
     let mut btd4_dense_samples_unmatched = 0u64;
@@ -1780,7 +1805,7 @@ fn convert_btd_inner(
             if let (Some(writer), Some(dense_texture_ids)) =
                 (btd4_writer.as_mut(), dense_texture_ids.as_deref())
             {
-                let gathered = gather_btd4_cell_channels(
+                let mut gathered = gather_btd4_cell_channels(
                     &mut btd,
                     cell_x,
                     cell_y,
@@ -1791,6 +1816,7 @@ fn convert_btd_inner(
                     &gcvr_grass_object_ids,
                     &btd4_grass_refs,
                     dense_texture_ids,
+                    &global_blend,
                     &mut source_cache,
                 )?;
                 btd4_layers_recovered =
@@ -1801,6 +1827,22 @@ fn convert_btd_inner(
                         &texture_fields.btd4_source_layer_object_ids,
                     ),
                 );
+                if raw_sidecar {
+                    let mut raw_cell = Vec::with_capacity(crate::raw_terrain::CELL_BYTES);
+                    for quadrant in 0..4 {
+                        let x = i64::from(cell_x) * 128 + 64 + (quadrant & 1) * 64;
+                        let y = i64::from(cell_y) * 128 + 64 + (quadrant >> 1) * 64;
+                        let origin = [i32::try_from(x).map_err(|_| AuthoringEmitError::Message("raw terrain X exceeds i32".into()))?,
+                                      i32::try_from(y).map_err(|_| AuthoringEmitError::Message("raw terrain Y exceeds i32".into()))?];
+                        let patch = btd.raw_terrain_patch(origin)?;
+                        raw_cell.extend(crate::raw_terrain::encode_patch(&patch).map_err(AuthoringEmitError::Message)?);
+                    }
+                    gathered.channels.raw_terrain = Some(raw_cell);
+                }
+                if let Some(plan) = &grass_points_plan {
+                    gathered.channels.grass_points =
+                        build_cell_grass_points(&mut btd, cell_x, cell_y, plan, &mut grass_points_stats)?;
+                }
                 writer
                     .add_cell(cell_x, cell_y, gathered.channels)
                     .map_err(AuthoringEmitError::Message)?;
@@ -1810,12 +1852,21 @@ fn convert_btd_inner(
     }
     let write_cells_elapsed = write_cells_started.elapsed();
     if btd4_writer.is_some() {
-        // Dense samples whose texture is not in their quadrant's LAND layer table render
-        // as the base texture; the LAND stacks stay exactly as the non-BTD4 conversion writes them.
+        // Unmatched source samples use the normalized retained eight-layer blend.
         operation_counts.insert(
             "btd4.dense_samples_unmatched".to_owned(),
             btd4_dense_samples_unmatched,
         );
+    }
+    if grass_points_plan.is_some() {
+        for (name, value) in [
+            ("cells", grass_points_stats.cells),
+            ("runs", grass_points_stats.runs),
+            ("points", grass_points_stats.points),
+            ("unresolved_grass_params", grass_points_stats.unresolved_grass_params),
+        ] {
+            operation_counts.insert(format!("btd4.grass_points.{name}"), value);
+        }
     }
     let sink_profile_after_cells = authoring_output.record_sink_profile();
     let cell_sink_elapsed = sink_profile_after_cells
@@ -2100,6 +2151,27 @@ fn load_converted_textures(
     crate::texture_bridge::plan_required_textures(&manifest).map_err(AuthoringEmitError::Message)
 }
 
+/// Every GCVR in a BTD's ground-cover table (`XXXXXX:SeventySix.esm`), in table order.
+pub fn btd_ground_cover_form_keys(btd_path: &str) -> Result<Vec<String>, AuthoringEmitError> {
+    let btd = BtdFile::open(btd_path)?;
+    let header = btd.header();
+    Ok((0..header.gcvr_count)
+        .filter_map(|index| btd.ground_cover_form_id(index))
+        .map(|form_id| source_ltex_form_key(form_id, header.is_starfield_layout))
+        .collect())
+}
+
+fn load_ground_covers(
+    options: &ConvertOptions,
+) -> Result<Vec<crate::texture_bridge::GroundCoverManifest>, AuthoringEmitError> {
+    if !options.emit_textures || options.texture_manifest_path.is_empty() {
+        return Ok(Vec::new());
+    }
+    let manifest_text = fs::read_to_string(&options.texture_manifest_path)?;
+    let manifest: TextureManifest = serde_json::from_str(&manifest_text)?;
+    Ok(manifest.ground_covers)
+}
+
 fn should_release_land_alpha_after_materialization(
     frame: SourceFrame,
     btd4_output_path: &str,
@@ -2116,7 +2188,8 @@ fn load_source_texture_alpha_masks(
     let manifest_text = fs::read_to_string(&options.texture_manifest_path)?;
     let manifest: TextureManifest = serde_json::from_str(&manifest_text)?;
     let mut masks = TextureAlphaMasks::default();
-    for bundle in manifest.textures {
+    // Raw-bank-only bundles exist for the .btd4 source bank; LAND must blend as without it.
+    for bundle in manifest.textures.into_iter().filter(|bundle| !bundle.raw_bank_only) {
         let Some(object_id) = object_id_from_source_form_key(&bundle.source_ltex_form_key) else {
             continue;
         };
@@ -2556,6 +2629,7 @@ fn collect_required_texture_usages(
             }
         }
     }
+    include_raw_source_bank_ids(btd, options, &mut required_source_ltex_object_ids);
     texture_usages_for_required_ids(btd, options, &required_source_ltex_object_ids)
 }
 
@@ -2574,7 +2648,7 @@ fn collect_required_texture_usages_lightweight_profiled(
         "load_source_texture_alpha_masks_exclusive",
         source_alpha_started,
     );
-    let (required_source_ltex_object_ids, blend_profile) =
+    let (mut required_source_ltex_object_ids, blend_profile) =
         collect_required_source_ltex_object_ids_profiled(
             btd,
             options.source_min_x,
@@ -2612,6 +2686,8 @@ fn collect_required_texture_usages_lightweight_profiled(
     );
 
     let resolve_usages_started = Instant::now();
+    let record_usages = texture_usages_for_required_ids(btd, options, &required_source_ltex_object_ids)?;
+    include_raw_source_bank_ids(btd, options, &mut required_source_ltex_object_ids);
     let usages = texture_usages_for_required_ids(btd, options, &required_source_ltex_object_ids)?;
     push_timing(
         &mut timings,
@@ -2625,9 +2701,43 @@ fn collect_required_texture_usages_lightweight_profiled(
     operation_counts.insert("resolved_texture_usages".to_owned(), usages.len() as u64);
     Ok(RequiredTextureUsageProfile {
         usages,
+        record_usages,
         timings,
         operation_counts,
     })
+}
+
+fn include_raw_source_bank_ids(btd: &BtdFile, options: &ConvertOptions, required: &mut BTreeSet<u32>) {
+    if !options.btd4_output_path.is_empty() && !btd.header().is_starfield_layout {
+        required.extend((0..btd.header().ltex_count).filter_map(|index| btd.land_texture_form_id(index)).map(|id| id & 0x00ff_ffff));
+    }
+}
+
+fn raw_material_bank(btd: &BtdFile, options: &ConvertOptions) -> Result<Option<Vec<u8>>, AuthoringEmitError> {
+    if options.btd4_output_path.is_empty() || btd.header().is_starfield_layout || btd.header().ltex_count == 0 { return Ok(None); }
+    if options.texture_manifest_path.is_empty() {
+        return Err(AuthoringEmitError::Message("FO76 BTD4 requires a texture manifest; regenerate terrain textures together with LAND/BTD4".into()));
+    }
+    let manifest: TextureManifest = serde_json::from_str(&fs::read_to_string(&options.texture_manifest_path)?)?;
+    if !manifest.textures.iter().any(|bundle| bundle.raw_source_prefix.is_some()) {
+        return Err(AuthoringEmitError::Message("FO76 BTD4 requires raw terrain source data; regenerate terrain textures together with LAND/BTD4".into()));
+    }
+    let mut materials = Vec::with_capacity(btd.header().ltex_count);
+    for ordinal in 0..btd.header().ltex_count {
+        let id = btd.land_texture_form_id(ordinal).unwrap();
+        let bundle = manifest.textures.iter().find(|bundle|
+            bundle.source_gcvr_form_key.is_none() && object_id_from_source_form_key(&bundle.source_ltex_form_key) == Some(id & 0x00ff_ffff))
+            .ok_or_else(|| AuthoringEmitError::Message(format!("raw terrain bank is missing source LTEX {id:08X}")))?;
+        let prefix = bundle.raw_source_prefix.as_deref().ok_or_else(|| AuthoringEmitError::Message("raw terrain bundle has no source-copy prefix".into()))?;
+        let expected = format!("{}_source", bundle.output_prefix.trim().replace('\\', "/"));
+        if prefix != expected { return Err(AuthoringEmitError::Message("raw terrain bundle prefix disagrees with texture job".into())); }
+        materials.push(crate::raw_terrain::MaterialSource {
+            source_ltex_form_id: id,
+            rows: bundle.raw_material_rows.ok_or_else(|| AuthoringEmitError::Message("raw terrain bundle has no native material rows".into()))?,
+            textures: ["d", "n", "l", "r"].map(|map| format!("{prefix}_{map}.dds")),
+        });
+    }
+    crate::raw_terrain::encode_bank(&materials).map(Some).map_err(AuthoringEmitError::Message)
 }
 
 fn texture_usages_for_required_ids(
@@ -4179,8 +4289,8 @@ fn build_land_texture_fields(
             layer_count: 0,
             ground_cover_layer_count: 0,
             no_ground_cover_layer_count: 0,
-            btd4_layer_object_ids: vec![None; 24],
-            btd4_source_layer_object_ids: vec![None; 24],
+            btd4_layer_object_ids: vec![None; 32],
+            btd4_source_layer_object_ids: vec![None; 32],
         });
     }
 
@@ -4188,8 +4298,8 @@ fn build_land_texture_fields(
     let mut layer_count = 0u32;
     let mut ground_cover_layer_count = 0u32;
     let mut no_ground_cover_layer_count = 0u32;
-    let mut btd4_layer_object_ids = vec![None; 24];
-    let mut btd4_source_layer_object_ids = vec![None; 24];
+    let mut btd4_layer_object_ids = vec![None; 32];
+    let mut btd4_source_layer_object_ids = vec![None; 32];
 
     for quadrant in 0..4u8 {
         let Some(quadrant_blend) = global_blend
@@ -4227,7 +4337,7 @@ fn build_land_texture_fields(
             layer: -1,
         });
         layer_count = layer_count.saturating_add(1);
-        let btd4_base = quadrant as usize * 6;
+        let btd4_base = quadrant as usize * 8;
         btd4_layer_object_ids[btd4_base] = Some(base_texture.ltex_object_id);
         btd4_source_layer_object_ids[btd4_base] = Some(quadrant_blend.base_source_ltex_object_id);
 
@@ -4238,9 +4348,6 @@ fn build_land_texture_fields(
             .copied()
             .zip(quadrant_blend.alpha_vtxt.iter())
         {
-            if vtxt.is_empty() {
-                continue;
-            }
             let texture =
                 texture_for_source_ltex_object_id(source_ltex_object_id, textures_by_source_usage)
                     .ok_or_else(|| {
@@ -4249,23 +4356,25 @@ fn build_land_texture_fields(
                         ))
                     })?;
             let new_slot = next_alpha_slot;
-            count_texture_layer_ground_cover(
-                false,
-                &mut ground_cover_layer_count,
-                &mut no_ground_cover_layer_count,
-            );
-            fields.push(LandTextureField::Layer {
-                signature: "ATXT",
-                texture_object_id: texture.ltex_object_id,
-                plugin_name: plugin_name.to_owned(),
-                quadrant,
-                layer: new_slot as i16,
-            });
-            fields.push(LandTextureField::AlphaLayerData {
-                raw_hex: bytes_hex(vtxt),
-            });
-            layer_count = layer_count.saturating_add(1);
-            if new_slot < 5 {
+            if new_slot < 3 && !vtxt.is_empty() {
+                count_texture_layer_ground_cover(
+                    false,
+                    &mut ground_cover_layer_count,
+                    &mut no_ground_cover_layer_count,
+                );
+                fields.push(LandTextureField::Layer {
+                    signature: "ATXT",
+                    texture_object_id: texture.ltex_object_id,
+                    plugin_name: plugin_name.to_owned(),
+                    quadrant,
+                    layer: new_slot as i16,
+                });
+                fields.push(LandTextureField::AlphaLayerData {
+                    raw_hex: bytes_hex(vtxt),
+                });
+                layer_count = layer_count.saturating_add(1);
+            }
+            if new_slot < 7 {
                 btd4_layer_object_ids[btd4_base + 1 + new_slot] = Some(texture.ltex_object_id);
                 btd4_source_layer_object_ids[btd4_base + 1 + new_slot] =
                     Some(source_ltex_object_id);
@@ -4290,14 +4399,13 @@ fn build_land_texture_fields(
 ///   +HALF_CELL_SAMPLES shift and clamping with the f32 LAND heights (the LAND's
 ///   33x33 verts are the {0,4,...,128} subset). The +1 edge row/column reads into
 ///   the next source cell, which the extra-cell growth covers.
-/// - LAYR: the 24-slot table (4 quadrants × base + 5 alpha) from
+/// - LAYR: the 32-slot table (4 quadrants × base + 7 alpha) from
 ///   `build_land_texture_fields`; `kind = 0` (LTEX), `plugin_index = 0` (the
 ///   producer) or `u8::MAX` for an empty slot.
 /// - GCVR: one 128x128 mask per producer GRAS object id; errors past FO4's 16
 ///   grass types per LAND interval.
-/// - ALPH: planes in the LAND's per-quadrant ATXT slot order, since the engine
-///   reuses the vanilla LAND material for the dense terrain; `None` without
-///   alpha layers.
+/// - ALPH: seven final-coverage planes per quadrant in LAYR order, independently
+///   of the four-material native LAND fallback; `None` without alpha layers.
 /// - CLRS: 129x129 RGB converted from the BTD terrain colors.
 ///
 /// `layers_recovered` is always 0.
@@ -4392,6 +4500,7 @@ fn gather_btd4_cell_channels(
     grass_object_ids_by_gcvr: &HashMap<u32, Vec<u32>>,
     grass_refs: &HashMap<u32, (u8, u32)>,
     dense_texture_ids: &[Option<u32>],
+    global_blend: &GlobalLandscapeBlend,
     source_cache: &mut SourceCellCache,
 ) -> Result<Btd4CellGather, AuthoringEmitError> {
     let mut heights = Vec::with_capacity(129 * 129);
@@ -4403,9 +4512,9 @@ fn gather_btd4_cell_channels(
         }
     }
 
-    if layer_object_ids.len() != 24 || source_layer_object_ids.len() != 24 {
+    if layer_object_ids.len() != 32 || source_layer_object_ids.len() != 32 {
         return Err(AuthoringEmitError::Message(format!(
-            "cell ({cell_x},{cell_y}) did not produce the 24-slot BTD4 material table"
+            "cell ({cell_x},{cell_y}) did not produce the 32-slot BTD4 material table"
         )));
     }
     let layers: Vec<crate::btd4::LayerRef> = layer_object_ids
@@ -4417,20 +4526,210 @@ fn gather_btd4_cell_channels(
         })
         .collect();
 
-    let dense_alpha = dense_alpha_planes(dense_texture_ids, source_layer_object_ids);
+    let dense_alpha = dense_alpha_planes(dense_texture_ids, source_layer_object_ids, global_blend, cell_x, cell_y)
+        .map_err(AuthoringEmitError::Message)?;
     let gcvr = dense_gcvr_entries(btd, cell_x, cell_y, grass_object_ids_by_gcvr, grass_refs)?;
     let colors = dense_cell_colors(btd, cell_x, cell_y)?;
 
     Ok(Btd4CellGather {
         channels: crate::btd4::CellChannels {
+            raw_terrain: None,
             heights: Some(heights),
             alphas: dense_alpha,
             layers: Some(layers),
             gcvr,
             colors: Some(colors),
+            grass_points: None,
         },
         layers_recovered: 0,
     })
+}
+
+/// Everything the v5 GRSP channel needs from the manifest, keyed by source object id.
+struct GrassPointsPlan {
+    covers: HashMap<u32, crate::fo76_grass::GroundCover>,
+    /// Indexed by the grass keys in `covers`.
+    grasses: Vec<PlannedGrass>,
+}
+
+struct PlannedGrass {
+    density: u8,
+    /// `None` when the grass has no emitted record or no FO76 DNAM: its params still
+    /// count toward the param index (seed), but get no points.
+    placement: Option<((u8, u32), crate::fo76_grass::GrassDnam)>,
+}
+
+#[derive(Default)]
+struct GrassPointsStats {
+    cells: u64,
+    runs: u64,
+    points: u64,
+    unresolved_grass_params: u64,
+}
+
+fn build_grass_points_plan(
+    ground_covers: &[crate::texture_bridge::GroundCoverManifest],
+    textures: &[EmittedTexture],
+    grass_refs: &HashMap<u32, (u8, u32)>,
+) -> Result<GrassPointsPlan, AuthoringEmitError> {
+    let mut emitted = HashMap::new();
+    for texture in textures {
+        for (grass, object_id) in texture.converted.grass.iter().zip(&texture.grass_object_ids) {
+            if let Some(source) = object_id_from_source_form_key(&grass.source_form_key) {
+                emitted.entry(source).or_insert((*object_id, grass.fo76_dnam));
+            }
+        }
+    }
+    let mut keys = HashMap::new();
+    let mut grasses: Vec<PlannedGrass> = Vec::new();
+    let mut covers = HashMap::new();
+    for cover in ground_covers {
+        let Some(cover_id) = object_id_from_source_form_key(&cover.form_key) else { continue };
+        let mut cover_grasses = Vec::with_capacity(cover.grasses.len());
+        for grass in &cover.grasses {
+            let Some(source) = object_id_from_source_form_key(&grass.form_key) else { continue };
+            let key = *keys.entry(source).or_insert_with(|| {
+                let placement = emitted.get(&source).and_then(|&(object_id, dnam)| {
+                    let target = grass_refs.get(&object_id).copied().unwrap_or((0, object_id));
+                    dnam.map(|dnam| (target, dnam))
+                });
+                grasses.push(PlannedGrass { density: placement.map_or(0, |(_, dnam)| dnam.density), placement });
+                grasses.len() - 1
+            });
+            let pct = if grass.dnam == crate::fo76_grass::GCVR_DENSITY_FROM_GRASS {
+                u16::from(grasses[key].density)
+            } else {
+                grass.dnam
+            };
+            // Above 100% the sampler's cbrt radius turns negative and its point count explodes;
+            // FO76 data stays within it, so anything else is a manifest error.
+            if pct > 100 {
+                return Err(AuthoringEmitError::Message(format!(
+                    "GCVR {} grass {} density {pct}% exceeds 100%",
+                    cover.form_key, grass.form_key
+                )));
+            }
+            cover_grasses.push((key, grass.dnam));
+        }
+        covers.insert(
+            cover_id,
+            crate::fo76_grass::GroundCover {
+                land_textures: cover.ltex_form_keys.iter().filter_map(|key| object_id_from_source_form_key(key)).collect(),
+                ynam: cover.ynam,
+                grasses: cover_grasses,
+            },
+        );
+    }
+    Ok(GrassPointsPlan { covers, grasses })
+}
+
+/// FO76's ground-cover points for FO4 cell (`cell_x`, `cell_y`). FO76 grass cells are world
+/// cells, so the inputs are the FO4-frame grids the GCVR channel uses and the seeds use the
+/// FO4 cell coordinates.
+fn build_cell_grass_points(
+    btd: &mut BtdFile,
+    cell_x: i32,
+    cell_y: i32,
+    plan: &GrassPointsPlan,
+    stats: &mut GrassPointsStats,
+) -> Result<Option<crate::btd4::GrassPointsChunk>, AuthoringEmitError> {
+    use crate::fo76_grass::{BLOCK_SAMPLES, CELL_UNITS, SAMPLE_UNITS};
+    let header = btd.header();
+    let (min_x, min_y, max_x, max_y) = (header.cell_min_x, header.cell_min_y, header.cell_max_x, header.cell_max_y);
+    let ltex_count = header.ltex_count;
+    let clamp = move |cx: i32, cy: i32| (cx.clamp(min_x, max_x), cy.clamp(min_y, max_y));
+    // The reader returns ground-cover bytes bit-reversed (slot k = bit 7-k); FO76 tests bit k.
+    let ground_cover: Vec<u8> = crate::fo4_frame::assemble_cell_grid(
+        |cx, cy| {
+            let (cx, cy) = clamp(cx, cy);
+            btd.cell_ground_cover_mask_u8(cx, cy, 0)
+        },
+        cell_x,
+        cell_y,
+        None,
+    )?
+    .into_iter()
+    .map(u8::reverse_bits)
+    .collect();
+    if ground_cover.iter().all(|&bits| bits == 0) {
+        return Ok(None);
+    }
+    let alpha_words = crate::fo4_frame::assemble_cell_grid(
+        |cx, cy| {
+            let (cx, cy) = clamp(cx, cy);
+            btd.cell_raw_land_alpha_u16(cx, cy, 0)
+        },
+        cell_x,
+        cell_y,
+        None,
+    )?;
+    let mut quadrant_layers: [Vec<u32>; 4] = Default::default();
+    let mut quadrant_ground_covers = [[None; 8]; 4];
+    for q in 0..4usize {
+        let ((dx, dy), (sqx, sqy)) = crate::fo4_frame::source_quadrant(q & 1, q >> 1);
+        let (nx, ny) = clamp(cell_x + dx, cell_y + dy);
+        let source_quadrant = (sqy << 1) | sqx;
+        let palette = btd.cell_raw_ltex_palettes(nx, ny)?[source_quadrant];
+        quadrant_layers[q] = crate::fo76_grass::quadrant_layer_indices(&palette, ltex_count)
+            .into_iter()
+            .map(|index| btd.land_texture_form_id(index).unwrap_or(0) & 0x00FF_FFFF)
+            .collect();
+        let slots = btd.cell_texture_set(nx, ny)?.quadrants[source_quadrant].ground_cover;
+        for (slot, cover) in slots.into_iter().zip(quadrant_ground_covers[q].iter_mut()) {
+            *cover = slot
+                .and_then(|index| btd.ground_cover_form_id(usize::from(index)))
+                .and_then(|form_id| plan.covers.get(&(form_id & 0x00FF_FFFF)));
+        }
+    }
+    let source = crate::fo76_grass::CellSource {
+        cell_x,
+        cell_y,
+        ground_cover: &ground_cover,
+        alpha_words: &alpha_words,
+        quadrant_layers,
+        quadrant_ground_covers,
+    };
+    let unresolved = std::sync::atomic::AtomicU64::new(0);
+    let runs = crate::fo76_grass::cell_runs(&source, &|grass| plan.grasses[grass].density, &|grass| {
+        let mask = plan.grasses[grass].placement.map(|(_, dnam)| crate::fo76_grass::ClumpMask::from_dnam(&dnam));
+        unresolved.fetch_add(u64::from(mask.is_none()), std::sync::atomic::Ordering::Relaxed);
+        mask
+    });
+    stats.unresolved_grass_params += unresolved.into_inner();
+    if runs.is_empty() {
+        return Ok(None);
+    }
+
+    let mut table_index = HashMap::new();
+    let mut grasses = Vec::new();
+    let mut chunk_runs = Vec::with_capacity(runs.len());
+    for run in runs {
+        let grass = *table_index.entry(run.grass).or_insert_with(|| {
+            let ((plugin_index, object_id), dnam) = plan.grasses[run.grass].placement.expect("placed grass");
+            grasses.push(crate::btd4::GrassPointsGrass { plugin_index, object_id, dnam });
+            grasses.len() - 1
+        });
+        let grass = u8::try_from(grass).map_err(|_| {
+            AuthoringEmitError::Message(format!("cell ({cell_x},{cell_y}) places more than 255 grass types"))
+        })?;
+        let block_origin = |cell: i32, block: u8| {
+            f64::from(cell) * f64::from(CELL_UNITS) + f64::from(block) * f64::from(BLOCK_SAMPLES as f32 * SAMPLE_UNITS)
+        };
+        let (origin_x, origin_y) = (block_origin(cell_x, run.block_x), block_origin(cell_y, run.block_y));
+        let encode = |value: f32, origin: f64| ((f64::from(value) - origin) * f64::from(crate::btd4::GRASS_POINT_UNITS)).round() as i16;
+        stats.points += run.points.len() as u64;
+        chunk_runs.push(crate::btd4::GrassPointsRun {
+            block_x: run.block_x,
+            block_y: run.block_y,
+            param_index: run.param_index,
+            grass,
+            seed_after: run.seed_after,
+            points: run.points.iter().map(|p| [encode(p[0], origin_x), encode(p[1], origin_y)]).collect(),
+        });
+    }
+    stats.cells += 1;
+    stats.runs += chunk_runs.len() as u64;
+    Ok(Some(crate::btd4::GrassPointsChunk { grasses, runs: chunk_runs }))
 }
 
 fn dense_cell_texture_object_ids(
@@ -4523,7 +4822,7 @@ fn dense_samples_unmatched(
                 continue;
             };
             let quadrant = (x / 64) | ((y / 64) << 1);
-            if !ordered_source_layers[quadrant * 6..quadrant * 6 + 6].contains(&Some(id)) {
+            if !ordered_source_layers[quadrant * 8..quadrant * 8 + 8].contains(&Some(id)) {
                 unmatched += 1;
             }
         }
@@ -4534,17 +4833,19 @@ fn dense_samples_unmatched(
 fn dense_alpha_planes(
     texture_ids: &[Option<u32>],
     ordered_source_layers: &[Option<u32>],
-) -> Option<Vec<Vec<u8>>> {
+    global_blend: &GlobalLandscapeBlend,
+    cell_x: i32,
+    cell_y: i32,
+) -> Result<Option<Vec<Vec<u8>>>, String> {
     let has_alpha = (0..4usize).any(|quadrant| {
-        ordered_source_layers[quadrant * 6 + 1..quadrant * 6 + 6]
-            .iter()
-            .any(Option::is_some)
+        ordered_source_layers[quadrant * 8 + 1..quadrant * 8 + 8]
+            .iter().any(Option::is_some)
     });
-    if !has_alpha {
-        return None;
-    }
+    if !has_alpha { return Ok(None); }
     let mut planes = vec![vec![0u8; crate::btd4::ALPH_PLANE_LEN]; crate::btd4::ALPH_PLANE_COUNT];
     for quadrant in 0..4usize {
+        let layers = &ordered_source_layers[quadrant * 8..quadrant * 8 + 8];
+        if layers[0].is_none() { continue; }
         let qx = quadrant & 1;
         let qy = quadrant >> 1;
         for y in 0..crate::btd4::ALPH_PLANE_VERTS {
@@ -4552,18 +4853,56 @@ fn dense_alpha_planes(
                 let sample_x = qx * 64 + x.min(63);
                 let sample_y = qy * 64 + y.min(63);
                 let selected = texture_ids[sample_y * CELL_SOURCE_SAMPLES + sample_x];
-                for slot in 0..5usize {
-                    if selected.is_some()
-                        && selected == ordered_source_layers[quadrant * 6 + 1 + slot]
-                    {
-                        planes[quadrant * 5 + slot][y * crate::btd4::ALPH_PLANE_VERTS + x] =
-                            u8::MAX;
-                    }
+                let slot = layers.iter().position(|id| id.is_some() && *id == selected);
+                let coverage = if x > 0 && x < 64 && y > 0 && y < 64 && slot.is_some() {
+                    let mut coverage = [0u8; 8];
+                    coverage[slot.unwrap()] = 255;
+                    coverage
+                } else {
+                    // Shared boundaries must use the LAND's retained blend, not each quadrant's base fallback.
+                    dense_retained_coverage(global_blend, cell_x, cell_y, quadrant as u8, x, y, layers)?
+                };
+                for slot in 0..7usize {
+                    planes[quadrant * 7 + slot][y * crate::btd4::ALPH_PLANE_VERTS + x] = coverage[slot + 1];
                 }
             }
         }
     }
-    Some(planes)
+    Ok(Some(planes))
+}
+
+fn dense_retained_coverage(
+    blend: &GlobalLandscapeBlend, cell_x: i32, cell_y: i32,
+    quadrant: u8, x: usize, y: usize, layers: &[Option<u32>],
+) -> Result<[u8; 8], String> {
+    let mut coverage = [0.0f32; 8];
+    let column = (x / 4).min(15);
+    let row = (y / 4).min(15);
+    let fx = (x - column * 4) as f32 * 0.25;
+    let fy = (y - row * 4) as f32 * 0.25;
+    for (dx, dy, weight) in [(0, 0, (1.0-fx)*(1.0-fy)), (1, 0, fx*(1.0-fy)),
+        (0, 1, (1.0-fx)*fy), (1, 1, fx*fy)] {
+        if weight == 0.0 { continue; }
+        let source = blend.quadrant_vertex_weights(cell_x, cell_y, quadrant, row + dy, column + dx)?;
+        let quantized = crate::global_blend::quantize_vertex_weights_to_bytes(source);
+        let values: [f32; 8] = std::array::from_fn(|slot| layers[slot]
+            .and_then(|id| quantized.get(&id).copied()).map_or(0.0, f32::from));
+        let total: f32 = values.iter().sum();
+        if total > 0.0 {
+            for slot in 0..8 { coverage[slot] += weight * values[slot] / total; }
+        } else {
+            coverage[0] += weight;
+        }
+    }
+    let mut bytes = coverage.map(|value| (value * 255.0).floor() as u8);
+    let mut order = [0usize, 1, 2, 3, 4, 5, 6, 7];
+    order.sort_by(|&left, &right| {
+        let fraction = |slot: usize| coverage[slot] * 255.0 - f32::from(bytes[slot]);
+        fraction(right).total_cmp(&fraction(left)).then_with(|| layers[left].cmp(&layers[right]))
+    });
+    let missing = 255 - bytes.iter().map(|&v| u16::from(v)).sum::<u16>();
+    for &slot in order.iter().take(usize::from(missing)) { bytes[slot] += 1; }
+    Ok(bytes)
 }
 
 fn dense_gcvr_entries(
@@ -5623,10 +5962,12 @@ mod tests {
 
     #[test]
     fn dense_alpha_preserves_full_resolution_slot_changes() {
-        let mut ordered_layers = vec![None; 24];
+        let mut ordered_layers = vec![None; 32];
+        ordered_layers[0] = Some(0x300);
+        ordered_layers[8] = Some(0x300);
         ordered_layers[1] = Some(0x100);
         ordered_layers[2] = Some(0x200);
-        ordered_layers[7] = Some(0x200);
+        ordered_layers[9] = Some(0x200);
         let mut texture_ids = vec![None; CELL_SOURCE_SAMPLES * CELL_SOURCE_SAMPLES];
         for y in 0..CELL_SOURCE_SAMPLES {
             for x in 0..CELL_SOURCE_SAMPLES {
@@ -5637,14 +5978,170 @@ mod tests {
             texture_ids[y * CELL_SOURCE_SAMPLES + 64] = Some(0x200);
         }
 
-        let planes = dense_alpha_planes(&texture_ids, &ordered_layers).expect("dense alpha");
+        let blend = GlobalLandscapeBlend::from_vertices(0, 0, 1, 1,
+            vec![HashMap::from([(0x300, 1.0)]); 33 * 33]);
+        let planes = dense_alpha_planes(&texture_ids, &ordered_layers, &blend, 0, 0)
+            .expect("dense alpha").expect("planes");
         assert_eq!(planes.len(), crate::btd4::ALPH_PLANE_COUNT);
-        assert_eq!(planes[0][10], u8::MAX);
-        assert_eq!(planes[0][11], 0);
-        assert_eq!(planes[1][10], 0);
-        assert_eq!(planes[1][11], u8::MAX);
-        assert_eq!(planes[0][64], u8::MAX);
-        assert_eq!(planes[5][0], u8::MAX);
+        assert_eq!(planes[0][65 + 10], u8::MAX);
+        assert_eq!(planes[0][65 + 11], 0);
+        assert_eq!(planes[1][65 + 10], 0);
+        assert_eq!(planes[1][65 + 11], u8::MAX);
+        assert_eq!(planes[0][64], 0);
+        assert_eq!(planes[7][0], 0);
+    }
+
+
+    #[test]
+    fn dense_alpha_preserves_fifth_sixth_detail_and_all_six_boundary_weights() {
+        let blend = GlobalLandscapeBlend::from_vertices(0, 0, 1, 1,
+            vec![HashMap::from([(1, 6.0), (2, 5.0), (3, 4.0), (4, 3.0), (5, 2.0), (6, 1.0)]); 33 * 33]);
+        let layers = dense_test_layers(&blend, 0, 0);
+        assert!(layers.contains(&Some(5)) && layers.contains(&Some(6)));
+        let mut ids = vec![Some(6); 128 * 128];
+        ids[10 * 128 + 10] = Some(5);
+        let planes = dense_alpha_planes(&ids, &layers, &blend, 0, 0).unwrap().unwrap();
+        assert_eq!(dense_test_effective(&planes, &layers, 0, 10, 10), HashMap::from([(5, 255)]));
+        let weights = dense_test_effective(&planes, &layers, 0, 11, 10);
+        assert_eq!(weights, HashMap::from([(6, 255)]));
+        assert_eq!(dense_test_effective(&planes, &layers, 0, 0, 0),
+            HashMap::from([(1, 73), (2, 61), (3, 49), (4, 36), (5, 24), (6, 12)]));
+        for q in 0..4 { for y in 0..65 { for x in 0..65 {
+            let weights = dense_test_effective(&planes, &layers, q, x, y);
+            assert_eq!(weights.values().map(|&v| u16::from(v)).sum::<u16>(), 255);
+            assert!(weights.keys().all(|id| layers[q*8..q*8+8].contains(&Some(*id))));
+        } } }
+    }
+
+    #[test]
+    fn dense_alpha_six_layers_match_different_base_quadrant_and_cell_edges() {
+        let vertices = (0..33).flat_map(|_| (0..65).map(|x| {
+            let (a,b) = if x == 16 || x == 32 || x == 48 { (6.0, 5.0) }
+                else if (x / 16) % 2 == 0 { (50.0, 5.0) } else { (6.0, 50.0) };
+            HashMap::from([(1,a), (2,b), (3,4.0), (4,3.0), (5,2.0), (6,1.0)])
+        })).collect();
+        let blend = GlobalLandscapeBlend::from_vertices(0, 0, 2, 1, vertices);
+        let left = dense_test_layers(&blend, 0, 0);
+        let right = dense_test_layers(&blend, 1, 0);
+        assert_ne!(left[0], left[8], "the regression needs distinct quadrant bases");
+        assert_ne!(left[8], right[0], "the regression needs distinct cell-edge bases");
+        assert!(left.contains(&Some(6)) && right.contains(&Some(6)));
+        let ids = vec![Some(6); 128 * 128];
+        let a = dense_alpha_planes(&ids, &left, &blend, 0, 0).unwrap().unwrap();
+        let b = dense_alpha_planes(&ids, &right, &blend, 1, 0).unwrap().unwrap();
+        for y in 0..65 {
+            assert_eq!(dense_test_effective(&a,&left,0,64,y), dense_test_effective(&a,&left,1,0,y));
+            assert_eq!(dense_test_effective(&a,&left,1,64,y), dense_test_effective(&b,&right,0,0,y));
+        }
+        for x in 0..65 {
+            assert_eq!(dense_test_effective(&a,&left,0,x,64), dense_test_effective(&a,&left,2,x,0));
+        }
+    }
+
+
+    #[test]
+    fn eight_material_sidecar_retains_identity_while_land_stays_within_native_capacity() {
+        let weights = (1..=8u32).map(|id| (id, 1.0)).collect::<HashMap<_,_>>();
+        let blend = GlobalLandscapeBlend::from_vertices(0,0,1,1,vec![weights;33*33]);
+        let textures = (1..=8u32).map(|id| {
+            let mut texture = test_emitted_texture(None,0x800+id,vec![]);
+            texture.converted.source_ltex_form_key = format!("{id:06X}:SeventySix.esm");
+            texture.txst_object_id = 0x900 + id;
+            texture.converted.diffuse_rel_path = format!("textures/terrain/layer{id}_d.dds");
+            texture
+        }).collect::<Vec<_>>();
+        let index = index_textures_by_source_usage(&textures);
+        let mut dropped = 0;
+        let result = build_land_texture_fields(0,0,&blend,&index,"B21_Test.esp",&mut dropped,false).unwrap();
+        assert_eq!(dropped,0);
+        assert_eq!(result.btd4_layer_object_ids.len(),32);
+        for quadrant in 0..4 {
+            let ids = result.btd4_layer_object_ids[quadrant*8..quadrant*8+8].iter()
+                .copied().flatten().collect::<std::collections::BTreeSet<_>>();
+            assert_eq!(ids,(0x801..=0x808).collect());
+        }
+        assert_eq!(result.layer_count,16);
+        let mut output = AuthoringOutput::collect_only(PathBuf::new());
+        write_texture_records(&mut output, &base_options(), &textures, "APPALACHIA").unwrap();
+        let records = output.finish().records;
+        assert_eq!(records.iter().filter(|record| record.signature == "LTEX").count(), 8);
+        assert_eq!(records.iter().filter(|record| record.signature == "TXST").count(), 8);
+        for id in 1..=8u32 {
+            let ltex = records.iter().find(|record| record.signature == "LTEX" &&
+                record.yaml.contains(&format!("form_id: \"{:06X}\"", 0x800 + id))).unwrap();
+            assert!(ltex.yaml.contains(&format!("object_id: \"{:06X}\"", 0x900 + id)));
+            let txst = records.iter().find(|record| record.signature == "TXST" &&
+                record.yaml.contains(&format!("form_id: \"{:06X}\"", 0x900 + id))).unwrap();
+            assert!(txst.yaml.contains(&format!("layer{id}_d.dds")));
+        }
+        for field in result.fields {
+            if let LandTextureField::Layer { signature,layer,.. } = field {
+                assert!(signature == "BTXT" || (signature == "ATXT" && (0..=2).contains(&layer)));
+            }
+        }
+    }
+
+    #[test]
+    fn eight_layer_palette_preserves_seventh_eighth_interiors_and_shared_boundaries() {
+        let weights = (1..=8u32).map(|id| (id, 1.0)).collect::<HashMap<_,_>>();
+        let blend = GlobalLandscapeBlend::from_vertices(-2, -1, 2, 1, vec![weights; 65*33]);
+        let left = dense_test_layers(&blend,-2,-1);
+        let right = dense_test_layers(&blend,-1,-1);
+        for q in 0..4 { assert_eq!(left[q*8..q*8+8].iter().filter(|id| id.is_some()).count(),8); }
+        let mut ids = vec![Some(8);128*128];
+        ids[10*128+10] = Some(7);
+        let a = dense_alpha_planes(&ids,&left,&blend,-2,-1).unwrap().unwrap();
+        let b = dense_alpha_planes(&ids,&right,&blend,-1,-1).unwrap().unwrap();
+        assert_eq!(dense_test_effective(&a,&left,0,10,10),HashMap::from([(7,255)]));
+        assert_eq!(dense_test_effective(&a,&left,0,11,10),HashMap::from([(8,255)]));
+        let edge = dense_test_effective(&a,&left,0,64,16);
+        assert_eq!(edge.len(),8);
+        assert_eq!(edge.values().map(|&v|u16::from(v)).sum::<u16>(),255);
+        for y in 0..65 {
+            assert_eq!(dense_test_effective(&a,&left,0,64,y),dense_test_effective(&a,&left,1,0,y));
+            assert_eq!(dense_test_effective(&a,&left,1,64,y),dense_test_effective(&b,&right,0,0,y));
+        }
+    }
+
+    #[test]
+    fn dense_alpha_negative_origin_preserves_layer_order_and_corner_coverage() {
+        let weights = HashMap::from([(1,6.0),(2,5.0),(3,4.0),(4,3.0),(5,2.0),(6,1.0)]);
+        let zero = GlobalLandscapeBlend::from_vertices(0, 0, 1, 1, vec![weights.clone(); 33*33]);
+        let negative = GlobalLandscapeBlend::from_vertices(-2, -1, 1, 1, vec![weights; 33*33]);
+        let a = dense_test_layers(&zero,0,0);
+        let b = dense_test_layers(&negative,-2,-1);
+        assert_eq!(a,b);
+        let ids = vec![Some(6);128*128];
+        let zero_planes = dense_alpha_planes(&ids,&a,&zero,0,0).unwrap().unwrap();
+        let negative_planes = dense_alpha_planes(&ids,&b,&negative,-2,-1).unwrap().unwrap();
+        assert_eq!(zero_planes,negative_planes);
+        let corner = dense_test_effective(&negative_planes,&b,0,64,64);
+        assert_eq!(corner,dense_test_effective(&negative_planes,&b,1,0,64));
+        assert_eq!(corner,dense_test_effective(&negative_planes,&b,2,64,0));
+        assert_eq!(corner,dense_test_effective(&negative_planes,&b,3,0,0));
+        assert_eq!(corner.values().map(|&v|u16::from(v)).sum::<u16>(),255);
+    }
+
+    fn dense_test_layers(blend: &GlobalLandscapeBlend, cell_x: i32, cell_y: i32) -> Vec<Option<u32>> {
+        let mut layers = vec![None; 32];
+        for q in 0..4 {
+            let quad = blend.serialize_quadrant(cell_x,cell_y,q as u8).unwrap().unwrap();
+            layers[q*8] = Some(quad.base_source_ltex_object_id);
+            for (slot, (&id, bytes)) in quad.alpha_source_ltex_object_ids.iter().zip(&quad.alpha_vtxt).enumerate() {
+                assert!(!bytes.is_empty());
+                layers[q*8+slot+1] = Some(id);
+            }
+        }
+        layers
+    }
+
+    fn dense_test_effective(planes: &[Vec<u8>], layers: &[Option<u32>], q: usize, x: usize, y: usize) -> HashMap<u32,u8> {
+        let overlays: [u8;7] = std::array::from_fn(|slot| planes[q*7+slot][y*65+x]);
+        let total: u16 = overlays.iter().map(|&v| u16::from(v)).sum();
+        assert!(total <= 255);
+        let weights = [255-total as u8,overlays[0],overlays[1],overlays[2],overlays[3],overlays[4],overlays[5],overlays[6]];
+        weights.into_iter().enumerate().filter_map(|(slot,weight)|
+            (weight > 0).then(|| (layers[q*8+slot].unwrap(),weight))).collect()
     }
 
     #[test]
@@ -5703,6 +6200,7 @@ mod tests {
             flags: Vec::new(),
             source_gcvr_form_keys: Vec::new(),
             target_form_key: None,
+            fo76_dnam: None,
         }
     }
 
@@ -5868,6 +6366,7 @@ mod tests {
             flags: Vec::new(),
             source_gcvr_form_keys: Vec::new(),
             target_form_key: None,
+            fo76_dnam: None,
         };
         let base = ConvertedTerrainTexture {
             source_ltex_form_key: "001234:SeventySix.esm".to_string(),
@@ -6098,6 +6597,7 @@ mod tests {
                     flags: vec!["VertexLighting".to_string(), "FitToSlope".to_string()],
                     source_gcvr_form_keys: Vec::new(),
                     target_form_key: None,
+                    fo76_dnam: None,
                 }],
             },
             txst_object_id: 0x900,
@@ -6232,6 +6732,7 @@ mod tests {
             flags: Vec::new(),
             source_gcvr_form_keys: Vec::new(),
             target_form_key: None,
+            fo76_dnam: None,
         }];
         let textures = vec![
             EmittedTexture {
@@ -7392,6 +7893,8 @@ Temporary:
                 "output_prefix": format!("textures/terrain/{editor_id}"),
                 "output_material_path": null,
                 "material_type_object_id": null,
+                "raw_source_prefix": format!("textures/terrain/{editor_id}_source"),
+                "raw_material_rows": [[0.25,0.0,1.0,1.0/128.0],[0.0,0.0,0.0,0.0],[0.0,0.0,-1.0,1.0]],
                 "havok_friction": 30,
                 "havok_restitution": 30,
                 "grass": [],
@@ -7536,6 +8039,245 @@ Temporary:
         assert_yaml_records_equal(&plain, &sidecar);
     }
 
+    /// `btd_row_fixture` points every block at the height block; this re-points LOD0 stream 1
+    /// (ground cover) at a 16384-byte block of `ground_cover_byte` (raw FO76 bit order).
+    fn with_ground_cover_block(mut bytes: Vec<u8>, ground_cover_byte: u8) -> Vec<u8> {
+        use std::io::Write;
+        let path = temp_path("ground_cover_header", "btd");
+        fs::write(&path, &bytes).unwrap();
+        let header = BtdFile::open_header(path.to_str().unwrap()).unwrap();
+        let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(&vec![ground_cover_byte; 16384]).unwrap();
+        let block = encoder.finish().unwrap();
+        let block_offset = (bytes.len() - header.zlib_data_offset) as u32;
+        let cells = header.cells_x * header.cells_y;
+        for cell in 0..cells {
+            let entry = header.zlib_lod0_offset + (cells + cell) * 8;
+            put_u32_le(&mut bytes, entry, block_offset);
+            put_u32_le(&mut bytes, entry + 4, block.len() as u32);
+        }
+        bytes.extend_from_slice(&block);
+        bytes
+    }
+
+    #[test]
+    fn btd4_grass_points_leave_every_emitted_record_unchanged() {
+        // One cell whose every quadrant lists LTEX 0x200 as its only layer and GCVR 0x900 in
+        // slot 5; every ground-cover sample sets raw bit 5. The GCVR places GRAS 0x950 at the
+        // GRAS's own density (50%) and lists an unemitted GRAS 0x960 second (k = 1).
+        let (temp, mut options) = alpha_fallthrough_options();
+        let mut gcvr_maps = [[0xFFu8; 8]; 4];
+        let mut ltex_maps = [[0u8; 8]; 4];
+        for (gcvr, ltex) in gcvr_maps.iter_mut().zip(&mut ltex_maps) {
+            gcvr[5] = 0;
+            ltex[0] = 1; // ltexIndex = ltexCount - 1 = LTEX 0x200
+        }
+        let btd = btd_row_fixture(0x6000, &[0x000100, 0x000200], &[ltex_maps], &[0x000900], &[gcvr_maps]);
+        fs::write(&options.btd_path, with_ground_cover_block(btd, 0x20)).unwrap();
+
+        let dnam = crate::fo76_grass::GrassDnam {
+            sharp: 95.0, freq_base: 0.1, height_range: 0.3, color_range: 0.2, wave_period: 145.0,
+            water_above: 0, water_below: 0xFFFF, density: 50, min_slope: 0, max_slope: 57,
+            flags: 0x15, cover: 97.0, lod_blend: 0.1,
+        };
+        let base: serde_json::Value = serde_json::from_str(&fs::read_to_string(&options.texture_manifest_path).unwrap()).unwrap();
+        let write_manifest = |name: &str, grass_points: bool| {
+            let mut manifest = base.clone();
+            let mut grass = serde_json::json!({
+                "source_form_key": "000950:SeventySix.esm",
+                "source_editor_id": "B21_TestGrass",
+                "model_file_name": "Landscape/Grass/Test.nif",
+                "model_information": "",
+                "density": 7,
+                "max_slope": 57,
+                "position_range": 32.0,
+                "height_range": 0.3,
+                "color_range": 0.2,
+                "wave_period": 145.0,
+                "source_gcvr_form_keys": ["SeventySix.esm:000900"],
+            });
+            if grass_points {
+                grass["fo76_dnam"] = serde_json::to_value(dnam).unwrap();
+                manifest["ground_covers"] = serde_json::json!([{
+                    "form_key": "000900:SeventySix.esm",
+                    "editor_id": "B21_TestGCVR",
+                    "ynam": 0.286,
+                    "ltex_form_keys": ["000200:SeventySix.esm"],
+                    "grasses": [
+                        { "form_key": "SeventySix.esm:000950", "dnam": 0xFFFF },
+                        { "form_key": "SeventySix.esm:000960", "dnam": 40 },
+                    ],
+                }]);
+            }
+            manifest["textures"][1]["grass"] = serde_json::json!([grass]);
+            let path = temp.path().join(name);
+            fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+            path.display().to_string()
+        };
+        let convert = |options: ConvertOptions| {
+            let mut records = Vec::new();
+            let output = convert_btd_with_record_sink(options, &mut |record| {
+                records.push(record);
+                Ok(())
+            })
+            .expect("convert");
+            (output, records)
+        };
+
+        options.texture_manifest_path = write_manifest("plain.json", false);
+        let (_, plain) = convert(options.clone());
+        options.btd4_output_path = temp.path().join("no_points.btd4").display().to_string();
+        let (_, v4) = convert(options.clone());
+        options.texture_manifest_path = write_manifest("grass_points.json", true);
+        options.btd4_output_path = temp.path().join("points.btd4").display().to_string();
+        let (v5_output, v5) = convert(options.clone());
+
+        assert!(plain.iter().any(|record| record.signature == "GRAS"));
+        assert_yaml_records_equal(&plain, &v4);
+        assert_yaml_records_equal(&plain, &v5);
+        let v4_sidecar = crate::btd4::Btd4Reader::open(&temp.path().join("no_points.btd4")).unwrap();
+        assert!(v4_sidecar.cell(0, 0).unwrap().gcvr.is_some());
+        assert!(v4_sidecar.cell(0, 0).unwrap().grass_points.is_none());
+
+        let sidecar = crate::btd4::Btd4Reader::open(&temp.path().join("points.btd4")).unwrap();
+        let cell = sidecar.cell(0, 0).unwrap();
+        assert_eq!(cell.gcvr, v4_sidecar.cell(0, 0).unwrap().gcvr, "GCVR channel is unchanged");
+        let points = cell.grass_points.expect("GRSP");
+        assert_eq!(points.grasses.len(), 1);
+        let grass_object_id = points.grasses[0].object_id;
+        assert_eq!(points.grasses[0].plugin_index, 0);
+        assert_eq!(points.grasses[0].dnam, dnam);
+        assert!(v5.iter().any(|record| record.signature == "GRAS"
+            && record.relative_path.contains(&format!("{grass_object_id:06X}"))), "points name the emitted GRAS");
+        assert_eq!(points.runs.len(), 256, "every block places the 50% grass; 0x960 has no record");
+        assert!(points.runs.iter().all(|run| run.param_index == 0 && run.grass == 0));
+
+        // Block (0, 1): k = 0, 64 densities of 1.0 * 50% at world centre (128, 384).
+        let mask = crate::fo76_grass::ClumpMask::from_dnam(&dnam);
+        let mut seed = crate::fo76_grass::block_seed(0, 0, 0, 8, 0);
+        let expected = crate::fo76_grass::poisson_block(128.0, 384.0, &[0.5; 64], &mask, &mut seed);
+        let run = &points.runs[1];
+        assert_eq!((run.block_x, run.block_y, run.seed_after), (0, 1, seed));
+        assert_eq!(run.points.len(), expected.len());
+        for (stored, world) in run.points.iter().zip(&expected) {
+            assert_eq!(stored[0], (world[0] * 16.0).round() as i16);
+            assert_eq!(stored[1], ((world[1] - 256.0) * 16.0).round() as i16);
+        }
+        let counts = &v5_output.operation_counts;
+        assert_eq!(counts["btd4.grass_points.cells"], 1);
+        assert_eq!(counts["btd4.grass_points.runs"], 256);
+        assert_eq!(counts["btd4.grass_points.unresolved_grass_params"], 256);
+        assert_eq!(counts["btd4.grass_points.points"], points.runs.iter().map(|r| r.points.len() as u64).sum::<u64>());
+    }
+
+    #[test]
+    fn raw_bank_rejects_old_manifest_and_missing_source_row() {
+        let (_temp, mut options) = alpha_fallthrough_options();
+        options.btd4_output_path = "raw.btd4".into();
+        let btd = BtdFile::open(&options.btd_path).unwrap();
+        let mut manifest: serde_json::Value = serde_json::from_str(&fs::read_to_string(&options.texture_manifest_path).unwrap()).unwrap();
+        for bundle in manifest["textures"].as_array_mut().unwrap() {
+            bundle.as_object_mut().unwrap().remove("raw_source_prefix");
+        }
+        fs::write(&options.texture_manifest_path,serde_json::to_vec(&manifest).unwrap()).unwrap();
+        assert!(raw_material_bank(&btd,&options).unwrap_err().to_string().contains("regenerate terrain textures together with LAND/BTD4"));
+        manifest["textures"][0]["raw_source_prefix"] = serde_json::json!("textures/terrain/B21_TestBase_source");
+        fs::write(&options.texture_manifest_path,serde_json::to_vec(&manifest).unwrap()).unwrap();
+        assert!(raw_material_bank(&btd,&options).unwrap_err().to_string().contains("no source-copy prefix"));
+        options.texture_manifest_path.clear();
+        assert!(raw_material_bank(&btd,&options).unwrap_err().to_string().contains("requires a texture manifest"));
+        options.btd4_output_path.clear();
+        assert!(raw_material_bank(&btd,&options).unwrap().is_none());
+    }
+
+    #[test]
+    fn raw_v4_authoring_carries_full_source_bank_and_native_patches() {
+        // The raw bank rides in the texture manifest and the .btd4 only. Records come from the
+        // plain conversion's set, so LAND/LTEX/TXST/GRAS and their object ids match a BTD4-off
+        // run, each run building its own scan and manifest as BACUP does.
+        let (temp, mut options) = alpha_fallthrough_options();
+        let fixture: serde_json::Value = serde_json::from_str(&fs::read_to_string(&options.texture_manifest_path).unwrap()).unwrap();
+        let source_ids: Vec<_> = (1..=12).map(|id|id*0x100).collect();
+        fs::write(&options.btd_path,one_cell_btd(0x6000,&source_ids,base_and_additional_texture_maps())).unwrap();
+        let bundle_for = |id: u32, raw: bool| {
+            let mut bundle = if id == 0x200 { fixture["textures"][1].clone() } else { fixture["textures"][0].clone() };
+            if id > 0x200 {
+                let n = id / 0x100;
+                bundle["source_ltex_form_key"]=serde_json::json!(format!("{id:06X}:SeventySix.esm"));
+                bundle["source_ltex_editor_id"]=serde_json::json!(format!("B21_Bank{n}"));
+                bundle["source_txst_form_key"]=bundle["source_ltex_form_key"].clone();
+                bundle["source_txst_editor_id"]=serde_json::json!(format!("B21_Bank{n}TXST"));
+                bundle["output_prefix"]=serde_json::json!(format!("textures/terrain/B21_Bank{n}"));
+            }
+            let object = bundle.as_object_mut().unwrap();
+            if raw {
+                object.insert("raw_source_prefix".into(), serde_json::json!(format!("{}_source", object["output_prefix"].as_str().unwrap())));
+            } else {
+                object.remove("raw_source_prefix");
+                object.remove("raw_material_rows");
+            }
+            bundle
+        };
+        let usage_ids = |usages: &[RequiredTextureUsage]| -> BTreeSet<u32> {
+            usages.iter().filter_map(|usage| object_id_from_source_form_key(&usage.ltex_form_key)).collect()
+        };
+        let convert = |options: &ConvertOptions, ids: &BTreeSet<u32>, record_ids: &BTreeSet<u32>, raw: bool| {
+            let mut scan_options = options.clone();
+            scan_options.texture_manifest_path.clear();
+            let scan = prepare_terrain_texture_scan(scan_options).unwrap();
+            let manifest_path = temp.path().join(if raw { "raw_manifest.json" } else { "plain_manifest.json" });
+            let textures: Vec<_> = ids.iter().map(|id| {
+                let mut bundle = bundle_for(*id, raw);
+                if raw && !record_ids.contains(id) { bundle["raw_bank_only"] = serde_json::json!(true); }
+                bundle
+            }).collect();
+            fs::write(&manifest_path, serde_json::to_vec(&serde_json::json!({ "textures": textures })).unwrap()).unwrap();
+            let mut options = options.clone();
+            options.texture_manifest_path = manifest_path.display().to_string();
+            let mut records = Vec::new();
+            convert_prepared_btd_with_record_sink(scan.source, options, &mut |record| { records.push(record); Ok(()) }).unwrap();
+            (scan.profile, records)
+        };
+
+        let mut plain_options = options.clone();
+        plain_options.btd4_output_path.clear();
+        let mut plain_scan_options = plain_options.clone();
+        plain_scan_options.texture_manifest_path.clear();
+        let plain_ids = usage_ids(&prepare_terrain_texture_scan(plain_scan_options).unwrap().profile.usages);
+        assert!(plain_ids.len() < 12, "the plain LAND must not need every bank row in this fixture");
+        let (_, plain) = convert(&plain_options, &plain_ids, &plain_ids, false);
+
+        options.btd4_output_path = temp.path().join("raw.btd4").display().to_string();
+        let mut raw_scan_options = options.clone();
+        raw_scan_options.texture_manifest_path.clear();
+        let raw_scan = prepare_terrain_texture_scan(raw_scan_options).unwrap().profile;
+        let bank_ids = usage_ids(&raw_scan.usages);
+        assert_eq!(bank_ids, source_ids.iter().copied().collect::<BTreeSet<_>>());
+        assert_eq!(raw_scan.record_usages, prepare_terrain_texture_scan({
+            let mut o = plain_options.clone(); o.texture_manifest_path.clear(); o }).unwrap().profile.usages);
+        let record_ids = usage_ids(&raw_scan.record_usages);
+        let (_, raw) = convert(&options, &bank_ids, &record_ids, true);
+
+        assert_yaml_records_equal(&plain, &raw);
+        assert_eq!(raw.iter().filter(|record|record.signature=="LTEX").count(), plain_ids.len());
+        assert_eq!(raw.iter().filter(|record|record.signature=="TXST").count(), plain_ids.len());
+
+        let sidecar=crate::btd4::Btd4Reader::open(Path::new(&options.btd4_output_path)).unwrap();
+        assert_eq!(crate::raw_terrain::validate_bank(sidecar.raw_material_bank()).unwrap(),12);
+        let mut source=BtdFile::open(&options.btd_path).unwrap();
+        for cell_y in options.source_min_y..=options.source_max_y {
+            for cell_x in options.source_min_x..=options.source_max_x {
+                let cell=sidecar.cell(cell_x,cell_y).unwrap();
+                let raw=cell.raw_terrain.unwrap();
+                for quadrant in 0..4 {
+                    let origin=[cell_x*128+64+(quadrant&1)*64,cell_y*128+64+(quadrant>>1)*64];
+                    let expected=crate::raw_terrain::encode_patch(&source.raw_terrain_patch(origin).unwrap()).unwrap();
+                    assert_eq!(&raw[quadrant as usize*crate::raw_terrain::PATCH_BYTES..(quadrant as usize+1)*crate::raw_terrain::PATCH_BYTES],expected);
+                }
+            }
+        }
+    }
+
     #[test]
     fn prepared_structured_cells_match_reopened_legacy_yaml_records() {
         let (_temp, options) = alpha_fallthrough_options();
@@ -7655,7 +8397,7 @@ Temporary:
         let mut first_cell = [[0u8; 8]; 4];
         let mut second_cell = [[0u8; 8]; 4];
         for map in &mut first_cell {
-            map[7] = 2;
+            map[6] = 2;
         }
         for map in &mut second_cell {
             map[7] = 1;
@@ -7745,7 +8487,7 @@ Temporary:
         let mut maps = [[0u8; 8]; 4];
         for map in &mut maps {
             map[4] = 1;
-            map[7] = 2;
+            map[6] = 2;
         }
         maps
     }
@@ -7867,43 +8609,30 @@ Temporary:
     }
 
     #[test]
-    fn emits_btd4_sidecar_with_round_tripping_hgts() {
-        let height_sample = 5000u16;
-        let btd_bytes = one_cell_btd_constant_height(height_sample);
-        let btd_path = temp_path("emit", "btd");
-        fs::write(&btd_path, &btd_bytes).unwrap();
-
-        let authoring_dir = temp_path("emit_out", "dir");
-        let btd4_path = temp_path("emit_side", "btd4");
+    fn fo76_source_without_land_textures_writes_no_sidecar() {
+        let btd_path = temp_path("emit_no_ltex", "btd");
+        fs::write(&btd_path, one_cell_btd_constant_height(5000)).unwrap();
+        let btd4_path = temp_path("emit_no_ltex_side", "btd4");
         let options = ConvertOptions {
-            btd_path: btd_path.display().to_string(),
-            output_authoring_dir: authoring_dir.display().to_string(),
-            plugin_name: "B21_Test.esp".to_string(),
-            worldspace_editor_id: "B21TestWorld".to_string(),
-            source_min_x: 0,
-            source_min_y: 0,
-            source_max_x: 0,
-            source_max_y: 0,
-            first_form_id: 0x000800,
-            world_form_id: 0,
-            first_cell_form_id: 0,
-            resample_mode: "sample4".to_string(),
-            debug_output_dir: String::new(),
-            texture_manifest_path: String::new(),
-            water_manifest_path: String::new(),
-            emit_textures: false,
-            export_heightmap: false,
-            debug_flat_land: false,
-            preserve_source_ids: false,
-            reserved_object_ids: Vec::new(),
-            source_worldspace_authoring_dir: String::new(),
-            source_worldspace_terrain_ids_json: String::new(),
-            heightmap_output_path: String::new(),
             btd4_output_path: btd4_path.display().to_string(),
-            conversion_workers: None,
-            land_skip_ground_cover_variants: false,
-            reuse_existing_textures: false,
+            ..clone_options_for_probe(&btd_path)
         };
+        let output = convert_btd(options, TerrainRecordOutput::ReportOnly).expect("convert");
+        assert_eq!(output.report.btd4_output_path, None);
+        assert!(!btd4_path.exists());
+        let _ = fs::remove_file(&btd_path);
+    }
+
+    #[test]
+    fn emits_btd4_sidecar_with_round_tripping_hgts() {
+        let height_sample = 0x6000u16;
+        let (temp, mut options) = alpha_fallthrough_options();
+        let btd_path = std::path::PathBuf::from(&options.btd_path);
+        let authoring_dir = temp.path().join("emit_out");
+        let btd4_path = temp.path().join("emit_side.btd4");
+        options.output_authoring_dir = authoring_dir.display().to_string();
+        options.btd4_output_path = btd4_path.display().to_string();
+        options.emit_textures = false;
 
         let output = convert_btd(options, TerrainRecordOutput::ReportOnly).expect("convert");
         assert_eq!(
@@ -7922,7 +8651,6 @@ Temporary:
 
         let reader = crate::btd4::Btd4Reader::open(&btd4_path).expect("open sidecar");
         let header = reader.header();
-        assert_eq!(header.version, crate::btd4::BTD4_VERSION);
         assert_eq!(header.density, 128);
         assert_eq!(header.cell_min_x, 0);
         assert_eq!(header.cell_max_x, 0);
@@ -8204,4 +8932,83 @@ Temporary:
         );
     }
 
+    /// Size/time estimate on real FO76 data, read-only. `FO76_BTD` = Appalachia.btd,
+    /// `FO76_GRASS_JSON` = raw GRAS DNAM + GCVR Load data ({"grass": {id: dnam_hex},
+    /// "covers": {id: {ynam, ltex, grasses: [[id, u16]]}}}), `FO76_GRASS_STRIDE` = cell stride.
+    /// Every grass counts as emitted, so this is the upper bound of a full conversion.
+    #[test]
+    #[ignore = "reads the FO76 install"]
+    fn sample_real_fo76_grass_points() {
+        let json: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(std::env::var("FO76_GRASS_JSON").unwrap()).unwrap()).unwrap();
+        let hex_id = |text: &str| u32::from_str_radix(text, 16).unwrap();
+        let mut keys = HashMap::new();
+        let mut grasses = Vec::new();
+        for (id, dnam_hex) in json["grass"].as_object().unwrap() {
+            let dnam_hex = dnam_hex.as_str().unwrap();
+            let bytes: Vec<u8> =
+                (0..dnam_hex.len() / 2).map(|i| u8::from_str_radix(&dnam_hex[i * 2..i * 2 + 2], 16).unwrap()).collect();
+            let dnam = crate::fo76_grass::GrassDnam::from_file_bytes(&bytes).unwrap();
+            keys.insert(hex_id(id), grasses.len());
+            grasses.push(PlannedGrass { density: dnam.density, placement: Some(((0, hex_id(id)), dnam)) });
+        }
+        let covers = json["covers"]
+            .as_object()
+            .unwrap()
+            .iter()
+            .map(|(id, cover)| {
+                let cover = crate::fo76_grass::GroundCover {
+                    land_textures: cover["ltex"].as_array().unwrap().iter().map(|v| hex_id(v.as_str().unwrap())).collect(),
+                    ynam: cover["ynam"].as_f64().unwrap() as f32,
+                    grasses: cover["grasses"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|pair| (keys[&hex_id(pair[0].as_str().unwrap())], pair[1].as_u64().unwrap() as u16))
+                        .collect(),
+                };
+                (hex_id(id), cover)
+            })
+            .collect();
+        let plan = GrassPointsPlan { covers, grasses };
+        let mut btd = BtdFile::open(&std::env::var("FO76_BTD").unwrap()).unwrap();
+        let stride: usize = std::env::var("FO76_GRASS_STRIDE").map_or(16, |v| v.parse().unwrap());
+        let header = btd.header();
+        let (min_x, min_y, max_x, max_y) = (header.cell_min_x, header.cell_min_y, header.cell_max_x, header.cell_max_y);
+        let total_cells = (i64::from(max_x - min_x) + 1) * (i64::from(max_y - min_y) + 1);
+        let (mut sampled, mut with_points, mut points, mut runs, mut raw_bytes, mut zlib_bytes) = (0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
+        let mut densest = (0u64, 0i32, 0i32, 0usize, 0usize);
+        let mut max_run = 0usize;
+        let started = Instant::now();
+        for cell_y in (min_y..=max_y).step_by(stride) {
+            for cell_x in (min_x..=max_x).step_by(stride) {
+                sampled += 1;
+                let mut stats = GrassPointsStats::default();
+                let Some(chunk) = build_cell_grass_points(&mut btd, cell_x, cell_y, &plan, &mut stats).unwrap() else {
+                    continue;
+                };
+                crate::btd4::validate_grass_points(&chunk, 1).unwrap();
+                let encoded = crate::btd4::encode_grass_points(&chunk);
+                let compressed = crate::btd4::zlib_compress(&encoded).unwrap();
+                with_points += 1;
+                points += stats.points;
+                runs += stats.runs;
+                raw_bytes += encoded.len() as u64;
+                zlib_bytes += compressed.len() as u64;
+                max_run = max_run.max(chunk.runs.iter().map(|run| run.points.len()).max().unwrap_or(0));
+                if stats.points > densest.0 {
+                    densest = (stats.points, cell_x, cell_y, chunk.grasses.len(), compressed.len());
+                }
+            }
+        }
+        let elapsed = started.elapsed().as_secs_f64();
+        let scale = total_cells as f64 / sampled as f64;
+        eprintln!(
+            "sampled {sampled}/{total_cells} cells (stride {stride}) in {elapsed:.1}s: {with_points} with points, \
+             {points} points, {runs} runs, {raw_bytes} B raw, {zlib_bytes} B zlib; densest cell ({}, {}) {} points, \
+             {} grasses, {} B zlib; largest run {max_run} points; whole world est. {:.0} cells with points, {:.1} M points, {:.1} MB zlib, {:.0} s",
+            densest.1, densest.2, densest.0, densest.3, densest.4,
+            with_points as f64 * scale, points as f64 * scale / 1e6, zlib_bytes as f64 * scale / 1e6, elapsed * scale
+        );
+    }
 }

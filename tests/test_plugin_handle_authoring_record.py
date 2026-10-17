@@ -71,3 +71,25 @@ def test_export_record_text_rejects_unknown_form_id_and_no_authoring_dict_apis()
     assert not hasattr(module, "plugin_handle_record_as_authoring_dict")
     assert not hasattr(module, "plugin_handle_records_as_authoring_dicts_batch")
     assert not hasattr(module, "plugin_handle_add_authoring_record")
+
+
+@pytest.mark.parametrize("lazy", [False, True])
+def test_record_reads_resolve_exact_master_and_local_ids_without_core(tmp_path, lazy):
+    from creation_lib.esp import Plugin
+
+    path = tmp_path / "Lookup.esp"
+    with Plugin.new(path.name, game="fo4") as plugin:
+        plugin.add_master("Fallout4.esm")
+        for form_id, name in [(0x00000800, "Master"), (0x01000800, "Owned"), (0x01000801, "LocalOnly")]:
+            record = plugin.new_record("MISC", form_id=form_id)
+            record.editor_id = name
+            plugin.add_record(record)
+        plugin.save(path)
+    with Plugin.load(path, game="fo4", lazy_index=lazy) as plugin:
+        for form_id, name in [(0x00000800, "Master"), (0x01000800, "Owned"), (0x00000801, "LocalOnly")]:
+            assert plugin.read_authoring_record(form_id)["eid"] == name
+            subrecords = native_runtime.plugin_handle_record_subrecords(plugin._rust_handle, form_id)
+            assert next(data for signature, data, _ in subrecords if signature == "EDID") == name.encode() + b"\0"
+        assert plugin.read_authoring_record(0x00999999) is None
+        assert native_runtime.plugin_handle_record_subrecords(plugin._rust_handle, 0x00999999) is None
+        assert not native_runtime.plugin_handle_debug_section_loaded(plugin._rust_handle, "core")

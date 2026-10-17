@@ -227,41 +227,25 @@ pub fn fo76_bundle_to_fo4_pixels(
     let mut diffuse_out = diffuse.to_vec();
     let mut specgloss = vec![0.0; diffuse.len()];
     let mut glow = emit_lighting_alpha_glow.then(|| vec![0.0; diffuse.len()]);
-    let threshold = 1.0 - params.spec_offset;
-    let denom = params.spec_offset.max(1e-6);
 
     for idx in 0..pixel_count(width, height)? {
         let i = idx * 4;
-        let d0 = diffuse[i].clamp(0.0, 1.0);
-        let d1 = diffuse[i + 1].clamp(0.0, 1.0);
-        let d2 = diffuse[i + 2].clamp(0.0, 1.0);
-        let r0 = reflectivity[i].clamp(0.0, 1.0);
-        let r1 = reflectivity[i + 1].clamp(0.0, 1.0);
-        let r2 = reflectivity[i + 2].clamp(0.0, 1.0);
-        let gloss = (lighting[i].clamp(0.0, 1.0) * params.gloss_multiplier).clamp(0.0, 1.0);
-        let ao = lighting[i + 1].clamp(0.0, 1.0);
-        let ao_term = (1.0 - params.ao_multiplier) + ao * params.ao_multiplier;
-
-        let [metal0, metal1, metal2] =
-            metal_contribution_preserving_hue(r0, r1, r2, threshold, denom);
-
-        let base0 = d0 + metal0;
-        let base1 = d1 + metal1;
-        let base2 = d2 + metal2;
-
-        diffuse_out[i] = (base0 * ao_term).clamp(0.0, 1.0);
-        diffuse_out[i + 1] = (base1 * ao_term).clamp(0.0, 1.0);
-        diffuse_out[i + 2] = (base2 * ao_term).clamp(0.0, 1.0);
+        let f0 = [
+            reflectivity[i].clamp(0.0, 1.0),
+            reflectivity[i + 1].clamp(0.0, 1.0),
+            reflectivity[i + 2].clamp(0.0, 1.0),
+        ];
+        let smoothness = lighting[i].clamp(0.0, 1.0);
+        let metal = fo76_metal_weight(f0);
+        for c in 0..3 {
+            diffuse_out[i + c] = (diffuse[i + c].clamp(0.0, 1.0)
+                + FO76_METAL_DIFFUSE_FROM_F0 * metal * f0[c])
+                .clamp(0.0, 1.0);
+        }
         diffuse_out[i + 3] = diffuse[i + 3].clamp(0.0, 1.0);
 
-        let spec0 = 0.22 * (1.0 - metal0) + base0 * metal0;
-        let spec1 = 0.22 * (1.0 - metal1) + base1 * metal1;
-        let spec2 = 0.22 * (1.0 - metal2) + base2 * metal2;
-        let specular =
-            (((spec0 + spec1 + spec2) / 3.0) * params.specular_multiplier).clamp(0.0, 1.0);
-
-        specgloss[i] = specular;
-        specgloss[i + 1] = gloss;
+        specgloss[i] = fo76_specular_mask(f0, smoothness, params.specular_multiplier);
+        specgloss[i + 1] = (smoothness * params.gloss_multiplier).clamp(0.0, 1.0);
         specgloss[i + 2] = 0.0;
         specgloss[i + 3] = 1.0;
 
@@ -464,27 +448,35 @@ pub fn starfield_pbr_to_fo4_pixels(
     Ok(StarfieldPbrOutputs { diffuse, specgloss })
 }
 
-fn metal_contribution_preserving_hue(
-    reflectivity_r: f32,
-    reflectivity_g: f32,
-    reflectivity_b: f32,
-    threshold: f32,
-    denominator: f32,
-) -> [f32; 3] {
-    let peak = reflectivity_r.max(reflectivity_g).max(reflectivity_b);
-    let remapped_peak = ((peak - threshold).max(0.0) / denominator).clamp(0.0, 1.0);
-    if peak <= 0.0 {
-        return [remapped_peak; 3];
-    }
+// FO76 `_r` -> FO4 `_s`/`_d` constants, least-squares fitted against Bethesda's own FO4
+// `_s` and `_d` on 579 texture sets both games ship at the same path (see
+// bacup/docs/fo76-to-fo4-material-guide.md). `_r` decodes to linear F0: 0.04 on
+// dielectrics, rising on metal, where FO76 `_d` is near black.
+const FO76_DIELECTRIC_F0: f32 = 0.04;
+/// FO4CS starts treating F0 as metal at 0.16; FO4's `_d` already brightens from 0.04 up.
+const FO76_METAL_F0_FULL: f32 = 0.2;
+/// FO4 paints metal colour into `_d`: linear `_d` gains this share of the F0 colour.
+const FO76_METAL_DIFFUSE_FROM_F0: f32 = 0.33;
+/// FO4 `_s.R` = base + smoothness term + metal term (FO4 paints spec higher where glossy).
+const FO4_SPEC_BASE: f32 = 0.098;
+const FO4_SPEC_PER_SMOOTHNESS: f32 = 0.444;
+const FO4_SPEC_PER_F0: f32 = 0.434;
+const FO4_SPEC_F0_SPAN: f32 = 0.24;
 
-    // spec_offset filters reflectivity magnitude. Applying its threshold to
-    // each channel separately destroys colored-metal hue (gold/copper turn red).
-    let scale = remapped_peak / peak;
-    [
-        reflectivity_r * scale,
-        reflectivity_g * scale,
-        reflectivity_b * scale,
-    ]
+fn smoothstep(lo: f32, hi: f32, x: f32) -> f32 {
+    let t = ((x - lo) / (hi - lo)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+fn fo76_metal_weight(f0: [f32; 3]) -> f32 {
+    smoothstep(FO76_DIELECTRIC_F0, FO76_METAL_F0_FULL, f0[0].max(f0[1]).max(f0[2]))
+}
+
+fn fo76_specular_mask(f0: [f32; 3], smoothness: f32, specular_multiplier: f32) -> f32 {
+    let metal = (f0[0].max(f0[1]).max(f0[2]) - FO76_DIELECTRIC_F0).clamp(0.0, FO4_SPEC_F0_SPAN);
+    ((FO4_SPEC_BASE + FO4_SPEC_PER_SMOOTHNESS * smoothness + FO4_SPEC_PER_F0 * metal)
+        * specular_multiplier)
+        .clamp(0.0, 1.0)
 }
 
 pub fn fo76_normal_to_fo4_buffer(
@@ -585,12 +577,23 @@ pub fn fo76_reflectivity_lighting_to_fo4_specgloss_pixels(
     let mut specgloss = vec![0.0; reflectivity.len()];
     for idx in 0..pixel_count(width, height)? {
         let i = idx * 4;
-        specgloss[i] = reflectivity[i].clamp(0.0, 1.0);
-        specgloss[i + 1] = lighting[i].clamp(0.0, 1.0);
+        let f0 = [
+            reflectivity[i].clamp(0.0, 1.0),
+            reflectivity[i + 1].clamp(0.0, 1.0),
+            reflectivity[i + 2].clamp(0.0, 1.0),
+        ];
+        let smoothness = lighting[i].clamp(0.0, 1.0);
+        specgloss[i] = fo76_specular_mask(f0, smoothness, 1.0);
+        specgloss[i + 1] = smoothness;
         specgloss[i + 2] = 0.0;
         specgloss[i + 3] = 1.0;
     }
     Ok(specgloss)
+}
+
+pub fn legacy_specular_exponent_to_fo4_smoothness(exponent: f32) -> f32 {
+    // FO4's forward and deferred shaders reconstruct n = exp2(10 * s + 1).
+    ((exponent.max(2.0).log2() - 1.0) / 10.0).clamp(0.0, 1.0)
 }
 
 /// Parameters for the Gamebryo/Skyrim → FO4 spec-gloss synthesis.
@@ -600,10 +603,10 @@ pub fn fo76_reflectivity_lighting_to_fo4_specgloss_pixels(
 /// both: `_s.R`. `_s.G` is glossiness and `_s.B` is unread.
 #[derive(Debug, Clone, Copy)]
 pub struct GamebryoSpecParams {
-    /// Specular for non-metals when the source alpha carries no information.
+    /// Specular for non-metals when the source alpha is uniformly opaque.
     /// Matches the constant the FO76 bundle kernel uses for dielectrics.
     pub dielectric_baseline: f32,
-    /// Alpha range below which the channel is treated as carrying no data.
+    /// Tolerance for treating a uniformly opaque alpha channel as uninformative.
     /// 73% of sampled Skyrim normals are uniformly opaque; without this guard
     /// they would all render fully specular.
     pub alpha_flat_epsilon: f32,
@@ -618,7 +621,7 @@ impl Default for GamebryoSpecParams {
             dielectric_baseline: 0.22,
             alpha_flat_epsilon: 0.02,
             envmask_weight: 1.0,
-            gloss_baseline: 0.8,
+            gloss_baseline: 1.0,
             specular_multiplier: 1.0,
         }
     }
@@ -689,7 +692,8 @@ pub fn gamebryo_normal_envmask_to_fo4_specgloss_pixels(
         alpha_min = alpha_min.min(alpha);
         alpha_max = alpha_max.max(alpha);
     }
-    let alpha_informative = (alpha_max - alpha_min) > params.alpha_flat_epsilon;
+    let alpha_informative = (alpha_max - alpha_min) > params.alpha_flat_epsilon
+        || alpha_min < 1.0 - params.alpha_flat_epsilon;
 
     let mut normal_out = vec![0.0; normal.len()];
     let mut specgloss = vec![0.0; normal.len()];
@@ -1158,6 +1162,18 @@ fn convert_fo76_individual_paths_into(
             continue;
         };
 
+        if input.role == "normal"
+            && convert_bc5_snorm_normal(
+                &input.path,
+                output,
+                request.use_gpu,
+                request.gpu_min_pixels,
+                request.parallel_compression,
+            )?
+        {
+            push_converted(result, output);
+            continue;
+        }
         let image = directxtex_native::read_dds_float_rgba_image(input.path.as_path())
             .map_err(MaterialError::runtime)?;
         convert_fo76_individual_image(
@@ -1214,6 +1230,81 @@ pub fn convert_fo76_individual_image(
         parallel_compression,
     )?;
     Ok(())
+}
+
+pub fn convert_bc5_snorm_normal(
+    input: &Path,
+    output: &TexturePathOutput,
+    use_gpu: bool,
+    gpu_min_pixels: u32,
+    parallel_compression: bool,
+) -> Result<bool> {
+    let probe = directxtex_native::read_dds_probe(input).map_err(MaterialError::runtime)?;
+    if probe.dxgi_format != crate::bc5_snorm::DXGI_FORMAT_BC5_SNORM {
+        return Ok(false);
+    }
+    if probe.is_cubemap || probe.array_size != 1 || probe.depth != 1 {
+        return Err(MaterialError::invalid("signed BC5 normal must be a 2D image"));
+    }
+    let full_mips = directxtex_native::full_mip_count(probe.width, probe.height);
+    if probe.width == 0 || probe.height == 0 || probe.mip_levels > full_mips {
+        return Err(MaterialError::invalid("invalid signed BC5 normal dimensions/mips"));
+    }
+    let mut bytes = directxtex_native::profiling::read(input)
+        .map_err(|error| MaterialError::runtime(error.to_string()))?;
+    let header_size = if bytes.get(84..88) == Some(b"DX10") { 148_usize } else { 128 };
+    let mut expected_size = header_size;
+    for mip in 0..probe.mip_levels {
+        let width = (probe.width >> mip).max(1) as usize;
+        let height = (probe.height >> mip).max(1) as usize;
+        expected_size = width.div_ceil(4).checked_mul(height.div_ceil(4))
+            .and_then(|blocks| blocks.checked_mul(16))
+            .and_then(|size| expected_size.checked_add(size))
+            .ok_or_else(|| MaterialError::invalid("signed BC5 normal is too large"))?;
+    }
+    if bytes.len() != expected_size {
+        return Err(MaterialError::invalid("signed BC5 normal payload length mismatch"));
+    }
+    let header_u32 = |offset| u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
+    if header_u32(112) & (0xFE00 | 0x20_0000) != 0
+        || header_u32(8) & 0x80_0000 != 0
+        || (header_size == 148 && (header_u32(132) != 3 || header_u32(140) != 1))
+    {
+        return Err(MaterialError::invalid("signed BC5 normal must be a 2D image"));
+    }
+    if !crate::bc5_snorm::shift_bc5_snorm_dds(&mut bytes)
+        .map_err(|error| MaterialError::invalid(error.to_string()))?
+    {
+        return Err(MaterialError::invalid("unsupported signed BC5 DDS header"));
+    }
+    let target_format = output_format_for_path(
+        &output.role, probe.dxgi_format, &output.format, &output.path,
+    );
+    if probe.mip_levels == full_mips && target_format == "BC5_UNORM" {
+        if let Some(parent) = output.path.parent() {
+            directxtex_native::profiling::create_dir_all(parent)
+                .map_err(|error| MaterialError::runtime(error.to_string()))?;
+        }
+        directxtex_native::profiling::write(&output.path, &bytes)
+            .map_err(|error| MaterialError::runtime(error.to_string()))?;
+    } else {
+        let image = directxtex_native::read_dds_rgba_image_bytes(&bytes)
+            .map_err(MaterialError::runtime)?;
+        convert_fo76_individual_image(
+            "normal",
+            output,
+            directxtex_native::DdsRgbaFloatImage {
+                width: image.width,
+                height: image.height,
+                rgba: image.rgba.into_iter().map(|channel| channel as f32 / 255.0).collect(),
+                dxgi_format: probe.dxgi_format,
+            },
+            use_gpu,
+            gpu_min_pixels,
+            parallel_compression,
+        )?;
+    }
+    Ok(true)
 }
 
 pub fn mapped_fo76_output_role(role: &str) -> Option<&'static str> {
@@ -1382,76 +1473,43 @@ mod tests {
 
     #[test]
     fn fo76_bundle_diffuse_and_specgloss_math() {
-        let out = fo76_bundle_to_fo4_buffers(
-            &rgba_bytes([1.0, 0.0, 0.0, 1.0]),
-            &rgba_bytes([0.0, 0.0, 0.0, 1.0]),
-            &rgba_bytes([0.5, 1.0, 0.0, 1.0]),
-            1,
-            1,
-            1,
-            1,
-            1,
-            1,
-            TextureConversionParams::default(),
-            false,
-        )
-        .unwrap();
+        let bundle = |d: [f32; 4], r: [f32; 4], l: [f32; 4]| {
+            fo76_bundle_to_fo4_buffers(
+                &rgba_bytes(d),
+                &rgba_bytes(r),
+                &rgba_bytes(l),
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                TextureConversionParams::default(),
+                false,
+            )
+            .unwrap()
+        };
 
-        assert_eq!(decode_rgba(out.diffuse), [1.0, 0.0, 0.0, 1.0]);
-        assert_rgba_close(decode_rgba(out.specgloss), [0.22, 0.5, 0.0, 1.0]);
+        // Dielectric (F0 0.04): `_d` passes through, and FO76's `_l.G` AO is not folded in
+        // (FO4's own `_d` of the same asset carries no extra AO). `_s.R` follows smoothness.
+        let out = bundle([0.5, 0.25, 0.75, 1.0], [0.04, 0.04, 0.04, 1.0], [0.5, 0.25, 0.0, 1.0]);
+        assert_rgba_close(decode_rgba(out.diffuse), [0.5, 0.25, 0.75, 1.0]);
+        assert_rgba_close(decode_rgba(out.specgloss), [0.098 + 0.444 * 0.5, 0.5, 0.0, 1.0]);
         assert!(out.glow.is_none());
 
-        let out = fo76_bundle_to_fo4_buffers(
-            &rgba_bytes([0.5, 0.25, 0.75, 1.0]),
-            &rgba_bytes([1.0, 1.0, 1.0, 1.0]),
-            &rgba_bytes([0.25, 0.5, 0.0, 1.0]),
-            1,
-            1,
-            1,
-            1,
-            1,
-            1,
-            TextureConversionParams::default(),
-            false,
-        )
-        .unwrap();
+        // Coloured metal with FO76's black `_d`: FO4 paints the F0 colour into `_d` and
+        // raises `_s.R`; gloss stays the FO76 smoothness.
+        let out = bundle([0.0, 0.0, 0.0, 1.0], [0.4, 0.25, 0.1, 1.0], [0.5, 1.0, 0.0, 1.0]);
+        assert_rgba_close(decode_rgba(out.diffuse), [0.132, 0.0825, 0.033, 1.0]);
+        assert_rgba_close(
+            decode_rgba(out.specgloss),
+            [0.098 + 0.444 * 0.5 + 0.434 * 0.24, 0.5, 0.0, 1.0],
+        );
 
-        assert_eq!(decode_rgba(out.diffuse), [1.0, 0.9375, 1.0, 1.0]);
-        assert_eq!(decode_rgba(out.specgloss), [1.0, 0.25, 0.0, 1.0]);
-
-        let out = fo76_bundle_to_fo4_buffers(
-            &rgba_bytes([0.0, 0.0, 0.0, 1.0]),
-            &rgba_bytes([0.4, 0.25, 0.1, 1.0]),
-            &rgba_bytes([0.5, 1.0, 0.0, 1.0]),
-            1,
-            1,
-            1,
-            1,
-            1,
-            1,
-            TextureConversionParams::default(),
-            false,
-        )
-        .unwrap();
-
-        assert_rgba_close(decode_rgba(out.diffuse), [0.25, 0.15625, 0.0625, 1.0]);
-
-        let out = fo76_bundle_to_fo4_buffers(
-            &rgba_bytes([0.0, 0.0, 0.0, 1.0]),
-            &rgba_bytes([0.25, 0.25, 0.25, 1.0]),
-            &rgba_bytes([0.5, 1.0, 0.0, 1.0]),
-            1,
-            1,
-            1,
-            1,
-            1,
-            1,
-            TextureConversionParams::default(),
-            false,
-        )
-        .unwrap();
-
-        assert_rgba_close(decode_rgba(out.diffuse), [0.0625, 0.0625, 0.0625, 1.0]);
+        // Half way up the dielectric->metal ramp the `_d` colour is blended in by smoothstep.
+        let out = bundle([0.0, 0.0, 0.0, 1.0], [0.12, 0.12, 0.12, 1.0], [0.0, 1.0, 0.0, 1.0]);
+        assert_rgba_close(decode_rgba(out.diffuse), [0.0198, 0.0198, 0.0198, 1.0]);
+        assert_rgba_close(decode_rgba(out.specgloss), [0.098 + 0.434 * 0.08, 0.0, 0.0, 1.0]);
     }
 
     #[test]
@@ -1583,7 +1641,8 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(decode_rgba(out), [1.0, 0.5, 0.0, 1.0]);
+        // `_s.R` is the fitted mask, not F0 copied: full metal at smoothness 0.5.
+        assert_rgba_close(decode_rgba(out), [0.098 + 0.444 * 0.5 + 0.434 * 0.24, 0.5, 0.0, 1.0]);
 
         let err = passthrough_rgba_buffer(&[0, 1, 2, 3], 1, 1).unwrap_err();
         assert!(
@@ -1964,8 +2023,6 @@ mod tests {
             "alpha should win texel 1"
         );
 
-        // Flat 0.0 alpha is uninformative, so the baseline applies and the 1x1
-        // mask must be upsampled to cover both texels.
         let normal = f32_vec_to_bytes(&[0.5, 0.5, 1.0, 0.0, 0.5, 0.5, 1.0, 0.0]);
         let mask = f32_vec_to_bytes(&[0.75, 0.75, 0.75, 1.0]);
         let out = gamebryo_normal_envmask_to_fo4_specgloss_buffers(
@@ -1980,6 +2037,36 @@ mod tests {
         .unwrap();
         assert!((out.specgloss[0] - 0.75).abs() < 1e-6);
         assert!((out.specgloss[4] - 0.75).abs() < 1e-6);
+    }
+
+    #[test]
+    fn gamebryo_constant_authored_specular_masks_are_preserved() {
+        for alpha in [0.0, 0.05, 0.25, 0.5] {
+            let normal = [0.5, 0.5, 1.0, alpha, 0.5, 0.5, 1.0, alpha];
+            let out = gamebryo_normal_envmask_to_fo4_specgloss_pixels(
+                &normal,
+                None,
+                2,
+                1,
+                0,
+                0,
+                GamebryoSpecParams::default(),
+            )
+            .unwrap();
+            assert_eq!(out.specgloss[0], alpha);
+            assert_eq!(out.specgloss[4], alpha);
+        }
+    }
+
+    #[test]
+    fn gamebryo_exponent_conversion_preserves_source_highlight_width() {
+        for exponent in [2.0, 10.0, 30.0, 50.0, 60.0, 80.0, 90.0, 128.0, 2048.0] {
+            let smoothness = legacy_specular_exponent_to_fo4_smoothness(exponent);
+            let reconstructed = (10.0 * smoothness + 1.0).exp2();
+            assert!((reconstructed - exponent).abs() < 0.001, "{exponent}");
+        }
+        assert_eq!(legacy_specular_exponent_to_fo4_smoothness(0.0), 0.0);
+        assert_eq!(legacy_specular_exponent_to_fo4_smoothness(4096.0), 1.0);
     }
 
     #[test]
@@ -2027,7 +2114,7 @@ mod tests {
             let i = idx * 4;
             assert_eq!(out.specgloss[i + 2], 0.0, "blue must be zero");
             assert_eq!(out.specgloss[i + 3], 1.0, "alpha must be opaque");
-            assert!((out.specgloss[i + 1] - 0.8).abs() < 1e-6, "gloss baseline");
+            assert_eq!(out.specgloss[i + 1], 1.0, "material supplies the gloss scalar");
             assert_eq!(out.normal[i + 3], 1.0, "normal alpha must be discarded");
         }
         assert!((out.normal[0] - 0.25).abs() < 1e-6);

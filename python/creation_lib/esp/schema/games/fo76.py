@@ -153724,7 +153724,7 @@ def build_schema() -> GameSchema:
                 sig='ATKD',
                 kind=FieldKind.PARSED_WITH_RAW_FALLBACK,
                 display_label='Attack Data',
-                codec='struct:f,f,I,I,f,f,f,f,f,f,i,f',
+                codec='struct:f,f,I,I,f,f,I,f,f,f,i,f',
                 fields=(
                     FieldSpec(
                         name='damage_mult',
@@ -153761,9 +153761,12 @@ def build_schema() -> GameSchema:
                         authoring_label='Strike Angle',
                     ),
                     FieldSpec(
-                        name='stagger',
-                        kind='float32',
-                        authoring_label='Stagger',
+                        name='attack_type',
+                        kind='formid',
+                        formlink_target='KYWD',
+                        formlink_targets=('KYWD',),
+                        null_allowed=True,
+                        authoring_label='Attack Type',
                     ),
                     FieldSpec(
                         name='knockdown',
@@ -220899,7 +220902,7 @@ def build_schema() -> GameSchema:
                 sig='ATKD',
                 kind=FieldKind.PARSED_WITH_RAW_FALLBACK,
                 display_label='Attack Data',
-                codec='struct:f,f,I,I,f,f,f,f,f,f,i,f',
+                codec='struct:f,f,I,I,f,f,I,f,f,f,i,f',
                 fields=(
                     FieldSpec(
                         name='damage_mult',
@@ -220936,9 +220939,12 @@ def build_schema() -> GameSchema:
                         authoring_label='Strike Angle',
                     ),
                     FieldSpec(
-                        name='stagger',
-                        kind='float32',
-                        authoring_label='Stagger',
+                        name='attack_type',
+                        kind='formid',
+                        formlink_target='KYWD',
+                        formlink_targets=('KYWD',),
+                        null_allowed=True,
+                        authoring_label='Attack Type',
                     ),
                     FieldSpec(
                         name='knockdown',

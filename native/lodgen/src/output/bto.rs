@@ -273,7 +273,7 @@ pub fn object_vertex_desc(has_colors: bool) -> u64 {
     }
 }
 
-fn new_bto_nif_with_root() -> (NifFile, usize) {
+pub(crate) fn new_bto_nif_with_root() -> (NifFile, usize) {
     let mut nif = NifFile::new("fo4");
     // Remove the default BSFadeNode root.
     nif.blocks.clear();
@@ -624,33 +624,8 @@ fn build_subindex_trishape(
     extra_data_id: Option<usize>,
     vertex_encoding: VertexEncoding,
 ) -> usize {
-    let g = &shape.geometry;
-    let nv = g.vertices.len();
-    let nt = g.triangles.len();
-    let has_colors = !g.vertex_colors.is_empty();
-
-    let vertex_data: Vec<NifValue> = (0..nv)
-        .map(|i| {
-            let pos = g.vertices[i];
-            let uv = g.uvcoords.get(i).copied().unwrap_or([0.0, 0.0]);
-            let normal = g.normals.get(i).copied().unwrap_or([0.0, 0.0, 1.0]);
-            let tangent = g.tangents.get(i).copied().unwrap_or([1.0, 0.0, 0.0]);
-            let bitangent = g.bitangents.get(i).copied().unwrap_or([0.0, 1.0, 0.0]);
-            let color = if has_colors {
-                Some(
-                    g.vertex_colors
-                        .get(i)
-                        .copied()
-                        .unwrap_or([1.0, 1.0, 1.0, 1.0]),
-                )
-            } else {
-                None
-            };
-            vertex_encoding.build(pos, uv, normal, tangent, bitangent, color)
-        })
-        .collect();
-
-    let triangle_data = super::triangle_values(&g.triangles);
+    let mut fields = trishape_fields(shape, shader_id, alpha_id, extra_data_id, vertex_encoding);
+    let nt = shape.geometry.triangles.len();
 
     // Expand the per-shape segments to the level grid and trim trailing zeros.
     // Port: BSSubIndexTriShape.SetSegments (BSSubIndexTriShape.cs:160-183).
@@ -678,6 +653,87 @@ fn build_subindex_trishape(
             NifValue::Struct(d)
         })
         .collect();
+
+    fields.insert(
+        BTO_NUM_PRIMITIVES_OVERRIDE_FIELD.to_string(),
+        NifValue::UInt((nt * 2) as u64),
+    );
+    fields.insert("Num Segments".to_string(), NifValue::UInt(num_segments));
+    fields.insert("Total Segments".to_string(), NifValue::UInt(num_segments));
+    fields.insert("Segment".to_string(), NifValue::Array(segment_data));
+
+    nif.add_block("BSSubIndexTriShape", Some(fields))
+}
+
+/// An instance stream root (LOD_RUNTIME.md Q9): a plain `BSTriShape` with the object-LOD vertex layout and
+/// shader, geometry in model space. The instance data block that follows it in the footer roots places it.
+pub fn add_instance_trishape(nif: &mut NifFile, shape: &BtoShape) -> usize {
+    let mut texset_cache = IndexMap::new();
+    let (shader_id, alpha_id) = build_shape_properties(nif, shape, &mut texset_cache);
+    let fields = trishape_fields(shape, shader_id, alpha_id, None, VertexEncoding::Positional);
+    nif.add_block("BSTriShape", Some(fields))
+}
+
+/// Appends each group's `(BSTriShape, BSDistantObjectInstanceDataBlock)` pair to the stream roots after the scene
+/// root (LOD_RUNTIME.md Q9). With `encode_layers` every instance scale carries its group's layer.
+pub fn write_bto_with_instances(
+    nif: &mut NifFile,
+    groups: &[crate::objects::instanced::InstanceGroup],
+    encode_layers: bool,
+) {
+    use crate::objects::instance_layers::encode_scale;
+    for group in groups {
+        let shape = add_instance_trishape(nif, &group.shape);
+        let encoded: Vec<_>;
+        let instances = if encode_layers {
+            encoded = group
+                .instances
+                .iter()
+                .map(|i| crate::output::instance_block::Instance { scale: encode_scale(i.scale, group.layer), ..*i })
+                .collect();
+            &encoded
+        } else {
+            &group.instances
+        };
+        let data = crate::output::instance_block::add_to_nif(nif, group.object, instances, &group.ids);
+        nif.header.footer_roots.extend([shape as i32, data as i32]);
+    }
+}
+
+fn trishape_fields(
+    shape: &BtoShape,
+    shader_id: usize,
+    alpha_id: Option<usize>,
+    extra_data_id: Option<usize>,
+    vertex_encoding: VertexEncoding,
+) -> IndexMap<String, NifValue> {
+    let g = &shape.geometry;
+    let nv = g.vertices.len();
+    let nt = g.triangles.len();
+    let has_colors = !g.vertex_colors.is_empty();
+
+    let vertex_data: Vec<NifValue> = (0..nv)
+        .map(|i| {
+            let pos = g.vertices[i];
+            let uv = g.uvcoords.get(i).copied().unwrap_or([0.0, 0.0]);
+            let normal = g.normals.get(i).copied().unwrap_or([0.0, 0.0, 1.0]);
+            let tangent = g.tangents.get(i).copied().unwrap_or([1.0, 0.0, 0.0]);
+            let bitangent = g.bitangents.get(i).copied().unwrap_or([0.0, 1.0, 0.0]);
+            let color = if has_colors {
+                Some(
+                    g.vertex_colors
+                        .get(i)
+                        .copied()
+                        .unwrap_or([1.0, 1.0, 1.0, 1.0]),
+                )
+            } else {
+                None
+            };
+            vertex_encoding.build(pos, uv, normal, tangent, bitangent, color)
+        })
+        .collect();
+
+    let triangle_data = super::triangle_values(&g.triangles);
 
     let mut fields = IndexMap::new();
     let name = if shape.name_index_at { "obj-at" } else { "obj" };
@@ -732,15 +788,7 @@ fn build_subindex_trishape(
     fields.insert("Data Size".to_string(), NifValue::UInt(0)); // calc'd by writer
     fields.insert("Vertex Data".to_string(), NifValue::Array(vertex_data));
     fields.insert("Triangles".to_string(), NifValue::Array(triangle_data));
-    fields.insert(
-        BTO_NUM_PRIMITIVES_OVERRIDE_FIELD.to_string(),
-        NifValue::UInt((nt * 2) as u64),
-    );
-    fields.insert("Num Segments".to_string(), NifValue::UInt(num_segments));
-    fields.insert("Total Segments".to_string(), NifValue::UInt(num_segments));
-    fields.insert("Segment".to_string(), NifValue::Array(segment_data));
-
-    nif.add_block("BSSubIndexTriShape", Some(fields))
+    fields
 }
 
 /// Write a `.bto` object-LOD mesh to disk.
@@ -805,6 +853,49 @@ mod tests {
             },
             other => panic!("missing texture array: {other:?}"),
         }
+    }
+
+    #[test]
+    fn instance_trishape_is_a_plain_bstrishape() {
+        let mut geometry = LodGeometry::new();
+        geometry.vertices = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        geometry.uvcoords = vec![[0.0, 0.0]; 3];
+        geometry.normals = vec![[0.0, 0.0, 1.0]; 3];
+        geometry.tangents = vec![[1.0, 0.0, 0.0]; 3];
+        geometry.bitangents = vec![[0.0, 1.0, 0.0]; 3];
+        geometry.triangles = vec![[0, 1, 2]];
+        geometry.update_bbox();
+        let shape = BtoShape {
+            geometry,
+            segments: Vec::new(),
+            segment_count: 0,
+            translation: [0.0, 0.0, 0.0],
+            scale: 1.0,
+            center: [0.5, 0.5, 0.0],
+            radius: 1.0,
+            multibound: MultiBoundAabb { position: [0.5, 0.5, 0.0], extent: [1.0, 1.0, 1.0] },
+            name_index_at: false,
+            shader: BtoShader::Lighting {
+                texture_set: Default::default(),
+                flags1: 0x8040_0001,
+                flags2: 5,
+                clamp: 0,
+                backlight: None,
+                grayscale_scale: None,
+            },
+            alpha: None,
+            enable_parent: 0,
+        };
+        let (mut nif, _) = new_bto_nif_with_root();
+        let id = add_instance_trishape(&mut nif, &shape);
+        let reloaded = NifFile::from_bytes(&nif.to_bytes().unwrap(), None).unwrap();
+        let block = &reloaded.blocks[id];
+        assert_eq!(block.type_name, "BSTriShape");
+        assert_eq!(block.get_field("Num Vertices").map(NifValue::as_i64), Some(3));
+        assert_eq!(block.get_field("Num Triangles").map(NifValue::as_i64), Some(1));
+        let shader = block.get_field("Shader Property").map(NifValue::as_i64).unwrap();
+        assert_eq!(reloaded.blocks[shader as usize].type_name, "BSLightingShaderProperty");
+        assert!(reloaded.blocks.iter().all(|b| b.type_name != "BSSubIndexTriShape"));
     }
 
     #[test]

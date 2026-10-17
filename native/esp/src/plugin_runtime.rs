@@ -69,6 +69,7 @@ mod plugin_index;
 pub use plugin_index::*;
 #[path = "master_edit.rs"]
 mod master_edit;
+pub use master_edit::{record_form_ids, remap_record_bytes};
 #[path = "cell_slice.rs"]
 mod cell_slice;
 pub use cell_slice::*;
@@ -83,7 +84,9 @@ mod worldspace_offsets;
 pub use worldspace_offsets::*;
 #[path = "asset_collect.rs"]
 mod asset_collect;
-pub use asset_collect::*;
+pub(crate) use asset_collect::*;
+#[path = "starfield_armor_closure.rs"]
+mod starfield_armor_closure;
 #[path = "walker_policy.rs"]
 mod walker_policy;
 pub(crate) use walker_policy::*;
@@ -359,9 +362,55 @@ pub struct LazyRecordStore {
     /// EditorID index read from the file alone, for EditorID lookups that do
     /// not need the whole `CoreSection`. See [`lazy_eid_form_ids`].
     eid_form_ids: std::sync::OnceLock<HashMap<String, Vec<u32>>>,
+    editor_search_rows: std::sync::Mutex<HashMap<SmolStr, Vec<(usize, u32, String)>>>,
 }
 
 impl LazyRecordStore {
+    fn search_editor_ids(
+        &self,
+        signatures: &HashSet<SmolStr>,
+        matcher: &RecordSearchMatcher,
+        limit: Option<usize>,
+    ) -> Vec<(u32, String, Option<String>, Option<String>)> {
+        let mut cache = self.editor_search_rows.lock().unwrap();
+        let missing: HashSet<_> = signatures
+            .iter()
+            .filter(|signature| !cache.contains_key(*signature))
+            .cloned()
+            .collect();
+        for signature in &missing {
+            cache.insert(signature.clone(), Vec::new());
+        }
+        if !missing.is_empty() {
+            let cursor = self.cursor();
+            cursor.scan(&mut |view| {
+                let signature = SmolStr::new(String::from_utf8_lossy(view.signature).as_ref());
+                if missing.contains(&signature) {
+                    if let Ok(record) = cursor.parse_at(view.offset) {
+                        if let Some(editor_id) = record_editor_id_value(&record) {
+                            cache.get_mut(&signature).unwrap().push((
+                                view.offset, record.form_id, editor_id,
+                            ));
+                        }
+                    }
+                }
+                std::ops::ControlFlow::Continue(())
+            });
+        }
+        let mut matches: Vec<_> = signatures.iter().flat_map(|signature| {
+            cache[signature].iter().filter_map(move |(offset, form_id, editor_id)| {
+                matcher.is_match(editor_id).then_some((*offset, *form_id, signature, editor_id))
+            })
+        }).collect();
+        matches.sort_unstable_by_key(|row| row.0);
+        if let Some(limit) = limit {
+            matches.truncate(limit);
+        }
+        matches.into_iter().map(|(_, form_id, signature, editor_id)| {
+            (form_id, signature.to_string(), Some(editor_id.clone()), None)
+        }).collect()
+    }
+
     fn cursor(&self) -> crate::record_cursor::RecordCursor<'_> {
         crate::record_cursor::RecordCursor::new(&self.buffer, self.header_size, self.root_start)
     }
@@ -433,17 +482,41 @@ impl NativePluginSlot {
         self.sections.core.is_some()
     }
 
+    pub fn record_index_entries_with_editor_ids(&mut self) -> Vec<RecordIndexEntry> {
+        if let Some(lazy) = self.lazy.as_ref().filter(|_| !self.has_core_section()) {
+            let own_plugin_name: Arc<str> = Arc::from(self.parsed.plugin_name.as_str());
+            let masters = &self.parsed.header.masters;
+            let mut entries = HashMap::new();
+            lazy.cursor().scan(&mut |view| {
+                let stub = index_stub_record(&view);
+                let entry = record_index_entry_for_record(&stub, &own_plugin_name, masters);
+                if entry.eid.is_empty() {
+                    // A later nameless record still replaces an earlier row with the same FormKey.
+                    entries.remove(&entry.form_key);
+                } else {
+                    entries.insert(entry.form_key.clone(), entry);
+                }
+                std::ops::ControlFlow::Continue(())
+            });
+            entries.into_values().collect()
+        } else {
+            ensure_core_section(self)
+                .by_form_key
+                .values()
+                .filter(|entry| !entry.eid.is_empty())
+                .cloned()
+                .collect()
+        }
+    }
+
     pub fn cached_unique_core_records_sections(
         &self,
     ) -> Option<(Arc<CoreSection>, Arc<RecordsSection>)> {
         let core = self.sections.core.as_ref()?;
         let records = self.sections.records.as_ref()?;
-        let indexed_record_count = core
-            .by_signature_form_keys
-            .values()
-            .map(Vec::len)
-            .sum::<usize>();
-        if indexed_record_count != core.by_form_key.len() {
+        // Repeated raw IDs share the same first-record path. Different raw IDs
+        // collapsed into one normalized FormKey still need the locator.
+        if records.locator.len() != core.by_form_key.len() {
             return None;
         }
         Some((Arc::clone(core), Arc::clone(records)))
@@ -453,11 +526,27 @@ impl NativePluginSlot {
         self.sections.form_id_paths.is_some()
     }
 
+    pub fn ensure_unique_core_records_sections(
+        &mut self,
+    ) -> Option<(Arc<CoreSection>, Arc<RecordsSection>)> {
+        if self.is_lazy() || !self.has_core_section() {
+            return None;
+        }
+        ensure_records_section(self);
+        let sections = self.cached_unique_core_records_sections()?;
+        self.sections.locator = None;
+        Some(sections)
+    }
+
     /// `true` for index-only handles whose `parsed.root_items` tree was dropped
     /// after load (read-only target masters). Tree walkers must materialize
     /// records via [`Self::lazy_record`] instead of indexing the empty tree.
     pub fn is_lazy(&self) -> bool {
         self.lazy.is_some()
+    }
+
+    pub fn record_authoring_value(&self, record: &ParsedRecord) -> JsonValue {
+        serialize_record_payload_to_json(record, &self.parsed, &self.strings)
     }
 
     pub fn visit_lazy_records(
@@ -834,25 +923,22 @@ fn lazy_index_entries_for_signatures(
     by_form_key.into_values().flatten().collect()
 }
 
-/// `pick_owned_form_id` over `CoreSection::form_ids_by_object_id[object_id]`,
-/// which holds every record's form id in file order, without building it: the
-/// first owned match ends the scan.
-fn lazy_pick_owned_form_id(lazy: &LazyRecordStore, object_id: u32, own_index: u8) -> Option<u32> {
-    let mut first = None;
-    let mut owned = None;
+fn lazy_form_ids_for_signatures(slot: &NativePluginSlot, wanted: &HashSet<SmolStr>) -> Vec<u32> {
+    let lazy = slot.lazy.as_ref().expect("lazy handle");
+    let own: Arc<str> = Arc::from(slot.parsed.plugin_name.as_str());
+    let mut selected = FormKeyIndex::<Option<(usize, u32)>>::default();
     lazy.cursor().scan(&mut |view| {
-        if view.form_id & 0x00FF_FFFF != object_id {
-            return std::ops::ControlFlow::Continue(());
+        let key = form_key_for_raw_form_id(view.form_id, &own, &slot.parsed.header.masters);
+        if wanted.iter().any(|signature| signature.as_bytes() == view.signature) {
+            selected.insert(key, Some((view.offset, view.form_id)));
+        } else if selected.get(&key).is_some() {
+            selected.insert(key, None);
         }
-        let index = ((view.form_id >> 24) & 0xFF) as u8;
-        if index == LOCAL_FORM_INDEX || index == own_index {
-            owned = Some(view.form_id);
-            return std::ops::ControlFlow::Break(());
-        }
-        first.get_or_insert(view.form_id);
         std::ops::ControlFlow::Continue(())
     });
-    owned.or(first)
+    let mut rows: Vec<_> = selected.into_values().flatten().collect();
+    rows.sort_unstable_by_key(|row| row.0);
+    rows.into_iter().map(|row| row.1).collect()
 }
 
 /// `CoreSection::by_eid_lower` for a lazy handle, as raw form ids in file
@@ -934,7 +1020,13 @@ fn first_edid_subrecord(payload: &[u8], flags: u32) -> Option<ParsedSubrecord> {
 
 pub fn ensure_records_section(slot: &mut NativePluginSlot) -> Arc<RecordsSection> {
     if slot.sections.records.is_none() {
-        slot.sections.records = Some(Arc::new(build_records_section(&slot.parsed)));
+        let records = match &slot.sections.form_id_paths {
+            Some(paths) => RecordsSection {
+                locator: Arc::clone(&paths.by_form_id),
+            },
+            None => build_records_section(&slot.parsed),
+        };
+        slot.sections.records = Some(Arc::new(records));
     }
     slot.sections
         .records
@@ -945,7 +1037,13 @@ pub fn ensure_records_section(slot: &mut NativePluginSlot) -> Arc<RecordsSection
 
 pub fn ensure_form_id_paths_section(slot: &mut NativePluginSlot) -> Arc<FormIdPathsSection> {
     if slot.sections.form_id_paths.is_none() {
-        slot.sections.form_id_paths = Some(Arc::new(build_form_id_paths_section(&slot.parsed)));
+        let paths = match &slot.sections.records {
+            Some(records) => FormIdPathsSection {
+                by_form_id: Arc::clone(&records.locator),
+            },
+            None => build_form_id_paths_section(&slot.parsed),
+        };
+        slot.sections.form_id_paths = Some(Arc::new(paths));
     }
     slot.sections
         .form_id_paths
@@ -1200,6 +1298,7 @@ mod lazy_offset_probe_tests {
     use super::test_support::{group, record, subrecord};
     use super::{LazyRecordStore, MODERN_HEADER_SIZE};
     use bytes::Bytes;
+    use std::collections::HashMap;
 
     fn store(record_count: u32) -> LazyRecordStore {
         let mut children = Vec::new();
@@ -1222,6 +1321,7 @@ mod lazy_offset_probe_tests {
             offsets: std::sync::OnceLock::new(),
             probes: std::sync::atomic::AtomicUsize::new(0),
             eid_form_ids: std::sync::OnceLock::new(),
+            editor_search_rows: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -1241,6 +1341,50 @@ mod lazy_offset_probe_tests {
             assert!(store.offset_of(0x0100_0000 + index).is_some());
         }
         assert!(store.offset_of(0x0200_0000).is_none());
+    }
+}
+
+#[cfg(test)]
+mod lazy_editor_search_tests {
+    use super::*;
+    use super::test_support::{compressed_record, record, subrecord};
+
+    #[test]
+    fn caches_requested_signatures_preserving_duplicates_order_and_match_semantics() {
+        let late_edid = [
+            subrecord(b"DATA", &[0; 8]), subrecord(b"FULL", b"title\0"),
+            subrecord(b"OBND", &[0; 12]), subrecord(b"EDID", b"B21_Alpha\0"),
+        ].concat();
+        let lazy = LazyRecordStore {
+            buffer: Bytes::from([
+                record(b"QUST", 1, 0, &late_edid),
+                compressed_record(b"PERK", 2, &subrecord(b"EDID", b"B21_Alpha\0")),
+                record(b"QUST", 3, 0, &subrecord(b"EDID", b"b21_alpha\0")),
+                record(b"QUST", 4, 0, &subrecord(b"EDID", b"B21_Alpha\0")),
+                record(b"QUST", 5, 0, &subrecord(b"FULL", b"No editor ID\0")),
+            ].concat()),
+            header_size: MODERN_HEADER_SIZE,
+            root_start: 0,
+            offsets: std::sync::OnceLock::new(),
+            probes: std::sync::atomic::AtomicUsize::new(0),
+            eid_form_ids: std::sync::OnceLock::new(),
+            editor_search_rows: std::sync::Mutex::new(HashMap::new()),
+        };
+        let quest = HashSet::from([SmolStr::new("QUST")]);
+        let exact = RecordSearchMatcher::compile("B21_Alpha", "glob", true).unwrap();
+        let first = lazy.search_editor_ids(&quest, &exact, None);
+        assert_eq!(first.iter().map(|row| row.0).collect::<Vec<_>>(), vec![1, 4]);
+        assert_eq!(lazy.editor_search_rows.lock().unwrap().len(), 1);
+        assert!(lazy.offsets.get().is_none());
+        let insensitive = RecordSearchMatcher::compile("b21_*", "glob", false).unwrap();
+        let both = HashSet::from([SmolStr::new("QUST"), SmolStr::new("PERK")]);
+        let matches = lazy.search_editor_ids(&both, &insensitive, None);
+        assert_eq!(matches.iter().map(|row| row.0).collect::<Vec<_>>(), vec![1, 2, 3, 4]);
+        assert_eq!(lazy.search_editor_ids(&both, &insensitive, Some(2)), matches[..2]);
+        assert!(lazy.search_editor_ids(&both, &insensitive, Some(0)).is_empty());
+        assert_eq!(lazy.search_editor_ids(&quest, &exact, None), first);
+        assert!(lazy.search_editor_ids(&HashSet::from([SmolStr::new("NPC_")]), &exact, None).is_empty());
+        assert_eq!(lazy.editor_search_rows.lock().unwrap().len(), 3);
     }
 }
 
@@ -1275,6 +1419,7 @@ mod lazy_cell_children_tests {
                 offsets: std::sync::OnceLock::from(offsets),
                 probes: std::sync::atomic::AtomicUsize::new(0),
                 eid_form_ids: std::sync::OnceLock::new(),
+            editor_search_rows: std::sync::Mutex::new(HashMap::new()),
             }),
         }
     }
@@ -1379,6 +1524,7 @@ mod lazy_core_parity_tests {
         let stat = [
             record(b"STAT", 0x0100_0008, 0, &edid("Duplicate")),
             record(b"STAT", 0x0000_0009, 0, &[]),
+            record(b"STAT", 0x0100_0009, 0, &[]),
         ]
         .concat();
         let buffer = Bytes::from(
@@ -1412,6 +1558,7 @@ mod lazy_core_parity_tests {
                 offsets: std::sync::OnceLock::new(),
                 probes: std::sync::atomic::AtomicUsize::new(0),
                 eid_form_ids: std::sync::OnceLock::new(),
+            editor_search_rows: std::sync::Mutex::new(HashMap::new()),
             }),
         }
     }
@@ -1450,6 +1597,20 @@ mod lazy_core_parity_tests {
     }
 
     #[test]
+    fn editor_id_entries_match_core_without_retaining_a_full_index() {
+        let mut slot = slot();
+        let core = build_core_section_streaming(&slot);
+        let streamed = slot.record_index_entries_with_editor_ids();
+        let expected = core.by_form_key.values().filter(|entry| !entry.eid.is_empty()).collect();
+        assert_eq!(rows(streamed.iter().collect()), rows(expected));
+        assert!(!slot.has_core_section());
+
+        ensure_core_section(&mut slot);
+        let cached = slot.record_index_entries_with_editor_ids();
+        assert_eq!(rows(streamed.iter().collect()), rows(cached.iter().collect()));
+    }
+
+    #[test]
     fn eid_index_matches_the_core_section() {
         let slot = slot();
         let core = build_core_section_streaming(&slot);
@@ -1475,17 +1636,32 @@ mod lazy_core_parity_tests {
     }
 
     #[test]
-    fn owned_form_id_pick_matches_the_core_section() {
+    fn filtered_ids_match_core_order_without_building_indexes() {
         let slot = slot();
         let core = build_core_section_streaming(&slot);
-        let lazy = slot.lazy.as_ref().unwrap();
-        for object_id in 0..=0x0Au32 {
-            let expected = core
-                .form_ids_by_object_id
-                .get(&object_id)
-                .and_then(|ids| pick_owned_form_id(ids, 1));
-            assert_eq!(lazy_pick_owned_form_id(lazy, object_id, 1), expected, "{object_id:06X}");
+        for signature in ["MISC", "STAT", "REFR", "NONE"] {
+            let wanted = HashSet::from([SmolStr::new(signature)]);
+            let found = lazy_form_ids_for_signatures(&slot, &wanted);
+            let mut expected: Vec<_> = core.by_form_key.values()
+                .filter(|entry| wanted.contains(&entry.signature))
+                .map(|entry| entry.raw_form_id).collect();
+            expected.sort_by_key(|id| slot.lazy.as_ref().unwrap().cursor().find_form_id(*id).unwrap());
+            assert_eq!(found, expected);
         }
+        assert!(slot.sections.core.is_none());
+        assert!(slot.lazy.as_ref().unwrap().offsets.get().is_none());
+    }
+
+    #[test]
+    fn indexed_reads_preserve_exact_master_and_owned_fallback() {
+        let mut slot = slot();
+        for (requested, expected) in [(0x01000004, 0x01000004), (0x00000004, 0x00000004),
+            (0x00000001, 0x01000001), (0x02000004, 0x01000004)] {
+            assert_eq!(resolve_record_indexed(&mut slot, requested).unwrap().form_id, expected);
+        }
+        assert!(resolve_record_indexed(&mut slot, 0x09999999).is_none());
+        assert!(slot.sections.core.is_none());
+        assert!(slot.lazy.as_ref().unwrap().offsets.get().is_some());
     }
 }
 
@@ -3349,6 +3525,39 @@ pub fn plugin_handle_load_no_py(
     Ok(insert_plugin_handle(parsed, strings))
 }
 
+/// Source tree with selected payloads decoded only when accessed.
+pub fn plugin_handle_load_lazy_records_no_py(
+    path: &str,
+    game: &str,
+    strings_dir: Option<&str>,
+    signatures: &[[u8; 4]],
+) -> Result<u64, String> {
+    let parsed = parse_plugin_file_lazy_records(path, Some(game.to_string()), signatures)
+        .map_err(|error| error.to_string())?;
+    let strings = if parsed.header.flags & TES4_FLAG_LOCALIZED != 0 {
+        strings::hydrate_strings_state(path, &parsed.plugin_name, strings_dir, None)
+    } else {
+        LocalizedStringsState::default()
+    };
+    Ok(insert_plugin_handle(parsed, strings))
+}
+
+/// Read-only record projection without group topology; never save this handle.
+pub fn plugin_handle_load_projection_no_py(
+    path: &str,
+    game: &str,
+    signatures: &[[u8; 4]],
+) -> Result<u64, String> {
+    let parsed = parse_plugin_file_projection(path, Some(game.to_string()), signatures)
+        .map_err(|error| error.to_string())?;
+    let strings = if parsed.header.flags & TES4_FLAG_LOCALIZED != 0 {
+        strings::hydrate_strings_state(path, &parsed.plugin_name, None, None)
+    } else {
+        LocalizedStringsState::default()
+    };
+    Ok(insert_plugin_handle(parsed, strings))
+}
+
 /// Lazy/index-only load for read-only handles (target masters). Parses only the
 /// TES4 header and keeps the (mmap-backed) file buffer; the `CoreSection`
 /// (formid/eid/sig index) is built by streaming those bytes, and records are
@@ -3430,6 +3639,7 @@ pub fn plugin_handle_load_index_no_py(
         offsets: std::sync::OnceLock::new(),
             probes: std::sync::atomic::AtomicUsize::new(0),
             eid_form_ids: std::sync::OnceLock::new(),
+            editor_search_rows: std::sync::Mutex::new(HashMap::new()),
     };
     Ok(insert_plugin_handle_lazy(parsed, strings, lazy))
 }
@@ -4338,50 +4548,34 @@ pub fn plugin_handle_replace_projected_cell_authoring_record_values_at_locations
 }
 
 #[pyfunction(name = "plugin_handle_read_authoring_record")]
+#[pyo3(signature = (handle_id, form_id, keep_present_fields=false))]
 pub fn plugin_handle_read_authoring_record_native(
+    py: Python<'_>,
     handle_id: u64,
     form_id: u32,
+    keep_present_fields: bool,
 ) -> PyResult<Option<String>> {
-    let mut store = plugin_handle_store().lock().unwrap();
-    let slot = store
-        .get_mut(&handle_id)
-        .ok_or_else(|| PyKeyError::new_err(format!("unknown plugin handle: {handle_id}")))?;
-    let raw_form_id = form_id & 0xFFFF_FFFF;
-    let own_index = (slot.parsed.header.masters.len() & 0xFF) as u8;
-    let resolved = {
-        let records = ensure_records_section(slot);
-        if records.record(&slot.parsed, raw_form_id).is_some() {
-            Some(raw_form_id)
-        } else if let (Some(lazy), false) = (slot.lazy.as_ref(), slot.has_core_section()) {
-            // Building the core section to answer this costs ~8 s on
-            // SeventySix.esm; an early-exit scan gives the same answer.
-            lazy_pick_owned_form_id(lazy, raw_form_id & 0x00FF_FFFF, own_index)
-        } else {
-            let object_id = raw_form_id & 0x00FF_FFFF;
-            let core = ensure_core_section(slot);
-            core.form_ids_by_object_id
-                .get(&object_id)
-                .and_then(|ids| pick_owned_form_id(ids, own_index))
+    py.detach(move || {
+        let mut store = plugin_handle_store().lock().unwrap();
+        let slot = store
+            .get_mut(&handle_id)
+            .ok_or_else(|| PyKeyError::new_err(format!("unknown plugin handle: {handle_id}")))?;
+        if slot.lazy.is_none() {
+            ensure_records_section(slot);
         }
-    };
-    let Some(resolved) = resolved else {
-        return Ok(None);
-    };
-    let value = if slot.lazy.is_some() {
-        let Some(record) = lazy_materialize_record(slot, resolved) else {
+        let Some(record) = resolve_record(slot, form_id) else {
             return Ok(None);
         };
-        serialize_record_payload_to_json(&record, &slot.parsed, &slot.strings)
-    } else {
-        let records = ensure_records_section(slot);
-        let Some(record) = records.record(&slot.parsed, resolved) else {
-            return Ok(None);
+        let serialize = || serialize_record_payload_to_json(&record, &slot.parsed, &slot.strings);
+        let value = if keep_present_fields {
+            self::authoring::authoring_serialize::with_present_struct_fields_kept(serialize)
+        } else {
+            serialize()
         };
-        serialize_record_payload_to_json(record, &slot.parsed, &slot.strings)
-    };
-    serde_json::to_string(&value)
-        .map(Some)
-        .map_err(|e| value_error(format!("serialize record: {e}")))
+        serde_json::to_string(&value)
+            .map(Some)
+            .map_err(|e| value_error(format!("serialize record: {e}")))
+    })
 }
 
 #[pyfunction(name = "plugin_handle_inspect_record")]
@@ -4853,6 +5047,9 @@ pub fn plugin_handle_record_form_ids_native(
                 .collect::<HashSet<_>>()
         });
         if slot.lazy.is_some() {
+            if let Some(wanted) = wanted.as_ref().filter(|_| !slot.has_core_section()) {
+                return Ok(lazy_form_ids_for_signatures(slot, wanted));
+            }
             let core = ensure_core_section(slot);
             let lazy = slot.lazy.as_ref().expect("checked above");
             let mut indexed = core
@@ -5157,6 +5354,11 @@ pub fn plugin_handle_search_records_native(
         // each record only long enough to test it and dropping it again, so the
         // scan stays flat in memory.
         if let Some(lazy) = slot.lazy.as_ref() {
+            if !want_full {
+                if let Some(wanted) = wanted.as_ref() {
+                    return Ok(lazy.search_editor_ids(wanted, &matcher, limit));
+                }
+            }
             let cursor = lazy.cursor();
             let mut matches = Vec::new();
             cursor.scan(&mut |view| {
@@ -5291,55 +5493,20 @@ pub fn plugin_handle_record_subrecords_native(
         let slot = store
             .get_mut(&handle_id)
             .ok_or_else(|| PyKeyError::new_err(format!("unknown plugin handle: {handle_id}")))?;
-        let raw_form_id = form_id & 0xFFFF_FFFF;
-        let own_index = (slot.parsed.header.masters.len() & 0xFF) as u8;
-        let resolved = {
-            let records = ensure_records_section(slot);
-            if records.record(&slot.parsed, raw_form_id).is_some() {
-                Some(raw_form_id)
-            } else {
-                let object_id = raw_form_id & 0x00FF_FFFF;
-                let core = ensure_core_section(slot);
-                core.form_ids_by_object_id
-                    .get(&object_id)
-                    .and_then(|ids| pick_owned_form_id(ids, own_index))
-            }
-        };
-        let Some(resolved) = resolved else {
+        let Some(record) = resolve_record_indexed(slot, form_id) else {
             return Ok(None);
         };
-        let payloads = if slot.lazy.is_some() {
-            let Some(record) = lazy_materialize_record(slot, resolved) else {
-                return Ok(None);
-            };
-            record
-                .subrecords
-                .iter()
-                .map(|subrecord| {
-                    (
-                        subrecord.signature.to_string(),
-                        subrecord.data.to_vec(),
-                        subrecord.semantic_type.clone(),
-                    )
-                })
-                .collect()
-        } else {
-            let records = ensure_records_section(slot);
-            let Some(record) = records.record(&slot.parsed, resolved) else {
-                return Ok(None);
-            };
-            record
-                .subrecords
-                .iter()
-                .map(|subrecord| {
-                    (
-                        subrecord.signature.to_string(),
-                        subrecord.data.to_vec(),
-                        subrecord.semantic_type.clone(),
-                    )
-                })
-                .collect()
-        };
+        let payloads = record
+            .subrecords
+            .iter()
+            .map(|subrecord| {
+                (
+                    subrecord.signature.to_string(),
+                    subrecord.data.to_vec(),
+                    subrecord.semantic_type.clone(),
+                )
+            })
+            .collect();
         Ok(Some(payloads))
     })
 }
@@ -6590,16 +6757,16 @@ pub fn plugin_handle_export_record_text_native(
             .ok_or_else(|| {
                 PyKeyError::new_err(format!("unknown record form_id: {raw_form_id:08X}"))
             })?;
-        dump_text_payload_value(
+        let payload = self::authoring::authoring_serialize::with_present_struct_fields_kept(|| {
             serialize_record_payload_text_value(
                 &slot.parsed,
                 &slot.strings,
                 &record,
                 "authoring",
                 false,
-            )?,
-            format.as_str(),
-        )
+            )
+        })?;
+        dump_text_payload_value(payload, format.as_str())
     })
 }
 
@@ -12821,6 +12988,25 @@ pub fn serialize_record_payload_to_json(
     plugin: &ParsedPlugin,
     strings: &LocalizedStringsState,
 ) -> serde_json::Value {
+    let (mut map, entries) = compact_record_payload_entries(record, plugin, strings);
+    let mut fields = group_schema_row_group_fields_json(entries);
+    if is_starfield_game_name(plugin.game.as_deref()) {
+        fields = group_starfield_component_fields_json(fields);
+    }
+    fields = group_object_template_fields_json(record.signature.as_str(), fields);
+    map.insert("fields".to_string(), serde_json::Value::Array(fields));
+    serde_json::Value::Object(map)
+}
+
+/// The record header keys of `serialize_record_payload_to_json` plus exactly one
+/// entry per non-EDID subrecord, in subrecord order. Grouping (row groups such
+/// as AJNG+AJXG, object templates, Starfield components) merges several
+/// subrecords into one entry, so per-subrecord consumers must use these instead.
+fn compact_record_payload_entries(
+    record: &ParsedRecord,
+    plugin: &ParsedPlugin,
+    strings: &LocalizedStringsState,
+) -> (serde_json::Map<String, serde_json::Value>, Vec<CompactAuthoringEntry>) {
     let masters: &[String] = plugin.header.masters.as_slice();
     let plugin_name: &str = plugin.plugin_name.as_str();
 
@@ -12866,7 +13052,9 @@ pub fn serialize_record_payload_to_json(
         }
     }
     // raw_payload_hex
-    if let Some(raw_bytes) = &record.raw_payload {
+    if let Some(raw_bytes) = &record.raw_payload
+        && (record.flags & COMPRESSED_RECORD_FLAG != 0 || record.parse_error.is_some())
+    {
         map.insert(
             "raw_payload_hex".to_string(),
             serde_json::Value::String(hex::encode_upper(raw_bytes)),
@@ -13108,13 +13296,7 @@ pub fn serialize_record_payload_to_json(
         }
     }
 
-    let mut fields = group_schema_row_group_fields_json(fields);
-    if is_starfield_game_name(plugin.game.as_deref()) {
-        fields = group_starfield_component_fields_json(fields);
-    }
-    fields = group_object_template_fields_json(record.signature.as_str(), fields);
-    map.insert("fields".to_string(), serde_json::Value::Array(fields));
-    serde_json::Value::Object(map)
+    (map, fields)
 }
 
 /// GIL-free equivalent of `compact_field_payload` — strips the outer
@@ -18280,6 +18462,44 @@ mod tests {
         let _ = ensure_form_id_paths_section(slot);
         let _ = ensure_refs_section(slot);
         let _ = ensure_assets_section(slot);
+    }
+
+    #[test]
+    fn record_location_indexes_share_storage_and_rebuild_after_structural_writes() {
+        for records_first in [false, true] {
+            let handle = create_empty_plugin_handle("SharedPaths.esp", Some("fo4"));
+            let mut store = plugin_handle_store_ref().lock().unwrap();
+            let slot = store.get_mut(&handle).unwrap();
+            slot.parsed.root_items.push(ParsedItem::Record(make_record("REFR", 0x800, None)));
+            if records_first {
+                ensure_records_section(slot);
+                assert!(slot.sections.form_id_paths.is_none());
+            } else {
+                ensure_form_id_paths_section(slot);
+                assert!(slot.sections.records.is_none());
+            }
+            let records = ensure_records_section(slot);
+            let paths = ensure_form_id_paths_section(slot);
+            assert!(Arc::ptr_eq(&records.locator, &paths.by_form_id));
+            assert_eq!(records.record(&slot.parsed, 0x800).unwrap().form_id, 0x800);
+
+            slot.apply_write_effect(&WriteEffect::RecordContents { form_ids: smallvec::smallvec![0x800] });
+            assert!(Arc::ptr_eq(&records.locator, &ensure_form_id_paths_section(slot).by_form_id));
+            slot.parsed.root_items.insert(0, ParsedItem::Record(make_record("REFR", 0x801, None)));
+            slot.apply_write_effect(&WriteEffect::RecordsAddedOrRemoved);
+            assert!(slot.sections.records.is_none());
+            assert!(slot.sections.form_id_paths.is_none());
+            let rebuilt_paths = ensure_form_id_paths_section(slot);
+            let rebuilt_records = ensure_records_section(slot);
+            assert!(Arc::ptr_eq(&rebuilt_records.locator, &rebuilt_paths.by_form_id));
+            assert!(!Arc::ptr_eq(&records.locator, &rebuilt_records.locator));
+            assert_eq!(rebuilt_paths.by_form_id[&0x800].record_index, 1);
+            assert_eq!(rebuilt_records.record(&slot.parsed, 0x801).unwrap().form_id, 0x801);
+            slot.apply_write_effect(&WriteEffect::MastersChanged);
+            assert!(slot.sections.records.is_none());
+            assert!(slot.sections.form_id_paths.is_none());
+            store.remove(&handle);
+        }
     }
 
     fn temp_plugin_path(test_name: &str) -> PathBuf {

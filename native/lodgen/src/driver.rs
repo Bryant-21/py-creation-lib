@@ -710,6 +710,25 @@ pub fn run_terrain(
     crate::terrain::textures::clear_texture_cache();
     let mut stats = LodGenStats::default();
 
+    let land_fallback;
+    let settings = match crate::terrain::btd_source::unusable_btd(settings) {
+        Some(reason) => {
+            stats.warnings.push(format!("{reason}; terrain LOD uses LAND"));
+            let mut land = settings.clone();
+            land.terrain.source = crate::settings::TerrainSource::Land;
+            land_fallback = land;
+            &land_fallback
+        }
+        None => settings,
+    };
+    let dense = match crate::terrain::dense_textures::DenseTerrainSource::load(settings, &paths.data_dirs) {
+        Ok(dense) => dense,
+        Err(reason) => {
+            stats.warnings.push(format!("{reason}; terrain LOD textures use LAND"));
+            None
+        }
+    };
+
     // One-time fidelity warning for the still-DEFERRED options. protect_cell_borders
     // and skirts are now implemented (terrain_lod.rs); only the perf-only passes
     // optimize_unseen (below-water post culling) and hide_quads (covered-quad
@@ -773,7 +792,7 @@ pub fn run_terrain(
                 quads
                     .par_iter()
                     .enumerate()
-                    .map(|(i, q)| (i, terrain::generate_quad(q, &ctx)))
+                    .map(|(i, q)| (i, terrain::generate_quad_with(q, &ctx, dense.as_ref())))
                     .collect()
             };
             if let Some(ref pool) = pool {
@@ -1065,6 +1084,9 @@ pub fn run_objects(
         .filter(|&l| l >= settings.global.lod_min && l <= settings.global.lod_max)
         .collect();
     let total_levels = levels.len() as f32;
+    // Object ids are world-wide, so one registry spans every level. Instance shapes must sample the atlas.
+    let instancing = (settings.objects.instance_records && atlas.atlas_size.0 > 0)
+        .then(|| crate::objects::RecordInstancing::new(&world.editor_id, atlas));
 
     for (li, &level) in levels.iter().enumerate() {
         crate::objects::parse_nif::clear_model_shape_cache();
@@ -1095,6 +1117,7 @@ pub fn run_objects(
         let memory_warning_keys: Arc<Mutex<BTreeSet<String>>> =
             Arc::new(Mutex::new(BTreeSet::new()));
         let memory_warnings: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let instancing = instancing.as_ref();
         let results: Vec<(usize, anyhow::Result<crate::progress::QuadOutputs>)> = {
             let limiter = Arc::new(ParallelLimiter::new(active_limit));
             let do_par = |quads: &[crate::descriptors::QuadDesc]| {
@@ -1117,7 +1140,7 @@ pub fn run_objects(
                             );
                         }
 
-                        let result = crate::objects::generate_quad(q, &ctx, atlas);
+                        let result = crate::objects::generate_quad(q, &ctx, atlas, instancing);
 
                         if let Some(message) =
                             validate_object_lod_memory_finish(memory_snapshot(), ctx.level)
@@ -1183,6 +1206,11 @@ pub fn run_objects(
         crate::objects::parse_nif::clear_model_shape_cache();
         crate::objects::parse_nif::clear_nif_cache();
         trim_allocator();
+    }
+    if let Some(instancing) = &instancing {
+        let arrays = instancing.finish(&world.editor_id, settings, paths)?;
+        stats.dds += arrays.dds;
+        stats.warnings.extend(arrays.warnings);
     }
 
     progress.report("done", 1.0);
@@ -1331,6 +1359,7 @@ mod tests {
             part_transform: crate::input::identity_part_transform(),
             part_scale: 1.0,
             material_swap: Default::default(),
+            hideable_by_id: true,
         };
         world.refs = vec![
             make_ref(
@@ -1435,6 +1464,7 @@ mod tests {
             part_transform: crate::input::identity_part_transform(),
             part_scale: 1.0,
             material_swap: Default::default(),
+            hideable_by_id: true,
         }
     }
 
@@ -1474,6 +1504,61 @@ mod tests {
         assert_eq!(stats.btr, 7);
         assert_eq!(stats.dds, 14); // 2 per quad
         assert!(stats.lod_written);
+    }
+
+    fn run_l4_terrain_from_btd(btd: &std::path::Path, out: &std::path::Path) -> LodGenStats {
+        let mut s = LodSettings::fo4_default();
+        s.global.lod_min = 4;
+        s.global.lod_max = 4;
+        s.terrain.source = crate::settings::TerrainSource::Btd;
+        s.terrain.btd_path = Some(btd.to_string_lossy().into_owned());
+        let paths = LodPaths {
+            data_dirs: vec![std::path::PathBuf::from(".")],
+            output_dir: out.to_path_buf(),
+            source_data_dir: None,
+        };
+        run_terrain(&flat_world(), &s, &Game::fo4(), &paths, &mut NullProgress).unwrap()
+    }
+
+    fn btd_warnings(stats: &LodGenStats) -> Vec<&String> {
+        stats.warnings.iter().filter(|w| w.contains("BTD")).collect()
+    }
+
+    #[test]
+    fn a_truncated_btd_falls_back_to_land_with_one_warning() {
+        let dir = tempfile::tempdir().unwrap();
+        let btd = dir.path().join("W.btd");
+        std::fs::write(&btd, b"BTDB truncated").unwrap();
+        let stats = run_l4_terrain_from_btd(&btd, &dir.path().join("out"));
+        assert_eq!(stats.btr, 4);
+        let warnings = btd_warnings(&stats);
+        assert_eq!(warnings.len(), 1, "{:?}", stats.warnings);
+        assert!(warnings[0].contains("terrain LOD uses LAND"), "{}", warnings[0]);
+    }
+
+    #[test]
+    fn a_starfield_btd_falls_back_to_land_with_one_warning() {
+        let dir = tempfile::tempdir().unwrap();
+        let btd = dir.path().join("W.btd");
+        let cell = terrain_native::btd_write::BtdWriteCell {
+            cell_x: 0,
+            cell_y: 0,
+            heights: vec![1.0; 128 * 128],
+            quad_layers: [[0xFF; 6]; 4],
+            quad_alphas: vec![0; 128 * 128],
+        };
+        let input = terrain_native::btd_write::BtdWriteInput {
+            cells_x: 2,
+            cells_y: 2,
+            ltex_form_ids: Vec::new(),
+            cells: vec![cell],
+        };
+        terrain_native::btd_write::write_starfield_btd(&btd, &input).unwrap();
+        let stats = run_l4_terrain_from_btd(&btd, &dir.path().join("out"));
+        assert_eq!(stats.btr, 4);
+        let warnings = btd_warnings(&stats);
+        assert_eq!(warnings.len(), 1, "{:?}", stats.warnings);
+        assert!(warnings[0].contains("Starfield layout"), "{}", warnings[0]);
     }
 
     #[test]

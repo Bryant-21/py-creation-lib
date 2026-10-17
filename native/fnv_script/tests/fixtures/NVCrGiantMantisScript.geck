@@ -1,0 +1,44 @@
+scn NVCrGiantMantisScript
+
+ref ActivatingRef
+ref ThisCreature
+int DoOnce
+
+int LeftLegGone
+int RightLegGone
+
+begin OnHit
+
+	set ThisCreature to GetSelf
+
+	; Check if left arm gone; if not, add a leg to pick up
+	if ThisCreature.IsLimbGone 3 == 1 && LeftLegGone == 0
+		if ThisCreature.GetItemCount MantisLeg >= 1
+			ThisCreature.RemoveItem MantisLeg 1
+			set LeftLegGone to 1
+		endif
+	endif
+
+	; Check if right arm gone; if not, add a leg to pick up
+	if ThisCreature.IsLimbGone 5 == 1 && RightLegGone == 0
+		if ThisCreature.GetItemCount MantisLeg >= 1
+			ThisCreature.RemoveItem MantisLeg 1
+			set RightLegGone to 1
+		endif
+	endif
+
+	if ThisCreature.GetAV Health <= 0
+		if DoOnce == 0
+			if ThisCreature.IsLimbGone 5 == 0
+				AddItem MantisLeg 1
+			endif
+
+			if ThisCreature.IsLimbGone 3 == 0
+				AddItem MantisLeg 1
+			endif
+
+			set DoOnce to 1
+		endif
+	endif
+
+end

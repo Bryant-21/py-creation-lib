@@ -2,6 +2,11 @@
 pub mod fo76_bto;
 pub mod geometry;
 pub mod hybrid;
+pub mod instance_array_index;
+pub mod instance_layers;
+pub mod instance_transform;
+pub mod instanced;
+pub mod lodtex_index;
 pub mod meshopt_decimator;
 pub mod object_lod;
 pub mod parse_nif;
@@ -10,6 +15,7 @@ pub mod static_desc;
 
 use crate::atlas::AtlasResult;
 use crate::descriptors::QuadDesc;
+use crate::input::StaticDesc;
 use crate::objects::static_desc::ShapeDesc;
 use crate::progress::{QuadCtx, QuadOutputs};
 
@@ -30,9 +36,154 @@ pub fn generate_quad(
     quad: &QuadDesc,
     ctx: &QuadCtx<'_>,
     atlas: &AtlasResult,
+    instancing: Option<&RecordInstancing>,
 ) -> anyhow::Result<QuadOutputs> {
-    let all_shapes = collect_quad_shapes(quad, ctx, atlas);
-    write_quad_shapes(quad, ctx, all_shapes)
+    let Some(instancing) = instancing else {
+        let all_shapes = collect_quad_shapes(quad, ctx, atlas);
+        return write_quad_shapes(quad, ctx, all_shapes);
+    };
+    let refs: Vec<&StaticDesc> = quad.static_refs(ctx.world).collect();
+    let level_index = lod_model_index(ctx.level);
+    let min_count = ctx.settings.objects.fo76_bto_instanced_min_count as usize;
+    let (record_groups, mut merged, _) = instanced::group_record_instances(&refs, level_index, min_count);
+    let mut groups = Vec::new();
+    for group in record_groups {
+        let representative = refs[group.refs[0]];
+        match record_group_shape(representative, &group.model, level_index, ctx, atlas, instancing) {
+            Some((object, shape, layer)) => groups.push(instanced::InstanceGroup {
+                object,
+                model: group.model,
+                shape,
+                layer,
+                instances: group.instances,
+                ids: group.ids,
+            }),
+            None => merged.extend(group.refs),
+        }
+    }
+    merged.sort_unstable();
+    let all_shapes = collect_shapes(merged.iter().map(|&i| refs[i]), quad, ctx, atlas);
+    let mut outputs = write_quad_shapes(quad, ctx, all_shapes)?;
+    if !groups.is_empty() {
+        let written = outputs.object_lod.as_ref().and_then(|t| t.bto_path.clone());
+        let (path, _, created) =
+            instanced::append_instance_groups(ctx, quad, written, &groups, Some(&instancing.layers))?;
+        if created {
+            outputs.meshes.push(path);
+        }
+    }
+    Ok(outputs)
+}
+
+/// World-wide state for records-path instancing (`objects.instance_records`).
+pub struct RecordInstancing {
+    object_ids: instanced::ObjectIds<String>,
+    atlas_diffuse: String,
+    layers: instance_layers::InstanceLayers,
+}
+
+impl RecordInstancing {
+    pub fn new(world: &str, atlas: &AtlasResult) -> Self {
+        Self {
+            object_ids: instanced::ObjectIds::new(world),
+            atlas_diffuse: crate::atlas::atlas::data_relative_path(&atlas.diffuse),
+            layers: Default::default(),
+        }
+    }
+
+    pub fn layers(&self) -> &instance_layers::InstanceLayers {
+        &self.layers
+    }
+
+    /// The world's texture arrays, in the formats of the records atlas, whose diffuse stores plain texels.
+    pub fn finish(
+        &self,
+        world: &str,
+        settings: &crate::settings::LodSettings,
+        paths: &crate::progress::LodPaths,
+    ) -> anyhow::Result<crate::progress::LodGenStats> {
+        let objects = &settings.objects;
+        self.layers.finish(
+            &paths.output_dir,
+            world,
+            &instance_layers::ArrayFormats::new(objects, false),
+            settings.global.workers,
+            |tile| {
+                let (dirs, size) = (&paths.data_dirs, instance_array_index::SLICE_SIZE);
+                crate::atlas::atlas::load_atlas_slice(dirs, &tile.key, objects.atlas_size, objects.max_tile_size, size)
+            },
+        )
+    }
+}
+
+/// A group's LOD model in model space, remapped onto the world atlas, with its object id and layer. None keeps the
+/// group merged: an id collision, a part off the atlas or alpha-tested, or a model that fails to parse.
+fn record_group_shape(
+    representative: &StaticDesc,
+    model: &str,
+    level_index: usize,
+    ctx: &QuadCtx<'_>,
+    atlas: &AtlasResult,
+    instancing: &RecordInstancing,
+) -> Option<(u32, object_lod::BtoShape, u32)> {
+    use crate::objects::static_desc::ShapeFlags;
+    let object = instancing.object_ids.claim_record(model, &representative.material_swap)?;
+    let neutral = StaticDesc {
+        pos: [0.0; 3],
+        rot: [0.0; 3],
+        scale: 1.0,
+        part_transform: crate::input::identity_part_transform(),
+        part_scale: 1.0,
+        ..representative.clone()
+    };
+    let shapes = parse_nif::parse_nif_for_object_lod(&neutral, level_index, ctx).ok()?;
+    // Level 1 at the origin: the transform leaves model space as it is and only applies the atlas remap.
+    let model_space = QuadDesc {
+        z_order: 0,
+        x: 0,
+        y: 0,
+        quad_level: 1,
+        quad_index: 0,
+        quad_offset: 4096.0,
+        static_indices: Vec::new(),
+        statics: Vec::new(),
+        out_values: Default::default(),
+    };
+    let mut parts = Vec::new();
+    let mut texture_set = None;
+    for mut shape in shapes {
+        let tile = instance_layers::AtlasTile::lookup(&atlas.list, &shape.textures[..3], shape.alpha_threshold);
+        if !object_lod::transform_shape_with_world(
+            &model_space,
+            &neutral,
+            &mut shape,
+            &atlas.list,
+            &ctx.settings.objects,
+            ctx.world,
+        ) {
+            continue;
+        }
+        texture_set.get_or_insert_with(|| shape.textures.clone());
+        parts.push(instanced::InstancePart {
+            alpha: shape.flags.contains(ShapeFlags::IS_ALPHA),
+            diffuse: shape.textures[0].clone(),
+            geometry: shape.geometry,
+            tile,
+        });
+    }
+    let tile = instance_layers::single_tile(parts.iter().map(|part| part.tile.clone()));
+    let shape = instanced::instance_shape(parts, &instancing.atlas_diffuse, texture_set?)?;
+    Some((object, shape, instancing.layers.assign(tile.as_ref())))
+}
+
+/// The `lod_models` slot for a level: 0=L4, 1=L8, 2=L16, 3=L32.
+fn lod_model_index(level: i32) -> usize {
+    match level {
+        8 => 1,
+        16 => 2,
+        32 => 3,
+        _ => 0,
+    }
 }
 
 /// Collect transformed object-LOD shapes for one quad without writing the `.bto`.
@@ -41,21 +192,23 @@ pub fn collect_quad_shapes(
     ctx: &QuadCtx<'_>,
     atlas: &AtlasResult,
 ) -> Vec<ShapeDesc> {
+    collect_shapes(quad.static_refs(ctx.world), quad, ctx, atlas)
+}
+
+fn collect_shapes<'a>(
+    refs: impl Iterator<Item = &'a StaticDesc>,
+    quad: &QuadDesc,
+    ctx: &QuadCtx<'_>,
+    atlas: &AtlasResult,
+) -> Vec<ShapeDesc> {
     use crate::objects::object_lod::transform_shape_with_world;
     use crate::objects::parse_nif::parse_nif_for_object_lod;
-    // quad_index maps to the lod_models slot index: 0=L4, 1=L8, 2=L16, 3=L32.
     // port: DoLOD:3044 — skip refs with no model at this level.
-    let level_index: usize = match ctx.level {
-        4 => 0,
-        8 => 1,
-        16 => 2,
-        32 => 3,
-        _ => 0,
-    };
+    let level_index = lod_model_index(ctx.level);
 
     let mut all_shapes = Vec::new();
 
-    for stat in quad.static_refs(ctx.world) {
+    for stat in refs {
         // port: DoLOD:3044 — skip if no model for this level
         let Some(model) = stat.lod_models.get(level_index).and_then(|m| m.as_ref()) else {
             continue;

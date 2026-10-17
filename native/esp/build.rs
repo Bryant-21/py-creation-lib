@@ -1,9 +1,54 @@
+#[path = "generated/fnv.rs"]
+mod fnv;
+#[path = "generated/fo3.rs"]
+mod fo3;
+#[path = "generated/fo4.rs"]
+mod fo4;
+#[path = "generated/fo76.rs"]
+mod fo76;
+#[path = "generated/oblivion.rs"]
+mod oblivion;
+#[path = "generated/skyrimse.rs"]
+mod skyrimse;
+#[path = "generated/starfield.rs"]
+mod starfield;
+
+fn compress_schemas() {
+    use flate2::{Compression, write::GzEncoder};
+    use std::io::Write;
+
+    let out_dir =
+        std::path::PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR was not set"));
+    for (game, json) in [
+        (oblivion::GAME, oblivion::AUTHORING_SCHEMA_JSON),
+        (fo3::GAME, fo3::AUTHORING_SCHEMA_JSON),
+        (fnv::GAME, fnv::AUTHORING_SCHEMA_JSON),
+        (fo4::GAME, fo4::AUTHORING_SCHEMA_JSON),
+        (skyrimse::GAME, skyrimse::AUTHORING_SCHEMA_JSON),
+        (fo76::GAME, fo76::AUTHORING_SCHEMA_JSON),
+        (starfield::GAME, starfield::AUTHORING_SCHEMA_JSON),
+    ] {
+        println!("cargo:rerun-if-changed=generated/{game}.rs");
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::best());
+        encoder
+            .write_all(json.as_bytes())
+            .expect("failed to compress schema");
+        let compressed = encoder
+            .finish()
+            .expect("failed to finish schema compression");
+        std::fs::write(out_dir.join(format!("{game}.json.gz")), compressed)
+            .expect("failed to write compressed schema");
+    }
+}
+
 #[cfg(windows)]
 fn main() {
     use std::env;
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::process::Command;
+
+    compress_schemas();
 
     let interpreter = pyo3_build_config::get()
         .executable
@@ -58,4 +103,6 @@ fn main() {
 }
 
 #[cfg(not(windows))]
-fn main() {}
+fn main() {
+    compress_schemas();
+}

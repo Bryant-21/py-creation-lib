@@ -1264,13 +1264,17 @@ class Plugin:
             raise RuntimeError("upsert requires the native ESP backend")
         return _native_runtime.plugin_handle_replace_authoring_record(handle, json.dumps(record))
 
-    def read_authoring_record(self, form_id: int) -> dict | None:
+    def read_authoring_record(self, form_id: int, *, keep_present_fields: bool = False) -> dict | None:
+        """``keep_present_fields`` keeps zero/default struct fields that the compact
+        authoring-dir shape drops; use it for inspection output."""
         import json
 
         handle = getattr(self, "_rust_handle", None)
         if handle is None:
             return None
-        text = _native_runtime.plugin_handle_read_authoring_record(handle, form_id)
+        text = _native_runtime.plugin_handle_read_authoring_record(
+            handle, form_id, keep_present_fields=keep_present_fields
+        )
         return json.loads(text) if text is not None else None
 
     def copy_record(self, record: Record, source_plugin: "Plugin") -> Record | _native_runtime.RecordSummary | None:

@@ -273,7 +273,7 @@ impl Offsets {
     }
 }
 
-fn merge_class(
+pub(crate) fn merge_class(
     abc: &mut AbcFile,
     mut compiled: AbcFile,
     target: usize,
@@ -553,6 +553,8 @@ fn instruction(pool: &ConstantPool, op: &Op) -> serde_json::Value {
         Op::GetSlot { index } => json!(["getslot", index]),
         Op::GetLex { index } => json!(["getlex", name(pool, *index)]),
         Op::GetProperty { index } => json!(["getproperty", name(pool, *index)]),
+        Op::SetProperty { index } => json!(["setproperty", name(pool, *index)]),
+        Op::InitProperty { index } => json!(["initproperty", name(pool, *index)]),
         Op::CallProperty { index, num_args } => {
             json!(["callproperty", name(pool, *index), num_args])
         }
@@ -632,14 +634,21 @@ pub fn patch_method_count(
         let method = if method_name == "$constructor" {
             instance.init_method
         } else {
+            let (trait_name, accessor) = if let Some(property) = method_name.strip_prefix("get ") {
+                (property, Some(true))
+            } else if let Some(property) = method_name.strip_prefix("set ") {
+                (property, Some(false))
+            } else {
+                (method_name, None)
+            };
             let methods: Vec<_> = instance
                 .traits
                 .iter()
-                .filter(|t| name(&abc.constant_pool, t.name) == method_name)
+                .filter(|t| name(&abc.constant_pool, t.name) == trait_name)
                 .filter_map(|t| match t.kind {
-                    TraitKind::Method { method, .. }
-                    | TraitKind::Getter { method, .. }
-                    | TraitKind::Setter { method, .. } => Some(method),
+                    TraitKind::Method { method, .. } if accessor.is_none() => Some(method),
+                    TraitKind::Getter { method, .. } if accessor != Some(false) => Some(method),
+                    TraitKind::Setter { method, .. } if accessor != Some(true) => Some(method),
                     _ => None,
                 })
                 .collect();
@@ -710,6 +719,15 @@ pub fn patch_method_count(
                 let op = match opcode {
                     "getlocal" => Op::GetLocal { index: number(1)? },
                     "getlex" => Op::GetLex {
+                        index: qname(&mut abc.constant_pool, identifier(1)?),
+                    },
+                    "getproperty" => Op::GetProperty {
+                        index: qname(&mut abc.constant_pool, identifier(1)?),
+                    },
+                    "setproperty" => Op::SetProperty {
+                        index: qname(&mut abc.constant_pool, identifier(1)?),
+                    },
+                    "initproperty" => Op::InitProperty {
                         index: qname(&mut abc.constant_pool, identifier(1)?),
                     },
                     "callproperty" => Op::CallProperty {

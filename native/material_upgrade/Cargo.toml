@@ -1,0 +1,31 @@
+[package]
+name = "material_upgrade_native"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "material_upgrade_native"
+crate-type = ["rlib"]
+
+[features]
+# BA2 sources and LTEX/TXST plugin reading. Both pull the external `directxtex` FFI (via
+# bsarchive_native), which collides with `directxtex_native` in an exe link, so unit tests
+# run with --no-default-features; the umbrella `_native.pyd` links both without conflict.
+default = ["game-data"]
+game-data = ["dep:bsarchive_native", "dep:esp_authoring_core"]
+
+[dependencies]
+bsarchive_native = { path = "../bsarchive", optional = true }
+directxtex_native = { path = "../directxtex" }
+esp_authoring_core = { path = "../esp", optional = true }
+materials_native = { path = "../materials" }
+nif_core_native = { path = "../nif_core" }
+terrain_native = { path = "../terrain" }
+pyo3 = { workspace = true, features = ["extension-module", "abi3-py310"] }
+rayon = "1"
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+walkdir = "2.5.0"
+
+[dev-dependencies]
+tempfile = { workspace = true }

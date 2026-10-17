@@ -3,14 +3,17 @@ use pyo3::types::{PyBytes, PyDict, PyList};
 use serde::de::DeserializeOwned;
 
 pub mod base;
+pub mod bc5_snorm;
 pub mod bgem;
 pub mod bgsm;
 pub mod bsrefl;
 pub mod cdb;
 pub mod cdb_to_bgsm;
 mod ce2;
+pub use ce2::Ce2MaterialPayload;
 pub mod convert;
 pub mod error;
+pub mod fo76_envmap;
 mod pbr;
 pub mod starfield_mat;
 mod string_table;

@@ -278,11 +278,8 @@ fn encode_alpha_vtxt_legacy(
                 }
                 let slot = retained_index - 1;
                 let numerator = u32::from(weight) * 255;
-                let mut alpha_byte =
+                let alpha_byte =
                     ((numerator + u32::from(prefix_weight) / 2) / u32::from(prefix_weight)) as u8;
-                if slot >= FIRST_ATXT_SLOT_REQUIRING_HEADROOM {
-                    alpha_byte = alpha_byte.min(MAX_LATE_ATXT_ALPHA_WITH_BASE_HEADROOM);
-                }
                 if alpha_byte == 0 {
                     continue;
                 }

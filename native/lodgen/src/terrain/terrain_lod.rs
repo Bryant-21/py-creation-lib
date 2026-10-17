@@ -23,7 +23,7 @@ pub(crate) fn half_bits_to_f32(b: u16) -> f32 {
 
 /// Assembled terrain mesh in local block space (0..4096 on each axis).
 ///
-/// UV = (post/(32*level), 1 - post/(32*level)) per CreateGeometry (TerrainLOD.cs:284,293).
+/// UV = (post/(ppc*level), 1 - post/(ppc*level)) per CreateGeometry (TerrainLOD.cs:284,293).
 /// Triangles are u16 indices (FO4 BSTriShape is always u16; max 65535 verts enforced by Terra).
 #[derive(Debug, Clone)]
 pub struct TerrainMesh {
@@ -36,33 +36,39 @@ pub struct TerrainMesh {
 // ---------------------------------------------------------------------------
 // assemble_block — TerrainLOD.GenerateQuad block assembly (TerrainLOD.cs:305-455)
 //
-// Produces the (size, heights) flat heightmap consumed by build_terrain_mesh.
+// Produces the TerrainBlock heightmap consumed by build_terrain_mesh.
 // Heights are divided by lodLevel so the block lives in a 0..4096 local space;
 // the NIF node has scale = lodLevel to restore world scale at render time.
 // ---------------------------------------------------------------------------
 
-/// Assemble a `level × level` cell block into a `(32*level+1)²` height grid.
-///
-/// Returns `(size, heights)` where `size = 32*level + 1` (capped at 1025) and
-/// `heights` is a row-major `Vec<f32>` of length `size * size`.
+/// Height posts along a LAND cell edge, not counting the post shared with the next cell.
+pub const LAND_POSTS_PER_CELL: usize = 32;
+
+/// A quad's assembled height grid: `size × size` posts, row-major, heights and water divided by the level.
+#[derive(Debug, Clone)]
+pub struct TerrainBlock {
+    pub size: usize,
+    pub posts_per_cell: usize,
+    pub heights: Vec<f32>,
+    pub water: Vec<f32>,
+}
+
+pub fn block_size(level: usize, posts_per_cell: usize) -> usize {
+    (posts_per_cell * level + 1).min(1025)
+}
+
+/// Assemble a `level × level` cell block of LAND posts.
 ///
 /// Port of `TerrainLOD.GenerateQuad` block-fill section (`TerrainLOD.cs:305-455`).
 pub fn assemble_block(
     world: &crate::input::WorldspaceInput,
     quad: &crate::descriptors::QuadDesc,
     _settings: &crate::settings::LodSettings,
-) -> (usize, Vec<f32>) {
-    let (size, heights, _) = assemble_block_with_water(world, quad, _settings);
-    (size, heights)
-}
-
-fn assemble_block_with_water(
-    world: &crate::input::WorldspaceInput,
-    quad: &crate::descriptors::QuadDesc,
-    _settings: &crate::settings::LodSettings,
-) -> (usize, Vec<f32>, Vec<f32>) {
+) -> TerrainBlock {
+    let ppc = LAND_POSTS_PER_CELL;
+    let stride = ppc + 1;
     let level = quad.quad_level as usize;
-    let size = (32 * level + 1).min(1025);
+    let size = block_size(level, ppc);
     let mut heights = vec![0.0f32; size * size];
     let mut water_heights = vec![world.water_height / level as f32; size * size];
 
@@ -84,18 +90,18 @@ fn assemble_block_with_water(
             match cell {
                 Some(c) => {
                     let cell_water = c.water_height / level as f32;
-                    // Copy 33×33 posts into block at offset (col*32, row*32).
+                    // Copy the cell's posts into the block at offset (col*ppc, row*ppc).
                     // TerrainLOD.cs:337-346: offset = (num6*32+l, num5*32+k),
                     // divide each height by lodLevel.
                     let div = level as f32;
-                    for k in 0..33usize {
-                        for l in 0..33usize {
-                            let block_col = col * 32 + l;
-                            let block_row = row * 32 + k;
+                    for k in 0..=ppc {
+                        for l in 0..=ppc {
+                            let block_col = col * ppc + l;
+                            let block_row = row * ppc + k;
                             // Clamp to avoid overrun at boundaries (size may be capped).
                             if block_col < size && block_row < size {
-                                // c.heights is row-major [col + row*33].
-                                let h = c.heights[l + k * 33];
+                                // c.heights is row-major [col + row*(ppc+1)].
+                                let h = c.heights[l + k * stride];
                                 heights[block_col + block_row * size] = h / div;
                                 water_heights[block_col + block_row * size] = cell_water;
                             }
@@ -105,10 +111,10 @@ fn assemble_block_with_water(
                 None => {
                     // Missing cell: fill with fallback/lodLevel.
                     let fill = fallback / level as f32;
-                    let col_start = col * 32;
-                    let row_start = row * 32;
-                    for k in 0..33usize {
-                        for l in 0..33usize {
+                    let col_start = col * ppc;
+                    let row_start = row * ppc;
+                    for k in 0..=ppc {
+                        for l in 0..=ppc {
                             let block_col = col_start + l;
                             let block_row = row_start + k;
                             if block_col < size && block_row < size {
@@ -123,20 +129,20 @@ fn assemble_block_with_water(
         }
     }
 
-    (size, heights, water_heights)
+    TerrainBlock { size, posts_per_cell: ppc, heights, water: water_heights }
 }
 
 // ---------------------------------------------------------------------------
 // build_terrain_mesh — Terra decimate + CreateGeometry (TerrainLOD.cs:266-303)
 //
-// 1. Calls assemble_block to get (size, heights).
+// 1. Calls assemble_block to get the TerrainBlock.
 // 2. Constructs a Terra engine with the level's quality/max_vertices settings.
 // 3. Calls terra.triangulate().
 // 4. Calls terra.generate_output() to get raw (verts, tris).
 // 5. Port of CreateGeometry (TerrainLOD.cs:266-303):
 //    - Sorts verts by (y*4096 + x) key (SortedDictionary ordering).
-//    - Scales x/y by num3 = 128/level.
-//    - UV = (x/(32*level), 1 - y/(32*level)).
+//    - Scales x/y by num3 = 4096/(ppc*level) (128/level for LAND).
+//    - UV = (x/(ppc*level), 1 - y/(ppc*level)).
 //    - Computes BBox over scaled verts.
 //    - Remaps triangle indices to sorted-vertex order.
 // 6. Returns TerrainMesh with u16 triangle indices.
@@ -154,6 +160,28 @@ pub fn build_terrain_mesh(
     quad: &crate::descriptors::QuadDesc,
     settings: &crate::settings::LodSettings,
 ) -> anyhow::Result<TerrainMesh> {
+    build_terrain_mesh_from_block(world, quad, settings, terrain_block(world, quad, settings)?)
+}
+
+/// The quad's height block from the configured source.
+pub fn terrain_block(
+    world: &crate::input::WorldspaceInput,
+    quad: &crate::descriptors::QuadDesc,
+    settings: &crate::settings::LodSettings,
+) -> anyhow::Result<TerrainBlock> {
+    match settings.terrain.source {
+        crate::settings::TerrainSource::Land => Ok(assemble_block(world, quad, settings)),
+        crate::settings::TerrainSource::Btd => btd_block(world, quad, settings),
+    }
+}
+
+/// Decimate an assembled block; see `build_terrain_mesh`.
+pub fn build_terrain_mesh_from_block(
+    world: &crate::input::WorldspaceInput,
+    quad: &crate::descriptors::QuadDesc,
+    settings: &crate::settings::LodSettings,
+    block: TerrainBlock,
+) -> anyhow::Result<TerrainMesh> {
     use crate::descriptors::BBox;
 
     let level = quad.quad_level as usize;
@@ -167,7 +195,7 @@ pub fn build_terrain_mesh(
         _ => anyhow::bail!("unsupported lodLevel {level}"),
     };
 
-    let (size, heights, water_heights) = assemble_block_with_water(world, quad, settings);
+    let TerrainBlock { size, posts_per_cell: ppc, heights, water: water_heights } = block;
 
     let lvl = &settings.terrain.levels[lod_index];
     let error_threshold = lvl.quality;
@@ -196,7 +224,8 @@ pub fn build_terrain_mesh(
     // (The optimize-unseen `heightValues < waterheight` term of list4 is not ported,
     // like the rest of optimize_unseen.)
     if settings.terrain.protect_cell_borders && size > 1 {
-        let stride = (level * 2).max(1);
+        // level*2 LAND posts: keep the same world spacing at any post density.
+        let stride = (level * 2 * ppc / LAND_POSTS_PER_CELL).max(1);
         let edge = size - 1;
         let mut forced: Vec<(usize, usize)> = Vec::new();
         let mut yy = 0usize;
@@ -225,8 +254,8 @@ pub fn build_terrain_mesh(
 
     // CreateGeometry (TerrainLOD.cs:266-303):
     // Sort vertices by key = (y as i32) * 4096 + (x as i32) to match C# SortedDictionary.
-    let num3 = 128.0f32 / level as f32; // position scale
-    let num4 = (32 * level) as f32; // UV denominator
+    let num4 = (ppc * level) as f32; // UV denominator
+    let num3 = 4096.0f32 / num4; // position scale
 
     // Build a sorted list of (key, original_index) pairs.
     let mut sort_pairs: Vec<(i32, usize)> = raw_verts
@@ -290,6 +319,19 @@ pub fn build_terrain_mesh(
         tris,
         bbox,
     })
+}
+
+/// One BTD per quad: its tile cache never evicts, so a shared or per-thread instance would hold every
+/// decoded tile of the world for the whole run.
+fn btd_block(
+    world: &crate::input::WorldspaceInput,
+    quad: &crate::descriptors::QuadDesc,
+    settings: &crate::settings::LodSettings,
+) -> anyhow::Result<TerrainBlock> {
+    use anyhow::Context;
+    let path = settings.terrain.btd_path.as_deref().context("terrain.source=btd needs terrain.btd_path")?;
+    let mut btd = terrain_native::btd::BtdFile::open(path).map_err(|e| anyhow::anyhow!("open BTD {path}: {e}"))?;
+    super::btd_source::assemble_block_from_btd(&mut btd, world, quad)
 }
 
 /// Add a border skirt ring to a terrain mesh.
@@ -415,6 +457,64 @@ mod tests {
         let mut world = crate::input::WorldspaceInput::from_cells("W", cells);
         world.water_height = 100.0;
         world
+    }
+
+    #[test]
+    fn block_size_follows_posts_per_cell() {
+        assert_eq!(block_size(4, 32), 129);
+        assert_eq!(block_size(4, 128), 513);
+        assert_eq!(block_size(8, 128), 1025);
+        assert_eq!(block_size(32, 32), 1025);
+    }
+
+    #[test]
+    fn land_blocks_use_32_posts_per_cell() {
+        let w = flat_world(4);
+        let s = LodSettings::fo4_default();
+        let quad = quads_for(&w, 4, &s).into_iter().find(|q| q.x == 0 && q.y == 0).unwrap();
+        let block = assemble_block(&w, &quad, &s);
+        assert_eq!(block.posts_per_cell, 32);
+        assert_eq!(block.size, 129);
+        assert_eq!(block.heights.len(), 129 * 129);
+        assert_eq!(block.water.len(), 129 * 129);
+        assert_eq!(block.heights[128 + 128 * 129], 10.0 / 4.0);
+    }
+
+    #[test]
+    fn btd_source_needs_a_path() {
+        let w = flat_world(4);
+        let mut s = LodSettings::fo4_default();
+        s.terrain.source = crate::settings::TerrainSource::Btd;
+        let quad = quads_for(&w, 4, &s).into_iter().find(|q| q.x == 0 && q.y == 0).unwrap();
+        let err = build_terrain_mesh(&w, &quad, &s).unwrap_err().to_string();
+        assert!(err.contains("btd_path"), "{err}");
+    }
+
+    #[test]
+    fn btd_source_reads_the_btd() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("starfield.btd");
+        let cell = terrain_native::btd_write::BtdWriteCell {
+            cell_x: 0,
+            cell_y: 0,
+            heights: vec![1.0; 128 * 128],
+            quad_layers: [[0xFF; 6]; 4],
+            quad_alphas: vec![0; 128 * 128],
+        };
+        let input = terrain_native::btd_write::BtdWriteInput {
+            cells_x: 2,
+            cells_y: 2,
+            ltex_form_ids: Vec::new(),
+            cells: vec![cell],
+        };
+        terrain_native::btd_write::write_starfield_btd(&path, &input).unwrap();
+        let w = flat_world(4);
+        let mut s = LodSettings::fo4_default();
+        s.terrain.source = crate::settings::TerrainSource::Btd;
+        s.terrain.btd_path = Some(path.to_string_lossy().into_owned());
+        let quad = quads_for(&w, 4, &s).into_iter().find(|q| q.x == 0 && q.y == 0).unwrap();
+        let err = build_terrain_mesh(&w, &quad, &s).unwrap_err().to_string();
+        assert!(err.contains("Starfield layout"), "{err}");
     }
 
     #[test]

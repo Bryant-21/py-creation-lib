@@ -83,6 +83,7 @@ pub struct TargetMetadata {
     pub base_class: ScriptTarget,
     pub game_mode_timer_seconds: f64,
     pub game_mode_timer_id: i64,
+    pub game_mode_native_frames: bool,
     symbols: HashMap<String, SymbolMetadata>,
 }
 
@@ -92,6 +93,7 @@ impl TargetMetadata {
             base_class: ScriptTarget::from_papyrus_extends(extends),
             game_mode_timer_seconds: 1.0,
             game_mode_timer_id: 0,
+            game_mode_native_frames: false,
             symbols: HashMap::new(),
         }
     }

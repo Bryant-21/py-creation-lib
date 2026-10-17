@@ -121,6 +121,39 @@ fn write_bgsm_string(writer: &mut Writer, value: &str) {
 }
 
 pub fn parse(data: &[u8]) -> Result<BgsmData> {
+    read(data).map(|(parsed, _)| parsed)
+}
+
+/// FO76 still ships FO4-era materials (`_s` smooth/spec map, whatever the header version says).
+/// They are legacy materials: only the BGSM v22+ upgrade, never a native copy, makes them PBR.
+pub fn has_legacy_smoothspec(data: &BgsmData) -> bool {
+    let path = data.SmoothSpecTexture.trim_end_matches('\0').trim().to_ascii_lowercase();
+    std::path::Path::new(&path)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .is_some_and(|stem| stem.ends_with("_s"))
+}
+
+/// Byte ranges of the texture path strings, length prefix included.
+pub fn texture_string_spans(data: &[u8]) -> Result<Vec<std::ops::Range<usize>>> {
+    let (_, reader) = read(data)?;
+    let mut spans = reader.string_spans().to_vec();
+    // RootMaterialPath is the last string read and names a material, not a texture.
+    spans.pop();
+    Ok(spans)
+}
+
+/// Byte range of the RootMaterialPath string, length prefix included.
+pub fn root_material_span(data: &[u8]) -> Result<std::ops::Range<usize>> {
+    let (_, reader) = read(data)?;
+    reader
+        .string_spans()
+        .last()
+        .cloned()
+        .ok_or_else(|| crate::error::MaterialError::invalid("BGSM has no strings"))
+}
+
+fn read(data: &[u8]) -> Result<(BgsmData, Reader<'_>)> {
     let mut reader = Reader::new(data);
     let header = read_header(&mut reader, BGSM_SIGNATURE)?;
     let diffuse_texture = reader.read_string()?;
@@ -332,7 +365,7 @@ pub fn parse(data: &[u8]) -> Result<BgsmData> {
         }
     }
 
-    Ok(BgsmData {
+    let parsed = BgsmData {
         header,
         DiffuseTexture: diffuse_texture,
         NormalTexture: normal_texture,
@@ -412,7 +445,8 @@ pub fn parse(data: &[u8]) -> Result<BgsmData> {
         TerrainThresholdFalloff: terrain_threshold_falloff,
         TerrainTilingDistance: terrain_tiling_distance,
         TerrainRotationAngle: terrain_rotation_angle,
-    })
+    };
+    Ok((parsed, reader))
 }
 
 pub fn write(data: &BgsmData) -> Vec<u8> {

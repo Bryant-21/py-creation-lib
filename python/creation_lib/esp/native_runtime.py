@@ -815,9 +815,11 @@ def plugin_handle_replace_projected_cell_authoring_record_values_at_locations(
     return int(native_fn(int(handle), json.dumps(values)))
 
 
-def plugin_handle_read_authoring_record(handle: Any, form_id: int) -> str | None:
+def plugin_handle_read_authoring_record(
+    handle: Any, form_id: int, *, keep_present_fields: bool = False
+) -> str | None:
     native_fn = _require_native_function("plugin_handle_read_authoring_record")
-    return native_fn(int(handle), int(form_id) & 0xFFFFFFFF)
+    return native_fn(int(handle), int(form_id) & 0xFFFFFFFF, keep_present_fields)
 
 
 def plugin_handle_inspect_record(handle: Any, raw_form_id: int) -> dict[str, Any] | None:
@@ -1389,14 +1391,23 @@ def _decode_asset_owner_claims(
             )
             decoded.append(value)
         else:
-            decoded.append(
-                {
-                    "source_form_key": claim[0],
-                    "source_record_signature": claim[1],
-                    "source_subrecord_sig": claim[2],
-                    "idle_topology": _decode_idle_topology(claim[3]),
-                }
-            )
+            value = {
+                "source_form_key": claim[0],
+                "source_record_signature": claim[1],
+                "source_subrecord_sig": claim[2],
+                "idle_topology": _decode_idle_topology(claim[3]),
+            }
+            if len(claim) > 4 and claim[4]:
+                value["armor_family"] = [
+                    {
+                        "armor_form_key": model[0],
+                        "owner_form_key": model[1],
+                        "source_subrecord_sig": model[2],
+                        "source_path": model[3],
+                    }
+                    for model in claim[4]
+                ]
+            decoded.append(value)
     return decoded
 
 
@@ -1438,9 +1449,8 @@ def plugin_handle_collect_assets(
                     "source_record_signature": source_record_signature,
                     "source_subrecord_sig": source_subrecord_sig,
                     "workshop_wire_point": item[5] if len(item) > 5 else None,
-                    "workshop_snap_points": item[6] if len(item) > 6 else None,
                     "owner_claims": _decode_asset_owner_claims(
-                        item[7] if len(item) > 7 else None,
+                        item[6] if len(item) > 6 else None,
                         source_form_key=item[2],
                         source_record_signature=source_record_signature,
                         source_subrecord_sig=source_subrecord_sig,

@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://modbox21.local/catalog_schemas/CampScrap.schema.json",
+  "title": "CampScrap catalog",
+  "description": "Lets the workshop scrap world objects that have no FO4 scrap recipe of their own.",
+  "x-help": "FO4 scraps a world object only when a scrap recipe (a COBJ filtered by WorkshopRecipeFilterScrap) creates its base form. Each row here gives a base form such a recipe: in workshop mode the object can then be scrapped for that recipe's components, and, like FO4's cars and junk piles, it can no longer be moved or stored.\n\nObjects that already have a recipe (anything buildable, or scrappable through a vanilla list) keep their own.",
+  "allOf": [
+    {"$ref": "envelope.schema.json"}
+  ],
+  "required": ["settings", "objects"],
+  "properties": {
+    "version": {"const": 1},
+    "settings": {"type": "object", "description": "Feature-wide values; a later plugin's field replaces the earlier one.", "properties": {}},
+    "objects": {
+      "type": "object",
+      "title": "Scrappable objects",
+      "description": "Base form -> the scrap recipe it borrows",
+      "x-key": "map",
+      "x-key-title": "Object",
+      "propertyNames": {"$ref": "envelope.schema.json#/$defs/formKey"},
+      "additionalProperties": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": ["recipe"],
+            "properties": {
+              "recipe": {"$ref": "envelope.schema.json#/$defs/formKey", "x-form-type": ["COBJ"], "title": "Scrap recipe", "description": "A workshop COBJ whose components the object yields when scrapped."},
+              "match": {"type": "string", "enum": ["id", "editor_id", "model", "similar", "class", "fallback", "manual"], "title": "Found by", "description": "Label only: how BACUP chose the recipe."}
+            }
+          },
+          {"$ref": "envelope.schema.json#/$defs/removeMarker"}
+        ]
+      }
+    }
+  }
+}

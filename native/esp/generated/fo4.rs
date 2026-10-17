@@ -109975,7 +109975,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r##"{
           "id": "DATA",
           "kind": "parsed",
           "display_label": "Data",
-          "codec": "struct:I,f,I,B,B,B,B,I,H,B,B,I,f,I,I,I,I,f,f,f,f,I,I,I,I,I,I,I,I,I,I,f,I,f,I,I,I,I,I,I,I,f,f",
+          "codec": "struct:I,f,I,I,I,H,B,B,I,f,I,I,I,I,f,f,f,f,I,I,I,I,I,I,I,I,I,I,f,I,f,I,I,I,I,I,I,I,f,f",
           "fields": [
             {
               "id": "flags",
@@ -109994,24 +109994,14 @@ pub const AUTHORING_SCHEMA_JSON: &str = r##"{
               "display_label": "Assoc. Item"
             },
             {
-              "id": "magic_skill_unused_byte_1",
-              "kind": "uint8",
-              "display_label": "Magic Skill (unused) Byte 1"
-            },
-            {
-              "id": "magic_skill_unused_byte_2",
-              "kind": "uint8",
-              "display_label": "Magic Skill (unused) Byte 2"
-            },
-            {
-              "id": "magic_skill_unused_byte_3",
-              "kind": "uint8",
-              "display_label": "Magic Skill (unused) Byte 3"
-            },
-            {
-              "id": "magic_skill_unused_byte_4",
-              "kind": "uint8",
-              "display_label": "Magic Skill (unused) Byte 4"
+              "id": "associated_skill",
+              "kind": "formid",
+              "display_label": "Associated Skill",
+              "formlink_target": "AVIF",
+              "formlink_targets": [
+                "AVIF"
+              ],
+              "null_allowed": true
             },
             {
               "id": "resist_value",
@@ -129075,7 +129065,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r##"{
           "id": "ATKD",
           "kind": "parsed",
           "display_label": "Attack Data",
-          "codec": "struct:f,f,I,I,f,f,f,f,f,f,i",
+          "codec": "struct:f,f,I,I,f,f,I,f,f,f,i",
           "fields": [
             {
               "id": "damage_mult",
@@ -129114,9 +129104,14 @@ pub const AUTHORING_SCHEMA_JSON: &str = r##"{
               "display_label": "Strike Angle"
             },
             {
-              "id": "stagger",
-              "kind": "float32",
-              "display_label": "Stagger"
+              "id": "attack_type",
+              "kind": "formid",
+              "display_label": "Attack Type",
+              "formlink_target": "KYWD",
+              "formlink_targets": [
+                "KYWD"
+              ],
+              "null_allowed": true
             },
             {
               "id": "knockdown",
@@ -203768,7 +203763,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r##"{
           "id": "ATKD",
           "kind": "parsed",
           "display_label": "Attack Data",
-          "codec": "struct:f,f,I,I,f,f,f,f,f,f,i",
+          "codec": "struct:f,f,I,I,f,f,I,f,f,f,i",
           "fields": [
             {
               "id": "damage_mult",
@@ -203807,9 +203802,14 @@ pub const AUTHORING_SCHEMA_JSON: &str = r##"{
               "display_label": "Strike Angle"
             },
             {
-              "id": "stagger",
-              "kind": "float32",
-              "display_label": "Stagger"
+              "id": "attack_type",
+              "kind": "formid",
+              "display_label": "Attack Type",
+              "formlink_target": "KYWD",
+              "formlink_targets": [
+                "KYWD"
+              ],
+              "null_allowed": true
             },
             {
               "id": "knockdown",
@@ -262510,6 +262510,18 @@ pub const AUTHORING_SCHEMA_JSON: &str = r##"{
           ],
           "null_allowed": true,
           "scope_id": "keywords"
+        },
+        {
+          "id": "MDOB",
+          "kind": "parsed",
+          "display_label": "Menu Display Object",
+          "codec": "formid",
+          "fields": [
+            {
+              "id": "formid_0",
+              "kind": "formid"
+            }
+          ]
         },
         {
           "id": "ETYP",

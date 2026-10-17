@@ -46,6 +46,9 @@ pub struct RefInput {
     pub part_transform: [[f32; 4]; 4],
     pub part_scale: f32,
     pub material_swap: std::collections::BTreeMap<String, String>,
+    /// The engine can resolve `ref_id` to hide an instance when its cell loads (LOD_RUNTIME Q3): the placed ref's
+    /// base carries 0x8000 and its FormID is not in light-plugin space. Synthetic refs are never hideable.
+    pub hideable_by_id: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -235,6 +238,7 @@ fn synthesize_grass_refs_for_cell(
                         alpha_threshold: 128,
                         is_billboard: false,
                         is_grass: true,
+                        hideable_by_id: false,
                         base_name: grass.base_name.clone(),
                         base_flags: 0,
                         material_name: String::new(),
@@ -251,6 +255,14 @@ fn synthesize_grass_refs_for_cell(
 }
 
 pub type StaticDesc = RefInput;
+
+/// Whether the engine's instance-visibility lookup can find this ref: it tries `(fileIndex << 24) | low 24 bits`
+/// over the full plugins and accepts only refs whose base has form flag 0x8000. A light plugin's own new refs live
+/// in FE space at runtime, so only its overrides of master refs resolve.
+pub(crate) fn hideable_by_id(base_record_flags: u32, ref_form_id: u32, master_count: usize, light_plugin: bool) -> bool {
+    let own_record = (ref_form_id >> 24) as usize >= master_count;
+    base_record_flags & 0x8000 != 0 && !(light_plugin && own_record)
+}
 
 pub fn identity_part_transform() -> [[f32; 4]; 4] {
     [
@@ -1486,6 +1498,7 @@ mod esp_enum {
         part_transform: [[f32; 4]; 4],
         part_scale: f32,
         material_swap: &std::collections::BTreeMap<String, String>,
+        hideable_by_id: bool,
     ) {
         let enable_parent = refr_enable_parent(record);
         out.push(RefInput {
@@ -1509,6 +1522,7 @@ mod esp_enum {
                 .map(|m| m.to_lowercase().ends_with(".dds"))
                 .unwrap_or(false),
             is_grass: false,
+            hideable_by_id,
             base_name: base.editor_id.clone(),
             base_flags: static_desc_base_flags(base),
             material_name: base.material_name.clone(),
@@ -1747,6 +1761,11 @@ mod esp_enum {
             .filter(|entry| entry.base_signature == base.signature);
         let (base, parent_overlay_force_visible) = overlay_resolved_base(base, parent_overlay);
         let has_multiref_lod_link = placed_ref_has_multiref_lod_link(record);
+        let hideable = handle.plugin.as_ref().is_some_and(|p| {
+            let header = &p.parsed.header;
+            let light = header.flags & 0x200 != 0 || p.parsed.plugin_name.to_ascii_lowercase().ends_with(".esl");
+            super::hideable_by_id(base.record_flags, record.form_id, header.masters.len(), light)
+        });
         let parent_can_emit = ref_can_emit_object_lod(
             record.flags,
             base.record_flags,
@@ -1783,6 +1802,7 @@ mod esp_enum {
                     super::identity_part_transform(),
                     1.0,
                     &material_swap,
+                    hideable,
                 );
                 return;
             }
@@ -1821,6 +1841,7 @@ mod esp_enum {
                     scol_part_transform(part),
                     part.scale,
                     &material_swap,
+                    hideable,
                 );
             }
             return;
@@ -1842,6 +1863,7 @@ mod esp_enum {
             super::identity_part_transform(),
             1.0,
             &material_swap,
+            hideable,
         );
     }
 
@@ -2240,6 +2262,17 @@ pub fn discover_worldspaces(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_engine_hides_by_id_only_refs_of_a_distant_lod_base_outside_light_plugin_space() {
+        use super::hideable_by_id;
+        // Full plugin with two masters: its own refs are 0x02xxxxxx, overrides keep the master's index.
+        assert!(hideable_by_id(0x8000, 0x0200_1234, 2, false));
+        assert!(!hideable_by_id(0x0000, 0x0200_1234, 2, false));
+        // Light plugin: its own new refs live in FE space at runtime; overrides of master refs still resolve.
+        assert!(!hideable_by_id(0x8000, 0x0200_1234, 2, true));
+        assert!(hideable_by_id(0x8000, 0x0100_1234, 2, true));
+    }
+
     use super::*;
 
     fn grass_layer(max_slope_degrees: f32) -> GrassLayerInput {

@@ -5,6 +5,7 @@ pub mod bone_remap;
 pub mod first_person;
 pub mod pack;
 pub mod segment;
+pub mod creature_parts;
 pub mod source;
 pub mod weight_transfer;
 
@@ -435,7 +436,10 @@ fn convert_one_shape(
     let shape = nif.get_block(shape_id)?.clone();
     let mut geometry = ShapeGeometry::from_shape(nif, &shape);
     geometry.complete_partition_geometry(nif, &shape, parsed);
-    geometry.apply_transform(&parsed.skin_transform);
+    // Preserved skin-to-bone binds already consume vertices in the source skin space.
+    if matches!(policy, LegacySkinPolicy::TranslateSkeleton) {
+        geometry.apply_transform(&parsed.skin_transform);
+    }
     let (shader_ref, alpha_ref) = geometry_property_refs(nif, &shape);
     let source_bone_refs = source_bone_refs(nif, parsed.instance_block_id);
     let (source_to_local, mut target_bone_names, mut target_bone_refs, bones_remapped) =
@@ -2089,6 +2093,9 @@ fn distance(left: [f32; 3], right: [f32; 3]) -> f32 {
     let dz = left[2] - right[2];
     (dx * dx + dy * dy + dz * dz).sqrt()
 }
+
+#[cfg(test)]
+mod skin_space_tests;
 
 #[cfg(test)]
 mod tests {

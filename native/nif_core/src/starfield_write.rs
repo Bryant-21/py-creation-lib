@@ -33,6 +33,7 @@ pub struct StarfieldMeshOut {
     pub nif_bytes: Vec<u8>,
     /// `(relative path under Data, e.g. "geometries/<20hex>/<20hex>.mesh", bytes)`.
     pub mesh_files: Vec<(String, Vec<u8>)>,
+    pub collision_fallback: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,7 +65,14 @@ pub fn convert_fo4_nif_to_starfield(
 ) -> Result<StarfieldMeshOut, String> {
     let nif_in = NifFile::from_bytes(fo4_nif_bytes, None)
         .map_err(|error| format!("starfield_write: failed to parse FO4 NIF: {error}"))?;
+    convert_fo4_nif_to_starfield_parsed(&nif_in, mat_path_for, collision)
+}
 
+pub fn convert_fo4_nif_to_starfield_parsed(
+    nif_in: &NifFile,
+    mat_path_for: &dyn Fn(&NifBlock) -> String,
+    collision: CollisionMode,
+) -> Result<StarfieldMeshOut, String> {
     let extracted: Vec<ExtractedShape> = nif_in.blocks.iter().filter_map(extract_shape).collect();
     if extracted.is_empty() {
         return Err(
@@ -103,7 +111,7 @@ pub fn convert_fo4_nif_to_starfield(
         let mesh_ref = format!("{folder}\\{file}");
         mesh_files.push((format!("geometries/{folder}/{file}.mesh"), mesh_bytes));
 
-        let mat_rel = mat_path_for(&shape.source_block);
+        let mat_rel = mat_path_for(shape.source_block);
         let mat_path_bs = mat_rel.replace('/', "\\");
         let material_id =
             materials_native::cdb::bethesda_crc32(mat_path_bs.to_ascii_lowercase().as_bytes());
@@ -160,13 +168,17 @@ pub fn convert_fo4_nif_to_starfield(
         children.push(NifValue::Ref(geo_id as i32));
     }
 
+    let mut collision_fallback = false;
     let collision_out = match collision {
         CollisionMode::None => None,
         CollisionMode::FromFo4Prims => {
-            let prims = starfield_collision::extract_fo4_collision_prims(fo4_nif_bytes)?;
+            let prims = starfield_collision::extract_fo4_collision_prims_from_nif(nif_in)?;
+            collision_fallback = !prims.is_empty()
+                && prims.iter().all(|prim| matches!(prim, CollisionPrim::Box { .. }));
             starfield_collision::emit_starfield_collision(&prims)?
         }
         CollisionMode::AabbFallback => {
+            collision_fallback = true;
             let prim = aabb_collision_prim(&expanded);
             starfield_collision::emit_starfield_collision(std::slice::from_ref(&prim))?
         }
@@ -216,6 +228,7 @@ pub fn convert_fo4_nif_to_starfield(
     Ok(StarfieldMeshOut {
         nif_bytes,
         mesh_files,
+        collision_fallback,
     })
 }
 
@@ -243,7 +256,7 @@ fn new_starfield_header() -> NifHeader {
 // ---------- geometry extraction (FO4 side) ----------
 
 #[derive(Clone)]
-struct ExtractedShape {
+struct ExtractedShape<'a> {
     name: String,
     /// Node translation, already ÷ `HAVOK_SCALE` (FO4_TO_SF_SPATIAL applied once).
     translation: [f32; 3],
@@ -260,12 +273,12 @@ struct ExtractedShape {
     has_vertex_colors: bool,
     triangles: Vec<[u32; 3]>,
     /// The original FO4 shape block, handed to `mat_path_for` unmodified.
-    source_block: NifBlock,
+    source_block: &'a NifBlock,
 }
 
 const IDENTITY_MAT3: [[f32; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
 
-fn extract_shape(block: &NifBlock) -> Option<ExtractedShape> {
+fn extract_shape(block: &NifBlock) -> Option<ExtractedShape<'_>> {
     if !matches!(
         block.type_name.as_str(),
         "BSTriShape" | "BSSubIndexTriShape"
@@ -285,7 +298,7 @@ fn extract_shape(block: &NifBlock) -> Option<ExtractedShape> {
     let mut vertex_colors = Vec::with_capacity(entries.len());
     let mut has_vertex_colors = false;
 
-    for entry in &entries {
+    for entry in entries {
         let NifValue::Struct(fields) = entry else {
             continue;
         };
@@ -350,7 +363,7 @@ fn extract_shape(block: &NifBlock) -> Option<ExtractedShape> {
         vertex_colors,
         has_vertex_colors,
         triangles,
-        source_block: block.clone(),
+        source_block: block,
     })
 }
 
@@ -359,7 +372,7 @@ fn extract_shape(block: &NifBlock) -> Option<ExtractedShape> {
 /// (R3 §10 risk 6 — `.mesh` indices are `u16`). Triangles are consumed in original order; a
 /// new batch starts only when the *next* triangle would push the running unique-vertex count
 /// over `max_verts`, so no batch can exceed the limit.
-fn split_oversized(shape: ExtractedShape, max_verts: usize) -> Vec<ExtractedShape> {
+fn split_oversized(shape: ExtractedShape<'_>, max_verts: usize) -> Vec<ExtractedShape<'_>> {
     if shape.positions.len() <= max_verts {
         return vec![shape];
     }
@@ -402,7 +415,7 @@ fn split_oversized(shape: ExtractedShape, max_verts: usize) -> Vec<ExtractedShap
     out
 }
 
-fn empty_like(shape: &ExtractedShape) -> ExtractedShape {
+fn empty_like<'a>(shape: &ExtractedShape<'a>) -> ExtractedShape<'a> {
     ExtractedShape {
         name: shape.name.clone(),
         translation: shape.translation,
@@ -416,16 +429,16 @@ fn empty_like(shape: &ExtractedShape) -> ExtractedShape {
         vertex_colors: Vec::new(),
         has_vertex_colors: shape.has_vertex_colors,
         triangles: Vec::new(),
-        source_block: shape.source_block.clone(),
+        source_block: shape.source_block,
     }
 }
 
 // ---------- NIF field value helpers (local copies; see other modules for the same pattern) ----------
 
-fn value_array(value: Option<&NifValue>) -> Vec<NifValue> {
+fn value_array(value: Option<&NifValue>) -> &[NifValue] {
     match value {
-        Some(NifValue::Array(items)) => items.clone(),
-        _ => Vec::new(),
+        Some(NifValue::Array(items)) => items,
+        _ => &[],
     }
 }
 
@@ -990,6 +1003,29 @@ mod tests {
     }
 
     #[test]
+    fn parsed_conversion_preserves_bytes_and_collision_fallback_reporting() {
+        let bytes = build_fo4_fixture();
+        let mut nif = NifFile::from_bytes(&bytes, None).unwrap();
+        for with_invalid_collision in [false, true] {
+            if with_invalid_collision {
+                let id = nif.add_block("bhkPhysicsSystem", None);
+                nif.blocks[id].set_field("Binary Data", crate::cloth::bytes_to_byte_array(b"invalid"));
+            }
+            let bytes = nif.to_bytes().unwrap();
+            let parsed = NifFile::from_bytes(&bytes, None).unwrap();
+            for mode in [CollisionMode::None, CollisionMode::FromFo4Prims, CollisionMode::AabbFallback] {
+                let from_bytes = convert_fo4_nif_to_starfield(&bytes, &stub_mat_path, mode).unwrap();
+                let from_parsed = convert_fo4_nif_to_starfield_parsed(&parsed, &stub_mat_path, mode).unwrap();
+                assert_eq!(from_bytes.nif_bytes, from_parsed.nif_bytes);
+                assert_eq!(from_bytes.mesh_files, from_parsed.mesh_files);
+                assert_eq!(from_bytes.collision_fallback, from_parsed.collision_fallback);
+                assert_eq!(from_parsed.collision_fallback, mode == CollisionMode::AabbFallback
+                    || (mode == CollisionMode::FromFo4Prims && with_invalid_collision));
+            }
+        }
+    }
+
+    #[test]
     fn convert_produces_one_bsgeometry_per_shape_with_bs_version_175() {
         let fo4_bytes = build_fo4_fixture();
         let out = convert_fo4_nif_to_starfield(&fo4_bytes, &stub_mat_path, CollisionMode::None)
@@ -1179,7 +1215,7 @@ mod tests {
             vertex_colors: vec![[255, 255, 255, 255]; 4],
             has_vertex_colors: false,
             triangles: vec![[0, 1, 2], [0, 2, 3]],
-            source_block: NifBlock::new(0, "BSTriShape"),
+            source_block: &NifBlock::new(0, "BSTriShape"),
         };
 
         let mesh_bytes = build_mesh_bytes(&shape);
@@ -1231,7 +1267,7 @@ mod tests {
             vertex_colors: vec![[10, 20, 30, 40]; 3], // R,G,B,A
             has_vertex_colors: true,
             triangles: vec![[0, 1, 2]],
-            source_block: NifBlock::new(0, "BSTriShape"),
+            source_block: &NifBlock::new(0, "BSTriShape"),
         };
         let mesh_bytes = build_mesh_bytes(&shape);
         let (_v, indices_size, _s, _w, num_verts) = parse_mesh_header(&mesh_bytes).unwrap();
@@ -1271,7 +1307,7 @@ mod tests {
             vertex_colors: vec![[255, 255, 255, 255]; 6],
             has_vertex_colors: false,
             triangles: vec![[0, 1, 2], [3, 4, 5]],
-            source_block: NifBlock::new(0, "BSTriShape"),
+            source_block: &NifBlock::new(0, "BSTriShape"),
         };
 
         let parts = split_oversized(shape, 4);
@@ -1305,7 +1341,7 @@ mod tests {
             vertex_colors: vec![[255, 255, 255, 255]; 3],
             has_vertex_colors: false,
             triangles: vec![[0, 1, 2]],
-            source_block: NifBlock::new(0, "BSTriShape"),
+            source_block: &NifBlock::new(0, "BSTriShape"),
         };
         let parts = split_oversized(shape, 65535);
         assert_eq!(parts.len(), 1);

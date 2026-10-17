@@ -352,6 +352,7 @@ fn barn_static(model: &str) -> StaticDesc {
         part_transform: lodgen_native::input::identity_part_transform(),
         part_scale: 1.0,
         material_swap: std::collections::BTreeMap::new(),
+        hideable_by_id: true,
     }
 }
 
@@ -407,6 +408,7 @@ fn make_stat(pos: [f32; 3], rot: [f32; 3], scale: f32) -> StaticDesc {
         part_transform: lodgen_native::input::identity_part_transform(),
         part_scale: 1.0,
         material_swap: std::collections::BTreeMap::new(),
+        hideable_by_id: true,
     }
 }
 
@@ -1225,6 +1227,7 @@ fn static_no_lod() -> StaticDesc {
         part_transform: lodgen_native::input::identity_part_transform(),
         part_scale: 1.0,
         material_swap: std::collections::BTreeMap::new(),
+        hideable_by_id: true,
     }
 }
 
@@ -1271,7 +1274,7 @@ fn run_generate_quad(
         level,
     };
 
-    lodgen_native::objects::generate_quad(&quad, &ctx, &atlas)
+    lodgen_native::objects::generate_quad(&quad, &ctx, &atlas, None)
 }
 
 #[test]
@@ -1288,6 +1291,203 @@ fn generate_quad_skips_refs_without_lod_model() {
         "no LOD model → no .bto emitted, got {:?}",
         out.meshes
     );
+}
+
+#[test]
+fn records_instancing_writes_instance_pairs_onto_the_world_atlas() {
+    use lodgen_native::atlas::atlas::AtlasResult;
+    use lodgen_native::objects::static_desc::ShapeFlags;
+    use nif_core_native::model::NifFile;
+
+    let tmp = std::env::temp_dir().join("lodgen_records_instancing");
+    let _ = std::fs::remove_dir_all(&tmp);
+    let (data, out_dir) = (tmp.join("data"), tmp.join("out"));
+
+    // The rock's LOD model, written by the BTO writer at level 1 so it stays in model space.
+    let mut textures: [String; 10] = Default::default();
+    textures[0] = r"textures\rock\rock01_d.dds".into();
+    textures[1] = r"textures\rock\rock01_n.dds".into();
+    let settings = LodSettings::fo4_default();
+    let model = build_bto(
+        &mut make_quad(1, 0, 0),
+        vec![bto_test_shape(textures, ShapeFlags::HAS_LOD_FLAG, 0)],
+        &settings.objects,
+    );
+    lodgen_native::output::bto::write_bto(&data.join("meshes/lod/rock01_lod.nif"), &model)
+        .expect("write LOD model");
+
+    let mut list = AtlasList::new();
+    list.insert(
+        r"textures\rock\rock01_d.dds,textures\rock\rock01_n.dds".to_string(),
+        AtlasRect::from_map_row(256, 256, 0, 0, 4096, 4096, r"Textures\Terrain\W\Objects\W.Objects.dds", false),
+    );
+    let atlas = AtlasResult {
+        map_path: out_dir.join("atlas.txt"),
+        diffuse: out_dir.join("Textures/Terrain/W/Objects/W.Objects.dds"),
+        normal: out_dir.join("Textures/Terrain/W/Objects/W.Objects_n.dds"),
+        specular: out_dir.join("Textures/Terrain/W/Objects/W.Objects_s.dds"),
+        atlas_size: (4096, 4096),
+        uv: std::collections::HashMap::new(),
+        list,
+        dds_written: 3,
+    };
+
+    let rock = |id: &str, x: f32| {
+        let mut r = barn_static(r"meshes\lod\rock01_lod.nif");
+        r.ref_id = id.into();
+        r.pos = [x, 100.0, 0.0];
+        r
+    };
+    let mut quad = make_quad(4, 0, 0);
+    quad.statics = vec![rock("00000101", 100.0), rock("00000102", 200.0), rock("00000103", 300.0)];
+    let world = empty_world();
+    let game = Game::fo4();
+    let paths = LodPaths { data_dirs: vec![data], output_dir: out_dir, source_data_dir: None };
+    let ctx = QuadCtx { world: &world, settings: &settings, game: &game, paths: &paths, level: 4 };
+    let instancing = lodgen_native::objects::RecordInstancing::new("W", &atlas);
+
+    let out = lodgen_native::objects::generate_quad(&quad, &ctx, &atlas, Some(&instancing)).expect("generate_quad");
+
+    assert_eq!(out.meshes.len(), 1, "every rock is instanced, so the BTO holds only the root and one pair");
+    let nif = NifFile::from_bytes(&std::fs::read(&out.meshes[0]).unwrap(), None).unwrap();
+    let roots = &nif.header.footer_roots;
+    assert_eq!(roots.len(), 3);
+    assert_eq!(nif.blocks[roots[1] as usize].type_name, "BSTriShape");
+    let (_, instances, ids) =
+        lodgen_native::output::instance_block::decode(&nif.blocks[roots[2] as usize].remainder).unwrap();
+    assert_eq!(ids, vec![0x101, 0x102, 0x103]);
+    assert_eq!(instances[2].pos, [300.0, 100.0, 0.0]);
+}
+
+/// A rock LOD model with one shape per `names` texture pair, an atlas tile for each, and a level-4 quad of rocks at
+/// `scales`, under a fresh `tmp/<dir>`.
+struct RecordsLayerFixture {
+    tmp: std::path::PathBuf,
+    settings: LodSettings,
+    paths: LodPaths,
+    atlas: lodgen_native::atlas::atlas::AtlasResult,
+    quad: QuadDesc,
+}
+
+impl RecordsLayerFixture {
+    fn new(dir: &str, names: &[&str], scales: &[f32]) -> Self {
+        use lodgen_native::objects::static_desc::ShapeFlags;
+        let tmp = std::env::temp_dir().join(dir);
+        let _ = std::fs::remove_dir_all(&tmp);
+        let (data, out_dir) = (tmp.join("data"), tmp.join("out"));
+        let settings = LodSettings::fo4_default();
+        let shapes = names
+            .iter()
+            .map(|name| {
+                let mut textures: [String; 10] = Default::default();
+                textures[0] = format!(r"textures\rock\{name}_d.dds");
+                textures[1] = format!(r"textures\rock\{name}_n.dds");
+                bto_test_shape(textures, ShapeFlags::HAS_LOD_FLAG, 0)
+            })
+            .collect();
+        let model = build_bto(&mut make_quad(1, 0, 0), shapes, &settings.objects);
+        lodgen_native::output::bto::write_bto(&data.join("meshes/lod/rock01_lod.nif"), &model).expect("write LOD model");
+        for name in names {
+            for (suffix, rgba) in [("d", [200u8, 100, 50, 255]), ("n", [128, 128, 255, 255])] {
+                let path = data.join(format!("textures/rock/{name}_{suffix}.dds"));
+                directxtex_native::write_dds_rgba_image(&path, 64, 64, &rgba.repeat(64 * 64), "R8G8B8A8_UNORM", false)
+                    .unwrap();
+            }
+        }
+
+        let mut list = AtlasList::new();
+        for (i, name) in names.iter().enumerate() {
+            list.insert(
+                format!(r"textures\rock\{name}_d.dds,textures\rock\{name}_n.dds"),
+                AtlasRect::from_map_row(256, 256, 256 * i as u32, 0, 4096, 4096, r"Textures\Terrain\W\Objects\W.Objects.dds", false),
+            );
+        }
+        let atlas = lodgen_native::atlas::atlas::AtlasResult {
+            map_path: out_dir.join("atlas.txt"),
+            diffuse: out_dir.join("Textures/Terrain/W/Objects/W.Objects.dds"),
+            normal: out_dir.join("Textures/Terrain/W/Objects/W.Objects_n.dds"),
+            specular: out_dir.join("Textures/Terrain/W/Objects/W.Objects_s.dds"),
+            atlas_size: (4096, 4096),
+            uv: std::collections::HashMap::new(),
+            list,
+            dds_written: 3,
+        };
+        let mut quad = make_quad(4, 0, 0);
+        quad.statics = scales
+            .iter()
+            .enumerate()
+            .map(|(i, &scale)| {
+                let mut r = barn_static(r"meshes\lod\rock01_lod.nif");
+                r.ref_id = format!("{:08X}", 0x101 + i);
+                r.pos = [100.0 * (i + 1) as f32, 100.0, 0.0];
+                r.scale = scale;
+                r
+            })
+            .collect();
+        let paths = LodPaths { data_dirs: vec![data], output_dir: out_dir, source_data_dir: None };
+        Self { tmp, settings, paths, atlas, quad }
+    }
+
+    fn generate(&self, instancing: &lodgen_native::objects::RecordInstancing) -> Vec<lodgen_native::output::instance_block::Instance> {
+        let world = empty_world();
+        let game = Game::fo4();
+        let ctx = QuadCtx { world: &world, settings: &self.settings, game: &game, paths: &self.paths, level: 4 };
+        let out = lodgen_native::objects::generate_quad(&self.quad, &ctx, &self.atlas, Some(instancing)).expect("generate_quad");
+        let nif = nif_core_native::model::NifFile::from_bytes(&std::fs::read(&out.meshes[0]).unwrap(), None).unwrap();
+        nif.blocks
+            .iter()
+            .filter(|b| b.type_name == lodgen_native::output::instance_block::BLOCK_TYPE)
+            .flat_map(|b| lodgen_native::output::instance_block::decode(&b.remainder).unwrap().1)
+            .collect()
+    }
+}
+
+#[test]
+fn records_instances_carry_their_group_layer() {
+    use lodgen_native::objects::instance_layers::{AtlasTile, UvRect, scale_layer};
+    let scales = [1.3, 0.7, 2.1];
+    let fixture = RecordsLayerFixture::new("lodgen_records_instance_layers", &["rock01"], &scales);
+    let instancing = lodgen_native::objects::RecordInstancing::new("W", &fixture.atlas);
+    let rect = AtlasRect::from_map_row(256, 256, 0, 512, 4096, 4096, "w.dds", false);
+    let other = AtlasTile { key: r"textures\other_d.dds".into(), rect: UvRect::of(&rect) };
+    assert_eq!(instancing.layers().assign(Some(&other)), 0);
+
+    let instances = fixture.generate(&instancing);
+
+    assert_eq!(instances.len(), 3);
+    for (instance, scale) in instances.iter().zip(scales) {
+        assert_eq!(scale_layer(instance.scale), 1);
+        assert!(((instance.scale - scale) / scale).abs() < 2f32.powi(-12), "{} vs {scale}", instance.scale);
+    }
+    let tiles = instancing.layers().tiles();
+    assert!(tiles[1].key.eq_ignore_ascii_case(r"textures\rock\rock01_d.dds,textures\rock\rock01_n.dds"));
+    let _ = std::fs::remove_dir_all(&fixture.tmp);
+}
+
+#[test]
+fn records_layers_write_the_world_arrays_with_the_atlas_texels() {
+    use lodgen_native::objects::instance_array_index::{file, parse};
+    let mut fixture = RecordsLayerFixture::new("lodgen_records_instance_arrays", &["rock01"], &[1.3, 0.7]);
+    fixture.settings.objects.diffuse_format = lodgen_native::settings::Format::Rgba8;
+    let instancing = lodgen_native::objects::RecordInstancing::new("W", &fixture.atlas);
+    fixture.generate(&instancing);
+
+    let stats = instancing.finish("W", &fixture.settings, &fixture.paths).unwrap();
+
+    assert_eq!((stats.dds, stats.warnings.len()), (3, 0), "{:?}", stats.warnings);
+    let out = &fixture.paths.output_dir;
+    let rect = lodgen_native::objects::instance_layers::UvRect::of(
+        fixture.atlas.list.get(r"textures\rock\rock01_d.dds,textures\rock\rock01_n.dds").unwrap(),
+    );
+    assert_eq!(parse(&std::fs::read_to_string(file(out, "W", ".txt")).unwrap()).unwrap(), vec![rect]);
+    let array = std::fs::read(file(out, "W", ".dds")).unwrap();
+    let probe = directxtex_native::read_dds_probe_bytes(&array).unwrap();
+    assert_eq!((probe.width, probe.height, probe.array_size, probe.mip_levels, probe.dxgi_format), (256, 256, 1, 9, 28));
+    // The records atlas blits the diffuse texels as read, so the slice does too.
+    assert_eq!(&array[148..152], &[200, 100, 50, 255]);
+    let normal = directxtex_native::read_dds_probe(&file(out, "W", "_n.dds")).unwrap();
+    assert_eq!((normal.array_size, normal.dxgi_format), (1, 71));
+    let _ = std::fs::remove_dir_all(&fixture.tmp);
 }
 
 // ---------------------------------------------------------------------------

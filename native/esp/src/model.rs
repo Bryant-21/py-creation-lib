@@ -22,7 +22,7 @@ pub struct ParsedRecord {
     pub form_version: Option<u16>,
     pub version2: Option<u16>,
     pub subrecords: Vec<ParsedSubrecord>,
-    /// Stored compressed payload for byte-exact roundtrip. As with
+    /// Stored payload for lazy decoding and byte-exact roundtrip. As with
     /// `ParsedSubrecord::data` this is normally a refcount slice into
     /// the source mmap rather than an owned copy.
     pub raw_payload: Option<Bytes>,

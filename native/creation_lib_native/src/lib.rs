@@ -19,8 +19,14 @@ fn register_submodule(
     Ok(())
 }
 
-#[pymodule]
-fn _native(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
+pub fn register_module(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
+    #[cfg(feature = "mod_manager")]
+    register_submodule(
+        py,
+        m,
+        "mod_manager_native",
+        mod_manager_native::register_module,
+    )?;
     #[cfg(feature = "audio")]
     register_submodule(py, m, "audio_native", audio_native::register_module)?;
     #[cfg(feature = "palette")]
@@ -54,12 +60,21 @@ fn _native(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     register_submodule(py, m, "havok_native", havok_native::register_module)?;
     #[cfg(feature = "materials")]
     register_submodule(py, m, "materials_native", materials_native::register_module)?;
+    #[cfg(feature = "material_upgrade")]
+    register_submodule(
+        py,
+        m,
+        "material_upgrade_native",
+        material_upgrade_native::register_module,
+    )?;
     #[cfg(feature = "nif")]
     register_submodule(py, m, "nif_core_native", nif_core_native::register_module)?;
     #[cfg(feature = "db")]
     register_submodule(py, m, "db_native", db_native::register_module)?;
     #[cfg(feature = "papyrus_core")]
     register_submodule(py, m, "papyrus_core", papyrus_core::register_module)?;
+    #[cfg(feature = "previs")]
+    register_submodule(py, m, "previs_native", previs_native::register_module)?;
     #[cfg(feature = "scientific")]
     register_submodule(
         py,
@@ -81,4 +96,10 @@ fn _native(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
         world_renderer_native::register_module,
     )?;
     Ok(())
+}
+
+#[cfg(not(feature = "embedded"))]
+#[pymodule]
+fn _native(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
+    register_module(py, m)
 }

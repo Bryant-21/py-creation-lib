@@ -1,0 +1,14 @@
+scn NVCCBunkerRadroachSCRIPT
+
+float iTimer
+
+begin GameMode
+
+	if iTimer > 3
+		set iTimer to 0
+		PlaceAtMe vGlowingOneRadiationAuraExplosion
+	else
+		set iTimer to iTimer + GetSecondsPassed
+	endif
+
+end

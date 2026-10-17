@@ -5,12 +5,13 @@
 //!
 //! Untouched destination tags are preserved as opaque byte ranges (the splice
 //! inserts the new defines immediately before the SymbolClass tag and replaces
-//! only that tag). Fonts/text/buttons in a closure are rejected; the FO76
-//! marker icons are pure shape/sprite art with no bitmaps.
+//! only that tag). Fonts/text/buttons in a closure are rejected. Bitmaps that
+//! shapes name in their fill styles travel with the closure.
 
 use std::collections::{HashMap, HashSet};
 
 use crate::container::{Movie, TagSpan, split_tags, split_tags_at, write_tag_header};
+use crate::shape::bitmap_id_offsets;
 use crate::symbolclass::{SymbolEntry, encode_symbol_table, parse_symbol_table};
 
 const DEFINE_SPRITE: u16 = 39;
@@ -93,12 +94,16 @@ fn sprite_char_refs(sprite_body: &[u8]) -> Result<Vec<u16>, String> {
     Ok(refs)
 }
 
-/// Characters that `code` references. Shapes/morphs/bitmaps are leaves (the
-/// FO76 marker library has no bitmaps); fonts/text/buttons are out of scope.
+/// Characters that `code` references. Shapes/morphs reference the bitmaps their
+/// fill styles name; bitmaps are leaves; fonts/text/buttons are out of scope.
 fn internal_refs(code: u16, body: &[u8]) -> Result<Vec<u16>, String> {
     match code {
         DEFINE_SPRITE => sprite_char_refs(body),
-        2 | 22 | 32 | 83 | 46 | 84 | 20 | 36 | 6 | 21 | 35 | 90 => Ok(Vec::new()),
+        2 | 22 | 32 | 83 | 46 | 84 => Ok(bitmap_id_offsets(code, body)?
+            .into_iter()
+            .map(|at| u16::from_le_bytes([body[at], body[at + 1]]))
+            .collect()),
+        20 | 36 | 6 | 21 | 35 | 90 => Ok(Vec::new()),
         7 | 34 => Err("button in marker closure is not supported".into()),
         10 | 11 | 33 | 37 | 48 | 75 => Err("font/text in marker closure is not supported".into()),
         _ => Ok(Vec::new()),
@@ -173,6 +178,10 @@ fn remap_define_body(code: u16, body: &[u8], offset: u16) -> Result<Vec<u8>, Str
                 out[abs..abs + 2].copy_from_slice(&cur.wrapping_add(offset).to_le_bytes());
             }
         }
+    }
+    for at in bitmap_id_offsets(code, body)? {
+        let cur = u16::from_le_bytes([out[at], out[at + 1]]);
+        out[at..at + 2].copy_from_slice(&cur.wrapping_add(offset).to_le_bytes());
     }
     Ok(out)
 }

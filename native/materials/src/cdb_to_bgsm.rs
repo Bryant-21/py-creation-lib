@@ -71,6 +71,12 @@ fn load_cdb(cdb_path: &Path) -> Result<Arc<CachedCdb>, String> {
 /// `materials\architecture\...\foo.mat`), resolved against `cdb_path` the
 /// same way `MaterialsCDB.lookup_by_path` does.
 pub fn cdb_to_bgsm(cdb_path: &Path, mat_path: &str) -> Result<Vec<u8>, String> {
+    let material = project_material(cdb_path, mat_path)?;
+    let bgsm = build_bgsm(&material, mat_path)?;
+    Ok(bgsm::write(&bgsm))
+}
+
+pub fn project_material(cdb_path: &Path, mat_path: &str) -> Result<Ce2MaterialPayload, String> {
     let cached = load_cdb(cdb_path)?;
     let canonical_path = canonical_material_path(mat_path);
     let db_id = [mat_path, canonical_path.as_str()]
@@ -84,10 +90,8 @@ pub fn cdb_to_bgsm(cdb_path: &Path, mat_path: &str) -> Result<Vec<u8>, String> {
         .ok_or_else(|| {
             format!("material not found in cdb: {mat_path} (canonical: {canonical_path})")
         })?;
-    let material = ce2::project(&cached.payload, db_id)
-        .ok_or_else(|| format!("failed to project CE2 material for {mat_path}"))?;
-    let bgsm = build_bgsm(&material, mat_path)?;
-    Ok(bgsm::write(&bgsm))
+    ce2::project(&cached.payload, db_id)
+        .ok_or_else(|| format!("failed to project CE2 material for {mat_path}"))
 }
 
 fn canonical_material_path(path: &str) -> String {
@@ -113,13 +117,48 @@ fn canonical_material_path(path: &str) -> String {
 }
 
 fn build_bgsm(material: &Ce2MaterialPayload, mat_path: &str) -> Result<BgsmData, String> {
-    // Highest-index layer == topmost == last painted; multi-layer materials
-    // collapse to it, blenders and LOD materials are dropped (FO4 has no
-    // equivalent of either).
+    if material.layers.len() > 1 || !material.blenders.is_empty() {
+        return Err(format!(
+            "CE2Material {mat_path:?} requires layer/mask baking before FO4 emission ({} layers, {} blenders)",
+            material.layers.len(),
+            material.blenders.len()
+        ));
+    }
+    if !material.conversion_blockers.is_empty() {
+        return Err(format!(
+            "CE2Material {mat_path:?}: {}",
+            material.conversion_blockers.join("; ")
+        ));
+    }
     let layer = material
         .layers
         .last()
         .ok_or_else(|| format!("CE2Material {mat_path:?} has no layers"))?;
+    if layer.texture_set.diffuse.is_empty() || layer.texture_set.normal.is_empty() {
+        return Err(format!(
+            "CE2Material {mat_path:?} has no resolved diffuse/normal pair"
+        ));
+    }
+    let unsupported: Vec<_> = [
+        ("roughness", &layer.texture_set.rough),
+        ("metalness", &layer.texture_set.metal),
+        ("AO", &layer.texture_set.ao),
+        ("opacity", &layer.texture_set.opacity),
+        ("emissive", &layer.texture_set.emissive),
+    ]
+    .into_iter()
+    .filter_map(|(name, path)| (!path.is_empty()).then_some(name))
+    .collect();
+    if !unsupported.is_empty() || layer.material.metalness != 0.0 {
+        let mut unsupported = unsupported;
+        if layer.material.metalness != 0.0 {
+            unsupported.push("material metalness");
+        }
+        return Err(format!(
+            "CE2Material {mat_path:?} requires texture baking: {}",
+            unsupported.join(", ")
+        ));
+    }
 
     let params = PbrToSpecGlossParams {
         ao_multiplier: 1.0,
@@ -148,6 +187,13 @@ fn build_bgsm(material: &Ce2MaterialPayload, mat_path: &str) -> Result<BgsmData,
 
     let header = default_header(TARGET_BGSM_VERSION);
     let mut bgsm = default_bgsm(header);
+
+    bgsm.header.u_scale = layer.uv_stream.scale_u;
+    bgsm.header.v_scale = layer.uv_stream.scale_v;
+    bgsm.header.u_offset = layer.uv_stream.offset_u;
+    bgsm.header.v_offset = layer.uv_stream.offset_v;
+    bgsm.header.tile_u = layer.uv_stream.address_mode == 0;
+    bgsm.header.tile_v = layer.uv_stream.address_mode == 0;
 
     bgsm.DiffuseTexture = layer.texture_set.diffuse.clone();
     bgsm.NormalTexture = layer.texture_set.normal.clone();
@@ -306,6 +352,9 @@ mod tests {
                 emissive_color: [0.0, 0.0, 0.0],
                 emissive_multiplier: 0.0,
                 alpha: 1.0,
+                color: [1.0, 1.0, 1.0, 0.0],
+                color_mode: 1,
+                use_vertex_color: false,
             },
             texture_set: Ce2TextureSetPayload {
                 diffuse: "tex_d.dds".to_owned(),
@@ -315,6 +364,8 @@ mod tests {
                 metal: String::new(),
                 ao: String::new(),
                 emissive: String::new(),
+                replacements: Default::default(),
+                normal_intensity: 1.0,
             },
             uv_stream: Ce2UvStreamPayload {
                 scale_u: 1.0,
@@ -322,6 +373,7 @@ mod tests {
                 offset_u: 0.0,
                 offset_v: 0.0,
                 channel: 0,
+                address_mode: 0,
             },
             name: String::new(),
         }
@@ -334,6 +386,7 @@ mod tests {
             layers,
             blenders: Vec::new(),
             lod_materials: Vec::new(),
+            conversion_blockers: Vec::new(),
         }
     }
 
@@ -353,12 +406,59 @@ mod tests {
     }
 
     #[test]
-    fn top_layer_wins_on_multi_layer_material() {
+    fn single_layer_preserves_uv_transform_and_clamp_addressing() {
+        let mut layer = layer(0.5, 0.0);
+        layer.uv_stream.scale_u = 40.0;
+        layer.uv_stream.offset_u = 0.25;
+        layer.uv_stream.offset_v = -0.5;
+        layer.uv_stream.address_mode = 1;
+        let bgsm = build_bgsm(&material(vec![layer]), "uv.mat").unwrap();
+        let reloaded = bgsm::parse(&bgsm::write(&bgsm)).unwrap();
+        assert_eq!(reloaded.header.u_scale, 40.0);
+        assert_eq!(reloaded.header.u_offset, 0.25);
+        assert_eq!(reloaded.header.v_offset, -0.5);
+        assert!(!reloaded.header.tile_u && !reloaded.header.tile_v);
+    }
+
+    #[test]
+    fn multi_layer_material_requires_baking() {
         let mat = material(vec![layer(0.2, 0.0), layer(0.9, 0.0)]);
-        let bgsm = build_bgsm(&mat, "materials\\multi.mat").expect("builds");
-        // Only the last (highest-index) layer's smoothness feeds the gloss
-        // conversion: roughness = 1 - 0.9 = 0.1 -> gloss = 0.9.
-        assert!((bgsm.Smoothness - 0.9).abs() < 1e-5, "{}", bgsm.Smoothness);
+        let error = build_bgsm(&mat, "materials\\multi.mat").expect_err("lossy flattening");
+        assert!(error.contains("requires layer/mask baking"));
+    }
+
+    #[test]
+    fn single_layer_rejects_unbaked_channels_and_unprojected_components() {
+        for channel in 0..5 {
+            let mut layer = layer(0.5, 0.0);
+            let slots = [
+                &mut layer.texture_set.rough,
+                &mut layer.texture_set.metal,
+                &mut layer.texture_set.ao,
+                &mut layer.texture_set.opacity,
+                &mut layer.texture_set.emissive,
+            ];
+            *slots.into_iter().nth(channel).unwrap() = "source.dds".to_owned();
+            assert!(
+                build_bgsm(&material(vec![layer]), "single.mat")
+                    .unwrap_err()
+                    .contains("requires texture baking")
+            );
+        }
+        let metallic = material(vec![layer(0.5, 1.0)]);
+        assert!(
+            build_bgsm(&metallic, "single.mat")
+                .unwrap_err()
+                .contains("material metalness")
+        );
+        let mut mat = material(vec![layer(0.5, 0.0)]);
+        mat.conversion_blockers
+            .push("unprojected UV channel".to_owned());
+        assert!(
+            build_bgsm(&mat, "single.mat")
+                .unwrap_err()
+                .contains("unprojected UV channel")
+        );
     }
 
     #[test]
@@ -389,4 +489,63 @@ mod tests {
         );
     }
 
+    #[test]
+    #[ignore = "requires extracted Starfield materialsbeta.cdb"]
+    fn starfield_constellation_source_graph_receipt() {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let cached =
+            load_cdb(&repo.join("extracted/starfield/Materials/materialsbeta.cdb")).unwrap();
+        let path =
+            "Materials/Clothes/Spacesuit_Constellation/Spacesuit_Constellation_UpperBody.mat";
+        let root_id = cached.by_resource_id[&cdb::resource_id_from_path(path)];
+        let material = ce2::project(&cached.payload, root_id).unwrap();
+        assert_eq!(material.layers.len(), 4);
+        assert_eq!(material.blenders.len(), 3);
+        assert!(material.blenders.iter().all(|blender| blender.mode == 4));
+        assert!(
+            material
+                .layers
+                .iter()
+                .any(|layer| layer.uv_stream.scale_u == 40.0)
+        );
+        assert!(
+            material
+                .layers
+                .iter()
+                .any(|layer| !layer.texture_set.replacements.is_empty())
+        );
+        let mut pending = vec![root_id];
+        let mut seen = std::collections::HashSet::new();
+        let mut rows = Vec::new();
+        while let Some(id) = pending.pop() {
+            if id == 0 || !seen.insert(id) {
+                continue;
+            }
+            let object = cached
+                .payload
+                .objects
+                .iter()
+                .find(|o| o.db_id == id)
+                .unwrap();
+            pending.push(object.base_object_db_id);
+            let components: Vec<_> = object.components.iter().map(|component| {
+                let data = ce2::walk_component(component, &cached.payload.class_defs);
+                if component.class_name.ends_with("ID") {
+                    if let Some(id) = data.as_ref().and_then(|v| v.get("ID")).and_then(|v| v.as_u64()) {
+                        pending.push(id as u32);
+                    }
+                }
+                serde_json::json!({"class": component.class_name, "index": component.key & 0xffff, "diff":component.is_diff, "data":data})
+            }).collect();
+            rows.push(serde_json::json!({"id":id,"base":object.base_object_db_id,"outer":object.parent_db_id,"components":components}));
+        }
+        let receipt = std::env::temp_dir().join("b21_starfield_constellation_material_graph.json");
+        std::fs::write(
+            &receipt,
+            serde_json::to_vec_pretty(&serde_json::json!({"root":root_id,"objects":rows})).unwrap(),
+        )
+        .unwrap();
+        println!("{} objects: {}", seen.len(), receipt.display());
+        assert!(seen.len() > 10);
+    }
 }

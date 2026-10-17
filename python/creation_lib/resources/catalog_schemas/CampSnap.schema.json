@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://modbox21.local/catalog_schemas/CampSnap.schema.json",
+  "title": "CampSnap catalog",
+  "allOf": [
+    {"$ref": "envelope.schema.json"}
+  ],
+  "$defs": {
+    "vector": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "number"}},
+    "nodeType": {
+      "type": "object",
+      "required": ["editor_id", "self_snap", "adjacent"],
+      "properties": {
+        "editor_id": {"type": "string"},
+        "self_snap": {"type": "boolean", "description": "Two nodes of this type snap to each other (STND FNAM bit 0)"},
+        "adjacent": {
+          "type": "array",
+          "items": {"$ref": "envelope.schema.json#/$defs/formKey"},
+          "x-form-type": ["STND"],
+          "description": "NNAM as stored; adjacency is two-way at runtime"
+        }
+      }
+    },
+    "template": {
+      "type": "object",
+      "required": ["editor_id", "category", "nodes"],
+      "properties": {
+        "editor_id": {"type": "string"},
+        "category": {"type": "integer", "minimum": 0, "description": "STPT, 0 when absent"},
+        "nodes": {
+          "type": "array",
+          "description": "Flattened: parent template nodes with overrides and removals applied",
+          "items": {
+            "type": "object",
+            "required": ["id", "type", "pos", "rot"],
+            "properties": {
+              "id": {"type": "integer", "minimum": 0},
+              "type": {"$ref": "envelope.schema.json#/$defs/formKey", "x-form-type": ["STND"]},
+              "pos": {"$ref": "#/$defs/vector"},
+              "rot": {"$ref": "#/$defs/vector", "description": "Euler degrees as stored by FO76"}
+            }
+          }
+        }
+      }
+    }
+  },
+  "required": [
+    "settings",
+    "node_types",
+    "templates",
+    "forms",
+    "fo4_aliases"
+  ],
+  "properties": {
+    "version": {"const": 1},
+    "settings": {"type": "object", "description": "Feature-wide values; a later plugin's field replaces the earlier one.", "properties": {}},
+    "node_types": {
+      "type": "object",
+      "description": "Snap node type (STND)",
+      "x-key": "map",
+      "propertyNames": {"$ref": "envelope.schema.json#/$defs/formKey"},
+      "x-form-type": ["STND"],
+      "additionalProperties": {"oneOf": [{"$ref": "#/$defs/nodeType"}, {"$ref": "envelope.schema.json#/$defs/removeMarker"}]}
+    },
+    "templates": {
+      "type": "object",
+      "description": "Snap template (STMP)",
+      "x-key": "map",
+      "propertyNames": {"$ref": "envelope.schema.json#/$defs/formKey"},
+      "x-form-type": ["STMP"],
+      "additionalProperties": {"oneOf": [{"$ref": "#/$defs/template"}, {"$ref": "envelope.schema.json#/$defs/removeMarker"}]}
+    },
+    "forms": {
+      "type": "object",
+      "description": "Base form (any type with SNTP) -> its snap template",
+      "x-key": "map",
+      "propertyNames": {"$ref": "envelope.schema.json#/$defs/formKey"},
+      "additionalProperties": {"oneOf": [{"$ref": "envelope.schema.json#/$defs/formKey", "x-form-type": ["STMP"]}, {"$ref": "envelope.schema.json#/$defs/removeMarker"}]}
+    },
+    "fo4_aliases": {
+      "type": "object",
+      "description": "FO4 connect point name -> snap node types that stand in for it",
+      "x-key": "map",
+      "propertyNames": {"type": "string", "pattern": "^P-"},
+      "additionalProperties": {
+        "oneOf": [
+          {"type": "array", "items": {"$ref": "envelope.schema.json#/$defs/formKey"}, "x-form-type": ["STND"]},
+          {"$ref": "envelope.schema.json#/$defs/removeMarker"}
+        ]
+      }
+    }
+  }
+}

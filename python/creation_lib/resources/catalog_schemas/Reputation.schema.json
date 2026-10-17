@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://modbox21.local/catalog_schemas/Reputation.schema.json",
+  "title": "Reputation catalog",
+  "description": "The faction reputation meters shown on the map and in the HUD: which value they track and where each tier starts.",
+  "x-help": "A reputation faction is a meter tied to an actor value. When the actor value changes the HUD shows the faction's meter, and the map's reputation panel lists the tier the player has reached.\n\nEach faction has exactly seven tiers. A tier's threshold is the actor value at which that tier begins, and the seven thresholds must rise from the first to the last. The label is the tier's name.\n\nOnly the Crater and Foundation factions have HUD artwork; a faction with another code is skipped. A faction without a name or an actor value is skipped too.",
+  "allOf": [
+    {"$ref": "envelope.schema.json"}
+  ],
+  "$defs": {
+    "optionalForm": {"oneOf": [{"$ref": "envelope.schema.json#/$defs/formKey"}, {"type": "null"}]}
+  },
+  "properties": {
+    "version": {"const": 1},
+    "settings": {
+      "type": "object",
+      "description": "Feature-wide values; a later plugin's field replaces the earlier one.",
+      "properties": {
+        "output_plugin": {"const": "SeventySix.esm", "title": "Output plugin", "description": "Tales only supports reputation built for SeventySix.esm."},
+        "source_movie_contract": {"type": "object", "title": "HUD movie contract", "description": "Which HUD movie the reputation widget was built from. Informational."},
+        "sounds": {
+          "type": "object",
+          "title": "HUD sounds",
+          "description": "Sound played for each HUD cue.",
+          "x-key-title": "Cue",
+          "propertyNames": {"enum": ["increase", "decrease", "level_up"]},
+          "properties": {
+            "increase": {"type": "object", "title": "Reputation goes up", "properties": {"form": {"$ref": "#/$defs/optionalForm", "x-form-type": ["SNDR"], "title": "Sound", "description": "Sound descriptor played."}}},
+            "decrease": {"type": "object", "title": "Reputation goes down", "properties": {"form": {"$ref": "#/$defs/optionalForm", "x-form-type": ["SNDR"], "title": "Sound", "description": "Sound descriptor played."}}},
+            "level_up": {"type": "object", "title": "Tier reached", "properties": {"form": {"$ref": "#/$defs/optionalForm", "x-form-type": ["SNDR"], "title": "Sound", "description": "Sound descriptor played."}}}
+          },
+          "additionalProperties": {"type": "object", "properties": {"form": {"$ref": "#/$defs/optionalForm", "x-form-type": ["SNDR"]}}}
+        },
+        "missing_converted": {"type": "array", "items": {"type": "string"}, "title": "Missing converted forms", "description": "Source forms that are absent from the converted plugin. Informational."}
+      }
+    },
+    "factions": {
+      "type": "array",
+      "title": "Factions",
+      "description": "The reputation meters. Only Crater and Foundation have HUD art.",
+      "x-key": ["code"],
+      "x-order": "entries",
+      "items": {
+        "type": "object",
+        "properties": {
+          "code": {"type": "string", "title": "Code", "description": "Short faction name that picks the HUD artwork: Crater or Foundation."},
+          "name": {"type": "string", "title": "Name", "description": "Faction name shown on the panel."},
+          "available": {"type": "boolean", "title": "Available", "description": "Whether the converted plugin carries this faction's records."},
+          "actor_value": {"$ref": "#/$defs/optionalForm", "x-form-type": ["AVIF"], "title": "Reputation value", "description": "The actor value that holds the player's reputation. Required."},
+          "faction": {"$ref": "#/$defs/optionalForm", "x-form-type": ["FACT"], "title": "Faction record", "description": "The faction (FACT) this reputation belongs to. Optional."},
+          "minimum": {"type": "number", "title": "Minimum", "description": "Lowest value of the meter."},
+          "maximum": {"type": "number", "title": "Maximum", "description": "Highest value of the meter."},
+          "default": {"type": "number", "title": "Starting value", "description": "Value a new character begins with."},
+          "tiers": {
+            "type": "array",
+            "title": "Tiers",
+            "description": "Exactly seven tiers, from lowest to highest. Thresholds must rise.",
+            "items": {
+              "type": "object",
+              "required": ["threshold"],
+              "properties": {
+                "index": {"type": "integer", "title": "Tier number", "description": "Position of the tier, starting at 0."},
+                "label": {"type": "string", "title": "Label", "description": "Tier name, for example Ally."},
+                "threshold": {"type": "number", "title": "Starts at", "description": "Reputation value at which this tier begins."},
+                "global": {"$ref": "#/$defs/optionalForm", "x-form-type": ["GLOB"], "title": "Tier global", "description": "Global variable the tier's quests read. Optional."}
+              }
+            }
+          },
+          "remove": {"$ref": "envelope.schema.json#/$defs/removeFlag"}
+        },
+        "if": {"not": {"required": ["remove"]}},
+        "then": {"required": ["code", "tiers"]}
+      }
+    }
+  }
+}

@@ -32,6 +32,8 @@ const VF_VERTEX: i64 = 0x0001;
 const VF_SKINNED: i64 = 0x0040;
 const VF_FULL_PRECISION: i64 = 0x0400;
 
+// Keep shared meanings only; Skyrim's remappable textures, lighting, and LOD
+// bits can otherwise enable unrelated FO4 tessellation, dismemberment, or VATS.
 const FO4_FLAGS_1_STATIC_MASK: u64 = (1 << 0)
     | (1 << 3)
     | (1 << 4)
@@ -48,7 +50,6 @@ const FO4_FLAGS_1_STATIC_MASK: u64 = (1 << 0)
     | (1 << 22)
     | (1 << 23)
     | (1 << 24)
-    | (1 << 25)
     | (1 << 26)
     | (1 << 27)
     | (1 << 29)
@@ -59,25 +60,17 @@ const FO4_FLAGS_2_STATIC_MASK: u64 = (1 << 0)
     | (1 << 4)
     | (1 << 5)
     | (1 << 6)
-    | (1 << 7)
     | (1 << 10)
     | (1 << 11)
     | (1 << 12)
     | (1 << 13)
     | (1 << 14)
-    | (1 << 15)
     | (1 << 16)
     | (1 << 18)
     | (1 << 19)
-    | (1 << 20)
-    | (1 << 22)
     | (1 << 24)
-    | (1 << 25)
-    | (1 << 26)
-    | (1 << 27)
     | (1 << 29)
-    | (1 << 30)
-    | (1 << 31);
+    | (1 << 30);
 
 #[derive(Debug, Default)]
 pub(crate) struct MaterialSynthesisReport {
@@ -422,7 +415,9 @@ fn lighting_material(
         SpecularEnabled: flags_1 & SLSF1_SPECULAR != 0,
         SpecularColor: color3(shader.get_field("Specular Color")).unwrap_or([1.0; 3]),
         SpecularMult: float(shader.get_field("Specular Strength")).unwrap_or(1.0),
-        Smoothness: (float(shader.get_field("Glossiness")).unwrap_or(50.0) / 100.0).clamp(0.0, 1.0),
+        Smoothness: materials_native::texture_convert::legacy_specular_exponent_to_fo4_smoothness(
+            float(shader.get_field("Glossiness")).unwrap_or(80.0),
+        ),
         FresnelPower: 5.0,
         WetnessControlSpecScale: -1.0,
         WetnessControlSpecPowerScale: -1.0,
@@ -530,11 +525,12 @@ fn fo4_material_header(
 ) -> BaseHeader {
     let uv_offset = tex_coord(shader.get_field("UV Offset")).unwrap_or([0.0, 0.0]);
     let uv_scale = tex_coord(shader.get_field("UV Scale")).unwrap_or([1.0, 1.0]);
+    let clamp_mode = numeric(shader.get_field("Texture Clamp Mode")).unwrap_or(3);
     BaseHeader {
         signature: 0,
         version: 2,
-        tile_u: true,
-        tile_v: true,
+        tile_u: clamp_mode & 2 != 0,
+        tile_v: clamp_mode & 1 != 0,
         u_offset: uv_offset[0],
         v_offset: uv_offset[1],
         u_scale: uv_scale[0],
@@ -855,7 +851,124 @@ mod tests {
         assert!(material.DisplacementTexture.is_none());
         assert!(material.Glowmap);
         assert!(material.EmitEnabled);
-        assert!((material.Smoothness - 0.75).abs() < f32::EPSILON);
+        assert!(((10.0 * material.Smoothness + 1.0).exp2() - 75.0).abs() < 0.0001);
+    }
+
+    #[test]
+    fn material_headers_preserve_skyrim_clamp_modes_and_uv_transforms() {
+        for (mode, tile_u, tile_v) in [
+            (0, false, false),
+            (1, false, true),
+            (2, true, false),
+            (3, true, true),
+        ] {
+            let mut shader = NifBlock::new(0, "BSLightingShaderProperty");
+            shader.set_field("Texture Clamp Mode", NifValue::UInt(mode));
+            shader.set_field(
+                "UV Offset",
+                NifValue::Struct(IndexMap::from([
+                    ("u".into(), NifValue::Float(0.25)),
+                    ("v".into(), NifValue::Float(0.5)),
+                ])),
+            );
+            shader.set_field(
+                "UV Scale",
+                NifValue::Struct(IndexMap::from([
+                    ("u".into(), NifValue::Float(2.0)),
+                    ("v".into(), NifValue::Float(3.0)),
+                ])),
+            );
+            let lighting = bgsm::parse(&bgsm::write(&lighting_material(&shader, &[], None))).unwrap();
+            shader.type_name = "BSEffectShaderProperty".into();
+            let effect = bgem::parse(&bgem::write(&effect_material(&shader, None))).unwrap();
+            for header in [&lighting.header, &effect.header] {
+                assert_eq!((header.tile_u, header.tile_v), (tile_u, tile_v));
+                assert_eq!((header.u_offset, header.v_offset), (0.25, 0.5));
+                assert_eq!((header.u_scale, header.v_scale), (2.0, 3.0));
+            }
+        }
+    }
+
+    #[test]
+    fn synthesis_does_not_reinterpret_skyrim_flags_as_fo4_render_features() {
+        let mut nif = NifFile::new("skyrimse");
+        let shader_id = nif.add_block("BSLightingShaderProperty", None);
+        nif.blocks[shader_id] = NifBlock::new(shader_id, "BSLightingShaderProperty");
+        let shader = &mut nif.blocks[shader_id];
+        shader.set_field(
+            "Shader Flags 1:SK",
+            NifValue::UInt(SLSF1_SPECULAR | SLSF1_ZBUFFER_TEST | (1 << 25)),
+        );
+        shader.set_field(
+            "Shader Flags 2:SK",
+            NifValue::UInt(
+                SLSF2_ZBUFFER_WRITE | SLSF2_ASSUME_SHADOWMASK | (1 << 15) | (1 << 20)
+                    | (1 << 22) | (1 << 25) | (1 << 26) | SLSF2_BACK_LIGHTING | (1 << 31),
+            ),
+        );
+        let output = tempfile::tempdir().unwrap();
+        let report =
+            synthesize_fo4_materials(&mut nif, Path::new("Meshes/Test.nif"), output.path()).unwrap();
+        let shader = &nif.blocks[shader_id];
+        assert_eq!(
+            numeric(shader.get_field("Shader Flags 1:FO4")),
+            Some(SLSF1_SPECULAR | SLSF1_ZBUFFER_TEST)
+        );
+        assert_eq!(
+            numeric(shader.get_field("Shader Flags 2:FO4")),
+            Some(SLSF2_ZBUFFER_WRITE)
+        );
+        let material = bgsm::parse(&std::fs::read(&report.emitted[0]).unwrap()).unwrap();
+        assert!(material.AssumeShadowmask);
+        assert_eq!(material.BackLighting, Some(true));
+        assert!(!material.header.alpha_test);
+        assert!(!material.Tessellate);
+    }
+
+    #[test]
+    #[ignore = "requires local extracted Skyrim barrel and cloud assets"]
+    fn real_skyrim_barrel_and_cloud_preserve_material_render_contracts() {
+        let extracted = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../extracted/skyrimse/meshes");
+        let temp = tempfile::tempdir().unwrap();
+        let materials = temp.path().join("Materials");
+        for (relative, material_name) in [
+            ("clutter/barrel02.nif", "barrel02_8.bgsm"),
+            ("sky/clouddistant01.nif", "clouddistant01_3.bgem"),
+        ] {
+            let output = temp.path().join(Path::new(relative).file_name().unwrap());
+            let report = crate::convert_file::convert_nif_file(
+                &extracted.join(relative),
+                &output,
+                "skyrimse",
+                "fo4",
+                Some(&materials),
+                &crate::convert_file::ConvertFileOptions::default(),
+            ).unwrap();
+            assert!(report.errors.is_empty(), "{:?}", report.errors);
+            let material_path = report.emitted_bgsms.iter().find(|path| {
+                Path::new(path).file_name().unwrap().to_string_lossy()
+                    .eq_ignore_ascii_case(material_name)
+            }).unwrap();
+            let bytes = std::fs::read(material_path).unwrap();
+            if material_name.ends_with(".bgsm") {
+                let material = bgsm::parse(&bytes).unwrap();
+                assert_eq!(material.SpecularColor, [1.0; 3]);
+                assert_eq!(material.SpecularMult, 1.0);
+                assert!(((10.0 * material.Smoothness + 1.0).exp2() - 80.0).abs() < 0.0001);
+                let converted = NifFile::load(output).unwrap();
+                for shader in converted.blocks.iter().filter(|block| {
+                    block.type_name == "BSLightingShaderProperty"
+                }) {
+                    assert_eq!(numeric(shader.get_field("Shader Flags 1")).unwrap() & (1 << 25), 0);
+                    assert_eq!(numeric(shader.get_field("Shader Flags 2")).unwrap() & (1 << 15), 0);
+                }
+            } else {
+                let material = bgem::parse(&bytes).unwrap();
+                assert!(material.header.tile_u);
+                assert!(!material.header.tile_v);
+            }
+        }
     }
 
     #[test]

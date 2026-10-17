@@ -9,7 +9,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import os
 import sys
 from pathlib import Path
 
@@ -77,7 +76,9 @@ def serialize_shape_records(shape) -> bytes:
         if fs.color:
             fill_styles.append({"color": fs.color.to_hex(), "type": fs.fill_type})
 
+    from creation_lib.swf.library_assets import encoded_geometry
     return json.dumps({
+        **encoded_geometry(shape),
         "records": records,
         "fill_styles": fill_styles,
         "bounds": list(shape.bounds_px),

@@ -2,6 +2,7 @@ use pyo3::prelude::*;
 
 pub mod asset_source;
 pub mod atlas;
+pub mod audit;
 pub mod billboards;
 pub mod descriptors;
 pub mod driver;
@@ -11,6 +12,7 @@ pub mod naming;
 pub mod objects;
 pub mod output;
 pub mod progress;
+pub mod report;
 pub mod settings;
 pub mod terrain;
 pub mod trees;
@@ -106,7 +108,7 @@ pub fn run_with_world(
             stats.dds += obj.dds;
             stats.warnings.extend(obj.warnings);
         }
-        settings::ObjectSource::Fo76BtoAtlas => {
+        settings::ObjectSource::Fo76BtoAtlas | settings::ObjectSource::Fo76BtoInstanced => {
             let obj = objects::fo76_bto::build_object_lod(world, settings, &game, paths, progress)?;
             stats.bto += obj.bto;
             stats.btt += obj.btt;
@@ -248,11 +250,13 @@ fn run_with_object_lod_overlay(
 fn source_bto_object_only_without_world(settings: &settings::LodSettings) -> bool {
     let source_bto = matches!(
         settings.objects.source,
-        settings::ObjectSource::Fo76Bto | settings::ObjectSource::Fo76BtoAtlas
+        settings::ObjectSource::Fo76Bto
+            | settings::ObjectSource::Fo76BtoAtlas
+            | settings::ObjectSource::Fo76BtoInstanced
     ) || settings.objects.fo76_bto_atlas_pages;
     let atlas_mode = matches!(
         settings.objects.source,
-        settings::ObjectSource::Fo76BtoAtlas
+        settings::ObjectSource::Fo76BtoAtlas | settings::ObjectSource::Fo76BtoInstanced
     ) || settings.objects.fo76_bto_atlas_pages;
     source_bto
         && settings.global.generate_objects

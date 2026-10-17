@@ -1,0 +1,37 @@
+scn CrGiantMantisNymphScript
+
+; Added conditional code to reduce the cost of running the script on every frame. Part of a game-wide revision of scripts - Jorge 03/14/10
+
+int distance
+Short Alive
+
+Begin OnLoad
+	If GetDead != 1
+		Set Alive to 1
+	Endif
+End
+
+
+begin OnDeath
+
+	;Disable 1
+	;MarkForDelete
+
+end
+
+begin GameMode
+
+If	Alive != 1
+	Return
+Elseif Alive == 1
+	If Player.IsInInterior != 1
+		Return
+	Else
+		if GetDistance player < 50
+			; Squish the nymph
+			Kill player
+			Set Alive to 0
+		endif
+	Endif
+Endif
+end

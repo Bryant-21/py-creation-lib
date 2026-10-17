@@ -348,7 +348,7 @@ pub(crate) fn parse_compressed_subrecords_from_payload(
 pub(crate) fn lazy_subrecords_for_record(
     record: &ParsedRecord,
 ) -> PyResult<Option<Vec<ParsedSubrecord>>> {
-    if (record.flags & COMPRESSED_RECORD_FLAG) == 0 || !record.subrecords.is_empty() {
+    if !record.subrecords.is_empty() {
         return Ok(None);
     }
     let Some(raw_payload) = &record.raw_payload else {
@@ -356,6 +356,9 @@ pub(crate) fn lazy_subrecords_for_record(
     };
     if record.parse_error.is_some() {
         return Ok(None);
+    }
+    if record.flags & COMPRESSED_RECORD_FLAG == 0 {
+        return parse_subrecords(raw_payload).map(Some);
     }
     decode_compressed_subrecords_from_payload(raw_payload)
         .map(|parsed| Some(parsed.subrecords))
@@ -367,6 +370,16 @@ pub(crate) fn parse_record(
     offset: usize,
     header_size: usize,
     eager_compressed: bool,
+) -> PyResult<(ParsedRecord, usize)> {
+    parse_record_with_lazy_signatures(data, offset, header_size, eager_compressed, &[])
+}
+
+fn parse_record_with_lazy_signatures(
+    data: &Bytes,
+    offset: usize,
+    header_size: usize,
+    eager_compressed: bool,
+    lazy_signatures: &[[u8; 4]],
 ) -> PyResult<(ParsedRecord, usize)> {
     if offset + header_size > data.len() {
         return Err(value_error("record header extends past end of file"));
@@ -411,6 +424,15 @@ pub(crate) fn parse_record(
         } else {
             (Vec::new(), Some(stored_payload), None)
         }
+    } else if lazy_signatures
+        .iter()
+        .any(|sig| sig.as_slice() == signature.as_bytes())
+    {
+        (
+            Vec::new(),
+            Some(data.slice(payload_start..payload_end)),
+            None,
+        )
     } else {
         (
             parse_subrecords_from(data, payload_start, payload_end)?,
@@ -489,12 +511,13 @@ pub(crate) fn scan_record_offsets(
     });
 }
 
-pub(crate) fn parse_children(
+fn parse_children_with_lazy_signatures(
     data: &Bytes,
     offset: usize,
     end: usize,
     header_size: usize,
     eager_compressed: bool,
+    lazy_signatures: &[[u8; 4]],
 ) -> PyResult<(Vec<ParsedItem>, usize)> {
     let expected = count_children(data, offset, end, header_size);
     if expected > 1 && end.saturating_sub(offset) >= 1024 * 1024 {
@@ -522,11 +545,23 @@ pub(crate) fn parse_children(
             .par_iter()
             .map(|(item_offset, is_group)| {
                 if *is_group {
-                    parse_group(data, *item_offset, header_size, eager_compressed)
-                        .map(|(group, _)| ParsedItem::Group(group))
+                    parse_group_with_lazy_signatures(
+                        data,
+                        *item_offset,
+                        header_size,
+                        eager_compressed,
+                        lazy_signatures,
+                    )
+                    .map(|(group, _)| ParsedItem::Group(group))
                 } else {
-                    parse_record(data, *item_offset, header_size, eager_compressed)
-                        .map(|(record, _)| ParsedItem::Record(record))
+                    parse_record_with_lazy_signatures(
+                        data,
+                        *item_offset,
+                        header_size,
+                        eager_compressed,
+                        lazy_signatures,
+                    )
+                    .map(|(record, _)| ParsedItem::Record(record))
                 }
             })
             .collect::<PyResult<Vec<_>>>()?;
@@ -536,11 +571,23 @@ pub(crate) fn parse_children(
     let mut cursor = offset;
     while cursor + header_size <= end {
         if &data[cursor..cursor + 4] == b"GRUP" {
-            let (group, next) = parse_group(data, cursor, header_size, eager_compressed)?;
+            let (group, next) = parse_group_with_lazy_signatures(
+                data,
+                cursor,
+                header_size,
+                eager_compressed,
+                lazy_signatures,
+            )?;
             items.push(ParsedItem::Group(group));
             cursor = next;
         } else {
-            let (record, next) = parse_record(data, cursor, header_size, eager_compressed)?;
+            let (record, next) = parse_record_with_lazy_signatures(
+                data,
+                cursor,
+                header_size,
+                eager_compressed,
+                lazy_signatures,
+            )?;
             items.push(ParsedItem::Record(record));
             cursor = next;
         }
@@ -553,6 +600,16 @@ pub(crate) fn parse_group(
     offset: usize,
     header_size: usize,
     eager_compressed: bool,
+) -> PyResult<(ParsedGroup, usize)> {
+    parse_group_with_lazy_signatures(data, offset, header_size, eager_compressed, &[])
+}
+
+fn parse_group_with_lazy_signatures(
+    data: &Bytes,
+    offset: usize,
+    header_size: usize,
+    eager_compressed: bool,
+    lazy_signatures: &[[u8; 4]],
 ) -> PyResult<(ParsedGroup, usize)> {
     if offset + header_size > data.len() || &data[offset..offset + 4] != b"GRUP" {
         return Err(value_error(format!("expected GRUP at {offset}")));
@@ -570,12 +627,13 @@ pub(crate) fn parse_group(
     if end > data.len() {
         return Err(value_error("group extends past end of file"));
     }
-    let (children, _) = parse_children(
+    let (children, _) = parse_children_with_lazy_signatures(
         data,
         offset + header_size,
         end,
         header_size,
         eager_compressed,
+        lazy_signatures,
     )?;
     Ok((
         ParsedGroup {
@@ -1976,6 +2034,82 @@ pub fn parse_plugin_file_lazy_compressed(
     parse_plugin_file_with_compression(path, game, false)
 }
 
+/// Retains topology while leaving selected uncompressed payloads file-backed.
+/// Readers must use `effective_subrecords_for_record` for these records.
+pub fn parse_plugin_file_lazy_records(
+    path: &str,
+    game: Option<String>,
+    lazy_signatures: &[[u8; 4]],
+) -> PyResult<ParsedPlugin> {
+    let file_path = Path::new(path);
+    parse_plugin_bytes_with_lazy_signatures(
+        read_plugin_source_bytes(file_path)?,
+        file_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("Plugin.esp")
+            .to_string(),
+        path.to_string(),
+        game,
+        false,
+        lazy_signatures,
+    )
+}
+
+/// Read-only projection: keeps selected records in physical order, including
+/// duplicates, but discards group topology. Do not use this to save a plugin.
+pub fn parse_plugin_file_projection(
+    path: &str,
+    game: Option<String>,
+    signatures: &[[u8; 4]],
+) -> PyResult<ParsedPlugin> {
+    let file_path = Path::new(path);
+    let data = read_plugin_source_bytes(file_path)?;
+    let header_size = detect_header_size(&data);
+    let (header_record, offset) = parse_record(&data, 0, header_size, true)?;
+    if header_record.signature != "TES4" {
+        return Err(value_error(format!(
+            "expected TES4 header record, got {}",
+            header_record.signature
+        )));
+    }
+    let mut root_items = Vec::new();
+    let mut error = None;
+    let outcome =
+        crate::record_cursor::RecordCursor::new(&data, header_size, offset).scan(&mut |view| {
+            if signatures.contains(view.signature) {
+                match parse_record(&data, view.offset, header_size, false) {
+                    Ok((record, _)) => root_items.push(ParsedItem::Record(record)),
+                    Err(err) => {
+                        error = Some(err);
+                        return std::ops::ControlFlow::Break(());
+                    }
+                }
+            }
+            std::ops::ControlFlow::Continue(())
+        });
+    if let Some(error) = error {
+        return Err(error);
+    }
+    if let crate::record_cursor::ScanOutcome::Truncated { offset } = outcome {
+        return Err(value_error(format!(
+            "plugin item at {offset} extends past parent boundary"
+        )));
+    }
+    Ok(ParsedPlugin {
+        plugin_name: file_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("Plugin.esp")
+            .to_string(),
+        file_path: file_path.to_string_lossy().into_owned(),
+        header_size,
+        header: parse_plugin_header(&header_record),
+        root_items,
+        game,
+    })
+}
+
 /// Eagerly decompresses every COMPRESSED-flagged record so callers get fully
 /// decoded subrecord arrays — used by inspect/export entry points that need
 /// to render `raw_payload_hex`-free YAML. General plugin queries should keep
@@ -2067,6 +2201,24 @@ fn parse_plugin_bytes_with_compression(
     game: Option<String>,
     eager_compressed: bool,
 ) -> PyResult<ParsedPlugin> {
+    parse_plugin_bytes_with_lazy_signatures(
+        data,
+        plugin_name,
+        file_path,
+        game,
+        eager_compressed,
+        &[],
+    )
+}
+
+fn parse_plugin_bytes_with_lazy_signatures(
+    data: Bytes,
+    plugin_name: String,
+    file_path: String,
+    game: Option<String>,
+    eager_compressed: bool,
+    lazy_signatures: &[[u8; 4]],
+) -> PyResult<ParsedPlugin> {
     let header_size = detect_header_size(&data);
     let (header_record, offset) = parse_record(&data, 0, header_size, true)?;
     if header_record.signature != "TES4" {
@@ -2077,7 +2229,14 @@ fn parse_plugin_bytes_with_compression(
     }
     let header = parse_plugin_header(&header_record);
     let data_len = data.len();
-    let (root_items, _) = parse_children(&data, offset, data_len, header_size, eager_compressed)?;
+    let (root_items, _) = parse_children_with_lazy_signatures(
+        &data,
+        offset,
+        data_len,
+        header_size,
+        eager_compressed,
+        lazy_signatures,
+    )?;
     Ok(ParsedPlugin {
         plugin_name,
         file_path,
@@ -2086,6 +2245,226 @@ fn parse_plugin_bytes_with_compression(
         root_items,
         game,
     })
+}
+
+#[cfg(test)]
+mod projection_tests {
+    use super::*;
+    use crate::plugin_runtime::test_support::{group, record, subrecord};
+
+    #[test]
+    fn lazy_records_preserve_topology_payloads_and_duplicate_lookup() {
+        Python::initialize();
+        let mut payload = subrecord(b"EDID", b"First\0");
+        payload.extend(subrecord(b"NAME", &0x1234_u32.to_le_bytes()));
+        payload.extend(subrecord(b"DATA", &[0; 24]));
+        let child = record(b"REFR", 0x800, 0, &payload);
+        let mut bytes = record(b"TES4", 0, 0, &[]);
+        bytes.extend(group(
+            *b"WRLD",
+            0,
+            &group(
+                0x900_u32.to_le_bytes(),
+                6,
+                &[
+                    child.clone(),
+                    record(b"STAT", 0x801, 0, &subrecord(b"EDID", b"StillEager\0")),
+                    record(b"REFR", 0x800, 0, &subrecord(b"EDID", b"Last\0")),
+                ]
+                .concat(),
+            ),
+        ));
+        let data = Bytes::from(bytes);
+        let eager = parse_plugin_bytes_with_compression(
+            data.clone(),
+            "Test.esm".into(),
+            "".into(),
+            None,
+            false,
+        )
+        .unwrap();
+        let lazy = parse_plugin_bytes_with_lazy_signatures(
+            data,
+            "Test.esm".into(),
+            "".into(),
+            None,
+            false,
+            &[*b"REFR"],
+        )
+        .unwrap();
+        let eager_paths = build_records_section(&eager);
+        let lazy_paths = build_records_section(&lazy);
+        for raw in [0x800, 0x801] {
+            let expected = eager_paths.record(&eager, raw).unwrap();
+            let actual = lazy_paths.record(&lazy, raw).unwrap();
+            assert_eq!(
+                record_bytes_from_parsed(expected, 24).unwrap(),
+                record_bytes_from_parsed(actual, 24).unwrap()
+            );
+            let expected = effective_subrecords_for_record(expected);
+            let actual_subrecords = effective_subrecords_for_record(actual);
+            assert_eq!(expected.len(), actual_subrecords.len());
+            for (left, right) in expected.iter().zip(actual_subrecords.iter()) {
+                assert_eq!(left.signature, right.signature);
+                assert_eq!(left.data, right.data);
+            }
+            assert_eq!(actual.subrecords.is_empty(), raw == 0x800);
+            assert_eq!(
+                serialize_record_payload_to_json(
+                    eager_paths.record(&eager, raw).unwrap(),
+                    &eager,
+                    &LocalizedStringsState::default()
+                ),
+                serialize_record_payload_to_json(actual, &lazy, &LocalizedStringsState::default()),
+            );
+        }
+        let core = build_core_section(&lazy);
+        assert_eq!(
+            core.by_form_key
+                .get(&FormKey::new(Arc::from("Test.esm"), 0x800))
+                .unwrap()
+                .eid,
+            "Last"
+        );
+        assert_eq!(
+            record_bytes_from_parsed(lazy_paths.record(&lazy, 0x800).unwrap(), 24).unwrap(),
+            child
+        );
+        assert_eq!(
+            build_plugin_bytes(&mut eager.clone()).unwrap(),
+            build_plugin_bytes(&mut lazy.clone()).unwrap()
+        );
+    }
+
+    #[test]
+    fn lazy_uncompressed_subrecords_match_eager_extended_and_truncated_payloads() {
+        Python::initialize();
+        let mut extended = subrecord(b"XXXX", &70000_u32.to_le_bytes());
+        extended.extend(b"DATA\0\0");
+        extended.extend(vec![9u8; 70000]);
+        for payload in [
+            extended.clone(),
+            extended[..23].to_vec(),
+            b"XXXX\x04\x00\x01".to_vec(),
+            vec![],
+        ] {
+            let data = Bytes::from(record(b"REFR", 1, 0, &payload));
+            let (eager, _) = parse_record(&data, 0, 24, false).unwrap();
+            let (lazy, _) =
+                parse_record_with_lazy_signatures(&data, 0, 24, false, &[*b"REFR"]).unwrap();
+            let actual = effective_subrecords_for_record(&lazy);
+            assert_eq!(eager.subrecords.len(), actual.len());
+            for (left, right) in eager.subrecords.iter().zip(actual.iter()) {
+                assert_eq!(left.signature, right.signature);
+                assert_eq!(left.data, right.data);
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "requires SOURCE_LOOKUP_PLUGIN pointing to a corpus plugin"]
+    fn lazy_source_corpus_parity() {
+        Python::initialize();
+        let path = std::env::var("SOURCE_LOOKUP_PLUGIN").unwrap();
+        let eager = parse_plugin_file(&path, Some("fo76".into()), false).unwrap();
+        let lazy = parse_plugin_file_lazy_records(
+            &path,
+            Some("fo76".into()),
+            &[*b"REFR", *b"ACHR", *b"PGRE", *b"PHZD"],
+        )
+        .unwrap();
+        fn compare(left: &[ParsedItem], right: &[ParsedItem], records: &mut usize) {
+            assert_eq!(left.len(), right.len());
+            for (left, right) in left.iter().zip(right) {
+                match (left, right) {
+                    (ParsedItem::Group(left), ParsedItem::Group(right)) => {
+                        assert_eq!(left.label, right.label);
+                        assert_eq!(left.group_type, right.group_type);
+                        assert_eq!(left.tail, right.tail);
+                        compare(&left.children, &right.children, records);
+                    }
+                    (ParsedItem::Record(left), ParsedItem::Record(right)) => {
+                        assert_eq!(
+                            record_bytes_from_parsed(left, 24).unwrap(),
+                            record_bytes_from_parsed(right, 24).unwrap()
+                        );
+                        let left = effective_subrecords_for_record(left);
+                        let right = effective_subrecords_for_record(right);
+                        assert_eq!(left.len(), right.len());
+                        for (left, right) in left.iter().zip(right.iter()) {
+                            assert_eq!(left.signature, right.signature);
+                            assert_eq!(left.data, right.data);
+                        }
+                        *records += 1;
+                    }
+                    _ => panic!("group topology changed"),
+                }
+            }
+        }
+        let mut records = 0;
+        compare(&eager.root_items, &lazy.root_items, &mut records);
+        eprintln!("lazy_source_corpus_parity records={records}");
+        assert!(records > 0);
+    }
+
+    #[test]
+    fn projection_preserves_nested_order_duplicates_and_compression() {
+        Python::initialize();
+        let race = record(b"RACE", 0x1000800, 0, &subrecord(b"EDID", b"Race\0"));
+        let plain = subrecord(b"EDID", b"Idle\0");
+        let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(&plain).unwrap();
+        let mut compressed = (plain.len() as u32).to_le_bytes().to_vec();
+        compressed.extend(encoder.finish().unwrap());
+        let idle = record(b"IDLE", 0x1000801, COMPRESSED_RECORD_FLAG, &compressed);
+        let mut bytes = record(b"TES4", 0, 0, &subrecord(b"MAST", b"Fallout4.esm\0"));
+        bytes.extend(group(*b"MISC", 0, &[]));
+        bytes.extend(group(
+            *b"RACE",
+            0,
+            &[
+                race.clone(),
+                record(b"STAT", 0x1000802, 0, &subrecord(b"EDID", b"Skip\0")),
+                group(*b"IDLE", 0, &idle),
+                race.clone(),
+            ]
+            .concat(),
+        ));
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("projection.esp");
+        fs::write(&path, bytes).unwrap();
+        let projected = parse_plugin_file_projection(
+            path.to_str().unwrap(),
+            Some("fo4".into()),
+            &[*b"RACE", *b"IDLE"],
+        )
+        .unwrap();
+        let actual = projected
+            .root_items
+            .iter()
+            .map(|item| {
+                let ParsedItem::Record(record) = item else {
+                    panic!("flat projection")
+                };
+                record_bytes_from_parsed(record, 24).unwrap()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(actual, vec![race.clone(), idle, race]);
+        assert_eq!(projected.header.masters, vec!["Fallout4.esm"]);
+        assert_eq!(projected.plugin_name, "projection.esp");
+    }
+
+    #[test]
+    fn projection_rejects_truncated_skipped_records() {
+        Python::initialize();
+        let mut bytes = record(b"TES4", 0, 0, &[]);
+        bytes.extend(record(b"STAT", 1, 0, &subrecord(b"EDID", b"Skipped\0")));
+        bytes.pop();
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("truncated.esp");
+        fs::write(&path, bytes).unwrap();
+        assert!(parse_plugin_file_projection(path.to_str().unwrap(), None, &[*b"RACE"]).is_err());
+    }
 }
 
 pub(crate) fn load_plugin_native_impl(

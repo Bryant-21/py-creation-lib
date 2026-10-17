@@ -1,15 +1,11 @@
 //! Starfield `BSGeometry` + external `.mesh` -> FO4 `BSTriShape` conversion,
 //! with hybrid (decoded / render-derived fallback) collision.
 //!
-//! Scale: Starfield is 1 unit = 1 metre, FO4 is `HAVOK_SCALE` (69.99125) units
-//! per metre. The single multiply site is [`build_vertex_data`], applied to the composed
-//! world-space vertex position right before FO4 bounds are computed. Render
-//! geometry gathered for the fallback collision path is already in that
-//! post-multiply FO4-unit space, so [`build_fallback_shape`] divides by
-//! `HAVOK_SCALE` exactly once to land back in Havok metres — mirroring
-//! `convert_file.rs`'s `collect_visible_facets`/`box_collision_shape` pattern.
-//! Decoded Starfield collision (`decode_starfield_collision`) is already in
-//! Havok metres and is passed through unscaled.
+//! Starfield uses metres; FO4 uses 69.99125 units per metre. Static shapes bake
+//! world transforms, while weapon parts keep scaled local transforms and skin
+//! conversion consumes raw local vertices through the source inverse binds.
+//! Collision receives world-space FO4 vertices and converts them back to metres;
+//! decoded collision is already in metres.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -37,6 +33,10 @@ const FO4_DEFAULT_SHADER_FLAGS_1: u64 = 0x8040_0201;
 pub struct SfConvertOptions {
     pub geometries_root: PathBuf,
     pub material_path_rewriter: Option<Box<dyn Fn(&str) -> String + Send + Sync>>,
+    pub target_skeleton: Option<PathBuf>,
+    pub translation_maps_dir: Option<PathBuf>,
+    pub weapon_role: Option<String>,
+    pub cloth_companions: Vec<PathBuf>,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -45,6 +45,12 @@ pub struct SfConvertReport {
     pub collision_decoded: u32,
     pub collision_fallback: u32,
     pub collision_none: u32,
+    pub skinned_shapes: u32,
+    pub reduced_skin_vertices: u32,
+    pub max_discarded_skin_weight: f32,
+    pub cloth_blobs: u32,
+    pub custom_cloth_bones: u32,
+    pub unbound_cloth_bones: u32,
 }
 
 /// Walk up from `nif_path`'s directory looking for the extracted
@@ -92,15 +98,29 @@ pub fn convert_starfield_nif(
         &mut geometries,
         &mut HashSet::new(),
     );
+    let requires_complete_geometry = opts.weapon_role.is_some()
+        || geometries.iter().any(|(_, id)| {
+            matches!(src_nif.blocks[*id].get_field("Skin"), Some(NifValue::Ref(id)) if *id >= 0)
+        });
 
     let mut dest_nif = NifFile::new("fo4");
     dest_nif.header.footer_roots = vec![0];
     let dest_root_id = 0usize;
+    let preserved_scene = if opts.weapon_role.is_some() {
+        Some(crate::sf_scene::preserve_weapon_scene(
+            &src_nif,
+            &mut dest_nif,
+            root_id,
+        )?)
+    } else {
+        None
+    };
 
     let mut report = SfConvertReport::default();
     let mut mesh_failures = Vec::new();
     let mut fallback_vertices: Vec<[f32; 3]> = Vec::new();
     let mut fallback_triangles: Vec<[u32; 3]> = Vec::new();
+    let mut skin_context = None;
 
     for (world, block_id) in &geometries {
         let Some(block) = src_nif.get_block(*block_id) else {
@@ -123,20 +143,91 @@ pub fn convert_starfield_nif(
             continue;
         }
 
-        let shape_id = build_bstrishape(&mut dest_nif, block, &mesh, world, &src_nif, opts);
-        attach_child(&mut dest_nif, dest_root_id, shape_id);
+        let has_skin = mesh.bone_influences.is_some()
+            || matches!(block.get_field("Skin"), Some(NifValue::Ref(id)) if *id >= 0);
+        let skinned = if has_skin {
+            if skin_context.is_none() {
+                let skeleton = opts
+                    .target_skeleton
+                    .as_deref()
+                    .ok_or("Starfield skinned geometry requires an explicit target skeleton")?;
+                let maps = opts
+                    .translation_maps_dir
+                    .as_deref()
+                    .ok_or("Starfield skinned geometry requires skeleton translation maps")?;
+                skin_context = Some(crate::sf_skin::SkinContext::load(
+                    &mut dest_nif,
+                    skeleton,
+                    maps,
+                    &src_nif,
+                    &opts.cloth_companions,
+                )?);
+                let context = skin_context.as_ref().unwrap();
+                report.cloth_blobs = context.cloth_blobs;
+                report.custom_cloth_bones = context.custom_cloth_bones;
+                report.unbound_cloth_bones = context.unbound_cloth_bones;
+            }
+            let skin =
+                skin_context
+                    .as_ref()
+                    .unwrap()
+                    .convert(&src_nif, block, &mesh, &mut dest_nif)?;
+            report.skinned_shapes += 1;
+            report.reduced_skin_vertices += skin.reduced_vertices;
+            report.max_discarded_skin_weight = report
+                .max_discarded_skin_weight
+                .max(skin.max_discarded_weight);
+            Some(skin)
+        } else {
+            None
+        };
+        let shape_world = if preserved_scene.is_some() && !has_skin {
+            identity_xform()
+        } else {
+            *world
+        };
+        let shape_id = build_bstrishape(
+            &mut dest_nif,
+            block,
+            &mesh,
+            &shape_world,
+            &src_nif,
+            opts,
+            skinned.as_ref(),
+        );
+        let parent = if !has_skin {
+            if let Some(scene) = &preserved_scene {
+                crate::sf_scene::copy_shape_transform(block, &mut dest_nif.blocks[shape_id])?;
+                *scene
+                    .get(block_id)
+                    .ok_or("weapon geometry has no preserved parent")?
+            } else {
+                dest_root_id
+            }
+        } else {
+            dest_root_id
+        };
+        attach_child(&mut dest_nif, parent, shape_id);
         report.shapes += 1;
 
+        if has_skin {
+            continue;
+        }
         let base = fallback_vertices.len() as u32;
         for position in &mesh.positions {
-            fallback_vertices.push(apply_xform(world, *position).map(|c| c * HAVOK_SCALE));
+            let mut point = apply_xform(world, *position);
+            if preserved_scene.is_some() {
+                point =
+                    inverse_apply_xform(&read_local_transform(&src_nif.blocks[root_id]), point)?;
+            }
+            fallback_vertices.push(point.map(|c| c * HAVOK_SCALE));
         }
         for triangle in &mesh.triangles {
             fallback_triangles.push([base + triangle[0], base + triangle[1], base + triangle[2]]);
         }
     }
 
-    if report.shapes == 0 {
+    if report.shapes == 0 && !(preserved_scene.is_some() && geometries.is_empty()) {
         let detail = if geometries.is_empty() {
             "no BSGeometry blocks found".to_string()
         } else if mesh_failures.is_empty() {
@@ -153,15 +244,34 @@ pub fn convert_starfield_nif(
         };
         return Err(format!("sf convert: no convertible geometry: {detail}"));
     }
+    if requires_complete_geometry && report.shapes as usize != geometries.len() {
+        return Err(format!(
+            "sf convert: incomplete Starfield weapon/outfit geometry: converted {} of {} shapes; {}",
+            report.shapes,
+            geometries.len(),
+            mesh_failures.join("; ")
+        ));
+    }
+    if report.cloth_blobs as usize != src_nif.find_blocks("BSClothExtraData").len() {
+        return Err(
+            "sf convert: Starfield cloth requires a supported target skin and simulation binding"
+                .into(),
+        );
+    }
 
-    install_collision(
-        &src_nif,
-        &mut dest_nif,
-        dest_root_id,
-        &fallback_vertices,
-        &fallback_triangles,
-        &mut report,
-    );
+    if report.skinned_shapes == 0 {
+        install_collision(
+            &src_nif,
+            &mut dest_nif,
+            dest_root_id,
+            &fallback_vertices,
+            &fallback_triangles,
+            &mut report,
+            opts.weapon_role.is_some(),
+        )?;
+    } else {
+        report.collision_none = 1;
+    }
 
     dest_nif
         .save(Some(dest.to_path_buf()))
@@ -184,6 +294,31 @@ mod root_tests {
             .join("Meshes/a/b/c/d/e/f/g/h/i/j/generated_lod.nif");
 
         assert_eq!(default_geometries_root(&nif), geometries);
+    }
+
+    #[test]
+    fn weapon_fallback_points_are_relative_to_preserved_root() {
+        let root = Xform {
+            translation: [4.0, 5.0, 6.0],
+            rotation: [[0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+            scale: 2.0,
+        };
+        let child = Xform {
+            translation: [1.0, 2.0, 3.0],
+            ..identity_xform()
+        };
+        let position = [0.5, 0.7, 0.9];
+        let world_point = apply_xform(&combine(&root, &child), position);
+        let collision_point = inverse_apply_xform(&root, world_point).unwrap();
+        let expected = apply_xform(&child, position);
+        for axis in 0..3 {
+            assert!((collision_point[axis] - expected[axis]).abs() < 1e-6);
+        }
+        assert_ne!(collision_point, world_point);
+        let reapplied = apply_xform(&root, collision_point);
+        for axis in 0..3 {
+            assert!((reapplied[axis] - world_point[axis]).abs() < 1e-6);
+        }
     }
 }
 
@@ -231,6 +366,21 @@ fn apply_xform(xform: &Xform, local: [f32; 3]) -> [f32; 3] {
         rotated[1] * xform.scale + xform.translation[1],
         rotated[2] * xform.scale + xform.translation[2],
     ]
+}
+
+fn inverse_apply_xform(xform: &Xform, point: [f32; 3]) -> Result<[f32; 3], String> {
+    if !xform.scale.is_finite() || xform.scale.abs() < 1e-12 {
+        return Err("Starfield weapon root has a singular scale".into());
+    }
+    let relative =
+        std::array::from_fn(|axis| (point[axis] - xform.translation[axis]) / xform.scale);
+    let inverse_rotation =
+        std::array::from_fn(|row| std::array::from_fn(|col| xform.rotation[col][row]));
+    let point = rotate_only(&inverse_rotation, relative);
+    if point.iter().any(|value| !value.is_finite()) {
+        return Err("Starfield weapon root has a nonfinite transform".into());
+    }
+    Ok(point)
 }
 
 fn combine(parent: &Xform, local: &Xform) -> Xform {
@@ -329,8 +479,47 @@ fn build_bstrishape(
     world: &Xform,
     src_nif: &NifFile,
     opts: &SfConvertOptions,
+    skin: Option<&crate::sf_skin::SkinnedGeometry>,
 ) -> usize {
-    let (vertex_data, bounds_min, bounds_max) = build_vertex_data(mesh, world);
+    let (vertex_data, bounds_min, bounds_max) = match skin {
+        Some(skin) => {
+            let (tangents, bitangents) = crate::skin::pack::recompute_tangents_lengyel(
+                &skin.positions,
+                &skin.normals,
+                &mesh.uvs,
+                &mesh.triangles,
+            );
+            let colors = mesh.vertex_colors.as_ref().map(|colors| {
+                colors
+                    .iter()
+                    .map(|color| color.map(|c| c as f32 / 255.0))
+                    .collect::<Vec<_>>()
+            });
+            let data = crate::skin::pack::pack_skinned_vertex_data(
+                &skin.positions,
+                &skin.normals,
+                &tangents,
+                &bitangents,
+                &mesh.uvs,
+                colors.as_deref(),
+                &skin.influences,
+            );
+            let min = std::array::from_fn(|axis| {
+                skin.positions
+                    .iter()
+                    .map(|p| p[axis])
+                    .fold(f32::INFINITY, f32::min)
+            });
+            let max = std::array::from_fn(|axis| {
+                skin.positions
+                    .iter()
+                    .map(|p| p[axis])
+                    .fold(f32::NEG_INFINITY, f32::max)
+            });
+            (data, min, max)
+        }
+        None => build_vertex_data(mesh, world),
+    };
     let has_vertex_colors = mesh.vertex_colors.is_some();
 
     let center = [
@@ -358,6 +547,14 @@ fn build_bstrishape(
         .collect();
 
     let shader_id = build_shader(dest_nif, source_block, src_nif, opts);
+    if skin.is_some() {
+        let shader = &mut dest_nif.blocks[shader_id];
+        let flags = match shader.get_field("Shader Flags 1:FO4") {
+            Some(NifValue::UInt(flags)) => *flags,
+            _ => FO4_DEFAULT_SHADER_FLAGS_1,
+        };
+        shader.set_field("Shader Flags 1:FO4", NifValue::UInt(flags | 2));
+    }
 
     let shape_id = dest_nif.add_block("BSTriShape", None);
     if let Some(block) = dest_nif.blocks.get_mut(shape_id) {
@@ -371,7 +568,17 @@ fn build_bstrishape(
         block.set_field("Flags", NifValue::UInt(14));
         block.set_field("Bounding Sphere", NifValue::Struct(sphere));
         block.set_field("Shader Property", NifValue::Ref(shader_id as i32));
-        block.set_field("Vertex Desc", NifValue::Int(vertex_desc(has_vertex_colors)));
+        block.set_field(
+            "Vertex Desc",
+            NifValue::Int(if skin.is_some() {
+                crate::skin::pack::vertex_desc_skinned(has_vertex_colors)
+            } else {
+                vertex_desc(has_vertex_colors)
+            }),
+        );
+        if let Some(skin) = skin {
+            block.set_field("Skin", NifValue::Ref(skin.instance as i32));
+        }
         block.set_field("Num Vertices", NifValue::UInt(vertex_data.len() as u64));
         block.set_field("Num Triangles", NifValue::UInt(triangles.len() as u64));
         block.set_field("Vertex Data", NifValue::Array(vertex_data));
@@ -476,9 +683,8 @@ fn triangle_value(v1: i64, v2: i64, v3: i64) -> NifValue {
 }
 
 /// Lengyel per-triangle tangent-space accumulation, Gram-Schmidt orthogonalized
-/// against the vertex normal. `.mesh` carries no tangent/bitangent channel, so
-/// this is synthesized from positions/normals/UVs — required because
-/// `vertex_desc` always sets `VF_TANGENTS`.
+/// against the vertex normal. Recomputed after conversion so the tangent frame
+/// agrees with the emitted positions, normals and UVs.
 fn compute_tangent_space(
     positions: &[[f32; 3]],
     normals: &[[f32; 3]],
@@ -599,8 +805,11 @@ fn build_shader(
 fn populate_fo4_external_shader_defaults(block: &mut NifBlock, material_path: String) {
     block.set_field("Shader Type", NifValue::UInt(0));
     block.set_field("Name", NifValue::String(material_path));
-    block.set_field("Shader Flags 1", NifValue::UInt(FO4_DEFAULT_SHADER_FLAGS_1));
-    block.set_field("Shader Flags 2", NifValue::UInt(1));
+    block.set_field(
+        "Shader Flags 1:FO4",
+        NifValue::UInt(FO4_DEFAULT_SHADER_FLAGS_1),
+    );
+    block.set_field("Shader Flags 2:FO4", NifValue::UInt(1));
     block.set_field("UV Offset", tex_coord_value([0.0, 0.0]));
     block.set_field("UV Scale", tex_coord_value([1.0, 1.0]));
     block.set_field("Texture Set", NifValue::Ref(-1));
@@ -656,13 +865,33 @@ fn rewrite_material_path(
     path: &str,
     rewriter: &Option<Box<dyn Fn(&str) -> String + Send + Sync>>,
 ) -> String {
-    if let Some(rewrite) = rewriter {
-        return rewrite(path);
-    }
-    if path.len() >= 4 && path[path.len() - 4..].eq_ignore_ascii_case(".mat") {
+    rewriter
+        .as_ref()
+        .map_or_else(|| converted_material_path(path), |rewrite| rewrite(path))
+}
+
+pub(crate) fn converted_material_path(path: &str) -> String {
+    if path.to_ascii_lowercase().ends_with(".mat") {
         format!("{}.bgsm", &path[..path.len() - 4])
     } else {
         path.to_string()
+    }
+}
+
+#[cfg(test)]
+mod native_material_tests {
+    use super::*;
+
+    #[test]
+    fn native_material_rewriter_sees_mat_paths_while_default_still_uses_bgsm() {
+        let path = "Materials/Weapons/Shotty.MAT";
+        assert_eq!(
+            rewrite_material_path(path, &None),
+            "Materials/Weapons/Shotty.bgsm"
+        );
+        let native: Option<Box<dyn Fn(&str) -> String + Send + Sync>> =
+            Some(Box::new(str::to_owned));
+        assert_eq!(rewrite_material_path(path, &native), path);
     }
 }
 
@@ -697,8 +926,10 @@ fn install_collision(
     fallback_vertices: &[[f32; 3]],
     fallback_triangles: &[[u32; 3]],
     report: &mut SfConvertReport,
-) {
+    weapon: bool,
+) -> Result<(), String> {
     let mut decoded_shapes: Vec<MultiBodyShape> = Vec::new();
+    let mut decoded_metas = Vec::new();
     let mut any_failure = false;
 
     for block in &src_nif.blocks {
@@ -712,7 +943,31 @@ fn install_collision(
             continue;
         };
         match decode_starfield_collision(&bytes) {
-            Ok(mut shapes) => decoded_shapes.append(&mut shapes),
+            Ok(mut shapes) => {
+                let context = crate::fo76_collision::SourceCollisionContext::new(&bytes);
+                for (index, shape) in shapes.iter_mut().enumerate() {
+                    let mut meta = BodyMeta::default();
+                    if weapon {
+                        let source = context.body_metadata(index);
+                        meta.layer = 5;
+                        meta.dynamic = Some(source.motion_type.map_or(true, |motion| motion == 2));
+                        meta.motion_type = if source.motion_type == Some(1) {
+                            BodyMotionType::Keyframed
+                        } else {
+                            BodyMotionType::Static
+                        };
+                        meta.body_mass = source.body_mass;
+                        meta.mass_distribution = context.mass_distribution(index);
+                        meta.position = source.position.unwrap_or(meta.position);
+                        meta.orientation = source.orientation.unwrap_or(meta.orientation);
+                        if meta.dynamic == Some(true) {
+                            make_dynamic_shape_convex(shape);
+                        }
+                    }
+                    decoded_metas.push(meta);
+                }
+                decoded_shapes.append(&mut shapes);
+            }
             // Not a collision payload (e.g. cloth data sharing the NIF's TAG0
             // slot on banner/cloth assets) — absence is normal, skip silently.
             Err(error) if error.contains("hknpPhysicsSystemData") => {}
@@ -722,25 +977,53 @@ fn install_collision(
 
     if any_failure {
         if let Some(shape) = build_fallback_shape(fallback_vertices, fallback_triangles) {
-            if attach_collision(dest_nif, parent_id, vec![shape]).is_ok() {
+            let mut shape = shape;
+            let mut meta = BodyMeta::default();
+            if weapon {
+                make_dynamic_shape_convex(&mut shape);
+                meta.layer = 5;
+                meta.dynamic = Some(true);
+                meta.body_mass = decoded_metas
+                    .iter()
+                    .filter_map(|meta| meta.body_mass)
+                    .reduce(|a, b| a + b);
+            }
+            if attach_collision(dest_nif, parent_id, vec![shape], &[meta]).is_ok() {
                 report.collision_fallback += 1;
-                return;
+                return Ok(());
             }
         }
         report.collision_none += 1;
-        return;
+        return if weapon {
+            Err("Starfield weapon collision could not be converted or rebuilt".into())
+        } else {
+            Ok(())
+        };
     }
 
     if !decoded_shapes.is_empty() {
-        if attach_collision(dest_nif, parent_id, decoded_shapes).is_ok() {
+        if let Err(error) = attach_collision(dest_nif, parent_id, decoded_shapes, &decoded_metas) {
+            if weapon {
+                return Err(format!("Starfield weapon physics: {error}"));
+            }
+        } else {
             report.collision_decoded += 1;
-            return;
+            return Ok(());
         }
         report.collision_none += 1;
-        return;
+        return Ok(());
     }
 
     report.collision_none += 1;
+    Ok(())
+}
+
+fn make_dynamic_shape_convex(shape: &mut MultiBodyShape) {
+    if let MultiBodyShape::CompressedMesh { vertices, .. } = shape {
+        *shape = MultiBodyShape::Polytope {
+            vertices: std::mem::take(vertices),
+        };
+    }
 }
 
 /// `vertices` are already the FO4-unit (post `HAVOK_SCALE`) render positions
@@ -774,6 +1057,7 @@ fn attach_collision(
     nif: &mut NifFile,
     parent_id: usize,
     shapes: Vec<MultiBodyShape>,
+    metas: &[BodyMeta],
 ) -> Result<(), String> {
     if shapes.is_empty() {
         return Err("no collision shapes".to_string());
@@ -789,15 +1073,7 @@ fn attach_collision(
         body_props_raw: None,
         mass_distribution: None,
     };
-    let metas: Vec<BodyMeta> = shapes
-        .iter()
-        .map(|_| BodyMeta {
-            layer: FO4_STATIC_LAYER,
-            motion_type: BodyMotionType::Static,
-            ..BodyMeta::default()
-        })
-        .collect();
-    let blob = build_fo4_multi_body_collision(&shapes, &options, None, Some(&metas))
+    let blob = build_fo4_multi_body_collision(&shapes, &options, None, Some(metas))
         .map_err(|error| error.to_string())?;
 
     let physics_id = nif.add_block("bhkPhysicsSystem", None);

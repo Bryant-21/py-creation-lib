@@ -204,7 +204,7 @@ pub fn havok_convert_bytes_report(
     )
 }
 
-fn havok_convert_bytes_report_with_fo76_options(
+pub fn havok_convert_bytes_report_with_fo76_options(
     data: &[u8],
     target_version: &str,
     fo76_options: convert::fo76::Fo76MigrationOptions,
@@ -223,11 +223,19 @@ fn havok_convert_bytes_report_with_fo76_options(
 }
 
 pub fn havok_convert_for_editing(data: &[u8], target_version: &str) -> HavokResult<hkx::HkxFile> {
-    let (file, _) = convert_havok_model(
+    havok_convert_for_editing_with_fo76_options(
         data,
         target_version,
         convert::fo76::Fo76MigrationOptions::default(),
-    )?;
+    )
+}
+
+pub fn havok_convert_for_editing_with_fo76_options(
+    data: &[u8],
+    target_version: &str,
+    fo76_options: convert::fo76::Fo76MigrationOptions,
+) -> HavokResult<hkx::HkxFile> {
+    let (file, _) = convert_havok_model(data, target_version, fo76_options)?;
     match file {
         Some(file) => {
             let animation = file.objects().iter().any(|object| {

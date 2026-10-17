@@ -22,6 +22,8 @@ pub struct GameProfile {
     pub allow_groups: bool,
     /// Whether the game's Papyrus supports guard statements.
     pub allow_guards: bool,
+    /// Whether a script with no `Extends` implicitly extends `ScriptObject`.
+    pub script_object_root: bool,
 }
 
 impl GameProfile {
@@ -34,6 +36,7 @@ impl GameProfile {
                 allow_structs: false,
                 allow_groups: false,
                 allow_guards: false,
+                script_object_root: false,
             },
             Game::Fo4 => Self {
                 game_id: 2,
@@ -43,6 +46,7 @@ impl GameProfile {
                 allow_structs: true,
                 allow_groups: true,
                 allow_guards: false,
+                script_object_root: true,
             },
             Game::Starfield => Self {
                 game_id: 4,
@@ -51,6 +55,7 @@ impl GameProfile {
                 allow_structs: true,
                 allow_groups: true,
                 allow_guards: true,
+                script_object_root: true,
             },
         }
     }

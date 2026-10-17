@@ -1239,7 +1239,7 @@ class SettingsWindow:
             gp["root"] = val
         imgui.same_line()
         if imgui.button(f"Browse##root_{game_id}"):
-            path = self._pick_folder("Select Game Root Directory")
+            path = self._pick_folder("Select Game Root Directory", gp["root"])
             if path:
                 gp["root"] = path
 
@@ -1252,7 +1252,7 @@ class SettingsWindow:
             gp["extracted"] = val
         imgui.same_line()
         if imgui.button(f"Browse##ext_{game_id}"):
-            path = self._pick_folder("Select Extracted Directory")
+            path = self._pick_folder("Select Extracted Directory", gp["extracted"])
             if path:
                 gp["extracted"] = path
 
@@ -1317,7 +1317,7 @@ class SettingsWindow:
             gp["scripts_user_dir"] = val
         imgui.same_line()
         if imgui.button(f"Browse##scripts_user_{game_id}"):
-            path = self._pick_folder("Select Scripts User Source Directory")
+            path = self._pick_folder("Select Scripts User Source Directory", gp.get("scripts_user_dir", ""))
             if path:
                 gp["scripts_user_dir"] = os.path.normpath(path)
 
@@ -1337,7 +1337,7 @@ class SettingsWindow:
             gp["scripts_base_dir"] = val
         imgui.same_line()
         if imgui.button(f"Browse##scripts_base_{game_id}"):
-            path = self._pick_folder("Select Scripts Base Source Directory")
+            path = self._pick_folder("Select Scripts Base Source Directory", gp.get("scripts_base_dir", ""))
             if path:
                 gp["scripts_base_dir"] = os.path.normpath(path)
 
@@ -1374,10 +1374,10 @@ class SettingsWindow:
                     self._script_sources.append(norm)
 
     @staticmethod
-    def _pick_folder(title: str = "Select Folder") -> str | None:
+    def _pick_folder(title: str = "Select Folder", default_path: str = "") -> str | None:
         """Open an OS folder picker. Returns path string or None."""
         try:
-            return _shared_pick_folder(title)
+            return _shared_pick_folder(title, default_path)
         except Exception as e:
             _log.warning("Folder picker failed: %s", e)
             return None

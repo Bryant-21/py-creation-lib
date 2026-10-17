@@ -387,7 +387,7 @@ fn class_counts(file: &HkxFile) -> BTreeMap<String, usize> {
     counts
 }
 
-fn reconstruct_fo4_graph(source: &HkxFile) -> HavokResult<HkxFile> {
+pub(super) fn reconstruct_fo4_graph(source: &HkxFile) -> HavokResult<HkxFile> {
     let mut registry = DescriptorRegistry::for_contents_version(FO4_CONTENTS_VERSION);
     let mut objects = Vec::with_capacity(source.objects().len());
     for (index, source_object) in source.objects().iter().enumerate() {
@@ -467,7 +467,7 @@ fn reconstruct_fo4_graph(source: &HkxFile) -> HavokResult<HkxFile> {
     ))
 }
 
-fn validate_target_descriptor_signatures(file: &HkxFile) -> HavokResult<()> {
+pub(super) fn validate_target_descriptor_signatures(file: &HkxFile) -> HavokResult<()> {
     let mut registry = DescriptorRegistry::for_contents_version(FO4_CONTENTS_VERSION);
     for object in file.objects() {
         let descriptor = registry
@@ -971,7 +971,7 @@ fn events_equal(source: &[AnimationEvent], target: &[AnimationEvent]) -> bool {
         })
 }
 
-fn validate_graph_preserved(
+pub(super) fn validate_graph_preserved(
     source: &HkxFile,
     target: &HkxFile,
     target_name: &str,

@@ -34,6 +34,7 @@ pub fn register_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(list_archive, m)?)?;
     m.add_function(wrap_pyfunction!(extract_archive, m)?)?;
     m.add_function(wrap_pyfunction!(extract_one, m)?)?;
+    m.add_function(wrap_pyfunction!(extract_one_bounded, m)?)?;
     m.add_function(wrap_pyfunction!(archive_info, m)?)?;
     m.add_function(wrap_pyfunction!(archive_entry_count, m)?)?;
     m.add_function(wrap_pyfunction!(pack_archive, m)?)?;
@@ -125,6 +126,82 @@ impl ArchiveReader {
 }
 
 impl OpenArchive {
+    fn extract_bounded(&self, requested_path: &str, limit: usize) -> Result<Vec<u8>, String> {
+        let requested = normalize_lookup(requested_path);
+        let oversized = || format!("Archive member exceeds the {limit}-byte preview limit");
+        match self {
+            Self::Tes4(archive, options) => {
+                for (dir, directory) in archive {
+                    for (name, file) in directory {
+                        if normalize_lookup(&join_tes4_path(
+                            dir.name().to_string(),
+                            name.name().to_string(),
+                        )) != requested
+                        {
+                            continue;
+                        }
+                        let size = file.decompressed_len().unwrap_or(file.as_bytes().len());
+                        if size > limit {
+                            return Err(oversized());
+                        }
+                        if !file.is_compressed() {
+                            return Ok(file.as_bytes().to_vec());
+                        }
+                        let reader: Box<dyn Read + '_> = if options.version() == tes4::Version::v105
+                        {
+                            Box::new(
+                                lzzzz::lz4f::ReadDecompressor::new(file.as_bytes())
+                                    .map_err(|e| e.to_string())?,
+                            )
+                        } else {
+                            Box::new(flate2::read::ZlibDecoder::new(file.as_bytes()))
+                        };
+                        let mut bytes = Vec::new();
+                        reader
+                            .take(limit as u64 + 1)
+                            .read_to_end(&mut bytes)
+                            .map_err(|e| e.to_string())?;
+                        if bytes.len() > limit {
+                            return Err(oversized());
+                        }
+                        if bytes.len() != size {
+                            return Err("Archive member decompression size mismatch".into());
+                        }
+                        return Ok(bytes);
+                    }
+                }
+            }
+            Self::Fo4(archive, options) => {
+                for (key, file) in archive {
+                    if normalize_lookup(&key.name().to_string()) != requested {
+                        continue;
+                    }
+                    let mut size = if options.format() == fo4::Format::DX10 {
+                        148usize
+                    } else {
+                        0
+                    };
+                    for chunk in file {
+                        size = size.saturating_add(
+                            chunk.decompressed_len().unwrap_or(chunk.as_bytes().len()),
+                        );
+                        if size > limit {
+                            return Err(oversized());
+                        }
+                    }
+                    let mut bytes = Vec::with_capacity(size);
+                    file.write(&mut bytes, &(*options).into())
+                        .map_err(|e| e.to_string())?;
+                    if bytes.len() > limit {
+                        return Err(oversized());
+                    }
+                    return Ok(bytes);
+                }
+            }
+        }
+        Err(format!("file not found in archive: {requested_path}"))
+    }
+
     fn file_count(&self) -> usize {
         match self {
             Self::Tes4(archive, _) => archive.values().map(|dir| dir.len()).sum(),
@@ -489,6 +566,24 @@ fn extract_archive_impl(
 pub fn extract_one_impl(archive: &Path, file_path: &str) -> Result<Vec<u8>, String> {
     let archive = open_archive(archive)?;
     archive.extract_file(file_path)
+}
+
+#[pyfunction]
+fn extract_one_bounded(
+    py: Python<'_>,
+    archive: PathBuf,
+    file_path: String,
+    limit: usize,
+) -> PyResult<Py<PyBytes>> {
+    if limit == 0 || limit > 8 * 1024 * 1024 {
+        return Err(PyValueError::new_err(
+            "Preview limit must be between 1 byte and 8 MiB",
+        ));
+    }
+    let bytes = py
+        .detach(move || open_archive(&archive)?.extract_bounded(&file_path, limit))
+        .map_err(PyValueError::new_err)?;
+    Ok(PyBytes::new(py, &bytes).unbind())
 }
 
 /// Open an archive once and visit the requested members in order.

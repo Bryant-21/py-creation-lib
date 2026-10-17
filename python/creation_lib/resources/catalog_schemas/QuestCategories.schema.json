@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://modbox21.local/catalog_schemas/QuestCategories.schema.json",
+  "title": "QuestCategories catalog",
+  "description": "Chooses which Pip-Boy quest tab (MAIN, SIDE, MISC, LEADS or EVENTS) each quest is listed in.",
+  "x-help": "The Pip-Boy DATA page has five quest tabs: MAIN, SIDE, MISC, LEADS and EVENTS. Tales puts every loaded quest in a tab by its quest type, so quests from the base game, DLC and other mods already land somewhere sensible, and any quest with no match ends up in MISC.\n\nAdd a row here to force one quest into a different tab. The converted Fallout 76 quests are already placed by the conversion. The EVENTS tab is also filled from Tales' own list of public events, which wins over this catalog.",
+  "allOf": [
+    {"$ref": "envelope.schema.json"}
+  ],
+  "properties": {
+    "version": {"const": 1},
+    "settings": {
+      "type": "object",
+      "description": "Feature-wide values; a later plugin's field replaces the earlier one.",
+      "properties": {
+        "categories": {"const": ["MAIN", "SIDE", "MISC", "LEADS", "EVENTS"], "title": "Tab names", "description": "The Pip-Boy quest tabs, in the order Tales indexes them. Fixed."},
+        "presentation": {"type": "object", "required": ["available", "component_owner"], "title": "Interface check", "description": "Result of checking the Pip-Boy movie the tabs are built on. Informational."},
+        "missing_converted": {"type": "array", "items": {"type": "string"}, "title": "Missing converted quests", "description": "Source quests that are absent from the converted plugin. Informational."},
+        "source_sha256": {"type": "string", "title": "Source hash", "description": "Fingerprint of the source data. Informational."}
+      }
+    },
+    "quests": {
+      "type": "array",
+      "title": "Quests",
+      "description": "Quests with a forced tab.",
+      "x-key": ["form"],
+      "items": {
+        "type": "object",
+        "properties": {
+          "form": {"$ref": "envelope.schema.json#/$defs/formKey", "x-form-type": ["QUST"], "title": "Quest (QUST)", "description": "The quest to place."},
+          "category": {"enum": ["MAIN", "SIDE", "MISC", "LEADS", "EVENTS"], "title": "Tab", "description": "The Pip-Boy tab the quest is listed in.", "x-enum-labels": {"MAIN": "MAIN (story)", "SIDE": "SIDE (side and daily quests)", "MISC": "MISC (everything else)", "LEADS": "LEADS (radio and breadcrumb leads)", "EVENTS": "EVENTS (public events)"}},
+          "remove": {"$ref": "envelope.schema.json#/$defs/removeFlag"}
+        },
+        "if": {"not": {"required": ["remove"]}},
+        "then": {"required": ["form"]}
+      }
+    }
+  }
+}

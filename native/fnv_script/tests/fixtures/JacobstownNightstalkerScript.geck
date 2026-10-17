@@ -1,0 +1,29 @@
+scn JacobstownNightstalkerScript
+
+short Initialize
+short Decloak
+
+begin OnLoad
+
+	if Initialize == 0
+		AddSpell StealthBoyInvisibilitySpell
+		set Initialize to 1
+	endif
+
+end
+
+begin OnHit
+
+	if Decloak == 0
+		RemoveSpell StealthBoyInvisibilitySpell
+		set Decloak to 1
+	endif
+
+end
+
+begin OnCombatEnd
+
+	AddSpell StealthBoyInvisibilitySpell
+	set Decloak to 0
+
+end

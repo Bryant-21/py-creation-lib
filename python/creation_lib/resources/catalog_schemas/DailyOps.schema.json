@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://modbox21.local/catalog_schemas/DailyOps.schema.json",
+  "title": "DailyOps catalog",
+  "description": "Data behind Daily Ops: lists of references the operations use, the size of each entrance trigger, and the radio voice lines.",
+  "x-help": "Daily Ops are timed missions. Their quests pick targets from reference lists, detect the player entering an operation through entrance triggers, and play the radio operator's lines.\n\nReference lists name the references an operation may use (consoles, uplink stations and so on). An entrance gives the size of the trigger box that starts an operation when the player walks in. Radio voice lines map each radio topic to the dialogue responses (INFO records) and the audio clip played for each.\n\nVoice lines are written by the conversion into SeventySix.esm.json; reference lists and entrances come from the Tales-shipped B21_TalesFromAppalachia.esm.json. A mod that adds its own operations adds its own rows here.",
+  "allOf": [
+    {"$ref": "envelope.schema.json"}
+  ],
+  "properties": {
+    "version": {"const": 1},
+    "settings": {
+      "type": "object",
+      "description": "Feature-wide values; a later plugin's field replaces the earlier one.",
+      "properties": {
+        "speaker": {"type": "string", "title": "Radio speaker", "description": "Voice folder name of the radio operator."},
+        "recipe_sha256": {"type": "string", "title": "Recipe hash", "description": "Fingerprint of the conversion recipe. Informational."}
+      }
+    },
+    "refs": {
+      "type": "array",
+      "title": "Reference lists",
+      "description": "Form lists of references that operations pick from.",
+      "x-key": ["form"],
+      "items": {
+        "type": "object",
+        "required": ["form"],
+        "properties": {
+          "form": {"$ref": "envelope.schema.json#/$defs/formKey", "x-form-type": ["FLST"], "title": "Form list (FLST)", "description": "The list the quests read. Its members here replace its contents in game."},
+          "remove": {"$ref": "envelope.schema.json#/$defs/removeFlag"},
+          "members": {"type": "array", "items": {"$ref": "envelope.schema.json#/$defs/formKey"}, "x-form-type": ["REFR", "ACHR"], "title": "References", "description": "The placed references in the list. Every one must be loaded or the whole catalog is rejected."}
+        },
+        "if": {"not": {"required": ["remove"]}},
+        "then": {"required": ["members"]}
+      }
+    },
+    "entrances": {
+      "type": "array",
+      "title": "Entrances",
+      "description": "Trigger volumes that start an operation when the player enters.",
+      "x-key": ["form"],
+      "items": {
+        "type": "object",
+        "required": ["form"],
+        "properties": {
+          "form": {"$ref": "envelope.schema.json#/$defs/formKey", "x-form-type": ["REFR"], "title": "Trigger reference", "description": "The placed trigger the player walks into."},
+          "remove": {"$ref": "envelope.schema.json#/$defs/removeFlag"},
+          "bounds": {"type": "array", "items": {"type": "number", "exclusiveMinimum": 0}, "minItems": 3, "maxItems": 3, "title": "Size (X, Y, Z)", "description": "Size of the trigger box in game units. Every value must be above 0.", "x-columns": ["X", "Y", "Z"]}
+        },
+        "if": {"not": {"required": ["remove"]}},
+        "then": {"required": ["bounds"]}
+      }
+    },
+    "voice": {
+      "type": "object",
+      "title": "Radio voice lines",
+      "description": "For each radio topic, the dialogue responses and the audio clip played for each.",
+      "x-key": "map",
+      "x-key-title": "Radio topic (DIAL)",
+      "x-key-form-type": ["DIAL"],
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "variants": {
+            "type": "array",
+            "title": "Variants",
+            "description": "Alternative lines for the topic; one is chosen when the topic plays.",
+            "items": {
+              "type": "object",
+              "required": ["info", "clips"],
+              "properties": {
+                "info": {"$ref": "envelope.schema.json#/$defs/formKey", "x-form-type": ["INFO"], "title": "Response (INFO)", "description": "The dialogue response this variant plays."},
+                "clips": {
+                  "type": "array",
+                  "title": "Audio clips",
+                  "description": "One clip per response line, in order. The count must match the INFO's responses.",
+                  "items": {
+                    "type": "object",
+                    "required": ["path"],
+                    "properties": {
+                      "path": {"type": "string", "title": "Clip", "description": "Audio file path starting with Sound/FX/B21/TalesFromAppalachia/DailyOps/.", "x-asset": {"kind": "sound", "root": "Sound", "strip_root": false}},
+                      "sha256": {"type": "string", "title": "Clip hash", "description": "Fingerprint of the converted clip. Informational."},
+                      "source_sha256": {"type": "string", "title": "Source hash", "description": "Fingerprint of the source clip. Informational."}
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "remove": {"$ref": "envelope.schema.json#/$defs/removeFlag"}
+        },
+        "if": {"not": {"required": ["remove"]}},
+        "then": {"required": ["variants"]}
+      }
+    }
+  }
+}

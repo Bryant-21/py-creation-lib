@@ -262,6 +262,7 @@ impl Parser {
                 Some(TopLevel::Event(e)) => script.events.push(e),
                 Some(TopLevel::State(s)) => script.states.push(s),
                 Some(TopLevel::Struct(s)) => script.structs.push(s),
+                Some(TopLevel::CustomEvent(name)) => script.custom_events.push(name),
                 Some(TopLevel::Discard) => {}
                 None => {
                     if !self.at_eof() {
@@ -383,10 +384,10 @@ impl Parser {
                 let props = self.parse_group();
                 Some(TopLevel::Property(props))
             }
-            TokenKind::KwCustomEvent => {
-                self.parse_custom_event_discard();
-                Some(TopLevel::Discard)
-            }
+            TokenKind::KwCustomEvent => Some(match self.parse_custom_event() {
+                Some(name) => TopLevel::CustomEvent(name),
+                None => TopLevel::Discard,
+            }),
             TokenKind::KwFunction => {
                 let f = self.parse_function(None, self.cur_pos());
                 Some(TopLevel::Function(f))
@@ -510,11 +511,13 @@ impl Parser {
         }
     }
 
-    fn parse_custom_event_discard(&mut self) {
+    fn parse_custom_event(&mut self) -> Option<String> {
         self.pos += 1; // CustomEvent
-        if matches!(self.peek(), TokenKind::Name(_)) {
-            self.pos += 1;
-        }
+        let TokenKind::Name(name) = self.peek().clone() else {
+            return None;
+        };
+        self.pos += 1;
+        Some(name)
     }
 
     fn parse_group(&mut self) -> Vec<PropertyDef> {
@@ -1366,12 +1369,13 @@ impl Parser {
                     };
                     if matches!(self.peek(), TokenKind::LParen) {
                         self.pos += 1;
-                        let (args, _names) = self.parse_arg_list();
+                        let (args, arg_names) = self.parse_arg_list();
                         self.expect(&TokenKind::RParen, "`)`");
                         left = Expr::DotCallExpr {
                             object: Box::new(left),
                             method: member,
                             args,
+                            arg_names,
                             pos: span(start, self.last_end()),
                         };
                     } else {
@@ -1407,6 +1411,7 @@ impl Parser {
                             object,
                             method: member,
                             args,
+                            arg_names,
                             pos: span(start, self.last_end()),
                         },
                         other => Expr::CallExpr {
@@ -1596,6 +1601,7 @@ enum TopLevel {
     Event(EventDef),
     State(StateDef),
     Struct(StructDef),
+    CustomEvent(String),
     Discard,
 }
 

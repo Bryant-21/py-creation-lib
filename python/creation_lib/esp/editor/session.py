@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import struct
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Iterable
@@ -20,6 +20,7 @@ from creation_lib.esp.native_runtime import (
     plugin_handle_get,
     plugin_handle_record_payload_hash,
     plugin_handle_record_summary,
+    plugin_handle_record_flags,
     plugin_handle_load,
     plugin_handle_load_index,
 )
@@ -295,9 +296,7 @@ class EditorSession:
 
             master_filenames: list[str] = list(plugin_handle_get(handle_id, "masters") or [])
 
-            # Insert masters BEFORE this plugin so load_order_index ordering is correct.
-            # We append the new plugin first, then resolve masters (which will be
-            # inserted with lower load_order indices via _load_master).
+            # Required masters must precede their dependent in the load order.
             loaded = LoadedPlugin(
                 handle=handle_id,
                 path=str(path),
@@ -306,12 +305,13 @@ class EditorSession:
                 load_order_index=len(self._plugins),
                 plugin_name=plugin_name,
             )
+            for master_name in master_filenames:
+                self._load_master(master_name, game=game, _seen=seen, source_dir=path.parent)
+
+            loaded.load_order_index = len(self._plugins)
             self._plugins.append(loaded)
             if self._active_handle is None and not is_master:
                 self._active_handle = handle_id
-
-            for master_name in master_filenames:
-                self._load_master(master_name, game=game, _seen=seen)
 
             self._invalidate_cache()
             return loaded
@@ -383,11 +383,11 @@ class EditorSession:
         self._invalidate_cache()
         self._maybe_run_auto_scan()
 
-    def _load_master(self, master_name: str, *, game: str, _seen: set[str]) -> None:
+    def _load_master(self, master_name: str, *, game: str, _seen: set[str], source_dir: Path | None = None) -> None:
         """Resolve `master_name` (filename only) against the game's data dir."""
         if any(p.plugin_name.lower() == master_name.lower() for p in self._plugins):
             return
-        candidate = self._resolve_master_path(master_name, game)
+        candidate = self._resolve_master_path(master_name, game, source_dir=source_dir)
         if candidate is None:
             _log.warning("Master not found in game data dir: %s (game=%s)", master_name, game)
             return
@@ -396,8 +396,10 @@ class EditorSession:
         except Exception:
             _log.exception("Failed to load master %s", master_name)
 
-    def _resolve_master_path(self, master_name: str, game: str) -> Path | None:
+    def _resolve_master_path(self, master_name: str, game: str, *, source_dir: Path | None = None) -> Path | None:
         candidates: list[Path] = []
+        if source_dir is not None:
+            candidates.append(source_dir / master_name)
         for search_path in self._master_search_paths:
             candidates.append(search_path / master_name)
             candidates.append(search_path / "Data" / master_name)
@@ -487,8 +489,55 @@ class EditorSession:
 
     # -- cross-plugin resolution ------------------------------------------
 
-    def resolve_form_id(self, form_id: int) -> tuple[int, RecordSummary] | None:
+    def form_key(self, handle: int, form_id: int) -> tuple[str, int] | None:
+        """Resolve a file-relative ID to its origin filename and object ID."""
+        plugin = self.get_by_handle(handle)
+        if plugin is None:
+            return None
+        masters = list(plugin_handle_get(handle, "masters") or [])
+        index = (int(form_id) >> 24) & 0xFF
+        if index in (len(masters), 0xFF):
+            origin = plugin.plugin_name
+        elif index < len(masters):
+            origin = masters[index]
+        else:
+            return None
+        return (origin.casefold(), int(form_id) & 0xFFFFFF)
+
+    def local_form_id(self, handle: int, key: tuple[str, int]) -> int | None:
+        plugin = self.get_by_handle(handle)
+        if plugin is None:
+            return None
+        masters = list(plugin_handle_get(handle, "masters") or [])
+        names = [*masters, plugin.plugin_name]
+        index = next((i for i, name in enumerate(names) if name.casefold() == key[0]), None)
+        return None if index is None else (index << 24) | key[1]
+
+    def resolve_form_id(self, form_id: int, *, source_handle: int | None = None) -> tuple[int, RecordSummary] | None:
         """Walk load order high-to-low and return (handle, record summary) or None."""
+        if source_handle is not None:
+            key = self.form_key(source_handle, form_id)
+            source = self.get_by_handle(source_handle)
+            if key is None or source is None or not form_id:
+                return None
+            for plugin in sorted(self.plugins, key=lambda p: p.load_order_index, reverse=True):
+                if plugin.game != source.game:
+                    continue
+                local_id = self.local_form_id(plugin.handle, key)
+                if local_id is None:
+                    continue
+                record = plugin_handle_record_summary(plugin.handle, local_id)
+                if record is not None and self.form_key(plugin.handle, record.form_id) == key:
+                    from creation_lib.esp.schema import get_schema
+                    spec = get_schema(plugin.game).records.get(record.signature)
+                    flags_spec = spec.record_flags if spec else None
+                    partial_bits = [bit.bit for bit in flags_spec.bits if bit.name.casefold() == "partial form"] if flags_spec else []
+                    if partial_bits:
+                        flags = int(plugin_handle_record_flags(plugin.handle, record.form_id) or 0)
+                        if any(flags & (1 << bit) for bit in partial_bits):
+                            continue
+                    return plugin.handle, record
+            return None
         cached = self._resolve_cache.get(form_id, _SENTINEL)
         if cached is not _SENTINEL:
             return cached
@@ -505,12 +554,21 @@ class EditorSession:
         self._resolve_cache[form_id] = result
         return result
 
-    def referencing(self, form_id: int) -> list[tuple[int, int]]:
+    def referencing(self, form_id: int, *, source_handle: int | None = None) -> list[tuple[int, int]]:
         """All (plugin_handle, ref_form_id) pairs that reference `form_id`."""
         out: list[tuple[int, int]] = []
+        key = self.form_key(source_handle, form_id) if source_handle is not None else None
+        source = self.get_by_handle(source_handle) if source_handle is not None else None
+        if source_handle is not None and (key is None or source is None):
+            return out
         for plugin in self._plugins:
+            if source is not None and plugin.game != source.game:
+                continue
+            local_id = self.local_form_id(plugin.handle, key) if key is not None else form_id
+            if local_id is None:
+                continue
             try:
-                ids = self._call(plugin.handle, "get_referencing_form_ids", form_id) or []
+                ids = self._call(plugin.handle, "get_referencing_form_ids", local_id) or []
             except Exception:
                 ids = []
             for fid in ids:

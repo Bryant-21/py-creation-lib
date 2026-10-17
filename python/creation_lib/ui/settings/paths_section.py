@@ -30,9 +30,9 @@ class _State:
 _state = _State()
 
 
-def _pick_folder(title: str = "Select Folder") -> str | None:
+def _pick_folder(title: str = "Select Folder", default_path: str = "") -> str | None:
     try:
-        return pick_folder(title)
+        return pick_folder(title, default_path)
     except Exception as e:
         _log.warning("Folder picker failed: %s", e)
         return None
@@ -69,7 +69,7 @@ def _draw_game_paths(game_id: str, scale: float | None = None) -> None:
         gp["root"] = val
     imgui.same_line()
     if imgui.button(f"Browse##root_{game_id}"):
-        path = _pick_folder("Select Game Root Directory")
+        path = _pick_folder("Select Game Root Directory", gp["root"])
         if path:
             gp["root"] = path
 
@@ -89,7 +89,7 @@ def _draw_game_paths(game_id: str, scale: float | None = None) -> None:
             gp["pts_root"] = val
         imgui.same_line()
         if imgui.button("Browse##pts_root_fo76"):
-            path = _pick_folder("Select Fallout 76 Playtest Directory")
+            path = _pick_folder("Select Fallout 76 Playtest Directory", gp.get("pts_root", ""))
             if path:
                 gp["pts_root"] = path
 
@@ -101,7 +101,7 @@ def _draw_game_paths(game_id: str, scale: float | None = None) -> None:
         gp["extracted"] = val
     imgui.same_line()
     if imgui.button(f"Browse##ext_{game_id}"):
-        path = _pick_folder("Select Extracted Directory")
+        path = _pick_folder("Select Extracted Directory", gp["extracted"])
         if path:
             gp["extracted"] = path
 
@@ -157,7 +157,7 @@ def _draw_game_paths(game_id: str, scale: float | None = None) -> None:
         gp["scripts_user_dir"] = val
     imgui.same_line()
     if imgui.button(f"Browse##scripts_user_{game_id}"):
-        path = _pick_folder("Select Scripts User Source Directory")
+        path = _pick_folder("Select Scripts User Source Directory", gp.get("scripts_user_dir", ""))
         if path:
             gp["scripts_user_dir"] = os.path.normpath(path)
 
@@ -174,7 +174,7 @@ def _draw_game_paths(game_id: str, scale: float | None = None) -> None:
         gp["scripts_base_dir"] = val
     imgui.same_line()
     if imgui.button(f"Browse##scripts_base_{game_id}"):
-        path = _pick_folder("Select Scripts Base Source Directory")
+        path = _pick_folder("Select Scripts Base Source Directory", gp.get("scripts_base_dir", ""))
         if path:
             gp["scripts_base_dir"] = os.path.normpath(path)
 

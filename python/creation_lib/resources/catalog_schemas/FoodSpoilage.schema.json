@@ -1,0 +1,130 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://modbox21.local/catalog_schemas/FoodSpoilage.schema.json",
+  "title": "Food spoilage",
+  "allOf": [{"$ref": "envelope.schema.json"}],
+  "$defs": {
+    "curve": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["x", "y"],
+        "properties": {"x": {"type": "number"}, "y": {"type": "number", "minimum": 0}}
+      },
+      "x-widget": "curve",
+      "description": "Food lifetime by player level: each point is (level, freshness points)."
+    },
+    "profile": {
+      "type": "object",
+      "required": ["curve", "spoiled"],
+      "properties": {
+        "curve": {
+          "$ref": "#/$defs/curve",
+          "title": "Freshness curve",
+          "description": "Freshness points (y) at each player level (x). Divide by the ageing speed for minutes."
+        },
+        "curve_id": {"type": "string", "title": "Curve name", "description": "Name of the curve, for your reference."},
+        "spoiled": {
+          "oneOf": [{"$ref": "envelope.schema.json#/$defs/formKey"}, {"type": "null"}],
+          "x-form-type": ["ALCH"],
+          "title": "Spoiled item",
+          "description": "What the food becomes when it spoils."
+        }
+      },
+      "description": "How a category of food spoils: its curve and what it becomes."
+    }
+  },
+  "properties": {
+    "version": {"const": 1},
+    "settings": {
+      "type": "object",
+      "description": "How fast food ages and how cold storage changes it. A later plugin's value replaces an earlier one.",
+      "properties": {
+        "points_per_minute": {
+          "type": "number",
+          "minimum": 0,
+          "title": "Ageing speed (points per minute)",
+          "description": "Freshness points lost per minute of unpaused play. Time to spoil in minutes = curve value / this."
+        },
+        "decay_policy": {"type": "string", "title": "Decay policy", "description": "How the clock counts. Leave as is."},
+        "can_spoil_keyword": {
+          "oneOf": [{"$ref": "envelope.schema.json#/$defs/formKey"}, {"type": "null"}],
+          "x-form-type": ["KYWD"],
+          "title": "Can-spoil keyword",
+          "description": "Keyword on food that is allowed to spoil."
+        },
+        "defaults": {
+          "type": "object",
+          "description": "Defaults for food without its own row, by category: raw_meat, cooked_meat, raw_vegetable, cooked_vegetable.",
+          "additionalProperties": {"$ref": "#/$defs/profile"},
+          "title": "Category defaults",
+          "x-key-title": "Category"
+        },
+        "storage": {
+          "type": "object",
+          "description": "How refrigerators, freezers and fermenters change the ageing speed.",
+          "additionalProperties": {
+            "type": "object",
+            "required": ["rate"],
+            "properties": {
+              "rate": {
+                "type": "number",
+                "minimum": 0,
+                "title": "Ageing speed multiplier",
+                "description": "1 is normal, 0.5 half speed, 0 stops ageing, 2 double."
+              },
+              "keyword": {
+                "oneOf": [{"$ref": "envelope.schema.json#/$defs/formKey"}, {"type": "null"}],
+                "x-form-type": ["KYWD"],
+                "title": "Keyword",
+                "description": "Workbench keyword that marks this kind of store."
+              },
+              "bases": {
+                "type": "array",
+                "items": {"$ref": "envelope.schema.json#/$defs/formKey"},
+                "x-form-type": ["ACTI"],
+                "title": "Containers",
+                "description": "Specific activators that act as this kind of store."
+              }
+            }
+          },
+          "title": "Cold storage",
+          "x-key-title": "Kind"
+        }
+      },
+      "title": "Settings"
+    },
+    "foods": {
+      "type": "array",
+      "description": "Foods with their own spoilage, keyed by food.",
+      "x-key": ["form"],
+      "items": {
+        "type": "object",
+        "properties": {
+          "form": {
+            "$ref": "envelope.schema.json#/$defs/formKey",
+            "x-form-type": ["ALCH"],
+            "title": "Food",
+            "description": "The food item."
+          },
+          "editor_id": {"type": "string", "title": "Editor ID", "description": "Its name."},
+          "spoiled": {
+            "oneOf": [{"$ref": "envelope.schema.json#/$defs/formKey"}, {"type": "null"}],
+            "x-form-type": ["ALCH"],
+            "title": "Spoiled item",
+            "description": "What it becomes when fully spoiled."
+          },
+          "curve_id": {"type": "string", "title": "Curve name", "description": "Name of its curve."},
+          "curve": {"$ref": "#/$defs/curve", "title": "Freshness curve", "description": "Its own freshness curve."},
+          "remove": {"$ref": "envelope.schema.json#/$defs/removeFlag"}
+        },
+        "if": {"not": {"required": ["remove"]}},
+        "then": {"required": ["form"]}
+      },
+      "title": "Foods"
+    }
+  },
+  "description": "Food loses freshness while you play and turns into a spoiled item when fully gone.",
+  "x-help": "Each food has a lifetime curve: the player's level on the x axis, the food's freshness points on the y axis. Freshness drops at the 'Ageing speed' (points per minute of play); when it reaches 0 the food becomes its 'Spoiled item'. So a curve value of 120 at your level and a speed of 1 means two hours. Foods without a row use their category's default.\n\nRefrigerators, freezers and fermenters change how fast food ages: a rate of 0.5 halves the speed, 0 stops it, 2 doubles it. The 'Settings' page shows how long each default lasts."
+}

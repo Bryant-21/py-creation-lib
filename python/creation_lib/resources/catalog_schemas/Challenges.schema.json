@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://modbox21.local/catalog_schemas/Challenges.schema.json",
+  "title": "Challenges catalog",
+  "description": "Challenges shown in the map's Challenges panel: what the player must do, how many times, and the reward.",
+  "x-help": "A challenge is a goal such as 'kill 25 Scorched'. The map's Challenges panel groups them by category and shows progress. Lifetime challenges are permanent, daily ones re-roll every day at UTC midnight and weekly ones every Monday.\n\nA challenge's kind says what counts as progress (kills, items gained, crafting, quests and so on) and its conditions narrow that down, for example to a certain enemy. Conditions are written as groups: every group must hold, and a group holds when any one of its conditions does. A challenge can be a sub-challenge of a parent, or require other challenges to be finished first.\n\nTales sets caps and XP rewards itself from the challenge's count and frequency, so the numbers written in a catalog are not used. Perk card packs are taken from the catalog. Progress is saved by the challenge number, which is the object ID of its form.",
+  "allOf": [
+    {"$ref": "envelope.schema.json"}
+  ],
+  "$defs": {
+    "formList": {"type": "array", "items": {"$ref": "envelope.schema.json#/$defs/formKey"}, "x-form-type": ["CHAL"]}
+  },
+  "properties": {
+    "version": {"const": 1},
+    "settings": {
+      "type": "object",
+      "description": "Feature-wide values; a later plugin's field replaces the earlier one.",
+      "properties": {
+        "source": {"type": "object", "title": "Source", "description": "Where the catalog was converted from. Informational.", "properties": {"plugin": {"type": "string", "title": "Plugin"}, "records": {"type": "integer", "title": "Records"}, "sha256": {"type": "string", "title": "Hash"}}},
+        "output_plugin": {"type": "string", "title": "Output plugin", "description": "The plugin that holds the challenge records."}
+      }
+    },
+    "categories": {
+      "type": "array",
+      "title": "Categories",
+      "description": "Groups in the panel's category rail, in order.",
+      "x-key": ["key"],
+      "x-order": "entries",
+      "items": {
+        "type": "object",
+        "properties": {
+          "key": {"type": "string", "title": "Key", "description": "Short name challenges refer to."},
+          "label": {"type": "string", "title": "Label", "description": "Text shown for the category."},
+          "remove": {"$ref": "envelope.schema.json#/$defs/removeFlag"}
+        },
+        "if": {"not": {"required": ["remove"]}},
+        "then": {"required": ["key"]}
+      }
+    },
+    "challenges": {
+      "type": "array",
+      "title": "Challenges",
+      "description": "The challenges, in panel order. Progress is saved by the form's object ID, so do not reuse one for a different goal.",
+      "x-key": ["id"],
+      "x-order": "entries",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {"$ref": "envelope.schema.json#/$defs/formKey", "x-form-type": ["CHAL"], "title": "Challenge (CHAL)", "description": "The challenge record. Its object ID is the challenge number progress is saved under."},
+          "eid": {"type": "string", "title": "Editor ID", "description": "Label only."},
+          "name": {"type": "string", "title": "Name", "description": "Text shown for the challenge."},
+          "category": {"type": "string", "x-ref": "categories", "title": "Category", "description": "Which category the challenge is listed under."},
+          "frequency": {"enum": ["lifetime", "daily", "weekly"], "title": "Frequency", "description": "Lifetime: counts forever. Daily: up to five roll each day. Weekly: up to seven roll each week.", "x-enum-labels": {"lifetime": "Lifetime", "daily": "Daily", "weekly": "Weekly"}},
+          "kind": {"type": "string", "title": "Kind", "description": "What counts as progress: kill, acquire, craft, craft_or_scrap, workshop, harvest, discover, consume, quest, level, lock, hack, claim, parent or script."},
+          "count": {"type": "integer", "minimum": 1, "title": "Times required", "description": "How many times it must happen. Tales scales the caps and XP reward from this."},
+          "parent": {"oneOf": [{"$ref": "envelope.schema.json#/$defs/formKey"}, {"type": "null"}], "x-form-type": ["CHAL"], "x-ref": "challenges", "title": "Parent challenge", "description": "Makes this a step of a bigger challenge; the parent completes when its steps do. Daily and weekly rolls skip steps."},
+          "prerequisites": {"$ref": "#/$defs/formList", "x-ref": "challenges", "title": "Must finish first", "description": "Challenges that have to be completed before this one is active."},
+          "sub_challenges": {"$ref": "#/$defs/formList", "x-ref": "challenges", "title": "Steps", "description": "The challenges that make up this one."},
+          "reward": {
+            "type": "object",
+            "title": "Reward",
+            "description": "Caps and XP are set by Tales; only perk card packs are read from here.",
+            "properties": {
+              "caps": {"type": "integer", "title": "Caps", "description": "Ignored: Tales sets caps from the challenge's count and frequency."},
+              "xp": {"type": "integer", "title": "XP", "description": "Ignored: Tales sets XP from the challenge's count and frequency."},
+              "perkCardPacks": {"type": "integer", "title": "Perk card packs", "description": "Perk card packs paid when the challenge completes."},
+              "item": {"$ref": "envelope.schema.json#/$defs/formKey", "title": "Item", "description": "An item paid on completion."}
+            }
+          },
+          "conditions": {
+            "type": "array",
+            "title": "Conditions",
+            "description": "Every group must hold; a group holds when any one condition in it does.",
+            "items": {
+              "type": "array",
+              "title": "Group (any of)",
+              "items": {
+                "type": "object",
+                "required": ["fn"],
+                "properties": {
+                  "fn": {"type": "string", "title": "Check", "description": "Name of the check, for example one that tests the killed actor's keywords. Use 'group' to nest a group."},
+                  "on": {"type": "string", "title": "Applies to", "description": "Which actor the check looks at, such as the target."},
+                  "op": {"type": "string", "title": "Operator", "description": "Comparison: ==, !=, >, >=, < or <=."},
+                  "params": {"type": "array", "title": "Parameters", "description": "Arguments of the check."},
+                  "value": {"type": "number", "title": "Value", "description": "The number the check is compared with."}
+                }
+              }
+            }
+          },
+          "remove": {"$ref": "envelope.schema.json#/$defs/removeFlag"}
+        },
+        "if": {"not": {"required": ["remove"]}},
+        "then": {"required": ["id"]}
+      }
+    }
+  }
+}

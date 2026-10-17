@@ -1,0 +1,120 @@
+scn VFreeformNellisScript
+
+ref rTest
+
+ref rTrigger1
+ref rTrigger2
+ref rTrigger3
+
+int iGeorgeCaps			; amount bartered to, 3 = 300, 2 = 200
+
+int iNellisFrontGateStart
+
+; Pearl
+int iPearlInfo				; Early into as to whether the player has convinced Pearl to give general information about Nellis
+
+int iLoyalJobs
+; 1 = has asked about jobs, changes dialogue for job responses.  Individual variables are set per quest which will change Loyal's dialogue responses to thanks for taking care of that instead of descriptions
+int iLoyalSonicEmitter
+; 1 = Loyal told the player about the sonic emitter.  Player can come back and ask for the emitter later if they increase their science skill, check to see if the player does not have the emitter and hasn't completed the quest
+int iVRPods
+; 1 = player tried to use the VR pods
+
+int iFrontGateInfo
+; 1 = Player spoke with George
+; 2 = Player got info from George
+; 3 = Player made it to the front gate alive
+; 4 = Player made it to the front gate alive without George's help
+
+int iAnts
+; 1 = Player has been told about the ant problem, 2 = player got the info to talk to Loyal about the sonic generator, 5 = quest done, 4 = quest done but lied
+int iInfestation
+; 1 = Cleared out the Ants
+int iGenerators
+; 1 = Fixed the generator problem
+int iGeneratorSwitches
+; 3 = power on, is incremented as switches are flipped
+
+int iAntCount
+; number of ants dead, 15 = all dead
+
+int iHandyman
+; 5 = Fixed all of the arrays
+int iArraysFixed
+; 1 = All arrays have been reapaired
+int iSpareParts
+; 5 = has all 5 nellisarrayparts
+
+int iInfortunium
+; 1 = Sabotaged all of the artillery
+
+int iMedicineMan
+; 3 = Healed all of the injured warriors, increment +1 per boomer healed
+int iMedicineManWorsened
+; 3 = Made all of the patients worse
+int  iMedicineManKilled
+; 1 = If the player kills any of the patients this variable is set to 1
+int iMedicineManActive
+; 1 = Player has spoken to Argyll and gotten permission to treat the patients, +1 per patient healed or made worse.
+int iArgyllBarter
+; 1 = Player has bartered down what Argyll "charges" for healing services.
+
+
+int iOralTradition
+; 1 = Pete has begun mural narration, but hasn't finished.
+; 2 = Pete has finished mural narration, will answer history questions.
+; 3 - 7 = Updates as player answers 1-5 history questions.
+; 8 = Pete has answered all 6 history questions; gives player written version.
+int iPeteLecture
+; 1 = Pete is on the lecture circuit
+
+int iHeardStory
+; 1 = Player heard the story of the Boomers from Pete.
+
+int iJackLoveStory
+; -1 = Player started the romance but told Jack he has no chance
+; 1 = Got Love Story Mission
+; 2 = Met the girl at Crimson Caravan
+; 3 = Girl is waiting for her boomer outfit.
+; 4 = Girl going to Nellis through the front gate
+; 5 = Girl following the rail lines
+; 6 = Player sent her to die and failed
+; 7 = Player sent her to die and she's on her way
+; 8 = Quest done, Love has found a way
+
+int iFindJack
+; 1 = Jack and Janet found each other
+
+int iJackScrap
+; number of scrap pieces the player has in inventory
+int iCollectingScrap
+; 1 = got the scrap job from Jack
+
+int iJackPouting
+; player told Jack, Janet is dead
+
+int iMissiles
+; 1 = player was told to turn in missiles by Raquel
+
+int bJanetMentionedContract
+; 1 = Janet brought up the fact that the Crimson Caravan won't pay her backwages if she leaves before her work contract is up.
+
+int iMcLaffertyDeal
+; 0 = No deal reached.	
+; 1 = Alice McLafferty refuses to pay Janet's backwages as a penalty.
+; 2 = Alice McLafferty has been convinced into paying Janet's backwages.	
+
+;NellisBoomerTeacher variables
+int iTaughtGuns
+int iTaughtBarter
+int iTaughtRepair
+int iTaughtSpeech
+int iTaughtScience
+int iTaughtSurvival
+int iTaughtMedicine
+int iTaughtUnarmed
+int iTaughtExplosives
+int iTaughtLockpicking
+
+int iPearlTimer
+; sets a delay on when the player can ask about support again

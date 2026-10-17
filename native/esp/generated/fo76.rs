@@ -321475,7 +321475,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r##"{
           "id": "ATKD",
           "kind": "parsed_with_raw_fallback",
           "display_label": "Attack Data",
-          "codec": "struct:f,f,I,I,f,f,f,f,f,f,i,f",
+          "codec": "struct:f,f,I,I,f,f,I,f,f,f,i,f",
           "fields": [
             {
               "id": "damage_mult",
@@ -321514,9 +321514,14 @@ pub const AUTHORING_SCHEMA_JSON: &str = r##"{
               "display_label": "Strike Angle"
             },
             {
-              "id": "stagger",
-              "kind": "float32",
-              "display_label": "Stagger"
+              "id": "attack_type",
+              "kind": "formid",
+              "display_label": "Attack Type",
+              "formlink_target": "KYWD",
+              "formlink_targets": [
+                "KYWD"
+              ],
+              "null_allowed": true
             },
             {
               "id": "knockdown",
@@ -453932,7 +453937,7 @@ pub const AUTHORING_SCHEMA_JSON: &str = r##"{
           "id": "ATKD",
           "kind": "parsed_with_raw_fallback",
           "display_label": "Attack Data",
-          "codec": "struct:f,f,I,I,f,f,f,f,f,f,i,f",
+          "codec": "struct:f,f,I,I,f,f,I,f,f,f,i,f",
           "fields": [
             {
               "id": "damage_mult",
@@ -453971,9 +453976,14 @@ pub const AUTHORING_SCHEMA_JSON: &str = r##"{
               "display_label": "Strike Angle"
             },
             {
-              "id": "stagger",
-              "kind": "float32",
-              "display_label": "Stagger"
+              "id": "attack_type",
+              "kind": "formid",
+              "display_label": "Attack Type",
+              "formlink_target": "KYWD",
+              "formlink_targets": [
+                "KYWD"
+              ],
+              "null_allowed": true
             },
             {
               "id": "knockdown",

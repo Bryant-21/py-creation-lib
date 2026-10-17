@@ -410,8 +410,9 @@ fn read_transitions(ta_idx: usize, objects: &[HkxObject]) -> Vec<Trans> {
 }
 
 /// Every `(eventId, flag, clip-set)` entry the graph yields, one per resolving transition.
-fn collect_entries(objects: &[HkxObject]) -> Vec<(i64, u32, BTreeSet<String>)> {
+fn collect_entries(objects: &[HkxObject], event_ids: &HashSet<i64>) -> Vec<(i64, u32, BTreeSet<String>)> {
     let mut out = Vec::new();
+    let mut targets = HashMap::new();
     for sm in objects.iter().filter(|o| o.class_name == "hkbStateMachine") {
         let states = sm_states(sm, objects);
         let mut tas: Vec<usize> = Vec::new();
@@ -425,15 +426,20 @@ fn collect_entries(objects: &[HkxObject]) -> Vec<(i64, u32, BTreeSet<String>)> {
         }
         for ta in tas {
             for t in read_transitions(ta, objects) {
+                if !event_ids.contains(&t.eid) {
+                    continue;
+                }
                 let Some(&tgt) = states.get(&t.tsid) else {
                     continue;
                 };
-                let clips = resolve_transition(tgt, t.to_nested, t.flags, objects);
+                let nested = (t.flags & FLAG_TO_NESTED_STATE_ID_IS_VALID != 0).then_some(t.to_nested);
+                let clips = targets.entry((tgt, nested))
+                    .or_insert_with(|| resolve_transition(tgt, t.to_nested, t.flags, objects));
                 if clips.is_empty() {
                     continue;
                 }
                 let flag = u32::from(is_moving_condition(t.cond.as_deref()));
-                out.push((t.eid, flag, clips));
+                out.push((t.eid, flag, clips.clone()));
             }
         }
     }
@@ -452,18 +458,29 @@ pub fn resolve_anim_events(behavior_file: &Path, candidates: &[String]) -> Vec<A
     let Some(hkx) = super::hkx_cache::behavior_packfile(behavior_file) else {
         return Vec::new();
     };
-    let objects = hkx.objects();
+    resolve_anim_events_from_objects(hkx.objects(), &candidate_spellings(candidates))
+}
 
-    let event_names = collect_event_names(objects);
-    let entries = collect_entries(objects);
-
-    // ESP candidate set: ci map (first spelling wins) for case-substitution + filtering.
+pub(super) fn candidate_spellings(candidates: &[String]) -> HashMap<String, String> {
     let mut ev_by_lower: HashMap<String, String> = HashMap::new();
     for c in candidates {
         ev_by_lower
             .entry(c.to_ascii_lowercase())
             .or_insert_with(|| c.clone());
     }
+    ev_by_lower
+}
+
+pub(super) fn resolve_anim_events_from_objects(
+    objects: &[HkxObject],
+    ev_by_lower: &HashMap<String, String>,
+) -> Vec<AnimEvent> {
+    let event_names = collect_event_names(objects);
+    let event_ids = event_names.iter().enumerate()
+        .filter(|(_, name)| ev_by_lower.contains_key(&name.to_ascii_lowercase()))
+        .map(|(index, _)| index as i64)
+        .collect();
+    let entries = collect_entries(objects, &event_ids);
 
     // De-dup by (event_lc, clip-set_lc); prefer the moving-gated flag.
     let mut dedup: BTreeMap<(String, Vec<String>), AnimEvent> = BTreeMap::new();

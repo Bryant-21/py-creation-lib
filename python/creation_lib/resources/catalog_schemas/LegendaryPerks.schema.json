@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://modbox21.local/catalog_schemas/LegendaryPerks.schema.json",
+  "title": "LegendaryPerks catalog",
+  "description": "Tells Tales which perk and which value global belong to each rank of each legendary perk card.",
+  "x-help": "Legendary perks are the 28 cards Tales runs itself (Ammo Factory, Funky Duds, Legendary Strength and so on), each with four ranks. For every rank Tales needs two forms: the PERK that is added to the player, and a GLOB that holds the rank's strength.\n\nEach binding is named B21_Legendary_<Card>_<rank> for the perk, or B21_Legendary_<Card>_<rank>_Value for its global, where the rank is 1 to 4 and the card is one of the names in the card list, for example B21_Legendary_FunkyDuds_2 or B21_Legendary_FunkyDuds_2_Value.\n\nThe conversion writes all 112 perk bindings and their globals. You only need this catalog to point a rank at your own perk or value, or to remove a binding an earlier plugin made.\n\nCards: AmmoFactory, BloodSacrifice, BrawlingChemist, CollateralDamage, DetonationContagion, ElectricAbsorption, ExplodingPalm, FarFlungFireworks, FollowThrough, FunkyDuds, HackAndSlash, LegendaryAgility, LegendaryCharisma, LegendaryEndurance, LegendaryIntelligence, LegendaryLuck, LegendaryPerception, LegendaryStrength, MasterInfiltrator, PowerArmorReboot, PowerSprinter, Retribution, SizzlingStyle, SurvivalShortcut, TakingOneForTheTeam, WhatRads, ActionDiet, FeralRage.",
+  "allOf": [
+    {"$ref": "envelope.schema.json"}
+  ],
+  "properties": {
+    "version": {"const": 1},
+    "settings": {"type": "object", "description": "Feature-wide values; a later plugin's field replaces the earlier one.", "properties": {}},
+    "bindings": {
+      "type": "object",
+      "title": "Bindings",
+      "description": "Perk and value-global bindings. The name says which card and rank; the value is the form. A later plugin's binding replaces an earlier one.",
+      "x-key": "map",
+      "x-key-title": "Binding name (B21_Legendary_<Card>_<rank> or ..._Value)",
+      "propertyNames": {"pattern": "^B21_Legendary_[A-Za-z]+_[1-4](_Value)?$"},
+      "additionalProperties": {"oneOf": [{"$ref": "envelope.schema.json#/$defs/formKey"}, {"$ref": "envelope.schema.json#/$defs/removeMarker"}], "x-form-type": ["PERK", "GLOB"]}
+    }
+  }
+}

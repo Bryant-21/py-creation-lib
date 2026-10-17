@@ -11,7 +11,7 @@ import json
 import logging
 import os
 import shutil
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -328,6 +328,7 @@ def compile_papyrus(
         return 0
 
     profile = get_profile(game)
+    from creation_lib.pex.corpus import bundled_corpus_root, install_headers_root
     from creation_lib.pex.native_runtime import compile_psc
 
     output_dir = mod_dir / "data" / "Scripts"
@@ -335,7 +336,8 @@ def compile_papyrus(
     # Import search path (first match wins):
     #   1. This mod's own Source/User     — the scripts being compiled + their siblings
     #   2. Game's Source/User             — any deployed scripts from other mods
-    #   3. Game's Source/Base             — vanilla base game scripts
+    #   3. Game's Source                  — F4SE extensions to vanilla types
+    #   4. Game's Source/Base             — vanilla base game scripts
     game_user_dir = game_data_dir / "Scripts" / "Source" / "User"
     # Fallout 4 keeps vanilla sources under Scripts/Source/Base; Skyrim reverses
     # the two path components and drops the Base level entirely.
@@ -344,8 +346,9 @@ def compile_papyrus(
         game_data_dir / "Source" / "Scripts",
         game_data_dir / "Scripts" / "Source",
     )
+    # Quest.psc, not any .psc: F4SE alone puts ~30 overrides in Scripts/Source.
     scripts_base = next(
-        (path for path in base_candidates if next(path.glob("*.psc"), None)),
+        (path for path in base_candidates if (path / "Quest.psc").is_file()),
         base_candidates[0],
     )
     import_parts = [str(source_dir)]
@@ -360,8 +363,22 @@ def compile_papyrus(
                 raise ValueError(f"Papyrus import directory does not exist: {import_dir}")
             if str(import_dir) not in import_parts:
                 import_parts.append(str(import_dir))
+    # Conversion compiles against PEX-derived headers, whose event-name types
+    # differ from Creation Kit sources. Preserve that API when rebuilding it.
+    converted_headers = bundled_corpus_root(game) if (mod_dir / ".source_game").is_file() else None
+    if converted_headers is not None:
+        import_parts.append(str(converted_headers))
+        _emit(f"  [compile] using PEX-derived {game} headers for converted mod ({converted_headers})")
     if game_user_dir.is_dir():
         import_parts.append(str(game_user_dir))
+    game_extended_dir = game_data_dir / "Scripts" / "Source"
+    if game == "fo4" and game_extended_dir.is_dir() and game_extended_dir != scripts_base:
+        import_parts.append(str(game_extended_dir))
+    # Ahead of the vanilla sources: F4SE's extended Form/ObjectReference ship as loose .pex only.
+    installed = install_headers_root(game, game_data_dir / "Scripts")
+    if installed is not None:
+        import_parts.append(str(installed))
+        _emit(f"  [compile] using headers from the install's loose scripts ({installed})")
     if scripts_base.is_dir():
         import_parts.append(str(scripts_base))
 
@@ -369,15 +386,13 @@ def compile_papyrus(
     # base-game call types as None and the errors land on the mod's own lines
     # ("cannot assign None to Bool") as though the mod were at fault. A game
     # install without Creation Kit sources looks exactly like broken source.
-    have_base_sources = scripts_base.is_dir() and next(
+    have_base_sources = converted_headers is not None or scripts_base.is_dir() and next(
         scripts_base.glob("*.psc"), None
     ) is not None
     if not have_base_sources:
         # No game install, or one the Creation Kit never wrote sources into. The
         # bundled corpus carries the same type surface, synthesized from the
         # game's own .pex, so compiling does not require the game at all.
-        from creation_lib.pex.corpus import bundled_corpus_root
-
         bundled = bundled_corpus_root(game)
         if bundled is not None:
             import_parts.append(str(bundled))
@@ -431,8 +446,6 @@ def compile_papyrus(
             output_pex.parent.mkdir(parents=True, exist_ok=True)
             output_pex.write_bytes(stock_outputs[psc_path.resolve()])
             continue
-        if output_pex.is_file():
-            output_pex.unlink()
         try:
             result = compile_psc(
                 psc_path.read_text(encoding="utf-8"),
@@ -473,15 +486,25 @@ def compile_papyrus(
 # Deploy
 # ---------------------------------------------------------------------------
 
+LEGACY_DEPLOY_PATHS_FILE = "legacy_xse_paths.txt"
+
+
 def deploy_xse_files(
     mod_dir: Path,
     target_data_dir: Path,
     *,
     game: str,
     preserve_xse_inis: bool = False,
+    remove_paths: Sequence[str] = (),
     on_progress: Callable[[str], None] | None = None,
 ) -> tuple[int, list[str]]:
     ext_dir = xse_plugin_dir_for(game)
+    for relative in remove_paths:
+        stale = Path(target_data_dir) / relative
+        if stale.is_file():
+            stale.unlink()
+            if on_progress:
+                on_progress(f"  Removed legacy file: {relative}")
     xse_dir = Path(mod_dir) / ext_dir
     copied, preserved = 0, []
     for source in sorted(xse_dir.rglob("*")):
@@ -594,9 +617,15 @@ def deploy_mod(
                     f"Build/install your {ext_dir} plugin first (e.g. xmake install -y)."
                 )
             return 0
+        manifest = mod_dir / LEGACY_DEPLOY_PATHS_FILE
+        remove_paths = (
+            [line.strip() for line in manifest.read_text(encoding="utf-8").splitlines() if line.strip()]
+            if manifest.is_file()
+            else []
+        )
         copied, preserved = deploy_xse_files(
             mod_dir, target_data_dir, game=game, preserve_xse_inis=preserve_xse_inis,
-            on_progress=_emit,
+            remove_paths=remove_paths, on_progress=_emit,
         )
         result.preserved_xse_inis.extend(preserved)
         result.loose_files_deployed += copied

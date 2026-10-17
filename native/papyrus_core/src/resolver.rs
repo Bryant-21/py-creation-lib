@@ -190,6 +190,7 @@ impl<'a> Resolver<'a> {
                 method,
                 args,
                 pos,
+                ..
             } => {
                 let orig = self.infer_type(object, scope);
                 let receiver = self.resolve_receiver_type(object, scope);

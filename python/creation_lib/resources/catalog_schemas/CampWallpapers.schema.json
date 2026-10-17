@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://modbox21.local/catalog_schemas/CampWallpapers.schema.json",
+  "title": "CampWallpapers catalog",
+  "description": "Adds wallpapers to the CAMP build menu: choosing one re-skins a wall with new materials and meshes.",
+  "x-help": "A wallpaper is an OMOD that a player applies to a wall in the CAMP build menu. Applying it swaps the wall's material (colours and textures) and its mesh for the wallpaper's own.\n\nEach wallpaper row names the OMOD, a material swap (MSWP) for the textures, and a mesh swap set: a named list of 'wall mesh -> wallpaper mesh' pairs kept in the Mesh swap sets tab. A wallpaper only works if its set exists there, and it only changes walls whose mesh appears in the set's left column.\n\nThe order of the rows is the order of the build menu. A later plugin that replaces a row keeps its place; new rows go to the end.\n\nOne row should be marked 'Remove Wallpaper': that row carries no swaps and takes the wallpaper off a wall.",
+  "allOf": [
+    {"$ref": "envelope.schema.json"}
+  ],
+  "properties": {
+    "version": {"const": 1},
+    "settings": {"type": "object", "description": "Feature-wide values; a later plugin's field replaces the earlier one.", "properties": {}},
+    "wallpapers": {
+      "type": "array",
+      "title": "Wallpapers",
+      "description": "The wallpapers in build menu order. A later plugin's replacement keeps its slot; new wallpapers are added at the end.",
+      "x-key": ["form"],
+      "x-order": "entries",
+      "items": {
+        "type": "object",
+        "properties": {
+          "form": {"$ref": "envelope.schema.json#/$defs/formKey", "x-form-type": ["OMOD"], "title": "Wallpaper (OMOD)", "description": "The mod that is applied to a wall when the player chooses this wallpaper."},
+          "editor_id": {"type": "string", "title": "Editor ID", "description": "Label only; Tales identifies the wallpaper by its form."},
+          "remove": {"$ref": "envelope.schema.json#/$defs/removeFlag"},
+          "strip": {"type": "boolean", "title": "Is the 'Remove Wallpaper' row", "description": "Tick for the menu row that takes a wallpaper off a wall. It carries no swaps."},
+          "material_swap": {"$ref": "envelope.schema.json#/$defs/formKey", "x-form-type": ["MSWP"], "title": "Material swap", "description": "The material swap (MSWP) that re-textures the wall."},
+          "model_swap": {"type": "string", "x-ref": "model_swaps", "title": "Mesh swap set", "description": "Which set from the Mesh swap sets tab swaps the wall's meshes for this wallpaper."},
+          "art": {"oneOf": [{"$ref": "envelope.schema.json#/$defs/formKey"}, {"type": "null"}], "x-form-type": ["ARTO"], "title": "Menu icon", "description": "The art object (ARTO) shown for the wallpaper in the build menu. Optional."}
+        },
+        "if": {"not": {"required": ["remove"]}},
+        "then": {"required": ["form"]}
+      }
+    },
+    "model_swaps": {
+      "type": "object",
+      "title": "Mesh swap sets",
+      "description": "Named lists of 'wall mesh -> wallpaper mesh' pairs. A later plugin that reuses a name replaces the whole set.",
+      "x-key": "map",
+      "x-key-title": "Set name",
+      "additionalProperties": {
+        "anyOf": [
+          {
+            "type": "array",
+            "title": "Mesh swaps",
+            "description": "Whenever a wall loads the mesh on the left, the wallpaper's mesh on the right is loaded instead.",
+            "x-columns": ["Wall mesh", "Wallpaper mesh"],
+            "x-asset": {"kind": "nif", "root": "Meshes", "strip_root": true},
+            "items": {
+              "type": "array",
+              "items": {"type": "string", "x-asset": {"kind": "nif", "root": "Meshes", "strip_root": true}},
+              "minItems": 2,
+              "maxItems": 2
+            }
+          },
+          {"$ref": "envelope.schema.json#/$defs/removeMarker"}
+        ]
+      }
+    }
+  }
+}

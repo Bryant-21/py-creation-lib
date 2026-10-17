@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://modbox21.local/catalog_schemas/Emotes.schema.json",
+  "title": "Emotes catalog",
+  "description": "The emotes offered by the radial emote wheel: animated character emotes and icon-only bubbles, sorted into categories.",
+  "x-help": "The emote wheel (opened with the Emotes key in Tales Config) lists categories, and each category lists emotes.\n\nA character emote plays an idle animation on the player. It needs an IDLE record and at least one .hkx animation clip: one for male characters, optionally one for female characters and one for power armor. An icon emote plays no animation; it only shows a speech bubble with the icon, and can roll a dice number. Pet emotes are not supported and are skipped.\n\nCategories and emotes keep the order they are listed in, which is the order of the wheel. An emote only shows if its category exists. Rows that break a rule (no animation, duration out of range, unknown category) are dropped at run time and the rest still load; the warnings panel tells you which.\n\nTales only plays emote forms from SeventySix.esm today, so idle and category forms must come from that plugin.",
+  "allOf": [
+    {"$ref": "envelope.schema.json"}
+  ],
+  "properties": {
+    "version": {"const": 1},
+    "settings": {
+      "type": "object",
+      "description": "Feature-wide values; a later plugin's field replaces the earlier one. These come from the conversion and rarely need editing.",
+      "properties": {
+        "event_name": {"type": "string", "title": "Event name", "description": "Contract name between the catalog and Tales. Leave as generated."},
+        "source_plugin": {"type": "string", "title": "Source plugin", "description": "The plugin the emotes were converted from."},
+        "source_plugin_sha256": {"type": "string", "title": "Source plugin hash", "description": "Fingerprint of the source plugin; informational."},
+        "playback_route": {"type": "object", "required": ["event"], "title": "Playback route", "description": "The behavior graph event the emote animations are played through. Tales refuses the feature when the event is missing."},
+        "ui": {"type": "object", "required": ["bridge_version"], "title": "Wheel interface", "description": "Version of the radial menu movie that this catalog was built for."},
+        "power_armor_dropped_tracks": {"type": "array", "items": {"type": "string"}, "title": "Dropped power armor clips", "description": "Power armor clips the converter could not use. Informational."},
+        "files": {"type": "array", "items": {"type": "object"}, "title": "Converted files", "description": "The animation files the converter produced. Informational."},
+        "skipped": {"type": "array", "items": {"type": "object", "properties": {"source_id": {"$ref": "envelope.schema.json#/$defs/formKey"}}}, "title": "Skipped emotes", "description": "Source emotes the converter skipped. Informational."},
+        "excluded": {"type": "array", "items": {"type": "object", "properties": {"source_id": {"$ref": "envelope.schema.json#/$defs/formKey"}}}, "title": "Excluded emotes", "description": "Source emotes deliberately left out. Informational."}
+      }
+    },
+    "categories": {
+      "type": "array",
+      "title": "Categories",
+      "description": "The groups of the wheel, in wheel order. Emotes point at a category; an emote with an unknown category is dropped.",
+      "x-key": ["id"],
+      "x-order": "entries",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {"$ref": "envelope.schema.json#/$defs/formKey", "x-form-type": ["ECAT"], "title": "Category (ECAT)", "description": "The emote category record. It must come from SeventySix.esm."},
+          "editor_id": {"type": "string", "title": "Editor ID", "description": "Label only."},
+          "name": {"type": "string", "title": "Name", "description": "Text shown for the category on the wheel."},
+          "icon": {"type": "string", "title": "Icon", "description": "Name of the icon symbol in the wheel's menu movie (not a file path)."},
+          "remove": {"$ref": "envelope.schema.json#/$defs/removeFlag"}
+        },
+        "if": {"not": {"required": ["remove"]}},
+        "then": {"required": ["id", "name", "icon"]}
+      }
+    },
+    "entries": {
+      "type": "array",
+      "title": "Emotes",
+      "description": "The emotes, in wheel order within their category. Only emote forms from SeventySix.esm play today.",
+      "x-key": ["form"],
+      "x-order": "entries",
+      "items": {
+        "type": "object",
+        "properties": {
+          "form": {"$ref": "envelope.schema.json#/$defs/formKey", "x-form-type": ["EMOT"], "title": "Emote (EMOT)", "description": "The emote record this row describes."},
+          "editor_id": {"type": "string", "title": "Editor ID", "description": "Label only."},
+          "name": {"type": "string", "title": "Name", "description": "Text shown for the emote on the wheel."},
+          "category_id": {
+            "oneOf": [{"$ref": "envelope.schema.json#/$defs/formKey"}, {"const": ""}],
+            "x-form-type": ["ECAT"],
+            "title": "Category",
+            "description": "The category this emote appears in. Leave empty only for pet emotes, which are not supported.",
+            "x-ref": "categories"
+          },
+          "kind": {"enum": ["human", "icon", "pet"], "title": "Kind", "description": "Character: plays an animation on the player. Icon: only shows a bubble. Pet: not supported, skipped.", "x-enum-labels": {"human": "Character animation", "icon": "Icon bubble only", "pet": "Pet (not supported)"}},
+          "icon": {"type": "string", "title": "Icon", "description": "Name of the icon symbol in the wheel's menu movie (not a file path). Shown on the wheel and in the bubble."},
+          "idle_id": {"oneOf": [{"$ref": "envelope.schema.json#/$defs/formKey"}, {"const": ""}], "x-form-type": ["IDLE"], "title": "Idle", "description": "The idle record Tales plays. Required for character emotes; it must come from SeventySix.esm."},
+          "animation": {"type": "string", "title": "Animation (male)", "description": "Animation clip (.hkx) for male characters, relative to Meshes. Used for female characters too when no female clip is set.", "x-asset": {"kind": "any", "root": "Meshes", "strip_root": true}},
+          "animation_female": {"type": "string", "title": "Animation (female)", "description": "Optional clip for female characters, relative to Meshes.", "x-asset": {"kind": "any", "root": "Meshes", "strip_root": true}},
+          "animation_power_armor": {"type": "string", "title": "Animation (power armor)", "description": "Optional clip played in power armor, relative to Meshes. Without it the emote is not offered in power armor.", "x-asset": {"kind": "any", "root": "Meshes", "strip_root": true}},
+          "power_armor_only": {"type": "boolean", "title": "Power armor only", "description": "Offer this emote only while the player wears power armor."},
+          "duration": {"type": "number", "title": "Duration (seconds)", "description": "How long the emote plays or the bubble shows. Must be above 0 and at most 60."},
+          "dice_faces": {"type": "integer", "title": "Dice faces", "description": "For dice emotes: the bubble shows a random number from 1 to this many. 0 means no number. At most 100."},
+          "sound_ids": {"type": "array", "items": {"$ref": "envelope.schema.json#/$defs/formKey"}, "x-form-type": ["SNDR"], "title": "Sounds", "description": "Sound descriptors played with the emote."},
+          "remove": {"$ref": "envelope.schema.json#/$defs/removeFlag"}
+        },
+        "if": {"not": {"required": ["remove"]}},
+        "then": {"required": ["form"]}
+      }
+    }
+  }
+}

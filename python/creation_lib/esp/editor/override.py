@@ -15,12 +15,14 @@ covers the record's own form_id and subrecord bytes tagged `formid` /
 from __future__ import annotations
 
 import logging
+from collections import deque
 
 from creation_lib.esp.editor.session import EditorSession
 from creation_lib.esp.native_runtime import (
     plugin_handle_call,
     plugin_handle_copy_record,
     plugin_handle_get,
+    plugin_handle_record_summary,
 )
 
 _log = logging.getLogger("creation_lib.esp.editor.override")
@@ -32,13 +34,14 @@ def copy_as_override(
     *,
     deep: bool = False,
     target_handle: int | None = None,
+    source_handle: int | None = None,
 ) -> list[int]:
     """Copy `source_form_id` into a target plugin as an override.
 
     Returns the list of FormIDs (target-space) that were inserted.
     """
     target = _resolve_target(session, target_handle)
-    return _copy_records(session, source_form_id, target_handle=target, as_new=False, deep=deep)
+    return _copy_records(session, source_form_id, target_handle=target, source_handle=source_handle, as_new=False, deep=deep)
 
 
 def copy_as_new(
@@ -47,6 +50,7 @@ def copy_as_new(
     *,
     deep: bool = False,
     target_handle: int | None = None,
+    source_handle: int | None = None,
 ) -> list[int]:
     """Copy `source_form_id` into a target plugin as a brand-new record.
 
@@ -57,7 +61,7 @@ def copy_as_new(
     Returns the list of newly-allocated FormIDs (target-space).
     """
     target = _resolve_target(session, target_handle)
-    return _copy_records(session, source_form_id, target_handle=target, as_new=True, deep=deep)
+    return _copy_records(session, source_form_id, target_handle=target, source_handle=source_handle, as_new=True, deep=deep)
 
 
 def _resolve_target(session: EditorSession, target_handle: int | None) -> int:
@@ -73,6 +77,7 @@ def _copy_records(
     source_form_id: int,
     *,
     target_handle: int,
+    source_handle: int | None,
     as_new: bool,
     deep: bool,
 ) -> list[int]:
@@ -80,25 +85,29 @@ def _copy_records(
     if target_plugin is None:
         raise RuntimeError(f"Unknown target handle: {target_handle}")
 
-    queue: list[int] = [int(source_form_id)]
-    seen: set[int] = set()
+    queue = deque([(source_handle, int(source_form_id), True)])
+    seen: set[tuple[int, int]] = set()
     inserted: list[int] = []
 
     while queue:
-        fid = queue.pop(0)
-        if fid in seen:
-            continue
-        seen.add(fid)
-
-        located = session.resolve_form_id(fid)
+        context_handle, fid, is_root = queue.popleft()
+        if is_root and context_handle is not None:
+            record = plugin_handle_record_summary(context_handle, fid)
+            located = (context_handle, record) if record is not None and record.form_id == fid else None
+        else:
+            located = session.resolve_form_id(fid, source_handle=context_handle)
         if located is None:
             _log.warning("copy: source FormID 0x%08X not found in load order", fid)
             continue
         source_handle, record_summary = located
+        scoped_key = (source_handle, record_summary.form_id)
+        if scoped_key in seen:
+            continue
+        seen.add(scoped_key)
         if source_handle == target_handle and not as_new:
             # Already in the target; nothing to override. Still recurse for deep.
             if deep:
-                queue.extend(_outbound(target_handle, fid))
+                queue.extend((target_handle, ref, False) for ref in _outbound(target_handle, record_summary.form_id))
             continue
 
         source_plugin = session.get_by_handle(source_handle)
@@ -129,7 +138,7 @@ def _copy_records(
         inserted.append(recorded_fid)
 
         if deep:
-            queue.extend(_outbound(source_handle, fid))
+            queue.extend((source_handle, ref, False) for ref in _outbound(source_handle, record_summary.form_id))
 
     session._invalidate_cache()
     return inserted

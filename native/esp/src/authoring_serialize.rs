@@ -3582,6 +3582,38 @@ fn authoring_field_is_default_json(
     }
 }
 
+// Authoring-dir YAML drops zero/default struct fields because the encoder
+// writes them back identically. Inspection dumps must not: a reader counting
+// fields would think the subrecord is truncated.
+thread_local! {
+    static KEEP_PRESENT_STRUCT_FIELDS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+struct KeepPresentStructFieldsGuard(bool);
+
+impl Drop for KeepPresentStructFieldsGuard {
+    fn drop(&mut self) {
+        KEEP_PRESENT_STRUCT_FIELDS.with(|flag| flag.set(self.0));
+    }
+}
+
+pub fn with_present_struct_fields_kept<R>(f: impl FnOnce() -> R) -> R {
+    let _guard =
+        KeepPresentStructFieldsGuard(KEEP_PRESENT_STRUCT_FIELDS.with(|flag| flag.replace(true)));
+    f()
+}
+
+fn struct_field_is_omitted(
+    raw_value: &serde_json::Value,
+    serialized: &serde_json::Value,
+    field: &SchemaFieldJson,
+) -> bool {
+    if KEEP_PRESENT_STRUCT_FIELDS.with(|flag| flag.get()) {
+        return raw_value.is_null() || serialized.is_null();
+    }
+    authoring_field_is_default_json(raw_value, serialized, field)
+}
+
 fn json_values_numerically_equal(a: &serde_json::Value, b: &serde_json::Value) -> bool {
     match (a, b) {
         (serde_json::Value::Number(x), serde_json::Value::Number(y)) => {
@@ -3619,7 +3651,7 @@ fn serialize_struct_value_json(
                 let raw_val = m.get(field.id.as_str()).unwrap_or(&serde_json::Value::Null);
                 let serialized =
                     serialize_field_value_json(raw_val, field, schema, masters, plugin_name);
-                if !authoring_field_is_default_json(raw_val, &serialized, field) {
+                if !struct_field_is_omitted(raw_val, &serialized, field) {
                     out.insert(key, serialized);
                 }
             }

@@ -7,12 +7,16 @@ use byteorder::{LittleEndian, ReadBytesExt};
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 
+use crate::skin::bone_remap::VertexInfluences;
+
+#[derive(Debug)]
 pub struct SfMeshData {
     pub positions: Vec<[f32; 3]>,
     pub normals: Vec<[f32; 3]>,
     pub uvs: Vec<[f32; 2]>,
     pub triangles: Vec<[u32; 3]>,
     pub vertex_colors: Option<Vec<[u8; 4]>>,
+    pub bone_influences: Option<Vec<VertexInfluences>>,
 }
 
 pub fn read_sf_mesh(path: &Path) -> Result<SfMeshData, String> {
@@ -59,9 +63,9 @@ fn parse_sf_mesh(data: &[u8]) -> Result<SfMeshData, String> {
     let scale = cur
         .read_f32::<LittleEndian>()
         .map_err(|e| format!("sf mesh: truncated at scale: {e}"))?;
-    let _weights_per_vert = read_u32(&mut cur, "weights_per_vert")?;
+    let weights_per_vert = read_u32(&mut cur, "weights_per_vert")? as usize;
     let num_positions = read_u32(&mut cur, "position count")? as usize;
-    if scale <= 0.0 || num_positions == 0 {
+    if !scale.is_finite() || scale <= 0.0 || num_positions == 0 {
         return Err("sf mesh: invalid scale or zero positions".to_string());
     }
 
@@ -78,6 +82,13 @@ fn parse_sf_mesh(data: &[u8]) -> Result<SfMeshData, String> {
             ]
         })
         .collect();
+    if raw_triangles
+        .iter()
+        .flatten()
+        .any(|&index| index as usize >= num_positions)
+    {
+        return Err("sf mesh: triangle index exceeds position count".to_string());
+    }
 
     let uvs = read_uv_channel(&mut cur, num_positions)?;
     let _uv2 = read_uv_channel(&mut cur, num_positions)?;
@@ -106,6 +117,41 @@ fn parse_sf_mesh(data: &[u8]) -> Result<SfMeshData, String> {
         compute_normals(&positions, &raw_triangles)
     };
 
+    let num_tangents = read_u32(&mut cur, "tangent count")? as usize;
+    let tangent_bytes = num_tangents
+        .checked_mul(4)
+        .filter(|&size| size <= data.len().saturating_sub(cur.position() as usize))
+        .ok_or_else(|| "sf mesh: truncated tangents".to_string())?;
+    cur.set_position(cur.position() + tangent_bytes as u64);
+
+    let num_weights = read_u32(&mut cur, "weight count")? as usize;
+    if num_positions.checked_mul(weights_per_vert) != Some(num_weights) {
+        return Err("sf mesh: weight count does not match vertex count and stride".to_string());
+    }
+    let bone_influences = if weights_per_vert > 0 {
+        if num_weights
+            .checked_mul(4)
+            .is_none_or(|size| size > data.len().saturating_sub(cur.position() as usize))
+        {
+            return Err("sf mesh: truncated bone weights".to_string());
+        }
+        let mut vertices = Vec::with_capacity(num_positions);
+        for _ in 0..num_positions {
+            let mut slots = Vec::with_capacity(weights_per_vert);
+            for _ in 0..weights_per_vert {
+                let bone = cur.read_u16::<LittleEndian>().unwrap() as usize;
+                let weight = cur.read_u16::<LittleEndian>().unwrap();
+                if weight != 0 {
+                    slots.push((bone, weight as f32 / 65535.0));
+                }
+            }
+            vertices.push(VertexInfluences { slots });
+        }
+        Some(vertices)
+    } else {
+        None
+    };
+
     // Starfield winding is flipped relative to FO4 (sf_backend.py:260) —
     // swap indices 1 and 2 so the exported triangles cull correctly under FO4.
     let triangles: Vec<[u32; 3]> = raw_triangles.iter().map(|t| [t[0], t[2], t[1]]).collect();
@@ -116,6 +162,7 @@ fn parse_sf_mesh(data: &[u8]) -> Result<SfMeshData, String> {
         uvs,
         triangles,
         vertex_colors,
+        bone_influences,
     })
 }
 
@@ -143,9 +190,9 @@ fn read_uv_channel(cur: &mut Cursor<&[u8]>, num_positions: usize) -> Result<Vec<
 }
 
 fn decode_udec_normal(packed: u32) -> [f32; 3] {
-    let x = (packed & 0x3FF) as f32 / 511.0 - 1.0;
-    let y = ((packed >> 10) & 0x3FF) as f32 / 511.0 - 1.0;
-    let z = ((packed >> 20) & 0x3FF) as f32 / 511.0 - 1.0;
+    let x = (packed & 0x3FF) as f32 / 511.5 - 1.0;
+    let y = ((packed >> 10) & 0x3FF) as f32 / 511.5 - 1.0;
+    let z = ((packed >> 20) & 0x3FF) as f32 / 511.5 - 1.0;
     [x, y, z]
 }
 
@@ -217,12 +264,18 @@ mod tests {
 
     #[test]
     fn decode_udec_normal_recovers_unit_axes() {
-        // 511 => (511/511 - 1) = 0.0; 1022 => (1022/511 - 1) = 1.0
-        let packed = 511u32 | (511u32 << 10) | (1022u32 << 20);
+        let packed = 511u32 | (511u32 << 10) | (1023u32 << 20);
         let n = decode_udec_normal(packed);
         assert!((n[0] - 0.0).abs() < 1e-3);
         assert!((n[1] - 0.0).abs() < 1e-3);
         assert!((n[2] - 1.0).abs() < 1e-3);
+        assert_eq!(decode_udec_normal(0), [-1.0; 3]);
+        assert_eq!(decode_udec_normal(0x3fffffff), [1.0; 3]);
+        assert!(
+            decode_udec_normal(0x5ff7fdff)
+                .iter()
+                .all(|value| *value < 0.0 && *value > -0.001)
+        );
     }
 
     #[test]
@@ -230,6 +283,48 @@ mod tests {
         let data = build_minimal_mesh();
         let mesh = parse_sf_mesh(&data).expect("parses");
         assert_eq!(mesh.triangles[0], [0, 2, 1]);
+        assert!(mesh.bone_influences.is_none());
+    }
+
+    #[test]
+    fn skin_weights_preserve_vertex_major_bone_indices_and_unorm_values() {
+        let mut data = build_minimal_mesh();
+        data[18..22].copy_from_slice(&2u32.to_le_bytes());
+        let count_offset = data.len() - 4;
+        data[count_offset..].copy_from_slice(&6u32.to_le_bytes());
+        for (bone, weight) in [
+            (2u16, 49151u16),
+            (5, 16384),
+            (7, 65535),
+            (0, 0),
+            (1, 0),
+            (9, 65535),
+        ] {
+            data.extend_from_slice(&bone.to_le_bytes());
+            data.extend_from_slice(&weight.to_le_bytes());
+        }
+        let mesh = parse_sf_mesh(&data).unwrap();
+        let influences = mesh.bone_influences.unwrap();
+        assert_eq!(influences[0].slots.len(), 2);
+        assert_eq!(influences[0].slots[0].0, 2);
+        assert_eq!(influences[0].slots[1].0, 5);
+        assert!((influences[0].slots[0].1 - 0.75).abs() < 0.00002);
+        assert_eq!(influences[1].slots, vec![(7, 1.0)]);
+        assert_eq!(influences[2].slots, vec![(9, 1.0)]);
+    }
+
+    #[test]
+    fn malformed_skin_weight_count_and_truncated_payload_are_rejected() {
+        let mut data = build_minimal_mesh();
+        data[18..22].copy_from_slice(&2u32.to_le_bytes());
+        assert!(parse_sf_mesh(&data).unwrap_err().contains("weight count"));
+        let count_offset = data.len() - 4;
+        data[count_offset..].copy_from_slice(&6u32.to_le_bytes());
+        assert!(
+            parse_sf_mesh(&data)
+                .unwrap_err()
+                .contains("truncated bone weights")
+        );
     }
 
     #[test]
@@ -248,6 +343,39 @@ mod tests {
         let root = Path::new("fake/geometries");
         let resolved = resolve_geometry_path(root, "abc/def.mesh");
         assert_eq!(resolved, root.join("abc").join("def.mesh"));
+    }
+
+    #[test]
+    #[ignore = "requires extracted Starfield outfit geometries"]
+    fn real_outfit_packed_normals_remain_finite_and_nonzero() {
+        let root =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../extracted/starfield/geometries");
+        let mut rows = Vec::new();
+        for path in [
+            "7bf9fa063821f7b581e5/8bbf9073e4f77b120c39",
+            "23d53ad50e363004ec50/fac260a94e7307230438",
+            "ea36a18744b551faecb8/bb3ba8a77f6e9faa6f9e",
+        ] {
+            let mesh = read_sf_mesh(&resolve_geometry_path(&root, path)).unwrap();
+            let invalid = mesh
+                .normals
+                .iter()
+                .enumerate()
+                .filter(|(_, n)| n.iter().map(|v| v * v).sum::<f32>() < 1e-12)
+                .map(|(i, _)| i)
+                .collect::<Vec<_>>();
+            assert_eq!(mesh.normals.len(), mesh.positions.len());
+            assert!(mesh.normals.iter().flatten().all(|value| value.is_finite()));
+            rows.push(serde_json::json!({"mesh":path,"vertices":mesh.positions.len(),"zero_normals":invalid}));
+        }
+        let receipt = std::env::temp_dir().join("b21_starfield_zero_normal_receipt.json");
+        std::fs::write(&receipt, serde_json::to_vec_pretty(&rows).unwrap()).unwrap();
+        println!("{}", receipt.display());
+        assert!(
+            rows.iter()
+                .all(|row| row["zero_normals"].as_array().unwrap().is_empty()),
+            "{rows:?}"
+        );
     }
 
     fn build_minimal_mesh() -> Vec<u8> {
@@ -271,6 +399,7 @@ mod tests {
         buf.extend_from_slice(&0u32.to_le_bytes()); // num_colors
         buf.extend_from_slice(&0u32.to_le_bytes()); // num_normals
         buf.extend_from_slice(&0u32.to_le_bytes()); // num_tangents
+        buf.extend_from_slice(&0u32.to_le_bytes()); // num_weights
         buf
     }
 }

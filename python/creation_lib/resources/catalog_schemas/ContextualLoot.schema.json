@@ -1,0 +1,154 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://modbox21.local/catalog_schemas/ContextualLoot.schema.json",
+  "title": "ContextualLoot catalog",
+  "description": "Leveled lists whose entries depend on the situation (player level, chance, Daily Ops progress, known plans, equipped ammo), used for Daily Ops rewards and kill drops.",
+  "x-help": "Fallout 76 leveled lists can test conditions on each entry, which Fallout 4 lists cannot. Tales rolls the lists in this catalog itself so those conditions still apply.\n\nLists are the conditional lists. Each list has entries (an item or another list, with a count, a minimum level and a chance of nothing) and each entry or list can carry conditions. Ammo groups gather the ammo types that share a keyword, so an 'ammo' condition can ask whether the equipped weapon uses that ammo. Rewards pay experience and leveled-list items per row of the Daily Ops reward screen. Tokens are items that, when found on a kill, make the game roll one of the lists instead of a death item. Counts override how many items a list entry gives at a certain level.\n\nA condition compares a value to a number: choose what to measure (player level, a random 0-100, whether a double mutation was done and so on), the comparison, and the number. Tick 'or next' to join a condition to the one after it with OR; otherwise conditions are joined with AND.",
+  "allOf": [
+    {"$ref": "envelope.schema.json"}
+  ],
+  "$defs": {
+    "condition": {
+      "type": "object",
+      "required": ["f", "op", "value", "or"],
+      "properties": {
+        "f": {"enum": ["constant", "random", "level", "double", "prior", "within", "plan", "ammo"], "title": "Measure", "description": "What is compared with the number.", "x-enum-labels": {"constant": "A fixed number (x)", "random": "Random number from 0 to 100", "level": "Player level", "double": "Double mutation done (1 yes, 0 no)", "prior": "Daily Ops tier already unlocked (1 yes, 0 no)", "within": "Run finished within a tier's time (1 yes, 0 no)", "plan": "Plan in this entry already learned (1 yes, 0 no)", "ammo": "Equipped weapon uses this ammo group (1 yes, 0 no)"}},
+        "op": {"type": "integer", "minimum": 0, "maximum": 5, "title": "Comparison", "description": "How the measure is compared with the number.", "x-enum-labels": {"0": "equals", "1": "is not", "2": "is above", "3": "is at least", "4": "is below", "5": "is at most"}},
+        "value": {"type": "number", "title": "Number", "description": "The number the measure is compared with."},
+        "or": {"type": "boolean", "title": "Or next", "description": "Join this condition to the next with OR instead of AND."},
+        "x": {"type": "number", "title": "Fixed number", "description": "The number used by a 'fixed number' measure."},
+        "tier": {"type": "integer", "minimum": 0, "maximum": 2, "title": "Tier", "description": "Which Daily Ops tier a 'prior' or 'within' measure looks at.", "x-enum-labels": {"0": "Initiate", "1": "Paladin", "2": "Elder"}},
+        "keyword": {"$ref": "envelope.schema.json#/$defs/formKey", "x-form-type": ["KYWD"], "title": "Ammo group keyword", "description": "For an 'ammo' measure: the keyword of an entry in Ammo groups."}
+      },
+      "allOf": [
+        {"if": {"properties": {"f": {"const": "constant"}}}, "then": {"required": ["x"]}},
+        {"if": {"properties": {"f": {"enum": ["prior", "within"]}}}, "then": {"required": ["tier"]}},
+        {"if": {"properties": {"f": {"const": "ammo"}}}, "then": {"required": ["keyword"]}}
+      ]
+    },
+    "entry": {
+      "type": "object",
+      "required": ["count", "level", "chance_none", "conditions"],
+      "properties": {
+        "list": {"$ref": "envelope.schema.json#/$defs/formKey", "x-form-type": ["LVLI"], "title": "Another list", "description": "Roll another list from the Lists tab instead of giving an item.", "x-ref": "lists"},
+        "item": {"$ref": "envelope.schema.json#/$defs/formKey", "title": "Item", "description": "The item given."},
+        "count": {"type": "integer", "minimum": 1, "title": "Count", "description": "How many are given."},
+        "level": {"type": "integer", "minimum": 0, "title": "Minimum level", "description": "The entry can only be chosen when the player is at least this level."},
+        "chance_none": {"type": "number", "minimum": 0, "maximum": 100, "title": "Chance of nothing (%)", "description": "Chance this entry gives nothing."},
+        "conditions": {"type": "array", "items": {"$ref": "#/$defs/condition"}, "title": "Conditions", "description": "The entry is only considered when these hold."}
+      },
+      "oneOf": [{"required": ["list"]}, {"required": ["item"]}]
+    }
+  },
+  "properties": {
+    "version": {"const": 1},
+    "settings": {"type": "object", "description": "Feature-wide values; a later plugin's field replaces the earlier one.", "properties": {}},
+    "lists": {
+      "type": "array",
+      "title": "Lists",
+      "description": "Conditional leveled lists.",
+      "x-key": ["id"],
+      "items": {
+        "type": "object",
+        "required": ["id"],
+        "properties": {
+          "id": {"$ref": "envelope.schema.json#/$defs/formKey", "x-form-type": ["LVLI"], "title": "List (LVLI)", "description": "The leveled list this row rolls."},
+          "remove": {"$ref": "envelope.schema.json#/$defs/removeFlag"},
+          "eid": {"type": "string", "title": "Editor ID", "description": "Label only."},
+          "flags": {"type": "integer", "minimum": 0, "title": "Roll rules", "description": "How the list picks its entries.", "x-flags": {"1": "Calculate from all levels", "2": "Each item counts separately", "4": "Use all matching entries", "64": "First matching entry only"}},
+          "max": {"type": "integer", "minimum": 0, "title": "Maximum count", "description": "Most items the list can give. 0 means no limit."},
+          "conditions": {"type": "array", "items": {"$ref": "#/$defs/condition"}, "title": "List conditions", "description": "The whole list gives nothing unless these hold."},
+          "entries": {"type": "array", "items": {"$ref": "#/$defs/entry"}, "title": "Entries", "description": "What the list can give."}
+        },
+        "if": {"not": {"required": ["remove"]}},
+        "then": {"required": ["flags", "max", "conditions", "entries"]}
+      }
+    },
+    "ammo_groups": {
+      "type": "array",
+      "title": "Ammo groups",
+      "description": "Ammo types that share one keyword. An 'ammo' condition names a group by its keyword.",
+      "x-key": ["keyword"],
+      "items": {
+        "type": "object",
+        "required": ["keyword"],
+        "properties": {
+          "keyword": {"$ref": "envelope.schema.json#/$defs/formKey", "x-form-type": ["KYWD"], "title": "Group keyword", "description": "Keyword that names the group. A weapon matches when it has this keyword or its loaded ammo is in the group."},
+          "remove": {"$ref": "envelope.schema.json#/$defs/removeFlag"},
+          "ammo": {"type": "array", "items": {"$ref": "envelope.schema.json#/$defs/formKey"}, "x-form-type": ["AMMO"], "title": "Ammo", "description": "The ammo types in the group."}
+        },
+        "if": {"not": {"required": ["remove"]}},
+        "then": {"required": ["ammo"]}
+      }
+    },
+    "rewards": {
+      "type": "array",
+      "title": "Rewards",
+      "description": "Daily Ops rewards: experience plus leveled-list items for each row of the reward screen.",
+      "x-key": ["id"],
+      "items": {
+        "type": "object",
+        "required": ["id"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1, "title": "Name", "description": "A name for the reward. Not a form."},
+          "remove": {"$ref": "envelope.schema.json#/$defs/removeFlag"},
+          "conditions": {"type": "array", "items": {"$ref": "#/$defs/condition"}, "title": "Conditions", "description": "The reward is paid only when these hold."},
+          "xp": {"type": "integer", "minimum": 0, "title": "Experience", "description": "XP paid."},
+          "items": {
+            "type": "array",
+            "title": "Items",
+            "description": "Leveled lists rolled for the reward.",
+            "items": {
+              "type": "object",
+              "required": ["list", "count", "row"],
+              "properties": {
+                "list": {"$ref": "envelope.schema.json#/$defs/formKey", "x-form-type": ["LVLI"], "title": "List", "description": "Leveled list rolled."},
+                "count": {"type": "integer", "minimum": 1, "title": "Rolls", "description": "How many times the list is rolled."},
+                "row": {"type": "integer", "minimum": 0, "maximum": 3, "title": "Screen row", "description": "Which row (0 to 3) of the reward screen the result is shown in."}
+              }
+            }
+          }
+        },
+        "if": {"not": {"required": ["remove"]}},
+        "then": {"required": ["conditions", "xp", "items"]}
+      }
+    },
+    "tokens": {
+      "type": "array",
+      "title": "Kill-drop tokens",
+      "description": "Items that stand in for a drop: when one is found on a kill, the game rolls the chosen list instead.",
+      "x-key": ["token"],
+      "items": {
+        "type": "object",
+        "required": ["token"],
+        "properties": {
+          "token": {"$ref": "envelope.schema.json#/$defs/formKey", "x-form-type": ["MISC"], "title": "Token item", "description": "The placeholder item in the death list."},
+          "remove": {"$ref": "envelope.schema.json#/$defs/removeFlag"},
+          "list": {"$ref": "envelope.schema.json#/$defs/formKey", "x-form-type": ["LVLI"], "title": "Death list replaced", "description": "The death list the token stands in for."},
+          "root": {"$ref": "envelope.schema.json#/$defs/formKey", "x-form-type": ["LVLI"], "description": "The list from the Lists tab that is rolled in its place.", "title": "List rolled", "x-ref": "lists"}
+        },
+        "if": {"not": {"required": ["remove"]}},
+        "then": {"required": ["list", "root"]}
+      }
+    },
+    "counts": {
+      "type": "array",
+      "title": "Count overrides",
+      "description": "Restores a quantity in a game leveled list: the entry of the chosen list that has the chosen level gets the new count.",
+      "x-key": ["list", "root", "level"],
+      "items": {
+        "type": "object",
+        "required": ["list", "root", "level"],
+        "properties": {
+          "list": {"$ref": "envelope.schema.json#/$defs/formKey", "x-form-type": ["LVLI"], "title": "Game list", "description": "The game leveled list whose entry is changed."},
+          "root": {"$ref": "envelope.schema.json#/$defs/formKey", "x-form-type": ["LVLI"], "title": "Entry", "description": "The item or list inside that game list whose count is changed."},
+          "level": {"type": "integer", "minimum": 0, "title": "Entry level", "description": "Only the entry with this level is changed."},
+          "count": {"type": "integer", "minimum": 0, "title": "New count", "description": "The count the entry gives from now on."},
+          "remove": {"$ref": "envelope.schema.json#/$defs/removeFlag"}
+        },
+        "if": {"not": {"required": ["remove"]}},
+        "then": {"required": ["count"]}
+      }
+    }
+  }
+}

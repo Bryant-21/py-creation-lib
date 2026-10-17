@@ -34,14 +34,14 @@ pub struct CoreSection {
 
 #[derive(Default, Clone)]
 pub struct RecordsSection {
-    pub locator: FxHashMap<u32, RecordPath>,
+    pub locator: Arc<FxHashMap<u32, RecordPath>>,
 }
 
 impl RecordsSection {
     pub fn record<'a>(&self, plugin: &'a ParsedPlugin, form_id: u32) -> Option<&'a ParsedRecord> {
         let path = self.locator.get(&form_id)?;
         let mut items = plugin.root_items.as_slice();
-        for index in &path.group_indices {
+        for index in path.group_indices.iter() {
             let item = items.get(*index as usize)?;
             let ParsedItem::Group(group) = item else {
                 return None;
@@ -68,7 +68,7 @@ impl LocatorSection {
         entry: &RecordLocatorEntry,
     ) -> Option<&'a ParsedRecord> {
         let mut items = plugin.root_items.as_slice();
-        for index in &entry.path.group_indices {
+        for index in entry.path.group_indices.iter() {
             let item = items.get(*index as usize)?;
             let ParsedItem::Group(group) = item else {
                 return None;
@@ -87,7 +87,7 @@ impl LocatorSection {
 /// `WriteEffect::RecordsAddedOrRemoved`.
 #[derive(Default, Clone)]
 pub struct FormIdPathsSection {
-    pub by_form_id: FxHashMap<u32, RecordPath>,
+    pub by_form_id: Arc<FxHashMap<u32, RecordPath>>,
 }
 
 /// A path from `ParsedPlugin::root_items` down to a specific `ParsedRecord`.
@@ -95,7 +95,8 @@ pub struct FormIdPathsSection {
 /// level; `record_index` is the index inside the innermost level.
 #[derive(Clone, Debug)]
 pub struct RecordPath {
-    pub group_indices: SmallVec<[u32; 4]>,
+    /// Siblings share the ancestor path instead of allocating it per record.
+    pub group_indices: Arc<[u32]>,
     pub record_index: u32,
 }
 
@@ -457,6 +458,7 @@ fn walk_for_locator(
     masters: &[String],
     out: &mut LocatorSection,
 ) {
+    let group_indices: Arc<[u32]> = Arc::from(stack.as_slice());
     for (index, item) in items.iter().enumerate() {
         match item {
             ParsedItem::Record(record) => {
@@ -465,7 +467,7 @@ fn walk_for_locator(
                     own_plugin_name,
                     masters,
                     RecordPath {
-                        group_indices: stack.clone(),
+                        group_indices: Arc::clone(&group_indices),
                         record_index: index as u32,
                     },
                 );
@@ -529,7 +531,9 @@ pub fn build_form_id_paths_section(plugin: &ParsedPlugin) -> FormIdPathsSection 
     let mut by_form_id = FxHashMap::default();
     let mut path = SmallVec::<[u32; 4]>::new();
     walk_for_paths(&plugin.root_items, &mut path, &mut by_form_id);
-    FormIdPathsSection { by_form_id }
+    FormIdPathsSection {
+        by_form_id: Arc::new(by_form_id),
+    }
 }
 
 fn walk_for_paths(
@@ -537,11 +541,12 @@ fn walk_for_paths(
     path: &mut SmallVec<[u32; 4]>,
     out: &mut FxHashMap<u32, RecordPath>,
 ) {
+    let group_indices: Arc<[u32]> = Arc::from(path.as_slice());
     for (index, item) in items.iter().enumerate() {
         match item {
             ParsedItem::Record(record) => {
                 out.entry(record.form_id).or_insert_with(|| RecordPath {
-                    group_indices: path.clone(),
+                    group_indices: Arc::clone(&group_indices),
                     record_index: index as u32,
                 });
             }
@@ -556,7 +561,7 @@ fn walk_for_paths(
 
 /// Subrecords to read for a record: borrows the already-parsed ones for the
 /// common (uncompressed) case — no per-record Vec clone — and only allocates
-/// when a compressed record must be lazily decompressed. Callers that store the
+/// when a stored payload must be lazily decoded. Callers that store the
 /// result back into a record call `.into_owned()`; read-only callers iterate
 /// the borrow directly.
 pub fn effective_subrecords_for_record(record: &ParsedRecord) -> Cow<'_, [ParsedSubrecord]> {
@@ -1412,8 +1417,10 @@ mod form_id_paths_tests {
 
         let section = build_form_id_paths_section(&plugin);
         let p = section.by_form_id.get(&0x0000_0901).expect("0x901 indexed");
-        assert_eq!(p.group_indices.as_slice(), &[0u32]);
+        assert_eq!(p.group_indices.as_ref(), &[0u32]);
         assert_eq!(p.record_index, 1);
+        let first = section.by_form_id.get(&0x0000_0900).unwrap();
+        assert!(Arc::ptr_eq(&first.group_indices, &p.group_indices));
     }
 }
 

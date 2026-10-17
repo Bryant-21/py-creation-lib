@@ -7,12 +7,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from creation_lib.swf.types import (
-    BitReader, BitWriter, RECT, MATRIX, COLOR, RGBA, FillStyle, LineStyle,
+    BitReader, BitWriter, RECT, MATRIX, COLOR, RGBA,
     parse_fill_styles, parse_line_styles, write_fill_styles, write_line_styles,
-    _sbits_needed,
 )
 from creation_lib.swf.shapes import (
-    ShapeDef, ShapeRecord, parse_shape_records, write_shape_records, _ubits_needed,
+    ShapeDef, parse_shape_records, write_shape_records, _ubits_needed,
 )
 
 # Tag IDs
@@ -190,10 +189,11 @@ class DefineShapeTag:
         reader.align()
 
         edge_bounds = None
+        shape_flags = 0
         if version >= 4:
             edge_bounds = RECT.parse(reader)
             reader.align()
-            _flags = reader.read_ui8()  # UsesFillWindingRule, UsesNonScalingStrokes, UsesScalingStrokes
+            shape_flags = reader.read_ui8()
 
         fill_styles = parse_fill_styles(reader, has_alpha)
         line_styles = parse_line_styles(reader, version, has_alpha)
@@ -210,6 +210,7 @@ class DefineShapeTag:
             records=records,
             shape_version=version,
             edge_bounds=(edge_bounds.xmin, edge_bounds.ymin, edge_bounds.xmax, edge_bounds.ymax) if edge_bounds else None,
+            shape_flags=shape_flags,
         )
         return cls(shape=shape, tag_id=shape_tag_id)
 
@@ -226,7 +227,7 @@ class DefineShapeTag:
         if version >= 4 and s.edge_bounds:
             RECT(s.edge_bounds[0], s.edge_bounds[2], s.edge_bounds[1], s.edge_bounds[3]).write(writer)
             writer.align()
-            writer.write_ui8(0)  # flags
+            writer.write_ui8(s.shape_flags)
 
         write_fill_styles(writer, s.fill_styles, has_alpha)
         write_line_styles(writer, s.line_styles, version, has_alpha)

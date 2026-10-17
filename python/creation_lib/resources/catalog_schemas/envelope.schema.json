@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://modbox21.local/catalog_schemas/envelope.schema.json",
+  "title": "Tales per-plugin catalog envelope",
+  "description": "Base for every R/<Feature>/<Plugin.ext>.json. Per-feature schemas allOf-reference this and add their sections. Sections are arrays of entries (or objects keyed by entry key); an entry may carry \"remove\": true.",
+  "type": "object",
+  "required": ["version"],
+  "properties": {
+    "version": {"type": "integer", "minimum": 1},
+    "settings": {"type": "object"}
+  },
+  "$defs": {
+    "formKey": {
+      "type": "string",
+      "pattern": "^[^\\s:]+\\.[^\\s:.]+:[0-9A-Fa-f]{1,8}$",
+      "description": "Plugin.ext:HEX; writers emit uppercase, 6 digits for full plugins. HEX:Plugin, bare hex and decimal ids are not accepted."
+    },
+    "removeFlag": {"type": "boolean", "description": "true deletes the earlier plugin's entry with the same key"},
+    "removeMarker": {
+      "type": "object",
+      "required": ["remove"],
+      "properties": {"remove": {"const": true}},
+      "description": "Map-section value that erases its key from earlier plugins"
+    },
+    "entry": {
+      "type": "object",
+      "properties": {
+        "remove": {"type": "boolean", "description": "true deletes the earlier plugin's entry with the same key"}
+      }
+    },
+    "section": {
+      "oneOf": [
+        {"type": "array", "items": {"$ref": "#/$defs/entry"}},
+        {"type": "object", "additionalProperties": {"$ref": "#/$defs/entry"}}
+      ]
+    }
+  }
+}

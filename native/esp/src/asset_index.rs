@@ -31,7 +31,13 @@ pub(crate) fn extract_asset_paths_from_subrecords(
         }
         let kind = asset_kind_for_path(default_kind, path.as_str());
         let path = normalize_asset_path(kind.as_str(), path);
-        let dedup_key = (kind.clone(), path.to_ascii_lowercase());
+        let model_role =
+            if record_sig == "ARMA" && matches!(sub_sig, "MOD2" | "MOD3" | "MOD4" | "MOD5") {
+                sub_sig
+            } else {
+                ""
+            };
+        let dedup_key = (kind.clone(), path.to_ascii_lowercase(), model_role);
         if !seen.insert(dedup_key) {
             continue;
         }

@@ -5,10 +5,11 @@ edition = "2024"
 
 [lib]
 name = "_native"
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 
 [features]
 default = ["all"]
+embedded = []
 all = [
     "audio",
     "palette",
@@ -22,7 +23,10 @@ all = [
     "fnv_script",
     "lodgen",
     "materials",
+    "material_upgrade",
+    "mod_manager",
     "papyrus_core",
+    "previs",
     "scientific",
     "swf",
     "terrain",
@@ -41,7 +45,10 @@ directxtex   = ["dep:directxtex_native"]
 fnv_script   = ["dep:fnv_script_native"]
 lodgen       = ["dep:lodgen_native", "lodgen_native/real-esp", "lodgen_native/archive-assets"]
 materials    = ["dep:materials_native"]
+material_upgrade = ["dep:material_upgrade_native"]
+mod_manager  = ["dep:mod_manager_native"]
 papyrus_core = ["dep:papyrus_core"]
+previs       = ["dep:previs_native"]
 scientific   = ["dep:scientific_native"]
 swf          = ["dep:swf_native"]
 terrain      = ["dep:terrain_native"]
@@ -59,8 +66,11 @@ fnv_script_native   = { path = "../fnv_script",  optional = true }
 havok_native        = { path = "../havok",       optional = true }
 lodgen_native       = { path = "../lodgen",      optional = true }
 materials_native    = { path = "../materials",   optional = true }
+material_upgrade_native = { path = "../material_upgrade", optional = true }
+mod_manager_native  = { path = "../mod_manager", optional = true }
 nif_core_native     = { path = "../nif_core",    optional = true }
 papyrus_core        = { path = "../papyrus_core", optional = true }
+previs_native       = { path = "../previs",      optional = true }
 scientific_native   = { path = "../scientific",  optional = true }
 swf_native          = { path = "../swf",         optional = true }
 terrain_native      = { path = "../terrain",     optional = true }

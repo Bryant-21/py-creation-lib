@@ -13,7 +13,12 @@ use crate::descriptors::{BBox, OutDesc, QuadDesc};
 use crate::game::Game;
 use crate::input::{StaticDesc, WorldspaceInput, identity_part_transform};
 use crate::objects::geometry::LodGeometry;
-use crate::objects::object_lod::{generate_segments, transform_shape_with_world};
+use crate::objects::instance_layers::{ArrayFormats, AtlasTile, InstanceLayers, Slice, single_tile};
+use crate::objects::instanced::{
+    InstanceGroup, InstancePart, InstancedStats, ObjectIds, RefIndex, ResourceInstances, group_tile_instances,
+    instance_shape,
+};
+use crate::objects::object_lod::{BtoShape, generate_segments, transform_shape_with_world};
 use crate::objects::static_desc::{ShaderKind, ShapeDesc, ShapeFlags, atlas_build_key};
 use crate::progress::{LodGenStats, LodPaths, Progress, QuadCtx};
 use crate::settings::{LodSettings, ObjectSource};
@@ -42,6 +47,7 @@ struct TextureSink<'a> {
     world: &'a str,
     copied: &'a Mutex<HashSet<PathBuf>>,
     dds_written: u32,
+    pbr: bool,
 }
 
 impl<'a> TextureSink<'a> {
@@ -50,6 +56,7 @@ impl<'a> TextureSink<'a> {
         output_dir: &'a Path,
         world: &'a str,
         copied: &'a Mutex<HashSet<PathBuf>>,
+        pbr: bool,
     ) -> Self {
         Self {
             source_root,
@@ -57,6 +64,50 @@ impl<'a> TextureSink<'a> {
             world,
             copied,
             dds_written: 0,
+            pbr,
+        }
+    }
+
+    /// Native assets on a tile below the atlas cutoff: slots 8/9 point at LOD copies of the FO76 `_l`/`_r`
+    /// named in `source` (else the `diffuse` siblings), stored like the atlas pages' maps. A map with no
+    /// source leaves its slot empty.
+    fn assign_pbr_slots(&mut self, source: &[String], diffuse: &str, out: &mut [String; 10]) {
+        if !self.pbr {
+            return;
+        }
+        let diffuse = normalize_texture_rel(diffuse);
+        for map in PbrMap::ALL {
+            out[map.slot()].clear();
+            let named = source
+                .iter()
+                .map(|texture| normalize_texture_rel(texture))
+                .find(|texture| map.names(texture));
+            let found = named
+                .into_iter()
+                .chain(replace_texture_suffix(&diffuse, "_d.dds", map.dds_suffix()))
+                .filter(|rel| !is_fo4_shared_texture(rel))
+                .find_map(|rel| resolve_source_data_path_ci(self.source_root, &rel).map(|path| (rel, path)));
+            let Some((rel, src_path)) = found else {
+                continue;
+            };
+            let dest_rel = pbr_hybrid_texture_rel(self.world, &rel);
+            let dst_path = self.output_dir.join(dest_rel.replace('\\', "/"));
+            let first = self
+                .copied
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .insert(dst_path.clone());
+            if first {
+                match write_pbr_lod_texture(map, &src_path, &dst_path) {
+                    Ok(()) => self.dds_written += 1,
+                    Err(err) => eprintln!(
+                        "[lodgen] hybrid source BTO: failed to write {} from {}: {err}",
+                        dst_path.display(),
+                        src_path.display()
+                    ),
+                }
+            }
+            out[map.slot()] = dest_rel;
         }
     }
 
@@ -149,6 +200,7 @@ struct SourceTileStats {
     far_tree_3d_fallback: u64,
     skipped_missing_billboard: BTreeMap<String, u64>,
     placed_tree_indices: std::collections::BTreeSet<i32>,
+    report: crate::report::TileReport,
 }
 
 #[derive(Default)]
@@ -181,6 +233,8 @@ struct HybridAtlasTexture {
     normal_path: Option<PathBuf>,
     lighting_path: Option<PathBuf>,
     specular_path: Option<PathBuf>,
+    /// Used by an instanceable model: packs onto page 0, the world atlas the instance renderer binds (Q9).
+    instanced: bool,
 }
 
 impl HybridAtlasTexture {
@@ -229,7 +283,7 @@ pub fn build_object_lod(
         );
     }
 
-    let mode = if settings.objects.source == ObjectSource::Fo76BtoAtlas
+    let mode = if matches!(settings.objects.source, ObjectSource::Fo76BtoAtlas | ObjectSource::Fo76BtoInstanced)
         || settings.objects.fo76_bto_atlas_pages
     {
         SourceBtoMode::Atlas
@@ -270,6 +324,7 @@ pub fn build_object_lod(
             },
         )
     };
+    let pbr_pages = (settings.objects.fo76_bto_pbr_maps && mode.is_atlas()).then(|| hybrid_atlas_pages(&atlas));
     let atlas = Arc::new(atlas);
     let billboard_manifest =
         if mode.is_atlas() && settings.objects.fo76_bto_tree_billboard_from_lod.is_some() {
@@ -286,6 +341,8 @@ pub fn build_object_lod(
             None
         };
     let copied_textures = Arc::new(Mutex::new(HashSet::new()));
+    let instancing = (mode.is_atlas() && settings.objects.source == ObjectSource::Fo76BtoInstanced)
+        .then(|| Instancing::new(world, paths));
     let worker_count = crate::driver::effective_worker_count(settings.global.workers);
     let mut stats = LodGenStats::default();
     stats.dds += atlas_stats.dds_written;
@@ -327,6 +384,8 @@ pub fn build_object_lod(
         atlas.as_ref(),
         billboard_manifest.as_ref(),
         &standard_tree_tiles,
+        instancing.as_ref(),
+        pbr_pages.as_ref(),
     ) {
         Ok(tile_stats) => (idx, tile_stats, None),
         Err(err) => (
@@ -381,7 +440,17 @@ pub fn build_object_lod(
     let mut far_tree_3d_fallback = 0u64;
     let mut skipped_missing_billboard = BTreeMap::<String, u64>::new();
     let mut placed_tree_indices = std::collections::BTreeSet::new();
-    for (_, tile_stats, warning) in results {
+    let mut object_report = crate::report::ObjectReport::default();
+    for (idx, tile_stats, warning) in results {
+        match &warning {
+            None => object_report.tiles.push(tile_stats.report),
+            Some(error) => object_report.failed_tiles.push(crate::report::FailedTile {
+                level: tiles[idx].level,
+                x: tiles[idx].x,
+                y: tiles[idx].y,
+                error: error.clone(),
+            }),
+        }
         stats.bto += tile_stats.stats.bto;
         stats.btt += tile_stats.stats.btt;
         stats.dds += tile_stats.stats.dds;
@@ -409,6 +478,25 @@ pub fn build_object_lod(
             stats.warnings.push(warning);
         }
     }
+    if let Some(instancing) = &instancing {
+        let arrays = finish_instance_layers(instancing, world, settings, paths, source_root)?;
+        stats.dds += arrays.dds;
+        stats.warnings.extend(arrays.warnings);
+    }
+    let report_path =
+        crate::report::write_object_report(&paths.output_dir, &world.editor_id, &object_report)?;
+    let (instanced_groups, instanced_instances) = object_report.total_instanced();
+    progress.report(
+        &format!(
+            "object LOD report: {} dropped={} failed={} instanced_groups={} instances={}",
+            report_path.display(),
+            object_report.total_dropped(),
+            object_report.failed_tiles.len(),
+            instanced_groups,
+            instanced_instances
+        ),
+        1.0,
+    );
     let other_write_secs =
         (write_secs - shape_build_secs - nif_build_secs - serialize_secs - file_write_secs).max(0.0);
     progress.report(
@@ -658,9 +746,15 @@ fn build_source_bto_atlas(
             } else {
                 models.iter().map(scan_model).collect()
             };
-        for model_sets in model_texture_sets {
-            for (key, texture) in model_sets {
-                texture_sets.entry(key).or_insert(texture);
+        let instancing = settings.objects.source == ObjectSource::Fo76BtoInstanced;
+        for (model_sets, (model, _)) in model_texture_sets.into_iter().zip(&models) {
+            let instanced = instancing && !is_tree_instance_model(model);
+            for (key, mut texture) in model_sets {
+                texture.instanced = instanced;
+                texture_sets
+                    .entry(key)
+                    .and_modify(|existing| existing.instanced |= instanced)
+                    .or_insert(texture);
             }
         }
         progress.report(
@@ -993,6 +1087,7 @@ fn insert_hybrid_atlas_texture_set(
         normal_path,
         lighting_path,
         specular_path,
+        instanced: false,
     };
     texture_sets
         .entry(texture.atlas_key().to_ascii_lowercase())
@@ -1046,6 +1141,7 @@ fn insert_hybrid_atlas_texture_set_from_data_paths(
         normal_path,
         lighting_path,
         specular_path,
+        instanced: false,
     };
     texture_sets
         .entry(texture.atlas_key().to_ascii_lowercase())
@@ -1106,6 +1202,11 @@ struct HybridAtlasCacheMeta {
     atlas_from_lod: Option<i32>,
     tree_billboard_from_lod: Option<i32>,
     trees_3d: bool,
+    #[serde(default)]
+    instanced: bool,
+    /// Skipped when false so a cache written without native assets keeps its bytes.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pbr_maps: bool,
 }
 
 fn hybrid_atlas_cache_meta(settings: &LodSettings) -> HybridAtlasCacheMeta {
@@ -1128,6 +1229,8 @@ fn hybrid_atlas_cache_meta(settings: &LodSettings) -> HybridAtlasCacheMeta {
         atlas_from_lod: settings.objects.fo76_bto_atlas_from_lod,
         tree_billboard_from_lod: settings.objects.fo76_bto_tree_billboard_from_lod,
         trees_3d: settings.trees.trees_3d,
+        instanced: settings.objects.source == ObjectSource::Fo76BtoInstanced,
+        pbr_maps: settings.objects.fo76_bto_pbr_maps,
     }
 }
 
@@ -1165,6 +1268,7 @@ fn hybrid_atlas_cache_source_selection_matches(
         && actual.atlas_from_lod == expected.atlas_from_lod
         && actual.tree_billboard_from_lod == expected.tree_billboard_from_lod
         && actual.trees_3d == expected.trees_3d
+        && actual.instanced == expected.instanced
 }
 
 fn write_hybrid_atlas_cache_meta(map_path: &Path, settings: &LodSettings) -> anyhow::Result<()> {
@@ -1225,6 +1329,13 @@ fn load_cached_hybrid_atlas(
         if !atlas_path.is_file()
             || !crate::atlas::atlas::sibling_dds(&atlas_path, "_n").is_file()
             || !crate::atlas::atlas::sibling_dds(&atlas_path, "_s").is_file()
+        {
+            return None;
+        }
+        if settings.objects.fo76_bto_pbr_maps
+            && PbrMap::ALL
+                .iter()
+                .any(|map| !crate::atlas::atlas::sibling_dds(&atlas_path, map.suffix()).is_file())
         {
             return None;
         }
@@ -1319,7 +1430,11 @@ fn try_rebuild_hybrid_atlas_from_existing_map(
         .output_dir
         .join(source_bto_atlas_page_rel(&world.editor_id, 0).replace('\\', "/"))
         .with_extension("txt");
-    if !map_path.is_file() || hybrid_atlas_cache_meta_matches(&map_path, settings, true) {
+    // A rebuild from the map's keys can't tell which textures belong on the instanced page.
+    if settings.objects.source == ObjectSource::Fo76BtoInstanced
+        || !map_path.is_file()
+        || hybrid_atlas_cache_meta_matches(&map_path, settings, true)
+    {
         return None;
     }
     let Some(cache_meta) = read_hybrid_atlas_cache_meta(&map_path) else {
@@ -1477,7 +1592,12 @@ fn build_paged_hybrid_atlas(
         0.35,
     );
     let load_started = Instant::now();
-    let loaded = load_hybrid_atlas_tiles(settings, textures, progress, &mut stats)?;
+    let pbr_roots = settings
+        .objects
+        .fo76_bto_pbr_maps
+        .then(|| pbr_search_roots(paths));
+    let loaded =
+        load_hybrid_atlas_tiles(settings, textures, progress, &mut stats, pbr_roots.as_deref())?;
     progress.report(
         &format!(
             "hybrid-atlas objects: atlas texture load complete kept={} elapsed={:.1}s total={:.1}s",
@@ -1504,8 +1624,13 @@ fn build_paged_hybrid_atlas(
     let mut first_specular = PathBuf::new();
     let mut first_map = PathBuf::new();
     let mut first_size = (0, 0);
-    let mut remaining: Vec<usize> = (0..loaded.len()).collect();
+    let groups: Vec<HybridAtlasGroup> = loaded.iter().map(|tile| tile.group).collect();
+    let mut remaining = hybrid_atlas_page_order(&groups);
     let mut page = 0usize;
+    let pbr_pool = pbr_roots
+        .is_some()
+        .then(|| crate::driver::build_worker_pool(settings.global.workers))
+        .flatten();
 
     while !remaining.is_empty() {
         let page_started = Instant::now();
@@ -1621,6 +1746,17 @@ fn build_paged_hybrid_atlas(
         if let Some(parent) = atlas_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
+        if pbr_roots.is_some() {
+            write_hybrid_atlas_pbr_pages(
+                &loaded,
+                &fitted,
+                atlas_w,
+                atlas_h,
+                &atlas_path,
+                pbr_pool.as_ref(),
+                &mut stats,
+            );
+        }
         for (index, (path, buf, fmt)) in [
             (atlas_path.as_path(), &buf_d, format_diffuse),
             (atlas_normal_path.as_path(), &buf_n, format_normal),
@@ -1706,6 +1842,45 @@ fn build_paged_hybrid_atlas(
     ))
 }
 
+/// One page's `<page>_l.dds` / `<page>_r.dds`: each fitted tile's map in the block its `_d` occupies, neutral
+/// elsewhere. Tile maps load one page and one map at a time, so the atlas never holds every tile's.
+fn write_hybrid_atlas_pbr_pages(
+    loaded: &[LoadedHybridAtlasTile],
+    fitted: &[crate::atlas::BinBlock],
+    atlas_w: u32,
+    atlas_h: u32,
+    atlas_path: &Path,
+    pool: Option<&rayon::ThreadPool>,
+    stats: &mut SourceAtlasStats,
+) {
+    for map in PbrMap::ALL {
+        let load = || -> Vec<Vec<u8>> {
+            fitted
+                .par_iter()
+                .map(|block| loaded[block.index].pbr_rgba(map))
+                .collect()
+        };
+        let tiles = match pool {
+            Some(pool) => pool.install(load),
+            None => load(),
+        };
+        let mut buf = map.neutral_rgba(atlas_w, atlas_h);
+        for (block, rgba) in fitted.iter().zip(&tiles) {
+            let tile = &loaded[block.index];
+            crate::atlas::atlas::blit_rgba(rgba, tile.w, tile.h, &mut buf, atlas_w, block.x, block.y);
+        }
+        drop(tiles);
+        let path = crate::atlas::atlas::sibling_dds(atlas_path, map.suffix());
+        match crate::atlas::atlas::write_atlas_dds(&path, atlas_w, atlas_h, &buf, map.format(), false) {
+            Ok(()) => stats.dds_written += 1,
+            Err(err) => eprintln!(
+                "[lodgen] hybrid-atlas objects: DDS write skipped ({}): {err}",
+                path.display()
+            ),
+        }
+    }
+}
+
 struct LoadedHybridAtlasTile {
     texture: HybridAtlasTexture,
     group: HybridAtlasGroup,
@@ -1717,10 +1892,23 @@ struct LoadedHybridAtlasTile {
     rgba_d: Vec<u8>,
     rgba_n: Vec<u8>,
     rgba_s: Vec<u8>,
+    /// Native assets: the `_l`/`_r` source files, read only while their page is composed.
+    pbr_sources: Option<[Option<PathBuf>; 2]>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+impl LoadedHybridAtlasTile {
+    fn pbr_rgba(&self, map: PbrMap) -> Vec<u8> {
+        self.pbr_sources
+            .as_ref()
+            .and_then(|sources| sources[map as usize].as_deref())
+            .and_then(|path| map.load(path, self.w, self.h))
+            .unwrap_or_else(|| map.neutral_rgba(self.w, self.h))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum HybridAtlasGroup {
+    Instanced,
     Tree,
     Translucent,
     AlphaTested,
@@ -1738,6 +1926,7 @@ fn load_hybrid_atlas_tiles(
     textures: Vec<HybridAtlasTexture>,
     progress: &mut dyn Progress,
     stats: &mut SourceAtlasStats,
+    pbr_roots: Option<&[PathBuf]>,
 ) -> anyhow::Result<Vec<LoadedHybridAtlasTile>> {
     let total = textures.len();
     let worker_count = crate::driver::effective_worker_count(settings.global.workers);
@@ -1752,7 +1941,8 @@ fn load_hybrid_atlas_tiles(
                     textures.into_par_iter().enumerate().for_each_with(
                         tx.clone(),
                         |sender, (index, texture)| {
-                            let result = load_one_hybrid_atlas_texture(settings, index, texture);
+                            let result =
+                                load_one_hybrid_atlas_texture(settings, index, texture, pbr_roots);
                             let _ = sender.send(result);
                         },
                     );
@@ -1787,7 +1977,7 @@ fn load_hybrid_atlas_tiles(
         })?;
     } else {
         for (index, texture) in textures.into_iter().enumerate() {
-            results.push(load_one_hybrid_atlas_texture(settings, index, texture));
+            results.push(load_one_hybrid_atlas_texture(settings, index, texture, pbr_roots));
             let done = index + 1;
             if done == total || done % report_every == 0 {
                 let kept = results.iter().filter(|r| r.tile.is_some()).count();
@@ -1814,40 +2004,38 @@ fn load_hybrid_atlas_tiles(
     Ok(loaded)
 }
 
+fn read_atlas_diffuse_rgba(path: &Path) -> Option<(u32, u32, Vec<u8>)> {
+    let img = directxtex_native::read_dds_rgba_image(path).ok()?;
+    let rgba = if directxtex_native::is_srgb_dxgi_format(img.dxgi_format) {
+        img.rgba
+    } else {
+        directxtex_native::convert_srgb_texels_to_linear_unorm(img.width, img.height, &img.rgba).ok()?
+    };
+    Some((img.width, img.height, rgba))
+}
+
+/// `pbr_roots` (native assets) keeps FO76 albedo in `_d`, since `_l`/`_r` carry the AO and metal tint the
+/// converted bundle bakes into it, and finds the texture set's `_l`/`_r` there; `_s` stays converted.
 fn load_one_hybrid_atlas_texture(
     settings: &LodSettings,
     index: usize,
     texture: HybridAtlasTexture,
+    pbr_roots: Option<&[PathBuf]>,
 ) -> HybridAtlasLoadResult {
     let diffuse_path = texture.diffuse_path.clone();
     let converted_bundle = load_converted_fo76_bundle_for_hybrid_atlas(&texture);
-    let (source_w, source_h, source_rgba_d, converted_specular) =
-        if let Some((w, h, rgba_d, rgba_s)) = converted_bundle {
-            (w, h, rgba_d, Some(rgba_s))
-        } else {
-            let Ok(img) = directxtex_native::read_dds_rgba_image(&diffuse_path) else {
-                return HybridAtlasLoadResult {
-                    index,
-                    tile: None,
-                    warning: None,
-                };
-            };
-            let rgba = if directxtex_native::is_srgb_dxgi_format(img.dxgi_format) {
-                img.rgba
-            } else {
-                let Ok(rgba) = directxtex_native::convert_srgb_texels_to_linear_unorm(
-                    img.width, img.height, &img.rgba,
-                ) else {
-                    return HybridAtlasLoadResult {
-                        index,
-                        tile: None,
-                        warning: None,
-                    };
-                };
-                rgba
-            };
-            (img.width, img.height, rgba, None)
+    let loaded = match converted_bundle {
+        Some((w, h, rgba_d, rgba_s)) if pbr_roots.is_none() => Some((w, h, rgba_d, Some(rgba_s))),
+        bundle => read_atlas_diffuse_rgba(&diffuse_path)
+            .map(|(w, h, rgba_d)| (w, h, rgba_d, bundle.map(|(_, _, _, rgba_s)| rgba_s))),
+    };
+    let Some((source_w, source_h, source_rgba_d, converted_specular)) = loaded else {
+        return HybridAtlasLoadResult {
+            index,
+            tile: None,
+            warning: None,
         };
+    };
     let page_size = hybrid_atlas_effective_page_size(settings, &texture);
     if source_w > page_size || source_h > page_size {
         return HybridAtlasLoadResult {
@@ -1895,11 +2083,14 @@ fn load_one_hybrid_atlas_texture(
                 .map(|img| crate::atlas::atlas::maybe_resize_rgba(img, w, h))
         })
         .unwrap_or_else(|| missing_specular_rgba(w, h));
+    let pbr_sources =
+        pbr_roots.map(|roots| PbrMap::ALL.map(|map| resolve_pbr_source(map, &texture, roots)));
 
     HybridAtlasLoadResult {
         index,
         tile: Some(LoadedHybridAtlasTile {
             group: hybrid_atlas_texture_group(&texture),
+            pbr_sources,
             texture,
             w,
             h,
@@ -1931,6 +2122,9 @@ fn hybrid_atlas_effective_min_tile_size(
 }
 
 fn hybrid_atlas_effective_page_size(settings: &LodSettings, texture: &HybridAtlasTexture) -> u32 {
+    if hybrid_atlas_texture_group(texture) == HybridAtlasGroup::Instanced {
+        return settings.objects.fo76_bto_instanced_atlas_size.max(1);
+    }
     let global_page_size = settings.objects.atlas_size.max(1);
     let alpha_tested_page_size = settings.objects.fo76_bto_atlas_alpha_tested_page_size;
     if alpha_tested_page_size > 0 && hybrid_atlas_texture_is_alpha_tested(texture) {
@@ -1980,9 +2174,18 @@ fn hybrid_atlas_texture_group(texture: &HybridAtlasTexture) -> HybridAtlasGroup 
         HybridAtlasGroup::Translucent
     } else if lower.contains(r"\texturearrays\alphatested\") {
         HybridAtlasGroup::AlphaTested
+    } else if texture.instanced {
+        HybridAtlasGroup::Instanced
     } else {
         HybridAtlasGroup::Other
     }
+}
+
+/// Page fill order: instanced textures first, so they land on page 0 (`<W>.Objects.dds`).
+fn hybrid_atlas_page_order(groups: &[HybridAtlasGroup]) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..groups.len()).collect();
+    order.sort_by_key(|&index| groups[index] != HybridAtlasGroup::Instanced);
+    order
 }
 
 fn hybrid_atlas_content_size(w: u32, h: u32, min_tile_size: u32, atlas_size: u32) -> (u32, u32) {
@@ -2109,6 +2312,170 @@ fn missing_specular_rgba(w: u32, h: u32) -> Vec<u8> {
         px[3] = 255;
     }
     rgba
+}
+
+/// The FO76 PBR maps native-assets LOD carries beside `_d`/`_n`/`_s`, in texture-set slots 8 and 9 like the
+/// converted full-detail meshes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PbrMap {
+    /// `_l`: R smoothness, G AO, B subsurface, A emissive mask.
+    Lighting,
+    /// `_r`: RGB F0.
+    Reflectance,
+}
+
+impl PbrMap {
+    const ALL: [PbrMap; 2] = [PbrMap::Lighting, PbrMap::Reflectance];
+
+    fn suffix(self) -> &'static str {
+        match self {
+            PbrMap::Lighting => "_l",
+            PbrMap::Reflectance => "_r",
+        }
+    }
+
+    fn dds_suffix(self) -> &'static str {
+        match self {
+            PbrMap::Lighting => "_l.dds",
+            PbrMap::Reflectance => "_r.dds",
+        }
+    }
+
+    fn slot(self) -> usize {
+        match self {
+            PbrMap::Lighting => 8,
+            PbrMap::Reflectance => 9,
+        }
+    }
+
+    /// Legacy headers, as `fo4_lod_texture_target` keeps object LOD textures; both hold linear data.
+    fn format(self) -> &'static str {
+        match self {
+            PbrMap::Lighting => "DXT5",
+            PbrMap::Reflectance => "DXT1",
+        }
+    }
+
+    /// For texels with no FO76 map, the material upgrader's defaults: class-less smoothness 0.34, AO 1,
+    /// no subsurface or emission; dielectric F0 0.04.
+    fn neutral(self) -> [u8; 4] {
+        match self {
+            PbrMap::Lighting => [87, 255, 0, 0],
+            PbrMap::Reflectance => [10, 10, 10, 255],
+        }
+    }
+
+    fn neutral_rgba(self, w: u32, h: u32) -> Vec<u8> {
+        self.neutral().repeat((w * h) as usize)
+    }
+
+    fn names(self, texture: &str) -> bool {
+        texture.to_ascii_lowercase().ends_with(self.dds_suffix())
+    }
+
+    /// Decoded texels (sRGB sources come back linear) in the LOD layout. A `_l` whose format has no alpha, or
+    /// whose alpha is opaque everywhere, has no emissive mask: FO76 only reads it where the material glows.
+    /// Single-channel `_r` (BC4) is grey F0.
+    fn normalize(self, image: directxtex_native::DdsRgbaImage) -> Vec<u8> {
+        let mut rgba = image.rgba;
+        match self {
+            PbrMap::Lighting => {
+                if !dxgi_format_has_alpha(image.dxgi_format) || rgba.chunks_exact(4).all(|px| px[3] == 255) {
+                    rgba.chunks_exact_mut(4).for_each(|px| px[3] = 0);
+                }
+            }
+            PbrMap::Reflectance => {
+                let grey = dxgi_format_is_single_channel(image.dxgi_format);
+                for px in rgba.chunks_exact_mut(4) {
+                    if grey {
+                        px[1] = px[0];
+                        px[2] = px[0];
+                    }
+                    px[3] = 255;
+                }
+            }
+        }
+        rgba
+    }
+
+    /// `path` read and normalized, resized to `w`x`h`; None when it can't be decoded.
+    fn load(self, path: &Path, w: u32, h: u32) -> Option<Vec<u8>> {
+        let image = directxtex_native::read_dds_rgba_image(path).ok()?;
+        let (source_w, source_h) = (image.width, image.height);
+        Some(resize_rgba_buffer_if_needed(self.normalize(image), source_w, source_h, w, h))
+    }
+}
+
+fn dxgi_format_has_alpha(dxgi_format: u32) -> bool {
+    // BC1 (its 1-bit alpha is punch-through, not a mask), BC4, BC5, R8, B5G6R5, B8G8R8X8.
+    !matches!(dxgi_format, 70..=72 | 79..=84 | 60..=64 | 85 | 88 | 93)
+}
+
+fn dxgi_format_is_single_channel(dxgi_format: u32) -> bool {
+    matches!(dxgi_format, 79..=81 | 60..=64)
+}
+
+/// `<texture>_l.dds` / `<texture>_r.dds` beside a `.dds` path: how atlas pages name their PBR siblings.
+fn pbr_sibling_texture_rel(texture: &str, map: PbrMap) -> String {
+    let stem = if texture.to_ascii_lowercase().ends_with(".dds") {
+        &texture[..texture.len() - 4]
+    } else {
+        texture
+    };
+    format!("{stem}{}", map.dds_suffix())
+}
+
+/// The FO76 `_l`/`_r` of an atlas texture set: the named slot when it carries the map's suffix, else the `_d`
+/// sibling beside the diffuse, else that sibling anywhere in `roots`.
+fn resolve_pbr_source(map: PbrMap, texture: &HybridAtlasTexture, roots: &[PathBuf]) -> Option<PathBuf> {
+    let (named_rel, named_path) = match map {
+        PbrMap::Lighting => (&texture.lighting_rel, texture.lighting_path.as_ref()),
+        PbrMap::Reflectance => (&texture.specular_rel, texture.specular_path.as_ref()),
+    };
+    if map.names(named_rel)
+        && let Some(path) = named_path
+    {
+        return Some(path.clone());
+    }
+    let file_name = texture.diffuse_path.file_name()?.to_string_lossy().into_owned();
+    if file_name.to_ascii_lowercase().ends_with("_d.dds") {
+        let beside = texture
+            .diffuse_path
+            .with_file_name(format!("{}{}", &file_name[..file_name.len() - 6], map.dds_suffix()));
+        if beside.is_file() {
+            return Some(beside);
+        }
+    }
+    let sibling_rel = replace_texture_suffix(&texture.diffuse_rel, "_d.dds", map.dds_suffix())?;
+    roots
+        .iter()
+        .find_map(|root| resolve_source_data_path_ci(root, &sibling_rel))
+}
+
+fn pbr_search_roots(paths: &LodPaths) -> Vec<PathBuf> {
+    std::iter::once(paths.output_dir.clone())
+        .chain(paths.data_dirs.iter().cloned())
+        .chain(paths.source_data_dir.iter().cloned())
+        .collect()
+}
+
+/// Lower-cased diffuse paths of every hybrid atlas page.
+fn hybrid_atlas_pages(atlas: &AtlasResult) -> HashSet<String> {
+    atlas
+        .list
+        .iter()
+        .map(|(_, rect)| rect.atlas_diffuse.to_ascii_lowercase())
+        .collect()
+}
+
+/// Points slots 8/9 of a texture set on a hybrid atlas page at that page's `_l`/`_r`.
+fn assign_pbr_atlas_slots(textures: &mut [String; 10], pages: &HashSet<String>) {
+    if !pages.contains(&textures[0].to_ascii_lowercase()) {
+        return;
+    }
+    for map in PbrMap::ALL {
+        textures[map.slot()] = pbr_sibling_texture_rel(&textures[0], map);
+    }
 }
 
 fn source_bto_atlas_page_rel(world: &str, page: usize) -> String {
@@ -2386,6 +2753,8 @@ fn convert_tile(
     atlas: &AtlasResult,
     billboard_manifest: Option<&BillboardManifest>,
     standard_tree_tiles: &TreeTileIndex,
+    instancing: Option<&Instancing>,
+    pbr_pages: Option<&HashSet<String>>,
 ) -> anyhow::Result<SourceTileStats> {
     let total_started = Instant::now();
     let load_started = Instant::now();
@@ -2407,6 +2776,7 @@ fn convert_tile(
         &paths.output_dir,
         &world.editor_id,
         copied_textures,
+        settings.objects.fo76_bto_pbr_maps,
     );
     let mut shapes = Vec::new();
     let mut tree_refs = Vec::<StaticDesc>::new();
@@ -2434,6 +2804,9 @@ fn convert_tile(
     let replace_source_translucent_foliage = !generated_tree_shapes.is_empty();
 
     let extract_started = Instant::now();
+    let mut atlas_dropped = 0u64;
+    let mut instanced_groups = Vec::<InstanceGroup>::new();
+    let mut instanced_stats = InstancedStats::default();
     for block in &nif.blocks {
         match block.type_name.as_str() {
             "BSSubIndexTriShape" | "BSTriShape"
@@ -2452,9 +2825,18 @@ fn convert_tile(
                     mode,
                     atlas,
                     &mut copied,
+                    &mut atlas_dropped,
                 ));
             }
             "BSDistantObjectInstancedNode" if settings.objects.fo76_bto_include_instances => {
+                let mut handled = HashSet::new();
+                if let Some(instancing) = instancing.filter(|_| mode.is_atlas()) {
+                    let node = group_node_instances(block, tile, resolver, &ctx, atlas, instancing);
+                    instanced_groups.extend(node.groups);
+                    instanced_stats.degenerate += node.stats.degenerate;
+                    instanced_stats.unmatched_ids += node.stats.unmatched_ids;
+                    handled = node.handled;
+                }
                 let extracted = extract_instance_shapes(
                     &nif,
                     block,
@@ -2466,9 +2848,11 @@ fn convert_tile(
                     atlas,
                     billboard_manifest,
                     &mut copied,
+                    &handled,
                 );
                 shapes.extend(extracted.shapes);
                 tree_refs.extend(extracted.tree_refs);
+                atlas_dropped += extracted.atlas_dropped;
                 tile_stats.tree_instances_to_btt += extracted.tree_instances_to_btt;
                 tile_stats.far_tree_3d_fallback += extracted.far_tree_3d_fallback;
                 for (model, count) in extracted.skipped_missing_billboard {
@@ -2482,6 +2866,15 @@ fn convert_tile(
         }
     }
     shapes.extend(generated_tree_shapes);
+    if let Some(pages) = pbr_pages {
+        for shape in &mut shapes {
+            assign_pbr_atlas_slots(&mut shape.textures, pages);
+        }
+        for group in &mut instanced_groups {
+            let crate::objects::object_lod::BtoShader::Lighting { texture_set, .. } = &mut group.shape.shader;
+            assign_pbr_atlas_slots(texture_set, pages);
+        }
+    }
     tile_stats.extract_secs = extract_started.elapsed().as_secs_f64();
 
     tile_stats.input_shapes = shapes.len() as u64;
@@ -2490,6 +2883,20 @@ fn convert_tile(
         crate::objects::write_atlassed_source_bto_shapes(&quad, &ctx, shapes)?
     } else {
         crate::objects::write_source_bto_shapes(&quad, &ctx, shapes)?
+    };
+    let instanced_bytes = if instanced_groups.is_empty() {
+        None
+    } else {
+        let written = outputs.object_lod.as_ref().and_then(|t| t.bto_path.clone());
+        let (_, bytes, created) = crate::objects::instanced::append_instance_groups(
+            &ctx,
+            &quad,
+            written,
+            &instanced_groups,
+            instancing.map(|instancing| &instancing.layers),
+        )?;
+        tile_stats.stats.bto += u32::from(created);
+        Some(bytes)
     };
     tile_stats.write_secs = write_started.elapsed().as_secs_f64();
     if let Some(telemetry) = &outputs.object_lod {
@@ -2501,6 +2908,19 @@ fn convert_tile(
         .as_ref()
         .map(|t| t.output_shape_count)
         .unwrap_or(0);
+    tile_stats.report = crate::report::TileReport {
+        level: tile.level as u32,
+        x: tile.x,
+        y: tile.y,
+        shapes_out: tile_stats.output_shapes as usize,
+        shapes_cap_dropped: outputs.object_lod.as_ref().map(|t| t.simplify.shapes_skipped).unwrap_or(0),
+        shapes_atlas_dropped: atlas_dropped,
+        bto_bytes: instanced_bytes.unwrap_or(tile_stats.bto_write.bytes),
+        instanced_groups: instanced_groups.len(),
+        instanced_instances: instanced_groups.iter().map(|g| g.instances.len() as u64).sum(),
+        degenerate: instanced_stats.degenerate,
+        unmatched_ids: instanced_stats.unmatched_ids,
+    };
     tile_stats.stats.bto += outputs
         .meshes
         .iter()
@@ -2572,6 +2992,7 @@ struct InstanceExtract {
     tree_instances_to_btt: u64,
     far_tree_3d_fallback: u64,
     skipped_missing_billboard: BTreeMap<String, u64>,
+    atlas_dropped: u64,
 }
 
 fn extract_instance_shapes(
@@ -2585,6 +3006,7 @@ fn extract_instance_shapes(
     atlas: &AtlasResult,
     billboard_manifest: Option<&BillboardManifest>,
     textures: &mut TextureSink<'_>,
+    handled: &HashSet<(usize, usize)>,
 ) -> InstanceExtract {
     let node_translation = vec3(node.get_field("Translation")).unwrap_or([0.0, 0.0, 0.0]);
     let level_index = level_index(tile.level);
@@ -2621,6 +3043,9 @@ fn extract_instance_shapes(
                 .unwrap_or(false);
         let mut model_shapes: Option<Vec<ShapeDesc>> = None;
         for (tx_idx, matrix_value) in val_array(inst.get("Transforms")).iter().enumerate() {
+            if handled.contains(&(inst_idx, tx_idx)) {
+                continue;
+            }
             let Some(matrix) = mat4(matrix_value) else {
                 continue;
             };
@@ -2684,6 +3109,8 @@ fn extract_instance_shapes(
                     if mode.is_atlas() {
                         if shape_uses_hybrid_atlas_or_safe(&shape, &ctx.world.editor_id) {
                             out.shapes.push(shape);
+                        } else {
+                            out.atlas_dropped += 1;
                         }
                     } else {
                         rewrite_shape_textures(&mut shape, textures);
@@ -2697,6 +3124,177 @@ fn extract_instance_shapes(
     out
 }
 
+/// Instanced-mode state shared by every tile of a world (plan Task 15).
+struct Instancing {
+    refs: RefIndex,
+    object_ids: ObjectIds,
+    /// Data-relative page-0 atlas (`<W>.Objects.dds`), the only texture the instance renderer binds (Q9).
+    atlas_diffuse: String,
+    layers: InstanceLayers,
+}
+
+impl Instancing {
+    fn new(world: &WorldspaceInput, paths: &LodPaths) -> Self {
+        let refs = world
+            .refs
+            .iter()
+            .filter(|r| r.lod_models.iter().any(Option::is_some))
+            .map(|r| (r.ref_id.as_str(), r.pos, r.lod_models.iter().flatten().cloned().collect(), r.hideable_by_id));
+        let page0 = paths.output_dir.join(source_bto_atlas_page_rel(&world.editor_id, 0).replace('\\', "/"));
+        Self {
+            refs: RefIndex::new(refs),
+            object_ids: ObjectIds::new(&world.editor_id),
+            atlas_diffuse: crate::atlas::atlas::data_relative_path(&page0),
+            layers: InstanceLayers::default(),
+        }
+    }
+}
+
+/// The world's texture arrays, with the instanced atlas page's formats and sRGB-payload diffuse.
+fn finish_instance_layers(
+    instancing: &Instancing,
+    world: &WorldspaceInput,
+    settings: &LodSettings,
+    paths: &LodPaths,
+    source_root: &Path,
+) -> anyhow::Result<LodGenStats> {
+    instancing.layers.finish(
+        &paths.output_dir,
+        &world.editor_id,
+        &ArrayFormats::new(&settings.objects, true),
+        settings.global.workers,
+        |tile| instance_layer_slice(settings, paths, source_root, tile),
+    )
+}
+
+/// A layer's tile loaded as the hybrid atlas loads an instanced texture, resized to the array slice.
+fn instance_layer_slice(
+    settings: &LodSettings,
+    paths: &LodPaths,
+    source_root: &Path,
+    tile: &AtlasTile,
+) -> Option<Slice> {
+    use crate::objects::instance_array_index::SLICE_SIZE;
+    let mut texture = hybrid_atlas_texture_from_existing_map_key(paths, source_root, &tile.key)?;
+    texture.instanced = true;
+    let loaded = load_one_hybrid_atlas_texture(settings, 0, texture, None).tile?;
+    Some(
+        [loaded.rgba_d, loaded.rgba_n, loaded.rgba_s]
+            .map(|rgba| crate::atlas::atlas::resize_rgba(&rgba, loaded.w, loaded.h, SLICE_SIZE, SLICE_SIZE)),
+    )
+}
+
+struct NodeInstancing {
+    groups: Vec<InstanceGroup>,
+    /// `(resource, transform)` pairs placed by a group or skipped as degenerate; the merged path leaves them out.
+    handled: HashSet<(usize, usize)>,
+    stats: InstancedStats,
+}
+
+/// The node's resolved, non-tree resources (trees keep the billboard and tree paths), each transform with its index
+/// in `Transforms`.
+fn read_instance_resources(node: &NifBlock, resolver: &ResourceResolver) -> Vec<ResourceInstances> {
+    let mut out = Vec::new();
+    for (resource, inst_value) in val_array(node.get_field("Instances")).iter().enumerate() {
+        let Some(inst) = as_struct(Some(inst_value)) else {
+            continue;
+        };
+        let Some(rid) = inst.get("Resource ID").and_then(resource_id_from_value) else {
+            continue;
+        };
+        let Some(model) = resolver.resolve(&rid) else {
+            continue;
+        };
+        if is_tree_instance_model(model) {
+            continue;
+        }
+        let transforms = val_array(inst.get("Transforms"))
+            .iter()
+            .enumerate()
+            .filter_map(|(index, value)| mat4(value).map(|matrix| (index, matrix)))
+            .collect();
+        out.push(ResourceInstances { resource, rid, model: model.to_string(), transforms });
+    }
+    out
+}
+
+fn group_node_instances(
+    node: &NifBlock,
+    tile: &SourceBtoTile,
+    resolver: &ResourceResolver,
+    ctx: &QuadCtx<'_>,
+    atlas: &AtlasResult,
+    instancing: &Instancing,
+) -> NodeInstancing {
+    let node_translation = vec3(node.get_field("Translation")).unwrap_or([0.0, 0.0, 0.0]);
+    let level_index = level_index(tile.level);
+    let resources = read_instance_resources(node, resolver);
+    // Only the segmented L4 level hides instances of loaded cells by id (LOD_RUNTIME.md Q1, Q3).
+    let (groups, fallback, stats) = group_tile_instances(
+        &resources,
+        node_translation,
+        ctx.settings.objects.fo76_bto_instanced_min_count as usize,
+        tile.level == 4,
+        |resource| {
+            let object = instancing.object_ids.claim(&resource.rid)?;
+            let (shape, tile) =
+                instanced_model_shape(&resource.model, level_index, ctx, atlas, &instancing.atlas_diffuse)?;
+            Some((object, shape, instancing.layers.assign(tile.as_ref())))
+        },
+        |model, pos| instancing.refs.find(model, pos),
+    );
+    let fallback: HashSet<(usize, usize)> = fallback.iter().map(|f| (f.resource, f.transform)).collect();
+    let handled = resources
+        .iter()
+        .flat_map(|r| r.transforms.iter().map(move |(transform, _)| (r.resource, *transform)))
+        .filter(|key| !fallback.contains(key))
+        .collect();
+    NodeInstancing { groups, handled, stats }
+}
+
+/// A resource's LOD model in model space with the world atlas UVs, as one instance shape, and the atlas tile it
+/// lies in when it lies in one.
+fn instanced_model_shape(
+    model: &str,
+    level_index: usize,
+    ctx: &QuadCtx<'_>,
+    atlas: &AtlasResult,
+    atlas_diffuse: &str,
+) -> Option<(BtoShape, Option<AtlasTile>)> {
+    let stat = instance_static_desc(model, level_index, [0.0, 0.0, 0.0], identity_part_transform(), 0, 0);
+    let shapes = crate::objects::parse_nif::parse_nif(&stat, level_index, ctx).ok()?;
+    // Level 1 at the origin: transform_shape leaves model space as it is and only applies the atlas remap.
+    let model_space = QuadDesc {
+        z_order: 0,
+        x: 0,
+        y: 0,
+        quad_level: 1,
+        quad_index: 0,
+        quad_offset: 4096.0,
+        static_indices: Vec::new(),
+        statics: Vec::new(),
+        out_values: Default::default(),
+    };
+    let mut parts = Vec::new();
+    let mut texture_set = None;
+    for mut shape in shapes {
+        wrap_source_bto_repeating_uvs_for_atlas(&mut shape);
+        let tile = AtlasTile::lookup(&atlas.list, &shape.textures[..3], shape.alpha_threshold);
+        if !transform_shape_with_world(&model_space, &stat, &mut shape, &atlas.list, &ctx.settings.objects, ctx.world) {
+            continue;
+        }
+        texture_set.get_or_insert_with(|| shape.textures.clone());
+        parts.push(InstancePart {
+            alpha: shape.flags.contains(ShapeFlags::IS_ALPHA),
+            diffuse: shape.textures[0].clone(),
+            geometry: shape.geometry,
+            tile,
+        });
+    }
+    let tile = single_tile(parts.iter().map(|part| part.tile.clone()));
+    instance_shape(parts, atlas_diffuse, texture_set?).map(|shape| (shape, tile))
+}
+
 fn extract_baked_shapes(
     nif: &NifFile,
     geom_block: &NifBlock,
@@ -2705,6 +3303,7 @@ fn extract_baked_shapes(
     mode: SourceBtoMode,
     atlas: &AtlasResult,
     textures: &mut TextureSink<'_>,
+    atlas_dropped: &mut u64,
 ) -> Vec<ShapeDesc> {
     let Some(source_geometry) = extract_inline_geometry(geom_block) else {
         return Vec::new();
@@ -2758,6 +3357,8 @@ fn extract_baked_shapes(
             );
             if !mode.is_atlas() || remap_baked_shape_to_atlas(&mut shape, atlas) {
                 out.push(shape);
+            } else {
+                *atlas_dropped += 1;
             }
         }
         return out;
@@ -2780,6 +3381,8 @@ fn extract_baked_shapes(
         );
         if !mode.is_atlas() || remap_baked_shape_to_atlas(&mut shape, atlas) {
             out.push(shape);
+        } else {
+            *atlas_dropped += 1;
         }
     }
 
@@ -2948,6 +3551,7 @@ fn instance_static_desc(
         part_transform,
         part_scale,
         material_swap: Default::default(),
+        hideable_by_id: false,
     }
 }
 
@@ -3021,6 +3625,7 @@ fn rewrite_shape_textures(shape: &mut ShapeDesc, textures: &mut TextureSink<'_>)
         }
         rewritten[target_idx] = textures.rewrite_slot(texture, specular);
     }
+    textures.assign_pbr_slots(&shape.textures, &shape.textures[0], &mut rewritten);
     shape.textures = rewritten;
 }
 
@@ -3045,6 +3650,9 @@ fn rewrite_texture_set(
         } else {
             textures.rewrite_slot(texture, specular)
         };
+    }
+    if !mode.is_atlas() {
+        textures.assign_pbr_slots(&source, &source[0], texture_set);
     }
 }
 
@@ -3083,6 +3691,13 @@ fn texture_set_for_array_slice(
         } else {
             textures.rewrite_slot(specular, true)
         };
+    }
+    if !mode.is_atlas() {
+        let named: Vec<String> = [10, 9]
+            .iter()
+            .filter_map(|&array| arrays.get(array).and_then(|v| v.get(slice)).cloned())
+            .collect();
+        textures.assign_pbr_slots(&named, diffuse, &mut texture_set);
     }
     Some(texture_set)
 }
@@ -3279,7 +3894,7 @@ fn shader_clamp_mode(shader: &NifBlock) -> u32 {
     clamp_mode(shader.get_field("Texture Clamp Mode"))
 }
 
-fn extract_inline_geometry(block: &NifBlock) -> Option<LodGeometry> {
+pub fn extract_inline_geometry(block: &NifBlock) -> Option<LodGeometry> {
     let mut geometry = LodGeometry::new();
     for vertex in val_array(block.get_field("Vertex Data")) {
         let fields = as_struct(Some(vertex))?;
@@ -3498,7 +4113,7 @@ fn write_fo4_lod_texture(
         if texture_matches_target(dst_path, target) {
             return Ok(0);
         }
-        match transcode_fo4_lod_texture(src_path, dst_path, target) {
+        match transcode_fo4_lod_texture(src_path, dst_path, target, texture_is_lod_cutout(normalized)) {
             Ok(()) => return Ok(std::fs::metadata(dst_path).map(|m| m.len()).unwrap_or(0)),
             Err(err) => {
                 eprintln!(
@@ -3516,7 +4131,19 @@ fn transcode_fo4_lod_texture(
     src_path: &Path,
     dst_path: &Path,
     target: Fo4DdsTarget,
+    cutout: bool,
 ) -> Result<(), String> {
+    if cutout {
+        let image = directxtex_native::read_dds_rgba_image(src_path)?;
+        let chain = directxtex_native::rgba8_cutout_mip_chain(
+            image.width,
+            image.height,
+            &image.rgba,
+            LOD_CUTOUT_ALPHA_REFERENCE,
+        )?;
+        let bytes = directxtex_native::encode_dds_from_rgba8_chain(&chain, target.format(), true, None)?;
+        return std::fs::write(dst_path, bytes).map_err(|err| err.to_string());
+    }
     let mips = match directxtex_native::read_dds_mips_rgba8(src_path) {
         Ok(mips) => mips,
         Err(_) => {
@@ -3545,6 +4172,9 @@ fn fo4_lod_texture_target(
         }
         return Some(Fo4DdsTarget::Bc5Unorm);
     }
+    if texture_is_lod_cutout(normalized) {
+        return Some(Fo4DdsTarget::Dxt5);
+    }
 
     let probe = directxtex_native::read_dds_probe(src_path).ok()?;
     let fourcc = dds_fourcc(src_path).ok()?;
@@ -3561,6 +4191,19 @@ fn fo4_lod_texture_target(
         _ if &fourcc == b"DX10" => Some(Fo4DdsTarget::Dxt5),
         _ => None,
     }
+}
+
+/// The LOD shapes' default alpha-test threshold (`alpha_threshold`'s fallback).
+const LOD_CUTOUT_ALPHA_REFERENCE: u8 = 128;
+
+/// FO76's object LOD cutouts. Their shipped mips are box-filtered 1-bit alpha that fills in
+/// solid a few levels down, so an alpha-tested distant card turns into a slab that flashes as
+/// the mip changes; they are rebuilt from the top level with the coverage kept, as BC3.
+fn texture_is_lod_cutout(normalized: &str) -> bool {
+    let lower = normalized.to_ascii_lowercase();
+    lower.ends_with("_d.dds")
+        && (lower.contains(r"\texturearrays\translucent\")
+            || lower.contains(r"\texturearrays\alphatested\"))
 }
 
 fn texture_is_normal_map(path: &str) -> bool {
@@ -3635,6 +4278,21 @@ fn hybrid_texture_rel(world: &str, normalized: &str, specular: bool) -> String {
         world.to_ascii_lowercase(),
         rest
     )
+}
+
+/// Its own folder, so a raw slot that copies the same FO76 `_l`/`_r` as authored never claims the path first.
+fn pbr_hybrid_texture_rel(world: &str, normalized: &str) -> String {
+    hybrid_texture_rel(world, normalized, false).replacen("\\objects\\hybrid\\", "\\objects\\hybridpbr\\", 1)
+}
+
+fn write_pbr_lod_texture(map: PbrMap, src_path: &Path, dst_path: &Path) -> Result<(), String> {
+    let image = directxtex_native::read_dds_rgba_image(src_path)?;
+    let (width, height) = (image.width, image.height);
+    let rgba = map.normalize(image);
+    if let Some(parent) = dst_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+    }
+    directxtex_native::write_dds_rgba_image(dst_path, width, height, &rgba, map.format(), true)
 }
 
 fn shorten_long_path_components(path: &str) -> String {
@@ -3985,14 +4643,14 @@ fn as_struct(value: Option<&NifValue>) -> Option<&indexmap::IndexMap<String, Nif
     }
 }
 
-fn val_array(value: Option<&NifValue>) -> &[NifValue] {
+pub(crate) fn val_array(value: Option<&NifValue>) -> &[NifValue] {
     match value {
         Some(NifValue::Array(items)) => items,
         _ => &[],
     }
 }
 
-fn val_string(value: Option<&NifValue>) -> Option<String> {
+pub(crate) fn val_string(value: Option<&NifValue>) -> Option<String> {
     match value {
         Some(NifValue::String(s)) | Some(NifValue::Char(s)) => {
             Some(s.trim_end_matches('\0').to_string())
@@ -4010,7 +4668,7 @@ fn val_ref(value: Option<&NifValue>) -> Option<i32> {
     }
 }
 
-fn val_u64(value: Option<&NifValue>) -> Option<u64> {
+pub(crate) fn val_u64(value: Option<&NifValue>) -> Option<u64> {
     match value {
         Some(NifValue::UInt(v)) => Some(*v),
         Some(NifValue::Int(v)) if *v >= 0 => Some(*v as u64),
@@ -4020,7 +4678,7 @@ fn val_u64(value: Option<&NifValue>) -> Option<u64> {
     }
 }
 
-fn val_f32(value: Option<&NifValue>) -> Option<f32> {
+pub(crate) fn val_f32(value: Option<&NifValue>) -> Option<f32> {
     match value {
         Some(NifValue::Float(v)) => Some(*v as f32),
         Some(NifValue::Int(v)) => Some(*v as f32),
@@ -4029,7 +4687,7 @@ fn val_f32(value: Option<&NifValue>) -> Option<f32> {
     }
 }
 
-fn vec3(value: Option<&NifValue>) -> Option<[f32; 3]> {
+pub(crate) fn vec3(value: Option<&NifValue>) -> Option<[f32; 3]> {
     match value {
         Some(NifValue::Vec3(v)) => Some(*v),
         Some(NifValue::Struct(fields)) => Some([
@@ -4085,6 +4743,45 @@ fn clamp_mode(value: Option<&NifValue>) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_source_tile_that_fails_to_convert_is_in_the_object_report() {
+        let dir = tempfile::tempdir().unwrap();
+        let objects = dir.path().join("source/Meshes/Terrain/W/Objects");
+        std::fs::create_dir_all(&objects).unwrap();
+        // A NIF header line with nothing after it: the read fails at the version fields.
+        std::fs::write(objects.join("W.4.0.0.bto"), b"Gamebryo File Format, Version 20.2.0.7\n").unwrap();
+        let paths = LodPaths {
+            data_dirs: vec![dir.path().join("source")],
+            output_dir: dir.path().join("out"),
+            source_data_dir: Some(dir.path().join("source")),
+        };
+        let mut settings = LodSettings::fo4_default();
+        settings.objects.source = ObjectSource::Fo76Bto;
+        settings.global.lod_min = 4;
+        settings.global.lod_max = 4;
+        settings.global.workers = 1;
+        settings.global.generate_trees = false;
+        struct Lines(Vec<String>);
+        impl Progress for Lines {
+            fn report(&mut self, message: &str, _fraction: f32) {
+                self.0.push(message.to_string());
+            }
+        }
+        let mut progress = Lines(Vec::new());
+
+        build_object_lod(&WorldspaceInput::from_cells("W", Vec::new()), &settings, &Game::fo4(), &paths, &mut progress)
+            .unwrap();
+
+        let text = std::fs::read_to_string(dir.path().join("out/LODGen/W.objects.report.json")).unwrap();
+        let report: crate::report::ObjectReport = serde_json::from_str(&text).unwrap();
+        assert!(report.tiles.is_empty(), "{report:?} {:?}", progress.0);
+        assert_eq!(report.failed_tiles.len(), 1);
+        let failed = &report.failed_tiles[0];
+        assert_eq!((failed.level, failed.x, failed.y), (4, 0, 0));
+        assert!(failed.error.contains("W.4.0.0.bto"), "{}", failed.error);
+        assert!(progress.0.iter().any(|line| line.contains("dropped=0 failed=1")), "{:?}", progress.0);
+    }
 
     #[test]
     fn source_bto_filename_parser_extracts_world_level_and_tile() {
@@ -4173,6 +4870,7 @@ mod tests {
             normal_path: Some(root.join("rock_n.dds")),
             lighting_path: None,
             specular_path: Some(root.join("rock_s.dds")),
+            instanced: false,
         };
         crate::atlas::write_atlas_map(
             &atlas_path.with_extension("txt"),
@@ -4587,4 +5285,791 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    #[test]
+    fn rewrite_texture_path_keeps_a_lod_cutouts_coverage_down_the_mips() {
+        let root = std::env::temp_dir().join(format!(
+            "lodgen_fo76_bto_texture_cutout_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let source = root.join("source");
+        let output = root.join("output");
+        let texture = source.join("textures/lod/generated/texturearrays/translucent/translucent_63_d.dds");
+        std::fs::create_dir_all(texture.parent().unwrap()).unwrap();
+        let size = 64u32;
+        let mut base = vec![0u8; (size * size * 4) as usize];
+        for y in 0..size {
+            for x in 0..size {
+                if x % 5 == 0 || (x + 2 * y) % 11 == 0 {
+                    let i = ((y * size + x) * 4) as usize;
+                    base[i..i + 4].copy_from_slice(&[90, 60, 30, 255]);
+                }
+            }
+        }
+        // FO76 ships these as DX10 BC1 with box-filtered mips that fill in solid.
+        let chain = directxtex_native::rgba8_box_mip_chain(size, size, &base).unwrap();
+        std::fs::write(
+            &texture,
+            directxtex_native::encode_dds_from_rgba8_chain(&chain, "BC1_UNORM_SRGB", false, None).unwrap(),
+        )
+        .unwrap();
+        let coverage = |px: &[u8]| px.chunks_exact(4).filter(|p| p[3] >= 128).count() as f32 / (px.len() / 4) as f32;
+
+        let copied = Mutex::new(HashSet::new());
+        let mut written = 0;
+        let rel = rewrite_texture_path(
+            &source,
+            &output,
+            "APPALACHIA",
+            r"textures\lod\generated\texturearrays\translucent\translucent_63_d.dds",
+            false,
+            &copied,
+            &mut written,
+        );
+
+        let dst = output.join(rel.replace('\\', "/"));
+        assert_eq!(written, 1);
+        assert_eq!(dds_fourcc(&dst).unwrap(), *b"DXT5");
+        let top = coverage(&base);
+        for (w, h, px) in directxtex_native::read_dds_mips_rgba8(&dst).unwrap().mips {
+            if (4..size).contains(&w) {
+                assert!((coverage(&px) - top).abs() <= 0.08, "{w}x{h}: {} vs {top}", coverage(&px));
+            }
+        }
+        assert!(!texture_needs_write(
+            &texture,
+            &dst,
+            r"textures\lod\generated\texturearrays\translucent\translucent_63_d.dds",
+            false
+        ));
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    fn atlas_texture(diffuse: &str, instanced: bool) -> HybridAtlasTexture {
+        HybridAtlasTexture {
+            diffuse_rel: diffuse.to_string(),
+            normal_rel: String::new(),
+            lighting_rel: String::new(),
+            specular_rel: String::new(),
+            diffuse_path: PathBuf::new(),
+            normal_path: None,
+            lighting_path: None,
+            specular_path: None,
+            instanced,
+        }
+    }
+
+    #[test]
+    fn instance_model_textures_pack_first_onto_the_unnumbered_world_atlas() {
+        let mut settings = LodSettings::fo4_default();
+        settings.objects.fo76_bto_instanced_atlas_size = 4096;
+        let rock = atlas_texture(r"textures\rock_d.dds", true);
+        let tree = atlas_texture(r"textures\lod\landscape\trees\pine_d.dds", true);
+        assert_eq!(hybrid_atlas_texture_group(&rock), HybridAtlasGroup::Instanced);
+        assert_eq!(hybrid_atlas_texture_group(&tree), HybridAtlasGroup::Tree);
+        assert_eq!(hybrid_atlas_texture_group(&atlas_texture(r"textures\rock_d.dds", false)), HybridAtlasGroup::Other);
+        assert_eq!(hybrid_atlas_effective_page_size(&settings, &rock), 4096);
+        let groups = [
+            HybridAtlasGroup::Other,
+            HybridAtlasGroup::Instanced,
+            HybridAtlasGroup::Tree,
+            HybridAtlasGroup::Instanced,
+        ];
+        assert_eq!(hybrid_atlas_page_order(&groups), vec![1, 3, 0, 2]);
+    }
+
+    #[test]
+    fn an_atlas_cached_without_instancing_is_not_reused_for_it() {
+        let mut settings = LodSettings::fo4_default();
+        settings.objects.source = ObjectSource::Fo76BtoAtlas;
+        let plain = hybrid_atlas_cache_meta(&settings);
+        settings.objects.source = ObjectSource::Fo76BtoInstanced;
+        assert!(plain != hybrid_atlas_cache_meta(&settings));
+        assert!(!hybrid_atlas_cache_source_selection_matches(&plain, &settings));
+    }
+
+    fn instance_node(resources: Vec<(ResourceId, Vec<NifValue>)>) -> NifBlock {
+        let instances = resources
+            .into_iter()
+            .map(|(rid, transforms)| {
+                let mut id = indexmap::IndexMap::new();
+                id.insert("Directory Hash".to_string(), NifValue::UInt(rid.dir.into()));
+                id.insert("File Hash".to_string(), NifValue::UInt(rid.file.into()));
+                id.insert("Extension".to_string(), NifValue::UInt(rid.ext.into()));
+                let mut fields = indexmap::IndexMap::new();
+                fields.insert("Resource ID".to_string(), NifValue::Struct(id));
+                fields.insert("Transforms".to_string(), NifValue::Array(transforms));
+                NifValue::Struct(fields)
+            })
+            .collect();
+        let mut node = NifBlock::new(0, "BSDistantObjectInstancedNode");
+        node.fields.insert("Instances".to_string(), NifValue::Array(instances));
+        node
+    }
+
+    #[test]
+    fn instance_nodes_offer_their_resolved_non_tree_resources_with_transform_indices() {
+        let rock = ResourceId { dir: 1, file: 2, ext: 3 };
+        let tree = ResourceId { dir: 1, file: 4, ext: 3 };
+        let lost = ResourceId { dir: 9, file: 9, ext: 9 };
+        let resolver = ResourceResolver {
+            by_id: HashMap::from([
+                (rock, r"meshes\lod\rocks\rock01_lod.nif".to_string()),
+                (tree, r"meshes\lod\landscape\trees\treepine01_lod.nif".to_string()),
+            ]),
+        };
+        let m = NifValue::Matrix44([[1.0, 0.0, 0.0, 5.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]]);
+        let node = instance_node(vec![(lost, vec![m.clone()]), (rock, vec![NifValue::UInt(0), m.clone()]), (tree, vec![m])]);
+        let resources = read_instance_resources(&node, &resolver);
+        assert_eq!(resources.len(), 1);
+        assert_eq!(resources[0].resource, 1);
+        assert_eq!(resources[0].rid, rock);
+        assert_eq!(resources[0].model, r"meshes\lod\rocks\rock01_lod.nif");
+        assert_eq!(resources[0].transforms.len(), 1);
+        assert_eq!(resources[0].transforms[0].0, 1);
+    }
+
+    /// One triangle with the diffuse/normal pair `name_d.dds`/`name_n.dds` under `textures\rock\`, left where it is.
+    fn rock_triangle(name: &str) -> ShapeDesc {
+        let mut geometry = LodGeometry::new();
+        geometry.vertices = vec![[0.0, 0.0, 0.0], [10.0, 0.0, 1.0], [0.0, 10.0, 2.0]];
+        geometry.normals = vec![[0.0, 0.0, 1.0]; 3];
+        geometry.tangents = vec![[1.0, 0.0, 0.0]; 3];
+        geometry.bitangents = vec![[0.0, 1.0, 0.0]; 3];
+        geometry.uvcoords = vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]];
+        geometry.triangles = vec![[0, 1, 2]];
+        let mut textures: [String; 10] = Default::default();
+        textures[0] = format!(r"textures\rock\{name}_d.dds");
+        textures[1] = format!(r"textures\rock\{name}_n.dds");
+        let tile = SourceBtoTile { world: "W".into(), level: 1, x: 0, y: 0, path: PathBuf::new() };
+        make_baked_shape(name.into(), &tile, &source_quad(&tile), geometry, textures, None, 0, false, None, [0.0; 3], 1.0)
+    }
+
+    fn triangle_count(nif: &NifFile, block: usize) -> usize {
+        val_array(nif.blocks[block].get_field("Triangles")).len()
+    }
+
+    #[test]
+    fn a_tile_places_uniform_instances_as_pairs_and_merges_only_the_rest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (source, out) = (tmp.path().join("source"), tmp.path().join("out"));
+        let settings = LodSettings::fo4_default();
+        let model = r"meshes\lod\rock01_lod.nif";
+        let model_shapes = crate::objects::object_lod::build_bto(
+            &mut source_quad(&SourceBtoTile { world: "W".into(), level: 1, x: 0, y: 0, path: PathBuf::new() }),
+            vec![rock_triangle("rock01")],
+            &settings.objects,
+        );
+        crate::output::bto::write_bto(&source.join("meshes/lod/rock01_lod.nif"), &model_shapes).unwrap();
+
+        // The tile: one baked shape plus an instance node with three uniform transforms and one stretched one.
+        let tile = SourceBtoTile {
+            world: "W".into(),
+            level: 4,
+            x: 0,
+            y: 0,
+            path: source.join("Meshes/Terrain/W/Objects/W.4.0.0.bto"),
+        };
+        let baked = crate::objects::object_lod::build_bto(
+            &mut source_quad(&tile),
+            vec![rock_triangle("baked")],
+            &settings.objects,
+        );
+        let mut tile_nif = crate::output::bto::build_bto_nif(&baked).unwrap();
+        let baked_block = tile_nif.blocks.iter().position(|b| b.type_name == "BSSubIndexTriShape").unwrap();
+        tile_nif.blocks[baked_block].set_field("Name", NifValue::String("BakedRock".into()));
+        // Extension is a char[4] field the writer leaves zeroed for an integer value.
+        let rid = ResourceId { dir: 1, file: 2, ext: 0 };
+        // Named fields, as tiles read back: the writer stores a Matrix44 value column-major.
+        let at = |x: f32, stretch: f32| {
+            let m = [[1.0, 0.0, 0.0, x], [0.0, stretch, 0.0, 100.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]];
+            let mut fields = indexmap::IndexMap::new();
+            for (r, row) in m.iter().enumerate() {
+                for (c, v) in row.iter().enumerate() {
+                    fields.insert(format!("m{}{}", r + 1, c + 1), NifValue::Float(f64::from(*v)));
+                }
+            }
+            NifValue::Struct(fields)
+        };
+        let mut node = instance_node(vec![(rid, vec![at(100.0, 1.0), at(200.0, 1.0), at(300.0, 1.0), at(400.0, 2.0)])]);
+        if let Some(NifValue::Array(instances)) = node.fields.get_mut("Instances") {
+            for instance in instances {
+                if let NifValue::Struct(fields) = instance {
+                    fields.insert("Num Unknown Data".into(), NifValue::UInt(0));
+                    fields.insert("Unknown Data".into(), NifValue::Array(Vec::new()));
+                    fields.insert("Num Transforms".into(), NifValue::UInt(4));
+                }
+            }
+        }
+        node.fields.insert("Num Instances".into(), NifValue::UInt(1));
+        let node_id = tile_nif.add_block("BSDistantObjectInstancedNode", None);
+        tile_nif.blocks[node_id].fields.extend(node.fields);
+        std::fs::create_dir_all(tile.path.parent().unwrap()).unwrap();
+        std::fs::write(&tile.path, tile_nif.to_bytes().unwrap()).unwrap();
+
+        let mut list = crate::atlas::AtlasList::new();
+        for (name, x) in [("rock01", 0), ("baked", 256)] {
+            list.insert(
+                format!(r"textures\rock\{name}_d.dds,textures\rock\{name}_n.dds"),
+                AtlasRect::from_map_row(256, 256, x, 0, 4096, 4096, r"Textures\Terrain\W\Objects\W.Objects.dds", false),
+            );
+        }
+        let atlas = AtlasResult {
+            map_path: PathBuf::new(),
+            diffuse: out.join("Textures/Terrain/W/Objects/W.Objects.dds"),
+            normal: PathBuf::new(),
+            specular: PathBuf::new(),
+            atlas_size: (4096, 4096),
+            uv: HashMap::new(),
+            list,
+            dds_written: 3,
+        };
+        let mut world = WorldspaceInput::from_cells("W", Vec::new());
+        for (i, x) in [100.0, 200.0, 300.0, 400.0].into_iter().enumerate() {
+            let mut placed = instance_static_desc(model, 0, [0.0; 3], identity_part_transform(), 0, i);
+            placed.ref_id = format!("{:08X}", 0x101 + i);
+            placed.pos = [x, 100.0, 0.0];
+            placed.hideable_by_id = true;
+            world.refs.push(placed);
+        }
+        let paths = LodPaths { data_dirs: vec![source.clone()], output_dir: out.clone(), source_data_dir: Some(source.clone()) };
+        let instancing = Instancing::new(&world, &paths);
+        let resolver = ResourceResolver { by_id: HashMap::from([(rid, model.to_string())]) };
+
+        let stats = convert_tile(
+            &world,
+            &settings,
+            &Game::fo4(),
+            &paths,
+            &source,
+            &resolver,
+            &tile,
+            &Mutex::new(HashSet::new()),
+            SourceBtoMode::Atlas,
+            &atlas,
+            None,
+            &TreeTileIndex::new(),
+            Some(&instancing),
+            None,
+        )
+        .unwrap();
+
+        let report = &stats.report;
+        assert_eq!((report.instanced_groups, report.instanced_instances), (1, 3));
+        assert_eq!((report.degenerate, report.unmatched_ids), (0, 0));
+        let written = NifFile::load_lean(&out.join("Meshes/Terrain/W/Objects/W.4.0.0.bto")).unwrap();
+        let roots: Vec<usize> = written.header.footer_roots.iter().map(|&r| r as usize).collect();
+        let types: Vec<&str> = roots.iter().map(|&r| written.blocks[r].type_name.as_str()).collect();
+        assert_eq!(types, ["NiNode", "BSTriShape", "BSDistantObjectInstanceDataBlock"]);
+        let (_, instances, ids) =
+            crate::output::instance_block::decode(&written.blocks[roots[2]].remainder).unwrap();
+        assert_eq!(ids, vec![0x101, 0x102, 0x103]);
+        assert_eq!(instances.len(), 3);
+        let instance_shape = &written.blocks[roots[1]];
+        let texture_set = block_of(&written, val_ref(instance_shape.get_field("Shader Property")).unwrap())
+            .and_then(|shader| block_of(&written, val_ref(shader.get_field("Texture Set"))?))
+            .unwrap();
+        let diffuse = val_string(val_array(texture_set.get_field("Textures")).first()).unwrap();
+        let diffuse = diffuse.strip_prefix(r"Data\").unwrap_or(&diffuse);
+        assert!(diffuse.eq_ignore_ascii_case(&instancing.atlas_diffuse), "{diffuse} vs {}", instancing.atlas_diffuse);
+        // Merged geometry: the baked triangle and the stretched instance; the three placed instances stay out.
+        let merged: usize = (0..written.blocks.len())
+            .filter(|&b| b != roots[1] && matches!(written.blocks[b].type_name.as_str(), "BSTriShape" | "BSSubIndexTriShape"))
+            .map(|b| triangle_count(&written, b))
+            .sum();
+        assert_eq!(merged, 2);
+    }
+
+    /// A level-8 tile (no ids needed) whose instance node places a rock model, written from `rock_triangle` shapes
+    /// named `names`, at uniform `scales`; every name has its own atlas tile.
+    struct InstancedTileFixture {
+        _tmp: tempfile::TempDir,
+        settings: LodSettings,
+        world: WorldspaceInput,
+        paths: LodPaths,
+        source: PathBuf,
+        tile: SourceBtoTile,
+        atlas: AtlasResult,
+        resolver: ResourceResolver,
+        matrices: Vec<[[f32; 4]; 4]>,
+    }
+
+    impl InstancedTileFixture {
+        fn new(names: &[&str], scales: &[f32]) -> Self {
+            let tmp = tempfile::tempdir().unwrap();
+            let (source, out) = (tmp.path().join("source"), tmp.path().join("out"));
+            let settings = LodSettings::fo4_default();
+            let model = r"meshes\lod\rock01_lod.nif";
+            let model_tile = SourceBtoTile { world: "W".into(), level: 1, x: 0, y: 0, path: PathBuf::new() };
+            let model_shapes = crate::objects::object_lod::build_bto(
+                &mut source_quad(&model_tile),
+                names.iter().map(|name| rock_triangle(name)).collect(),
+                &settings.objects,
+            );
+            crate::output::bto::write_bto(&source.join("meshes/lod/rock01_lod.nif"), &model_shapes).unwrap();
+            for (i, name) in names.iter().enumerate() {
+                let diffuse = [200u8, 100, 50 + 100 * i as u8, 255].repeat(64 * 64);
+                let normal = [128u8, 128, 255, 255].repeat(64 * 64);
+                for (suffix, rgba) in [("d", diffuse), ("n", normal)] {
+                    let path = source.join(format!("textures/rock/{name}_{suffix}.dds"));
+                    directxtex_native::write_dds_rgba_image(&path, 64, 64, &rgba, "R8G8B8A8_UNORM", false).unwrap();
+                }
+            }
+
+            let tile = SourceBtoTile {
+                world: "W".into(),
+                level: 8,
+                x: 0,
+                y: 0,
+                path: source.join("Meshes/Terrain/W/Objects/W.8.0.0.bto"),
+            };
+            let matrices: Vec<[[f32; 4]; 4]> = scales
+                .iter()
+                .enumerate()
+                .map(|(i, &s)| [[s, 0.0, 0.0, 100.0 * i as f32], [0.0, s, 0.0, 50.0], [0.0, 0.0, s, 0.0], [0.0, 0.0, 0.0, 1.0]])
+                .collect();
+            let named = |m: &[[f32; 4]; 4]| {
+                let mut fields = indexmap::IndexMap::new();
+                for (r, row) in m.iter().enumerate() {
+                    for (c, v) in row.iter().enumerate() {
+                        fields.insert(format!("m{}{}", r + 1, c + 1), NifValue::Float(f64::from(*v)));
+                    }
+                }
+                NifValue::Struct(fields)
+            };
+            let rid = ResourceId { dir: 1, file: 2, ext: 0 };
+            let mut node = instance_node(vec![(rid, matrices.iter().map(named).collect())]);
+            if let Some(NifValue::Array(instances)) = node.fields.get_mut("Instances") {
+                for instance in instances {
+                    if let NifValue::Struct(fields) = instance {
+                        fields.insert("Num Unknown Data".into(), NifValue::UInt(0));
+                        fields.insert("Unknown Data".into(), NifValue::Array(Vec::new()));
+                        fields.insert("Num Transforms".into(), NifValue::UInt(matrices.len() as u64));
+                    }
+                }
+            }
+            node.fields.insert("Num Instances".into(), NifValue::UInt(1));
+            let mut tile_nif = crate::output::bto::new_bto_nif_with_root().0;
+            let node_id = tile_nif.add_block("BSDistantObjectInstancedNode", None);
+            tile_nif.blocks[node_id].fields.extend(node.fields);
+            std::fs::create_dir_all(tile.path.parent().unwrap()).unwrap();
+            std::fs::write(&tile.path, tile_nif.to_bytes().unwrap()).unwrap();
+
+            let mut list = crate::atlas::AtlasList::new();
+            for (i, name) in names.iter().enumerate() {
+                list.insert(
+                    format!(r"textures\rock\{name}_d.dds,textures\rock\{name}_n.dds"),
+                    AtlasRect::from_map_row(256, 256, 256 * i as u32, 0, 4096, 4096, r"Textures\Terrain\W\Objects\W.Objects.dds", false),
+                );
+            }
+            let atlas = AtlasResult {
+                map_path: PathBuf::new(),
+                diffuse: out.join("Textures/Terrain/W/Objects/W.Objects.dds"),
+                normal: PathBuf::new(),
+                specular: PathBuf::new(),
+                atlas_size: (4096, 4096),
+                uv: HashMap::new(),
+                list,
+                dds_written: 3,
+            };
+            let paths = LodPaths { data_dirs: vec![source.clone()], output_dir: out, source_data_dir: Some(source.clone()) };
+            let resolver = ResourceResolver { by_id: HashMap::from([(rid, model.to_string())]) };
+            let world = WorldspaceInput::from_cells("W", Vec::new());
+            Self { _tmp: tmp, settings, world, paths, source, tile, atlas, resolver, matrices }
+        }
+
+        fn instancing(&self) -> Instancing {
+            Instancing::new(&self.world, &self.paths)
+        }
+
+        fn convert(&self, instancing: &Instancing) -> SourceTileStats {
+            convert_tile(
+                &self.world,
+                &self.settings,
+                &Game::fo4(),
+                &self.paths,
+                &self.source,
+                &self.resolver,
+                &self.tile,
+                &Mutex::new(HashSet::new()),
+                SourceBtoMode::Atlas,
+                &self.atlas,
+                None,
+                &TreeTileIndex::new(),
+                Some(instancing),
+                None,
+            )
+            .unwrap()
+        }
+
+        fn written_instances(&self) -> Vec<crate::output::instance_block::Instance> {
+            let written = NifFile::load_lean(&self.paths.output_dir.join("Meshes/Terrain/W/Objects/W.8.0.0.bto")).unwrap();
+            written
+                .blocks
+                .iter()
+                .filter(|b| b.type_name == crate::output::instance_block::BLOCK_TYPE)
+                .flat_map(|b| crate::output::instance_block::decode(&b.remainder).unwrap().1)
+                .collect()
+        }
+
+        fn plain_scales(&self) -> Vec<f32> {
+            self.matrices
+                .iter()
+                .map(|m| match crate::objects::instance_transform::decompose(m, [0.0; 3]) {
+                    crate::objects::instance_transform::InstanceTransform::Uniform { scale, .. } => scale,
+                    other => panic!("{other:?}"),
+                })
+                .collect()
+        }
+    }
+
+    #[test]
+    fn every_written_instance_carries_its_group_layer() {
+        use crate::objects::instance_layers::{UvRect, encode_scale, scale_layer};
+        let fixture = InstancedTileFixture::new(&["rock01"], &[1.3, 0.7, 2.1]);
+        let instancing = fixture.instancing();
+        let rect = AtlasRect::from_map_row(256, 256, 0, 512, 4096, 4096, "w.dds", false);
+        let other = AtlasTile { key: r"textures\other_d.dds".into(), rect: UvRect::of(&rect) };
+        assert_eq!(instancing.layers.assign(Some(&other)), 0);
+
+        let stats = fixture.convert(&instancing);
+
+        assert_eq!((stats.report.instanced_groups, stats.report.instanced_instances), (1, 3));
+        let tiles = instancing.layers.tiles();
+        assert_eq!(tiles.len(), 2);
+        assert!(tiles[1].key.eq_ignore_ascii_case(r"textures\rock\rock01_d.dds,textures\rock\rock01_n.dds"));
+        assert_eq!(tiles[1].rect, UvRect::of(fixture.atlas.list.get(&tiles[1].key).unwrap()));
+        let written = fixture.written_instances();
+        assert_eq!(written.len(), 3);
+        for (instance, plain) in written.iter().zip(fixture.plain_scales()) {
+            assert_eq!(scale_layer(instance.scale), 1);
+            assert_eq!(instance.scale, encode_scale(plain, 1));
+        }
+    }
+
+    #[test]
+    fn a_world_without_layers_keeps_todays_scales() {
+        let fixture = InstancedTileFixture::new(&["rock01", "rock02"], &[1.3, 0.7, 2.1]);
+        let instancing = fixture.instancing();
+
+        let stats = fixture.convert(&instancing);
+        instancing.layers.mark_unencoded_tiles().unwrap();
+
+        assert_eq!(stats.report.instanced_groups, 1, "the two-texture group is instanced");
+        assert!(instancing.layers.is_empty(), "but spans two atlas tiles, so it gets no layer");
+        let written: Vec<u32> = fixture.written_instances().iter().map(|i| i.scale.to_bits()).collect();
+        let plain: Vec<u32> = fixture.plain_scales().iter().map(|s| s.to_bits()).collect();
+        assert_eq!(written, plain);
+    }
+
+    #[test]
+    fn a_multi_texture_group_marks_its_instances_unlayered_once_the_world_has_layers() {
+        use crate::objects::instance_layers::{NO_LAYER, UvRect, encode_scale};
+        let fixture = InstancedTileFixture::new(&["rock01", "rock02"], &[1.3, 0.7]);
+        let instancing = fixture.instancing();
+        fixture.convert(&instancing);
+        let rect = AtlasRect::from_map_row(256, 256, 0, 512, 4096, 4096, "w.dds", false);
+        instancing.layers.assign(Some(&AtlasTile { key: r"textures\other_d.dds".into(), rect: UvRect::of(&rect) }));
+
+        instancing.layers.mark_unencoded_tiles().unwrap();
+
+        let written: Vec<f32> = fixture.written_instances().iter().map(|i| i.scale).collect();
+        let marked: Vec<f32> = fixture.plain_scales().iter().map(|&s| encode_scale(s, NO_LAYER)).collect();
+        assert_eq!(written, marked);
+    }
+
+    #[test]
+    fn a_layered_world_writes_slices_that_hold_what_the_atlas_page_holds() {
+        use crate::objects::instance_array_index::{SLICE_SIZE, file, parse};
+        let mut fixture = InstancedTileFixture::new(&["rock01"], &[1.3, 0.7]);
+        fixture.settings.objects.diffuse_format = crate::settings::Format::Rgba8;
+        let instancing = fixture.instancing();
+        fixture.convert(&instancing);
+
+        let stats =
+            finish_instance_layers(&instancing, &fixture.world, &fixture.settings, &fixture.paths, &fixture.source)
+                .unwrap();
+
+        assert_eq!((stats.dds, stats.warnings.len()), (3, 0), "{:?}", stats.warnings);
+        let out = &fixture.paths.output_dir;
+        let tiles = instancing.layers.tiles();
+        assert_eq!(parse(&std::fs::read_to_string(file(out, "W", ".txt")).unwrap()).unwrap(), vec![tiles[0].rect]);
+        let array = std::fs::read(file(out, "W", ".dds")).unwrap();
+        let probe = directxtex_native::read_dds_probe_bytes(&array).unwrap();
+        assert_eq!((probe.width, probe.array_size, probe.mip_levels, probe.dxgi_format), (SLICE_SIZE, 1, 9, 28));
+
+        // The page the hybrid atlas writes for the same texture stores the same diffuse texels.
+        let mut texture =
+            hybrid_atlas_texture_from_existing_map_key(&fixture.paths, &fixture.source, &tiles[0].key).unwrap();
+        texture.instanced = true;
+        let tile = load_one_hybrid_atlas_texture(&fixture.settings, 0, texture, None).tile.unwrap();
+        let page = out.join("page.dds");
+        crate::atlas::atlas::write_linear_diffuse_atlas_dds(&page, tile.w, tile.h, &tile.rgba_d, "R8G8B8A8_UNORM", false)
+            .unwrap();
+        let page = std::fs::read(&page).unwrap();
+        assert_eq!(&array[148..152], &page[128..132]);
+        for suffix in ["_n.dds", "_s.dds"] {
+            let probe = directxtex_native::read_dds_probe(&file(out, "W", suffix)).unwrap();
+            assert_eq!((probe.width, probe.array_size), (SLICE_SIZE, 1), "{suffix}");
+        }
+    }
+
+    fn write_texture(path: &Path, size: u32, px: [u8; 4], format: &str) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        directxtex_native::write_dds_rgba_image(path, size, size, &px.repeat((size * size) as usize), format, true)
+            .unwrap();
+    }
+
+    fn texel(path: &Path, x: u32, y: u32) -> [u8; 4] {
+        let image = directxtex_native::read_dds_rgba_image(path).unwrap();
+        let i = ((y * image.width + x) * 4) as usize;
+        image.rgba[i..i + 4].try_into().unwrap()
+    }
+
+    fn assert_near(actual: [u8; 4], expected: [u8; 4], tolerance: u8, what: &str) {
+        assert!(
+            actual.iter().zip(expected).all(|(a, e)| a.abs_diff(e) <= tolerance),
+            "{what}: {actual:?} vs {expected:?}"
+        );
+    }
+
+    struct PbrAtlasRun {
+        _tmp: tempfile::TempDir,
+        atlas: AtlasResult,
+        stats: SourceAtlasStats,
+        textures: Vec<HybridAtlasTexture>,
+    }
+
+    impl PbrAtlasRun {
+        /// Three texture sets on one page: plate names its BC1 `_l` and BC4 `_r`; gold names only `_d`, with an
+        /// alpha-masked `_l` and an sRGB `_r` beside it; stone has no FO76 maps.
+        fn new(pbr: bool) -> Self {
+            let tmp = tempfile::tempdir().unwrap();
+            let source = tmp.path().join("source");
+            let tex = |name: &str| source.join(format!("textures/metal/{name}.dds"));
+            write_texture(&tex("plate_d"), 16, [100, 80, 60, 255], "R8G8B8A8_UNORM");
+            write_texture(&tex("plate_n"), 16, [128, 128, 255, 255], "R8G8B8A8_UNORM");
+            write_texture(&tex("plate_l"), 16, [200, 100, 48, 255], "BC1_UNORM");
+            write_texture(&tex("plate_r"), 16, [128, 0, 0, 255], "BC4_UNORM");
+            write_texture(&tex("gold_d"), 16, [90, 70, 20, 255], "R8G8B8A8_UNORM");
+            write_texture(&tex("gold_l"), 16, [180, 255, 0, 128], "R8G8B8A8_UNORM");
+            write_texture(&tex("gold_r"), 16, [188, 188, 188, 255], "R8G8B8A8_UNORM_SRGB");
+            write_texture(&tex("stone_d"), 16, [60, 60, 60, 255], "R8G8B8A8_UNORM");
+            let paths = LodPaths {
+                data_dirs: Vec::new(),
+                output_dir: tmp.path().join("out"),
+                source_data_dir: Some(source.clone()),
+            };
+            let mut settings = LodSettings::fo4_default();
+            settings.global.workers = 1;
+            settings.objects.diffuse_format = crate::settings::Format::Rgba8;
+            settings.objects.fo76_bto_pbr_maps = pbr;
+            let mut sets = BTreeMap::new();
+            for (name, named_maps) in [("plate", true), ("gold", false), ("stone", false)] {
+                let mut set: [String; 10] = Default::default();
+                set[0] = format!(r"textures\metal\{name}_d.dds");
+                if named_maps {
+                    set[1] = format!(r"textures\metal\{name}_n.dds");
+                    set[2] = format!(r"textures\metal\{name}_l.dds");
+                    set[7] = format!(r"textures\metal\{name}_r.dds");
+                }
+                insert_hybrid_atlas_texture_set(&paths, &source, &set, &mut sets);
+            }
+            let textures: Vec<HybridAtlasTexture> = sets.into_values().collect();
+            assert_eq!(textures.len(), 3);
+            struct Quiet;
+            impl Progress for Quiet {
+                fn report(&mut self, _msg: &str, _frac: f32) {}
+            }
+            let world = WorldspaceInput::from_cells("W", Vec::new());
+            let (atlas, stats) =
+                build_paged_hybrid_atlas(&world, &settings, &paths, textures.clone(), &mut Quiet, false).unwrap();
+            Self { _tmp: tmp, atlas, stats, textures }
+        }
+
+        fn page(&self, map: Option<PbrMap>) -> PathBuf {
+            map.map_or(self.atlas.diffuse.clone(), |map| crate::atlas::atlas::sibling_dds(&self.atlas.diffuse, map.suffix()))
+        }
+
+        /// The texel at the centre of `name`'s tile on a page.
+        fn tile_texel(&self, name: &str, map: Option<PbrMap>) -> [u8; 4] {
+            let texture = self.textures.iter().find(|t| t.diffuse_rel.contains(name)).unwrap();
+            let rect = self.atlas.list.get(&texture.atlas_key()).unwrap();
+            let (w, h) = self.atlas.atlas_size;
+            let x = (rect.pos_u * w as f32) as u32 + 8;
+            let y = (rect.pos_v * h as f32) as u32 + 8;
+            texel(&self.page(map), x, y)
+        }
+    }
+
+    #[test]
+    fn native_assets_pack_l_and_r_pages_in_the_diffuse_layout() {
+        let run = PbrAtlasRun::new(true);
+        assert_eq!((run.stats.pages, run.stats.dds_written), (1, 5));
+        for (map, fourcc) in [(PbrMap::Lighting, b"DXT5"), (PbrMap::Reflectance, b"DXT1")] {
+            let page = run.page(Some(map));
+            assert!(page.file_name().unwrap().to_string_lossy().eq_ignore_ascii_case(&format!("W.Objects{}.dds", map.suffix())));
+            assert_eq!(&dds_fourcc(&page).unwrap(), fourcc);
+            let probe = directxtex_native::read_dds_probe(&page).unwrap();
+            assert_eq!((probe.width, probe.height), run.atlas.atlas_size);
+            assert!(probe.mip_levels > 1, "{map:?} has mips");
+        }
+        let (l, r) = (Some(PbrMap::Lighting), Some(PbrMap::Reflectance));
+        // A BC1 `_l` has no emissive mask; BC4 `_r` is grey F0.
+        assert_near(run.tile_texel("plate", l), [200, 100, 48, 0], 8, "plate _l");
+        assert_near(run.tile_texel("plate", r), [128, 128, 128, 255], 8, "plate _r");
+        // Siblings of `_d`: the `_l` alpha mask survives, the sRGB `_r` is stored linear.
+        assert_near(run.tile_texel("gold", l), [180, 255, 0, 128], 8, "gold _l");
+        assert_near(run.tile_texel("gold", r), [128, 128, 128, 255], 8, "gold _r");
+        assert_near(run.tile_texel("stone", l), PbrMap::Lighting.neutral(), 8, "stone _l");
+        assert_near(run.tile_texel("stone", r), PbrMap::Reflectance.neutral(), 6, "stone _r");
+        // FO76 albedo stays as authored instead of taking the bundle's AO and metal tint.
+        assert_near(run.tile_texel("plate", None), [100, 80, 60, 255], 3, "plate _d");
+    }
+
+    #[test]
+    fn without_native_assets_the_atlas_has_no_pbr_pages_and_a_converted_diffuse() {
+        let run = PbrAtlasRun::new(false);
+        assert_eq!((run.stats.pages, run.stats.dds_written), (1, 3));
+        for map in PbrMap::ALL {
+            assert!(!run.page(Some(map)).exists(), "{map:?}");
+        }
+        let plate = run.tile_texel("plate", None);
+        assert!(plate[0].abs_diff(100) > 10, "the FO76 bundle converts plate's diffuse: {plate:?}");
+    }
+
+    #[test]
+    fn native_assets_point_atlas_shapes_and_instances_at_the_page_maps() {
+        let fixture = InstancedTileFixture::new(&["rock01"], &[1.3, 0.7, 2.1]);
+        let instancing = fixture.instancing();
+        let pages = hybrid_atlas_pages(&fixture.atlas);
+        convert_tile(
+            &fixture.world,
+            &fixture.settings,
+            &Game::fo4(),
+            &fixture.paths,
+            &fixture.source,
+            &fixture.resolver,
+            &fixture.tile,
+            &Mutex::new(HashSet::new()),
+            SourceBtoMode::Atlas,
+            &fixture.atlas,
+            None,
+            &TreeTileIndex::new(),
+            Some(&instancing),
+            Some(&pages),
+        )
+        .unwrap();
+
+        let written = NifFile::load_lean(&fixture.paths.output_dir.join("Meshes/Terrain/W/Objects/W.8.0.0.bto")).unwrap();
+        let sets: Vec<Vec<String>> = written
+            .blocks
+            .iter()
+            .filter(|b| b.type_name == "BSShaderTextureSet")
+            .map(|b| val_array(b.get_field("Textures")).iter().map(|v| val_string(Some(v)).unwrap_or_default()).collect())
+            .collect();
+        assert!(!sets.is_empty());
+        for set in sets {
+            assert_eq!(set.len(), 10);
+            assert!(set[0].eq_ignore_ascii_case(r"Data\Textures\Terrain\W\Objects\W.Objects.dds"), "{set:?}");
+            assert!(set[8].eq_ignore_ascii_case(r"Data\Textures\Terrain\W\Objects\W.Objects_l.dds"), "{set:?}");
+            assert!(set[9].eq_ignore_ascii_case(r"Data\Textures\Terrain\W\Objects\W.Objects_r.dds"), "{set:?}");
+        }
+
+        let mut off_page: [String; 10] = Default::default();
+        off_page[0] = r"textures\shared\flatwhite01_d.dds".into();
+        assign_pbr_atlas_slots(&mut off_page, &pages);
+        assert!(off_page[8].is_empty() && off_page[9].is_empty());
+    }
+
+    #[test]
+    fn native_assets_raw_tiles_point_slots_8_and_9_at_lod_copies_of_the_fo76_maps() {
+        let dir = r"textures\lod\generated\texturearrays\notalphatested";
+        let copy = |name: &str| format!(r"textures\terrain\w\objects\hybridpbr\notalphatested\{name}");
+        for pbr in [false, true] {
+            let tmp = tempfile::tempdir().unwrap();
+            let (source, out) = (tmp.path().join("source"), tmp.path().join("out"));
+            let tex = |name: &str| source.join(dir.replace('\\', "/")).join(name);
+            write_texture(&tex("na_7_d.dds"), 8, [90, 90, 90, 255], "BC1_UNORM");
+            write_texture(&tex("na_7_l.dds"), 8, [200, 100, 48, 255], "BC1_UNORM");
+            write_texture(&tex("na_7_r.dds"), 8, [64, 0, 0, 255], "BC4_UNORM");
+            write_texture(&tex("na_8_d.dds"), 8, [90, 90, 90, 255], "BC1_UNORM");
+            write_texture(&tex("na_8_l.dds"), 8, [40, 200, 0, 255], "BC1_UNORM");
+            let copied = Mutex::new(HashSet::new());
+            let mut sink = TextureSink::new(&source, &out, "W", &copied, pbr);
+
+            // A texture-array slice names `_r` (array 9) and `_l` (array 10).
+            let mut arrays = vec![Vec::new(); 11];
+            arrays[0] = vec![format!(r"{dir}\na_7_d.dds")];
+            arrays[9] = vec![format!(r"{dir}\na_7_r.dds")];
+            arrays[10] = vec![format!(r"{dir}\na_7_l.dds")];
+            let sliced = texture_set_for_array_slice(&arrays, 0, SourceBtoMode::Raw, &mut sink).unwrap();
+            // A texture set names only `_d`: its `_l` is the sibling, and it has no `_r`.
+            let mut set: [String; 10] = Default::default();
+            set[0] = format!(r"{dir}\na_8_d.dds");
+            rewrite_texture_set(&mut set, SourceBtoMode::Raw, &mut sink);
+
+            if !pbr {
+                assert!(sliced[8].is_empty() && sliced[9].is_empty() && set[8].is_empty() && set[9].is_empty());
+                assert!(!out.join("textures/terrain/w/objects/hybridpbr").exists());
+                continue;
+            }
+            assert_eq!(sliced[8], copy("na_7_l.dds"));
+            assert_eq!(sliced[9], copy("na_7_r.dds"));
+            assert_eq!(set[8], copy("na_8_l.dds"));
+            assert!(set[9].is_empty(), "no `_r` source: the shader's neutral F0 applies");
+            let file = |rel: &str| out.join(rel.replace('\\', "/"));
+            assert_eq!(&dds_fourcc(&file(&sliced[8])).unwrap(), b"DXT5");
+            assert_eq!(&dds_fourcc(&file(&sliced[9])).unwrap(), b"DXT1");
+            assert!(directxtex_native::read_dds_probe(&file(&sliced[8])).unwrap().mip_levels > 1);
+            assert_near(texel(&file(&sliced[8]), 4, 4), [200, 100, 48, 0], 8, "array _l");
+            assert_near(texel(&file(&sliced[9]), 4, 4), [64, 64, 64, 255], 8, "array _r");
+            assert_near(texel(&file(&set[8]), 4, 4), [40, 200, 0, 0], 8, "set _l");
+        }
+    }
+
+    #[test]
+    fn a_native_assets_atlas_cache_needs_its_pbr_pages() {
+        let mut settings = LodSettings::fo4_default();
+        let plain = serde_json::to_string(&hybrid_atlas_cache_meta(&settings)).unwrap();
+        assert!(!plain.contains("pbr_maps"), "caches written without native assets keep their bytes");
+
+        settings.objects.fo76_bto_pbr_maps = true;
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = LodPaths { data_dirs: Vec::new(), output_dir: tmp.path().to_path_buf(), source_data_dir: None };
+        let atlas_path = tmp.path().join(source_bto_atlas_page_rel("W", 0).replace('\\', "/"));
+        std::fs::create_dir_all(atlas_path.parent().unwrap()).unwrap();
+        for suffix in ["", "_n", "_s"] {
+            std::fs::write(crate::atlas::atlas::sibling_dds(&atlas_path, suffix), b"dds").unwrap();
+        }
+        let map_path = atlas_path.with_extension("txt");
+        crate::atlas::write_atlas_map(
+            &map_path,
+            &[AtlasMapRow {
+                source: r"textures\rock_d.dds".into(),
+                tile_w: 16,
+                tile_h: 16,
+                x: 0,
+                y: 0,
+                atlas: crate::atlas::atlas::data_relative_path(&atlas_path),
+                atlas_w: 16,
+                atlas_h: 16,
+            }],
+        )
+        .unwrap();
+        write_hybrid_atlas_cache_meta(&map_path, &settings).unwrap();
+        assert!(read_hybrid_atlas_cache_meta(&map_path).unwrap().pbr_maps);
+
+        assert!(load_cached_hybrid_atlas("W", &settings, &paths, true).is_none());
+        for map in PbrMap::ALL {
+            std::fs::write(crate::atlas::atlas::sibling_dds(&atlas_path, map.suffix()), b"dds").unwrap();
+        }
+        assert!(load_cached_hybrid_atlas("W", &settings, &paths, true).is_some());
+        settings.objects.fo76_bto_pbr_maps = false;
+        assert!(load_cached_hybrid_atlas("W", &settings, &paths, true).is_none(), "a native cache is not reused without");
+    }
 }

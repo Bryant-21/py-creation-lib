@@ -28,3 +28,5 @@ __all__ = [
 __all__ += ["pick_folder", "pick_file", "pick_save_file"]
 from .audio_player import InlineAudioPlayer
 __all__ += ["InlineAudioPlayer"]
+from .drawer import Drawer
+__all__ += ["Drawer"]

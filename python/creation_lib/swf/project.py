@@ -45,6 +45,7 @@ declare that.
 from __future__ import annotations
 
 import json
+import base64
 from dataclasses import replace
 from pathlib import Path
 
@@ -90,6 +91,8 @@ def build_document(project: dict, base_dir: str | Path) -> SwfDocument:
     directory.
     """
     base_dir = Path(base_dir)
+    if project.get("editor_mode") == "binary":
+        raise ValueError("Binary SWF edit sessions must be exported from the SWF editor; packing would discard opaque tags")
     canvas = project.get("canvas", DEFAULT_CANVAS)
     exports = project.get("exports", [])
 
@@ -107,7 +110,12 @@ def build_document(project: dict, base_dir: str | Path) -> SwfDocument:
                              f"undefined character {character}")
 
     scripts = project.get("scripts", [])
-    sources = [_read_script(base_dir, s) for s in scripts]
+    # Editor projects keep source buffers inline, so builds use the saved
+    # revision without overwriting external .as files. Ordinary CLI projects
+    # still resolve their scripts from disk.
+    inline_sources = project.get("script_sources", {})
+    sources = [inline_sources[s] if s in inline_sources else _read_script(base_dir, s)
+               for s in scripts]
 
     stage_frames = project.get("stage") or [{}]
     stage_tags = _timeline_tags(stage_frames, declared)
@@ -168,6 +176,14 @@ def _first_show_frame(tags: list[SwfTag]) -> int:
 
 def _shape_tag(entry: dict, base_dir: Path, declared: dict[int, str]) -> DefineShapeTag:
     character_id = _claim(declared, _require(entry, "id", "shape"), "shape")
+    if "tag_data" in entry:
+        tag_id = entry.get("tag_code", 32)
+        if tag_id not in SHAPE_VERSION_MAP:
+            raise ValueError(f"shape {character_id} has invalid shape tag code {tag_id}")
+        tag = DefineShapeTag.parse(base64.b64decode(entry["tag_data"], validate=True), tag_id)
+        if tag.shape.shape_id != character_id:
+            raise ValueError(f"shape {character_id} payload has a different character ID")
+        return tag
     svg_path = base_dir / _require(entry, "svg", "shape")
     shapes = svg_to_shapes(svg_path.read_text(encoding="utf-8"))
     if not shapes:
@@ -255,13 +271,14 @@ def _timeline_tags(frames: list[dict], declared: dict[int, str]) -> list[SwfTag]
             tags.append(PlaceObject2Tag(
                 depth=depth,
                 character_id=character,
-                matrix=MATRIX(
+                matrix=MATRIX(**placement["matrix"]) if "matrix" in placement else MATRIX(
                     scale_x=placement.get("scale_x", 1.0),
                     scale_y=placement.get("scale_y", 1.0),
                     translate_x=round(placement.get("x", 0) * TWIPS_PER_PIXEL),
                     translate_y=round(placement.get("y", 0) * TWIPS_PER_PIXEL),
                 ),
                 name=placement.get("name"),
+                color_transform=bytes.fromhex(placement["color_transform"]) if "color_transform" in placement else None,
                 move=depth in occupied,
             ))
             occupied.add(depth)

@@ -8,10 +8,8 @@ pub const LAND_CELL_INTERVALS: usize = 32;
 pub const LAND_QUADRANT_INTERVALS: usize = 16;
 pub const LAND_QUADRANT_VERTICES: usize = 17;
 pub const LAND_ALPHA_DOWNSAMPLE_WIDTH: i32 = 4;
-/// FO4's landscape renderer consumes one BTXT plus ATXT slots 0 through 4.
-pub const MAX_TEXTURES_PER_QUADRANT: usize = 6;
-const FIRST_ATXT_SLOT_REQUIRING_HEADROOM: usize = 3;
-const MAX_LATE_ATXT_ALPHA_WITH_BASE_HEADROOM: u8 = 254;
+/// BTD4 retains eight materials; Tales and FO4CS transport all eight independently of native LAND slots.
+pub const MAX_TEXTURES_PER_QUADRANT: usize = 8;
 
 type QuadrantKey = (i32, i32, u8);
 
@@ -50,6 +48,7 @@ pub struct GlobalBlendBuildProfile {
     pub legacy_vertex_map_capacity_slots: u64,
     pub land_alpha_payload_bytes_before_release: u64,
     pub land_alpha_payload_bytes_released: u64,
+    pub land_alpha_payload_bytes_released_during_materialization: u64,
     pub land_alpha_payload_bytes_after_release: u64,
 }
 
@@ -212,13 +211,14 @@ impl GlobalLandscapeBlend {
         };
         let mut vertices = CompactVertexWeights::with_vertex_capacity(width * height);
         let sample_and_materialize_started = Instant::now();
-        for_each_global_blend_vertex(
+        let released_during_materialization = for_each_global_blend_vertex(
             btd,
             min_cell_x,
             min_cell_y,
             cells_x,
             cells_y,
             alpha_lookup,
+            release_land_alpha_after_materialization,
             |_, _, weights| {
                 profile.nonempty_vertex_count += u64::from(!weights.is_empty());
                 profile.max_vertex_entry_count =
@@ -236,8 +236,11 @@ impl GlobalLandscapeBlend {
         profile.land_alpha_payload_bytes_before_release =
             btd.tile_cache_stats().cached_land_alpha_payload_bytes;
         if release_land_alpha_after_materialization {
-            profile.land_alpha_payload_bytes_released = btd.release_land_alpha_payloads();
+            profile.land_alpha_payload_bytes_released =
+                released_during_materialization + btd.release_land_alpha_payloads();
         }
+        profile.land_alpha_payload_bytes_released_during_materialization =
+            released_during_materialization;
         profile.land_alpha_payload_bytes_after_release =
             btd.tile_cache_stats().cached_land_alpha_payload_bytes;
 
@@ -758,6 +761,7 @@ pub fn collect_required_source_ltex_object_ids_profiled(
         cells_x,
         cells_y,
         alpha_lookup,
+        false,
         |vertex_x, vertex_y, weights| {
             quantize_vertex_weights(weights, &mut quantized);
             let (quadrant_xs, quadrant_x_count) =
@@ -1272,11 +1276,8 @@ fn encode_alpha_vtxt(
                 }
                 let slot = retained_index - 1;
                 let numerator = u32::from(weight) * 255;
-                let mut alpha_byte =
+                let alpha_byte =
                     ((numerator + u32::from(prefix_weight) / 2) / u32::from(prefix_weight)) as u8;
-                if slot >= FIRST_ATXT_SLOT_REQUIRING_HEADROOM {
-                    alpha_byte = alpha_byte.min(MAX_LATE_ATXT_ALPHA_WITH_BASE_HEADROOM);
-                }
                 if alpha_byte == 0 {
                     continue;
                 }
@@ -1290,7 +1291,7 @@ fn encode_alpha_vtxt(
     Ok(per_slot)
 }
 
-trait VertexWeightSource {
+pub(crate) trait VertexWeightSource {
     fn for_each(&self, visit: impl FnMut(u32, f32));
 }
 
@@ -1310,7 +1311,7 @@ impl VertexWeightSource for [(u32, f32)] {
     }
 }
 
-fn quantize_vertex_weights_to_bytes<T: VertexWeightSource + ?Sized>(
+pub(crate) fn quantize_vertex_weights_to_bytes<T: VertexWeightSource + ?Sized>(
     weights: &T,
 ) -> HashMap<u32, u8> {
     let mut values = Vec::new();
@@ -1428,8 +1429,9 @@ fn for_each_global_blend_vertex(
     cells_x: usize,
     cells_y: usize,
     alpha_lookup: &impl SourceAlphaLookup,
+    release_completed_alpha_rows: bool,
     mut visit: impl FnMut(usize, usize, &HashMap<u32, f32>),
-) -> Result<(), BtdError> {
+) -> Result<u64, BtdError> {
     let width = cells_x * LAND_CELL_INTERVALS + 1;
     let height = cells_y * LAND_CELL_INTERVALS + 1;
     let header = btd.header();
@@ -1453,9 +1455,16 @@ fn for_each_global_blend_vertex(
     let mut loaded_rows: Vec<(i32, Vec<SourceCellBlendData>)> = Vec::with_capacity(2);
     let mut weights = HashMap::<u32, f32>::new();
     let sample_weight = 1.0 / (count_x * count_y) as f32;
+    let mut released_bytes = 0;
+    let mut first_loaded_row = None;
 
     for vertex_y in 0..height {
         let row_coordinates = &source_rows[vertex_y][..count_y];
+        if release_completed_alpha_rows && first_loaded_row != Some(row_coordinates[0].cell) {
+            // Sampling advances monotonically; no later vertex needs an earlier tile row.
+            released_bytes += btd.release_land_alpha_before_cell_row(row_coordinates[0].cell);
+            first_loaded_row = Some(row_coordinates[0].cell);
+        }
         loaded_rows.retain(|(cell_y, _)| {
             row_coordinates
                 .iter()
@@ -1506,7 +1515,7 @@ fn for_each_global_blend_vertex(
             visit(vertex_x, vertex_y, &weights);
         }
     }
-    Ok(())
+    Ok(released_bytes)
 }
 
 /// Starfield's alpha-blend footprint width (item B2-a2/8): keeping the FO76
@@ -1835,8 +1844,8 @@ mod tests {
             let edge_ids = totals.keys().copied().collect::<HashSet<_>>();
             let retained = retained_quadrant_textures(&totals, &edge_ids, None, &edge_ids).unwrap();
 
-            assert_eq!(retained.source_ltex_object_ids.len(), 6);
-            assert_eq!(retained.dropped_source_ltex_object_ids, [7, 8, 9, 10]);
+            assert_eq!(retained.source_ltex_object_ids.len(), MAX_TEXTURES_PER_QUADRANT);
+            assert_eq!(retained.dropped_source_ltex_object_ids, (MAX_TEXTURES_PER_QUADRANT as u32 + 1..=10).collect::<Vec<_>>());
         }
         {
             let width = LAND_CELL_INTERVALS + 1;
@@ -1900,18 +1909,36 @@ mod tests {
     }
 
     #[test]
+    fn six_source_materials_preserve_every_material_with_full_coverage() {
+        let width = LAND_CELL_INTERVALS + 1;
+        let mut vertices = vec![HashMap::new(); width * width];
+        vertices[8 * width + 8] = (1..=6u32).map(|id| (id, (7 - id) as f32)).collect();
+        let blend = GlobalLandscapeBlend::from_vertices(0, 0, 1, 1, vertices);
+        let quad = blend.serialize_quadrant(0, 0, 0).unwrap().unwrap();
+        assert_eq!(quad.base_source_ltex_object_id, 1);
+        assert_eq!(quad.alpha_source_ltex_object_ids, [2, 3, 4, 5, 6]);
+        assert!(quad.dropped_source_ltex_object_ids.is_empty());
+        let effective = effective_bytes(&quad, 8 * LAND_QUADRANT_VERTICES + 8);
+        assert_eq!(effective.values().map(|v| u32::from(*v)).sum::<u32>(), 255);
+        let expected = quantize_vertex_weights_to_bytes(&weights(&[(1, 6.0), (2, 5.0), (3, 4.0), (4, 3.0), (5, 2.0), (6, 1.0)]));
+        for (id, value) in expected {
+            assert!(effective[&id].abs_diff(value) <= 2);
+        }
+    }
+
+    #[test]
     fn quadrant_alpha_layers_reconstruct_vertex_weights() {
         {
             let width = LAND_CELL_INTERVALS + 1;
             let height = LAND_CELL_INTERVALS + 1;
             let mut vertices = vec![HashMap::new(); width * height];
-            vertices[0] = (1..=6u32).map(|id| (id, 1.0)).collect();
+            vertices[0] = (1..=MAX_TEXTURES_PER_QUADRANT as u32).map(|id| (id, 1.0)).collect();
             let expected = quantize_vertex_weights_to_bytes(&vertices[0]);
             let blend = GlobalLandscapeBlend::from_vertices(0, 0, 1, 1, vertices);
 
             let quad = blend.serialize_quadrant(0, 0, 0).unwrap().unwrap();
 
-            assert_eq!(quad.alpha_source_ltex_object_ids.len(), 5);
+            assert_eq!(quad.alpha_source_ltex_object_ids.len(), MAX_TEXTURES_PER_QUADRANT - 1);
             assert!(quad.alpha_vtxt.iter().all(|vtxt| !vtxt.is_empty()));
             assert!(quad.dropped_source_ltex_object_ids.is_empty());
             let actual = effective_bytes(&quad, 0);
@@ -2169,7 +2196,7 @@ mod tests {
     }
 
     #[test]
-    fn saturated_overlays_keep_headroom_and_edge_continuity() {
+    fn saturated_overlays_preserve_all_six_layers_and_edge_continuity() {
         {
             let width = LAND_CELL_INTERVALS + 1;
             let height = LAND_CELL_INTERVALS + 1;
@@ -2193,8 +2220,10 @@ mod tests {
 
             assert_eq!(quad.base_source_ltex_object_id, 1);
             assert_eq!(quad.alpha_source_ltex_object_ids, [2, 3, 4, 5]);
+            assert!(quad.dropped_source_ltex_object_ids.is_empty());
             assert_eq!(vtxt_alpha_byte(&quad.alpha_vtxt[0], 6), 255);
-            assert_eq!(vtxt_alpha_byte(&quad.alpha_vtxt[3], 0), 254);
+            assert_eq!(vtxt_alpha_byte(&quad.alpha_vtxt[3], 0), 255);
+            assert_eq!(effective_bytes(&quad, 0), HashMap::from([(5, 255)]));
         }
         {
             let width = LAND_CELL_INTERVALS + 1;

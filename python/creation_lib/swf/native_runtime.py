@@ -82,6 +82,24 @@ def render_symbol_png(data: bytes, name: str, frame: int = 1, scale: float = 1.0
     return bytes(load_native_module().render_symbol_png(bytes(data), name, frame, scale))
 
 
+def render_frame_image(data: bytes, frame: int = 1, owner: int = 0, fonts=()) -> dict:
+    png, bounds, warnings = load_native_module().render_frame_image(bytes(data), frame, owner, list(fonts))
+    return {"png": bytes(png), "bounds": bounds, "warnings": warnings}
+
+
+def sprite_frame_bounds(data: bytes, owner: int, frames) -> list:
+    return load_native_module().sprite_frame_bounds(bytes(data), owner, list(frames))
+
+
+def recover_as3_method_source(data: bytes, class_name: str, method: str) -> dict:
+    import json
+    return json.loads(load_native_module().recover_as3_method_source(bytes(data),class_name,method))
+
+
+def replace_as3_method_source(data: bytes, class_name: str, method: str, source: str) -> bytes:
+    return bytes(load_native_module().replace_as3_method_source(bytes(data),class_name,method,source))
+
+
 def tag_histogram(data: bytes) -> list[tuple[int, int]]:
     """``(tag_code, count)`` sorted by code — a structural fingerprint."""
     return load_native_module().tag_histogram(bytes(data))
@@ -176,6 +194,19 @@ def abc_disassemble(data: bytes, class_name: str, method: str | None = None) -> 
     return json.loads(load_native_module().abc_disassemble(bytes(data), str(class_name), method))
 
 
+def abc_decompile(data: bytes, class_name: str, method: str | None = None) -> str:
+    """ActionScript 3 source for one class, or for one of its methods (a label such as
+    ``populate``, ``get total``, ``constructor`` or ``static initializer``)."""
+    return str(load_native_module().abc_decompile(bytes(data), str(class_name), method))
+
+
+def abc_decompile_movie(data: bytes) -> tuple[list[tuple[str, str]], int]:
+    """Every class in the movie as ``(qualified name, source)``, plus how many methods
+    could not be structured and were printed as annotated disassembly instead."""
+    classes, fallbacks = load_native_module().abc_decompile_movie(bytes(data))
+    return [(str(name), str(source)) for name, source in classes], int(fallbacks)
+
+
 def abc_class_references(data: bytes, class_name: str, transitive: bool = False) -> dict[str, Any]:
     """Names a class depends on, split into movie-defined, built-in and external
     classes plus accessed members; ``transitive`` follows movie-defined classes."""
@@ -188,6 +219,12 @@ def inject_symbols(src: bytes, dst: bytes, names: list[str]) -> bytes:
     from ``src`` into ``dst``; return the re-assembled destination SWF bytes."""
     out = load_native_module().inject_symbols_into(bytes(src), bytes(dst), list(names))
     return bytes(out)
+
+
+def dangling_bitmap_fills(data: bytes) -> list[tuple[int, int]]:
+    """``(shape id, named id)`` for every shape fill style naming a character that is not
+    a bitmap; Scaleform crashes drawing such a fill."""
+    return list(load_native_module().dangling_bitmap_fills(bytes(data)))
 
 
 def inject_symbols_renamed(src: bytes, dst: bytes, pairs: list[tuple[str, str]]) -> bytes:

@@ -588,19 +588,27 @@ fn validate_constraints(
     for cs in constraint_sets {
         let cls_name = cs.class_name().to_string();
 
-        if cls_name.contains("StandardLink") {
-            has_standard = true;
-            let links = cs.get_array("links");
+        if cls_name.contains("StandardLink")
+            || cls_name.contains("StretchLink")
+            || cls_name.contains("BendStiffness")
+        {
+            has_standard |= cls_name.contains("StandardLink");
+            let links = cs.get_array(if cls_name.ends_with("Mx") {
+                "singles"
+            } else {
+                "links"
+            });
             total_links += links.len();
             check_link_indices(links, n_particles, prefix, &cls_name, result);
-        } else if cls_name.contains("StretchLink") {
-            let links = cs.get_array("links");
-            total_links += links.len();
-            check_link_indices(links, n_particles, prefix, &cls_name, result);
-        } else if cls_name.contains("BendStiffness") {
-            let links = cs.get_array("links");
-            total_links += links.len();
-            check_link_indices(links, n_particles, prefix, &cls_name, result);
+            if cls_name.ends_with("Mx") {
+                total_links += check_link_batches(
+                    cs.get_array("batches"),
+                    n_particles,
+                    prefix,
+                    &cls_name,
+                    result,
+                );
+            }
         }
     }
 
@@ -629,34 +637,69 @@ fn check_link_indices(
     result: &mut ValidationResult,
 ) {
     for (li, link) in links.iter().enumerate() {
-        let pa = get_int_field(link, "particleA");
-        let pb = get_int_field(link, "particleB");
-
-        if let Some(pa) = pa {
-            if pa < 0 || pa as usize >= n_particles {
+        for key in ["particleA", "particleB", "particleC", "particleD"] {
+            if let Some(particle) = get_int_field(link, key) {
+                if particle >= 0 && (particle as usize) < n_particles {
+                    continue;
+                }
                 result.push(
                     Severity::Error,
                     "LINK_INDEX_OOB",
                     format!(
-                        "{prefix}/{cls_name}: link[{li}].particleA={pa} out of range [0, {n_particles})"
-                    ),
-                );
-                return; // don't spam
-            }
-        }
-        if let Some(pb) = pb {
-            if pb < 0 || pb as usize >= n_particles {
-                result.push(
-                    Severity::Error,
-                    "LINK_INDEX_OOB",
-                    format!(
-                        "{prefix}/{cls_name}: link[{li}].particleB={pb} out of range [0, {n_particles})"
+                        "{prefix}/{cls_name}: link[{li}].{key}={particle} out of range [0, {n_particles})"
                     ),
                 );
                 return;
             }
         }
     }
+}
+
+fn check_link_batches(
+    batches: &[HkxValue],
+    n_particles: usize,
+    prefix: &str,
+    cls_name: &str,
+    result: &mut ValidationResult,
+) -> usize {
+    let keys: &[&str] = if cls_name.contains("BendStiffness") {
+        &["particlesA", "particlesB", "particlesC", "particlesD"]
+    } else {
+        &["particlesA", "particlesB"]
+    };
+    for (i, batch) in batches.iter().enumerate() {
+        for key in keys {
+            let value = batch
+                .as_object_members()
+                .and_then(|members| members.iter().find(|m| m.name == *key));
+            let Some(HkxValue::Array(indices)) = value.map(|m| &m.value) else {
+                result.push(
+                    Severity::Error,
+                    "LINK_BATCH_LAYOUT",
+                    format!("{prefix}/{cls_name}: batch[{i}] missing {key}"),
+                );
+                return batches.len() * 16;
+            };
+            if indices.len() != 16 {
+                result.push(
+                    Severity::Error,
+                    "LINK_BATCH_LAYOUT",
+                    format!(
+                        "{prefix}/{cls_name}: batch[{i}].{key} has {} lanes, expected 16",
+                        indices.len()
+                    ),
+                );
+                return batches.len() * 16;
+            }
+            for (lane, value) in indices.iter().enumerate() {
+                if !get_int_value(value).is_some_and(|v| v >= 0 && (v as usize) < n_particles) {
+                    result.push(Severity::Error, "LINK_INDEX_OOB", format!("{prefix}/{cls_name}: batch[{i}].{key}[{lane}] out of range [0, {n_particles})"));
+                    return batches.len() * 16;
+                }
+            }
+        }
+    }
+    batches.len() * 16
 }
 
 // ---------------------------------------------------------------------------
@@ -715,4 +758,110 @@ fn format_indices(indices: &[usize], max_display: usize) -> String {
         ""
     };
     format!("[{}]{suffix}", shown.join(", "))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hkx::{HkxFile, HkxMember, HkxObject};
+
+    fn member(name: &str, value: HkxValue) -> HkxMember {
+        HkxMember {
+            name: name.into(),
+            value,
+        }
+    }
+
+    fn validate_mx(singles: Vec<HkxValue>, batches: Vec<HkxValue>, bend: bool) -> ValidationResult {
+        let file = HkxFile::from_tagxml(
+            11,
+            "hk_2014.1.0-r1",
+            vec![HkxObject {
+                name: None,
+                offset: 0,
+                signature: 0,
+                class_name: if bend {
+                    "hclBendStiffnessConstraintSetMx"
+                } else {
+                    "hclStandardLinkConstraintSetMx"
+                }
+                .into(),
+                members: vec![
+                    member("singles", HkxValue::Array(singles)),
+                    member("batches", HkxValue::Array(batches)),
+                ],
+            }],
+        );
+        let mut result = ValidationResult::new();
+        validate_constraints(
+            &[ClothObjectRef::new(&file.objects()[0], &file)],
+            "test",
+            3,
+            &mut result,
+        );
+        result
+    }
+
+    #[test]
+    fn mx_singles_count_as_structural_links_and_check_indices() {
+        let link = |b| {
+            HkxValue::Object(vec![
+                member("particleA", HkxValue::U16(0)),
+                member("particleB", HkxValue::U16(b)),
+            ])
+        };
+        assert!(validate_mx(vec![link(1), link(2)], vec![], false).is_valid());
+        assert!(
+            validate_mx(vec![link(3)], vec![], false)
+                .issues
+                .iter()
+                .any(|i| i.code == "LINK_INDEX_OOB")
+        );
+        assert!(
+            validate_mx(vec![], vec![], false)
+                .issues
+                .iter()
+                .any(|i| i.code == "EMPTY_CONSTRAINTS")
+        );
+    }
+
+    #[test]
+    fn mx_batches_validate_every_lane_and_all_bend_particles() {
+        let batch = |last, lanes| {
+            HkxValue::Object(
+                ["particlesA", "particlesB", "particlesC", "particlesD"]
+                    .into_iter()
+                    .map(|key| {
+                        member(
+                            key,
+                            HkxValue::Array(
+                                (0..lanes)
+                                    .map(|lane| {
+                                        HkxValue::U16(if key == "particlesD" && lane == 15 {
+                                            last
+                                        } else {
+                                            0
+                                        })
+                                    })
+                                    .collect(),
+                            ),
+                        )
+                    })
+                    .collect(),
+            )
+        };
+        assert!(validate_mx(vec![], vec![batch(2, 16)], true).is_valid());
+        assert!(
+            validate_mx(vec![], vec![batch(3, 16)], true)
+                .issues
+                .iter()
+                .any(|i| i.code == "LINK_INDEX_OOB")
+        );
+        assert!(
+            validate_mx(vec![], vec![batch(2, 15)], true)
+                .issues
+                .iter()
+                .any(|i| i.code == "LINK_BATCH_LAYOUT")
+        );
+    }
 }

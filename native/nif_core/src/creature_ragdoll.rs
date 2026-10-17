@@ -566,6 +566,7 @@ fn source_constraints(
             "bhkHingeConstraint" => parse_hinge(constraint)?,
             "bhkPrismaticConstraint" => parse_prismatic(constraint)?,
             "bhkBreakableConstraint" => parse_breakable(constraint)?,
+            "bhkMalleableConstraint" => parse_malleable(constraint)?,
             "bhkRagdollConstraint" => parse_ragdoll_constraint(constraint)?,
             unsupported => {
                 return Err(LegacyCreatureRagdollError::UnsupportedConstraint {
@@ -726,20 +727,33 @@ fn animation_skeleton(
     body_targets: &HashMap<usize, usize>,
     body_ids: &HashSet<usize>,
 ) -> Result<(RigSkeletonIr, HashMap<usize, Transform>), LegacyCreatureRagdollError> {
-    let mut bones = Vec::new();
+    let mut bones = Vec::<RigBoneIr>::new();
     let mut indices = HashMap::new();
     let mut world = HashMap::new();
-    let mut names = HashSet::new();
+    let mut names = HashMap::<String, (usize, bool)>::new();
     let mut stack = vec![(root, None, Transform::identity())];
     while let Some((node, parent, parent_world)) = stack.pop() {
         let block = &nif.blocks[node];
         let name = bone_name(block)?;
-        if !names.insert(name.clone()) {
-            return Err(LegacyCreatureRagdollError::InvalidBoneName { node });
-        }
         let local = node_local_transform(block)?;
         let node_world = parent_world.combine(local);
+        let children = ref_array(block.get_field("Children"))
+            .into_iter()
+            .filter(|child| node_ids.contains(child) && nif.blocks[*child].type_name == "NiNode")
+            .collect::<Vec<_>>();
+        if let Some(&(first, first_is_leaf)) = names.get(&name) {
+            let original = &bones[first];
+            if !first_is_leaf || !children.is_empty()
+                || original.parent != parent || original.reference_pose != local.qs()
+            {
+                return Err(LegacyCreatureRagdollError::InvalidBoneName { node });
+            }
+            indices.insert(node, first);
+            world.insert(node, node_world);
+            continue;
+        }
         let index = bones.len();
+        names.insert(name.clone(), (index, children.is_empty()));
         indices.insert(node, index);
         world.insert(node, node_world);
         bones.push(RigBoneIr {
@@ -748,10 +762,6 @@ fn animation_skeleton(
             reference_pose: local.qs(),
             lock_translation: false,
         });
-        let children = ref_array(block.get_field("Children"))
-            .into_iter()
-            .filter(|child| node_ids.contains(child))
-            .collect::<Vec<_>>();
         for child in children.into_iter().rev() {
             stack.push((child, Some(index), node_world));
         }
@@ -992,50 +1002,64 @@ fn parse_limited_hinge_fields(
 
 fn parse_hinge(block: &NifBlock) -> Result<ConstraintKindIr, LegacyCreatureRagdollError> {
     let fields = required_struct(block, "Constraint")?;
+    parse_hinge_fields(block.block_id, fields)
+}
+
+fn parse_hinge_fields(
+    block_id: usize,
+    fields: &IndexMap<String, NifValue>,
+) -> Result<ConstraintKindIr, LegacyCreatureRagdollError> {
     Ok(ConstraintKindIr::Hinge(HingeIr {
         frame_a: constraint_frame(
-            block.block_id,
+            block_id,
             "A",
-            required_vec3(fields, "Axis A", block.block_id)?,
-            required_vec3(fields, "Perp Axis In A1", block.block_id)?,
-            required_vec3(fields, "Perp Axis In A2", block.block_id)?,
-            required_vec3(fields, "Pivot A", block.block_id)?,
+            required_vec3(fields, "Axis A", block_id)?,
+            required_vec3(fields, "Perp Axis In A1", block_id)?,
+            required_vec3(fields, "Perp Axis In A2", block_id)?,
+            required_vec3(fields, "Pivot A", block_id)?,
         )?,
         frame_b: constraint_frame(
-            block.block_id,
+            block_id,
             "B",
-            required_vec3(fields, "Axis B", block.block_id)?,
-            required_vec3(fields, "Perp Axis In B1", block.block_id)?,
-            required_vec3(fields, "Perp Axis In B2", block.block_id)?,
-            required_vec3(fields, "Pivot B", block.block_id)?,
+            required_vec3(fields, "Axis B", block_id)?,
+            required_vec3(fields, "Perp Axis In B1", block_id)?,
+            required_vec3(fields, "Perp Axis In B2", block_id)?,
+            required_vec3(fields, "Pivot B", block_id)?,
         )?,
     }))
 }
 
 fn parse_prismatic(block: &NifBlock) -> Result<ConstraintKindIr, LegacyCreatureRagdollError> {
     let fields = required_struct(block, "Constraint")?;
+    parse_prismatic_fields(block.block_id, fields)
+}
+
+fn parse_prismatic_fields(
+    block_id: usize,
+    fields: &IndexMap<String, NifValue>,
+) -> Result<ConstraintKindIr, LegacyCreatureRagdollError> {
     Ok(ConstraintKindIr::Prismatic(PrismaticIr {
         frame_a: constraint_frame(
-            block.block_id,
+            block_id,
             "A",
-            required_vec3(fields, "Sliding A", block.block_id)?,
-            required_vec3(fields, "Rotation A", block.block_id)?,
-            required_vec3(fields, "Plane A", block.block_id)?,
-            required_vec3(fields, "Pivot A", block.block_id)?,
+            required_vec3(fields, "Sliding A", block_id)?,
+            required_vec3(fields, "Rotation A", block_id)?,
+            required_vec3(fields, "Plane A", block_id)?,
+            required_vec3(fields, "Pivot A", block_id)?,
         )?,
         frame_b: constraint_frame(
-            block.block_id,
+            block_id,
             "B",
-            required_vec3(fields, "Sliding B", block.block_id)?,
-            required_vec3(fields, "Rotation B", block.block_id)?,
-            required_vec3(fields, "Plane B", block.block_id)?,
-            required_vec3(fields, "Pivot B", block.block_id)?,
+            required_vec3(fields, "Sliding B", block_id)?,
+            required_vec3(fields, "Rotation B", block_id)?,
+            required_vec3(fields, "Plane B", block_id)?,
+            required_vec3(fields, "Pivot B", block_id)?,
         )?,
-        min_distance: required_float(fields, "Min Distance", block.block_id)?
+        min_distance: required_float(fields, "Min Distance", block_id)?
             * LEGACY_BHK_TO_FO4_CHARACTER_SCALE,
-        max_distance: required_float(fields, "Max Distance", block.block_id)?
+        max_distance: required_float(fields, "Max Distance", block_id)?
             * LEGACY_BHK_TO_FO4_CHARACTER_SCALE,
-        max_friction_force: required_float(fields, "Friction", block.block_id)?,
+        max_friction_force: required_float(fields, "Friction", block_id)?,
     }))
 }
 
@@ -1071,30 +1095,69 @@ fn parse_ragdoll_constraint(
     block: &NifBlock,
 ) -> Result<ConstraintKindIr, LegacyCreatureRagdollError> {
     let fields = required_struct(block, "Constraint")?;
+    parse_ragdoll_fields(block.block_id, fields)
+}
+
+fn parse_ragdoll_fields(
+    block_id: usize,
+    fields: &IndexMap<String, NifValue>,
+) -> Result<ConstraintKindIr, LegacyCreatureRagdollError> {
     Ok(ConstraintKindIr::Ragdoll(RagdollLimitsIr {
         frame_a: constraint_frame(
-            block.block_id,
+            block_id,
             "A",
-            required_vec3(fields, "Twist A", block.block_id)?,
-            required_vec3(fields, "Plane A", block.block_id)?,
-            required_vec3(fields, "Motor A", block.block_id)?,
-            required_vec3(fields, "Pivot A", block.block_id)?,
+            required_vec3(fields, "Twist A", block_id)?,
+            required_vec3(fields, "Plane A", block_id)?,
+            required_vec3(fields, "Motor A", block_id)?,
+            required_vec3(fields, "Pivot A", block_id)?,
         )?,
         frame_b: constraint_frame(
-            block.block_id,
+            block_id,
             "B",
-            required_vec3(fields, "Twist B", block.block_id)?,
-            required_vec3(fields, "Plane B", block.block_id)?,
-            required_vec3(fields, "Motor B", block.block_id)?,
-            required_vec3(fields, "Pivot B", block.block_id)?,
+            required_vec3(fields, "Twist B", block_id)?,
+            required_vec3(fields, "Plane B", block_id)?,
+            required_vec3(fields, "Motor B", block_id)?,
+            required_vec3(fields, "Pivot B", block_id)?,
         )?,
-        cone_limit: required_float(fields, "Cone Max Angle", block.block_id)?,
-        plane_min: required_float(fields, "Plane Min Angle", block.block_id)?,
-        plane_max: required_float(fields, "Plane Max Angle", block.block_id)?,
-        twist_min: required_float(fields, "Twist Min Angle", block.block_id)?,
-        twist_max: required_float(fields, "Twist Max Angle", block.block_id)?,
-        max_friction_torque: required_float(fields, "Max Friction", block.block_id)?,
+        cone_limit: required_float(fields, "Cone Max Angle", block_id)?,
+        plane_min: required_float(fields, "Plane Min Angle", block_id)?,
+        plane_max: required_float(fields, "Plane Max Angle", block_id)?,
+        twist_min: required_float(fields, "Twist Min Angle", block_id)?,
+        twist_max: required_float(fields, "Twist Max Angle", block_id)?,
+        max_friction_torque: required_float(fields, "Max Friction", block_id)?,
     }))
+}
+
+fn parse_malleable(block: &NifBlock) -> Result<ConstraintKindIr, LegacyCreatureRagdollError> {
+    let fields = required_struct(block, "Constraint")?;
+    let constraint_type = struct_get(fields, "Type").map(NifValue::as_i64);
+    let name = match constraint_type {
+        Some(1) => "Hinge",
+        Some(2) => "Limited Hinge",
+        Some(6) => "Prismatic",
+        Some(7) => "Ragdoll",
+        _ => return Err(LegacyCreatureRagdollError::UnsupportedConstraint {
+            constraint: block.block_id,
+            kind: format!("bhkMalleableConstraint inner type {constraint_type:?}"),
+        }),
+    };
+    let Some(NifValue::Struct(inner)) = struct_get(fields, name) else {
+        return Err(LegacyCreatureRagdollError::MissingField {
+            block: block.block_id,
+            field: format!("Constraint.{name}"),
+        });
+    };
+    let inner = match constraint_type {
+        Some(1) => parse_hinge_fields(block.block_id, inner)?,
+        Some(2) => ConstraintKindIr::LimitedHinge(parse_limited_hinge_fields(block.block_id, inner)?),
+        Some(6) => parse_prismatic_fields(block.block_id, inner)?,
+        Some(7) => parse_ragdoll_fields(block.block_id, inner)?,
+        _ => unreachable!(),
+    };
+    Ok(ConstraintKindIr::Malleable {
+        inner: Box::new(inner),
+        strength: required_float(fields, "Strength", block.block_id)?,
+    })
 }
 
 fn constraint_frame(
@@ -1546,4 +1609,53 @@ fn cross(left: [f32; 3], right: [f32; 3]) -> [f32; 3] {
 fn normalize3(value: [f32; 3]) -> Option<[f32; 3]> {
     let length = dot(value, value).sqrt();
     (length.is_finite() && length > f32::EPSILON).then(|| scale3(value, length.recip()))
+}
+
+#[cfg(test)]
+mod malleable_tests;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn duplicate_leaf_fixture() -> (NifFile, usize, HashSet<usize>) {
+        let mut nif = NifFile::new("fnv");
+        nif.blocks[0].set_field("Name", NifValue::String("Root".to_string()));
+        let mut children = Vec::new();
+        for (kind, name) in [
+            ("NiNode", "Bip01 Head"),
+            ("NiNode", "Bip01 Head"),
+            ("BSValueNode", "AddOnNode35"),
+            ("BSValueNode", "AddOnNode35"),
+        ] {
+            let node = nif.add_block(kind, None);
+            nif.blocks[node].set_field("Name", NifValue::String(name.to_string()));
+            children.push(node);
+        }
+        nif.blocks[0].set_field("Children", NifValue::Array(
+            children.iter().map(|node| NifValue::Ref(*node as i32)).collect(),
+        ));
+        let alias = children[1];
+        let nodes = (0..nif.blocks.len()).collect();
+        (nif, alias, nodes)
+    }
+
+    #[test]
+    fn ragdoll_animation_skeleton_coalesces_exact_leaf_aliases_and_excludes_addon_nodes() {
+        let (nif, alias, nodes) = duplicate_leaf_fixture();
+        let (skeleton, world) = animation_skeleton(
+            &nif, 0, &nodes, &HashMap::from([(999, alias)]), &HashSet::from([999]),
+        ).unwrap();
+        assert_eq!(skeleton.bones.len(), 2);
+        assert_eq!(skeleton.bones[1].name, "Bip01 Head");
+        assert!(world.contains_key(&alias));
+    }
+
+    #[test]
+    fn ragdoll_animation_skeleton_rejects_distinct_duplicate_transforms() {
+        let (mut nif, alias, nodes) = duplicate_leaf_fixture();
+        nif.blocks[alias].set_field("Scale", NifValue::Float(2.0));
+        let result = animation_skeleton(&nif, 0, &nodes, &HashMap::new(), &HashSet::new());
+        assert!(matches!(result, Err(LegacyCreatureRagdollError::InvalidBoneName { node }) if node == alias));
+    }
 }

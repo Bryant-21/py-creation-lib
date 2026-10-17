@@ -36,7 +36,7 @@ pub struct AnimationClip {
     pub events: Vec<AnimationEvent>,
     pub original_skeleton_name: Option<String>,
     pub warnings: Vec<String>,
-    /// True when blendHint == "ADDITIVE" in the source binding.
+    /// True for either Havok additive blend convention in the source binding.
     pub is_additive: bool,
     /// transformTrackToBoneIndices from hkaAnimationBinding; empty = identity mapping.
     pub track_to_bone_indices: Vec<u32>,
@@ -114,7 +114,12 @@ pub fn extract_clip(xml: &str, skeleton: Option<&SkeletonRecord>) -> HavokResult
         .filter(|s| !s.is_empty());
     let is_additive = binding_node
         .and_then(|b| text_param(b, "blendHint"))
-        .map(|h| h.to_ascii_uppercase() == "ADDITIVE" || h == "1")
+        .map(|h| {
+            matches!(
+                h.to_ascii_uppercase().as_str(),
+                "ADDITIVE" | "ADDITIVE_DEPRECATED" | "1" | "2"
+            )
+        })
         .unwrap_or(false);
     let track_to_bone_indices = binding_node
         .and_then(|b| text_param(b, "transformTrackToBoneIndices"))
@@ -1046,4 +1051,30 @@ fn parse_int_list(text: &str) -> Vec<i64> {
                 .or_else(|| s.parse::<u64>().ok().map(|v| v as i64))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod blend_hint_tests {
+    use super::*;
+
+    #[test]
+    fn additive_bindings_are_detected_for_legacy_and_current_enum_spellings() {
+        for (hint, expected) in [
+            ("NORMAL", false),
+            ("0", false),
+            ("ADDITIVE_DEPRECATED", true),
+            ("additive_deprecated", true),
+            ("1", true),
+            ("ADDITIVE", true),
+            ("additive", true),
+            ("2", true),
+        ] {
+            let xml = format!(
+                r##"<hkpackfile><hksection name="__data__"><hkobject name="#0001" class="hkaInterleavedUncompressedAnimation"><hkparam name="duration">0</hkparam><hkparam name="numberOfTransformTracks">1</hkparam><hkparam name="transforms" numelements="1">(0 0 0 0)(0 0 0 1)(1 1 1 0)</hkparam></hkobject><hkobject name="#0002" class="hkaAnimationBinding"><hkparam name="animation">#0001</hkparam><hkparam name="blendHint">{hint}</hkparam></hkobject></hksection></hkpackfile>"##
+            );
+            let clip = extract_clip(&xml, None).unwrap();
+            assert_eq!(clip.is_additive, expected, "blendHint {hint}");
+            assert_eq!(clip.channels.len(), 1);
+        }
+    }
 }

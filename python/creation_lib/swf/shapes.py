@@ -6,10 +6,10 @@ beziers (lossless) and subdivides back to quadratic on export.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from creation_lib.swf.types import (
-    BitReader, BitWriter, RECT, FillStyle, LineStyle, LineStyle2,
+    BitReader, BitWriter, FillStyle, LineStyle, LineStyle2,
     parse_fill_styles, parse_line_styles, write_fill_styles, write_line_styles,
     _sbits_needed,
 )
@@ -88,6 +88,7 @@ class ShapeDef:
     records: list[ShapeRecord]
     shape_version: int = 1  # 1-4 matching DefineShape version
     edge_bounds: tuple[int, int, int, int] | None = None  # DefineShape4 only
+    shape_flags: int = 0  # DefineShape4 winding and stroke behavior
 
     @property
     def bounds_px(self) -> tuple[float, float, float, float]:

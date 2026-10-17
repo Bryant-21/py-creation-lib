@@ -15,8 +15,12 @@ pub mod abc_inspect;
 pub mod abc_rename;
 pub mod class_abc;
 pub mod container;
+pub mod decompile;
 pub mod inject;
+pub mod method_source;
 pub mod render;
+pub mod shape;
+pub mod stage_render;
 pub mod symbolclass;
 
 use container::{Signature, assemble, decompress, split_tags};
@@ -245,6 +249,13 @@ fn inject_symbols_renamed_into<'py>(
     Ok(PyBytes::new(py, &bytes))
 }
 
+/// `(shape id, named id)` for every shape fill style naming a non-bitmap character.
+#[pyfunction]
+fn dangling_bitmap_fills(data: &[u8]) -> PyResult<Vec<(u16, u16)>> {
+    let movie = decompress(data).map_err(PyValueError::new_err)?;
+    shape::dangling_bitmap_fills(&movie.body).map_err(PyValueError::new_err)
+}
+
 #[pyfunction]
 fn render_symbol_png<'py>(
     py: Python<'py>,
@@ -257,12 +268,67 @@ fn render_symbol_png<'py>(
     Ok(PyBytes::new(py, &png))
 }
 
+#[pyfunction]
+fn sprite_frame_bounds(py: Python<'_>, data: Vec<u8>, owner: u16, frames: Vec<u16>) -> PyResult<Vec<Option<[f32; 4]>>> {
+    py.detach(move || stage_render::sprite_frame_bounds(&data, owner, &frames)).map_err(PyValueError::new_err)
+}
+
+#[pyfunction]
+fn render_frame_image<'py>(
+    py: Python<'py>,
+    data: Vec<u8>,
+    frame: u16,
+    owner: u16,
+    fonts: Vec<Vec<u8>>,
+) -> PyResult<(Bound<'py, PyBytes>, Vec<f32>, Vec<String>)> {
+    let image = py
+        .detach(move || stage_render::render(&data, frame, owner, &fonts))
+        .map_err(PyValueError::new_err)?;
+    Ok((
+        PyBytes::new(py, &image.png),
+        image.bounds.to_vec(),
+        image.warnings,
+    ))
+}
+
+#[pyfunction]
+fn recover_as3_method_source(
+    py: Python<'_>,
+    data: Vec<u8>,
+    class: String,
+    method: String,
+) -> PyResult<String> {
+    let value = py
+        .detach(move || method_source::recover(&data, &class, &method))
+        .map_err(PyValueError::new_err)?;
+    Ok(value.to_string())
+}
+
+#[pyfunction]
+fn replace_as3_method_source<'py>(
+    py: Python<'py>,
+    data: Vec<u8>,
+    class: String,
+    method: String,
+    source: String,
+) -> PyResult<Bound<'py, PyBytes>> {
+    let output = py
+        .detach(move || method_source::replace(&data, &class, &method, &source))
+        .map_err(PyValueError::new_err)?;
+    Ok(PyBytes::new(py, &output))
+}
+
 pub fn register_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(replace_as3_classes, m)?)?;
     m.add_function(wrap_pyfunction!(augment_as3_classes, m)?)?;
     m.add_function(wrap_pyfunction!(patch_as3_method, m)?)?;
     m.add_function(wrap_pyfunction!(rename_as3_classes, m)?)?;
+    m.add_function(wrap_pyfunction!(dangling_bitmap_fills, m)?)?;
     m.add_function(wrap_pyfunction!(render_symbol_png, m)?)?;
+    m.add_function(wrap_pyfunction!(render_frame_image, m)?)?;
+    m.add_function(wrap_pyfunction!(sprite_frame_bounds, m)?)?;
+    m.add_function(wrap_pyfunction!(recover_as3_method_source, m)?)?;
+    m.add_function(wrap_pyfunction!(replace_as3_method_source, m)?)?;
     m.add_function(wrap_pyfunction!(swf_info, m)?)?;
     m.add_function(wrap_pyfunction!(list_symbols, m)?)?;
     m.add_function(wrap_pyfunction!(tag_histogram, m)?)?;
@@ -278,6 +344,8 @@ pub fn register_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(abc_class_outline, m)?)?;
     m.add_function(wrap_pyfunction!(abc_disassemble, m)?)?;
     m.add_function(wrap_pyfunction!(abc_class_references, m)?)?;
+    m.add_function(wrap_pyfunction!(abc_decompile, m)?)?;
+    m.add_function(wrap_pyfunction!(abc_decompile_movie, m)?)?;
     Ok(())
 }
 
@@ -327,8 +395,15 @@ fn patch_as3_method<'py>(
     replacement: &str,
     expected_matches: usize,
 ) -> PyResult<Bound<'py, PyBytes>> {
-    let result = abc_edit::patch_method_count(data, class_name, method_name, pattern, replacement, expected_matches)
-        .map_err(PyValueError::new_err)?;
+    let result = abc_edit::patch_method_count(
+        data,
+        class_name,
+        method_name,
+        pattern,
+        replacement,
+        expected_matches,
+    )
+    .map_err(PyValueError::new_err)?;
     Ok(PyBytes::new(py, &result))
 }
 
@@ -352,6 +427,23 @@ fn abc_class_references(data: &[u8], class_name: &str, transitive: bool) -> PyRe
     abc_inspect::class_references(data, class_name, transitive)
         .map(|v| v.to_string())
         .map_err(PyValueError::new_err)
+}
+
+/// AS3 source for one class, or for one of its methods (`name`, `get name`, `constructor`, ...).
+#[pyfunction]
+#[pyo3(signature = (data, class_name, method=None))]
+fn abc_decompile(py: Python<'_>, data: Vec<u8>, class_name: String, method: Option<String>) -> PyResult<String> {
+    py.detach(move || match method {
+        Some(method) => decompile::decompile_method(&data, &class_name, &method),
+        None => decompile::decompile_class(&data, &class_name),
+    })
+    .map_err(PyValueError::new_err)
+}
+
+/// Every class as `(qualified name, source)`, and how many methods fell back to disassembly.
+#[pyfunction]
+fn abc_decompile_movie(py: Python<'_>, data: Vec<u8>) -> PyResult<(Vec<(String, String)>, usize)> {
+    py.detach(move || decompile::decompile_movie(&data)).map_err(PyValueError::new_err)
 }
 
 #[pymodule]

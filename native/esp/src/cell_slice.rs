@@ -1858,10 +1858,61 @@ fn target_base_form_id_is_valid(
         .unwrap_or(false)
 }
 
+enum SourceCopyLookup {
+    Indexed(Arc<CoreSection>, Arc<RecordsSection>),
+    Located(LocatorSection),
+}
+
+struct SourceCopyEntry<'a> {
+    signature: &'a SmolStr,
+    record: Option<&'a ParsedRecord>,
+}
+
+impl SourceCopyLookup {
+    fn new(slot: &NativePluginSlot) -> Self {
+        match (&slot.sections.core, &slot.sections.records) {
+            (Some(core), Some(records)) if !slot.is_lazy() =>
+                Self::Indexed(Arc::clone(core), Arc::clone(records)),
+            _ => Self::Located(build_locator_section(&slot.parsed)),
+        }
+    }
+
+    fn get<'a>(&'a self, plugin: &'a ParsedPlugin, key: &FormKey) -> Option<SourceCopyEntry<'a>> {
+        match self {
+            Self::Indexed(core, records) => {
+                let entry = core.by_form_key.get(key)?;
+                // LocatorSection keeps the first physical occurrence, while CoreSection's
+                // metadata keeps the last. The object-ID list retains physical order.
+                let raw_form_id = core.form_ids_by_object_id.get(&entry.object_id)
+                    .filter(|ids| ids.len() > 1)
+                    .and_then(|ids| ids.iter().find(|&&raw| {
+                        form_key_for_raw_form_id(raw, &entry.defined_in, &plugin.header.masters) == entry.form_key
+                    })).copied().unwrap_or(entry.raw_form_id);
+                let record = records.record(plugin, raw_form_id);
+                Some(SourceCopyEntry {
+                    signature: record.map_or(&entry.signature, |record| &record.signature),
+                    record,
+                })
+            }
+            Self::Located(locator) => {
+                let entry = locator.by_form_key.get(key)?;
+                Some(SourceCopyEntry {
+                    signature: &entry.signature,
+                    record: locator.record(plugin, entry),
+                })
+            }
+        }
+    }
+
+    fn get_text<'a>(&'a self, plugin: &'a ParsedPlugin, text: &str) -> Option<SourceCopyEntry<'a>> {
+        self.get(plugin, &normalize_form_key(text.trim())?)
+    }
+}
+
 fn fo76_fo4_runtime_lvli_replacement(
     record: &ParsedRecord,
     source_plugin: &ParsedPlugin,
-    source_locator: &LocatorSection,
+    source_locator: &SourceCopyLookup,
     source_own_index: u8,
     target: &TargetFormIdContext,
     target_game: Option<&str>,
@@ -1877,7 +1928,7 @@ fn fo76_fo4_runtime_lvli_replacement(
     }
     let source_base_raw = placed_child_base_form_id(record)?;
     let source_base_key = render_form_key(source_plugin, source_base_raw);
-    let source_base = locator_entry_by_form_key(source_locator, source_base_key.as_str())?;
+    let source_base = source_locator.get_text(source_plugin, source_base_key.as_str())?;
     if source_base.signature.as_str() != "LVLI" {
         return None;
     }
@@ -1939,7 +1990,7 @@ fn stable_leveled_entry_index(seed: u64, len: usize) -> usize {
 
 fn collect_lvli_entry_target_raws(
     source_plugin: &ParsedPlugin,
-    source_locator: &LocatorSection,
+    source_locator: &SourceCopyLookup,
     source_own_index: u8,
     target: &TargetFormIdContext,
     target_locator: &LocatorSection,
@@ -1959,8 +2010,8 @@ fn collect_lvli_entry_target_raws(
     }
     for entry_raw in leveled_item_entry_form_ids(lvli_record) {
         let source_entry_key = render_form_key(source_plugin, entry_raw);
-        let source_entry = locator_entry_by_form_key(source_locator, source_entry_key.as_str());
-        let entry_record = source_entry.and_then(|e| source_locator.record(source_plugin, e));
+        let source_entry = source_locator.get_text(source_plugin, source_entry_key.as_str());
+        let entry_record = source_entry.as_ref().and_then(|e| e.record);
         if let Some(source_entry) = source_entry {
             if source_entry.signature.as_str() == "LVLI" {
                 if let Some(nested_record) = entry_record {
@@ -2053,7 +2104,7 @@ fn drop_nuked_candidates(candidates: &mut Vec<(u32, Option<String>)>) {
 fn replace_placed_lvli_base(
     record: &mut ParsedRecord,
     source_plugin: &ParsedPlugin,
-    source_locator: &LocatorSection,
+    source_locator: &SourceCopyLookup,
     source_own_index: u8,
     target: &TargetFormIdContext,
     target_locator: &LocatorSection,
@@ -2067,13 +2118,13 @@ fn replace_placed_lvli_base(
         return Ok(0);
     }
     let base_key = render_form_key(source_plugin, base_form_id);
-    let Some(base_entry) = locator_entry_by_form_key(source_locator, base_key.as_str()) else {
+    let Some(base_entry) = source_locator.get_text(source_plugin, base_key.as_str()) else {
         return Ok(0);
     };
     if base_entry.signature.as_str() != "LVLI" {
         return Ok(0);
     }
-    let Some(base_record) = source_locator.record(source_plugin, base_entry) else {
+    let Some(base_record) = base_entry.record else {
         return Err("unresolved_lvli_base");
     };
     let mut candidates: Vec<(u32, Option<String>)> = Vec::new();
@@ -2570,13 +2621,12 @@ fn placed_child_base_form_id(record: &ParsedRecord) -> Option<u32> {
 /// touches conversion state.
 fn skipped_ref_source_base_key(
     source_plugin: &ParsedPlugin,
-    source_locator: &LocatorSection,
+    source_locator: &SourceCopyLookup,
     source_key: &str,
 ) -> String {
     let resolved = object_id_from_form_key(source_key).and_then(|object_id| {
         let key = FormKey::new(Arc::from(source_plugin.plugin_name.as_str()), object_id);
-        let entry = source_locator.by_form_key.get(&key)?;
-        let record = source_locator.record(source_plugin, entry)?;
+        let record = source_locator.get(source_plugin, &key)?.record?;
         let base = placed_child_base_form_id(record)?;
         Some(render_form_key(source_plugin, base))
     });
@@ -2625,7 +2675,7 @@ fn placed_child_has_valid_base(
 
 fn source_record_for_target_child(
     source_plugin: &ParsedPlugin,
-    source_locator: &LocatorSection,
+    source_locator: &SourceCopyLookup,
     target_child_key: &str,
     source_own_index: u8,
     target: &TargetFormIdContext,
@@ -2637,13 +2687,13 @@ fn source_record_for_target_child(
 ) -> Result<(ParsedRecord, usize, usize, usize), &'static str> {
     let object_id = object_id_from_form_key(target_child_key).ok_or("invalid_child_key")?;
     let source_key = FormKey::new(Arc::from(source_plugin.plugin_name.as_str()), object_id);
-    let Some(entry) = source_locator.by_form_key.get(&source_key) else {
+    let Some(entry) = source_locator.get(source_plugin, &source_key) else {
         return Err("missing_source_child");
     };
     if !is_placed_child_signature(entry.signature.as_str()) {
         return Err("not_placed_child");
     }
-    let Some(source_record) = source_locator.record(source_plugin, entry) else {
+    let Some(source_record) = entry.record else {
         return Err("missing_source_record");
     };
     let mut record = source_record.clone();
@@ -2712,7 +2762,7 @@ fn source_record_for_target_child(
 
 struct CopyCellChildrenContext<'a> {
     source_plugin: &'a ParsedPlugin,
-    source_locator: &'a LocatorSection,
+    source_locator: &'a SourceCopyLookup,
     source_own_index: u8,
     target: &'a TargetFormIdContext,
     target_game: Option<&'a str>,
@@ -4908,7 +4958,7 @@ pub fn copy_cell_slice_children_payload_with_workers(
             PyKeyError::new_err(format!("unknown source plugin handle: {source_handle_id}"))
         })?;
         let source_plugin = &source_slot.parsed;
-        let source_locator = build_locator_section(source_plugin);
+        let source_locator = SourceCopyLookup::new(source_slot);
         let source_own_index = (source_plugin.header.masters.len() & 0xFF) as u8;
         let target_own_prefix = local_form_prefix(&target_slot.parsed);
         let target_game = target_slot.parsed.game.clone();
@@ -5547,7 +5597,7 @@ pub fn synthesize_worldspace_persistent_cell_payload_with_workers(
         }
 
         // ── Convert + route the persistent refs into Cell-Persistent(8). ──────
-        let source_locator = build_locator_section(source_plugin);
+        let source_locator = SourceCopyLookup::new(source_slot);
         let source_own_index = (source_plugin.header.masters.len() & 0xFF) as u8;
         target_existing_form_ids.clear();
         collect_record_form_ids(
@@ -8579,7 +8629,7 @@ mod tests {
             )],
         );
 
-        let source_locator = build_locator_section(&source);
+        let source_locator = SourceCopyLookup::Located(build_locator_section(&source));
         let target_locator = build_locator_section(&target);
         let target_ctx = TargetFormIdContext {
             plugin_name: target.plugin_name.clone(),
@@ -8704,10 +8754,66 @@ mod tests {
         assert!(payload_ser.mapped_form_refs > 0, "payload: {dump}");
     }
 
+    fn assert_source_lookup_matches_locator(slot: &NativePluginSlot) -> usize {
+        let started = Instant::now();
+        let located = build_locator_section(&slot.parsed);
+        let locator_seconds = started.elapsed().as_secs_f64();
+        let started = Instant::now();
+        let lookup = SourceCopyLookup::new(slot);
+        let shared_seconds = started.elapsed().as_secs_f64();
+        for entry in located.by_form_key.values() {
+            let actual = lookup.get(&slot.parsed, &entry.form_key).unwrap();
+            assert_eq!(actual.signature, &entry.signature);
+            assert!(std::ptr::eq(actual.record.unwrap(), located.record(&slot.parsed, entry).unwrap()));
+        }
+        assert!(lookup.get_text(&slot.parsed, "not-a-form-key").is_none());
+        eprintln!("source lookup records={} indexed={} locator_seconds={locator_seconds:.6} shared_seconds={shared_seconds:.6}",
+            located.by_form_key.len(), matches!(lookup, SourceCopyLookup::Indexed(..)));
+        located.by_form_key.len()
+    }
+
+    #[test]
+    fn source_copy_lookup_preserves_unique_and_duplicate_form_keys() {
+        for duplicate in [false, true] {
+            let mut source = source_world_with_persistent_cell();
+            if duplicate {
+                source.root_items.push(ParsedItem::Record(record("STAT", 0x00050B2C, Some("Duplicate"))));
+            }
+            let handle = insert_plugin_handle(source, LocalizedStringsState::default());
+            {
+                let mut store = plugin_handle_store_ref().lock().unwrap();
+                let slot = store.get_mut(&handle).unwrap();
+                assert!(matches!(SourceCopyLookup::new(slot), SourceCopyLookup::Located(_)));
+                ensure_core_section(slot);
+                ensure_records_section(slot);
+                assert!(matches!(SourceCopyLookup::new(slot), SourceCopyLookup::Indexed(..)));
+                assert_source_lookup_matches_locator(slot);
+            }
+            plugin_handle_close_native(handle);
+        }
+    }
+
+    #[test]
+    #[ignore = "requires SOURCE_LOOKUP_PLUGIN pointing to a corpus plugin"]
+    fn source_copy_lookup_corpus_parity() {
+        Python::initialize();
+        let path = std::env::var("SOURCE_LOOKUP_PLUGIN").unwrap();
+        let handle = plugin_handle_load_no_py(&path, Some("fo76"), None, None, false).unwrap();
+        {
+            let mut store = plugin_handle_store_ref().lock().unwrap();
+            let slot = store.get_mut(&handle).unwrap();
+            ensure_core_section(slot);
+            ensure_records_section(slot);
+            assert!(matches!(SourceCopyLookup::new(slot), SourceCopyLookup::Indexed(..)));
+            assert!(assert_source_lookup_matches_locator(slot) > 0);
+        }
+        plugin_handle_close_native(handle);
+    }
+
     #[test]
     fn copy_cell_slice_children_cases() {
         // copy_cell_slice_children_clones_source_records_into_target_cells
-        {
+        for lazy in [false, true] {
             let mut source_ref = record("REFR", 0x014EA534, None);
             source_ref.flags = RECORD_FLAG_LOD_RESPECTS_ENABLE_STATE;
             source_ref
@@ -8721,6 +8827,11 @@ mod tests {
                 data.extend_from_slice(&value.to_le_bytes());
             }
             source_ref.subrecords.push(subrecord("DATA", data));
+            if lazy {
+                let bytes = record_bytes_from_parsed(&source_ref, MODERN_HEADER_SIZE).unwrap();
+                source_ref.raw_payload = Some(Bytes::from(bytes).slice(MODERN_HEADER_SIZE..));
+                source_ref.subrecords.clear();
+            }
             let source = plugin_with_name(
                 "SeventySix.esm",
                 "fo76",
@@ -8741,6 +8852,12 @@ mod tests {
                 vec![target_cell_group],
             );
             let source_handle = insert_plugin_handle(source, LocalizedStringsState::default());
+            {
+                let mut store = plugin_handle_store_ref().lock().unwrap();
+                let slot = store.get_mut(&source_handle).unwrap();
+                ensure_core_section(slot);
+                ensure_records_section(slot);
+            }
             let target_handle = insert_plugin_handle(target, LocalizedStringsState::default());
             let children = serde_json::json!({
                 "B21_Appalachia.esp:2628FE": {
@@ -8779,6 +8896,7 @@ mod tests {
                 panic!("expected inserted record");
             };
             assert_eq!(inserted.form_id, 0x014EA534);
+            assert!(inserted.raw_payload.is_none());
             assert_eq!(
                 inserted.flags & RECORD_FLAG_VISIBLE_WHEN_DISTANT,
                 RECORD_FLAG_VISIBLE_WHEN_DISTANT,

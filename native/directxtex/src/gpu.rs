@@ -28,6 +28,16 @@ unsafe extern "C" {
         out: *const *mut u8,
         out_len: *const usize,
     ) -> i32;
+    fn DirectXTexFFI_GpuNormalCrevice(
+        dev: *mut c_void,
+        rgba: *const u8,
+        w: u32,
+        h: u32,
+        n: u32,
+        sigma: *const f32,
+        weight: *const f32,
+        out: *mut f32,
+    ) -> i32;
 }
 
 /// Opaque device pointer. Safe to send because every access is serialized
@@ -67,6 +77,7 @@ pub fn compress_bc7_gpu(
     height: u32,
     srgb: bool,
 ) -> Result<Vec<u8>, String> {
+    let result = (|| {
     let expected = (width as usize) * (height as usize) * 4;
     if rgba.len() != expected {
         return Err(format!("rgba len {} != expected {expected}", rgba.len()));
@@ -96,6 +107,9 @@ pub fn compress_bc7_gpu(
         return Err(format!("gpu bc7 compress failed: rc={rc}"));
     }
     Ok(out)
+    })();
+    crate::profiling::gpu_attempt(result.is_err());
+    result
 }
 
 /// Compress a batch of RGBA8 images — typically one texture's whole mip chain —
@@ -107,6 +121,7 @@ pub fn compress_bc7_gpu_batch(
     images: &[(u32, u32, &[u8])],
     srgb: bool,
 ) -> Result<Vec<Vec<u8>>, String> {
+    let result = (|| {
     if images.is_empty() {
         return Ok(Vec::new());
     }
@@ -153,6 +168,44 @@ pub fn compress_bc7_gpu_batch(
         return Err(format!("gpu bc7 batch compress failed: rc={rc}"));
     }
     Ok(outs)
+    })();
+    crate::profiling::gpu_attempt(result.is_err());
+    result
+}
+
+/// Sum over `scales` of `weight * Gaussian(sigma px) * div(slope)` for an RGBA8 tangent-space
+/// normal map (R = x, G = y, green flipped into the slope field), wrapping at the edges.
+/// Returns `width * height` floats. `Err` when the GPU is unavailable or the dispatch fails.
+pub fn normal_crevice_gpu(rgba: &[u8], width: u32, height: u32, scales: &[(f32, f32)]) -> Result<Vec<f32>, String> {
+    let expected = (width as usize) * (height as usize) * 4;
+    if rgba.len() != expected || scales.is_empty() {
+        return Err(format!("rgba len {} != expected {expected} or no scales", rgba.len()));
+    }
+    let sigma: Vec<f32> = scales.iter().map(|s| s.0).collect();
+    let weight: Vec<f32> = scales.iter().map(|s| s.1).collect();
+    let mut out = vec![0f32; (width as usize) * (height as usize)];
+    let _wait = crate::profiling::Timer::new(crate::profiling::Stage::GpuWait);
+    let guard = gpu_state().lock().map_err(|_| "gpu mutex poisoned".to_string())?;
+    let Device(dev) = match &*guard {
+        GpuState::Available(d) => d,
+        GpuState::Unavailable => return Err("gpu device unavailable".to_string()),
+    };
+    let rc = unsafe {
+        DirectXTexFFI_GpuNormalCrevice(
+            *dev,
+            rgba.as_ptr(),
+            width,
+            height,
+            sigma.len() as u32,
+            sigma.as_ptr(),
+            weight.as_ptr(),
+            out.as_mut_ptr(),
+        )
+    };
+    if rc != 0 {
+        return Err(format!("gpu normal crevice failed: rc={rc}"));
+    }
+    Ok(out)
 }
 
 #[cfg(test)]

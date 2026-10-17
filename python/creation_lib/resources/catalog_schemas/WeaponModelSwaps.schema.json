@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://modbox21.local/catalog_schemas/WeaponModelSwaps.schema.json",
+  "title": "WeaponModelSwaps catalog",
+  "description": "Lets a weapon skin (an OMOD) change what a weapon looks like by loading different meshes while the skin is applied.",
+  "x-help": "A weapon skin is an OMOD (a weapon mod) that, while it is attached, makes the game load a different mesh in place of one of the weapon's own meshes. Fallout 76 weapon skins work this way, and Fallout 4 has no equivalent, so Tales does it for you.\n\nEach skin below is one OMOD plus a list of mesh pairs. A pair reads 'replace this mesh -> with this mesh'. Whenever the weapon loads the first mesh (the weapon itself, or any of its attachments), the game loads the second one instead. Pairs that do not match anything the weapon loads are simply ignored.\n\nExample: a skin OMOD 'Fire Hydrant Bat' with the pair Weapons\\BaseballBat\\BaseballBat.nif -> Weapons\\BaseballBat\\BaseballBat_Hydrant.nif. Apply the skin at the workbench and the bat is drawn with the hydrant mesh, in first person, third person and on NPCs.\n\nIf the replacement mesh is not found at run time the original mesh is kept, so a wrong path never breaks the weapon. If several skins are attached to one weapon, the first one that lists the mesh wins.",
+  "allOf": [
+    {"$ref": "envelope.schema.json"}
+  ],
+  "required": [
+    "skins"
+  ],
+  "properties": {
+    "version": {"const": 1},
+    "settings": {
+      "type": "object",
+      "description": "Feature-wide values; a later plugin's field replaces the earlier one.",
+      "properties": {"source_plugin": {"type": "string", "title": "Source plugin", "description": "The plugin the skins were converted from. Informational only."}}
+    },
+    "skins": {
+      "type": "array",
+      "title": "Weapon skins",
+      "description": "Each skin is an OMOD plus the meshes it swaps while it is attached to a weapon.",
+      "x-key": ["form"],
+      "items": {
+        "type": "object",
+        "properties": {
+          "form": {"$ref": "envelope.schema.json#/$defs/formKey", "x-form-type": ["OMOD"], "title": "Skin (OMOD)", "description": "The weapon mod that triggers the swap. The swap is active while this mod is attached to the weapon."},
+          "editor_id": {"type": "string", "title": "Editor ID", "description": "Label only; Tales identifies the skin by its form."},
+          "models": {
+            "type": "array",
+            "title": "Mesh swaps",
+            "description": "Pairs of 'replace this mesh' and 'with this mesh', as paths relative to the Meshes folder.",
+            "x-columns": ["Replace this mesh", "With this mesh"],
+            "x-asset": {"kind": "nif", "root": "Meshes", "strip_root": true},
+            "items": {"type": "array", "prefixItems": [
+              {"type": "string", "title": "Replace this mesh", "description": "A mesh the weapon loads, for example the weapon itself or one of its attachments.", "x-asset": {"kind": "nif", "root": "Meshes", "strip_root": true}},
+              {"type": "string", "title": "With this mesh", "description": "The mesh to load instead while the skin is attached.", "x-asset": {"kind": "nif", "root": "Meshes", "strip_root": true}}
+            ], "minItems": 2, "maxItems": 2}
+          },
+          "remove": {"$ref": "envelope.schema.json#/$defs/removeFlag"}
+        },
+        "if": {"not": {"required": ["remove"]}},
+        "then": {"required": ["form"]}
+      }
+    }
+  }
+}

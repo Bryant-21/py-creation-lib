@@ -10,6 +10,7 @@ use swf_native::container::{
     Movie, Signature, assemble, decompress, split_tags, split_tags_at, write_tag_header,
 };
 use swf_native::inject::inject_symbols;
+use swf_native::shape::dangling_bitmap_fills;
 use swf_native::symbolclass::{SymbolEntry, encode_symbol_table, parse_symbol_table};
 
 const DEFINE_SHAPE: u16 = 2;
@@ -22,10 +23,35 @@ fn tag(code: u16, body: &[u8]) -> Vec<u8> {
     out
 }
 
-fn shape(cid: u16, art: &[u8]) -> Vec<u8> {
+/// A DefineShape with an empty bounds RECT, the given fill styles, no line
+/// styles and no edges.
+fn shape_with_fills(cid: u16, fills: &[u8], count: u8) -> Vec<u8> {
     let mut body = cid.to_le_bytes().to_vec();
-    body.extend_from_slice(art);
+    body.push(0); // RECT with 0-bit fields
+    body.push(count);
+    body.extend_from_slice(fills);
+    body.push(0); // line style count
+    body.push(0); // NumFillBits/NumLineBits
+    body.push(0); // EndShapeRecord
     tag(DEFINE_SHAPE, &body)
+}
+
+fn shape(cid: u16) -> Vec<u8> {
+    shape_with_fills(cid, &[], 0)
+}
+
+/// A clipped bitmap fill style naming `bitmap`, with an empty MATRIX.
+fn bitmap_fill(bitmap: u16) -> Vec<u8> {
+    let mut fill = vec![0x41];
+    fill.extend(bitmap.to_le_bytes());
+    fill.push(0);
+    fill
+}
+
+fn bitmap(cid: u16) -> Vec<u8> {
+    let mut body = cid.to_le_bytes().to_vec();
+    body.extend_from_slice(&[5, 1, 0, 1, 0, 0x78, 0x9C]);
+    tag(36, &body)
 }
 
 /// A one-frame sprite placing each child with PlaceObject2 (HasCharacter).
@@ -80,16 +106,16 @@ fn injects_symbol_closures_with_remapped_ids_and_preserved_bytes() {
     // Shape 1 is shared art: both markers place it.
     let src = movie(
         &[
-            shape(1, &[0xAA, 0xBB]),
-            shape(2, &[0xCC]),
-            shape(9, &[0xDD]), // unrelated, must not be copied
+            shape(1),
+            shape(2),
+            shape(9), // unrelated, must not be copied
             sprite(3, &[1]),
             sprite(4, &[1, 2]),
         ],
         &[(3, "MarkerA"), (4, "MarkerB"), (9, "Unused")],
     );
     let dst = movie(
-        &(1..=5).map(|cid| shape(cid, &[0x11])).collect::<Vec<_>>(),
+        &(1..=5).map(shape).collect::<Vec<_>>(),
         &[(5, "Existing")],
     );
 
@@ -143,4 +169,44 @@ fn injects_symbol_closures_with_remapped_ids_and_preserved_bytes() {
 
     let err = inject_symbols(&src, &dst, &["Missing"]).unwrap_err();
     assert!(err.contains("not found"), "{err}");
+}
+
+/// FO76's ImSelling1 emote icon fills a shape with a bitmap. Shapes reference
+/// bitmap fills by id, not placement; the bitmap must travel and the fill must
+/// follow the remap, or it names whatever lands on the old id in `dst`.
+#[test]
+fn injects_bitmaps_named_by_shape_fills() {
+    let mut fills = bitmap_fill(65535); // Flash's unused-fill placeholder
+    fills.extend(bitmap_fill(4));
+    let src = movie(
+        &[bitmap(4), shape_with_fills(5, &fills, 2), sprite(6, &[5])],
+        &[(6, "Selling")],
+    );
+    let dst = movie(&(1..=9).map(shape).collect::<Vec<_>>(), &[(9, "Existing")]);
+
+    let out = inject_symbols(&src, &dst, &["Selling"]).unwrap();
+
+    let spans = split_tags(&out.body).unwrap();
+    let defines = |code: u16| -> Vec<&[u8]> {
+        spans
+            .iter()
+            .filter(|s| s.code == code)
+            .map(|s| &out.body[s.body_range()])
+            .collect()
+    };
+    let bitmaps = defines(36);
+    assert_eq!(bitmaps.len(), 1, "bitmap copied once");
+    assert_eq!(u16::from_le_bytes([bitmaps[0][0], bitmaps[0][1]]), 14);
+    let selling = defines(DEFINE_SHAPE)
+        .into_iter()
+        .find(|b| u16::from_le_bytes([b[0], b[1]]) == 15)
+        .expect("remapped shape");
+    let mut expected = bitmap_fill(65535);
+    expected.extend(bitmap_fill(14));
+    assert_eq!(&selling[4..4 + expected.len()], expected.as_slice());
+    assert_eq!(dangling_bitmap_fills(&out.body).unwrap(), []);
+
+    // What the injector used to emit: the fill names a sprite.
+    let broken = movie(&[sprite(3, &[]), shape_with_fills(5, &bitmap_fill(3), 1)], &[]);
+    assert_eq!(dangling_bitmap_fills(&broken.body).unwrap(), [(5, 3)]);
 }

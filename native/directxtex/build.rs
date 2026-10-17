@@ -121,4 +121,5 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=compat/DirectXTexCompress.cpp");
     println!("cargo:rerun-if-changed=ffi/main.cpp");
+    println!("cargo:rerun-if-changed=vendored_shaders");
 }

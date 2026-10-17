@@ -10,7 +10,6 @@ struct CollectedAsset {
     source_subrecord_sig: String,
     owner_claims: Vec<AssetOwnerClaim>,
     workshop_wire_point: Option<(f32, f32, f32)>,
-    workshop_snap_points: Option<Vec<WorkshopSnapPoint>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -19,6 +18,7 @@ struct AssetOwnerClaim {
     source_record_signature: String,
     source_subrecord_sig: String,
     idle_topology: Vec<IdleTopologyNode>,
+    armor_family: Vec<super::starfield_armor_closure::ArmorFamilyModel>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -30,8 +30,6 @@ struct IdleTopologyNode {
     conditions: Vec<(String, String)>,
 }
 
-type WorkshopSnapPointPayload = (String, (f32, f32, f32), (f32, f32, f32, f32), f32);
-
 type IdleTopologyNodePayload = (
     String,
     Option<String>,
@@ -40,7 +38,8 @@ type IdleTopologyNodePayload = (
     Vec<(String, String)>,
 );
 
-type AssetOwnerClaimPayload = (String, String, String, Vec<IdleTopologyNodePayload>);
+type ArmorFamilyModelPayload = (String, String, String, String);
+type AssetOwnerClaimPayload = (String, String, String, Vec<IdleTopologyNodePayload>, Vec<ArmorFamilyModelPayload>);
 
 type CollectedAssetPayload = (
     String,
@@ -49,7 +48,6 @@ type CollectedAssetPayload = (
     String,
     String,
     Option<(f32, f32, f32)>,
-    Option<Vec<WorkshopSnapPointPayload>>,
     Vec<AssetOwnerClaimPayload>,
 );
 
@@ -58,42 +56,6 @@ type AssetKey = (SmolStr, String);
 #[derive(Default)]
 struct WorkshopWirePointIndex {
     by_template: HashMap<FormKey, (f32, f32, f32)>,
-}
-
-#[derive(Clone, Debug)]
-struct WorkshopSnapPoint {
-    name: String,
-    translation: (f32, f32, f32),
-    rotation: (f32, f32, f32, f32),
-    scale: f32,
-}
-
-#[derive(Clone, Debug)]
-struct TemplateNode {
-    id: u32,
-    node: FormKey,
-    translation: (f32, f32, f32),
-    rotation_degrees: (f32, f32, f32),
-}
-
-#[derive(Clone, Debug, Default)]
-struct SnapTemplate {
-    parent: Option<FormKey>,
-    nodes: Vec<TemplateNode>,
-    parent_overrides: HashMap<u32, ((f32, f32, f32), (f32, f32, f32))>,
-}
-
-#[derive(Clone, Debug, Default)]
-struct SnapNode {
-    editor_id: Option<String>,
-    no_self_snap: bool,
-    adjacent: HashSet<FormKey>,
-    angles: Vec<f32>,
-}
-
-#[derive(Default)]
-struct WorkshopSnapPointIndex {
-    by_template: HashMap<FormKey, Vec<WorkshopSnapPoint>>,
 }
 
 struct AssetCollectFilters {
@@ -244,15 +206,13 @@ pub(crate) fn plugin_handle_collect_assets_native(
             let Some(slot) = store.get(handle_id) else {
                 continue;
             };
-            let (workshop_wire_points, workshop_snap_points) =
-                workshop_indexes_from_plugin(&slot.parsed);
+            let workshop_wire_points = WorkshopWirePointIndex::from_plugin(&slot.parsed);
             if filters.form_key_filter.is_some() {
                 collect_assets_from_form_keys(
                     &slot.parsed,
                     &filters,
                     &idle_topology,
                     &workshop_wire_points,
-                    &workshop_snap_points,
                     &mut seen,
                     &mut ambiguous_wire_points,
                     &mut out,
@@ -263,11 +223,29 @@ pub(crate) fn plugin_handle_collect_assets_native(
                     &filters,
                     &idle_topology,
                     &workshop_wire_points,
-                    &workshop_snap_points,
                     &mut seen,
                     &mut ambiguous_wire_points,
                     &mut out,
                 );
+            }
+        }
+        let mut armor_families = super::starfield_armor_closure::ArmorFamilyIndex::default();
+        if filters.kind_filter.as_ref().is_none_or(|kinds| kinds.contains("nif"))
+            && filters.signature_filter.as_ref().is_none_or(|sigs| sigs.contains("ARMA"))
+        {
+            for handle_id in source_handles.iter().chain(master_handles.iter()) {
+                if let Some(slot) = store.get(handle_id) {
+                    armor_families.add_plugin(&slot.parsed);
+                }
+            }
+            for asset in &mut out {
+                for claim in &mut asset.owner_claims {
+                    if claim.source_record_signature == "ARMA" {
+                        claim.armor_family = armor_families.companions(
+                            &claim.source_form_key, &claim.source_subrecord_sig,
+                        );
+                    }
+                }
             }
         }
         Ok::<_, PyErr>(
@@ -280,7 +258,6 @@ pub(crate) fn plugin_handle_collect_assets_native(
                         asset.source_record_signature,
                         asset.source_subrecord_sig,
                         asset.workshop_wire_point,
-                        asset.workshop_snap_points.map(workshop_snap_point_payloads),
                         asset_owner_claim_payloads(asset.owner_claims),
                     )
                 })
@@ -294,7 +271,6 @@ fn collect_assets_from_items(
     filters: &AssetCollectFilters,
     idle_topology: &IdleTopologyIndex,
     workshop_wire_points: &WorkshopWirePointIndex,
-    workshop_snap_points: &WorkshopSnapPointIndex,
     seen: &mut HashMap<AssetKey, usize>,
     ambiguous_wire_points: &mut HashSet<AssetKey>,
     out: &mut Vec<CollectedAsset>,
@@ -307,7 +283,6 @@ fn collect_assets_from_items(
         filters,
         idle_topology,
         workshop_wire_points,
-        workshop_snap_points,
         seen,
         ambiguous_wire_points,
         out,
@@ -319,7 +294,6 @@ fn collect_assets_from_form_keys(
     filters: &AssetCollectFilters,
     idle_topology: &IdleTopologyIndex,
     workshop_wire_points: &WorkshopWirePointIndex,
-    workshop_snap_points: &WorkshopSnapPointIndex,
     seen: &mut HashMap<AssetKey, usize>,
     ambiguous_wire_points: &mut HashSet<AssetKey>,
     out: &mut Vec<CollectedAsset>,
@@ -344,7 +318,6 @@ fn collect_assets_from_form_keys(
             plugin,
             idle_topology,
             workshop_wire_points,
-            workshop_snap_points,
             filters,
             seen,
             ambiguous_wire_points,
@@ -360,7 +333,6 @@ fn collect_assets_from_parsed_items(
     filters: &AssetCollectFilters,
     idle_topology: &IdleTopologyIndex,
     workshop_wire_points: &WorkshopWirePointIndex,
-    workshop_snap_points: &WorkshopSnapPointIndex,
     seen: &mut HashMap<AssetKey, usize>,
     ambiguous_wire_points: &mut HashSet<AssetKey>,
     out: &mut Vec<CollectedAsset>,
@@ -373,7 +345,6 @@ fn collect_assets_from_parsed_items(
                 own_plugin_name,
                 idle_topology,
                 workshop_wire_points,
-                workshop_snap_points,
                 filters,
                 seen,
                 ambiguous_wire_points,
@@ -386,7 +357,6 @@ fn collect_assets_from_parsed_items(
                 filters,
                 idle_topology,
                 workshop_wire_points,
-                workshop_snap_points,
                 seen,
                 ambiguous_wire_points,
                 out,
@@ -401,7 +371,6 @@ fn collect_assets_from_record(
     own_plugin_name: &Arc<str>,
     idle_topology: &IdleTopologyIndex,
     workshop_wire_points: &WorkshopWirePointIndex,
-    workshop_snap_points: &WorkshopSnapPointIndex,
     filters: &AssetCollectFilters,
     seen: &mut HashMap<AssetKey, usize>,
     ambiguous_wire_points: &mut HashSet<AssetKey>,
@@ -428,7 +397,6 @@ fn collect_assets_from_record(
         plugin,
         idle_topology,
         workshop_wire_points,
-        workshop_snap_points,
         filters,
         seen,
         ambiguous_wire_points,
@@ -442,7 +410,6 @@ fn collect_assets_from_record_with_form_key(
     plugin: &ParsedPlugin,
     idle_topology: &IdleTopologyIndex,
     workshop_wire_points: &WorkshopWirePointIndex,
-    workshop_snap_points: &WorkshopSnapPointIndex,
     filters: &AssetCollectFilters,
     seen: &mut HashMap<AssetKey, usize>,
     ambiguous_wire_points: &mut HashSet<AssetKey>,
@@ -465,14 +432,11 @@ fn collect_assets_from_record_with_form_key(
             source_record_signature: record.signature.to_string(),
             source_subrecord_sig: asset.source_subrecord_sig.to_string(),
             idle_topology: idle_topology.ancestry_for(record, form_key),
+            armor_family: Vec::new(),
         };
         let workshop_wire_point = (asset.kind.as_str() == "nif"
             && asset.source_subrecord_sig.as_str() == "MODL")
             .then(|| workshop_wire_points.for_record(record, plugin))
-            .flatten();
-        let workshop_snap_points = (asset.kind.as_str() == "nif"
-            && asset.source_subrecord_sig.as_str() == "MODL")
-            .then(|| workshop_snap_points.for_record(record, plugin))
             .flatten();
         if let Some(&existing_index) = seen.get(&dedup_key) {
             if !out[existing_index].owner_claims.iter().any(|claim| {
@@ -489,13 +453,6 @@ fn collect_assets_from_record_with_form_key(
                 ambiguous_wire_points,
                 out,
             );
-            merge_workshop_snap_points(
-                &dedup_key,
-                workshop_snap_points,
-                existing_index,
-                ambiguous_wire_points,
-                out,
-            );
             continue;
         }
         seen.insert(dedup_key, out.len());
@@ -507,15 +464,71 @@ fn collect_assets_from_record_with_form_key(
             source_subrecord_sig: asset.source_subrecord_sig.to_string(),
             owner_claims: vec![owner_claim],
             workshop_wire_point,
-            workshop_snap_points,
         });
     }
 }
 
 impl WorkshopWirePointIndex {
-    #[cfg(test)]
     fn from_plugin(plugin: &ParsedPlugin) -> Self {
-        workshop_indexes_from_plugin(plugin).0
+        if plugin.game.as_deref() != Some("fo76") {
+            return Self::default();
+        }
+
+        let own_plugin_name: Arc<str> = Arc::from(plugin.plugin_name.as_str());
+        let mut wire_attach_nodes = HashSet::new();
+        let mut wire_candidates = HashMap::new();
+        for record in records(plugin) {
+            let form_key = resolve_form_id_to_form_key(
+                record.form_id,
+                &own_plugin_name,
+                &plugin.header.masters,
+            );
+            match record.signature.as_str() {
+                "STND" => {
+                    if record_editor_id(record).is_some_and(|value| {
+                        value.eq_ignore_ascii_case("defaultSnapNode_WireAttach")
+                    }) {
+                        wire_attach_nodes.insert(form_key);
+                    }
+                }
+                "STMP" => {
+                    let candidates = record
+                        .subrecords
+                        .iter()
+                        .filter_map(|subrecord| {
+                            if subrecord.signature.as_str() != "ENAM" || subrecord.data.len() < 20 {
+                                return None;
+                            }
+                            let node = resolve_form_id_to_form_key(
+                                u32::from_le_bytes(subrecord.data[4..8].try_into().ok()?),
+                                &own_plugin_name,
+                                &plugin.header.masters,
+                            );
+                            let point = (
+                                f32::from_le_bytes(subrecord.data[8..12].try_into().ok()?),
+                                f32::from_le_bytes(subrecord.data[12..16].try_into().ok()?),
+                                f32::from_le_bytes(subrecord.data[16..20].try_into().ok()?),
+                            );
+                            (point.0.is_finite() && point.1.is_finite() && point.2.is_finite())
+                                .then_some((node, point))
+                        })
+                        .collect::<Vec<_>>();
+                    wire_candidates.insert(form_key, candidates);
+                }
+                _ => {}
+            }
+        }
+
+        let by_template = wire_candidates
+            .into_iter()
+            .filter_map(|(key, candidates)| {
+                candidates
+                    .iter()
+                    .find(|(node, _)| wire_attach_nodes.contains(node))
+                    .map(|(_, point)| (key, *point))
+            })
+            .collect();
+        Self { by_template }
     }
 
     fn for_record(&self, record: &ParsedRecord, plugin: &ParsedPlugin) -> Option<(f32, f32, f32)> {
@@ -535,434 +548,6 @@ impl WorkshopWirePointIndex {
         );
         self.by_template.get(&snap_template).copied()
     }
-}
-
-impl WorkshopSnapPointIndex {
-    #[cfg(test)]
-    fn from_plugin(plugin: &ParsedPlugin) -> Self {
-        workshop_indexes_from_plugin(plugin).1
-    }
-
-    fn from_parts(
-        templates: HashMap<FormKey, SnapTemplate>,
-        mut node_defs: HashMap<FormKey, SnapNode>,
-    ) -> Self {
-        let edges = node_defs
-            .iter()
-            .flat_map(|(node, definition)| {
-                definition
-                    .adjacent
-                    .iter()
-                    .cloned()
-                    .map(|adjacent| (node.clone(), adjacent))
-                    .collect::<Vec<_>>()
-            })
-            .collect::<Vec<_>>();
-        for (node, adjacent) in edges {
-            node_defs
-                .entry(adjacent)
-                .or_insert_with(SnapNode::default)
-                .adjacent
-                .insert(node);
-        }
-
-        let template_keys = templates.keys().cloned().collect::<Vec<_>>();
-        let mut flattened = HashMap::new();
-        let mut by_template = HashMap::new();
-        for template_key in template_keys {
-            let nodes = flatten_snap_template(
-                &template_key,
-                &templates,
-                &mut flattened,
-                &mut HashSet::new(),
-            );
-            let points = expand_snap_points(&nodes, &node_defs);
-            if !points.is_empty() {
-                by_template.insert(template_key, points);
-            }
-        }
-        Self { by_template }
-    }
-
-    fn for_record(
-        &self,
-        record: &ParsedRecord,
-        plugin: &ParsedPlugin,
-    ) -> Option<Vec<WorkshopSnapPoint>> {
-        let snap_template_raw = record
-            .subrecords
-            .iter()
-            .find(|subrecord| subrecord.signature.as_str() == "SNTP")
-            .and_then(|subrecord| {
-                (subrecord.data.len() >= 4)
-                    .then(|| u32::from_le_bytes(subrecord.data[..4].try_into().unwrap()))
-            })?;
-        let own_plugin_name: Arc<str> = Arc::from(plugin.plugin_name.as_str());
-        let snap_template = resolve_form_id_to_form_key(
-            snap_template_raw,
-            &own_plugin_name,
-            &plugin.header.masters,
-        );
-        self.by_template.get(&snap_template).cloned()
-    }
-}
-
-fn workshop_indexes_from_plugin(
-    plugin: &ParsedPlugin,
-) -> (WorkshopWirePointIndex, WorkshopSnapPointIndex) {
-    if plugin.game.as_deref() != Some("fo76") {
-        return Default::default();
-    }
-
-    let own_plugin_name: Arc<str> = Arc::from(plugin.plugin_name.as_str());
-    let mut wire_attach_nodes = HashSet::new();
-    let mut wire_candidates = HashMap::new();
-    let mut node_defs = HashMap::new();
-    let mut templates = HashMap::new();
-    for record in records(plugin) {
-        let form_key =
-            resolve_form_id_to_form_key(record.form_id, &own_plugin_name, &plugin.header.masters);
-        match record.signature.as_str() {
-            "STND" => {
-                let editor_id = record_editor_id(record);
-                if editor_id
-                    .is_some_and(|value| value.eq_ignore_ascii_case("defaultSnapNode_WireAttach"))
-                {
-                    wire_attach_nodes.insert(form_key.clone());
-                }
-                let no_self_snap = editor_id
-                    .is_some_and(|value| value.to_ascii_lowercase().contains("noselfsnap"));
-                let adjacent = record
-                    .subrecords
-                    .iter()
-                    .filter(|subrecord| {
-                        subrecord.signature.as_str() == "NNAM" && subrecord.data.len() >= 4
-                    })
-                    .map(|subrecord| {
-                        resolve_form_id_to_form_key(
-                            u32::from_le_bytes(subrecord.data[..4].try_into().unwrap()),
-                            &own_plugin_name,
-                            &plugin.header.masters,
-                        )
-                    })
-                    .collect();
-                let angles = record
-                    .subrecords
-                    .iter()
-                    .filter(|subrecord| {
-                        subrecord.signature.as_str() == "FLTV" && subrecord.data.len() >= 4
-                    })
-                    .filter_map(|subrecord| {
-                        let value = f32::from_le_bytes(
-                            subrecord.data[..4].try_into().expect("checked length"),
-                        );
-                        value.is_finite().then_some(value)
-                    })
-                    .collect();
-                node_defs.insert(
-                    form_key,
-                    SnapNode {
-                        editor_id: editor_id.map(str::to_string),
-                        no_self_snap,
-                        adjacent,
-                        angles,
-                    },
-                );
-            }
-            "STMP" => {
-                let candidates = record
-                    .subrecords
-                    .iter()
-                    .filter_map(|subrecord| {
-                        if subrecord.signature.as_str() != "ENAM" || subrecord.data.len() < 20 {
-                            return None;
-                        }
-                        let node = resolve_form_id_to_form_key(
-                            u32::from_le_bytes(subrecord.data[4..8].try_into().ok()?),
-                            &own_plugin_name,
-                            &plugin.header.masters,
-                        );
-                        let point = (
-                            f32::from_le_bytes(subrecord.data[8..12].try_into().ok()?),
-                            f32::from_le_bytes(subrecord.data[12..16].try_into().ok()?),
-                            f32::from_le_bytes(subrecord.data[16..20].try_into().ok()?),
-                        );
-                        (point.0.is_finite() && point.1.is_finite() && point.2.is_finite())
-                            .then_some((node, point))
-                    })
-                    .collect::<Vec<_>>();
-                wire_candidates.insert(form_key.clone(), candidates);
-                templates.insert(
-                    form_key,
-                    parse_snap_template(record, plugin, &own_plugin_name),
-                );
-            }
-            _ => {}
-        }
-    }
-
-    let by_template = wire_candidates
-        .into_iter()
-        .filter_map(|(key, candidates)| {
-            candidates
-                .iter()
-                .find(|(node, _)| wire_attach_nodes.contains(node))
-                .map(|(_, point)| (key, *point))
-        })
-        .collect();
-    (
-        WorkshopWirePointIndex { by_template },
-        WorkshopSnapPointIndex::from_parts(templates, node_defs),
-    )
-}
-
-fn parse_snap_template(
-    record: &ParsedRecord,
-    plugin: &ParsedPlugin,
-    own_plugin_name: &Arc<str>,
-) -> SnapTemplate {
-    let mut template = SnapTemplate::default();
-    let mut pending_parent_node = None;
-    for subrecord in &record.subrecords {
-        match subrecord.signature.as_str() {
-            "PNAM" if subrecord.data.len() >= 4 => {
-                template.parent = Some(resolve_form_id_to_form_key(
-                    u32::from_le_bytes(subrecord.data[..4].try_into().unwrap()),
-                    own_plugin_name,
-                    &plugin.header.masters,
-                ));
-            }
-            "ENAM" if subrecord.data.len() >= 24 => {
-                let id = u32::from_le_bytes(subrecord.data[..4].try_into().unwrap());
-                let node = resolve_form_id_to_form_key(
-                    u32::from_le_bytes(subrecord.data[4..8].try_into().unwrap()),
-                    own_plugin_name,
-                    &plugin.header.masters,
-                );
-                if let Some((translation, rotation_degrees)) =
-                    parse_snap_transform(&subrecord.data, 8)
-                {
-                    template.nodes.push(TemplateNode {
-                        id,
-                        node,
-                        translation,
-                        rotation_degrees,
-                    });
-                }
-            }
-            "ONAM" if subrecord.data.len() >= 4 => {
-                pending_parent_node =
-                    Some(u32::from_le_bytes(subrecord.data[..4].try_into().unwrap()));
-            }
-            "TNAM" => {
-                if let (Some(id), Some(transform)) = (
-                    pending_parent_node.take(),
-                    parse_snap_transform(&subrecord.data, 0),
-                ) {
-                    template.parent_overrides.insert(id, transform);
-                }
-            }
-            _ => {}
-        }
-    }
-    template
-}
-
-fn parse_snap_transform(data: &[u8], offset: usize) -> Option<((f32, f32, f32), (f32, f32, f32))> {
-    let remaining = data.len().checked_sub(offset)?;
-    let count = if remaining >= 24 {
-        6
-    } else if remaining >= 16 {
-        4
-    } else {
-        return None;
-    };
-    let mut values = [0.0f32; 6];
-    for (index, value) in values.iter_mut().take(count).enumerate() {
-        let start = offset + index * 4;
-        *value = f32::from_le_bytes(data[start..start + 4].try_into().ok()?);
-        if !value.is_finite() {
-            return None;
-        }
-    }
-    let rotation = if count == 6 {
-        (values[3], values[4], values[5])
-    } else {
-        (0.0, 0.0, values[3])
-    };
-    Some(((values[0], values[1], values[2]), rotation))
-}
-
-fn flatten_snap_template(
-    key: &FormKey,
-    templates: &HashMap<FormKey, SnapTemplate>,
-    cache: &mut HashMap<FormKey, Vec<TemplateNode>>,
-    visiting: &mut HashSet<FormKey>,
-) -> Vec<TemplateNode> {
-    if let Some(nodes) = cache.get(key) {
-        return nodes.clone();
-    }
-    if !visiting.insert(key.clone()) {
-        return Vec::new();
-    }
-    let Some(template) = templates.get(key) else {
-        visiting.remove(key);
-        return Vec::new();
-    };
-    let mut nodes = template
-        .parent
-        .as_ref()
-        .map(|parent| flatten_snap_template(parent, templates, cache, visiting))
-        .unwrap_or_default();
-    for node in &mut nodes {
-        if let Some((translation, rotation_degrees)) = template.parent_overrides.get(&node.id) {
-            node.translation = *translation;
-            node.rotation_degrees = *rotation_degrees;
-        }
-    }
-    for node in &template.nodes {
-        if let Some(existing) = nodes.iter_mut().find(|existing| existing.id == node.id) {
-            *existing = node.clone();
-        } else {
-            nodes.push(node.clone());
-        }
-    }
-    visiting.remove(key);
-    cache.insert(key.clone(), nodes.clone());
-    nodes
-}
-
-fn expand_snap_points(
-    nodes: &[TemplateNode],
-    node_defs: &HashMap<FormKey, SnapNode>,
-) -> Vec<WorkshopSnapPoint> {
-    let mut points = Vec::new();
-    for node in nodes {
-        let definition = node_defs.get(&node.node).cloned().unwrap_or_default();
-        if let Some(name) = definition
-            .editor_id
-            .as_deref()
-            .and_then(fo4_workshop_snap_name)
-        {
-            points.push(WorkshopSnapPoint {
-                name: name.to_string(),
-                translation: node.translation,
-                rotation: euler_degrees_to_quaternion(
-                    node.rotation_degrees.0,
-                    node.rotation_degrees.1,
-                    node.rotation_degrees.2,
-                ),
-                scale: 1.0,
-            });
-        }
-        let mut names = Vec::new();
-        if !definition.no_self_snap {
-            names.push(format!("P-76-{}", snap_node_token(&node.node)));
-        }
-        names.extend(definition.adjacent.iter().map(|adjacent| {
-            let mut pair = [snap_node_token(&node.node), snap_node_token(adjacent)];
-            pair.sort();
-            format!("P-76-{}-{}", pair[0], pair[1])
-        }));
-        names.sort();
-        names.dedup();
-
-        let mut angles = vec![0.0];
-        angles.extend(definition.angles);
-        angles.sort_by(f32::total_cmp);
-        angles.dedup_by(|left, right| (*left - *right).abs() <= 0.001);
-        for name in names {
-            for angle in &angles {
-                points.push(WorkshopSnapPoint {
-                    name: name.clone(),
-                    translation: node.translation,
-                    rotation: euler_degrees_to_quaternion(
-                        node.rotation_degrees.0,
-                        node.rotation_degrees.1,
-                        node.rotation_degrees.2 + angle,
-                    ),
-                    scale: 1.0,
-                });
-            }
-        }
-    }
-    points.sort_by(|left, right| {
-        left.name
-            .cmp(&right.name)
-            .then_with(|| left.translation.0.total_cmp(&right.translation.0))
-            .then_with(|| left.translation.1.total_cmp(&right.translation.1))
-            .then_with(|| left.translation.2.total_cmp(&right.translation.2))
-            .then_with(|| left.rotation.3.total_cmp(&right.rotation.3))
-    });
-    points.dedup_by(|left, right| workshop_snap_points_equal(left, right));
-    points
-}
-
-/// Every FO4 name [`fo4_workshop_snap_name`] can return. `conversion_native` validates
-/// incoming snap-point names against this list, so the two must not drift.
-pub const FO4_WORKSHOP_SNAP_ALIASES: &[&str] = &[
-    "P-WS-Origin",
-    "P-WS-Rotation",
-    "P-WS-SinkMax",
-    "P-Floor",
-    "P-Balcony01-Dif",
-    "P-Balcony01",
-    "P-WrhsRoofTwinPk01",
-    "P-WrhsRoof02-Dif",
-    "P-WrhsRoof02-Dif2",
-];
-
-/// FO4 snapping matches connect points by name, so a FO76 node only interoperates with
-/// vanilla pieces if it is also emitted under the name FO4 uses for that position.
-/// Entries were derived by matching converted connect-point transforms against the FO4
-/// meshes the kit was ported from (FO76 warehouse/barn ← FO4 `dlc03barn*`); nodes with no
-/// corroborated counterpart stay unmapped and keep only their opaque `P-76-*` name.
-fn fo4_workshop_snap_name(editor_id: &str) -> Option<&'static str> {
-    let normalized = editor_id.to_ascii_lowercase();
-    match normalized.as_str() {
-        "defaultsnapnode_origin" => Some("P-WS-Origin"),
-        "defaultsnapnode_rotation" => Some("P-WS-Rotation"),
-        "defaultsnapnode_sinkmax" => Some("P-WS-SinkMax"),
-        "snapnode_floor01"
-        | "snapnode_floor01_nofoundationsnap"
-        | "snapnode_floor01foundation"
-        | "snapnode_floor01foundation_ramp"
-        | "snapnode_floor01foundation_stairside"
-        | "snapnode_stairswithturn_top" => Some("P-Floor"),
-        // `_noselfsnap` variants are deliberately excluded: giving them a shared FO4 name
-        // would reintroduce the self-snapping they opt out of.
-        "snapnode_floor01sm_a" => Some("P-Balcony01-Dif"),
-        "snapnode_floor01sm_b" => Some("P-Balcony01"),
-        "snapnode_roof01twinpeak" => Some("P-WrhsRoofTwinPk01"),
-        "snapnode_roof01l" => Some("P-WrhsRoof02-Dif"),
-        "snapnode_roof01r" => Some("P-WrhsRoof02-Dif2"),
-        _ => None,
-    }
-}
-
-fn snap_node_token(key: &FormKey) -> String {
-    key.to_string()
-        .rsplit(':')
-        .next()
-        .unwrap_or("UNKNOWN")
-        .chars()
-        .filter(|character| character.is_ascii_alphanumeric())
-        .collect::<String>()
-        .to_ascii_uppercase()
-}
-
-fn euler_degrees_to_quaternion(x: f32, y: f32, z: f32) -> (f32, f32, f32, f32) {
-    // Bethesda Euler angles are clockwise: FO4's NiMatrix3::FromEulerAnglesXYZ negates all
-    // three before building the matrix, and vanilla dlc03barn* connect points confirm the sign.
-    let (sx, cx) = (-x.to_radians() * 0.5).sin_cos();
-    let (sy, cy) = (-y.to_radians() * 0.5).sin_cos();
-    let (sz, cz) = (-z.to_radians() * 0.5).sin_cos();
-    (
-        cx * cy * cz + sx * sy * sz,
-        sx * cy * cz - cx * sy * sz,
-        cx * sy * cz + sx * cy * sz,
-        cx * cy * sz - sx * sy * cz,
-    )
 }
 
 fn records(plugin: &ParsedPlugin) -> impl Iterator<Item = &ParsedRecord> {
@@ -1013,37 +598,6 @@ fn merge_workshop_wire_point(
     }
 }
 
-fn merge_workshop_snap_points(
-    key: &AssetKey,
-    candidate: Option<Vec<WorkshopSnapPoint>>,
-    existing_index: usize,
-    ambiguous: &mut HashSet<AssetKey>,
-    out: &mut [CollectedAsset],
-) {
-    let Some(candidate) = candidate else {
-        return;
-    };
-    if ambiguous.contains(key) {
-        return;
-    }
-    let existing = &mut out[existing_index].workshop_snap_points;
-    match existing {
-        None => *existing = Some(candidate),
-        Some(points) if workshop_snap_point_lists_equal(points, &candidate) => {}
-        Some(_) => {
-            *existing = None;
-            ambiguous.insert(key.clone());
-        }
-    }
-}
-
-fn workshop_snap_point_payloads(points: Vec<WorkshopSnapPoint>) -> Vec<WorkshopSnapPointPayload> {
-    points
-        .into_iter()
-        .map(|point| (point.name, point.translation, point.rotation, point.scale))
-        .collect()
-}
-
 fn asset_owner_claim_payloads(claims: Vec<AssetOwnerClaim>) -> Vec<AssetOwnerClaimPayload> {
     claims
         .into_iter()
@@ -1065,40 +619,13 @@ fn asset_owner_claim_payloads(claims: Vec<AssetOwnerClaim>) -> Vec<AssetOwnerCla
                         )
                     })
                     .collect(),
+                claim.armor_family.into_iter().map(|model| (
+                    model.armor_form_key, model.owner_form_key,
+                    model.source_subrecord_sig, model.source_path,
+                )).collect(),
             )
         })
         .collect()
-}
-
-fn workshop_snap_point_lists_equal(
-    left: &[WorkshopSnapPoint],
-    right: &[WorkshopSnapPoint],
-) -> bool {
-    left.len() == right.len()
-        && left
-            .iter()
-            .zip(right)
-            .all(|(left, right)| workshop_snap_points_equal(left, right))
-}
-
-fn workshop_snap_points_equal(left: &WorkshopSnapPoint, right: &WorkshopSnapPoint) -> bool {
-    left.name == right.name
-        && tuple3_close(left.translation, right.translation)
-        && tuple4_close(left.rotation, right.rotation)
-        && (left.scale - right.scale).abs() <= 0.0001
-}
-
-fn tuple3_close(left: (f32, f32, f32), right: (f32, f32, f32)) -> bool {
-    (left.0 - right.0).abs() <= 0.001
-        && (left.1 - right.1).abs() <= 0.001
-        && (left.2 - right.2).abs() <= 0.001
-}
-
-fn tuple4_close(left: (f32, f32, f32, f32), right: (f32, f32, f32, f32)) -> bool {
-    (left.0 - right.0).abs() <= 0.0001
-        && (left.1 - right.1).abs() <= 0.0001
-        && (left.2 - right.2).abs() <= 0.0001
-        && (left.3 - right.3).abs() <= 0.0001
 }
 
 fn wire_points_equal(left: (f32, f32, f32), right: (f32, f32, f32)) -> bool {
@@ -1168,7 +695,6 @@ mod tests {
             form_key_filter: None,
         };
         let wire_points = WorkshopWirePointIndex::from_plugin(&plugin);
-        let snap_points = WorkshopSnapPointIndex::from_plugin(&plugin);
         let mut idle_topology = IdleTopologyIndex::default();
         idle_topology.add_plugin(&plugin);
         let mut seen = HashMap::new();
@@ -1180,7 +706,6 @@ mod tests {
             &filters,
             &idle_topology,
             &wire_points,
-            &snap_points,
             &mut seen,
             &mut ambiguous,
             &mut assets,
@@ -1198,6 +723,58 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["SeventySix.esm:000801", "SeventySix.esm:000802"]
         );
+    }
+
+    #[test]
+    fn shared_arma_models_keep_both_perspectives_in_owner_claims() {
+        let mut addon = record("ARMA", 0x003A_8DE7, "unused.nif");
+        addon.subrecords = vec![
+            subrecord("MOD2", "Clothes/ChronoWatch/Watch_M.nif"),
+            subrecord("MOD3", "Clothes/ChronoWatch/Watch_F.nif"),
+            subrecord("MOD4", "clothes/chronowatch/watch_m.NIF"),
+            subrecord("MOD5", "Clothes/ChronoWatch/Watch_F.nif"),
+            subrecord("MOD4", "Clothes/ChronoWatch/Watch_M.nif"),
+        ];
+        let plugin = plugin_for_game("Starfield.esm", "starfield", vec![addon]);
+        let filters = AssetCollectFilters {
+            kind_filter: None,
+            signature_filter: None,
+            form_key_filter: None,
+        };
+        let wire_points = WorkshopWirePointIndex::from_plugin(&plugin);
+        let mut idle_topology = IdleTopologyIndex::default();
+        idle_topology.add_plugin(&plugin);
+        let mut seen = HashMap::new();
+        let mut ambiguous = HashSet::new();
+        let mut assets = Vec::new();
+
+        collect_assets_from_items(
+            &plugin,
+            &filters,
+            &idle_topology,
+            &wire_points,
+            &mut seen,
+            &mut ambiguous,
+            &mut assets,
+        );
+
+        assert_eq!(assets.len(), 2);
+        for (asset, expected_roles) in assets.iter().zip([["MOD2", "MOD4"], ["MOD3", "MOD5"]]) {
+            assert_eq!(asset.source_subrecord_sig, expected_roles[0]);
+            assert_eq!(asset.owner_claims.len(), 2);
+            assert!(asset.owner_claims.iter().all(|claim| {
+                claim.source_record_signature == "ARMA"
+                    && claim.source_form_key == "Starfield.esm:3A8DE7"
+            }));
+            assert_eq!(
+                asset
+                    .owner_claims
+                    .iter()
+                    .map(|claim| claim.source_subrecord_sig.as_str())
+                    .collect::<Vec<_>>(),
+                expected_roles,
+            );
+        }
     }
 
     #[test]
@@ -1262,7 +839,6 @@ mod tests {
             form_key_filter: None,
         };
         let wire_points = WorkshopWirePointIndex::from_plugin(&plugin);
-        let snap_points = WorkshopSnapPointIndex::from_plugin(&plugin);
         let mut idle_topology = IdleTopologyIndex::default();
         idle_topology.add_plugin(&plugin);
         let mut seen = HashMap::new();
@@ -1274,7 +850,6 @@ mod tests {
             &filters,
             &idle_topology,
             &wire_points,
-            &snap_points,
             &mut seen,
             &mut ambiguous,
             &mut assets,
@@ -1366,7 +941,6 @@ mod tests {
             form_key_filter: None,
         };
         let wire_points = WorkshopWirePointIndex::from_plugin(&plugin);
-        let snap_points = WorkshopSnapPointIndex::from_plugin(&plugin);
         let mut idle_topology = IdleTopologyIndex::default();
         idle_topology.add_plugin(&plugin);
         let mut seen = HashMap::new();
@@ -1378,7 +952,6 @@ mod tests {
             &filters,
             &idle_topology,
             &wire_points,
-            &snap_points,
             &mut seen,
             &mut ambiguous,
             &mut assets,
@@ -1386,321 +959,5 @@ mod tests {
 
         assert_eq!(assets.len(), 1);
         assert_eq!(assets[0].workshop_wire_point, Some((3.5, 15.0, 77.0)));
-        let points = assets[0]
-            .workshop_snap_points
-            .as_ref()
-            .expect("full snap template points");
-        assert_eq!(points.len(), 1);
-        assert_eq!(points[0].name, "P-76-012595");
-        assert_eq!(points[0].translation, (3.5, 15.0, 77.0));
-        assert_eq!(points[0].rotation, (1.0, 0.0, 0.0, 0.0));
-    }
-
-    #[test]
-    fn fo76_snap_template_inherits_overrides_and_expands_angles() {
-        let node_a = ParsedRecord {
-            signature: SmolStr::new("STND"),
-            form_id: 0x0001_0001,
-            flags: 0,
-            version_control: 0,
-            form_version: Some(195),
-            version2: None,
-            subrecords: vec![
-                subrecord("EDID", "SnapNode_A"),
-                raw_subrecord("NNAM", 0x0001_0002u32.to_le_bytes().to_vec()),
-                raw_subrecord("FLTV", 90.0f32.to_le_bytes().to_vec()),
-            ],
-            raw_payload: None,
-            parse_error: None,
-        };
-        let node_b = ParsedRecord {
-            signature: SmolStr::new("STND"),
-            form_id: 0x0001_0002,
-            flags: 0,
-            version_control: 0,
-            form_version: Some(195),
-            version2: None,
-            subrecords: vec![subrecord("EDID", "SnapNode_B")],
-            raw_payload: None,
-            parse_error: None,
-        };
-        let mut parent_enam = Vec::new();
-        parent_enam.extend_from_slice(&7u32.to_le_bytes());
-        parent_enam.extend_from_slice(&0x0001_0001u32.to_le_bytes());
-        for value in [1.0f32, 2.0, 3.0, 0.0, 0.0, 0.0] {
-            parent_enam.extend_from_slice(&value.to_le_bytes());
-        }
-        parent_enam.extend_from_slice(&0u32.to_le_bytes());
-        let parent = ParsedRecord {
-            signature: SmolStr::new("STMP"),
-            form_id: 0x0002_0001,
-            flags: 0,
-            version_control: 0,
-            form_version: Some(195),
-            version2: None,
-            subrecords: vec![raw_subrecord("ENAM", parent_enam)],
-            raw_payload: None,
-            parse_error: None,
-        };
-        let mut override_transform = Vec::new();
-        for value in [4.0f32, 5.0, 6.0, 0.0, 0.0, 180.0] {
-            override_transform.extend_from_slice(&value.to_le_bytes());
-        }
-        let child = ParsedRecord {
-            signature: SmolStr::new("STMP"),
-            form_id: 0x0002_0002,
-            flags: 0,
-            version_control: 0,
-            form_version: Some(195),
-            version2: None,
-            subrecords: vec![
-                raw_subrecord("PNAM", 0x0002_0001u32.to_le_bytes().to_vec()),
-                raw_subrecord("ONAM", 7u32.to_le_bytes().to_vec()),
-                raw_subrecord("TNAM", override_transform),
-            ],
-            raw_payload: None,
-            parse_error: None,
-        };
-        let activator = ParsedRecord {
-            signature: SmolStr::new("ACTI"),
-            form_id: 0x0003_0001,
-            flags: 0,
-            version_control: 0,
-            form_version: Some(195),
-            version2: None,
-            subrecords: vec![
-                raw_subrecord("SNTP", 0x0002_0002u32.to_le_bytes().to_vec()),
-                subrecord("MODL", "Workshop/Foundation.nif"),
-            ],
-            raw_payload: None,
-            parse_error: None,
-        };
-        let plugin = plugin(vec![node_a, node_b, parent, child, activator]);
-        let snap_points = WorkshopSnapPointIndex::from_plugin(&plugin);
-        let points = snap_points
-            .for_record(
-                records(&plugin)
-                    .find(|record| record.signature.as_str() == "ACTI")
-                    .unwrap(),
-                &plugin,
-            )
-            .expect("inherited points");
-
-        assert_eq!(points.len(), 4);
-        assert!(
-            points
-                .iter()
-                .all(|point| point.translation == (4.0, 5.0, 6.0))
-        );
-        assert!(points.iter().any(|point| point.name == "P-76-010001"));
-        assert!(
-            points
-                .iter()
-                .any(|point| point.name == "P-76-010001-010002")
-        );
-    }
-
-    #[test]
-    fn fo76_floor_node_adds_single_fo4_alias_without_angle_expansion() {
-        let floor_node = ParsedRecord {
-            signature: SmolStr::new("STND"),
-            form_id: 0x000A_7382,
-            flags: 0,
-            version_control: 0,
-            form_version: Some(181),
-            version2: None,
-            subrecords: vec![
-                subrecord("EDID", "SnapNode_Floor01Foundation"),
-                raw_subrecord("FLTV", 90.0f32.to_le_bytes().to_vec()),
-            ],
-            raw_payload: None,
-            parse_error: None,
-        };
-        let mut node = Vec::new();
-        node.extend_from_slice(&0u32.to_le_bytes());
-        node.extend_from_slice(&0x000A_7382u32.to_le_bytes());
-        for value in [0.0f32, 128.0, 0.0, 0.0, 0.0, 0.0] {
-            node.extend_from_slice(&value.to_le_bytes());
-        }
-        let template = ParsedRecord {
-            signature: SmolStr::new("STMP"),
-            form_id: 0x0001_596A,
-            flags: 0,
-            version_control: 0,
-            form_version: Some(195),
-            version2: None,
-            subrecords: vec![raw_subrecord("ENAM", node)],
-            raw_payload: None,
-            parse_error: None,
-        };
-        let foundation = ParsedRecord {
-            signature: SmolStr::new("STAT"),
-            form_id: 0x0049_41FF,
-            flags: 0,
-            version_control: 0,
-            form_version: Some(208),
-            version2: None,
-            subrecords: vec![
-                raw_subrecord("SNTP", 0x0001_596Au32.to_le_bytes().to_vec()),
-                subrecord("MODL", "Workshop/Foundation.nif"),
-            ],
-            raw_payload: None,
-            parse_error: None,
-        };
-        let plugin = plugin(vec![floor_node, template, foundation]);
-        let points = WorkshopSnapPointIndex::from_plugin(&plugin)
-            .for_record(
-                records(&plugin)
-                    .find(|record| record.signature.as_str() == "STAT")
-                    .unwrap(),
-                &plugin,
-            )
-            .expect("foundation snap points");
-
-        assert_eq!(
-            points
-                .iter()
-                .filter(|point| point.name == "P-Floor")
-                .count(),
-            1
-        );
-        assert_eq!(
-            points
-                .iter()
-                .filter(|point| point.name == "P-76-0A7382")
-                .count(),
-            2
-        );
-    }
-
-    fn single_node_snap_points(editor_id: &str, transform: [f32; 6]) -> Vec<WorkshopSnapPoint> {
-        let snap_node = ParsedRecord {
-            signature: SmolStr::new("STND"),
-            form_id: 0x0001_0001,
-            flags: 0,
-            version_control: 0,
-            form_version: Some(195),
-            version2: None,
-            subrecords: vec![subrecord("EDID", editor_id)],
-            raw_payload: None,
-            parse_error: None,
-        };
-        let mut node = Vec::new();
-        node.extend_from_slice(&0u32.to_le_bytes());
-        node.extend_from_slice(&0x0001_0001u32.to_le_bytes());
-        for value in transform {
-            node.extend_from_slice(&value.to_le_bytes());
-        }
-        let template = ParsedRecord {
-            signature: SmolStr::new("STMP"),
-            form_id: 0x0002_0001,
-            flags: 0,
-            version_control: 0,
-            form_version: Some(195),
-            version2: None,
-            subrecords: vec![raw_subrecord("ENAM", node)],
-            raw_payload: None,
-            parse_error: None,
-        };
-        let piece = ParsedRecord {
-            signature: SmolStr::new("STAT"),
-            form_id: 0x0003_0001,
-            flags: 0,
-            version_control: 0,
-            form_version: Some(208),
-            version2: None,
-            subrecords: vec![
-                raw_subrecord("SNTP", 0x0002_0001u32.to_le_bytes().to_vec()),
-                subrecord("MODL", "Workshop/Piece.nif"),
-            ],
-            raw_payload: None,
-            parse_error: None,
-        };
-        let plugin = plugin(vec![snap_node, template, piece]);
-        WorkshopSnapPointIndex::from_plugin(&plugin)
-            .for_record(
-                records(&plugin)
-                    .find(|record| record.signature.as_str() == "STAT")
-                    .unwrap(),
-                &plugin,
-            )
-            .expect("snap points")
-    }
-
-    fn assert_rotation(point: &WorkshopSnapPoint, expected: (f32, f32, f32, f32)) {
-        let actual = point.rotation;
-        let close = |a: f32, b: f32| (a - b).abs() < 1e-4;
-        assert!(
-            close(actual.0, expected.0)
-                && close(actual.1, expected.1)
-                && close(actual.2, expected.2)
-                && close(actual.3, expected.3),
-            "{}: expected {expected:?}, got {actual:?}",
-            point.name
-        );
-    }
-
-    #[test]
-    fn floor_x_edge_rotations_match_vanilla_dlc03barnfloorwood01() {
-        // dlc03barnfloorwood01.nif: P-Floor at x=+128 is (w .7071, z -.7071), x=-128 is z +.7071.
-        let half = std::f32::consts::FRAC_1_SQRT_2;
-        let plus_x = single_node_snap_points("SnapNode_Floor01", [128.0, 0.0, 0.0, 0.0, 0.0, 90.0]);
-        let minus_x =
-            single_node_snap_points("SnapNode_Floor01", [-128.0, 0.0, 0.0, 0.0, 0.0, -90.0]);
-        let floor = |points: &[WorkshopSnapPoint]| {
-            points
-                .iter()
-                .find(|point| point.name == "P-Floor")
-                .cloned()
-                .expect("P-Floor alias")
-        };
-        assert_rotation(&floor(&plus_x), (half, 0.0, 0.0, -half));
-        assert_rotation(&floor(&minus_x), (half, 0.0, 0.0, half));
-    }
-
-    #[test]
-    fn roof_edge_rotation_matches_vanilla_dlc03barnroofa01() {
-        // dlc03barnroofa01.nif: P-WrhsRoof02-Dif at x=+128 is (w .7071, z -.7071).
-        let half = std::f32::consts::FRAC_1_SQRT_2;
-        let points =
-            single_node_snap_points("SnapNode_Roof01L", [128.0, 0.0, 320.0, 0.0, 0.0, 90.0]);
-        let roof = points
-            .iter()
-            .find(|point| point.name == "P-WrhsRoof02-Dif")
-            .expect("P-WrhsRoof02-Dif alias");
-        assert_rotation(roof, (half, 0.0, 0.0, -half));
-    }
-
-    #[test]
-    fn every_fo4_alias_is_declared_for_the_conversion_validator() {
-        for editor_id in [
-            "defaultSnapNode_Origin",
-            "defaultSnapNode_Rotation",
-            "defaultSnapNode_SinkMax",
-            "SnapNode_Floor01",
-            "SnapNode_Floor01_NoFoundationSnap",
-            "SnapNode_Floor01Foundation",
-            "SnapNode_Floor01Foundation_Ramp",
-            "SnapNode_Floor01Foundation_StairSide",
-            "SnapNode_StairsWithTurn_Top",
-            "SnapNode_Floor01Sm_A",
-            "SnapNode_Floor01Sm_B",
-            "SnapNode_Roof01TwinPeak",
-            "SnapNode_Roof01L",
-            "SnapNode_Roof01R",
-        ] {
-            let name = fo4_workshop_snap_name(editor_id)
-                .unwrap_or_else(|| panic!("{editor_id} lost its FO4 alias"));
-            assert!(
-                FO4_WORKSHOP_SNAP_ALIASES.contains(&name),
-                "{name} is missing from FO4_WORKSHOP_SNAP_ALIASES; conversion_native would \
-                 reject it as an unsupported generated snap name"
-            );
-        }
-        assert_eq!(
-            fo4_workshop_snap_name("SnapNode_Floor01Sm_A_noselfsnap"),
-            None
-        );
-        assert_eq!(fo4_workshop_snap_name("SnapNode_Wall01L"), None);
     }
 }

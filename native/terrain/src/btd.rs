@@ -30,6 +30,8 @@ pub enum BtdError {
     CellOutOfBounds(i32, i32),
     #[error("unsupported BTD lod {0}")]
     UnsupportedLod(u8),
+    #[error("invalid raw terrain patch: {0}")]
+    InvalidRawPatch(&'static str),
     #[error("zlib decode failed: {0}")]
     Zlib(String),
     #[error("BTD offset is outside file: {0}")]
@@ -95,6 +97,18 @@ pub struct QuadrantTextureSet {
     pub additional: [Option<u8>; 5],
     pub additional_source_slots: [Option<u8>; 5],
     pub ground_cover: [Option<u8>; 8],
+}
+
+pub const RAW_SELECTOR_SIDE: usize = 67;
+pub const RAW_COLOR_SIDE: usize = 19;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RawTerrainPatch {
+    pub storage_origin: [i32; 2],
+    pub native_grid_origin: [f32; 2],
+    pub selectors: Vec<u16>,
+    pub palettes: [[u8; 8]; 9],
+    pub colors: Vec<u16>,
 }
 
 #[derive(Debug, Clone)]
@@ -239,6 +253,19 @@ impl BtdFile {
             .sum()
     }
 
+    pub(crate) fn release_land_alpha_before_cell_row(&mut self, cell_y: i32) -> u64 {
+        let relative_y = i64::from(cell_y) - i64::from(self.header.cell_min_y);
+        self.tile_cache
+            .values_mut()
+            .filter(|tile| i64::from(tile.y0) + TILE_CELLS as i64 <= relative_y)
+            .map(|tile| {
+                let bytes = tile.land_alphas.len() * std::mem::size_of::<u16>();
+                drop(std::mem::take(&mut tile.land_alphas));
+                bytes as u64
+            })
+            .sum()
+    }
+
     pub fn land_texture_form_id(&self, index: usize) -> Option<u32> {
         self.ltex_form_ids.get(index).copied()
     }
@@ -253,7 +280,7 @@ impl BtdFile {
         cell_y: i32,
         lod: u8,
     ) -> Result<Vec<u16>, BtdError> {
-        self.extract_cell_u16(cell_x, cell_y, lod, ExtractKind::Height)
+        self.extract_cell_u16(cell_x, cell_y, lod, ExtractKind::Height, true)
     }
 
     pub fn cell_land_alpha_u16(
@@ -262,7 +289,93 @@ impl BtdFile {
         cell_y: i32,
         lod: u8,
     ) -> Result<Vec<u16>, BtdError> {
-        self.extract_cell_u16(cell_x, cell_y, lod, ExtractKind::LandAlpha)
+        self.extract_cell_u16(cell_x, cell_y, lod, ExtractKind::LandAlpha, true)
+    }
+
+    /// Native selector words retain the original five 3-bit groups and unused high bit.
+    pub fn cell_raw_land_alpha_u16(
+        &mut self, cell_x: i32, cell_y: i32, lod: u8,
+    ) -> Result<Vec<u16>, BtdError> {
+        self.extract_cell_u16(cell_x, cell_y, lod, ExtractKind::LandAlpha, false)
+    }
+
+    pub fn cell_raw_ltex_palettes(&self, cell_x: i32, cell_y: i32) -> Result<[[u8; 8]; 4], BtdError> {
+        self.assert_cell_in_bounds(cell_x, cell_y)?;
+        let x = usize::try_from(cell_x - self.header.cell_min_x).unwrap();
+        let y = usize::try_from(cell_y - self.header.cell_min_y).unwrap();
+        let mut palettes = [[0u8; 8]; 4];
+        for (q, palette) in palettes.iter_mut().enumerate() {
+            let offset = ((((y << 1) | (q >> 1)) * (self.header.cells_x << 1) + ((x << 1) | (q & 1))) << 3)
+                + self.header.ltex_map_offset;
+            ensure_range(&self.bytes, offset, 8)?;
+            palette.copy_from_slice(&self.bytes[offset..offset + 8]);
+        }
+        Ok(palettes)
+    }
+
+    pub fn raw_terrain_patch(&mut self, storage_origin: [i32; 2]) -> Result<RawTerrainPatch, BtdError> {
+        if self.header.is_starfield_layout || storage_origin.iter().any(|v| v.rem_euclid(64) != 0) {
+            return Err(BtdError::InvalidRawPatch("FO76 source origin must align to a 64-sample quadrant"));
+        }
+        if self.header.resolution_x as u64 != self.header.cells_x as u64 * 128 ||
+            self.header.resolution_y as u64 != self.header.cells_y as u64 * 128 {
+            return Err(BtdError::InvalidRawPatch("FO76 source dimensions must match the cell extent"));
+        }
+        let minimum = [i64::from(self.header.cell_min_x) * 128, i64::from(self.header.cell_min_y) * 128];
+        let maximum = [(i64::from(self.header.cell_max_x) + 1) * 128 - 1,
+                       (i64::from(self.header.cell_max_y) + 1) * 128 - 1];
+        let origin = storage_origin.map(i64::from);
+        if (0..2).any(|axis| origin[axis] + 65 < minimum[axis] || origin[axis] - 1 > maximum[axis]) {
+            return Err(BtdError::InvalidRawPatch("requested rectangle is wholly outside BTD bounds"));
+        }
+        let in_bounds = |x: i64, y: i64| x >= minimum[0] && x <= maximum[0] && y >= minimum[1] && y <= maximum[1];
+        let mut selectors = vec![0u16; RAW_SELECTOR_SIDE * RAW_SELECTOR_SIDE];
+        let mut source_cells = HashMap::new();
+        for row in 0..RAW_SELECTOR_SIDE {
+            for column in 0..RAW_SELECTOR_SIDE {
+                let x = origin[0] + column as i64 - 1;
+                let y = origin[1] + row as i64 - 1;
+                if !in_bounds(x, y) { continue; }
+                let cell = (x.div_euclid(128) as i32, y.div_euclid(128) as i32);
+                if let std::collections::hash_map::Entry::Vacant(entry) = source_cells.entry(cell) {
+                    entry.insert(self.cell_raw_land_alpha_u16(cell.0, cell.1, 0)?);
+                }
+                selectors[row * RAW_SELECTOR_SIDE + column] = source_cells[&cell][
+                    y.rem_euclid(128) as usize * 128 + x.rem_euclid(128) as usize];
+            }
+        }
+        let mut palettes = [[0u8; 8]; 9];
+        for row in 0..3 {
+            for column in 0..3 {
+                let x = origin[0] + (column as i64 - 1) * 64;
+                let y = origin[1] + (row as i64 - 1) * 64;
+                if !in_bounds(x, y) { continue; }
+                let cell = (x.div_euclid(128) as i32, y.div_euclid(128) as i32);
+                let source = self.cell_raw_ltex_palettes(cell.0, cell.1)?;
+                let quadrant = (y.rem_euclid(128) / 64 * 2 + x.rem_euclid(128) / 64) as usize;
+                palettes[row * 3 + column] = source[quadrant];
+            }
+        }
+        let mut colors = vec![0u16; RAW_COLOR_SIDE * RAW_COLOR_SIDE];
+        source_cells.clear();
+        for row in 0..RAW_COLOR_SIDE {
+            for column in 0..RAW_COLOR_SIDE {
+                let x = origin[0] + (column as i64 - 1) * 4;
+                let y = origin[1] + (row as i64 - 1) * 4;
+                if !in_bounds(x, y) { continue; }
+                let cell = (x.div_euclid(128) as i32, y.div_euclid(128) as i32);
+                if let std::collections::hash_map::Entry::Vacant(entry) = source_cells.entry(cell) {
+                    entry.insert(self.cell_terrain_color_u16(cell.0, cell.1, 2)?);
+                }
+                colors[row * RAW_COLOR_SIDE + column] = source_cells[&cell][
+                    y.rem_euclid(128) as usize / 4 * 32 + x.rem_euclid(128) as usize / 4];
+            }
+        }
+        let native_grid_origin = [
+            (origin[0] - minimum[0]) as f32 - self.header.resolution_x as f32 * 0.5,
+            (origin[1] - minimum[1]) as f32 - self.header.resolution_y as f32 * 0.5,
+        ];
+        Ok(RawTerrainPatch { storage_origin, native_grid_origin, selectors, palettes, colors })
     }
 
     pub fn cell_terrain_color_u16(
@@ -271,7 +384,7 @@ impl BtdFile {
         cell_y: i32,
         lod: u8,
     ) -> Result<Vec<u16>, BtdError> {
-        self.extract_cell_u16(cell_x, cell_y, lod, ExtractKind::TerrainColor)
+        self.extract_cell_u16(cell_x, cell_y, lod, ExtractKind::TerrainColor, true)
     }
 
     pub fn cell_texture_set(&self, cell_x: i32, cell_y: i32) -> Result<CellTextureSet, BtdError> {
@@ -570,6 +683,7 @@ impl BtdFile {
         cell_y: i32,
         lod: u8,
         kind: ExtractKind,
+        reorder_alpha: bool,
     ) -> Result<Vec<u16>, BtdError> {
         if lod > 4 {
             return Err(BtdError::UnsupportedLod(lod));
@@ -604,7 +718,7 @@ impl BtdFile {
                         result.push(source[row_start + column * step]);
                     }
                 }
-                if matches!(kind, ExtractKind::LandAlpha) {
+                if reorder_alpha && matches!(kind, ExtractKind::LandAlpha) {
                     reorder_land_alpha_bits(&mut result);
                 }
                 Ok(result)
@@ -1215,7 +1329,159 @@ fn ensure_index_u16(values: &[u16], index: usize) -> Result<(), BtdError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
+    use std::io::{Seek, Write};
+
+    #[test]
+    fn raw_selectors_and_palettes_preserve_native_order_without_changing_legacy_decode() {
+        let mut bytes = vec![0u8; 800];
+        bytes[0..4].copy_from_slice(b"BTDB");
+        bytes[4..8].copy_from_slice(&6u32.to_le_bytes());
+        bytes[16..20].copy_from_slice(&128u32.to_le_bytes());
+        bytes[20..24].copy_from_slice(&128u32.to_le_bytes());
+        bytes[40..44].copy_from_slice(&6u32.to_le_bytes());
+        for index in 0..6usize { bytes[44+index*4..48+index*4].copy_from_slice(&(100+index as u32).to_le_bytes()); }
+        let palette_offset = 44 + 6*4 + 8;
+        let palettes = [[1,2,3,4,5,6,0,0], [6,5,4,3,2,1,0,0], [2,4,6,0,0,0,0,0], [3,5,0,0,0,0,0,0]];
+        for (q,palette) in palettes.iter().enumerate() {
+            bytes[palette_offset+q*8..palette_offset+(q+1)*8].copy_from_slice(palette);
+        }
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(&bytes).unwrap();
+        let mut btd = BtdFile::open(file.path().to_str().unwrap()).unwrap();
+        btd.tile_cache.insert(0, TileData { x0:0, y0:0, block_mask:0,
+            heights:vec![0; TILE_SAMPLE_COUNT], land_alphas:vec![0x8123; TILE_SAMPLE_COUNT],
+            ground_cover:Vec::new(), vertex_color:Vec::new() });
+        assert_eq!(btd.cell_raw_ltex_palettes(0,0).unwrap(), palettes);
+        let raw = btd.cell_raw_land_alpha_u16(0,0,0).unwrap();
+        assert!(raw.iter().all(|&word|word==0x8123));
+        let mut expected=raw.clone(); reorder_land_alpha_bits(&mut expected);
+        assert_ne!(raw,expected);
+        assert_eq!(btd.cell_land_alpha_u16(0,0,0).unwrap(),expected);
+        assert_eq!(btd.cell_raw_land_alpha_u16(0,0,0).unwrap(),raw);
+        let decoded=btd.cell_texture_set(0,0).unwrap();
+        assert_eq!(decoded.quadrants[0].base,Some(0));
+        assert_eq!(decoded.quadrants[0].additional,[Some(1),Some(2),Some(3),Some(4),Some(5)]);
+        assert!(btd.cell_raw_ltex_palettes(-1,0).is_err());
+    }
+
+    #[test]
+    fn raw_patch_preserves_gutters_palette_order_color_spacing_and_native_zero_padding() {
+        let mut bytes = vec![0u8; 20000];
+        bytes[0..4].copy_from_slice(b"BTDB");
+        bytes[4..8].copy_from_slice(&6u32.to_le_bytes());
+        bytes[16..20].copy_from_slice(&256u32.to_le_bytes());
+        bytes[20..24].copy_from_slice(&256u32.to_le_bytes());
+        bytes[24..28].copy_from_slice(&(-1i32).to_le_bytes());
+        bytes[28..32].copy_from_slice(&(-1i32).to_le_bytes());
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(&bytes).unwrap();
+        let mut btd = BtdFile::open(file.path().to_str().unwrap()).unwrap();
+        btd.header.cell_min_x = -1;
+        btd.header.cell_min_y = -1;
+        btd.header.cells_x = 2;
+        btd.header.cells_y = 2;
+        let palette_offset = btd.header.ltex_map_offset;
+        drop(btd);
+        for palette in 0..16usize {
+            for slot in 0..8usize { bytes[palette_offset + palette * 8 + slot] = (palette * 8 + slot) as u8; }
+        }
+        file.as_file_mut().rewind().unwrap();
+        file.write_all(&bytes).unwrap();
+        let mut btd = BtdFile::open(file.path().to_str().unwrap()).unwrap();
+        btd.header.cell_min_x = -1;
+        btd.header.cell_min_y = -1;
+        btd.header.cells_x = 2;
+        btd.header.cells_y = 2;
+        let mut alphas = vec![0u16; TILE_SAMPLE_COUNT];
+        let mut colors = vec![0u16; TILE_VERTEX_COLOR_SAMPLE_COUNT];
+        for y in 0..256usize {
+            for x in 0..256usize { alphas[y * TILE_SAMPLE_WIDTH + x] = ((y * 256 + x) as u16) ^ 0x8000; }
+        }
+        for y in 0..64usize {
+            for x in 0..64usize { colors[y * TILE_VERTEX_COLOR_WIDTH + x] = (y * 64 + x) as u16; }
+        }
+        btd.tile_cache.insert(0, TileData { x0:0, y0:0, block_mask:0, heights:Vec::new(),
+            land_alphas:alphas, ground_cover:Vec::new(), vertex_color:Vec::new() });
+        btd.tile_cache.insert(0x1200_0000, TileData { x0:0, y0:0, block_mask:0, heights:Vec::new(),
+            land_alphas:Vec::new(), ground_cover:Vec::new(), vertex_color:colors });
+        let left = btd.raw_terrain_patch([-64,-64]).unwrap();
+        let right = btd.raw_terrain_patch([0,-64]).unwrap();
+        for row in 0..67usize {
+            for column in 0..67usize {
+                let x = column + 63;
+                let y = row + 63;
+                assert_eq!(left.selectors[row * 67 + column], ((y * 256 + x) as u16) ^ 0x8000);
+            }
+            for column in 0..3usize { assert_eq!(left.selectors[row * 67 + 64 + column], right.selectors[row * 67 + column]); }
+        }
+        for row in 0..19usize {
+            for column in 0..19usize {
+                assert_eq!(left.colors[row * 19 + column], ((row + 15) * 64 + column + 15) as u16);
+            }
+            for column in 0..3usize { assert_eq!(left.colors[row * 19 + 16 + column], right.colors[row * 19 + column]); }
+        }
+        for row in 0..3usize {
+            for column in 0..3usize {
+                for slot in 0..8usize { assert_eq!(left.palettes[row * 3 + column][slot], ((row * 4 + column) * 8 + slot) as u8); }
+            }
+            for column in 0..2usize { assert_eq!(left.palettes[row * 3 + 1 + column], right.palettes[row * 3 + column]); }
+        }
+        let edge = btd.raw_terrain_patch([-128,-128]).unwrap();
+        assert!(edge.selectors[..67].iter().all(|v| *v == 0));
+        assert!((0..67).all(|row| edge.selectors[row * 67] == 0));
+        assert_eq!(edge.selectors[68], 0x8000);
+        assert!(edge.colors[..19].iter().all(|v| *v == 0));
+        assert!((0..19).all(|row| edge.colors[row * 19] == 0));
+        assert_eq!(edge.palettes[0], [0;8]);
+        assert_eq!(edge.palettes[4], left.palettes[0]);
+        assert!(btd.raw_terrain_patch([-256,-256]).is_err());
+        assert!(btd.raw_terrain_patch([-63,-64]).is_err());
+        btd.header.resolution_x += 1;
+        assert!(btd.raw_terrain_patch([-64,-64]).is_err());
+        btd.header.resolution_x -= 1;
+        let color_lod0 = btd.cell_terrain_color_u16(-1,-1,0).unwrap();
+        let color_lod2 = btd.cell_terrain_color_u16(-1,-1,2).unwrap();
+        for y in 0..128usize {
+            for x in 0..128usize { assert_eq!(color_lod0[y*128+x], color_lod2[(y/4)*32+x/4]); }
+        }
+    }
+
+    #[test]
+    fn alpha_row_release_preserves_boundary_rows_and_other_channels() {
+        let mut bytes = vec![0u8; 600];
+        bytes[0..4].copy_from_slice(b"BTDB");
+        bytes[4..8].copy_from_slice(&6u32.to_le_bytes());
+        bytes[16..20].copy_from_slice(&128u32.to_le_bytes());
+        bytes[20..24].copy_from_slice(&128u32.to_le_bytes());
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(&bytes).unwrap();
+        let mut btd = BtdFile::open(file.path().to_str().unwrap()).unwrap();
+        btd.header.cell_min_y = -16;
+        for row in 0..3u16 {
+            btd.tile_cache.insert(
+                u32::from(row),
+                TileData {
+                    x0: 0,
+                    y0: row * 8,
+                    block_mask: 0,
+                    heights: vec![10; 4],
+                    land_alphas: vec![20; 4],
+                    ground_cover: vec![30; 4],
+                    vertex_color: vec![40; 4],
+                },
+            );
+        }
+        assert_eq!(btd.release_land_alpha_before_cell_row(-9), 0);
+        assert_eq!(btd.release_land_alpha_before_cell_row(-8), 8);
+        assert_eq!(btd.release_land_alpha_before_cell_row(-8), 0);
+        assert_eq!(btd.release_land_alpha_before_cell_row(0), 8);
+        assert_eq!(btd.tile_cache[&2].land_alphas, vec![20; 4]);
+        for tile in btd.tile_cache.values() {
+            assert_eq!(tile.heights, vec![10; 4]);
+            assert_eq!(tile.ground_cover, vec![30; 4]);
+            assert_eq!(tile.vertex_color, vec![40; 4]);
+        }
+    }
 
     /// Verifies that BtdFile::open uses the mmap path and reaches the same
     /// parse logic as open_header: both return BadMagic on a non-BTD file

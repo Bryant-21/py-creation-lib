@@ -18,3 +18,4 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 # Rope buffer for incremental document edits in `session.rs`. Local because
 # only papyrus_core needs it.
 ropey = "1.6"
+unicode-casefold = "0.2"

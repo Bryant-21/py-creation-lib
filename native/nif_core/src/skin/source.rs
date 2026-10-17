@@ -158,10 +158,21 @@ pub fn parse_skin_chain(
         _ => None,
     };
 
-    let partitions = partition_id
+    let mut partitions = partition_id
         .and_then(|id| nif.get_block(id))
         .map(parse_partitions)
         .unwrap_or_default();
+    if kind == LegacySkinKind::Armor {
+        if let Some(NifValue::Array(parts)) = instance.get_field("Partitions") {
+            for (partition, part) in partitions.iter_mut().zip(parts) {
+                if let NifValue::Struct(fields) = part {
+                    if let Some(body_part) = fields.get("Body Part") {
+                        partition.body_part = as_u16(body_part);
+                    }
+                }
+            }
+        }
+    }
     let (data_influences, bone_transforms, bone_bounds) = parse_skin_data_bind(skin_data);
 
     Ok(Some(LegacySkin {

@@ -1,0 +1,243 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://modbox21.local/catalog_schemas/NpcStats.schema.json",
+  "title": "Enemy stats",
+  "allOf": [{"$ref": "envelope.schema.json"}],
+  "$defs": {
+    "scaled": {
+      "type": "object",
+      "properties": {
+        "curve": {
+          "$ref": "envelope.schema.json#/$defs/formKey",
+          "x-form-type": ["CURV"],
+          "title": "Level curve",
+          "description": "The curve that gives the value at each level."
+        },
+        "baked": {
+          "type": "number",
+          "title": "Value in the record",
+          "description": "The flat number the conversion wrote. Tales replaces it with the curve."
+        },
+        "remove": {"$ref": "envelope.schema.json#/$defs/removeFlag"}
+      },
+      "description": "A number that follows a level curve, with the flat number the record holds today."
+    },
+    "properties": {
+      "type": "object",
+      "description": "Actor value to its flat number and optional level curve.",
+      "propertyNames": {"$ref": "envelope.schema.json#/$defs/formKey"},
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "value": {"type": "number", "title": "Flat value", "description": "Value used when no curve applies."},
+          "curve": {
+            "$ref": "envelope.schema.json#/$defs/formKey",
+            "x-form-type": ["CURV"],
+            "title": "Level curve",
+            "description": "Curve that replaces the flat value."
+          }
+        }
+      },
+      "title": "Actor values",
+      "x-key-title": "Actor value",
+      "x-key-form-type": ["AVIF"]
+    },
+    "types": {
+      "type": "object",
+      "description": "Value per damage type.",
+      "propertyNames": {"$ref": "envelope.schema.json#/$defs/formKey"},
+      "additionalProperties": {"$ref": "#/$defs/scaled"},
+      "title": "By damage type",
+      "x-key-title": "Damage type",
+      "x-key-form-type": ["DMGT"]
+    }
+  },
+  "properties": {
+    "version": {"const": 1},
+    "settings": {
+      "type": "object",
+      "description": "Which plugin the curves came from and the marker value that switches them on. A later plugin's value replaces an earlier one.",
+      "properties": {
+        "source_plugin": {"type": "string", "title": "Source plugin", "description": "The Fallout 76 plugin the curves came from."},
+        "marker": {
+          "oneOf": [{"$ref": "envelope.schema.json#/$defs/formKey"}, {"type": "null"}],
+          "x-form-type": ["AVIF"],
+          "description": "The actor value whose property value names the NPC whose stats an actor uses. Only marked NPCs get curve stats.",
+          "title": "Marker value"
+        }
+      },
+      "title": "Settings"
+    },
+    "curves": {
+      "type": "object",
+      "description": "Level curves: each is a list of (level, value) points, flat outside the first and last point.",
+      "x-key": "map",
+      "propertyNames": {"$ref": "envelope.schema.json#/$defs/formKey"},
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "points": {
+            "type": "array",
+            "items": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2},
+            "x-widget": "curve"
+          },
+          "remove": {"$ref": "envelope.schema.json#/$defs/removeFlag"}
+        }
+      },
+      "title": "Curves",
+      "x-key-title": "Curve",
+      "x-key-form-type": ["CURV"]
+    },
+    "npcs": {
+      "type": "object",
+      "description": "Per NPC: health and XP curves, its race and its actor value rows.",
+      "x-key": "map",
+      "propertyNames": {"$ref": "envelope.schema.json#/$defs/formKey"},
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "source": {
+            "$ref": "envelope.schema.json#/$defs/formKey",
+            "title": "Fallout 76 NPC",
+            "description": "The NPC this row came from."
+          },
+          "editor_id": {"type": "string", "title": "Editor ID", "description": "Its name."},
+          "auto_calc": {
+            "type": "boolean",
+            "title": "Auto-calculated stats",
+            "description": "True when the NPC's health is computed from its level; kill XP is only curve-driven for these."
+          },
+          "health_curve": {
+            "$ref": "envelope.schema.json#/$defs/formKey",
+            "title": "Health curve",
+            "x-form-type": ["CURV"],
+            "description": "Level curve that gives the NPC's health."
+          },
+          "xp_curve": {
+            "$ref": "envelope.schema.json#/$defs/formKey",
+            "title": "XP curve",
+            "x-form-type": ["CURV"],
+            "description": "Level curve that gives the XP for killing it."
+          },
+          "race": {
+            "$ref": "envelope.schema.json#/$defs/formKey",
+            "x-form-type": ["RACE"],
+            "title": "Fallout 76 race",
+            "description": "The NPC's original race; race rows add to its stats."
+          },
+          "properties": {
+            "$ref": "#/$defs/properties",
+            "title": "Actor values",
+            "description": "Health and resistance rows for this NPC."
+          },
+          "remove": {"$ref": "envelope.schema.json#/$defs/removeFlag"}
+        }
+      },
+      "title": "NPCs",
+      "x-key-title": "NPC",
+      "x-key-form-type": ["NPC_"]
+    },
+    "races": {
+      "type": "object",
+      "description": "Per race: the Fallout 4 race it maps to, XP, actor values and unarmed damage.",
+      "x-key": "map",
+      "propertyNames": {"$ref": "envelope.schema.json#/$defs/formKey"},
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "output": {
+            "$ref": "envelope.schema.json#/$defs/formKey",
+            "x-form-type": ["RACE"],
+            "title": "Fallout 4 race",
+            "description": "The race the converted creatures use."
+          },
+          "editor_id": {"type": "string", "title": "Editor ID", "description": "Its name."},
+          "xp": {"type": "integer", "title": "Kill XP", "description": "Base XP for killing this race."},
+          "properties": {
+            "$ref": "#/$defs/properties",
+            "title": "Actor values",
+            "description": "Health and resistance rows for the race."
+          },
+          "unarmed": {
+            "type": "object",
+            "properties": {
+              "damage": {
+                "$ref": "envelope.schema.json#/$defs/formKey",
+                "title": "Damage record",
+                "description": "The record holding the damage curve."
+              },
+              "types": {
+                "type": "object",
+                "propertyNames": {"$ref": "envelope.schema.json#/$defs/formKey"},
+                "additionalProperties": {"$ref": "envelope.schema.json#/$defs/formKey"},
+                "title": "By damage type",
+                "x-key-title": "Damage type",
+                "x-key-form-type": ["DMGT"],
+                "description": "Record per damage type."
+              }
+            },
+            "title": "Unarmed attack",
+            "description": "The race's bare-hands damage."
+          },
+          "remove": {"$ref": "envelope.schema.json#/$defs/removeFlag"}
+        }
+      },
+      "title": "Races",
+      "x-key-title": "Fallout 76 race",
+      "x-key-form-type": ["RACE"]
+    },
+    "weapons": {
+      "type": "object",
+      "description": "Weapon damage that scales with the wielder's level.",
+      "x-key": "map",
+      "propertyNames": {"$ref": "envelope.schema.json#/$defs/formKey"},
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "editor_id": {"type": "string", "title": "Editor ID", "description": "Its name."},
+          "damage": {"$ref": "#/$defs/scaled", "title": "Damage", "description": "Damage curve."},
+          "types": {"$ref": "#/$defs/types", "title": "By damage type", "description": "Damage per type."},
+          "remove": {"$ref": "envelope.schema.json#/$defs/removeFlag"}
+        }
+      },
+      "title": "Weapons",
+      "x-key-title": "Weapon",
+      "x-key-form-type": ["WEAP"]
+    },
+    "explosions": {
+      "type": "object",
+      "description": "Explosion damage that scales with level.",
+      "x-key": "map",
+      "propertyNames": {"$ref": "envelope.schema.json#/$defs/formKey"},
+      "additionalProperties": {"$ref": "#/$defs/scaled"},
+      "title": "Explosions",
+      "x-key-title": "Explosion",
+      "x-key-form-type": ["EXPL"]
+    },
+    "armors": {
+      "type": "object",
+      "description": "Armor resistances per damage type, scaling with the wearer's level.",
+      "x-key": "map",
+      "propertyNames": {"$ref": "envelope.schema.json#/$defs/formKey"},
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "editor_id": {"type": "string", "title": "Editor ID", "description": "Its name."},
+          "types": {"$ref": "#/$defs/types", "title": "Resistance by damage type", "description": "Resistance per type."},
+          "remove": {"$ref": "envelope.schema.json#/$defs/removeFlag"}
+        }
+      },
+      "title": "Armors",
+      "x-key-title": "Armor",
+      "x-key-form-type": ["ARMO"]
+    },
+    "diagnostics": {
+      "type": "object",
+      "description": "Notes from the last conversion. Generated by BACUP from the Fallout 76 data; you normally leave it alone.",
+      "x-opaque": true,
+      "title": "Diagnostics"
+    }
+  },
+  "description": "Converted enemies get their health, resistances, XP and damage from Fallout 76's level curves.",
+  "x-help": "A curve turns a level into a number: the x axis is the creature's level, the y axis the stat. Enemies, races, weapons, explosions and armors point at curves, so the same enemy hits harder or has more health at a higher level.\n\nCurves are shared: define one under Curves, then point NPCs or weapons at it. 'Baked' numbers are what the conversion wrote into the record; Tales swaps them for the curve value at the right level.\n\nOnly NPCs carrying the marker value are affected; ordinary Fallout 4 NPCs are never touched."
+}

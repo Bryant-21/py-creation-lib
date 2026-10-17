@@ -66200,7 +66200,7 @@ def build_schema() -> GameSchema:
                 sig='DATA',
                 kind=FieldKind.PARSED,
                 display_label='Data',
-                codec='struct:I,f,I,B,B,B,B,I,H,B,B,I,f,I,I,I,I,f,f,f,f,I,I,I,I,I,I,I,I,I,I,f,I,f,I,I,I,I,I,I,I,f,f',
+                codec='struct:I,f,I,I,I,H,B,B,I,f,I,I,I,I,f,f,f,f,I,I,I,I,I,I,I,I,I,I,f,I,f,I,I,I,I,I,I,I,f,f',
                 fields=(
                     FieldSpec(
                         name='flags',
@@ -66219,24 +66219,12 @@ def build_schema() -> GameSchema:
                         authoring_label='Assoc. Item',
                     ),
                     FieldSpec(
-                        name='magic_skill_unused_byte_1',
-                        kind='uint8',
-                        authoring_label='Magic Skill (unused) Byte 1',
-                    ),
-                    FieldSpec(
-                        name='magic_skill_unused_byte_2',
-                        kind='uint8',
-                        authoring_label='Magic Skill (unused) Byte 2',
-                    ),
-                    FieldSpec(
-                        name='magic_skill_unused_byte_3',
-                        kind='uint8',
-                        authoring_label='Magic Skill (unused) Byte 3',
-                    ),
-                    FieldSpec(
-                        name='magic_skill_unused_byte_4',
-                        kind='uint8',
-                        authoring_label='Magic Skill (unused) Byte 4',
+                        name='associated_skill',
+                        kind='formid',
+                        formlink_target='AVIF',
+                        formlink_targets=('AVIF',),
+                        null_allowed=True,
+                        authoring_label='Associated Skill',
                     ),
                     FieldSpec(
                         name='resist_value',
@@ -78743,7 +78731,7 @@ def build_schema() -> GameSchema:
                 sig='ATKD',
                 kind=FieldKind.PARSED,
                 display_label='Attack Data',
-                codec='struct:f,f,I,I,f,f,f,f,f,f,i',
+                codec='struct:f,f,I,I,f,f,I,f,f,f,i',
                 fields=(
                     FieldSpec(
                         name='damage_mult',
@@ -78780,9 +78768,12 @@ def build_schema() -> GameSchema:
                         authoring_label='Strike Angle',
                     ),
                     FieldSpec(
-                        name='stagger',
-                        kind='float32',
-                        authoring_label='Stagger',
+                        name='attack_type',
+                        kind='formid',
+                        formlink_target='KYWD',
+                        formlink_targets=('KYWD',),
+                        null_allowed=True,
+                        authoring_label='Attack Type',
                     ),
                     FieldSpec(
                         name='knockdown',
@@ -121673,7 +121664,7 @@ def build_schema() -> GameSchema:
                 sig='ATKD',
                 kind=FieldKind.PARSED,
                 display_label='Attack Data',
-                codec='struct:f,f,I,I,f,f,f,f,f,f,i',
+                codec='struct:f,f,I,I,f,f,I,f,f,f,i',
                 fields=(
                     FieldSpec(
                         name='damage_mult',
@@ -121710,9 +121701,12 @@ def build_schema() -> GameSchema:
                         authoring_label='Strike Angle',
                     ),
                     FieldSpec(
-                        name='stagger',
-                        kind='float32',
-                        authoring_label='Stagger',
+                        name='attack_type',
+                        kind='formid',
+                        formlink_target='KYWD',
+                        formlink_targets=('KYWD',),
+                        null_allowed=True,
+                        authoring_label='Attack Type',
                     ),
                     FieldSpec(
                         name='knockdown',
@@ -152175,6 +152169,15 @@ def build_schema() -> GameSchema:
                 formlink_targets=('KYWD',),
                 null_allowed=True,
                 scope_id='keywords',
+            ),
+            SubrecordSpec(
+                sig='MDOB',
+                kind=FieldKind.PARSED,
+                display_label='Menu Display Object',
+                codec='formid',
+                fields=(
+                    FieldSpec(name='formid_0', kind='formid'),
+                ),
             ),
             SubrecordSpec(
                 sig='ETYP',

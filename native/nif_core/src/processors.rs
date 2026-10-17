@@ -3957,6 +3957,42 @@ fn bake_single_shape_transform(nif: &mut NifFile, shape_id: usize) {
     set_identity_scene_transform(&mut nif.blocks[shape_id]);
 }
 
+pub fn bake_shape_hierarchy_transform(nif: &mut NifFile, shape_id: usize) -> Result<(), String> {
+    fn world(nif: &NifFile, mut id: usize) -> Result<SceneTransform, String> {
+        let mut transform = SceneTransform::identity();
+        let mut visited = HashSet::new();
+        loop {
+            if !visited.insert(id) {
+                return Err("cyclic head-part hierarchy".to_string());
+            }
+            let block = nif
+                .get_block(id)
+                .ok_or_else(|| format!("missing block {id}"))?;
+            transform = compose_scene_transform(block_scene_transform(block), transform);
+            let parent = nif.blocks.iter().find(|candidate| {
+                value_array(candidate.get_field("Children"))
+                    .iter()
+                    .any(|value| value_ref(Some(value)) == Some(id as i32))
+            });
+            match parent {
+                Some(parent) => id = parent.block_id,
+                None => return Ok(transform),
+            }
+        }
+    }
+    let transform = world(nif, shape_id)?;
+    let shape = nif
+        .blocks
+        .get_mut(shape_id)
+        .ok_or_else(|| format!("missing shape {shape_id}"))?;
+    if !SCHEMA.is_subtype_of(&shape.type_name, "BSTriShape") {
+        return Err("attached shape must be converted to BSTriShape first".to_string());
+    }
+    bake_modern_shape_transform(shape, transform);
+    set_identity_scene_transform(shape);
+    Ok(())
+}
+
 fn triangulate_legacy_shape(nif: &mut NifFile, shape_id: usize) -> Result<(), String> {
     let Some(data_id) = value_ref(nif.blocks[shape_id].get_field("Data"))
         .filter(|reference| *reference >= 0)
@@ -6264,6 +6300,43 @@ fn setting_u64(value: Option<&Value>, enum_types: &[&str]) -> Result<Option<u64>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shape_hierarchy_bakes_source_transforms_into_local_vertices() {
+        let mut source = NifFile::new("fo4");
+        source.blocks[0].set_field("Translation", NifValue::Vec3([1.0, 0.0, 0.0]));
+        let shape = source.add_block("BSTriShape", None);
+        source.blocks[0].set_field(
+            "Children",
+            NifValue::Array(vec![NifValue::Ref(shape as i32)]),
+        );
+        source.blocks[shape].set_field("Translation", NifValue::Vec3([0.0, 2.0, 0.0]));
+        source.blocks[shape].set_field(
+            "Vertex Data",
+            NifValue::Array(vec![NifValue::Struct(IndexMap::from([
+                ("Vertex".into(), NifValue::Vec3([3.0, 0.0, 0.0])),
+                ("Normal".into(), NifValue::Vec3([1.0, 0.0, 0.0])),
+            ]))]),
+        );
+        source.blocks[0].set_field(
+            "Rotation",
+            NifValue::Matrix33([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]),
+        );
+        bake_shape_hierarchy_transform(&mut source, shape).unwrap();
+
+        let vertex = value_array(source.blocks[shape].get_field("Vertex Data")).first();
+        assert_eq!(
+            nested_value(vertex, "Vertex").and_then(vec3_value),
+            Some([-1.0, 3.0, 0.0])
+        );
+        assert_eq!(
+            nested_value(vertex, "Normal").and_then(vec3_value),
+            Some([0.0, 1.0, 0.0])
+        );
+        assert!(scene_transform_is_identity(block_scene_transform(
+            &source.blocks[shape]
+        )));
+    }
 
     fn animation_sequence(entries: Vec<NifValue>) -> NifFile {
         let mut nif = NifFile::new("oblivion");

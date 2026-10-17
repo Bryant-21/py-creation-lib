@@ -4,6 +4,12 @@ use crate::error::FnvScriptError;
 use crate::function_map::EntryShape;
 use std::collections::HashMap;
 
+const GAME_MODE_DELTA: &str = "B21GameModeDelta";
+const GAME_MODE_LAST_CLOCK: &str = "B21GameModeLastClock";
+const GAME_MODE_CURRENT_CLOCK: &str = "B21GameModeCurrentClock";
+const GAME_MODE_CLOCK: &str = "B21_ConversionClock.GetGameModeClock()";
+const GAME_MODE_ACTIVE: &str = "B21GameModeActive";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum StaticKind {
     Int,
@@ -68,7 +74,54 @@ pub fn lower(script: &Script, ctx: &FnvScriptContext) -> Result<Module, FnvScrip
         .iter()
         .map(|var| (var.name.to_ascii_lowercase(), static_kind_for_var(var.ty)))
         .collect();
-    let vars = Vec::new();
+    let mut vars = Vec::new();
+    let uses_seconds_passed = script
+        .blocks
+        .iter()
+        .any(|block| block.statements.iter().any(uses_seconds_passed_stmt));
+    if uses_seconds_passed {
+        for block in &script.blocks {
+            if !block.event.eq_ignore_ascii_case("GameMode")
+                && block.statements.iter().any(uses_seconds_passed_stmt)
+            {
+                return Err(FnvScriptError::Unsupported {
+                    kind: "GetSecondsPassed event",
+                    name: block.event.clone(),
+                    reason: "elapsed-time sampling is only verified for GameMode".into(),
+                });
+            }
+        }
+        for name in [
+            GAME_MODE_DELTA,
+            GAME_MODE_LAST_CLOCK,
+            GAME_MODE_CURRENT_CLOCK,
+        ] {
+            if declared_vars.contains_key(&name.to_ascii_lowercase())
+                || ctx
+                    .target
+                    .symbols()
+                    .any(|symbol| symbol.papyrus_name.eq_ignore_ascii_case(name))
+            {
+                return Err(FnvScriptError::Unsupported {
+                    kind: "GetSecondsPassed state",
+                    name: name.into(),
+                    reason: "source symbol collides with generated elapsed-time state".into(),
+                });
+            }
+            vars.push(Var {
+                name: name.into(),
+                ty: "Float".into(),
+                initial: Some(
+                    if name == GAME_MODE_LAST_CLOCK {
+                        "-1.0"
+                    } else {
+                        "0.0"
+                    }
+                    .into(),
+                ),
+            });
+        }
+    }
     let mut properties = script
         .variables
         .iter()
@@ -110,7 +163,39 @@ pub fn lower(script: &Script, ctx: &FnvScriptContext) -> Result<Module, FnvScrip
         }
     }
     if !game_mode_body.is_empty() {
-        lower_game_mode(&mut events, game_mode_body, ctx)?;
+        if ctx.target.game_mode_native_frames {
+            if declared_vars.contains_key(&GAME_MODE_ACTIVE.to_ascii_lowercase())
+                || ctx
+                    .target
+                    .symbols()
+                    .any(|symbol| symbol.papyrus_name.eq_ignore_ascii_case(GAME_MODE_ACTIVE))
+            {
+                return Err(FnvScriptError::Unsupported {
+                    kind: "GameMode state",
+                    name: GAME_MODE_ACTIVE.into(),
+                    reason: "source symbol collides with generated lifecycle state".into(),
+                });
+            }
+            vars.push(Var {
+                name: GAME_MODE_ACTIVE.into(),
+                ty: "Bool".into(),
+                initial: Some("False".into()),
+            });
+        }
+        lower_game_mode(&mut events, game_mode_body, ctx, uses_seconds_passed)?;
+    }
+    if events.iter().any(|event| event.name == "OnHit") {
+        for lifecycle in ["OnInit", "OnLoad"] {
+            if let Some(event) = events.iter_mut().find(|event| event.name == lifecycle) {
+                event.body.insert(0, hit_registration(ctx));
+            } else {
+                events.push(Event {
+                    name: lifecycle.into(),
+                    params: Vec::new(),
+                    body: vec![hit_registration(ctx)],
+                });
+            }
+        }
     }
 
     Ok(Module {
@@ -120,6 +205,61 @@ pub fn lower(script: &Script, ctx: &FnvScriptContext) -> Result<Module, FnvScrip
         properties,
         events,
     })
+}
+
+fn uses_seconds_passed_expr(expr: &Expr) -> bool {
+    match expr {
+        Expr::Ident(name) => name.eq_ignore_ascii_case("GetSecondsPassed"),
+        Expr::Call(call) => {
+            call.name.eq_ignore_ascii_case("GetSecondsPassed")
+                || call.args.iter().any(uses_seconds_passed_expr)
+                || call
+                    .receiver
+                    .as_deref()
+                    .is_some_and(uses_seconds_passed_expr)
+        }
+        Expr::Member { receiver, name } => {
+            name.eq_ignore_ascii_case("GetSecondsPassed") || uses_seconds_passed_expr(receiver)
+        }
+        Expr::BinOp { lhs, rhs, .. } => {
+            uses_seconds_passed_expr(lhs) || uses_seconds_passed_expr(rhs)
+        }
+        Expr::UnaryOp { operand, .. } => uses_seconds_passed_expr(operand),
+        _ => false,
+    }
+}
+
+fn uses_seconds_passed_stmt(stmt: &Stmt) -> bool {
+    match stmt {
+        Stmt::Set { value, .. } => uses_seconds_passed_expr(value),
+        Stmt::Call(call) => {
+            call.name.eq_ignore_ascii_case("GetSecondsPassed")
+                || call.args.iter().any(uses_seconds_passed_expr)
+        }
+        Stmt::If {
+            cond,
+            then_branch,
+            elif_branches,
+            else_branch,
+        } => {
+            uses_seconds_passed_expr(cond)
+                || then_branch.iter().any(uses_seconds_passed_stmt)
+                || elif_branches.iter().any(|(cond, body)| {
+                    uses_seconds_passed_expr(cond) || body.iter().any(uses_seconds_passed_stmt)
+                })
+                || else_branch.iter().any(uses_seconds_passed_stmt)
+        }
+        _ => false,
+    }
+}
+
+fn hit_registration(ctx: &FnvScriptContext) -> IrStmt {
+    let target = if ctx.target.base_class == ScriptTarget::ReferenceAlias {
+        "GetReference()"
+    } else {
+        "Self"
+    };
+    IrStmt::Expr(format!("RegisterForHitEvent({target})"))
 }
 
 fn lower_constant_initializer(expr: &Expr, var_type: VarType) -> Result<String, FnvScriptError> {
@@ -173,6 +313,18 @@ fn lower_block(
     }
     let signature = map_event_signature(&block.event)?;
     validate_event_target(&signature.name, ctx.target.base_class)?;
+    if block.event.eq_ignore_ascii_case("OnHitWith")
+        && !matches!(
+            ctx.target.base_class,
+            ScriptTarget::Actor | ScriptTarget::ReferenceAlias
+        )
+    {
+        return Err(FnvScriptError::Unsupported {
+            kind: "OnHitWith target",
+            name: ctx.papyrus_extends.clone(),
+            reason: "weapon-source filtering is only verified for actor attachments".into(),
+        });
+    }
     if block.args.len() > 1 {
         return Err(FnvScriptError::Unsupported {
             kind: "event filter",
@@ -188,10 +340,31 @@ fn lower_block(
                 reason: "FO4 event has no compatible source-reference filter".into(),
             });
         };
+        let filter_value = lower_expr(filter, ctx, declared_vars)?;
+        let list_filter = matches!(filter, Expr::Ident(name) if ctx.target.symbol(name).is_some_and(|symbol| symbol.papyrus_type.eq_ignore_ascii_case("FormList")));
+        body = vec![IrStmt::If {
+            cond: if list_filter {
+                format!("{filter_value}.HasForm({filter_param})")
+            } else {
+                format!("({filter_param} == {filter_value})")
+            },
+            then_branch: body,
+            elif: Vec::new(),
+            else_branch: Vec::new(),
+        }];
+    }
+    if signature.name == "OnHit" {
+        body.insert(0, hit_registration(ctx));
+    }
+    if signature.name == "OnCombatStateChanged" {
         body = vec![IrStmt::If {
             cond: format!(
-                "({filter_param} == {})",
-                lower_expr(filter, ctx, declared_vars)?
+                "(aeCombatState == {})",
+                if block.event.eq_ignore_ascii_case("OnStartCombat") {
+                    1
+                } else {
+                    0
+                }
             ),
             then_branch: body,
             elif: Vec::new(),
@@ -213,6 +386,37 @@ struct EventSignature {
 
 fn map_event_signature(name: &str) -> Result<EventSignature, FnvScriptError> {
     let signature = match name.to_ascii_lowercase().as_str() {
+        "onstartcombat" | "oncombatend" => EventSignature {
+            name: "OnCombatStateChanged".into(),
+            params: vec![
+                ("akTarget".into(), "Actor".into()),
+                ("aeCombatState".into(), "Int".into()),
+            ],
+            filter_param: if name.eq_ignore_ascii_case("OnStartCombat") {
+                Some("akTarget")
+            } else {
+                None
+            },
+        },
+        "onhit" | "onhitwith" => EventSignature {
+            name: "OnHit".into(),
+            params: vec![
+                ("akTarget".into(), "ObjectReference".into()),
+                ("akAggressor".into(), "ObjectReference".into()),
+                ("akSource".into(), "Form".into()),
+                ("akProjectile".into(), "Projectile".into()),
+                ("abPowerAttack".into(), "Bool".into()),
+                ("abSneakAttack".into(), "Bool".into()),
+                ("abBashAttack".into(), "Bool".into()),
+                ("abHitBlocked".into(), "Bool".into()),
+                ("apMaterial".into(), "String".into()),
+            ],
+            filter_param: Some(if name.eq_ignore_ascii_case("OnHitWith") {
+                "akSource"
+            } else {
+                "akAggressor"
+            }),
+        },
         "onactivate" => EventSignature {
             name: "OnActivate".into(),
             params: vec![("akActionRef".into(), "ObjectReference".into())],
@@ -255,11 +459,13 @@ fn map_event_signature(name: &str) -> Result<EventSignature, FnvScriptError> {
 
 fn validate_event_target(name: &str, target: ScriptTarget) -> Result<(), FnvScriptError> {
     let compatible = match name {
-        "OnActivate" | "OnTriggerEnter" | "OnLoad" => matches!(
+        "OnActivate" | "OnTriggerEnter" | "OnLoad" | "OnHit" => matches!(
             target,
             ScriptTarget::Actor | ScriptTarget::ObjectReference | ScriptTarget::ReferenceAlias
         ),
-        "OnDeath" => matches!(target, ScriptTarget::Actor | ScriptTarget::ReferenceAlias),
+        "OnDeath" | "OnCombatStateChanged" => {
+            matches!(target, ScriptTarget::Actor | ScriptTarget::ReferenceAlias)
+        }
         "OnQuestInit" => target == ScriptTarget::Quest,
         "OnInit" => true,
         _ => false,
@@ -298,6 +504,7 @@ fn lower_game_mode(
     events: &mut Vec<Event>,
     mut body: Vec<IrStmt>,
     ctx: &FnvScriptContext,
+    uses_seconds_passed: bool,
 ) -> Result<(), FnvScriptError> {
     if !ctx.target.game_mode_timer_seconds.is_finite() || ctx.target.game_mode_timer_seconds <= 0.0
     {
@@ -308,8 +515,44 @@ fn lower_game_mode(
         });
     }
     let restart = timer_start(ctx);
+    if uses_seconds_passed {
+        body.splice(0..0, [
+            IrStmt::Assign { target: GAME_MODE_CURRENT_CLOCK.into(), value: GAME_MODE_CLOCK.into() },
+            IrStmt::Assign { target: GAME_MODE_DELTA.into(), value: "0.0".into() },
+            IrStmt::If {
+                cond: format!("({GAME_MODE_LAST_CLOCK} >= 0.0 && {GAME_MODE_CURRENT_CLOCK} >= {GAME_MODE_LAST_CLOCK})"),
+                then_branch: vec![IrStmt::Assign {
+                    target: GAME_MODE_DELTA.into(),
+                    value: format!("({GAME_MODE_CURRENT_CLOCK} - {GAME_MODE_LAST_CLOCK})"),
+                }],
+                elif: Vec::new(),
+                else_branch: Vec::new(),
+            },
+            IrStmt::Assign { target: GAME_MODE_LAST_CLOCK.into(), value: GAME_MODE_CURRENT_CLOCK.into() },
+        ]);
+    }
     restart_before_returns(&mut body, &restart);
     body.push(IrStmt::Expr(restart.clone()));
+    if ctx.target.game_mode_native_frames {
+        body.insert(
+            0,
+            IrStmt::If {
+                cond: "!B21_ConversionClock.CanRunGameMode()".into(),
+                then_branch: vec![IrStmt::Expr(restart.clone()), IrStmt::Return],
+                elif: Vec::new(),
+                else_branch: Vec::new(),
+            },
+        );
+        body.insert(
+            0,
+            IrStmt::If {
+                cond: format!("!{GAME_MODE_ACTIVE}"),
+                then_branch: vec![IrStmt::Return],
+                elif: Vec::new(),
+                else_branch: Vec::new(),
+            },
+        );
+    }
 
     merge_event(
         events,
@@ -340,23 +583,59 @@ fn lower_game_mode(
     };
 
     for event_name in lifecycle_events {
+        let mut start_body = Vec::new();
+        if ctx.target.game_mode_native_frames {
+            start_body.push(IrStmt::Assign {
+                target: GAME_MODE_ACTIVE.into(),
+                value: "True".into(),
+            });
+        }
+        if uses_seconds_passed {
+            start_body.push(IrStmt::Assign {
+                target: GAME_MODE_LAST_CLOCK.into(),
+                value: GAME_MODE_CLOCK.into(),
+            });
+        }
+        start_body.push(IrStmt::Expr(restart.clone()));
         if let Some(event) = events
             .iter_mut()
             .find(|event| event.name.eq_ignore_ascii_case(event_name))
         {
-            event.body.insert(0, IrStmt::Expr(restart.clone()));
+            event.body.splice(0..0, start_body);
         } else {
             events.push(Event {
                 name: (*event_name).into(),
                 params: Vec::new(),
-                body: vec![IrStmt::Expr(restart.clone())],
+                body: start_body,
             });
         }
+    }
+    if ctx.target.game_mode_native_frames {
+        merge_event(
+            events,
+            Event {
+                name: "OnUnload".into(),
+                params: Vec::new(),
+                body: vec![
+                    IrStmt::Assign {
+                        target: GAME_MODE_ACTIVE.into(),
+                        value: "False".into(),
+                    },
+                    IrStmt::Expr("B21_ConversionClock.CancelGameMode(Self)".into()),
+                ],
+            },
+        )?;
     }
     Ok(())
 }
 
 fn timer_start(ctx: &FnvScriptContext) -> String {
+    if ctx.target.game_mode_native_frames {
+        return format!(
+            "B21_ConversionClock.RequestNextGameMode(Self, {})",
+            ctx.target.game_mode_timer_id
+        );
+    }
     format!(
         "StartTimer({}, {})",
         format_float(ctx.target.game_mode_timer_seconds),
@@ -616,6 +895,11 @@ fn lower_call(
     ctx: &FnvScriptContext,
     declared_vars: &HashMap<String, StaticKind>,
 ) -> Result<String, FnvScriptError> {
+    if matches!(call.name.to_ascii_lowercase().as_str(), "pms" | "playmagicshadervisuals") && call.args.len() == 1 {
+        let mut with_duration = call.clone();
+        with_duration.args.push(Expr::Float(-1.0));
+        return lower_call(&with_duration, ctx, declared_vars);
+    }
     let entry = ctx
         .function_map
         .get(&call.name)
@@ -623,6 +907,32 @@ fn lower_call(
             kind: "function",
             name: call.name.clone(),
         })?;
+
+    if matches!(
+        call.name.to_ascii_lowercase().as_str(),
+        "kill" | "killactor"
+    ) && matches!(call.args.len(), 0 | 2)
+    {
+        let receiver = match &call.receiver {
+            Some(value) => lower_expr(value, ctx, declared_vars)?,
+            None => "Self".into(),
+        };
+        return if call.args.is_empty() {
+            Ok(format!("({receiver} as Actor).Kill()"))
+        } else {
+            let killer = lower_typed_arg(
+                &call.args[0],
+                "object_reference",
+                ctx,
+                declared_vars,
+                &call.name,
+            )?;
+            let limb = lower_typed_arg(&call.args[1], "int", ctx, declared_vars, &call.name)?;
+            Ok(format!(
+                "B21_ConversionCreature.KillActorWithLimb({receiver} as Actor, {killer} as Actor, {limb})"
+            ))
+        };
+    }
 
     if call.args.len() != entry.arg_kinds.len() {
         return Err(FnvScriptError::Unsupported {
@@ -837,6 +1147,9 @@ fn static_kind_for_papyrus_type(papyrus_type: &str) -> StaticKind {
         "actor" => Some("actor"),
         "faction" => Some("faction"),
         "form" => Some("formkey"),
+        "spell" | "explosion" | "magiceffect" | "actorbase" | "weapon" | "armor" | "ammo"
+        | "potion" | "miscobject" | "globalvariable" | "effectshader" | "imagespacemodifier"
+        | "idle" | "formlist" | "sound" | "combatstyle" => Some("formkey"),
         "message" => Some("message"),
         "objectreference" | "referencealias" => Some("object_reference"),
         "package" => Some("package"),

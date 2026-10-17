@@ -401,7 +401,7 @@ def _test_compile_papyrus_uses_native_compiler(tmp_path: Path, monkeypatch):
     assert count == 3
     assert len(calls) == 3
     assert calls[0]["game"] == "fo4"
-    assert calls[0]["imports"] == [str(source_dir), str(scripts_base)]
+    assert calls[0]["imports"] == [str(source_dir), str(scripts_base.parent), str(scripts_base)]
     assert calls[0]["flags"] == str(scripts_base / "Institute_Papyrus_Flags.flg")
     assert (mod_dir / "data" / "Scripts" / "B21" / "Foo.pex").read_bytes() == b"pex"
     assert (mod_dir / "data" / "Scripts" / "B21" / "Bar.pex").read_bytes() == b"pex"

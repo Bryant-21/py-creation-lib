@@ -472,8 +472,9 @@ def _build_field(
     codec_lc = codec.lower()
 
     # Resolve enum/flag/formlink at the subrecord level (used for single-value codecs).
-    sub_enum = _enum_for(spec.enum_ref, schema_enums)
-    sub_formlink = spec.formlink_target
+    scalar_spec = spec.fields[0] if spec.fields and len(spec.fields) == 1 else None
+    sub_enum = _enum_for(spec.enum_ref or (scalar_spec.enum_ref if scalar_spec else None), schema_enums)
+    sub_formlink = spec.formlink_target or (scalar_spec.formlink_target if scalar_spec else None)
 
     # FormID-typed subrecords (single u32 form id).
     if sub_formlink and codec_lc in ("formid", "form_id", "uint32", "u32", ""):
@@ -535,7 +536,7 @@ def _build_field(
 
     # lstring — 4-byte string id when localized, otherwise zstring.
     if codec_lc == "lstring":
-        if is_localized and len(raw) >= 4:
+        if is_localized:
             return Field(
                 name, signature, FieldKind.LSTRING,
                 _decode_simple(raw, "<I"), raw, spec, notes=notes,

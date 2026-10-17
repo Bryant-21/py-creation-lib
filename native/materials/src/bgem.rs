@@ -79,6 +79,16 @@ fn write_bgem_string(writer: &mut Writer, value: &str) {
 }
 
 pub fn parse(data: &[u8]) -> Result<BgemData> {
+    read(data).map(|(parsed, _)| parsed)
+}
+
+/// Byte ranges of the texture path strings (every BGEM string), length prefix included.
+pub fn texture_string_spans(data: &[u8]) -> Result<Vec<std::ops::Range<usize>>> {
+    let (_, reader) = read(data)?;
+    Ok(reader.string_spans().to_vec())
+}
+
+fn read(data: &[u8]) -> Result<(BgemData, Reader<'_>)> {
     let mut reader = Reader::new(data);
     let header = read_header(&mut reader, BGEM_SIGNATURE)?;
     let base_texture = reader.read_string()?;
@@ -167,7 +177,7 @@ pub fn parse(data: &[u8]) -> Result<BgemData> {
         None
     };
 
-    Ok(BgemData {
+    let parsed = BgemData {
         header,
         BaseTexture: base_texture,
         GrayscaleTexture: grayscale_texture,
@@ -207,7 +217,8 @@ pub fn parse(data: &[u8]) -> Result<BgemData> {
         AdaptativeEmissive_FinalExposureMax: adaptative_emissive_final_exposure_max,
         Glowmap: glowmap,
         EffectPbrSpecular: effect_pbr_specular,
-    })
+    };
+    Ok((parsed, reader))
 }
 
 pub fn write(data: &BgemData) -> Vec<u8> {

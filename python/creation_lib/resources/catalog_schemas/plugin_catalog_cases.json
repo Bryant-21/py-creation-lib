@@ -1,0 +1,167 @@
+{
+  "version": 1,
+  "form_key_accept": [
+    {"text": "SeventySix.esm:35ADBA", "plugin": "seventysix.esm", "id": 3517882},
+    {"text": "SeventySix.esm:0183C6", "plugin": "seventysix.esm", "id": 99270},
+    {"text": "Fallout4.esm:1", "plugin": "fallout4.esm", "id": 1},
+    {"text": "MyMod.esp:abc123", "plugin": "mymod.esp", "id": 11256099},
+    {"text": "Light.esl:FFF", "plugin": "light.esl", "id": 4095},
+    {"text": "Big.esm:0FFFFFFF", "plugin": "big.esm", "id": 268435455}
+  ],
+  "form_key_reject": [
+    "35ADBA:SeventySix.esm",
+    "35ADBA",
+    "0x35ADBA",
+    "SeventySix.esm:0x35ADBA",
+    "3517882",
+    "3517882:SeventySix.esm",
+    ":35ADBA",
+    ".esm:35ADBA",
+    "SeventySix.esm:",
+    "SeventySix.esm:0",
+    "SeventySix.esm:000000",
+    "SeventySix.esm:XYZ",
+    "SeventySix.esm:123456789",
+    "SeventySix:35ADBA",
+    "SeventySix.esm:35ADBA:1",
+    " SeventySix.esm:35ADBA",
+    "SeventySix.esm:35ADBA ",
+    ""
+  ],
+  "form_key_format": [
+    {"plugin": "SeventySix.esm", "id": 3517882, "text": "SeventySix.esm:35ADBA"},
+    {"plugin": "SeventySix.esm", "id": 1, "text": "SeventySix.esm:000001"},
+    {"plugin": "Fallout4.esm", "id": 16777215, "text": "Fallout4.esm:FFFFFF"},
+    {"plugin": "Big.esm", "id": 16777216, "text": "Big.esm:01000000"},
+    {"plugin": "Big.esm", "id": 4278190081, "text": "Big.esm:FF000001"}
+  ],
+  "order": [
+    {
+      "name": "drops inactive and non-json, strips nothing from the returned names",
+      "files": ["Zeta.esp.json", "SeventySix.esm.json", "notes.txt", "Gone.esp.json", "seventysix.esm.json.bak"],
+      "active": ["Fallout4.esm", "SeventySix.esm", "Zeta.esp"],
+      "expected": ["SeventySix.esm.json", "Zeta.esp.json"]
+    },
+    {
+      "name": "plugin match is case-insensitive",
+      "files": ["seventysix.ESM.json", "MYMOD.esp.json"],
+      "active": ["MyMod.esp", "SeventySix.esm"],
+      "expected": ["MYMOD.esp.json", "seventysix.ESM.json"]
+    },
+    {
+      "name": "json extension is case-insensitive",
+      "files": ["B.esp.JSON", "A.esp.json"],
+      "active": ["A.esp", "B.esp"],
+      "expected": ["A.esp.json", "B.esp.JSON"]
+    },
+    {
+      "name": "load order wins over file name; light plugin interleaved with full plugins",
+      "files": ["Aaa.esp.json", "LightB.esl.json", "Mmm.esp.json", "Zzz.esl.json"],
+      "active": ["Fallout4.esm", "Zzz.esl", "Mmm.esp", "LightB.esl", "Aaa.esp"],
+      "expected": ["Zzz.esl.json", "Mmm.esp.json", "LightB.esl.json", "Aaa.esp.json"]
+    },
+    {
+      "name": "a file with no plugin name is dropped",
+      "files": [".json", "A.esp.json"],
+      "active": ["A.esp"],
+      "expected": ["A.esp.json"]
+    },
+    {
+      "name": "nothing active gives nothing",
+      "files": ["A.esp.json"],
+      "active": [],
+      "expected": []
+    }
+  ],
+  "merge": [
+    {
+      "name": "later entry replaces the whole earlier entry",
+      "key_field": "form",
+      "docs": [
+        [{"form": "A.esm:000001", "a": 1, "b": 2}, {"form": "A.esm:000002", "a": 9}],
+        [{"form": "A.esm:000001", "a": 5}]
+      ],
+      "expected": {
+        "A.esm:000001": {"form": "A.esm:000001", "a": 5},
+        "A.esm:000002": {"form": "A.esm:000002", "a": 9}
+      }
+    },
+    {
+      "name": "remove deletes an earlier entry and a remove with no earlier entry is a no-op",
+      "key_field": "form",
+      "docs": [
+        [{"form": "A.esm:000001", "a": 1}, {"form": "A.esm:000002", "a": 2}],
+        [{"form": "A.esm:000001", "remove": true}, {"form": "A.esm:000003", "remove": true}]
+      ],
+      "expected": {"A.esm:000002": {"form": "A.esm:000002", "a": 2}}
+    },
+    {
+      "name": "remove then re-add keeps the re-added entry",
+      "key_field": "form",
+      "docs": [
+        [{"form": "A.esm:000001", "a": 1}],
+        [{"form": "A.esm:000001", "remove": true}],
+        [{"form": "A.esm:000001", "a": 3}]
+      ],
+      "expected": {"A.esm:000001": {"form": "A.esm:000001", "a": 3}}
+    },
+    {
+      "name": "remove false is an ordinary entry",
+      "key_field": "form",
+      "docs": [[{"form": "A.esm:000001", "remove": false, "a": 1}]],
+      "expected": {"A.esm:000001": {"form": "A.esm:000001", "remove": false, "a": 1}}
+    },
+    {
+      "name": "entries without a key are skipped",
+      "key_field": "form",
+      "docs": [[{"a": 1}, {"form": "A.esm:000001", "a": 2}, 7, "x"]],
+      "expected": {"A.esm:000001": {"form": "A.esm:000001", "a": 2}}
+    },
+    {
+      "name": "map section: object key is the entry key; later replaces, remove erases",
+      "key_field": null,
+      "docs": [
+        {"k1": {"v": 1, "w": 1}, "k2": {"v": 2}, "k3": {"v": 3}},
+        {"k1": {"v": 10}, "k2": {"remove": true}}
+      ],
+      "expected": {"k1": {"v": 10}, "k3": {"v": 3}}
+    },
+    {
+      "name": "map section values may be strings or arrays; an object with remove erases them",
+      "key_field": null,
+      "docs": [
+        {"A.esm:000001": "A.esm:000010", "A.esm:000002": "A.esm:000020", "Swap": [["a.nif", "b.nif"]]},
+        {"A.esm:000001": "B.esp:000030", "A.esm:000002": {"remove": true}, "Swap": [["c.nif", "d.nif"]]}
+      ],
+      "expected": {"A.esm:000001": "B.esp:000030", "Swap": [["c.nif", "d.nif"]]}
+    },
+    {
+      "name": "section that is neither array nor object is ignored",
+      "key_field": "form",
+      "docs": [
+        [{"form": "A.esm:000001", "a": 1}],
+        "oops",
+        null,
+        5
+      ],
+      "expected": {"A.esm:000001": {"form": "A.esm:000001", "a": 1}}
+    }
+  ],
+  "settings": [
+    {
+      "name": "per-field later wins, other fields survive",
+      "docs": [{"a": 1, "b": 2}, {"b": 3, "c": 4}],
+      "expected": {"a": 1, "b": 3, "c": 4}
+    },
+    {
+      "name": "a later object value replaces the earlier one whole (no deep merge)",
+      "docs": [{"n": {"x": 1, "y": 2}}, {"n": {"x": 9}}],
+      "expected": {"n": {"x": 9}}
+    },
+    {
+      "name": "non-object settings are ignored",
+      "docs": [{"a": 1}, null, [1, 2], "s"],
+      "expected": {"a": 1}
+    }
+  ]
+}

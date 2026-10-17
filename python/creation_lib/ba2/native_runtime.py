@@ -145,6 +145,10 @@ def extract_one(archive: str, file_path: str) -> bytes | None:
     return _require_native_function("extract_one")(archive, file_path)
 
 
+def extract_one_bounded(archive, file_path, limit):
+    return _require_native_function("extract_one_bounded")(archive, file_path, limit)
+
+
 def extract_archive(
     archive: str,
     output_dir: str,

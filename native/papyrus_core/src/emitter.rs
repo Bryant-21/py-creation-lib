@@ -460,6 +460,7 @@ mod tests {
             }),
             method: "GetPlayer".into(),
             args: vec![],
+            arg_names: vec![],
             pos: Pos::ZERO,
         };
         assert_eq!(emit_expr(&e), "Game.GetPlayer()");
@@ -486,6 +487,7 @@ mod tests {
             object: Box::new(cast(name("akActionRef"), "Actor")),
             method: "EquipItem".into(),
             args: vec![name("PipboyCharGen")],
+            arg_names: vec![],
             pos: Pos::ZERO,
         };
         assert_eq!(
@@ -503,6 +505,7 @@ mod tests {
             )),
             method: "CollectDirtyWater".into(),
             args: vec![name("akActor")],
+            arg_names: vec![],
             pos: Pos::ZERO,
         };
         assert_eq!(
@@ -539,10 +542,12 @@ mod tests {
                 object: Box::new(name("Game")),
                 method: "GetPlayer".into(),
                 args: vec![],
+                arg_names: vec![],
                 pos: Pos::ZERO,
             }),
             method: "EvaluatePackage".into(),
             args: vec![],
+            arg_names: vec![],
             pos: Pos::ZERO,
         };
         assert_eq!(emit_expr(&e), "Game.GetPlayer().EvaluatePackage()");
@@ -554,6 +559,7 @@ mod tests {
             object: Box::new(name("akActor")),
             method: "Revive".into(),
             args: vec![cast(name("akTargetRef"), "Actor")],
+            arg_names: vec![],
             pos: Pos::ZERO,
         };
         assert_eq!(emit_expr(&e), "akActor.Revive(akTargetRef as Actor)");

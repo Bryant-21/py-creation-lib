@@ -40,7 +40,7 @@ def draw_path_row(label: str, path: str, btn_label: str = "Browse…") -> tuple[
     gap = imgui.get_style().item_spacing.x
     inline = available > button_width + gap + scaled(90)
     imgui.set_next_item_width(available - button_width - gap if inline else -1)
-    _, path = imgui.input_text(f"##{label}_path", path, imgui.InputTextFlags_.read_only)
+    _, path = imgui.input_text(f"##{label}_path", path)
     if imgui.is_item_hovered():
         imgui.set_tooltip(path)
     if inline:

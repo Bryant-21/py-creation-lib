@@ -1,0 +1,4059 @@
+[
+  {
+    "kind": "script",
+    "pex": {
+      "magic": 4200055006,
+      "major_version": 3,
+      "minor_version": 9,
+      "game_id": 2,
+      "compilation_time": 0,
+      "source_filename": "test.psc",
+      "username": "u",
+      "machine_name": "m",
+      "string_table": [],
+      "debug_info": null,
+      "user_flags": [],
+      "objects": [
+        {
+          "name": "MyScript",
+          "parent": "ObjectReference",
+          "docstring": "",
+          "is_const": false,
+          "auto_state": "",
+          "user_flags": 0,
+          "structs": [],
+          "variables": [],
+          "guards": [],
+          "properties": [],
+          "states": [
+            {
+              "name": "",
+              "functions": [
+                {
+                  "name": "MakeArray",
+                  "return_type": "None",
+                  "docstring": "",
+                  "is_native": false,
+                  "is_global": false,
+                  "user_flags": 0,
+                  "params": [],
+                  "locals": [
+                    {
+                      "name": "items",
+                      "type": "ObjectReference[]"
+                    }
+                  ],
+                  "instructions": [
+                    {
+                      "opcode": 30,
+                      "args": [
+                        {
+                          "type": 1,
+                          "data": "items"
+                        },
+                        {
+                          "type": 3,
+                          "data": 0
+                        }
+                      ]
+                    },
+                    {
+                      "opcode": 26,
+                      "args": [
+                        {
+                          "type": 0,
+                          "data": null
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "options": {},
+    "expected": "Scriptname MyScript Extends ObjectReference\n\nFunction MakeArray()\n\tObjectReference[] items\n\titems = new ObjectReference[0]\nEndFunction\n"
+  },
+  {
+    "kind": "function",
+    "function": {
+      "name": "TestFunc",
+      "return_type": "None",
+      "docstring": "",
+      "is_native": false,
+      "is_global": false,
+      "user_flags": 0,
+      "params": [],
+      "locals": [],
+      "instructions": [
+        {
+          "opcode": 13,
+          "args": [
+            {
+              "type": 1,
+              "data": "x"
+            },
+            {
+              "type": 3,
+              "data": 5
+            }
+          ]
+        },
+        {
+          "opcode": 26,
+          "args": [
+            {
+              "type": 0,
+              "data": null
+            }
+          ]
+        }
+      ]
+    },
+    "expected": [
+      {
+        "node": "AssignStmt",
+        "target": {
+          "node": "NameExpr",
+          "name": "x",
+          "pos": {
+            "line": 0,
+            "col": 0,
+            "end_line": 0,
+            "end_col": 0
+          }
+        },
+        "op": "=",
+        "value": {
+          "node": "LiteralExpr",
+          "value": 5,
+          "type": "int",
+          "pos": {
+            "line": 0,
+            "col": 0,
+            "end_line": 0,
+            "end_col": 0
+          }
+        },
+        "pos": {
+          "line": 0,
+          "col": 0,
+          "end_line": 0,
+          "end_col": 0
+        }
+      }
+    ]
+  },
+  {
+    "kind": "function",
+    "function": {
+      "name": "TestFunc",
+      "return_type": "None",
+      "docstring": "",
+      "is_native": false,
+      "is_global": false,
+      "user_flags": 0,
+      "params": [],
+      "locals": [],
+      "instructions": [
+        {
+          "opcode": 1,
+          "args": [
+            {
+              "type": 1,
+              "data": "result"
+            },
+            {
+              "type": 1,
+              "data": "a"
+            },
+            {
+              "type": 1,
+              "data": "b"
+            }
+          ]
+        },
+        {
+          "opcode": 26,
+          "args": [
+            {
+              "type": 0,
+              "data": null
+            }
+          ]
+        }
+      ]
+    },
+    "expected": [
+      {
+        "node": "AssignStmt",
+        "target": {
+          "node": "NameExpr",
+          "name": "result",
+          "pos": {
+            "line": 0,
+            "col": 0,
+            "end_line": 0,
+            "end_col": 0
+          }
+        },
+        "op": "=",
+        "value": {
+          "node": "BinaryExpr",
+          "left": {
+            "node": "NameExpr",
+            "name": "a",
+            "pos": {
+              "line": 0,
+              "col": 0,
+              "end_line": 0,
+              "end_col": 0
+            }
+          },
+          "op": "+",
+          "right": {
+            "node": "NameExpr",
+            "name": "b",
+            "pos": {
+              "line": 0,
+              "col": 0,
+              "end_line": 0,
+              "end_col": 0
+            }
+          },
+          "pos": {
+            "line": 0,
+            "col": 0,
+            "end_line": 0,
+            "end_col": 0
+          }
+        },
+        "pos": {
+          "line": 0,
+          "col": 0,
+          "end_line": 0,
+          "end_col": 0
+        }
+      }
+    ]
+  },
+  {
+    "kind": "function",
+    "function": {
+      "name": "TestFunc",
+      "return_type": "None",
+      "docstring": "",
+      "is_native": false,
+      "is_global": false,
+      "user_flags": 0,
+      "params": [],
+      "locals": [],
+      "instructions": [
+        {
+          "opcode": 23,
+          "args": [
+            {
+              "type": 1,
+              "data": "GetValue"
+            },
+            {
+              "type": 1,
+              "data": "akActor"
+            },
+            {
+              "type": 1,
+              "data": "result"
+            },
+            {
+              "type": 3,
+              "data": 1
+            },
+            {
+              "type": 2,
+              "data": "Health"
+            }
+          ]
+        },
+        {
+          "opcode": 26,
+          "args": [
+            {
+              "type": 0,
+              "data": null
+            }
+          ]
+        }
+      ]
+    },
+    "expected": [
+      {
+        "node": "AssignStmt",
+        "target": {
+          "node": "NameExpr",
+          "name": "result",
+          "pos": {
+            "line": 0,
+            "col": 0,
+            "end_line": 0,
+            "end_col": 0
+          }
+        },
+        "op": "=",
+        "value": {
+          "node": "DotCallExpr",
+          "object": {
+            "node": "NameExpr",
+            "name": "akActor",
+            "pos": {
+              "line": 0,
+              "col": 0,
+              "end_line": 0,
+              "end_col": 0
+            }
+          },
+          "method": "GetValue",
+          "args": [
+            {
+              "node": "LiteralExpr",
+              "value": "Health",
+              "type": "string",
+              "pos": {
+                "line": 0,
+                "col": 0,
+                "end_line": 0,
+                "end_col": 0
+              }
+            }
+          ],
+          "pos": {
+            "line": 0,
+            "col": 0,
+            "end_line": 0,
+            "end_col": 0
+          }
+        },
+        "pos": {
+          "line": 0,
+          "col": 0,
+          "end_line": 0,
+          "end_col": 0
+        }
+      }
+    ]
+  },
+  {
+    "kind": "function",
+    "function": {
+      "name": "TestFunc",
+      "return_type": "None",
+      "docstring": "",
+      "is_native": false,
+      "is_global": false,
+      "user_flags": 0,
+      "params": [],
+      "locals": [],
+      "instructions": [
+        {
+          "opcode": 28,
+          "args": [
+            {
+              "type": 1,
+              "data": "MyProp"
+            },
+            {
+              "type": 1,
+              "data": "self"
+            },
+            {
+              "type": 1,
+              "data": "dest"
+            }
+          ]
+        },
+        {
+          "opcode": 26,
+          "args": [
+            {
+              "type": 0,
+              "data": null
+            }
+          ]
+        }
+      ]
+    },
+    "expected": [
+      {
+        "node": "AssignStmt",
+        "target": {
+          "node": "NameExpr",
+          "name": "dest",
+          "pos": {
+            "line": 0,
+            "col": 0,
+            "end_line": 0,
+            "end_col": 0
+          }
+        },
+        "op": "=",
+        "value": {
+          "node": "DotExpr",
+          "object": {
+            "node": "NameExpr",
+            "name": "Self",
+            "pos": {
+              "line": 0,
+              "col": 0,
+              "end_line": 0,
+              "end_col": 0
+            }
+          },
+          "member": "MyProp",
+          "pos": {
+            "line": 0,
+            "col": 0,
+            "end_line": 0,
+            "end_col": 0
+          }
+        },
+        "pos": {
+          "line": 0,
+          "col": 0,
+          "end_line": 0,
+          "end_col": 0
+        }
+      }
+    ]
+  },
+  {
+    "kind": "function",
+    "function": {
+      "name": "TestFunc",
+      "return_type": "None",
+      "docstring": "",
+      "is_native": false,
+      "is_global": false,
+      "user_flags": 0,
+      "params": [],
+      "locals": [
+        {
+          "name": "dest",
+          "type": "Actor"
+        },
+        {
+          "name": "src",
+          "type": "ObjectReference"
+        }
+      ],
+      "instructions": [
+        {
+          "opcode": 14,
+          "args": [
+            {
+              "type": 1,
+              "data": "dest"
+            },
+            {
+              "type": 1,
+              "data": "src"
+            }
+          ]
+        },
+        {
+          "opcode": 26,
+          "args": [
+            {
+              "type": 0,
+              "data": null
+            }
+          ]
+        }
+      ]
+    },
+    "expected": [
+      {
+        "node": "AssignStmt",
+        "target": {
+          "node": "NameExpr",
+          "name": "dest",
+          "pos": {
+            "line": 0,
+            "col": 0,
+            "end_line": 0,
+            "end_col": 0
+          }
+        },
+        "op": "=",
+        "value": {
+          "node": "CastExpr",
+          "expr": {
+            "node": "NameExpr",
+            "name": "src",
+            "pos": {
+              "line": 0,
+              "col": 0,
+              "end_line": 0,
+              "end_col": 0
+            }
+          },
+          "target_type": "Actor",
+          "pos": {
+            "line": 0,
+            "col": 0,
+            "end_line": 0,
+            "end_col": 0
+          }
+        },
+        "pos": {
+          "line": 0,
+          "col": 0,
+          "end_line": 0,
+          "end_col": 0
+        }
+      }
+    ]
+  },
+  {
+    "kind": "function",
+    "function": {
+      "name": "TestFunc",
+      "return_type": "Int",
+      "docstring": "",
+      "is_native": false,
+      "is_global": false,
+      "user_flags": 0,
+      "params": [],
+      "locals": [],
+      "instructions": [
+        {
+          "opcode": 26,
+          "args": [
+            {
+              "type": 1,
+              "data": "x"
+            }
+          ]
+        }
+      ]
+    },
+    "expected": [
+      {
+        "node": "ReturnStmt",
+        "value": {
+          "node": "NameExpr",
+          "name": "x",
+          "pos": {
+            "line": 0,
+            "col": 0,
+            "end_line": 0,
+            "end_col": 0
+          }
+        },
+        "pos": {
+          "line": 0,
+          "col": 0,
+          "end_line": 0,
+          "end_col": 0
+        }
+      }
+    ]
+  },
+  {
+    "kind": "function",
+    "function": {
+      "name": "TestFunc",
+      "return_type": "None",
+      "docstring": "",
+      "is_native": false,
+      "is_global": false,
+      "user_flags": 0,
+      "params": [],
+      "locals": [
+        {
+          "name": "::temp0",
+          "type": "Int"
+        }
+      ],
+      "instructions": [
+        {
+          "opcode": 1,
+          "args": [
+            {
+              "type": 1,
+              "data": "::temp0"
+            },
+            {
+              "type": 1,
+              "data": "a"
+            },
+            {
+              "type": 1,
+              "data": "b"
+            }
+          ]
+        },
+        {
+          "opcode": 5,
+          "args": [
+            {
+              "type": 1,
+              "data": "result"
+            },
+            {
+              "type": 1,
+              "data": "::temp0"
+            },
+            {
+              "type": 1,
+              "data": "c"
+            }
+          ]
+        },
+        {
+          "opcode": 26,
+          "args": [
+            {
+              "type": 0,
+              "data": null
+            }
+          ]
+        }
+      ]
+    },
+    "expected": [
+      {
+        "node": "AssignStmt",
+        "target": {
+          "node": "NameExpr",
+          "name": "result",
+          "pos": {
+            "line": 0,
+            "col": 0,
+            "end_line": 0,
+            "end_col": 0
+          }
+        },
+        "op": "=",
+        "value": {
+          "node": "BinaryExpr",
+          "left": {
+            "node": "BinaryExpr",
+            "left": {
+              "node": "NameExpr",
+              "name": "a",
+              "pos": {
+                "line": 0,
+                "col": 0,
+                "end_line": 0,
+                "end_col": 0
+              }
+            },
+            "op": "+",
+            "right": {
+              "node": "NameExpr",
+              "name": "b",
+              "pos": {
+                "line": 0,
+                "col": 0,
+                "end_line": 0,
+                "end_col": 0
+              }
+            },
+            "pos": {
+              "line": 0,
+              "col": 0,
+              "end_line": 0,
+              "end_col": 0
+            }
+          },
+          "op": "*",
+          "right": {
+            "node": "NameExpr",
+            "name": "c",
+            "pos": {
+              "line": 0,
+              "col": 0,
+              "end_line": 0,
+              "end_col": 0
+            }
+          },
+          "pos": {
+            "line": 0,
+            "col": 0,
+            "end_line": 0,
+            "end_col": 0
+          }
+        },
+        "pos": {
+          "line": 0,
+          "col": 0,
+          "end_line": 0,
+          "end_col": 0
+        }
+      }
+    ]
+  },
+  {
+    "kind": "function",
+    "function": {
+      "name": "TestFunc",
+      "return_type": "None",
+      "docstring": "",
+      "is_native": false,
+      "is_global": false,
+      "user_flags": 0,
+      "params": [],
+      "locals": [],
+      "instructions": [
+        {
+          "opcode": 13,
+          "args": [
+            {
+              "type": 1,
+              "data": "::temp0"
+            },
+            {
+              "type": 3,
+              "data": 1
+            }
+          ]
+        },
+        {
+          "opcode": 13,
+          "args": [
+            {
+              "type": 1,
+              "data": "::temp0"
+            },
+            {
+              "type": 3,
+              "data": 2
+            }
+          ]
+        },
+        {
+          "opcode": 26,
+          "args": [
+            {
+              "type": 0,
+              "data": null
+            }
+          ]
+        }
+      ]
+    },
+    "expected": [
+      {
+        "node": "AssignStmt",
+        "target": {
+          "node": "NameExpr",
+          "name": "temp0",
+          "pos": {
+            "line": 0,
+            "col": 0,
+            "end_line": 0,
+            "end_col": 0
+          }
+        },
+        "op": "=",
+        "value": {
+          "node": "LiteralExpr",
+          "value": 1,
+          "type": "int",
+          "pos": {
+            "line": 0,
+            "col": 0,
+            "end_line": 0,
+            "end_col": 0
+          }
+        },
+        "pos": {
+          "line": 0,
+          "col": 0,
+          "end_line": 0,
+          "end_col": 0
+        }
+      },
+      {
+        "node": "AssignStmt",
+        "target": {
+          "node": "NameExpr",
+          "name": "temp0",
+          "pos": {
+            "line": 0,
+            "col": 0,
+            "end_line": 0,
+            "end_col": 0
+          }
+        },
+        "op": "=",
+        "value": {
+          "node": "LiteralExpr",
+          "value": 2,
+          "type": "int",
+          "pos": {
+            "line": 0,
+            "col": 0,
+            "end_line": 0,
+            "end_col": 0
+          }
+        },
+        "pos": {
+          "line": 0,
+          "col": 0,
+          "end_line": 0,
+          "end_col": 0
+        }
+      }
+    ]
+  },
+  {
+    "kind": "script",
+    "pex": {
+      "magic": 4200055006,
+      "major_version": 3,
+      "minor_version": 9,
+      "game_id": 2,
+      "compilation_time": 0,
+      "source_filename": "test.psc",
+      "username": "u",
+      "machine_name": "m",
+      "string_table": [],
+      "debug_info": null,
+      "user_flags": [],
+      "objects": [
+        {
+          "name": "MyScript",
+          "parent": "ObjectReference",
+          "docstring": "",
+          "is_const": true,
+          "auto_state": "",
+          "user_flags": 0,
+          "structs": [],
+          "variables": [],
+          "guards": [],
+          "properties": [],
+          "states": [
+            {
+              "name": "",
+              "functions": [
+                {
+                  "name": "::remote_Test",
+                  "return_type": "None",
+                  "docstring": "",
+                  "is_native": false,
+                  "is_global": false,
+                  "user_flags": 0,
+                  "params": [],
+                  "locals": [],
+                  "instructions": [
+                    {
+                      "opcode": 26,
+                      "args": [
+                        {
+                          "type": 0,
+                          "data": null
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "name": "KeepMe",
+                  "return_type": "None",
+                  "docstring": "",
+                  "is_native": false,
+                  "is_global": false,
+                  "user_flags": 0,
+                  "params": [],
+                  "locals": [],
+                  "instructions": [
+                    {
+                      "opcode": 26,
+                      "args": [
+                        {
+                          "type": 0,
+                          "data": null
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "options": {
+      "drop_script_const": true,
+      "skip_internal_functions": true
+    },
+    "expected": "Scriptname MyScript Extends ObjectReference\n\nFunction KeepMe()\nEndFunction\n"
+  },
+  {
+    "kind": "function",
+    "function": {
+      "name": "TestFunc",
+      "return_type": "None",
+      "docstring": "",
+      "is_native": false,
+      "is_global": false,
+      "user_flags": 0,
+      "params": [],
+      "locals": [],
+      "instructions": [
+        {
+          "opcode": 22,
+          "args": [
+            {
+              "type": 1,
+              "data": "cond"
+            },
+            {
+              "type": 3,
+              "data": 3
+            }
+          ]
+        },
+        {
+          "opcode": 13,
+          "args": [
+            {
+              "type": 1,
+              "data": "x"
+            },
+            {
+              "type": 3,
+              "data": 1
+            }
+          ]
+        },
+        {
+          "opcode": 20,
+          "args": [
+            {
+              "type": 3,
+              "data": 2
+            }
+          ]
+        },
+        {
+          "opcode": 13,
+          "args": [
+            {
+              "type": 1,
+              "data": "x"
+            },
+            {
+              "type": 3,
+              "data": 2
+            }
+          ]
+        },
+        {
+          "opcode": 26,
+          "args": [
+            {
+              "type": 0,
+              "data": null
+            }
+          ]
+        }
+      ]
+    },
+    "expected": [
+      {
+        "node": "IfStmt",
+        "condition": {
+          "node": "NameExpr",
+          "name": "cond",
+          "pos": {
+            "line": 0,
+            "col": 0,
+            "end_line": 0,
+            "end_col": 0
+          }
+        },
+        "body": [
+          {
+            "node": "AssignStmt",
+            "target": {
+              "node": "NameExpr",
+              "name": "x",
+              "pos": {
+                "line": 0,
+                "col": 0,
+                "end_line": 0,
+                "end_col": 0
+              }
+            },
+            "op": "=",
+            "value": {
+              "node": "LiteralExpr",
+              "value": 1,
+              "type": "int",
+              "pos": {
+                "line": 0,
+                "col": 0,
+                "end_line": 0,
+                "end_col": 0
+              }
+            },
+            "pos": {
+              "line": 0,
+              "col": 0,
+              "end_line": 0,
+              "end_col": 0
+            }
+          }
+        ],
+        "elseif_clauses": [],
+        "else_body": [
+          {
+            "node": "AssignStmt",
+            "target": {
+              "node": "NameExpr",
+              "name": "x",
+              "pos": {
+                "line": 0,
+                "col": 0,
+                "end_line": 0,
+                "end_col": 0
+              }
+            },
+            "op": "=",
+            "value": {
+              "node": "LiteralExpr",
+              "value": 2,
+              "type": "int",
+              "pos": {
+                "line": 0,
+                "col": 0,
+                "end_line": 0,
+                "end_col": 0
+              }
+            },
+            "pos": {
+              "line": 0,
+              "col": 0,
+              "end_line": 0,
+              "end_col": 0
+            }
+          }
+        ],
+        "pos": {
+          "line": 0,
+          "col": 0,
+          "end_line": 0,
+          "end_col": 0
+        }
+      }
+    ]
+  },
+  {
+    "kind": "function",
+    "function": {
+      "name": "TestFunc",
+      "return_type": "None",
+      "docstring": "",
+      "is_native": false,
+      "is_global": false,
+      "user_flags": 0,
+      "params": [],
+      "locals": [],
+      "instructions": [
+        {
+          "opcode": 22,
+          "args": [
+            {
+              "type": 1,
+              "data": "cond"
+            },
+            {
+              "type": 3,
+              "data": 2
+            }
+          ]
+        },
+        {
+          "opcode": 13,
+          "args": [
+            {
+              "type": 1,
+              "data": "x"
+            },
+            {
+              "type": 3,
+              "data": 1
+            }
+          ]
+        },
+        {
+          "opcode": 26,
+          "args": [
+            {
+              "type": 0,
+              "data": null
+            }
+          ]
+        }
+      ]
+    },
+    "expected": [
+      {
+        "node": "IfStmt",
+        "condition": {
+          "node": "NameExpr",
+          "name": "cond",
+          "pos": {
+            "line": 0,
+            "col": 0,
+            "end_line": 0,
+            "end_col": 0
+          }
+        },
+        "body": [
+          {
+            "node": "AssignStmt",
+            "target": {
+              "node": "NameExpr",
+              "name": "x",
+              "pos": {
+                "line": 0,
+                "col": 0,
+                "end_line": 0,
+                "end_col": 0
+              }
+            },
+            "op": "=",
+            "value": {
+              "node": "LiteralExpr",
+              "value": 1,
+              "type": "int",
+              "pos": {
+                "line": 0,
+                "col": 0,
+                "end_line": 0,
+                "end_col": 0
+              }
+            },
+            "pos": {
+              "line": 0,
+              "col": 0,
+              "end_line": 0,
+              "end_col": 0
+            }
+          }
+        ],
+        "elseif_clauses": [],
+        "else_body": [],
+        "pos": {
+          "line": 0,
+          "col": 0,
+          "end_line": 0,
+          "end_col": 0
+        }
+      }
+    ]
+  },
+  {
+    "kind": "function",
+    "function": {
+      "name": "TestFunc",
+      "return_type": "None",
+      "docstring": "",
+      "is_native": false,
+      "is_global": false,
+      "user_flags": 0,
+      "params": [],
+      "locals": [
+        {
+          "name": "::temp0",
+          "type": "Bool"
+        }
+      ],
+      "instructions": [
+        {
+          "opcode": 18,
+          "args": [
+            {
+              "type": 1,
+              "data": "::temp0"
+            },
+            {
+              "type": 1,
+              "data": "counter"
+            },
+            {
+              "type": 3,
+              "data": 0
+            }
+          ]
+        },
+        {
+          "opcode": 22,
+          "args": [
+            {
+              "type": 1,
+              "data": "::temp0"
+            },
+            {
+              "type": 3,
+              "data": 3
+            }
+          ]
+        },
+        {
+          "opcode": 3,
+          "args": [
+            {
+              "type": 1,
+              "data": "counter"
+            },
+            {
+              "type": 1,
+              "data": "counter"
+            },
+            {
+              "type": 3,
+              "data": 1
+            }
+          ]
+        },
+        {
+          "opcode": 20,
+          "args": [
+            {
+              "type": 3,
+              "data": -3
+            }
+          ]
+        },
+        {
+          "opcode": 26,
+          "args": [
+            {
+              "type": 0,
+              "data": null
+            }
+          ]
+        }
+      ]
+    },
+    "expected": [
+      {
+        "node": "WhileStmt",
+        "condition": {
+          "node": "BinaryExpr",
+          "left": {
+            "node": "NameExpr",
+            "name": "counter",
+            "pos": {
+              "line": 0,
+              "col": 0,
+              "end_line": 0,
+              "end_col": 0
+            }
+          },
+          "op": ">",
+          "right": {
+            "node": "LiteralExpr",
+            "value": 0,
+            "type": "int",
+            "pos": {
+              "line": 0,
+              "col": 0,
+              "end_line": 0,
+              "end_col": 0
+            }
+          },
+          "pos": {
+            "line": 0,
+            "col": 0,
+            "end_line": 0,
+            "end_col": 0
+          }
+        },
+        "body": [
+          {
+            "node": "AssignStmt",
+            "target": {
+              "node": "NameExpr",
+              "name": "counter",
+              "pos": {
+                "line": 0,
+                "col": 0,
+                "end_line": 0,
+                "end_col": 0
+              }
+            },
+            "op": "=",
+            "value": {
+              "node": "BinaryExpr",
+              "left": {
+                "node": "NameExpr",
+                "name": "counter",
+                "pos": {
+                  "line": 0,
+                  "col": 0,
+                  "end_line": 0,
+                  "end_col": 0
+                }
+              },
+              "op": "-",
+              "right": {
+                "node": "LiteralExpr",
+                "value": 1,
+                "type": "int",
+                "pos": {
+                  "line": 0,
+                  "col": 0,
+                  "end_line": 0,
+                  "end_col": 0
+                }
+              },
+              "pos": {
+                "line": 0,
+                "col": 0,
+                "end_line": 0,
+                "end_col": 0
+              }
+            },
+            "pos": {
+              "line": 0,
+              "col": 0,
+              "end_line": 0,
+              "end_col": 0
+            }
+          }
+        ],
+        "pos": {
+          "line": 0,
+          "col": 0,
+          "end_line": 0,
+          "end_col": 0
+        }
+      }
+    ]
+  },
+  {
+    "kind": "script",
+    "pex": {
+      "magic": 4200055006,
+      "major_version": 3,
+      "minor_version": 9,
+      "game_id": 2,
+      "compilation_time": 0,
+      "source_filename": "test.psc",
+      "username": "u",
+      "machine_name": "m",
+      "string_table": [],
+      "debug_info": null,
+      "user_flags": [],
+      "objects": [
+        {
+          "name": "MyScript",
+          "parent": "ObjectReference",
+          "docstring": "",
+          "is_const": false,
+          "auto_state": "",
+          "user_flags": 0,
+          "structs": [],
+          "variables": [],
+          "guards": [],
+          "properties": [],
+          "states": [
+            {
+              "name": "",
+              "functions": [
+                {
+                  "name": "PlayIt",
+                  "return_type": "None",
+                  "docstring": "",
+                  "is_native": false,
+                  "is_global": false,
+                  "user_flags": 0,
+                  "params": [],
+                  "locals": [
+                    {
+                      "name": "::temp0",
+                      "type": "Int"
+                    }
+                  ],
+                  "instructions": [
+                    {
+                      "opcode": 23,
+                      "args": [
+                        {
+                          "type": 1,
+                          "data": "Play"
+                        },
+                        {
+                          "type": 1,
+                          "data": "::MusicLoop_var"
+                        },
+                        {
+                          "type": 1,
+                          "data": "::temp0"
+                        },
+                        {
+                          "type": 3,
+                          "data": 2
+                        },
+                        {
+                          "type": 1,
+                          "data": "Self"
+                        },
+                        {
+                          "type": 2,
+                          "data": ""
+                        }
+                      ]
+                    },
+                    {
+                      "opcode": 26,
+                      "args": [
+                        {
+                          "type": 0,
+                          "data": null
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "options": {
+      "fo4_api_compat": true
+    },
+    "expected": "Scriptname MyScript Extends ObjectReference\n\nFunction PlayIt()\n\tMusicLoop.Play(Self)\nEndFunction\n"
+  },
+  {
+    "kind": "script",
+    "pex": {
+      "magic": 4200055006,
+      "major_version": 3,
+      "minor_version": 9,
+      "game_id": 2,
+      "compilation_time": 0,
+      "source_filename": "test.psc",
+      "username": "u",
+      "machine_name": "m",
+      "string_table": [],
+      "debug_info": null,
+      "user_flags": [],
+      "objects": [
+        {
+          "name": "MyScript",
+          "parent": "ObjectReference",
+          "docstring": "",
+          "is_const": false,
+          "auto_state": "",
+          "user_flags": 0,
+          "structs": [],
+          "variables": [],
+          "guards": [],
+          "properties": [],
+          "states": [
+            {
+              "name": "",
+              "functions": [
+                {
+                  "name": "FireIt",
+                  "return_type": "None",
+                  "docstring": "",
+                  "is_native": false,
+                  "is_global": false,
+                  "user_flags": 0,
+                  "params": [],
+                  "locals": [
+                    {
+                      "name": "myGun",
+                      "type": "weapon"
+                    }
+                  ],
+                  "instructions": [
+                    {
+                      "opcode": 23,
+                      "args": [
+                        {
+                          "type": 1,
+                          "data": "Fire"
+                        },
+                        {
+                          "type": 1,
+                          "data": "myGun"
+                        },
+                        {
+                          "type": 0,
+                          "data": null
+                        },
+                        {
+                          "type": 3,
+                          "data": 3
+                        },
+                        {
+                          "type": 1,
+                          "data": "Self"
+                        },
+                        {
+                          "type": 0,
+                          "data": null
+                        },
+                        {
+                          "type": 5,
+                          "data": true
+                        }
+                      ]
+                    },
+                    {
+                      "opcode": 26,
+                      "args": [
+                        {
+                          "type": 0,
+                          "data": null
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "options": {
+      "fo4_api_compat": true
+    },
+    "expected": "Scriptname MyScript Extends ObjectReference\n\nFunction FireIt()\n\tweapon myGun\n\tNone = myGun.Fire(Self, None)\nEndFunction\n"
+  },
+  {
+    "kind": "script",
+    "pex": {
+      "magic": 4200055006,
+      "major_version": 3,
+      "minor_version": 9,
+      "game_id": 2,
+      "compilation_time": 0,
+      "source_filename": "test.psc",
+      "username": "u",
+      "machine_name": "m",
+      "string_table": [],
+      "debug_info": null,
+      "user_flags": [],
+      "objects": [
+        {
+          "name": "TestOnEffectFinish",
+          "parent": "ActiveMagicEffect",
+          "docstring": "",
+          "is_const": false,
+          "auto_state": "",
+          "user_flags": 0,
+          "structs": [],
+          "variables": [],
+          "guards": [],
+          "properties": [],
+          "states": [
+            {
+              "name": "",
+              "functions": [
+                {
+                  "name": "OnEffectFinish",
+                  "return_type": "None",
+                  "docstring": "",
+                  "is_native": false,
+                  "is_global": false,
+                  "user_flags": 0,
+                  "params": [
+                    {
+                      "name": "akTarget",
+                      "type": "Actor"
+                    },
+                    {
+                      "name": "akCaster",
+                      "type": "Actor"
+                    },
+                    {
+                      "name": "x",
+                      "type": "Float"
+                    },
+                    {
+                      "name": "y",
+                      "type": "Float"
+                    },
+                    {
+                      "name": "z",
+                      "type": "Float"
+                    }
+                  ],
+                  "locals": [],
+                  "instructions": [
+                    {
+                      "opcode": 26,
+                      "args": [
+                        {
+                          "type": 0,
+                          "data": null
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "options": {
+      "fo4_api_compat": true
+    },
+    "expected": "Scriptname TestOnEffectFinish Extends ActiveMagicEffect\n\nEvent OnEffectFinish(Actor akTarget, Actor akCaster)\nEndEvent\n"
+  },
+  {
+    "kind": "script",
+    "pex": {
+      "magic": 4200055006,
+      "major_version": 3,
+      "minor_version": 9,
+      "game_id": 2,
+      "compilation_time": 0,
+      "source_filename": "test.psc",
+      "username": "u",
+      "machine_name": "m",
+      "string_table": [],
+      "debug_info": null,
+      "user_flags": [],
+      "objects": [
+        {
+          "name": "TestOnHit",
+          "parent": "ObjectReference",
+          "docstring": "",
+          "is_const": false,
+          "auto_state": "",
+          "user_flags": 0,
+          "structs": [],
+          "variables": [],
+          "guards": [],
+          "properties": [],
+          "states": [
+            {
+              "name": "",
+              "functions": [
+                {
+                  "name": "OnHit",
+                  "return_type": "None",
+                  "docstring": "",
+                  "is_native": false,
+                  "is_global": false,
+                  "user_flags": 0,
+                  "params": [
+                    {
+                      "name": "akTarget",
+                      "type": "ObjectReference"
+                    },
+                    {
+                      "name": "akAggressor",
+                      "type": "ObjectReference"
+                    },
+                    {
+                      "name": "akSource",
+                      "type": "Form"
+                    },
+                    {
+                      "name": "akProjectile",
+                      "type": "Projectile"
+                    },
+                    {
+                      "name": "abPowerAttack",
+                      "type": "Bool"
+                    },
+                    {
+                      "name": "abSneakAttack",
+                      "type": "Bool"
+                    },
+                    {
+                      "name": "abBashAttack",
+                      "type": "Bool"
+                    },
+                    {
+                      "name": "abHitBlocked",
+                      "type": "Bool"
+                    },
+                    {
+                      "name": "abCriticalHit",
+                      "type": "Bool"
+                    },
+                    {
+                      "name": "asMaterialName",
+                      "type": "String"
+                    }
+                  ],
+                  "locals": [],
+                  "instructions": [
+                    {
+                      "opcode": 26,
+                      "args": [
+                        {
+                          "type": 0,
+                          "data": null
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "options": {
+      "fo4_api_compat": true
+    },
+    "expected": "Scriptname TestOnHit Extends ObjectReference\n\nEvent OnHit(ObjectReference akTarget, ObjectReference akAggressor, Form akSource, Projectile akProjectile, Bool abPowerAttack, Bool abSneakAttack, Bool abBashAttack, Bool abHitBlocked, String asMaterialName)\nEndEvent\n"
+  },
+  {
+    "kind": "script",
+    "pex": {
+      "magic": 4200055006,
+      "major_version": 3,
+      "minor_version": 9,
+      "game_id": 2,
+      "compilation_time": 0,
+      "source_filename": "test.psc",
+      "username": "u",
+      "machine_name": "m",
+      "string_table": [],
+      "debug_info": null,
+      "user_flags": [],
+      "objects": [
+        {
+          "name": "TestOnRadiationDamage",
+          "parent": "ObjectReference",
+          "docstring": "",
+          "is_const": false,
+          "auto_state": "",
+          "user_flags": 0,
+          "structs": [],
+          "variables": [],
+          "guards": [],
+          "properties": [],
+          "states": [
+            {
+              "name": "",
+              "functions": [
+                {
+                  "name": "OnRadiationDamage",
+                  "return_type": "None",
+                  "docstring": "",
+                  "is_native": false,
+                  "is_global": false,
+                  "user_flags": 0,
+                  "params": [
+                    {
+                      "name": "akTarget",
+                      "type": "ObjectReference"
+                    },
+                    {
+                      "name": "afDamage",
+                      "type": "Float"
+                    },
+                    {
+                      "name": "abInWater",
+                      "type": "Bool"
+                    }
+                  ],
+                  "locals": [],
+                  "instructions": [
+                    {
+                      "opcode": 26,
+                      "args": [
+                        {
+                          "type": 0,
+                          "data": null
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "options": {
+      "fo4_api_compat": true
+    },
+    "expected": "Scriptname TestOnRadiationDamage Extends ObjectReference\n\nEvent OnRadiationDamage(ObjectReference akTarget, Bool abInWater)\nEndEvent\n"
+  },
+  {
+    "kind": "script",
+    "pex": {
+      "magic": 4200055006,
+      "major_version": 3,
+      "minor_version": 9,
+      "game_id": 2,
+      "compilation_time": 0,
+      "source_filename": "test.psc",
+      "username": "u",
+      "machine_name": "m",
+      "string_table": [],
+      "debug_info": null,
+      "user_flags": [],
+      "objects": [
+        {
+          "name": "MyScript",
+          "parent": "ObjectReference",
+          "docstring": "",
+          "is_const": false,
+          "auto_state": "",
+          "user_flags": 0,
+          "structs": [],
+          "variables": [],
+          "guards": [],
+          "properties": [],
+          "states": [
+            {
+              "name": "",
+              "functions": [
+                {
+                  "name": "GetThePlayer",
+                  "return_type": "Actor",
+                  "docstring": "",
+                  "is_native": false,
+                  "is_global": false,
+                  "user_flags": 0,
+                  "params": [],
+                  "locals": [
+                    {
+                      "name": "::temp0",
+                      "type": "Actor"
+                    }
+                  ],
+                  "instructions": [
+                    {
+                      "opcode": 25,
+                      "args": [
+                        {
+                          "type": 1,
+                          "data": "Game"
+                        },
+                        {
+                          "type": 1,
+                          "data": "GetLocalPlayer"
+                        },
+                        {
+                          "type": 1,
+                          "data": "::temp0"
+                        },
+                        {
+                          "type": 3,
+                          "data": 0
+                        }
+                      ]
+                    },
+                    {
+                      "opcode": 26,
+                      "args": [
+                        {
+                          "type": 1,
+                          "data": "::temp0"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "options": {},
+    "expected": "Scriptname MyScript Extends ObjectReference\n\nActor Function GetThePlayer()\n\tReturn Game.GetLocalPlayer()\nEndFunction\n"
+  },
+  {
+    "kind": "script",
+    "pex": {
+      "magic": 4200055006,
+      "major_version": 3,
+      "minor_version": 9,
+      "game_id": 2,
+      "compilation_time": 0,
+      "source_filename": "test.psc",
+      "username": "u",
+      "machine_name": "m",
+      "string_table": [],
+      "debug_info": null,
+      "user_flags": [],
+      "objects": [
+        {
+          "name": "MyScript",
+          "parent": "ObjectReference",
+          "docstring": "",
+          "is_const": false,
+          "auto_state": "",
+          "user_flags": 0,
+          "structs": [],
+          "variables": [],
+          "guards": [],
+          "properties": [],
+          "states": [
+            {
+              "name": "",
+              "functions": [
+                {
+                  "name": "GetThePlayer",
+                  "return_type": "Actor",
+                  "docstring": "",
+                  "is_native": false,
+                  "is_global": false,
+                  "user_flags": 0,
+                  "params": [],
+                  "locals": [
+                    {
+                      "name": "::temp0",
+                      "type": "Actor"
+                    }
+                  ],
+                  "instructions": [
+                    {
+                      "opcode": 25,
+                      "args": [
+                        {
+                          "type": 1,
+                          "data": "Game"
+                        },
+                        {
+                          "type": 1,
+                          "data": "GetLocalPlayer"
+                        },
+                        {
+                          "type": 1,
+                          "data": "::temp0"
+                        },
+                        {
+                          "type": 3,
+                          "data": 0
+                        }
+                      ]
+                    },
+                    {
+                      "opcode": 26,
+                      "args": [
+                        {
+                          "type": 1,
+                          "data": "::temp0"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "options": {
+      "fo4_api_compat": true
+    },
+    "expected": "Scriptname MyScript Extends ObjectReference\n\nActor Function GetThePlayer()\n\tReturn Game.GetPlayer()\nEndFunction\n"
+  },
+  {
+    "kind": "script",
+    "pex": {
+      "magic": 4200055006,
+      "major_version": 3,
+      "minor_version": 9,
+      "game_id": 2,
+      "compilation_time": 0,
+      "source_filename": "test.psc",
+      "username": "u",
+      "machine_name": "m",
+      "string_table": [],
+      "debug_info": null,
+      "user_flags": [],
+      "objects": [
+        {
+          "name": "MyScript",
+          "parent": "ObjectReference",
+          "docstring": "",
+          "is_const": false,
+          "auto_state": "",
+          "user_flags": 0,
+          "structs": [],
+          "variables": [],
+          "guards": [],
+          "properties": [],
+          "states": [
+            {
+              "name": "",
+              "functions": [
+                {
+                  "name": "TraceIt",
+                  "return_type": "None",
+                  "docstring": "",
+                  "is_native": false,
+                  "is_global": false,
+                  "user_flags": 0,
+                  "params": [],
+                  "locals": [],
+                  "instructions": [
+                    {
+                      "opcode": 25,
+                      "args": [
+                        {
+                          "type": 1,
+                          "data": "Debug"
+                        },
+                        {
+                          "type": 1,
+                          "data": "Trace"
+                        },
+                        {
+                          "type": 0,
+                          "data": null
+                        },
+                        {
+                          "type": 3,
+                          "data": 3
+                        },
+                        {
+                          "type": 2,
+                          "data": "hello"
+                        },
+                        {
+                          "type": 3,
+                          "data": 1
+                        },
+                        {
+                          "type": 2,
+                          "data": "Creatures"
+                        }
+                      ]
+                    },
+                    {
+                      "opcode": 26,
+                      "args": [
+                        {
+                          "type": 0,
+                          "data": null
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "options": {},
+    "expected": "Scriptname MyScript Extends ObjectReference\n\nFunction TraceIt()\n\tNone = Debug.Trace(\"hello\", 1, \"Creatures\")\nEndFunction\n"
+  },
+  {
+    "kind": "script",
+    "pex": {
+      "magic": 4200055006,
+      "major_version": 3,
+      "minor_version": 9,
+      "game_id": 2,
+      "compilation_time": 0,
+      "source_filename": "test.psc",
+      "username": "u",
+      "machine_name": "m",
+      "string_table": [],
+      "debug_info": null,
+      "user_flags": [],
+      "objects": [
+        {
+          "name": "MyScript",
+          "parent": "ObjectReference",
+          "docstring": "",
+          "is_const": false,
+          "auto_state": "",
+          "user_flags": 0,
+          "structs": [],
+          "variables": [],
+          "guards": [],
+          "properties": [],
+          "states": [
+            {
+              "name": "",
+              "functions": [
+                {
+                  "name": "TraceIt",
+                  "return_type": "None",
+                  "docstring": "",
+                  "is_native": false,
+                  "is_global": false,
+                  "user_flags": 0,
+                  "params": [],
+                  "locals": [],
+                  "instructions": [
+                    {
+                      "opcode": 25,
+                      "args": [
+                        {
+                          "type": 1,
+                          "data": "Debug"
+                        },
+                        {
+                          "type": 1,
+                          "data": "Trace"
+                        },
+                        {
+                          "type": 0,
+                          "data": null
+                        },
+                        {
+                          "type": 3,
+                          "data": 3
+                        },
+                        {
+                          "type": 2,
+                          "data": "hello"
+                        },
+                        {
+                          "type": 3,
+                          "data": 1
+                        },
+                        {
+                          "type": 2,
+                          "data": "Creatures"
+                        }
+                      ]
+                    },
+                    {
+                      "opcode": 26,
+                      "args": [
+                        {
+                          "type": 0,
+                          "data": null
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "options": {
+      "fo4_api_compat": true
+    },
+    "expected": "Scriptname MyScript Extends ObjectReference\n\nFunction TraceIt()\n\tNone = Debug.Trace(\"hello\", 1)\nEndFunction\n"
+  },
+  {
+    "kind": "script",
+    "pex": {
+      "magic": 4200055006,
+      "major_version": 3,
+      "minor_version": 9,
+      "game_id": 2,
+      "compilation_time": 0,
+      "source_filename": "test.psc",
+      "username": "u",
+      "machine_name": "m",
+      "string_table": [],
+      "debug_info": null,
+      "user_flags": [],
+      "objects": [
+        {
+          "name": "MyScript",
+          "parent": "ObjectReference",
+          "docstring": "",
+          "is_const": false,
+          "auto_state": "",
+          "user_flags": 0,
+          "structs": [],
+          "variables": [
+            {
+              "name": "selfRef",
+              "type": "actor",
+              "user_flags": 0,
+              "data": {
+                "type": 0,
+                "data": null
+              },
+              "is_const": false
+            }
+          ],
+          "guards": [],
+          "properties": [],
+          "states": [
+            {
+              "name": "",
+              "functions": [
+                {
+                  "name": "ToggleIt",
+                  "return_type": "None",
+                  "docstring": "",
+                  "is_native": false,
+                  "is_global": false,
+                  "user_flags": 0,
+                  "params": [],
+                  "locals": [],
+                  "instructions": [
+                    {
+                      "opcode": 23,
+                      "args": [
+                        {
+                          "type": 1,
+                          "data": "SetEquippedWeaponAttacksEnabled"
+                        },
+                        {
+                          "type": 1,
+                          "data": "selfRef"
+                        },
+                        {
+                          "type": 0,
+                          "data": null
+                        },
+                        {
+                          "type": 3,
+                          "data": 2
+                        },
+                        {
+                          "type": 3,
+                          "data": 2
+                        },
+                        {
+                          "type": 5,
+                          "data": false
+                        }
+                      ]
+                    },
+                    {
+                      "opcode": 26,
+                      "args": [
+                        {
+                          "type": 0,
+                          "data": null
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "options": {},
+    "expected": "Scriptname MyScript Extends ObjectReference\n\nactor selfRef\n\nFunction ToggleIt()\n\tNone = selfRef.SetEquippedWeaponAttacksEnabled(2, False)\nEndFunction\n"
+  },
+  {
+    "kind": "script",
+    "pex": {
+      "magic": 4200055006,
+      "major_version": 3,
+      "minor_version": 9,
+      "game_id": 2,
+      "compilation_time": 0,
+      "source_filename": "test.psc",
+      "username": "u",
+      "machine_name": "m",
+      "string_table": [],
+      "debug_info": null,
+      "user_flags": [],
+      "objects": [
+        {
+          "name": "MyScript",
+          "parent": "ObjectReference",
+          "docstring": "",
+          "is_const": false,
+          "auto_state": "",
+          "user_flags": 0,
+          "structs": [],
+          "variables": [
+            {
+              "name": "selfRef",
+              "type": "actor",
+              "user_flags": 0,
+              "data": {
+                "type": 0,
+                "data": null
+              },
+              "is_const": false
+            }
+          ],
+          "guards": [],
+          "properties": [],
+          "states": [
+            {
+              "name": "",
+              "functions": [
+                {
+                  "name": "ToggleIt",
+                  "return_type": "None",
+                  "docstring": "",
+                  "is_native": false,
+                  "is_global": false,
+                  "user_flags": 0,
+                  "params": [],
+                  "locals": [],
+                  "instructions": [
+                    {
+                      "opcode": 23,
+                      "args": [
+                        {
+                          "type": 1,
+                          "data": "SetEquippedWeaponAttacksEnabled"
+                        },
+                        {
+                          "type": 1,
+                          "data": "selfRef"
+                        },
+                        {
+                          "type": 0,
+                          "data": null
+                        },
+                        {
+                          "type": 3,
+                          "data": 2
+                        },
+                        {
+                          "type": 3,
+                          "data": 2
+                        },
+                        {
+                          "type": 5,
+                          "data": false
+                        }
+                      ]
+                    },
+                    {
+                      "opcode": 26,
+                      "args": [
+                        {
+                          "type": 0,
+                          "data": null
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "options": {
+      "fo4_api_compat": true
+    },
+    "expected": "Scriptname MyScript Extends ObjectReference\n\nactor selfRef\n\nFunction ToggleIt()\nEndFunction\n"
+  },
+  {
+    "kind": "script",
+    "pex": {
+      "magic": 4200055006,
+      "major_version": 3,
+      "minor_version": 9,
+      "game_id": 2,
+      "compilation_time": 0,
+      "source_filename": "test.psc",
+      "username": "u",
+      "machine_name": "m",
+      "string_table": [],
+      "debug_info": null,
+      "user_flags": [],
+      "objects": [
+        {
+          "name": "MyScript",
+          "parent": "ActiveMagicEffect",
+          "docstring": "",
+          "is_const": false,
+          "auto_state": "",
+          "user_flags": 0,
+          "structs": [],
+          "variables": [],
+          "guards": [],
+          "properties": [],
+          "states": [
+            {
+              "name": "",
+              "functions": [
+                {
+                  "name": "StopListening",
+                  "return_type": "None",
+                  "docstring": "",
+                  "is_native": false,
+                  "is_global": false,
+                  "user_flags": 0,
+                  "params": [],
+                  "locals": [],
+                  "instructions": [
+                    {
+                      "opcode": 23,
+                      "args": [
+                        {
+                          "type": 1,
+                          "data": "UnregisterForAllDamageDealtEvents"
+                        },
+                        {
+                          "type": 1,
+                          "data": "Self"
+                        },
+                        {
+                          "type": 0,
+                          "data": null
+                        },
+                        {
+                          "type": 3,
+                          "data": 1
+                        },
+                        {
+                          "type": 1,
+                          "data": "selfActorRef"
+                        }
+                      ]
+                    },
+                    {
+                      "opcode": 26,
+                      "args": [
+                        {
+                          "type": 0,
+                          "data": null
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "options": {},
+    "expected": "Scriptname MyScript Extends ActiveMagicEffect\n\nFunction StopListening()\n\tNone = Self.UnregisterForAllDamageDealtEvents(selfActorRef)\nEndFunction\n"
+  },
+  {
+    "kind": "script",
+    "pex": {
+      "magic": 4200055006,
+      "major_version": 3,
+      "minor_version": 9,
+      "game_id": 2,
+      "compilation_time": 0,
+      "source_filename": "test.psc",
+      "username": "u",
+      "machine_name": "m",
+      "string_table": [],
+      "debug_info": null,
+      "user_flags": [],
+      "objects": [
+        {
+          "name": "MyScript",
+          "parent": "ActiveMagicEffect",
+          "docstring": "",
+          "is_const": false,
+          "auto_state": "",
+          "user_flags": 0,
+          "structs": [],
+          "variables": [],
+          "guards": [],
+          "properties": [],
+          "states": [
+            {
+              "name": "",
+              "functions": [
+                {
+                  "name": "StopListening",
+                  "return_type": "None",
+                  "docstring": "",
+                  "is_native": false,
+                  "is_global": false,
+                  "user_flags": 0,
+                  "params": [],
+                  "locals": [],
+                  "instructions": [
+                    {
+                      "opcode": 23,
+                      "args": [
+                        {
+                          "type": 1,
+                          "data": "UnregisterForAllDamageDealtEvents"
+                        },
+                        {
+                          "type": 1,
+                          "data": "Self"
+                        },
+                        {
+                          "type": 0,
+                          "data": null
+                        },
+                        {
+                          "type": 3,
+                          "data": 1
+                        },
+                        {
+                          "type": 1,
+                          "data": "selfActorRef"
+                        }
+                      ]
+                    },
+                    {
+                      "opcode": 26,
+                      "args": [
+                        {
+                          "type": 0,
+                          "data": null
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "options": {
+      "fo4_api_compat": true
+    },
+    "expected": "Scriptname MyScript Extends ActiveMagicEffect\n\nFunction StopListening()\nEndFunction\n"
+  },
+  {
+    "kind": "script",
+    "pex": {
+      "magic": 4200055006,
+      "major_version": 3,
+      "minor_version": 9,
+      "game_id": 2,
+      "compilation_time": 0,
+      "source_filename": "test.psc",
+      "username": "u",
+      "machine_name": "m",
+      "string_table": [],
+      "debug_info": null,
+      "user_flags": [],
+      "objects": [
+        {
+          "name": "MyScript",
+          "parent": "ObjectReference",
+          "docstring": "",
+          "is_const": false,
+          "auto_state": "",
+          "user_flags": 0,
+          "structs": [],
+          "variables": [],
+          "guards": [],
+          "properties": [],
+          "states": [
+            {
+              "name": "",
+              "functions": [
+                {
+                  "name": "RegisterForHitEvent",
+                  "return_type": "None",
+                  "docstring": "",
+                  "is_native": false,
+                  "is_global": false,
+                  "user_flags": 0,
+                  "params": [],
+                  "locals": [],
+                  "instructions": [
+                    {
+                      "opcode": 23,
+                      "args": [
+                        {
+                          "type": 1,
+                          "data": "RegisterForHitEvent"
+                        },
+                        {
+                          "type": 1,
+                          "data": "Self"
+                        },
+                        {
+                          "type": 0,
+                          "data": null
+                        },
+                        {
+                          "type": 3,
+                          "data": 10
+                        },
+                        {
+                          "type": 1,
+                          "data": "Self"
+                        },
+                        {
+                          "type": 0,
+                          "data": null
+                        },
+                        {
+                          "type": 0,
+                          "data": null
+                        },
+                        {
+                          "type": 0,
+                          "data": null
+                        },
+                        {
+                          "type": 3,
+                          "data": -1
+                        },
+                        {
+                          "type": 3,
+                          "data": -1
+                        },
+                        {
+                          "type": 3,
+                          "data": -1
+                        },
+                        {
+                          "type": 3,
+                          "data": -1
+                        },
+                        {
+                          "type": 3,
+                          "data": -1
+                        },
+                        {
+                          "type": 5,
+                          "data": true
+                        }
+                      ]
+                    },
+                    {
+                      "opcode": 26,
+                      "args": [
+                        {
+                          "type": 0,
+                          "data": null
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "name": "UnregisterForHitEvent",
+                  "return_type": "None",
+                  "docstring": "",
+                  "is_native": false,
+                  "is_global": false,
+                  "user_flags": 0,
+                  "params": [],
+                  "locals": [],
+                  "instructions": [
+                    {
+                      "opcode": 23,
+                      "args": [
+                        {
+                          "type": 1,
+                          "data": "UnregisterForHitEvent"
+                        },
+                        {
+                          "type": 1,
+                          "data": "Self"
+                        },
+                        {
+                          "type": 0,
+                          "data": null
+                        },
+                        {
+                          "type": 3,
+                          "data": 10
+                        },
+                        {
+                          "type": 1,
+                          "data": "Self"
+                        },
+                        {
+                          "type": 0,
+                          "data": null
+                        },
+                        {
+                          "type": 0,
+                          "data": null
+                        },
+                        {
+                          "type": 0,
+                          "data": null
+                        },
+                        {
+                          "type": 3,
+                          "data": -1
+                        },
+                        {
+                          "type": 3,
+                          "data": -1
+                        },
+                        {
+                          "type": 3,
+                          "data": -1
+                        },
+                        {
+                          "type": 3,
+                          "data": -1
+                        },
+                        {
+                          "type": 3,
+                          "data": -1
+                        },
+                        {
+                          "type": 5,
+                          "data": true
+                        }
+                      ]
+                    },
+                    {
+                      "opcode": 26,
+                      "args": [
+                        {
+                          "type": 0,
+                          "data": null
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "options": {},
+    "expected": "Scriptname MyScript Extends ObjectReference\n\nFunction RegisterForHitEvent()\n\tNone = Self.RegisterForHitEvent(Self, None, None, None, -1, -1, -1, -1, -1, True)\nEndFunction\n\nFunction UnregisterForHitEvent()\n\tNone = Self.UnregisterForHitEvent(Self, None, None, None, -1, -1, -1, -1, -1, True)\nEndFunction\n"
+  },
+  {
+    "kind": "script",
+    "pex": {
+      "magic": 4200055006,
+      "major_version": 3,
+      "minor_version": 9,
+      "game_id": 2,
+      "compilation_time": 0,
+      "source_filename": "test.psc",
+      "username": "u",
+      "machine_name": "m",
+      "string_table": [],
+      "debug_info": null,
+      "user_flags": [],
+      "objects": [
+        {
+          "name": "MyScript",
+          "parent": "ObjectReference",
+          "docstring": "",
+          "is_const": false,
+          "auto_state": "",
+          "user_flags": 0,
+          "structs": [],
+          "variables": [],
+          "guards": [],
+          "properties": [],
+          "states": [
+            {
+              "name": "",
+              "functions": [
+                {
+                  "name": "RegisterForHitEvent",
+                  "return_type": "None",
+                  "docstring": "",
+                  "is_native": false,
+                  "is_global": false,
+                  "user_flags": 0,
+                  "params": [],
+                  "locals": [],
+                  "instructions": [
+                    {
+                      "opcode": 23,
+                      "args": [
+                        {
+                          "type": 1,
+                          "data": "RegisterForHitEvent"
+                        },
+                        {
+                          "type": 1,
+                          "data": "Self"
+                        },
+                        {
+                          "type": 0,
+                          "data": null
+                        },
+                        {
+                          "type": 3,
+                          "data": 10
+                        },
+                        {
+                          "type": 1,
+                          "data": "Self"
+                        },
+                        {
+                          "type": 0,
+                          "data": null
+                        },
+                        {
+                          "type": 0,
+                          "data": null
+                        },
+                        {
+                          "type": 0,
+                          "data": null
+                        },
+                        {
+                          "type": 3,
+                          "data": -1
+                        },
+                        {
+                          "type": 3,
+                          "data": -1
+                        },
+                        {
+                          "type": 3,
+                          "data": -1
+                        },
+                        {
+                          "type": 3,
+                          "data": -1
+                        },
+                        {
+                          "type": 3,
+                          "data": -1
+                        },
+                        {
+                          "type": 5,
+                          "data": true
+                        }
+                      ]
+                    },
+                    {
+                      "opcode": 26,
+                      "args": [
+                        {
+                          "type": 0,
+                          "data": null
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "name": "UnregisterForHitEvent",
+                  "return_type": "None",
+                  "docstring": "",
+                  "is_native": false,
+                  "is_global": false,
+                  "user_flags": 0,
+                  "params": [],
+                  "locals": [],
+                  "instructions": [
+                    {
+                      "opcode": 23,
+                      "args": [
+                        {
+                          "type": 1,
+                          "data": "UnregisterForHitEvent"
+                        },
+                        {
+                          "type": 1,
+                          "data": "Self"
+                        },
+                        {
+                          "type": 0,
+                          "data": null
+                        },
+                        {
+                          "type": 3,
+                          "data": 10
+                        },
+                        {
+                          "type": 1,
+                          "data": "Self"
+                        },
+                        {
+                          "type": 0,
+                          "data": null
+                        },
+                        {
+                          "type": 0,
+                          "data": null
+                        },
+                        {
+                          "type": 0,
+                          "data": null
+                        },
+                        {
+                          "type": 3,
+                          "data": -1
+                        },
+                        {
+                          "type": 3,
+                          "data": -1
+                        },
+                        {
+                          "type": 3,
+                          "data": -1
+                        },
+                        {
+                          "type": 3,
+                          "data": -1
+                        },
+                        {
+                          "type": 3,
+                          "data": -1
+                        },
+                        {
+                          "type": 5,
+                          "data": true
+                        }
+                      ]
+                    },
+                    {
+                      "opcode": 26,
+                      "args": [
+                        {
+                          "type": 0,
+                          "data": null
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "options": {
+      "fo4_api_compat": true
+    },
+    "expected": "Scriptname MyScript Extends ObjectReference\n\nFunction RegisterForHitEvent()\n\tNone = Self.RegisterForHitEvent(Self, None, None, None, -1, -1, -1, -1, True)\nEndFunction\n\nFunction UnregisterForHitEvent()\n\tNone = Self.UnregisterForHitEvent(Self, None, None, None, -1, -1, -1, -1, True)\nEndFunction\n"
+  },
+  {
+    "kind": "script",
+    "pex": {
+      "magic": 4200055006,
+      "major_version": 3,
+      "minor_version": 9,
+      "game_id": 2,
+      "compilation_time": 0,
+      "source_filename": "test.psc",
+      "username": "u",
+      "machine_name": "m",
+      "string_table": [],
+      "debug_info": null,
+      "user_flags": [],
+      "objects": [
+        {
+          "name": "MyEffect",
+          "parent": "ActiveMagicEffect",
+          "docstring": "",
+          "is_const": false,
+          "auto_state": "",
+          "user_flags": 0,
+          "structs": [],
+          "variables": [
+            {
+              "name": "MagnitudeSeen",
+              "type": "Float",
+              "user_flags": 0,
+              "data": {
+                "type": 0,
+                "data": null
+              },
+              "is_const": false
+            }
+          ],
+          "guards": [],
+          "properties": [],
+          "states": [
+            {
+              "name": "",
+              "functions": [
+                {
+                  "name": "OnEffectStart",
+                  "return_type": "None",
+                  "docstring": "",
+                  "is_native": false,
+                  "is_global": false,
+                  "user_flags": 0,
+                  "params": [
+                    {
+                      "name": "akTarget",
+                      "type": "actor"
+                    },
+                    {
+                      "name": "akCaster",
+                      "type": "actor"
+                    },
+                    {
+                      "name": "afMagnitude",
+                      "type": "Float"
+                    },
+                    {
+                      "name": "afDuration",
+                      "type": "Float"
+                    }
+                  ],
+                  "locals": [],
+                  "instructions": [
+                    {
+                      "opcode": 13,
+                      "args": [
+                        {
+                          "type": 1,
+                          "data": "MagnitudeSeen"
+                        },
+                        {
+                          "type": 1,
+                          "data": "afMagnitude"
+                        }
+                      ]
+                    },
+                    {
+                      "opcode": 26,
+                      "args": [
+                        {
+                          "type": 0,
+                          "data": null
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "options": {},
+    "expected": "Scriptname MyEffect Extends ActiveMagicEffect\n\nFloat MagnitudeSeen\n\nEvent OnEffectStart(actor akTarget, actor akCaster, Float afMagnitude, Float afDuration)\n\tMagnitudeSeen = afMagnitude\nEndEvent\n"
+  },
+  {
+    "kind": "script",
+    "pex": {
+      "magic": 4200055006,
+      "major_version": 3,
+      "minor_version": 9,
+      "game_id": 2,
+      "compilation_time": 0,
+      "source_filename": "test.psc",
+      "username": "u",
+      "machine_name": "m",
+      "string_table": [],
+      "debug_info": null,
+      "user_flags": [],
+      "objects": [
+        {
+          "name": "MyEffect",
+          "parent": "ActiveMagicEffect",
+          "docstring": "",
+          "is_const": false,
+          "auto_state": "",
+          "user_flags": 0,
+          "structs": [],
+          "variables": [
+            {
+              "name": "MagnitudeSeen",
+              "type": "Float",
+              "user_flags": 0,
+              "data": {
+                "type": 0,
+                "data": null
+              },
+              "is_const": false
+            }
+          ],
+          "guards": [],
+          "properties": [],
+          "states": [
+            {
+              "name": "",
+              "functions": [
+                {
+                  "name": "OnEffectStart",
+                  "return_type": "None",
+                  "docstring": "",
+                  "is_native": false,
+                  "is_global": false,
+                  "user_flags": 0,
+                  "params": [
+                    {
+                      "name": "akTarget",
+                      "type": "actor"
+                    },
+                    {
+                      "name": "akCaster",
+                      "type": "actor"
+                    },
+                    {
+                      "name": "afMagnitude",
+                      "type": "Float"
+                    },
+                    {
+                      "name": "afDuration",
+                      "type": "Float"
+                    }
+                  ],
+                  "locals": [],
+                  "instructions": [
+                    {
+                      "opcode": 13,
+                      "args": [
+                        {
+                          "type": 1,
+                          "data": "MagnitudeSeen"
+                        },
+                        {
+                          "type": 1,
+                          "data": "afMagnitude"
+                        }
+                      ]
+                    },
+                    {
+                      "opcode": 26,
+                      "args": [
+                        {
+                          "type": 0,
+                          "data": null
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "options": {
+      "fo4_api_compat": true
+    },
+    "expected": "Scriptname MyEffect Extends ActiveMagicEffect\n\nFloat MagnitudeSeen\n\nEvent OnEffectStart(actor akTarget, actor akCaster)\n\tFloat afMagnitude = 0.0\n\tMagnitudeSeen = afMagnitude\nEndEvent\n"
+  },
+  {
+    "kind": "script",
+    "pex": {
+      "magic": 4200055006,
+      "major_version": 3,
+      "minor_version": 9,
+      "game_id": 2,
+      "compilation_time": 0,
+      "source_filename": "test.psc",
+      "username": "u",
+      "machine_name": "m",
+      "string_table": [],
+      "debug_info": null,
+      "user_flags": [],
+      "objects": [
+        {
+          "name": "DefaultTopicInfoTest",
+          "parent": "TopicInfo",
+          "docstring": "",
+          "is_const": false,
+          "auto_state": "",
+          "user_flags": 0,
+          "structs": [],
+          "variables": [
+            {
+              "name": "SeenTarget",
+              "type": "ObjectReference",
+              "user_flags": 0,
+              "data": {
+                "type": 0,
+                "data": null
+              },
+              "is_const": false
+            },
+            {
+              "name": "SeenQuest",
+              "type": "QuestInstance",
+              "user_flags": 0,
+              "data": {
+                "type": 0,
+                "data": null
+              },
+              "is_const": false
+            }
+          ],
+          "guards": [],
+          "properties": [],
+          "states": [
+            {
+              "name": "",
+              "functions": [
+                {
+                  "name": "OnBegin",
+                  "return_type": "None",
+                  "docstring": "",
+                  "is_native": false,
+                  "is_global": false,
+                  "user_flags": 0,
+                  "params": [
+                    {
+                      "name": "akSpeakerRef",
+                      "type": "ObjectReference"
+                    },
+                    {
+                      "name": "akTargetRef",
+                      "type": "ObjectReference"
+                    },
+                    {
+                      "name": "akQuestInstance",
+                      "type": "QuestInstance"
+                    },
+                    {
+                      "name": "abHasBeenSaid",
+                      "type": "Bool"
+                    }
+                  ],
+                  "locals": [],
+                  "instructions": [
+                    {
+                      "opcode": 13,
+                      "args": [
+                        {
+                          "type": 1,
+                          "data": "SeenTarget"
+                        },
+                        {
+                          "type": 1,
+                          "data": "akTargetRef"
+                        }
+                      ]
+                    },
+                    {
+                      "opcode": 13,
+                      "args": [
+                        {
+                          "type": 1,
+                          "data": "SeenQuest"
+                        },
+                        {
+                          "type": 1,
+                          "data": "akQuestInstance"
+                        }
+                      ]
+                    },
+                    {
+                      "opcode": 26,
+                      "args": [
+                        {
+                          "type": 0,
+                          "data": null
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "options": {
+      "fo4_api_compat": true,
+      "type_aliases": {
+        "topicinfo": "TopicInfo",
+        "objectreference": "ObjectReference",
+        "questinstance": "Quest",
+        "none": "None",
+        "bool": "Bool"
+      }
+    },
+    "expected": "Scriptname DefaultTopicInfoTest Extends TopicInfo\n\nObjectReference SeenTarget\nQuest SeenQuest\n\nEvent OnBegin(ObjectReference akSpeakerRef, Bool abHasBeenSaid)\n\tObjectReference akTargetRef = Game.GetPlayer()\n\tQuest akQuestInstance = Self.GetOwningQuest()\n\tSeenTarget = akTargetRef\n\tSeenQuest = akQuestInstance\nEndEvent\n"
+  },
+  {
+    "kind": "script",
+    "pex": {
+      "magic": 4200055006,
+      "major_version": 3,
+      "minor_version": 9,
+      "game_id": 2,
+      "compilation_time": 0,
+      "source_filename": "test.psc",
+      "username": "u",
+      "machine_name": "m",
+      "string_table": [],
+      "debug_info": null,
+      "user_flags": [],
+      "objects": [
+        {
+          "name": "MyScript",
+          "parent": "ObjectReference",
+          "docstring": "",
+          "is_const": false,
+          "auto_state": "",
+          "user_flags": 0,
+          "structs": [],
+          "variables": [],
+          "guards": [],
+          "properties": [],
+          "states": [
+            {
+              "name": "",
+              "functions": [
+                {
+                  "name": "Collect",
+                  "return_type": "None",
+                  "docstring": "",
+                  "is_native": false,
+                  "is_global": false,
+                  "user_flags": 0,
+                  "params": [],
+                  "locals": [
+                    {
+                      "name": "refs",
+                      "type": "objectreference[]"
+                    }
+                  ],
+                  "instructions": [
+                    {
+                      "opcode": 23,
+                      "args": [
+                        {
+                          "type": 1,
+                          "data": "GetRefsLinkedToMe"
+                        },
+                        {
+                          "type": 1,
+                          "data": "Self"
+                        },
+                        {
+                          "type": 1,
+                          "data": "refs"
+                        },
+                        {
+                          "type": 3,
+                          "data": 3
+                        },
+                        {
+                          "type": 1,
+                          "data": "MyKeyword"
+                        },
+                        {
+                          "type": 0,
+                          "data": null
+                        },
+                        {
+                          "type": 5,
+                          "data": true
+                        }
+                      ]
+                    },
+                    {
+                      "opcode": 26,
+                      "args": [
+                        {
+                          "type": 0,
+                          "data": null
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "options": {
+      "fo4_api_compat": true
+    },
+    "expected": "Scriptname MyScript Extends ObjectReference\n\nFunction Collect()\n\tobjectreference[] refs\n\trefs = Self.GetRefsLinkedToMe(MyKeyword, None)\nEndFunction\n"
+  },
+  {
+    "kind": "script",
+    "pex": {
+      "magic": 4200055006,
+      "major_version": 3,
+      "minor_version": 9,
+      "game_id": 2,
+      "compilation_time": 0,
+      "source_filename": "test.psc",
+      "username": "u",
+      "machine_name": "m",
+      "string_table": [],
+      "debug_info": null,
+      "user_flags": [],
+      "objects": [
+        {
+          "name": "MyScript",
+          "parent": "ObjectReference",
+          "docstring": "",
+          "is_const": false,
+          "auto_state": "",
+          "user_flags": 0,
+          "structs": [],
+          "variables": [
+            {
+              "name": "counter",
+              "type": "Int",
+              "user_flags": 0,
+              "data": {
+                "type": 3,
+                "data": 0
+              },
+              "is_const": false
+            }
+          ],
+          "guards": [],
+          "properties": [
+            {
+              "name": "MyProp",
+              "type": "Int",
+              "docstring": "",
+              "user_flags": 0,
+              "flags": 4,
+              "auto_var": "::MyProp_var",
+              "getter": null,
+              "setter": null
+            }
+          ],
+          "states": [
+            {
+              "name": "",
+              "functions": [
+                {
+                  "name": "OnInit",
+                  "return_type": "None",
+                  "docstring": "",
+                  "is_native": false,
+                  "is_global": false,
+                  "user_flags": 0,
+                  "params": [],
+                  "locals": [],
+                  "instructions": [
+                    {
+                      "opcode": 13,
+                      "args": [
+                        {
+                          "type": 1,
+                          "data": "counter"
+                        },
+                        {
+                          "type": 3,
+                          "data": 1
+                        }
+                      ]
+                    },
+                    {
+                      "opcode": 26,
+                      "args": [
+                        {
+                          "type": 0,
+                          "data": null
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "options": {},
+    "expected": "Scriptname MyScript Extends ObjectReference\n\nInt counter = 0\n\nInt Property MyProp Auto\n\nEvent OnInit()\n\tcounter = 1\nEndEvent\n"
+  },
+  {
+    "kind": "function",
+    "function": {
+      "name": "TestFunc",
+      "return_type": "Bool",
+      "docstring": "",
+      "is_native": false,
+      "is_global": false,
+      "user_flags": 0,
+      "params": [],
+      "locals": [
+        {
+          "name": "::temp0",
+          "type": "Bool"
+        },
+        {
+          "name": "::temp1",
+          "type": "Bool"
+        },
+        {
+          "name": "::temp2",
+          "type": "Bool"
+        }
+      ],
+      "instructions": [
+        {
+          "opcode": 15,
+          "args": [
+            {
+              "type": 1,
+              "data": "::temp0"
+            },
+            {
+              "type": 1,
+              "data": "a"
+            },
+            {
+              "type": 1,
+              "data": "b"
+            }
+          ]
+        },
+        {
+          "opcode": 14,
+          "args": [
+            {
+              "type": 1,
+              "data": "::temp1"
+            },
+            {
+              "type": 1,
+              "data": "::temp0"
+            }
+          ]
+        },
+        {
+          "opcode": 14,
+          "args": [
+            {
+              "type": 1,
+              "data": "::temp2"
+            },
+            {
+              "type": 1,
+              "data": "::temp1"
+            }
+          ]
+        },
+        {
+          "opcode": 26,
+          "args": [
+            {
+              "type": 1,
+              "data": "::temp2"
+            }
+          ]
+        }
+      ]
+    },
+    "expected": [
+      {
+        "node": "ReturnStmt",
+        "value": {
+          "node": "CastExpr",
+          "expr": {
+            "node": "BinaryExpr",
+            "left": {
+              "node": "NameExpr",
+              "name": "a",
+              "pos": {
+                "line": 0,
+                "col": 0,
+                "end_line": 0,
+                "end_col": 0
+              }
+            },
+            "op": "==",
+            "right": {
+              "node": "NameExpr",
+              "name": "b",
+              "pos": {
+                "line": 0,
+                "col": 0,
+                "end_line": 0,
+                "end_col": 0
+              }
+            },
+            "pos": {
+              "line": 0,
+              "col": 0,
+              "end_line": 0,
+              "end_col": 0
+            }
+          },
+          "target_type": "Bool",
+          "pos": {
+            "line": 0,
+            "col": 0,
+            "end_line": 0,
+            "end_col": 0
+          }
+        },
+        "pos": {
+          "line": 0,
+          "col": 0,
+          "end_line": 0,
+          "end_col": 0
+        }
+      }
+    ]
+  },
+  {
+    "kind": "script",
+    "pex": {
+      "magic": 4200055006,
+      "major_version": 3,
+      "minor_version": 9,
+      "game_id": 2,
+      "compilation_time": 0,
+      "source_filename": "ConditionalQuest.psc",
+      "username": "",
+      "machine_name": "",
+      "string_table": [],
+      "debug_info": null,
+      "user_flags": [
+        {
+          "name": "conditional",
+          "index": 1
+        }
+      ],
+      "objects": [
+        {
+          "name": "ConditionalQuest",
+          "parent": "Quest",
+          "docstring": "",
+          "is_const": false,
+          "auto_state": "",
+          "user_flags": 2,
+          "structs": [],
+          "variables": [
+            {
+              "name": "rewardReady",
+              "type": "Bool",
+              "user_flags": 2,
+              "data": {
+                "type": 5,
+                "data": false
+              },
+              "is_const": false
+            }
+          ],
+          "guards": [],
+          "properties": [],
+          "states": [
+            {
+              "name": "",
+              "functions": []
+            }
+          ]
+        }
+      ]
+    },
+    "options": {},
+    "expected": "Scriptname ConditionalQuest Extends Quest conditional\n\nBool rewardReady = False conditional\n"
+  },
+  {
+    "kind": "script",
+    "pex": {
+      "magic": 4200055006,
+      "major_version": 3,
+      "minor_version": 9,
+      "game_id": 2,
+      "compilation_time": 0,
+      "source_filename": "test.psc",
+      "username": "u",
+      "machine_name": "m",
+      "string_table": [],
+      "debug_info": null,
+      "user_flags": [],
+      "objects": [
+        {
+          "name": "MyScript",
+          "parent": "ObjectReference",
+          "docstring": "",
+          "is_const": false,
+          "auto_state": "",
+          "user_flags": 0,
+          "structs": [],
+          "variables": [],
+          "guards": [],
+          "properties": [
+            {
+              "name": "ConstValue",
+              "type": "Int",
+              "docstring": "",
+              "user_flags": 0,
+              "flags": 1,
+              "auto_var": "",
+              "getter": {
+                "name": "get_ConstValue",
+                "return_type": "Int",
+                "docstring": "",
+                "is_native": false,
+                "is_global": false,
+                "user_flags": 0,
+                "params": [],
+                "locals": [],
+                "instructions": [
+                  {
+                    "opcode": 26,
+                    "args": [
+                      {
+                        "type": 3,
+                        "data": 4
+                      }
+                    ]
+                  }
+                ]
+              },
+              "setter": null
+            }
+          ],
+          "states": []
+        }
+      ]
+    },
+    "options": {},
+    "expected": "Scriptname MyScript Extends ObjectReference\n\nInt Property ConstValue\n\tInt Function Get()\n\t\tReturn 4\n\tEndFunction\nEndProperty\n"
+  },
+  {
+    "kind": "script",
+    "pex": {
+      "magic": 4200055006,
+      "major_version": 3,
+      "minor_version": 9,
+      "game_id": 2,
+      "compilation_time": 0,
+      "source_filename": "ConditionalProps.psc",
+      "username": "",
+      "machine_name": "",
+      "string_table": [],
+      "debug_info": null,
+      "user_flags": [
+        {
+          "name": "conditional",
+          "index": 1
+        }
+      ],
+      "objects": [
+        {
+          "name": "ConditionalProps",
+          "parent": "Quest",
+          "docstring": "",
+          "is_const": false,
+          "auto_state": "",
+          "user_flags": 2,
+          "structs": [],
+          "variables": [
+            {
+              "name": "::CurrentSong_var",
+              "type": "Int",
+              "user_flags": 2,
+              "data": {
+                "type": 3,
+                "data": 0
+              },
+              "is_const": false
+            }
+          ],
+          "guards": [],
+          "properties": [
+            {
+              "name": "CurrentSong",
+              "type": "Int",
+              "docstring": "",
+              "user_flags": 0,
+              "flags": 7,
+              "auto_var": "::CurrentSong_var",
+              "getter": null,
+              "setter": null
+            }
+          ],
+          "states": [
+            {
+              "name": "",
+              "functions": []
+            }
+          ]
+        }
+      ]
+    },
+    "options": {},
+    "expected": "Scriptname ConditionalProps Extends Quest conditional\n\nInt Property CurrentSong = 0 Auto conditional\n"
+  },
+  {
+    "kind": "script",
+    "pex": {
+      "magic": 4200055006,
+      "major_version": 3,
+      "minor_version": 9,
+      "game_id": 2,
+      "compilation_time": 0,
+      "source_filename": "test.psc",
+      "username": "u",
+      "machine_name": "m",
+      "string_table": [],
+      "debug_info": null,
+      "user_flags": [],
+      "objects": [
+        {
+          "name": "MyScript",
+          "parent": "ObjectReference",
+          "docstring": "",
+          "is_const": false,
+          "auto_state": "",
+          "user_flags": 0,
+          "structs": [
+            {
+              "name": "Pair",
+              "members": [
+                {
+                  "name": "First",
+                  "type": "Int",
+                  "user_flags": 0,
+                  "data": {
+                    "type": 0,
+                    "data": null
+                  },
+                  "is_const": false,
+                  "docstring": ""
+                }
+              ]
+            }
+          ],
+          "variables": [],
+          "guards": [],
+          "properties": [],
+          "states": [
+            {
+              "name": "",
+              "functions": [
+                {
+                  "name": "GetFirst",
+                  "return_type": "Int",
+                  "docstring": "",
+                  "is_native": false,
+                  "is_global": false,
+                  "user_flags": 0,
+                  "params": [],
+                  "locals": [
+                    {
+                      "name": "item",
+                      "type": "myscript#pair"
+                    },
+                    {
+                      "name": "::temp0",
+                      "type": "Int"
+                    }
+                  ],
+                  "instructions": [
+                    {
+                      "opcode": 37,
+                      "args": [
+                        {
+                          "type": 1,
+                          "data": "item"
+                        }
+                      ]
+                    },
+                    {
+                      "opcode": 38,
+                      "args": [
+                        {
+                          "type": 1,
+                          "data": "::temp0"
+                        },
+                        {
+                          "type": 1,
+                          "data": "item"
+                        },
+                        {
+                          "type": 1,
+                          "data": "First"
+                        }
+                      ]
+                    },
+                    {
+                      "opcode": 26,
+                      "args": [
+                        {
+                          "type": 1,
+                          "data": "::temp0"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "options": {},
+    "expected": "Scriptname MyScript Extends ObjectReference\n\nStruct Pair\n\tInt First\nEndStruct\n\nInt Function GetFirst()\n\tPair item\n\titem = new Pair\n\tReturn item.First\nEndFunction\n"
+  },
+  {
+    "kind": "script",
+    "pex": {
+      "magic": 4200055006,
+      "major_version": 3,
+      "minor_version": 9,
+      "game_id": 2,
+      "compilation_time": 0,
+      "source_filename": "test.psc",
+      "username": "u",
+      "machine_name": "m",
+      "string_table": [],
+      "debug_info": null,
+      "user_flags": [],
+      "objects": [
+        {
+          "name": "MyScript",
+          "parent": "ObjectReference",
+          "docstring": "",
+          "is_const": false,
+          "auto_state": "",
+          "user_flags": 0,
+          "structs": [
+            {
+              "name": "Pair",
+              "members": [
+                {
+                  "name": "First",
+                  "type": "Int",
+                  "user_flags": 0,
+                  "data": {
+                    "type": 0,
+                    "data": null
+                  },
+                  "is_const": false,
+                  "docstring": ""
+                }
+              ]
+            }
+          ],
+          "variables": [
+            {
+              "name": "Pairs",
+              "type": "myscript#pair[]",
+              "user_flags": 0,
+              "data": {
+                "type": 0,
+                "data": null
+              },
+              "is_const": false
+            }
+          ],
+          "guards": [],
+          "properties": [
+            {
+              "name": "PairProp",
+              "type": "myscript#pair[]",
+              "docstring": "",
+              "user_flags": 0,
+              "flags": 4,
+              "auto_var": "",
+              "getter": null,
+              "setter": null
+            }
+          ],
+          "states": []
+        }
+      ]
+    },
+    "options": {},
+    "expected": "Scriptname MyScript Extends ObjectReference\n\nStruct Pair\n\tInt First\nEndStruct\n\nPair[] Pairs\n\nPair[] Property PairProp Auto\n"
+  },
+  {
+    "kind": "script",
+    "pex": {
+      "magic": 4200055006,
+      "major_version": 3,
+      "minor_version": 9,
+      "game_id": 2,
+      "compilation_time": 0,
+      "source_filename": "test.psc",
+      "username": "u",
+      "machine_name": "m",
+      "string_table": [],
+      "debug_info": null,
+      "user_flags": [],
+      "objects": [
+        {
+          "name": "MyScript",
+          "parent": "ObjectReference",
+          "docstring": "",
+          "is_const": false,
+          "auto_state": "",
+          "user_flags": 0,
+          "structs": [],
+          "variables": [
+            {
+              "name": "BlastRegion",
+              "type": "region",
+              "user_flags": 0,
+              "data": {
+                "type": 0,
+                "data": null
+              },
+              "is_const": false
+            }
+          ],
+          "guards": [],
+          "properties": [],
+          "states": []
+        }
+      ]
+    },
+    "options": {
+      "type_aliases": {
+        "objectreference": "ObjectReference",
+        "region": "Form"
+      }
+    },
+    "expected": "Scriptname MyScript Extends ObjectReference\n\nForm BlastRegion\n"
+  },
+  {
+    "kind": "script",
+    "pex": {
+      "magic": 4200055006,
+      "major_version": 3,
+      "minor_version": 9,
+      "game_id": 2,
+      "compilation_time": 0,
+      "source_filename": "test.psc",
+      "username": "u",
+      "machine_name": "m",
+      "string_table": [],
+      "debug_info": null,
+      "user_flags": [],
+      "objects": [
+        {
+          "name": "MyQuestScript",
+          "parent": "QuestInstance",
+          "docstring": "",
+          "is_const": false,
+          "auto_state": "",
+          "user_flags": 0,
+          "structs": [],
+          "variables": [],
+          "guards": [],
+          "properties": [],
+          "states": []
+        }
+      ]
+    },
+    "options": {
+      "type_aliases": {
+        "questinstance": "Quest"
+      }
+    },
+    "expected": "Scriptname MyQuestScript Extends Quest\n"
+  }
+]

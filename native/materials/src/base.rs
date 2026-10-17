@@ -39,11 +39,21 @@ pub struct BaseHeader {
 pub struct Reader<'a> {
     data: &'a [u8],
     pos: usize,
+    string_spans: Vec<std::ops::Range<usize>>,
 }
 
 impl<'a> Reader<'a> {
     pub fn new(data: &'a [u8]) -> Self {
-        Self { data, pos: 0 }
+        Self {
+            data,
+            pos: 0,
+            string_spans: Vec::new(),
+        }
+    }
+
+    /// Byte ranges (length prefix included) of every string read so far, in read order.
+    pub fn string_spans(&self) -> &[std::ops::Range<usize>] {
+        &self.string_spans
     }
 
     fn read_exact(&mut self, len: usize) -> Result<&'a [u8]> {
@@ -84,11 +94,14 @@ impl<'a> Reader<'a> {
     }
 
     pub fn read_string(&mut self) -> Result<String> {
+        let start = self.pos;
         let len = self.read_u32()? as usize;
         if len == 0 {
+            self.string_spans.push(start..self.pos);
             return Ok(String::new());
         }
         let bytes = self.read_exact(len)?;
+        self.string_spans.push(start..self.pos);
         std::str::from_utf8(bytes)
             .map(|s| s.to_owned())
             .map_err(|err| MaterialError::invalid(err.to_string()))

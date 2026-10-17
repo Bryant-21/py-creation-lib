@@ -26,6 +26,17 @@ pub fn terrain_msn(world: &str, level: i32, x: i32, y: i32, season: &str) -> Str
     format!(r"Textures\Terrain\{world}\{world}.{level}.{x}.{y}{season}_msn.dds")
 }
 
+/// Dense-terrain companion of a diffuse tile: R roughness, G metalness, B AO, A F0. FO4CS finds it by
+/// replacing the diffuse path's `.dds` with `_rmaos.dds`, so the `.btr` texture set stays unchanged.
+pub fn terrain_rmaos(world: &str, level: i32, x: i32, y: i32, season: &str) -> String {
+    format!(r"Textures\Terrain\{world}\{world}.{level}.{x}.{y}{season}_rmaos.dds")
+}
+
+/// Dense-terrain emissive companion (`_g.dds`), written only for tiles where something emits.
+pub fn terrain_glow(world: &str, level: i32, x: i32, y: i32, season: &str) -> String {
+    format!(r"Textures\Terrain\{world}\{world}.{level}.{x}.{y}{season}_g.dds")
+}
+
 /// Data-relative path for the `.lod` LODSettings file.
 /// Pattern: `LODSettings\{world}.lod` (wbLOD.pas:432-459)
 pub fn lodsettings(world: &str) -> String {

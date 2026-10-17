@@ -1,0 +1,86 @@
+scn CrNightkinScript
+
+short DoOnce
+short combatcheck
+short soundcheck
+float timerEffect
+
+int Cloaked								; 0 = Stealth Boy effect not on
+											; 1 = Stealth Boy effect on
+											; This var is meant to ensure we never try to remove
+											; the effect when it's not already on.
+
+begin onLoad
+	ModActorValue sneak 100
+
+	; Add the effect, update the flag
+	if Cloaked == 0
+		addspell StealthBoyInvisibilitySpell
+;ShowWarning "Cloaking on load!"
+		set Cloaked to 1
+	endif
+
+	set soundcheck to 0
+	set timerEffect to 0
+end
+
+begin OnSTARTCombat
+	set combatcheck to 1
+end
+
+begin OnCombatEND
+	set combatcheck to 0
+;	ShowWarning "Combat ending!"
+end
+
+begin OnDeath
+	set combatcheck to 0
+
+	; If the nightkin is currently using the Stealth Boy effect, remove it
+	if Cloaked == 1
+		RemoveSpell StealthBoyInvisibilitySpell
+		set Cloaked to 0
+	endif
+
+end
+
+begin GameMode
+	ref refvar
+	set refvar to this
+	
+	;if GetDetected player
+	;	startcombat player
+	;endif
+
+	; Backup check to decloak nightkin after death
+	if (GetDead == 1) && (DoOnce == 0) && Cloaked == 1
+		RemoveSpell StealthBoyInvisibilitySpell
+		set Cloaked to 0
+		set DoOnce to 1
+	endif
+
+	if combatcheck == 1
+		ref mytarget
+		set mytarget to refvar.GetCombatTarget
+	else
+		; If not in combat, use Stealth Boy again
+		if refvar.GetDead == 0 && Cloaked == 0
+			addspell StealthBoyInvisibilitySpell
+;			ShowWarning "Not in combat, cloaking!"
+			set Cloaked to 1	
+			set soundcheck to 0
+		endif
+	endif
+
+	; Have nightkin decloak when they attack
+	if GetAnimAction == 2 && Cloaked == 1
+		RemoveSpell StealthBoyInvisibilitySpell
+		set Cloaked to 0
+		PMS NightkinCloakFXShader 1
+		if soundcheck == 0
+			refvar.PlaySound3D OBJStealthBoyActivate
+			set soundcheck to 1
+		endif
+	endif
+
+end

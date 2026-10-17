@@ -6,6 +6,7 @@ until the user closes it.
 from __future__ import annotations
 
 import time
+from pathlib import Path
 
 from imgui_bundle import portable_file_dialogs as pfd
 
@@ -30,7 +31,11 @@ def _wait(dlg) -> None:
 
 def pick_folder(title: str = "Select Folder", default_path: str = "") -> str | None:
     """Open a native folder dialog. Returns path or None."""
-    dlg = pfd.select_folder(title, default_path)
+    if default_path and Path(default_path).is_file():
+        default_path = str(Path(default_path).parent)
+    # Windows otherwise prefers the last opened directory over the supplied path.
+    options = pfd.opt.force_path if default_path else pfd.opt.none
+    dlg = pfd.select_folder(title, default_path, options)
     _wait(dlg)
     return dlg.result() or None
 

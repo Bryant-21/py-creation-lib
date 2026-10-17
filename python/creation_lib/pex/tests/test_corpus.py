@@ -43,3 +43,28 @@ def test_a_partial_expansion_is_never_served(monkeypatch, tmp_path):
     with pytest.raises(OSError):
         corpus.bundled_corpus_root("fo4")
     assert not any(tmp_path.glob("fo4-*/.complete"))
+
+
+def test_loose_install_scripts_become_headers_ahead_of_the_corpus(monkeypatch, tmp_path):
+    """Script extenders ship loose .pex only; their additions (Form.GetName) must resolve."""
+    from creation_lib.pex import headers
+
+    scripts = tmp_path / "Scripts"
+    scripts.mkdir()
+    (scripts / "Form.pex").write_bytes(b"pex")
+    monkeypatch.setattr(corpus, "_cache_root", lambda: tmp_path / "cache")
+    calls = []
+
+    def _emit(path, manifest=None):
+        calls.append(path)
+        yield "Form", "Scriptname Form Extends ScriptObject\n\nString Function GetName() Native\n"
+
+    monkeypatch.setattr(headers, "emit_headers_for_file", _emit)
+    root = corpus.install_headers_root("fo4", scripts)
+    assert "GetName" in (root / "Form.psc").read_text(encoding="utf-8")
+    assert corpus.install_headers_root("fo4", scripts) == root
+    assert len(calls) == 1
+
+
+def test_no_loose_install_scripts_means_no_install_headers(tmp_path):
+    assert corpus.install_headers_root("fo4", tmp_path) is None

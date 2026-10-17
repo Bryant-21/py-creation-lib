@@ -708,7 +708,7 @@ fn diffuse_lower_contains(s: &str, needle: &str) -> bool {
     s.to_lowercase().contains(needle)
 }
 
-fn format_to_str(f: &crate::settings::Format) -> &'static str {
+pub(crate) fn format_to_str(f: &crate::settings::Format) -> &'static str {
     use crate::settings::Format;
     match f {
         Format::Bc1 => "BC1_UNORM",
@@ -797,22 +797,7 @@ fn build_atlas_from_assets_with_progress(
     mut progress: Option<&mut dyn crate::progress::Progress>,
 ) -> anyhow::Result<AtlasResult> {
     use super::binpacker::{BinBlock, BinPacker};
-    // Load + optionally resize each diffuse tile.
-    // port: wbLOD.pas:1440-1480
-    struct Tile {
-        /// Data-relative diffuse path (backslash), stored in the atlas-map.
-        diffuse_rel: String,
-        /// Data-relative normal path (backslash) — empty if no `_n` sibling on disk.
-        /// Used to build the `diffuse,normal` AtlasList key (port: AtlasList.GetKey).
-        normal_rel: String,
-        w: u32,
-        h: u32,
-        rgba_d: Vec<u8>,
-        rgba_n: Vec<u8>,
-        rgba_s: Vec<u8>,
-    }
-
-    let mut tiles: Vec<Tile> = Vec::new();
+    let mut tiles: Vec<LoadedTile> = Vec::new();
 
     let total_tiles = diffuse_tile_assets.len().max(1);
     let report_every = (total_tiles / 20).max(1);
@@ -826,64 +811,10 @@ fn build_atlas_from_assets_with_progress(
     );
 
     for (idx, asset) in diffuse_tile_assets.iter().enumerate() {
-        // Skip tiles too large for the atlas (port: wbLOD.pas:1453)
-        let img = match read_asset_dds(asset, asset_sources) {
-            Ok(i) => i,
-            Err(_) => continue,
-        };
-        if img.width > atlas_size || img.height > atlas_size {
+        let Some(tile) = load_atlas_tile(asset, asset_sources, atlas_size, max_tile_size) else {
             continue;
-        }
-
-        // Resize if > max_tile_size (port: wbLOD.pas:1456-1469)
-        let (w, h, rgba_d) = if img.width > max_tile_size || img.height > max_tile_size {
-            let new_w = img.width.min(max_tile_size);
-            let new_h = img.height.min(max_tile_size);
-            let resized = resize_rgba(&img.rgba, img.width, img.height, new_w, new_h);
-            (new_w, new_h, resized)
-        } else {
-            (img.width, img.height, img.rgba)
         };
-
-        // Derive _n and _s sibling paths.
-        // port: wbLOD.pas:1423-1435
-        let n_asset = resolve_sibling_asset(asset, "_n.dds", asset_sources);
-        let s_asset = resolve_sibling_asset(asset, "_s.dds", asset_sources);
-
-        let rgba_n = if let Some(sibling) = &n_asset {
-            read_asset_dds(sibling, asset_sources)
-                .map(|i| maybe_resize_rgba(i, w, h))
-                .unwrap_or_else(|_| flat_normal_rgba(w, h))
-        } else {
-            flat_normal_rgba(w, h)
-        };
-        let rgba_s = if let Some(sibling) = &s_asset {
-            read_asset_dds(sibling, asset_sources)
-                .map(|i| maybe_resize_rgba(i, w, h))
-                .unwrap_or_else(|_| neutral_specular_rgba(w, h))
-        } else {
-            neutral_specular_rgba(w, h)
-        };
-
-        // Data-relative path for the atlas-map: take the part after "textures\" (case-insensitive).
-        let rel = asset.logical_path().replace('/', "\\");
-        // Data-relative normal path (only when an `_n` sibling exists on disk), used
-        // for the `diffuse,normal` AtlasList key. port: AtlasList.GetKey / atlas-map
-        // source column = `diffuse,normal` (Program.cs:1306-1311).
-        let normal_rel = n_asset
-            .as_ref()
-            .map(|asset| asset.logical_path().replace('/', "\\"))
-            .unwrap_or_default();
-
-        tiles.push(Tile {
-            diffuse_rel: rel,
-            normal_rel,
-            w,
-            h,
-            rgba_d,
-            rgba_n,
-            rgba_s,
-        });
+        tiles.push(tile);
 
         let done = idx + 1;
         if done == diffuse_tile_assets.len() || done % report_every == 0 {
@@ -1109,6 +1040,99 @@ fn build_atlas_from_assets_with_progress(
         list: atlas_list,
         dds_written,
     })
+}
+
+// Load + optionally resize each diffuse tile.
+// port: wbLOD.pas:1440-1480
+struct LoadedTile {
+    /// Data-relative diffuse path (backslash), stored in the atlas-map.
+    diffuse_rel: String,
+    /// Data-relative normal path (backslash) — empty if no `_n` sibling on disk.
+    /// Used to build the `diffuse,normal` AtlasList key (port: AtlasList.GetKey).
+    normal_rel: String,
+    w: u32,
+    h: u32,
+    rgba_d: Vec<u8>,
+    rgba_n: Vec<u8>,
+    rgba_s: Vec<u8>,
+}
+
+fn load_atlas_tile(
+    asset: &ResolvedAsset,
+    asset_sources: Option<&[std::path::PathBuf]>,
+    atlas_size: u32,
+    max_tile_size: u32,
+) -> Option<LoadedTile> {
+    // Skip tiles too large for the atlas (port: wbLOD.pas:1453)
+    let img = read_asset_dds(asset, asset_sources).ok()?;
+    if img.width > atlas_size || img.height > atlas_size {
+        return None;
+    }
+
+    // Resize if > max_tile_size (port: wbLOD.pas:1456-1469)
+    let (w, h, rgba_d) = if img.width > max_tile_size || img.height > max_tile_size {
+        let new_w = img.width.min(max_tile_size);
+        let new_h = img.height.min(max_tile_size);
+        let resized = resize_rgba(&img.rgba, img.width, img.height, new_w, new_h);
+        (new_w, new_h, resized)
+    } else {
+        (img.width, img.height, img.rgba)
+    };
+
+    // Derive _n and _s sibling paths.
+    // port: wbLOD.pas:1423-1435
+    let n_asset = resolve_sibling_asset(asset, "_n.dds", asset_sources);
+    let s_asset = resolve_sibling_asset(asset, "_s.dds", asset_sources);
+
+    let rgba_n = if let Some(sibling) = &n_asset {
+        read_asset_dds(sibling, asset_sources)
+            .map(|i| maybe_resize_rgba(i, w, h))
+            .unwrap_or_else(|_| flat_normal_rgba(w, h))
+    } else {
+        flat_normal_rgba(w, h)
+    };
+    let rgba_s = if let Some(sibling) = &s_asset {
+        read_asset_dds(sibling, asset_sources)
+            .map(|i| maybe_resize_rgba(i, w, h))
+            .unwrap_or_else(|_| neutral_specular_rgba(w, h))
+    } else {
+        neutral_specular_rgba(w, h)
+    };
+
+    // Data-relative path for the atlas-map: take the part after "textures\" (case-insensitive).
+    let rel = asset.logical_path().replace('/', "\\");
+    // Data-relative normal path (only when an `_n` sibling exists on disk), used
+    // for the `diffuse,normal` AtlasList key. port: AtlasList.GetKey / atlas-map
+    // source column = `diffuse,normal` (Program.cs:1306-1311).
+    let normal_rel = n_asset
+        .as_ref()
+        .map(|asset| asset.logical_path().replace('/', "\\"))
+        .unwrap_or_default();
+
+    Some(LoadedTile {
+        diffuse_rel: rel,
+        normal_rel,
+        w,
+        h,
+        rgba_d,
+        rgba_n,
+        rgba_s,
+    })
+}
+
+/// A tile of the records atlas, by its atlas key, loaded as `build_object_atlas` loads it and resized to `size`:
+/// diffuse, normal, specular.
+pub(crate) fn load_atlas_slice(
+    data_dirs: &[std::path::PathBuf],
+    key: &str,
+    atlas_size: u32,
+    max_tile_size: u32,
+    size: u32,
+) -> Option<[Vec<u8>; 3]> {
+    let diffuse = strip_normalize_texture_path(key.split(',').next()?).replace('\\', "/");
+    let asset = asset_source::resolve(data_dirs, &diffuse)?;
+    let tile = load_atlas_tile(&asset, Some(data_dirs), atlas_size, max_tile_size)?;
+    Some([tile.rgba_d, tile.rgba_n, tile.rgba_s].map(|rgba| resize_rgba(&rgba, tile.w, tile.h, size, size)))
 }
 
 // ---------------------------------------------------------------------------

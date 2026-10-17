@@ -1,0 +1,39 @@
+scn NellisExplodingAntScript
+
+ref ant
+int doonce
+int antcounter
+int iLightmyfire
+
+begin OnHitWith ExplodesGasTrapsOnHit
+
+	if GetHealthPercentage <= .5
+		set iLightmyfire to 1
+	endif
+
+	if doonce == 0 && getdead == 0
+		if GetHealthPercentage <= .1
+			placeatme NellisAntExplosion
+			set doonce to 1
+		endif
+	endif
+end
+
+begin OnDeath
+	set vfreeformnellis.iantcount to vfreeformnellis.iantcount + 1
+	if vfreeformnellis.iantcount == 15 && GetObjectiveCompleted VNellisInfestation 20 == 0
+		setObjectiveCompleted VNellisInfestation 20 1
+		if GetObjectiveCompleted VNellisInfestation 15 == 1
+			set VFreeformNellis.iInfestation to 1
+			setObjectiveDisplayed VNellisInfestation 45 1
+		endif
+		if GetObjectiveCompleted VNellisInfestation 35 == 0
+			setObjectiveDisplayed VNellisInfestation 35 0
+		endif
+	endif
+
+	if doonce == 0 && iLightmyfire == 1
+		placeatme NellisAntExplosion
+		set doonce to 1
+	endif
+end

@@ -1,0 +1,17 @@
+scn NVCRTumbleweedScript
+
+ref rWeed
+
+Begin OnHit
+	set rWeed to this
+	kill rWeed 0
+end
+
+Begin OnStartCombat
+	set rWeed to this
+	kill rWeed 0
+end
+
+Begin OnDeath
+	disable
+end

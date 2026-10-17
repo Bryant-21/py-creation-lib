@@ -144,14 +144,6 @@ def test_plugin_handle_collect_assets_reads_workshop_wire_point(
                 "ACTI",
                 "MODL",
                 (3.5, 15.0, 77.0),
-                [
-                    (
-                        "P-76-0A7382",
-                        (0.0, 128.0, -32.0),
-                        (1.0, 0.0, 0.0, 0.0),
-                        1.0,
-                    )
-                ],
             )
         ]
 
@@ -171,14 +163,6 @@ def test_plugin_handle_collect_assets_reads_workshop_wire_point(
             "source_record_signature": "ACTI",
             "source_subrecord_sig": "MODL",
             "workshop_wire_point": (3.5, 15.0, 77.0),
-            "workshop_snap_points": [
-                (
-                    "P-76-0A7382",
-                    (0.0, 128.0, -32.0),
-                    (1.0, 0.0, 0.0, 0.0),
-                    1.0,
-                )
-            ],
             "owner_claims": [
                 {
                     "source_form_key": "SeventySix.esm:76B545",
@@ -189,6 +173,25 @@ def test_plugin_handle_collect_assets_reads_workshop_wire_point(
             ],
         }
     ]
+
+
+def test_starfield_armor_family_claim_payload_retains_record_and_model_role():
+    from creation_lib.esp.native_runtime import _decode_asset_owner_claims
+
+    claims = _decode_asset_owner_claims(
+        [("Starfield.esm:000801", "ARMA", "MOD5", [], [
+            ("Starfield.esm:000800", "Starfield.esm:000802", "MOD5", "Clothes/Sleeves_F_1st.nif")
+        ])],
+        source_form_key="Starfield.esm:000801",
+        source_record_signature="ARMA",
+        source_subrecord_sig="MOD5",
+    )
+    assert claims[0]["armor_family"] == [{
+        "armor_form_key": "Starfield.esm:000800",
+        "owner_form_key": "Starfield.esm:000802",
+        "source_subrecord_sig": "MOD5",
+        "source_path": "Clothes/Sleeves_F_1st.nif",
+    }]
 
 
 def test_plugin_handle_collect_assets_decodes_all_owner_claims_and_idle_topology(
@@ -202,7 +205,6 @@ def test_plugin_handle_collect_assets_decodes_all_owner_claims_and_idle_topology
                 "FalloutNV.esm:11819B",
                 "IDLE",
                 "MODL",
-                None,
                 None,
                 [
                     (

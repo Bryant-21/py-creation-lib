@@ -1071,7 +1071,7 @@ impl NifFile {
                     let mut has_external_material = false;
                     if let Some(NifValue::String(name)) = block.get_field("Name") {
                         if let Some(n) = norm(name, "materials") {
-                            let is_material = n.ends_with(".bgsm") || n.ends_with(".bgem");
+                            let is_material = n.ends_with(".bgsm") || n.ends_with(".bgem") || n.ends_with(".mat");
                             if is_material && !out.materials.contains(&n) {
                                 out.materials.push(n);
                             }
@@ -1107,6 +1107,14 @@ impl NifFile {
 mod tests {
     use super::*;
     use crate::schema::SCHEMA;
+
+    #[test]
+    fn referenced_assets_include_native_starfield_materials_in_converted_nifs() {
+        let mut nif = NifFile::new("fo4");
+        let shader = nif.add_block("BSLightingShaderProperty", None);
+        nif.blocks[shader].set_field("Name", NifValue::String("Data\\Materials\\Starfield\\Weapons\\Shotty.mat".into()));
+        assert_eq!(nif.referenced_asset_paths().materials, ["materials/starfield/weapons/shotty.mat"]);
+    }
 
     #[test]
     fn suffixed_field_slots_are_read_and_updated() {

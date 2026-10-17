@@ -9,12 +9,16 @@ use super::types::{HkxType, HkxValue, deserialize_member_value};
 
 const DATA_VIRTUAL_FIXUP_SECTION_INDEX: u32 = 0;
 const SKYRIM_CHARACTER_DATA_SIGNATURE: u32 = 0x300d_6808;
+const SKYRIM_CHARACTER_STRING_DATA_SIGNATURE: u32 = 0x655b_42bc;
 const SKYRIM_CHARACTER_CONTROLLER_INFO_CLASS: &str = "hkbCharacterDataCharacterControllerInfo";
 const SKYRIM_CLIP_GENERATOR_SIGNATURE: u32 = 0x333b_85b9;
 const SKYRIM_BEHAVIOR_GRAPH_SIGNATURE: u32 = 0xb121_8f86;
 const SKYRIM_BEHAVIOR_REFERENCE_GENERATOR_SIGNATURE: u32 = 0x0fcb_5423;
 const SKYRIM_MANUAL_SELECTOR_GENERATOR_SIGNATURE: u32 = 0xd932_fab8;
 const SKYRIM_BLENDER_GENERATOR_SIGNATURE: u32 = 0x22df_7147;
+const SKYRIM_CYCLIC_BLEND_TRANSITION_GENERATOR_SIGNATURE: u32 = 0x5119_eb06;
+const SKYRIM_GAMEBRYO_SEQUENCE_GENERATOR_SIGNATURE: u32 = 0xc8df_2d77;
+const SKYRIM_DAMPING_MODIFIER_SIGNATURE: u32 = 0x9a04_0f03;
 const SKYRIM_MODIFIER_GENERATOR_SIGNATURE: u32 = 0x1f81_fae6;
 const SKYRIM_STATE_TAGGING_GENERATOR_SIGNATURE: u32 = 0xf082_6fc1;
 const SKYRIM_STATE_MACHINE_SIGNATURE: u32 = 0x816c_1dcb;
@@ -24,6 +28,16 @@ const SKYRIM_TRANSITION_INFO_ARRAY_SIGNATURE: u32 = 0xe397_b11e;
 const SKYRIM_BEHAVIOR_GRAPH_DATA_SIGNATURE: u32 = 0x095a_ca5d;
 const SKYRIM_BLENDING_TRANSITION_EFFECT_SIGNATURE: u32 = 0xfd85_84fe;
 const SKYRIM_EVALUATE_EXPRESSION_MODIFIER_SIGNATURE: u32 = 0xf900_f6be;
+const SKYRIM_POSE_MATCHING_GENERATOR_SIGNATURE: u32 = 0x29e2_71b4;
+const SKYRIM_GET_UP_MODIFIER_SIGNATURE: u32 = 0x61cb_7ac0;
+const SKYRIM_POWERED_RAGDOLL_CONTROLS_SIGNATURE: u32 = 0x7cb5_4065;
+const SKYRIM_RIGID_BODY_RAGDOLL_CONTROLS_SIGNATURE: u32 = 0xaa87_d1eb;
+const SKYRIM_EVENT_DRIVEN_MODIFIER_SIGNATURE: u32 = 0x7ed3_f44e;
+const SKYRIM_KEYFRAME_BONES_MODIFIER_SIGNATURE: u32 = 0x95f6_6629;
+
+#[cfg(test)]
+#[path = "reader_recovery_tests.rs"]
+mod recovery_layout_tests;
 
 #[derive(Debug, Default)]
 pub struct ReadOutcome {
@@ -210,14 +224,64 @@ fn read_members(
     path: &mut Vec<String>,
     array_sources: &mut Vec<ArraySource>,
 ) -> HavokResult<Vec<HkxMember>> {
-    let members = registry
+    let mut members = registry
         .get_all_members(class_name)
         .map_err(|error| HavokError::InvalidInput(error.to_string()))?;
+    if is_legacy_2010(context)
+        && context.object_signature_by_offset.get(&base) == Some(&0x19a0_05c0)
+        && class_name == "BSDirectAtModifier"
+    {
+        members = skyrim_direct_at_members(members);
+    }
+    if is_legacy_2010(context)
+        && context.object_signature_by_offset.get(&base)
+            == Some(&SKYRIM_MANUAL_SELECTOR_GENERATOR_SIGNATURE)
+        && class_name == "hkbManualSelectorGenerator"
+    {
+        for member in &mut members {
+            if member.name == "selectedGeneratorIndex" {
+                member.vtype = HkxType::Int8;
+            }
+        }
+    }
+    if is_legacy_2010(context)
+        && context.object_signature_by_offset.get(&base)
+            == Some(&SKYRIM_CYCLIC_BLEND_TRANSITION_GENERATOR_SIGNATURE)
+        && class_name == "BSCyclicBlendTransitionGenerator"
+    {
+        members.retain(|member| {
+            !matches!(
+                member.name.as_str(),
+                "TransitionOutEvent" | "TransitionInEvent"
+            )
+        });
+    }
     let mut values = Vec::with_capacity(members.len());
 
     for member in members {
         if member.flags == "SERIALIZE_IGNORED" {
             continue;
+        }
+        if is_legacy_2010(context)
+            && context.object_signature_by_offset.get(&base)
+                == Some(&SKYRIM_CLIP_GENERATOR_SIGNATURE)
+            && class_name == "hkbClipGenerator"
+        {
+            let absent = match member.name.as_str() {
+                "animationBundleName" => Some(HkxValue::String {
+                    value: String::new(),
+                    is_null: true,
+                }),
+                "userPartitionMask" => Some(HkxValue::U32(0)),
+                _ => None,
+            };
+            if let Some(value) = absent {
+                values.push(HkxMember {
+                    name: member.name,
+                    value,
+                });
+                continue;
+            }
         }
         if is_skyrim_character_controller_info(context, base, class_name, &member) {
             values.push(HkxMember {
@@ -226,10 +290,10 @@ fn read_members(
             });
             continue;
         }
-        if is_absent_legacy_member(context, base, class_name, &member) {
+        if let Some(value) = absent_legacy_member_value(context, base, class_name, &member) {
             values.push(HkxMember {
                 name: member.name,
-                value: HkxValue::Array(Vec::new()),
+                value,
             });
             continue;
         }
@@ -690,14 +754,65 @@ fn read_skyrim_character_controller_info(
 // object ends at partitionPairMap's 2012 offset, the mapper payload begins
 // after its shorter v40 body, and BlenderGenerator.children has a fixup 64
 // bytes before its 2012 offset.
-fn is_absent_legacy_member(
+fn absent_legacy_member_value(
     context: &ReadContext<'_>,
-    _base: usize,
+    base: usize,
     owner_class: &str,
     member: &MemberTemplate,
-) -> bool {
-    if !is_legacy_2010(context) || member.vtype != HkxType::Array {
-        return false;
+) -> Option<HkxValue> {
+    if !is_legacy_2010(context) {
+        return None;
+    }
+
+    if member.name == "animationBlendFraction"
+        && matches!(
+            (
+                owner_class,
+                context.object_signature_by_offset.get(&base).copied()
+            ),
+            (
+                "hkbPoweredRagdollControlsModifier",
+                Some(SKYRIM_POWERED_RAGDOLL_CONTROLS_SIGNATURE)
+            ) | (
+                "hkbRigidBodyRagdollControlsModifier",
+                Some(SKYRIM_RIGID_BODY_RAGDOLL_CONTROLS_SIGNATURE)
+            )
+        )
+    {
+        // These source versions predate the field; 0 is its declared Havok default.
+        return Some(HkxValue::F32(0.0));
+    }
+    if owner_class == "hkbManualSelectorGenerator"
+        && context.object_signature_by_offset.get(&base)
+            == Some(&SKYRIM_MANUAL_SELECTOR_GENERATOR_SIGNATURE)
+    {
+        // Version 0 ends at +96; later selector controls must not read the next object.
+        match member.name.as_str() {
+            "indexSelector" | "generatorChangedTransitionEffect" => {
+                return Some(HkxValue::Pointer(None));
+            }
+            "selectedIndexCanChangeAfterActivate" => return Some(HkxValue::Bool(true)),
+            _ => {}
+        }
+    }
+    if owner_class == "hkbCharacterStringData"
+        && context.object_signature_by_offset.get(&base)
+            == Some(&SKYRIM_CHARACTER_STRING_DATA_SIGNATURE)
+    {
+        // The source struct ends at +192; bow animation pointers begin there.
+        match member.name.as_str() {
+            "luaScriptOnCharacterActivated" | "luaScriptOnCharacterDeactivated" => {
+                return Some(HkxValue::String {
+                    value: String::new(),
+                    is_null: true,
+                });
+            }
+            "luaFiles" => return Some(HkxValue::Array(Vec::new())),
+            _ => {}
+        }
+    }
+    if member.vtype != HkxType::Array {
+        return None;
     }
 
     match (owner_class, member.name.as_str()) {
@@ -710,8 +825,8 @@ fn is_absent_legacy_member(
         | ("hkaSkeletonMapperData", "simpleMappings")
         | ("hkbCharacterData", "aiControlDriverInfo")
         | ("hkbCharacterData", "boneAttachmentBoneIndices")
-        | ("hkbCharacterData", "boneAttachmentTransforms") => true,
-        _ => false,
+        | ("hkbCharacterData", "boneAttachmentTransforms") => Some(HkxValue::Array(Vec::new())),
+        _ => None,
     }
 }
 
@@ -726,6 +841,12 @@ fn legacy_member_offset(
     }
 
     let signature = context.object_signature_by_offset.get(&base).copied();
+    if member.name == "enable"
+        && member.offset == 80
+        && (owner_class.ends_with("Modifier") || owner_class == "hkbModifierList")
+    {
+        return Some(72);
+    }
     if let Some(offset) =
         skyrim_behavior_member_offset(signature, owner_class, &member.name, member.offset)
     {
@@ -757,7 +878,6 @@ fn legacy_member_offset(
         ("BSLookAtModifier", "eyeBones") => Some(0x68),
         ("hkbFootIkControlsModifier", "legs") => Some(0x80),
         ("hkbFootIkModifier", "legs") => Some(0x80),
-        ("hkbPoseMatchingGenerator", "children") => Some(0x60),
         ("hkbModifierList", "modifiers") if member.offset == 88 => Some(80),
         ("hkbModifierList", "modifiers") => member.offset.checked_sub(8),
         ("hkaSkeletonMapperData", "chainMappings" | "unmappedBones") => {
@@ -778,6 +898,74 @@ fn skyrim_behavior_member_offset(
     descriptor_offset: usize,
 ) -> Option<usize> {
     match (signature, owner_class, member_name) {
+        (
+            Some(SKYRIM_POSE_MATCHING_GENERATOR_SIGNATURE),
+            "hkbPoseMatchingGenerator",
+            "referencePoseWeightThreshold"
+            | "blendParameter"
+            | "minCyclicBlendParameter"
+            | "maxCyclicBlendParameter"
+            | "indexOfSyncMasterChild"
+            | "flags"
+            | "subtractLastChild"
+            | "children"
+            | "worldFromModelRotation"
+            | "blendSpeed"
+            | "minSpeedToSwitch"
+            | "minSwitchTimeNoError"
+            | "minSwitchTimeFullError"
+            | "startPlayingEventId"
+            | "startMatchingEventId"
+            | "rootBoneIndex"
+            | "otherBoneIndex"
+            | "anotherBoneIndex"
+            | "pelvisIndex"
+            | "mode",
+        ) => descriptor_offset.checked_sub(64),
+        (
+            Some(SKYRIM_GET_UP_MODIFIER_SIGNATURE),
+            "hkbGetUpModifier",
+            "groundNormal" | "duration" | "alignWithGroundDuration" | "rootBoneIndex"
+            | "otherBoneIndex" | "anotherBoneIndex",
+        )
+        | (
+            Some(SKYRIM_POWERED_RAGDOLL_CONTROLS_SIGNATURE),
+            "hkbPoweredRagdollControlsModifier",
+            "controlData" | "bones" | "worldFromModelModeData" | "boneWeights",
+        )
+        | (
+            Some(SKYRIM_RIGID_BODY_RAGDOLL_CONTROLS_SIGNATURE),
+            "hkbRigidBodyRagdollControlsModifier",
+            "controlData" | "bones",
+        ) => descriptor_offset.checked_sub(16),
+        (
+            Some(SKYRIM_EVENT_DRIVEN_MODIFIER_SIGNATURE),
+            "hkbEventDrivenModifier",
+            "modifier" | "activateEventId" | "deactivateEventId" | "activeByDefault",
+        )
+        | (
+            Some(SKYRIM_KEYFRAME_BONES_MODIFIER_SIGNATURE),
+            "hkbKeyframeBonesModifier",
+            "keyframeInfo" | "keyframedBonesList",
+        ) => descriptor_offset.checked_sub(8),
+        (
+            Some(SKYRIM_CYCLIC_BLEND_TRANSITION_GENERATOR_SIGNATURE),
+            "BSCyclicBlendTransitionGenerator",
+            "pBlenderGenerator" | "EventToFreezeBlendValue" | "EventToCrossBlend",
+        ) => descriptor_offset.checked_sub(64),
+        (
+            Some(SKYRIM_CYCLIC_BLEND_TRANSITION_GENERATOR_SIGNATURE),
+            "BSCyclicBlendTransitionGenerator",
+            "fBlendParameter" | "fTransitionDuration" | "eBlendCurve",
+        ) => descriptor_offset.checked_sub(96),
+        (Some(0x338b_4879), "hkbTimerModifier", "alarmTimeSeconds" | "alarmEvent")
+        | (Some(0x1062_d993), "BSEventOnDeactivateModifier", "event")
+        | (
+            Some(0xb0fd_e45a),
+            "BSIsActiveModifier",
+            "bIsActive0" | "bInvertActive0" | "bIsActive1" | "bInvertActive1" | "bIsActive2"
+            | "bInvertActive2" | "bIsActive3" | "bInvertActive3" | "bIsActive4" | "bInvertActive4",
+        ) => descriptor_offset.checked_sub(8),
         (Some(SKYRIM_BEHAVIOR_GRAPH_SIGNATURE), "hkbBehaviorGraph", "rootGenerator") => Some(128),
         (Some(SKYRIM_BEHAVIOR_GRAPH_SIGNATURE), "hkbBehaviorGraph", "data") => Some(136),
         (
@@ -841,10 +1029,7 @@ fn skyrim_behavior_member_offset(
         (
             Some(SKYRIM_MANUAL_SELECTOR_GENERATOR_SIGNATURE),
             "hkbManualSelectorGenerator",
-            "generators"
-            | "selectedGeneratorIndex"
-            | "indexSelector"
-            | "selectedIndexCanChangeAfterActivate",
+            "generators" | "selectedGeneratorIndex",
         ) => descriptor_offset.checked_sub(64),
         (
             Some(SKYRIM_BLENDER_GENERATOR_SIGNATURE),
@@ -859,6 +1044,23 @@ fn skyrim_behavior_member_offset(
             | "children",
         ) => descriptor_offset.checked_sub(64),
         (Some(SKYRIM_MODIFIER_GENERATOR_SIGNATURE), "hkbModifierGenerator", "modifier") => Some(72),
+        (
+            Some(SKYRIM_DAMPING_MODIFIER_SIGNATURE),
+            "hkbDampingModifier",
+            "enable"
+            | "kP"
+            | "kI"
+            | "kD"
+            | "enableScalarDamping"
+            | "enableVectorDamping"
+            | "rawValue"
+            | "dampedValue",
+        ) => descriptor_offset.checked_sub(8),
+        (
+            Some(SKYRIM_GAMEBRYO_SEQUENCE_GENERATOR_SIGNATURE),
+            "BGSGamebryoSequenceGenerator",
+            "pSequence" | "eBlendModeFunction" | "fPercent" | "eUseTimePercentage" | "fTimePercent",
+        ) => descriptor_offset.checked_sub(64),
         (Some(SKYRIM_MODIFIER_GENERATOR_SIGNATURE), "hkbModifierGenerator", "generator") => {
             Some(80)
         }
@@ -870,11 +1072,12 @@ fn skyrim_behavior_member_offset(
         (
             Some(SKYRIM_CLIP_GENERATOR_SIGNATURE),
             "hkbClipGenerator",
-            "animationBundleName"
-            | "animationName"
-            | "triggers"
-            | "userPartitionMask"
-            | "cropStartAmountLocalTime"
+            "animationName" | "triggers",
+        ) => descriptor_offset.checked_sub(72),
+        (
+            Some(SKYRIM_CLIP_GENERATOR_SIGNATURE),
+            "hkbClipGenerator",
+            "cropStartAmountLocalTime"
             | "cropEndAmountLocalTime"
             | "startTime"
             | "playbackSpeed"
@@ -883,7 +1086,7 @@ fn skyrim_behavior_member_offset(
             | "animationBindingIndex"
             | "mode"
             | "flags",
-        ) => descriptor_offset.checked_sub(72),
+        ) => descriptor_offset.checked_sub(76),
         (
             Some(SKYRIM_STATE_MACHINE_SIGNATURE),
             "hkbStateMachine",
@@ -928,6 +1131,54 @@ fn skyrim_behavior_member_offset(
         ) => Some(descriptor_offset),
         _ => None,
     }
+}
+
+// The 0x19a005c0 Skyrim class predates the FO4 asymmetric limits and context enum.
+// Offsets match its reflection metadata and the mounted-bow object's raw payload.
+fn skyrim_direct_at_members(mut inherited: Vec<MemberTemplate>) -> Vec<MemberTemplate> {
+    inherited.retain(|member| {
+        matches!(
+            member.name.as_str(),
+            "variableBindingSet" | "userData" | "name" | "enable"
+        )
+    });
+    if let Some(enable) = inherited.iter_mut().find(|member| member.name == "enable") {
+        enable.offset = 72;
+    }
+    for (name, offset, vtype) in [
+        ("directAtTarget", 80, HkxType::Bool),
+        ("sourceBoneIndex", 82, HkxType::Int16),
+        ("startBoneIndex", 84, HkxType::Int16),
+        ("endBoneIndex", 86, HkxType::Int16),
+        ("limitHeadingDegrees", 88, HkxType::Real),
+        ("limitPitchDegrees", 92, HkxType::Real),
+        ("offsetHeadingDegrees", 96, HkxType::Real),
+        ("offsetPitchDegrees", 100, HkxType::Real),
+        ("onGain", 104, HkxType::Real),
+        ("offGain", 108, HkxType::Real),
+        ("targetLocation", 112, HkxType::Vector4),
+        ("userInfo", 128, HkxType::Uint32),
+        ("directAtCamera", 132, HkxType::Bool),
+        ("directAtCameraX", 136, HkxType::Real),
+        ("directAtCameraY", 140, HkxType::Real),
+        ("directAtCameraZ", 144, HkxType::Real),
+        ("active", 148, HkxType::Bool),
+        ("currentHeadingOffset", 152, HkxType::Real),
+        ("currentPitchOffset", 156, HkxType::Real),
+    ] {
+        inherited.push(MemberTemplate {
+            name: name.into(),
+            offset,
+            vtype,
+            vsubtype: HkxType::Void,
+            ctype: String::new(),
+            arrsize: 0,
+            flags: "FLAGS_NONE".into(),
+            etype: String::new(),
+            default: None,
+        });
+    }
+    inherited
 }
 
 fn legacy_array_element_stride(
@@ -1129,8 +1380,504 @@ fn read_c_string(data: &[u8], offset: usize) -> HavokResult<String> {
 }
 
 #[cfg(test)]
+mod character_string_data_tests {
+    use super::*;
+
+    #[test]
+    fn character_string_lua_fields_are_absent_only_in_exact_skyrim_layout() {
+        let mut data = vec![0u8; 384];
+        for (offset, text) in [(256, "activated.lua"), (320, "deactivated.lua")] {
+            data[offset..offset + text.len()].copy_from_slice(text.as_bytes());
+        }
+        let section = SectionHeader {
+            name: "__data__".into(),
+            offset: 0,
+            data1: data.len(),
+            data2: data.len(),
+            data3: data.len(),
+            exports: data.len(),
+            imports: data.len(),
+            end: data.len(),
+        };
+        let local_fixups = HashMap::from([(192, 256), (200, 320)]);
+        let empty = HashMap::new();
+        for (version, signature, absent) in [
+            (
+                "hk_2010.2.0-r1",
+                SKYRIM_CHARACTER_STRING_DATA_SIGNATURE,
+                true,
+            ),
+            (
+                "hk_2010.2.0-r1",
+                SKYRIM_CHARACTER_STRING_DATA_SIGNATURE ^ 1,
+                false,
+            ),
+            (
+                "hk_2014.1.0-r1",
+                SKYRIM_CHARACTER_STRING_DATA_SIGNATURE,
+                false,
+            ),
+        ] {
+            let signatures = HashMap::from([(0, signature)]);
+            let context = ReadContext {
+                data: &data,
+                data_section: &section,
+                contents_version: version,
+                local_fixups: &local_fixups,
+                global_fixups: &empty,
+                object_index_by_offset: &empty,
+                object_signature_by_offset: &signatures,
+            };
+            let mut registry = DescriptorRegistry::for_contents_version(version);
+            let members = read_members(
+                &mut registry,
+                &context,
+                0,
+                "hkbCharacterStringData",
+                0,
+                &mut Vec::new(),
+                &mut Vec::new(),
+            )
+            .unwrap();
+            for (field, text) in [
+                ("luaScriptOnCharacterActivated", "activated.lua"),
+                ("luaScriptOnCharacterDeactivated", "deactivated.lua"),
+            ] {
+                assert_eq!(
+                    members
+                        .iter()
+                        .find(|member| member.name == field)
+                        .unwrap()
+                        .value,
+                    HkxValue::String {
+                        value: if absent { String::new() } else { text.into() },
+                        is_null: absent,
+                    },
+                    "{version} 0x{signature:08x} {field}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "requires the extracted Skyrim bow and crossbow characters"]
+    fn skyrim_character_animation_pointers_do_not_become_lua_hooks() {
+        let root = std::env::var_os("MODKIT_SKYRIM_MESH_ROOT")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../../extracted/skyrimse/Meshes")
+            });
+        for (relative, expected) in [
+            (
+                "weapons/bow/characters/bowcharacter.hkx",
+                vec![
+                    r"..\Bow\Animations\Bow_DrawHeavy.hkx",
+                    r"..\Bow\Animations\Bow_DrawLight.hkx",
+                    r"..\Bow\Animations\Bow_IdleDrawn.hkx",
+                    r"..\Bow\Animations\Bow_Release.hkx",
+                ],
+            ),
+            (
+                "dlc01/weapons/crossbow/characters/crossbowcharacter.hkx",
+                vec![
+                    r"Animations\CrossBow_Release.hkx",
+                    r"Animations\CrossBow_Reload.hkx",
+                ],
+            ),
+        ] {
+            let bytes = std::fs::read(root.join(relative)).unwrap();
+            let file = crate::hkx::HkxFile::read(&bytes).unwrap();
+            let (index, object) = file
+                .objects()
+                .iter()
+                .enumerate()
+                .find(|(_, object)| object.class_name == "hkbCharacterStringData")
+                .unwrap();
+            assert_eq!(object.signature, SKYRIM_CHARACTER_STRING_DATA_SIGNATURE);
+            let value = |name: &str| {
+                &object
+                    .members
+                    .iter()
+                    .find(|member| member.name == name)
+                    .unwrap()
+                    .value
+            };
+            let source = file
+                .array_sources()
+                .iter()
+                .find(|source| {
+                    source.object_index == index
+                        && source.member_path == ["animationBundleNameData"]
+                })
+                .unwrap();
+            assert_eq!(source.content_offset, object.offset + 192, "{relative}");
+            assert_eq!(source.content_length, expected.len() * 8);
+            let HkxValue::Array(entries) = value("animationBundleNameData") else {
+                panic!("missing source animation names: {relative}")
+            };
+            let names = entries
+                .iter()
+                .map(|entry| {
+                    let members = entry.as_object_members().unwrap();
+                    assert_eq!(
+                        members
+                            .iter()
+                            .find(|member| member.name == "assetNames")
+                            .unwrap()
+                            .value,
+                        HkxValue::Array(Vec::new())
+                    );
+                    let HkxValue::String {
+                        value,
+                        is_null: false,
+                    } = &members
+                        .iter()
+                        .find(|member| member.name == "bundleName")
+                        .unwrap()
+                        .value
+                    else {
+                        panic!("missing source animation path")
+                    };
+                    value.as_str()
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(names, expected, "{relative}");
+            for field in [
+                "luaScriptOnCharacterActivated",
+                "luaScriptOnCharacterDeactivated",
+            ] {
+                assert_eq!(
+                    value(field),
+                    &HkxValue::String {
+                        value: String::new(),
+                        is_null: true
+                    },
+                    "{relative} {field}"
+                );
+            }
+            assert_eq!(value("luaFiles"), &HkxValue::Array(Vec::new()));
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "requires the extracted Skyrim hagraven behavior"]
+    fn skyrim_cyclic_blend_preserves_source_child_and_transition_events() {
+        let root = std::env::var("MODKIT_REPO_ROOT").expect("MODKIT_REPO_ROOT");
+        let bytes = std::fs::read(
+            std::path::Path::new(&root)
+                .join("extracted/skyrimse/meshes/actors/hagraven/behaviors/havgravenbehavior.hkx"),
+        )
+        .unwrap();
+        let file = crate::hkx::HkxFile::read(&bytes).unwrap();
+        let member = |object: &HkxObject, name: &str| {
+            object
+                .members
+                .iter()
+                .find(|member| member.name == name)
+                .unwrap()
+                .value
+                .clone()
+        };
+        let nodes = file
+            .objects()
+            .iter()
+            .filter(|object| object.class_name == "BSCyclicBlendTransitionGenerator")
+            .collect::<Vec<_>>();
+        assert_eq!(nodes.len(), 2);
+        for node in nodes {
+            let HkxValue::Pointer(Some(child)) = member(node, "pBlenderGenerator") else {
+                panic!("source cyclic blend lost its directional blender")
+            };
+            let child = &file.objects()[child];
+            assert_eq!(child.class_name, "hkbBlenderGenerator");
+            assert!(
+                matches!(member(child, "name"), HkxValue::String { value, .. } if value == "MT_DirectionalBlend" || value == "Magic_DirectionalBlend")
+            );
+            for (field, expected, raw_offset) in [
+                ("EventToFreezeBlendValue", 37, 88),
+                ("EventToCrossBlend", 38, 104),
+            ] {
+                let event = member(node, field);
+                assert_eq!(
+                    event
+                        .as_object_members()
+                        .unwrap()
+                        .iter()
+                        .find(|member| member.name == "id")
+                        .unwrap()
+                        .value,
+                    HkxValue::I32(expected)
+                );
+                assert_eq!(
+                    i32::from_le_bytes(
+                        bytes[node.offset + raw_offset..node.offset + raw_offset + 4]
+                            .try_into()
+                            .unwrap()
+                    ),
+                    expected
+                );
+            }
+            assert_eq!(member(node, "fBlendParameter"), HkxValue::F32(0.0));
+            assert_eq!(member(node, "fTransitionDuration"), HkxValue::F32(0.2));
+            assert!(!node.members.iter().any(|member| matches!(
+                member.name.as_str(),
+                "TransitionOutEvent" | "TransitionInEvent"
+            )));
+        }
+        assert_eq!(
+            skyrim_behavior_member_offset(
+                Some(0x8640_1931),
+                "BSCyclicBlendTransitionGenerator",
+                "pBlenderGenerator",
+                144
+            ),
+            None
+        );
+    }
+
+    #[test]
+    #[ignore = "requires the extracted Skyrim horse behavior"]
+    fn skyrim_manual_selectors_do_not_read_adjacent_runtime_state_or_object_tails() {
+        let root = std::env::var("MODKIT_REPO_ROOT").expect("MODKIT_REPO_ROOT");
+        let mut bytes = std::fs::read(
+            std::path::Path::new(&root)
+                .join("extracted/skyrimse/meshes/actors/character/behaviors/horsebehavior.hkx"),
+        )
+        .unwrap();
+        let file = crate::hkx::HkxFile::read(&bytes).unwrap();
+        let value = |object: &HkxObject, name: &str| {
+            object
+                .members
+                .iter()
+                .find(|member| member.name == name)
+                .unwrap()
+                .value
+                .clone()
+        };
+        let selectors = file
+            .objects()
+            .iter()
+            .filter(|object| object.class_name == "hkbManualSelectorGenerator")
+            .collect::<Vec<_>>();
+        assert!(selectors.len() > 10);
+        for selector in &selectors {
+            assert_eq!(
+                value(selector, "selectedGeneratorIndex"),
+                HkxValue::I8(bytes[selector.offset + 88] as i8)
+            );
+            for name in ["indexSelector", "generatorChangedTransitionEffect"] {
+                assert_eq!(value(selector, name), HkxValue::Pointer(None));
+            }
+            assert_eq!(
+                value(selector, "selectedIndexCanChangeAfterActivate"),
+                HkxValue::Bool(true)
+            );
+        }
+        let selector = selectors
+            .into_iter()
+            .find(|selector| {
+                matches!(value(selector, "name"), HkxValue::String { value, .. } if value == "MC_WeapEquip_MSG")
+            })
+            .unwrap();
+        bytes[selector.offset + 88] = 7;
+        bytes[selector.offset + 89] = 0xff;
+        let mutated = crate::hkx::HkxFile::read(&bytes).unwrap();
+        let mutated = mutated
+            .objects()
+            .iter()
+            .find(|object| object.offset == selector.offset)
+            .unwrap();
+        assert_eq!(value(mutated, "selectedGeneratorIndex"), HkxValue::I8(7));
+    }
+
+    #[test]
+    #[ignore = "requires the extracted Skyrim horse behavior"]
+    fn skyrim_mounted_clip_timing_and_aim_match_source_payload() {
+        let root = std::env::var("MODKIT_REPO_ROOT").expect("MODKIT_REPO_ROOT");
+        let bytes = std::fs::read(
+            std::path::Path::new(&root)
+                .join("extracted/skyrimse/meshes/actors/character/behaviors/horsebehavior.hkx"),
+        )
+        .unwrap();
+        let file = crate::hkx::HkxFile::read(&bytes).unwrap();
+        let value = |object: &HkxObject, name: &str| {
+            object
+                .members
+                .iter()
+                .find(|member| member.name == name)
+                .unwrap()
+                .value
+                .clone()
+        };
+        let clip = |name: &str| {
+            file.objects()
+                .iter()
+                .find(|object| {
+                    object.class_name == "hkbClipGenerator"
+                        && value(object, "name")
+                            == HkxValue::String {
+                                value: name.into(),
+                                is_null: false,
+                            }
+                })
+                .unwrap()
+        };
+        let normal = clip("Bow_DrawNock");
+        let quick = clip("Bow_DrawNock_QuickShot");
+        assert_eq!(value(normal, "startTime"), HkxValue::F32(0.0));
+        assert_eq!(value(normal, "playbackSpeed"), HkxValue::F32(1.0));
+        assert_eq!(value(quick, "playbackSpeed"), HkxValue::F32(2.0));
+        assert_eq!(value(normal, "animationBindingIndex"), HkxValue::I16(-1));
+        assert_eq!(
+            f32::from_le_bytes(
+                bytes[normal.offset + 100..normal.offset + 104]
+                    .try_into()
+                    .unwrap()
+            ),
+            1.0
+        );
+        let aim = file
+            .objects()
+            .iter()
+            .find(|object| object.class_name == "BSDirectAtModifier")
+            .unwrap();
+        assert_eq!(value(aim, "sourceBoneIndex"), HkxValue::I16(26));
+        assert_eq!(value(aim, "startBoneIndex"), HkxValue::I16(24));
+        assert_eq!(value(aim, "endBoneIndex"), HkxValue::I16(26));
+        assert_eq!(value(aim, "limitHeadingDegrees"), HkxValue::F32(90.0));
+        assert_eq!(value(aim, "limitPitchDegrees"), HkxValue::F32(90.0));
+        assert_eq!(value(aim, "onGain"), HkxValue::F32(0.05));
+        assert_eq!(value(aim, "userInfo"), HkxValue::U32(2));
+        assert!(!aim.members.iter().any(|member| member.name == "context"));
+        let timer = file
+            .objects()
+            .iter()
+            .find(|object| {
+                object.class_name == "hkbTimerModifier"
+                    && value(object, "name")
+                        == HkxValue::String {
+                            value: "SendEvent_BowRelease".into(),
+                            is_null: false,
+                        }
+            })
+            .unwrap();
+        assert_eq!(value(timer, "enable"), HkxValue::Bool(true));
+        let event = value(timer, "alarmEvent");
+        assert_eq!(
+            event
+                .as_object_members()
+                .unwrap()
+                .iter()
+                .find(|member| member.name == "id")
+                .unwrap()
+                .value,
+            HkxValue::I32(156)
+        );
+        let deactivate = file
+            .objects()
+            .iter()
+            .find(|object| {
+                object.class_name == "BSEventOnDeactivateModifier"
+                    && value(object, "name")
+                        == HkxValue::String {
+                            value: "BowZoomStop_OnDeactivateMod".into(),
+                            is_null: false,
+                        }
+            })
+            .unwrap();
+        assert_eq!(value(deactivate, "enable"), HkxValue::Bool(true));
+        let event = value(deactivate, "event");
+        assert_eq!(
+            event
+                .as_object_members()
+                .unwrap()
+                .iter()
+                .find(|member| member.name == "id")
+                .unwrap()
+                .value,
+            HkxValue::I32(174)
+        );
+    }
+
+    #[test]
+    fn skyrim_nif_sequence_generator_layout_is_signature_gated() {
+        for (field, target, source) in [
+            ("pSequence", 136, 72),
+            ("eBlendModeFunction", 144, 80),
+            ("fPercent", 148, 84),
+            ("eUseTimePercentage", 152, 88),
+            ("fTimePercent", 156, 92),
+        ] {
+            assert_eq!(
+                skyrim_behavior_member_offset(
+                    Some(SKYRIM_GAMEBRYO_SEQUENCE_GENERATOR_SIGNATURE),
+                    "BGSGamebryoSequenceGenerator",
+                    field,
+                    target
+                ),
+                Some(source)
+            );
+            assert_eq!(
+                skyrim_behavior_member_offset(
+                    Some(0x4e708fb6),
+                    "BGSGamebryoSequenceGenerator",
+                    field,
+                    target
+                ),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn skyrim_damping_layout_preserves_vector_alignment() {
+        assert_eq!(
+            skyrim_behavior_member_offset(
+                Some(SKYRIM_DAMPING_MODIFIER_SIGNATURE),
+                "hkbDampingModifier",
+                "enable",
+                80
+            ),
+            Some(72)
+        );
+        assert_eq!(
+            skyrim_behavior_member_offset(
+                Some(SKYRIM_DAMPING_MODIFIER_SIGNATURE),
+                "hkbDampingModifier",
+                "kP",
+                88
+            ),
+            Some(80)
+        );
+        assert_eq!(
+            skyrim_behavior_member_offset(
+                Some(SKYRIM_DAMPING_MODIFIER_SIGNATURE),
+                "hkbDampingModifier",
+                "enableScalarDamping",
+                100
+            ),
+            Some(92)
+        );
+        assert_eq!(
+            skyrim_behavior_member_offset(
+                Some(SKYRIM_DAMPING_MODIFIER_SIGNATURE),
+                "hkbDampingModifier",
+                "rawVector",
+                112
+            ),
+            None
+        );
+        assert_eq!(
+            skyrim_behavior_member_offset(Some(0x68a51d05), "hkbDampingModifier", "kP", 88),
+            None
+        );
+    }
 
     #[test]
     fn skyrim_behavior_offsets_are_exact_and_signature_scoped() {

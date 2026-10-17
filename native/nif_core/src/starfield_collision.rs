@@ -64,7 +64,10 @@ const COLLISION_OBJECT_SYNC_ON_UPDATE: u32 = 0x80;
 pub fn extract_fo4_collision_prims(fo4_nif_bytes: &[u8]) -> Result<Vec<CollisionPrim>, String> {
     let nif = NifFile::from_bytes(fo4_nif_bytes, None)
         .map_err(|error| format!("failed to read FO4 NIF: {error}"))?;
+    extract_fo4_collision_prims_from_nif(&nif)
+}
 
+pub fn extract_fo4_collision_prims_from_nif(nif: &NifFile) -> Result<Vec<CollisionPrim>, String> {
     let physics_blocks: Vec<_> = nif
         .blocks
         .iter()
@@ -106,7 +109,7 @@ pub fn extract_fo4_collision_prims(fo4_nif_bytes: &[u8]) -> Result<Vec<Collision
 
     // Collision block(s) exist but nothing decoded (mopp / compressed mesh / parse
     // failure) — fall back to the render-geometry AABB.
-    Ok(aabb_fallback_from_render_geometry(&nif)
+    Ok(aabb_fallback_from_render_geometry(nif)
         .into_iter()
         .collect())
 }

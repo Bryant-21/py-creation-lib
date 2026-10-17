@@ -100,6 +100,73 @@ fn parse_pex_file(py: Python<'_>, path: &str) -> PyResult<String> {
 }
 
 #[pyfunction]
+fn decompile_pex_json(
+    py: Python<'_>,
+    payload_json: String,
+    options_json: String,
+) -> PyResult<String> {
+    py.detach(move || {
+        let payload = serde_json::from_str(&payload_json).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("invalid PEX payload JSON: {e}"))
+        })?;
+        let options = serde_json::from_str(&options_json).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("invalid decompiler options JSON: {e}"))
+        })?;
+        let ast = crate::decompiler::decompile(&payload, &options)
+            .map_err(pyo3::exceptions::PyValueError::new_err)?;
+        serde_json::to_string(&ast)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+    })
+}
+
+#[pyfunction]
+fn decompile_pex_type_names(py: Python<'_>, payload_json: String) -> PyResult<Vec<String>> {
+    py.detach(move || {
+        let payload = serde_json::from_str(&payload_json).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("invalid PEX payload JSON: {e}"))
+        })?;
+        Ok(crate::decompiler::type_names(&payload))
+    })
+}
+
+#[pyfunction]
+fn decompile_function_json(py: Python<'_>, request_json: String) -> PyResult<String> {
+    #[derive(serde::Deserialize)]
+    struct Request {
+        function: crate::pex::PexFunctionPayload,
+        auto_vars: std::collections::HashMap<String, String>,
+        type_aliases: std::collections::HashMap<String, String>,
+        emit_locals: bool,
+        external_types: std::collections::HashMap<String, String>,
+        fo4_api_compat: bool,
+    }
+    py.detach(move || {
+        let request: Request = serde_json::from_str(&request_json).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!(
+                "invalid function decompiler request: {e}"
+            ))
+        })?;
+        let body = crate::decompiler::decompile_function(
+            &request.function,
+            &request.auto_vars,
+            &|ty| {
+                request
+                    .type_aliases
+                    .get(ty)
+                    .cloned()
+                    .unwrap_or_else(|| ty.to_owned())
+            },
+            request.emit_locals,
+            &request.external_types,
+            request.fo4_api_compat,
+        )
+        .map_err(pyo3::exceptions::PyValueError::new_err)?;
+        serde_json::to_string(&body)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+    })
+}
+
+#[pyfunction]
 fn write_pex_bytes(py: Python<'_>, payload_json: &str) -> PyResult<Vec<u8>> {
     let owned = payload_json.to_owned();
     py.detach(move || {
@@ -534,8 +601,33 @@ fn session_document_symbols(py: Python<'_>, sid: u64) -> PyResult<String> {
     }))
 }
 
+#[pyfunction]
+fn emit_pex_header(py: Python<'_>, object_json: String, manifest_json: String) -> PyResult<String> {
+    py.detach(|| -> Result<String, String> {
+        let object = serde_json::from_str(&object_json).map_err(|e| e.to_string())?;
+        let manifest = serde_json::from_str(&manifest_json).map_err(|e| e.to_string())?;
+        Ok(crate::headers::emit_header_object(&object, &manifest))
+    })
+    .map_err(pyo3::exceptions::PyValueError::new_err)
+}
+
+#[pyfunction]
+fn emit_pex_file_headers(
+    py: Python<'_>,
+    path: String,
+    manifest_json: String,
+) -> PyResult<Vec<(String, String)>> {
+    py.detach(|| {
+        let manifest = serde_json::from_str(&manifest_json).map_err(|e| e.to_string())?;
+        crate::headers::emit_headers_for_file(std::path::Path::new(&path), &manifest)
+    })
+    .map_err(pyo3::exceptions::PyValueError::new_err)
+}
+
 pub fn register_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(version, m)?)?;
+    m.add_function(wrap_pyfunction!(emit_pex_header, m)?)?;
+    m.add_function(wrap_pyfunction!(emit_pex_file_headers, m)?)?;
 
     // Stateless
     m.add_function(wrap_pyfunction!(parse_text, m)?)?;
@@ -543,6 +635,9 @@ pub fn register_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(emit_script_json, m)?)?;
     m.add_function(wrap_pyfunction!(parse_pex_bytes, m)?)?;
     m.add_function(wrap_pyfunction!(parse_pex_file, m)?)?;
+    m.add_function(wrap_pyfunction!(decompile_pex_json, m)?)?;
+    m.add_function(wrap_pyfunction!(decompile_pex_type_names, m)?)?;
+    m.add_function(wrap_pyfunction!(decompile_function_json, m)?)?;
     m.add_function(wrap_pyfunction!(write_pex_bytes, m)?)?;
     m.add_function(wrap_pyfunction!(compile_source, m)?)?;
 

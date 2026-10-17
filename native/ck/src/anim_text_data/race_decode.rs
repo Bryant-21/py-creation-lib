@@ -460,7 +460,7 @@ fn weapon_profiles_from_blocks(
             let flags = block.flags?;
             let role = u16::from_le_bytes(flags.get(0..2)?.try_into().ok()?);
             let perspective_value = u16::from_le_bytes(flags.get(2..4)?.try_into().ok()?);
-            let perspective = if perspective_value != 0 || block.subgraph_keywords.is_empty() {
+            let perspective = if perspective_value != 0 {
                 StancePerspective::FirstPerson
             } else {
                 StancePerspective::ThirdPerson
@@ -973,6 +973,14 @@ mod tests {
                 parse_plugin_file(&path_string, Some("fo4".to_string()), false).unwrap();
             let base = parse_plugin_file(&path_string, Some("fo4".to_string()), false).unwrap();
             let from_parsed = subgraph_inputs_from_parsed_plugins(&target, &[&base]).unwrap();
+
+            let projected_target = esp_authoring_core::plugin_runtime::parse_plugin_file_projection(
+                &path_string, Some("fo4".to_string()), &[*b"RACE", *b"IDLE"],
+            ).unwrap();
+            let projected_base = esp_authoring_core::plugin_runtime::parse_plugin_file_projection(
+                &path_string, Some("fo4".to_string()), &[*b"RACE"],
+            ).unwrap();
+            assert_eq!(subgraph_inputs_from_parsed_plugins(&projected_target, &[&projected_base]).unwrap(), from_parsed);
 
             assert_eq!(from_parsed, from_paths);
             assert_eq!(from_parsed.race_record_count, 1);

@@ -693,7 +693,7 @@ pub fn build_bto_with_telemetry(
     set_final_simplify_triangle_counts(&prepared, &mut telemetry.simplify);
     telemetry.models = collect_model_telemetry(&prepared);
     let mut bto_shapes = build_bto_shapes(quad, prepared, settings, true);
-    cap_bto_root_children_for_fo4(&mut bto_shapes, &mut telemetry);
+    fit_bto_root_children(quad, &mut bto_shapes, FO4_SAFE_BTO_ROOT_CHILDREN, settings, &mut telemetry);
     (bto_shapes, telemetry)
 }
 
@@ -740,7 +740,7 @@ fn build_source_bto_with_telemetry_impl(
     set_final_simplify_triangle_counts(&prepared, &mut telemetry.simplify);
     telemetry.models = collect_model_telemetry(&prepared);
     let mut bto_shapes = build_bto_shapes(quad, prepared, settings, merge_compatible);
-    cap_bto_root_children_for_fo4(&mut bto_shapes, &mut telemetry);
+    fit_bto_root_children(quad, &mut bto_shapes, FO4_SAFE_BTO_ROOT_CHILDREN, settings, &mut telemetry);
     (bto_shapes, telemetry)
 }
 
@@ -1169,23 +1169,111 @@ fn refresh_bto_shape_bounds(quad: &QuadDesc, shape: &mut BtoShape, settings: &Ob
     };
 }
 
-fn cap_bto_root_children_for_fo4(shapes: &mut Vec<BtoShape>, telemetry: &mut ObjectQuadTelemetry) {
-    if shapes.len() <= FO4_SAFE_BTO_ROOT_CHILDREN {
+/// Brings a tile under `limit` root children by merging compatible shapes, smallest first, and only as
+/// many as the limit needs. Truncation stays as the last resort for tiles whose shapes can't merge; the
+/// object report flags those through `shapes_skipped`.
+fn fit_bto_root_children(
+    quad: &QuadDesc,
+    shapes: &mut Vec<BtoShape>,
+    limit: usize,
+    settings: &ObjectSettings,
+    telemetry: &mut ObjectQuadTelemetry,
+) {
+    if shapes.len() <= limit {
         return;
     }
+    merge_smallest_until(quad, shapes, limit, settings);
+    if shapes.len() > limit {
+        cap_bto_root_children(shapes, limit, telemetry);
+    }
+}
 
+#[derive(Default)]
+struct MergeBucket {
+    head: usize,
+    members: Vec<usize>,
+    vertices: usize,
+    triangles: usize,
+    segment_triangles: BTreeMap<i32, usize>,
+}
+
+impl MergeBucket {
+    fn fits(&self, shape: &BtoShape, segment: i32) -> bool {
+        let triangles = shape.geometry.num_triangles();
+        self.vertices + shape.geometry.num_vertices() <= FO4_SAFE_BTO_SHAPE_VERTICES
+            && self.triangles + triangles <= FO4_SAFE_BTO_SHAPE_TRIANGLES
+            && self.segment_triangles.get(&segment).copied().unwrap_or(0) + triangles <= u16::MAX as usize
+    }
+
+    fn add(&mut self, index: usize, shape: &BtoShape, segment: i32) {
+        let triangles = shape.geometry.num_triangles();
+        self.members.push(index);
+        self.vertices += shape.geometry.num_vertices();
+        self.triangles += triangles;
+        *self.segment_triangles.entry(segment).or_default() += triangles;
+    }
+}
+
+fn merge_smallest_until(quad: &QuadDesc, shapes: &mut Vec<BtoShape>, limit: usize, settings: &ObjectSettings) {
+    let mut excess = shapes.len() - limit;
+    let mut order: Vec<usize> = (0..shapes.len()).filter(|&i| mergeable_segment_id(&shapes[i]).is_some()).collect();
+    order.sort_by_key(|&i| shapes[i].geometry.num_triangles());
+
+    let mut buckets: Vec<MergeBucket> = Vec::new();
+    let mut open: BTreeMap<BtoMergeKey, usize> = BTreeMap::new();
+    for i in order {
+        if excess == 0 {
+            break;
+        }
+        let shape = &shapes[i];
+        let segment = shape.segments[0].id;
+        let key = BtoMergeKey::from_shape(shape);
+        if let Some(&b) = open.get(&key)
+            && buckets[b].fits(shape, segment)
+        {
+            buckets[b].add(i, shape, segment);
+            excess -= 1;
+            continue;
+        }
+        let mut bucket = MergeBucket { head: i, ..MergeBucket::default() };
+        bucket.add(i, shape, segment);
+        open.insert(key, buckets.len());
+        buckets.push(bucket);
+    }
+
+    let mut slots: Vec<Option<BtoShape>> = std::mem::take(shapes).into_iter().map(Some).collect();
+    let mut merged = Vec::new();
+    for bucket in buckets.into_iter().filter(|b| b.members.len() > 1) {
+        let mut members: Vec<BtoShape> = bucket.members.iter().filter_map(|&i| slots[i].take()).collect();
+        // Ascending segment ids keep each cell's triangles in one segment, as vanilla tiles do.
+        members.sort_by_key(|shape| shape.segments[0].id);
+        let mut members = members.into_iter();
+        let mut combined = members.next().expect("bucket has members");
+        for shape in members {
+            append_bto_shape(&mut combined, shape);
+        }
+        refresh_bto_shape_bounds(quad, &mut combined, settings);
+        merged.push((bucket.head, combined));
+    }
+    for (head, combined) in merged {
+        slots[head] = Some(combined);
+    }
+    *shapes = slots.into_iter().flatten().collect();
+}
+
+fn cap_bto_root_children(shapes: &mut Vec<BtoShape>, limit: usize, telemetry: &mut ObjectQuadTelemetry) {
     shapes.sort_by(|a, b| {
         bto_shape_priority(b)
             .total_cmp(&bto_shape_priority(a))
             .then_with(|| b.geometry.num_triangles().cmp(&a.geometry.num_triangles()))
     });
 
-    let skipped = shapes.len() - FO4_SAFE_BTO_ROOT_CHILDREN;
-    let skipped_triangles = shapes[FO4_SAFE_BTO_ROOT_CHILDREN..]
+    let skipped = shapes.len() - limit;
+    let skipped_triangles = shapes[limit..]
         .iter()
         .map(|shape| shape.geometry.num_triangles() as u64)
         .sum::<u64>();
-    shapes.truncate(FO4_SAFE_BTO_ROOT_CHILDREN);
+    shapes.truncate(limit);
 
     telemetry.simplify.shapes_skipped += skipped as u64;
     telemetry.simplify.triangles_after = telemetry
@@ -1306,6 +1394,7 @@ mod unseen_tests {
             part_transform: crate::input::identity_part_transform(),
             part_scale: 1.0,
             material_swap: Default::default(),
+            hideable_by_id: true,
         }
     }
 
@@ -1456,6 +1545,86 @@ mod unseen_tests {
             bto.iter().any(|shape| shape.radius > 1000.0),
             "the cap should keep high-radius structures before small clutter"
         );
+    }
+
+    fn one_triangle_shape(i: usize, texture: &str, segment: i32) -> BtoShape {
+        let mut geometry = LodGeometry::new();
+        let o = i as f32;
+        geometry.vertices = vec![[o, o, 0.0], [o + 8.0, o, 0.0], [o, o + 8.0, 0.0]];
+        geometry.uvcoords = vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]];
+        geometry.normals = vec![[0.0, 0.0, 1.0]; 3];
+        geometry.triangles = vec![[0, 1, 2]];
+        geometry.update_bbox();
+        let mut texture_set: [String; 10] = Default::default();
+        texture_set[0] = texture.to_string();
+        BtoShape {
+            geometry,
+            segments: vec![SegmentDesc { id: segment, start_triangle: 0, num_triangles: 1 }],
+            segment_count: 32,
+            translation: [0.0; 3],
+            scale: 32.0,
+            center: [o + 4.0, o + 4.0, 0.0],
+            radius: 6.0,
+            multibound: MultiBoundAabb { position: [0.0; 3], extent: [0.0; 3] },
+            name_index_at: false,
+            shader: BtoShader::Lighting {
+                texture_set,
+                flags1: 0,
+                flags2: 0,
+                clamp: 3,
+                backlight: None,
+                grayscale_scale: None,
+            },
+            alpha: None,
+            enable_parent: 0,
+        }
+    }
+
+    #[test]
+    fn over_limit_tiles_merge_instead_of_dropping() {
+        let settings = LodSettings::fo4_default().objects;
+        let mut q = quad();
+        q.quad_level = 32;
+        let limit = 64;
+        let mut shapes: Vec<BtoShape> = (0..limit + 16).map(|i| one_triangle_shape(i, "tex/a.dds", 0)).collect();
+        let triangles_before: u64 = shapes.iter().map(|s| s.geometry.num_triangles() as u64).sum();
+        let mut telemetry = ObjectQuadTelemetry::default();
+        fit_bto_root_children(&q, &mut shapes, limit, &settings, &mut telemetry);
+        let triangles_after: u64 = shapes.iter().map(|s| s.geometry.num_triangles() as u64).sum();
+        assert_eq!(shapes.len(), limit, "merge only as many shapes as the limit needs");
+        assert_eq!(triangles_after, triangles_before);
+        assert_eq!(telemetry.simplify.shapes_skipped, 0);
+    }
+
+    #[test]
+    fn fitted_shapes_keep_segments_ascending_and_unique() {
+        let settings = LodSettings::fo4_default().objects;
+        let mut q = quad();
+        q.quad_level = 32;
+        let mut shapes: Vec<BtoShape> = (0..40).map(|i| one_triangle_shape(i, "tex/a.dds", (i % 4) as i32)).collect();
+        let mut telemetry = ObjectQuadTelemetry::default();
+        fit_bto_root_children(&q, &mut shapes, 8, &settings, &mut telemetry);
+        assert!(shapes.len() <= 8);
+        for shape in &shapes {
+            let ids: Vec<i32> = shape.segments.iter().map(|s| s.id).collect();
+            assert!(ids.windows(2).all(|w| w[0] < w[1]), "segments {ids:?}");
+            let covered: u32 = shape.segments.iter().map(|s| s.num_triangles as u32).sum();
+            assert_eq!(covered as usize, shape.geometry.num_triangles());
+            assert!(shape.radius > 6.0 || shape.geometry.num_triangles() == 1, "merged bounds refreshed");
+        }
+    }
+
+    #[test]
+    fn unmergeable_shapes_over_the_limit_are_still_capped() {
+        let settings = LodSettings::fo4_default().objects;
+        let mut q = quad();
+        q.quad_level = 32;
+        let mut shapes: Vec<BtoShape> =
+            (0..20).map(|i| one_triangle_shape(i, &format!("tex/{i}.dds"), 0)).collect();
+        let mut telemetry = ObjectQuadTelemetry::default();
+        fit_bto_root_children(&q, &mut shapes, 16, &settings, &mut telemetry);
+        assert_eq!(shapes.len(), 16);
+        assert_eq!(telemetry.simplify.shapes_skipped, 4);
     }
 
     #[test]

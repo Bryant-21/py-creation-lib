@@ -1005,10 +1005,166 @@ extern "C"
 		}
 		return 0;
 	}
+
+	//---------------------------------------------------------------------------------
+	// Normal-map crevice term (shaders/NormalCrevice.hlsl)
+
+	namespace crevice
+	{
+#include "NormalCrevice_DivergenceCS.inc"
+#include "NormalCrevice_BlurXCS.inc"
+#include "NormalCrevice_BlurYAccumulateCS.inc"
+
+		struct Params
+		{
+			uint32_t width, height, radius;
+			float sigma, weight;
+			float pad[3];
+		};
+
+		struct Shaders
+		{
+			Microsoft::WRL::ComPtr<ID3D11ComputeShader> divergence, blur_x, blur_y;
+		};
+	}
+
+	// Sum of `n` weighted Gaussian blurs of the RGBA8 normal map's slope divergence
+	// (sigma[i], weight[i], in pixels). `out` receives w*h floats. Serialized by the Rust GPU mutex.
+	int FFI(GpuNormalCrevice)(
+		void* dev,
+		const uint8_t* rgba,
+		uint32_t w,
+		uint32_t h,
+		uint32_t n,
+		const float* sigma,
+		const float* weight,
+		float* out) noexcept
+	{
+		using Microsoft::WRL::ComPtr;
+		if (!dev || !rgba || !w || !h || !n || !sigma || !weight || !out)
+			return -1;
+		auto* device = reinterpret_cast<ID3D11Device*>(dev);
+		auto fail = [](HRESULT hr) { return (static_cast<int>(hr & 0x7fffffff)) | 1; };
+
+		static crevice::Shaders shaders;
+		static ID3D11Device* shaders_device = nullptr;
+		if (shaders_device != device)
+		{
+			shaders = {};
+			HRESULT hr = device->CreateComputeShader(crevice::NormalCrevice_DivergenceCS, sizeof(crevice::NormalCrevice_DivergenceCS), nullptr, &shaders.divergence);
+			if (SUCCEEDED(hr))
+				hr = device->CreateComputeShader(crevice::NormalCrevice_BlurXCS, sizeof(crevice::NormalCrevice_BlurXCS), nullptr, &shaders.blur_x);
+			if (SUCCEEDED(hr))
+				hr = device->CreateComputeShader(crevice::NormalCrevice_BlurYAccumulateCS, sizeof(crevice::NormalCrevice_BlurYAccumulateCS), nullptr, &shaders.blur_y);
+			if (FAILED(hr))
+			{
+				shaders = {};
+				return fail(hr);
+			}
+			shaders_device = device;
+		}
+
+		const UINT count = w * h;
+		auto structured = [&](UINT stride, const void* init, bool uav, ComPtr<ID3D11Buffer>& buf) {
+			D3D11_BUFFER_DESC desc = {};
+			desc.ByteWidth = stride * count;
+			desc.Usage = D3D11_USAGE_DEFAULT;
+			desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | (uav ? D3D11_BIND_UNORDERED_ACCESS : 0);
+			desc.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
+			desc.StructureByteStride = stride;
+			D3D11_SUBRESOURCE_DATA data = { init, 0, 0 };
+			return device->CreateBuffer(&desc, init ? &data : nullptr, &buf);
+		};
+		ComPtr<ID3D11Buffer> normals, div, tmp, acc;
+		HRESULT hr = structured(4, rgba, false, normals);
+		if (SUCCEEDED(hr)) hr = structured(4, nullptr, true, div);
+		if (SUCCEEDED(hr)) hr = structured(4, nullptr, true, tmp);
+		if (SUCCEEDED(hr)) hr = structured(4, nullptr, true, acc);
+		if (FAILED(hr))
+			return fail(hr);
+
+		ComPtr<ID3D11ShaderResourceView> normals_srv, div_srv, tmp_srv;
+		ComPtr<ID3D11UnorderedAccessView> div_uav, tmp_uav, acc_uav;
+		hr = device->CreateShaderResourceView(normals.Get(), nullptr, &normals_srv);
+		if (SUCCEEDED(hr)) hr = device->CreateShaderResourceView(div.Get(), nullptr, &div_srv);
+		if (SUCCEEDED(hr)) hr = device->CreateShaderResourceView(tmp.Get(), nullptr, &tmp_srv);
+		if (SUCCEEDED(hr)) hr = device->CreateUnorderedAccessView(div.Get(), nullptr, &div_uav);
+		if (SUCCEEDED(hr)) hr = device->CreateUnorderedAccessView(tmp.Get(), nullptr, &tmp_uav);
+		if (SUCCEEDED(hr)) hr = device->CreateUnorderedAccessView(acc.Get(), nullptr, &acc_uav);
+		if (FAILED(hr))
+			return fail(hr);
+
+		D3D11_BUFFER_DESC cb_desc = {};
+		cb_desc.ByteWidth = sizeof(crevice::Params);
+		cb_desc.Usage = D3D11_USAGE_DYNAMIC;
+		cb_desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+		cb_desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+		ComPtr<ID3D11Buffer> cb;
+		hr = device->CreateBuffer(&cb_desc, nullptr, &cb);
+		if (FAILED(hr))
+			return fail(hr);
+
+		ComPtr<ID3D11DeviceContext> ctx;
+		device->GetImmediateContext(&ctx);
+		const UINT zero[4] = { 0, 0, 0, 0 };
+		ctx->ClearUnorderedAccessViewUint(acc_uav.Get(), zero);
+
+		auto run = [&](ID3D11ComputeShader* cs, float s, float wt, ID3D11ShaderResourceView* src, ID3D11UnorderedAccessView* dst) -> HRESULT {
+			D3D11_MAPPED_SUBRESOURCE mapped;
+			HRESULT r = ctx->Map(cb.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+			if (FAILED(r))
+				return r;
+			crevice::Params p = { w, h, static_cast<uint32_t>(s * 3.0f + 1.0f), s, wt, { 0, 0, 0 } };
+			memcpy(mapped.pData, &p, sizeof(p));
+			ctx->Unmap(cb.Get(), 0);
+			ID3D11ShaderResourceView* srvs[2] = { normals_srv.Get(), src };
+			ID3D11UnorderedAccessView* uavs[1] = { dst };
+			ID3D11Buffer* cbs[1] = { cb.Get() };
+			ctx->CSSetShader(cs, nullptr, 0);
+			ctx->CSSetShaderResources(0, 2, srvs);
+			ctx->CSSetUnorderedAccessViews(0, 1, uavs, nullptr);
+			ctx->CSSetConstantBuffers(0, 1, cbs);
+			ctx->Dispatch((w + 7) / 8, (h + 7) / 8, 1);
+			ID3D11ShaderResourceView* no_srv[2] = { nullptr, nullptr };
+			ID3D11UnorderedAccessView* no_uav[1] = { nullptr };
+			ctx->CSSetShaderResources(0, 2, no_srv);
+			ctx->CSSetUnorderedAccessViews(0, 1, no_uav, nullptr);
+			return S_OK;
+		};
+
+		hr = run(shaders.divergence.Get(), 1.0f, 0.0f, nullptr, div_uav.Get());
+		for (uint32_t i = 0; SUCCEEDED(hr) && i < n; ++i)
+		{
+			hr = run(shaders.blur_x.Get(), sigma[i], 0.0f, div_srv.Get(), tmp_uav.Get());
+			if (SUCCEEDED(hr))
+				hr = run(shaders.blur_y.Get(), sigma[i], weight[i], tmp_srv.Get(), acc_uav.Get());
+		}
+		ctx->CSSetShader(nullptr, nullptr, 0);
+		if (FAILED(hr))
+			return fail(hr);
+
+		D3D11_BUFFER_DESC rb_desc = {};
+		rb_desc.ByteWidth = 4 * count;
+		rb_desc.Usage = D3D11_USAGE_STAGING;
+		rb_desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+		ComPtr<ID3D11Buffer> readback;
+		hr = device->CreateBuffer(&rb_desc, nullptr, &readback);
+		if (FAILED(hr))
+			return fail(hr);
+		ctx->CopyResource(readback.Get(), acc.Get());
+		D3D11_MAPPED_SUBRESOURCE mapped;
+		hr = ctx->Map(readback.Get(), 0, D3D11_MAP_READ, 0, &mapped);
+		if (FAILED(hr))
+			return fail(hr);
+		memcpy(out, mapped.pData, 4 * static_cast<size_t>(count));
+		ctx->Unmap(readback.Get(), 0);
+		return 0;
+	}
 #else
 	void* FFI(GpuCreateDevice)() noexcept { return nullptr; }
 	void FFI(GpuReleaseDevice)(void*) noexcept {}
 	int FFI(GpuCompressBC7)(void*, const uint8_t*, uint32_t, uint32_t, int, uint8_t*, size_t) noexcept { return -1; }
 	int FFI(GpuCompressBC7Batch)(void*, uint32_t, const uint32_t*, const uint32_t*, const uint8_t* const*, int, uint8_t* const*, const size_t*) noexcept { return -1; }
+	int FFI(GpuNormalCrevice)(void*, const uint8_t*, uint32_t, uint32_t, uint32_t, const float*, const float*, float*) noexcept { return -1; }
 #endif
 }

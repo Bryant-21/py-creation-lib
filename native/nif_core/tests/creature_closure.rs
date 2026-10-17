@@ -220,6 +220,72 @@ fn recursively_stages_synthesized_material_and_texture() {
 }
 
 #[test]
+fn dependency_models_keep_record_paths_and_share_identical_assets_across_families() {
+    use nif_core_native::creature_closure::stage_creature_nif_closure_with_dependency_models;
+    use std::collections::BTreeMap;
+    let temp = tempfile::tempdir().unwrap();
+    let data = temp.path().join("source-data");
+    write_skyrim_material_nif(&data, true);
+    write_minimal_nif(&data, "meshes/actors/test/body.nif", "skyrimse");
+    let targets = BTreeMap::from([(
+        "meshes/actors/wolf/body.nif".to_string(),
+        "meshes/effects/translated.nif".to_string(),
+    )]);
+    let mut manifests = Vec::new();
+    for family in ["FamilyA", "FamilyB"] {
+        let mut request = request(
+            "skyrimse",
+            &data,
+            &temp.path().join(family),
+            vec![
+                input(CreatureNifRole::Body, "meshes/actors/test/body.nif", family),
+                input(
+                    CreatureNifRole::DependencyModel,
+                    "meshes/actors/wolf/body.nif",
+                    family,
+                ),
+            ],
+        );
+        request.target_namespace = family.into();
+        let receipt =
+            stage_creature_nif_closure_with_dependency_models(&request, &[], &targets).unwrap();
+        let dependency = receipt
+            .inputs
+            .iter()
+            .find(|input| input.role == CreatureNifRole::DependencyModel)
+            .unwrap();
+        assert_eq!(
+            dependency.target_data_relative_path,
+            "meshes/effects/translated.nif"
+        );
+        let artifacts = receipt
+            .artifacts
+            .iter()
+            .filter(|artifact| artifact.source_inputs.contains(&dependency.input_key))
+            .map(|artifact| {
+                (
+                    artifact.target_data_relative_path.clone(),
+                    artifact.fingerprint.clone(),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        assert!(
+            artifacts
+                .keys()
+                .any(|path| path.starts_with("materials/b21_creature_dependencies/"))
+        );
+        assert!(
+            artifacts
+                .keys()
+                .any(|path| path.starts_with("textures/b21_creature_dependencies/"))
+        );
+        receipt.validate().unwrap();
+        manifests.push(artifacts);
+    }
+    assert_eq!(manifests[0], manifests[1]);
+}
+
+#[test]
 fn skyrim_normal_generates_fo4_normal_and_specgloss_textures() {
     let temp = tempfile::tempdir().unwrap();
     let data = temp.path().join("source-data");

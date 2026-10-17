@@ -6,7 +6,7 @@ use pyo3::types::PyBytes;
 
 use crate::error::PrevisError;
 use crate::generation::{self, PreparedGeneration, collect_metadata};
-use crate::metadata::{pack_generation_date, stamped_cells, write_patched_plugin};
+use crate::metadata::{graft_stamps, pack_generation_date, stamped_cells, write_patched_plugin};
 use crate::precombine_stage::{self, PrecombineRequest};
 use crate::plugin::Plugin;
 use crate::stage::{CellEntry, PlanRequest, plan};
@@ -194,6 +194,13 @@ fn write_cell_metadata(
     .map_err(to_py)
 }
 
+/// Writes `plugin` to `output` with `previous`'s precombine/previs stamps;
+/// returns the stamped CELL count. Raises ValueError when they do not line up.
+#[pyfunction]
+fn graft_cell_stamps(py: Python<'_>, previous: PathBuf, plugin: PathBuf, output: PathBuf) -> PyResult<usize> {
+    py.detach(|| graft_stamps(&Plugin::open(&previous)?, &Plugin::open(&plugin)?, &output)).map_err(to_py)
+}
+
 /// Checks a load order's previsbines; returns the JSON report (see
 /// `detect::CheckReport`). `progress(stage, done, total)` is throttled like
 /// `progress_reporter`.
@@ -266,6 +273,7 @@ pub fn register_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(write_precombine_index, m)?)?;
     m.add_function(wrap_pyfunction!(stamped_cell_form_ids, m)?)?;
     m.add_function(wrap_pyfunction!(write_cell_metadata, m)?)?;
+    m.add_function(wrap_pyfunction!(graft_cell_stamps, m)?)?;
     m.add_function(wrap_pyfunction!(rewrite_tome_version, m)?)?;
     m.add_function(wrap_pyfunction!(check_load_order, m)?)?;
     m.add_function(wrap_pyfunction!(write_patch_seed, m)?)?;

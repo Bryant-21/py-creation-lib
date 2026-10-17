@@ -202,6 +202,65 @@ pub fn write_patched_plugin(
     Ok(patched)
 }
 
+fn decode_xcri(data: &[u8]) -> Result<Xcri> {
+    let word = |index: usize| data.get(index * 4..index * 4 + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()));
+    let invalid = || PrevisError::invalid("XCRI is truncated");
+    let meshes = word(0).ok_or_else(invalid)? as usize;
+    let pair_words = word(1).ok_or_else(invalid)? as usize;
+    if data.len() != 8 + 4 * (meshes + pair_words) || pair_words % 2 != 0 {
+        return Err(invalid());
+    }
+    Ok(Xcri {
+        mesh_ids: (0..meshes).map(|i| word(2 + i).unwrap()).collect(),
+        reference_mesh_pairs: (0..pair_words / 2).map(|i| (word(2 + meshes + 2 * i).unwrap(), word(3 + meshes + 2 * i).unwrap())).collect(),
+    })
+}
+
+/// Writes `target` to `output` carrying `previous`'s precombine and previs
+/// stamps, for a rebuild whose placed references are unchanged. Fails, so the
+/// caller regenerates instead, when the masters differ or a stamped CELL or a
+/// stamped reference of the plugin's own is missing from `target`.
+pub fn graft_stamps(previous: &Plugin, target: &Plugin, output: &Path) -> Result<usize> {
+    if previous.masters != target.masters {
+        return Err(PrevisError::invalid("the previous plugin has different masters"));
+    }
+    let own = target.self_index();
+    let present = |id: u32| id >> 24 != own || target.record(id).is_some();
+    let mut cells = FxHashMap::default();
+    let mut date = None;
+    for record in previous.records_of(b"CELL") {
+        let subrecords = previous.subrecords_at(&record)?;
+        let mut metadata = CellMetadata::default();
+        let mut stamped = false;
+        for (signature, data) in subrecords.iter() {
+            let stamp_date = || data.get(..2).map(|b| u16::from_le_bytes([b[0], b[1]]));
+            match &signature {
+                b"VISI" => (metadata.previs, stamped, date) = (true, true, date.or_else(stamp_date)),
+                b"PCMB" => (metadata.precombine, stamped, date) = (true, true, date.or_else(stamp_date)),
+                b"RVIS" => metadata.root_visibility_cell = crate::plugin::read_u32(data, 0),
+                b"XPRI" => metadata.previs_reference_ids = data.chunks_exact(4).map(|b| u32::from_le_bytes(b.try_into().unwrap())).collect(),
+                b"XCRI" => metadata.xcri = Some(decode_xcri(data)?),
+                _ => {}
+            }
+        }
+        if !stamped {
+            continue;
+        }
+        if target.record(record.form_id).is_none_or(|cell| &cell.signature != b"CELL") {
+            return Err(PrevisError::invalid(format!("stamped CELL {:08X} is not in the new plugin", record.form_id)));
+        }
+        let references = metadata.xcri.iter().flat_map(|x| x.reference_mesh_pairs.iter().map(|p| p.0));
+        if let Some(missing) = references.chain(metadata.previs_reference_ids.iter().copied()).chain(metadata.root_visibility_cell).find(|&id| !present(id)) {
+            return Err(PrevisError::invalid(format!("stamped record {missing:08X} is not in the new plugin")));
+        }
+        cells.insert(record.form_id, metadata);
+    }
+    let Some(date) = date else {
+        return Err(PrevisError::invalid("the previous plugin has no precombine or previs stamps"));
+    };
+    write_patched_plugin(target, output, &cells, date)
+}
+
 // Spool only changed CELLs; keeping all replacements or a whole WRLD in memory
 // would trade the seek bottleneck for another peak on small machines.
 fn plan_region(
@@ -440,6 +499,58 @@ mod tests {
             reference_mesh_pairs: vec![(10, 0), (12, 2)],
         };
         assert_eq!(xcri.normalized_for_previs().reference_mesh_pairs, vec![(12, 2), (10, 0)]);
+    }
+
+    #[test]
+    fn grafted_stamps_match_the_stamped_plugin() {
+        fn group(kind: u32, label: u32, body: &[u8]) -> Vec<u8> {
+            let mut bytes = b"GRUP".to_vec();
+            bytes.extend_from_slice(&((HEADER_SIZE + body.len()) as u32).to_le_bytes());
+            bytes.extend_from_slice(&label.to_le_bytes());
+            bytes.extend_from_slice(&kind.to_le_bytes());
+            bytes.extend_from_slice(&[0; 8]);
+            bytes.extend_from_slice(body);
+            bytes
+        }
+        fn plugin_bytes(with_reference: bool) -> Vec<u8> {
+            let mut cell = record(&[(b"DATA", &[1, 0])]);
+            cell[12..16].copy_from_slice(&0x800u32.to_le_bytes());
+            if with_reference {
+                let mut child = record(&[(b"NAME", &[1, 2, 3, 4])]);
+                child[..4].copy_from_slice(b"REFR");
+                child[12..16].copy_from_slice(&0x801u32.to_le_bytes());
+                cell.extend(group(6, 0x800, &group(9, 0x800, &child)));
+            }
+            let mut bytes = record(&[(b"HEDR", &[0; 12])]);
+            bytes[..4].copy_from_slice(b"TES4");
+            bytes[12..16].fill(0);
+            bytes.extend(group(0, u32::from_le_bytes(*b"CELL"), &group(2, 0, &group(3, 0, &cell))));
+            bytes
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let fresh = dir.path().join("Fresh.esp");
+        std::fs::write(&fresh, plugin_bytes(true)).unwrap();
+        let metadata = CellMetadata {
+            previs: true,
+            precombine: true,
+            root_visibility_cell: Some(0x800),
+            previs_reference_ids: vec![0x801],
+            xcri: Some(Xcri { mesh_ids: vec![5], reference_mesh_pairs: vec![(0x801, 5)] }),
+        };
+        let stamped = dir.path().join("Stamped.esp");
+        let date = pack_generation_date(2026, 10, 1).unwrap();
+        write_patched_plugin(&Plugin::open(&fresh).unwrap(), &stamped, &FxHashMap::from_iter([(0x800, metadata)]), date).unwrap();
+
+        let grafted = dir.path().join("Grafted.esp");
+        let count = graft_stamps(&Plugin::open(&stamped).unwrap(), &Plugin::open(&fresh).unwrap(), &grafted).unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(std::fs::read(&grafted).unwrap(), std::fs::read(&stamped).unwrap());
+
+        let without_reference = dir.path().join("Moved.esp");
+        std::fs::write(&without_reference, plugin_bytes(false)).unwrap();
+        let error = graft_stamps(&Plugin::open(&stamped).unwrap(), &Plugin::open(&without_reference).unwrap(), &dir.path().join("Out.esp"));
+        assert!(error.unwrap_err().to_string().contains("00000801"));
+        assert!(graft_stamps(&Plugin::open(&fresh).unwrap(), &Plugin::open(&fresh).unwrap(), &dir.path().join("None.esp")).is_err());
     }
 
     #[test]
